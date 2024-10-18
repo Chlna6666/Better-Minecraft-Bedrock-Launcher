@@ -1,0 +1,50 @@
+[package]
+name = "better_minecraft_bedrock_launcher"
+version = "0.0.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+build = "build.rs"
+
+
+
+[lib]
+name = "better_minecraft_bedrock_launcher_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.1", features = [] }
+embed-resource = "2.5.0"
+
+[target.'cfg(windows)'.dependencies]
+runas = "=1.0.0"
+deelevate = "0.2.0"
+winreg = "0.52.0"
+
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-single-instance = "2.0.0-rc.0"
+
+[dependencies]
+tauri = { version = "2.0.2", features = ["unstable", "devtools"] }
+tauri-plugin-shell = "2.0.1"
+tauri-plugin-dialog = "2.0.1"
+tauri-plugin-http = "2.0.1"
+tauri-plugin-fs = "2.0.1"
+tauri-plugin-store = "2.0.1"
+tauri-plugin-clipboard-manager = "2.1.0-beta.7"
+tauri-plugin-prevent-default = "0.6.1"
+serde = { version = "1", features = ["derive"] }
+window-shadows = "0.2.2"
+serde_json = "1"
+tokio = "1.39.2"
+toml = "0.8.2"
+once_cell = "1.19.0"
+chrono = "0.4.38"
+lazy_static = "1.5.0"
+libc = "0.2.155"
+windows = "0.58.0"
+sysinfo = "0.32.0"
+winapi = "0.3.9"
+windows-sys = { version = "0.59.0", features = ["Win32_System_SystemInformation"] }
+base64 = "0.22.1"
+rodio = "0.19.0"

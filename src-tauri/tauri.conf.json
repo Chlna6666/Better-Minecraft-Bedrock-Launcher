@@ -1,0 +1,111 @@
+{
+  "productName": "better_minecraft_bedrock_launcher",
+  "version": "0.0.0",
+  "identifier": "com.bmcbl",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build && copy .\\public\\SplashScreen.html .\\dist\\",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "fullscreen": false,
+        "resizable": true,
+        "title": "better_minecraft_bedrock_launcher",
+        "width": 800,
+        "height": 494.4,
+        "minWidth": 800,
+        "minHeight": 494.4,
+        "center": true,
+        "decorations": false,
+        "transparent": true,
+        "visible": false
+      },
+      {
+        "width": 600,
+        "height": 400,
+        "center": true,
+        "decorations": false,
+        "transparent": true,
+        "focus":false,
+        "shadow":false,
+        "url": "SplashScreen.html",
+        "label": "splashscreen",
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "My application capability used for all windows",
+          "windows": [
+            "*"
+          ],
+          "platforms": ["windows"],
+          "permissions": [
+            "fs:default",
+            "fs:allow-write-text-file",
+            "fs:allow-create",
+            "fs:allow-write",
+            "fs:allow-read",
+            "shell:allow-open",
+            "core:default",
+            "core:path:default",
+            "core:event:default",
+            "core:window:default",
+            "core:window:allow-create",
+            "core:window:allow-center",
+            "core:window:allow-request-user-attention",
+            "core:window:allow-set-resizable",
+            "core:window:allow-set-maximizable",
+            "core:window:allow-set-minimizable",
+            "core:window:allow-set-closable",
+            "core:window:allow-set-title",
+            "core:window:allow-maximize",
+            "core:window:allow-unmaximize",
+            "core:window:allow-minimize",
+            "core:window:allow-unminimize",
+            "core:window:allow-show",
+            "core:window:allow-hide",
+            "core:window:allow-close",
+            "core:window:allow-set-decorations",
+            "core:window:allow-set-always-on-top",
+            "core:window:allow-set-content-protected",
+            "core:window:allow-set-size",
+            "core:window:allow-set-min-size",
+            "core:window:allow-set-max-size",
+            "core:window:allow-set-position",
+            "core:window:allow-set-fullscreen",
+            "core:window:allow-set-focus",
+            "core:window:allow-set-icon",
+            "core:window:allow-set-skip-taskbar",
+            "core:window:allow-set-cursor-grab",
+            "core:window:allow-set-cursor-visible",
+            "core:window:allow-set-cursor-icon",
+            "core:window:allow-set-cursor-position",
+            "core:window:allow-set-ignore-cursor-events",
+            "core:window:allow-start-dragging",
+            "core:webview:allow-print"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/logo.png",
+      "icons/icon.ico"
+    ],
+    "resources": [
+
+    ]
+  }
+}

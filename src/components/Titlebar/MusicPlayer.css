@@ -1,0 +1,152 @@
+.music-player-container {
+    position: fixed;
+    top: 45px;
+    right: 5px;
+    background: linear-gradient(135deg, #6A82FB 0%, #FC5C7D 100%);
+    border-radius: 50%;
+    width: 45px;
+    height: 45px;
+    text-align: center; /* 使图片水平居中 */
+    box-shadow: 0px 4px 15px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    z-index: 1000;
+    transition: width 0.3s ease, height 0.3s ease, border-radius 0.3s ease;
+    border: none;
+    outline: none;
+}
+
+.music-player-container img {
+    vertical-align: middle; /* 图片垂直居中 */
+    width: 30px;
+    height: 30px;
+    filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(93deg) brightness(108%) contrast(101%);
+}
+
+.music-player-container.expanded {
+    width: 160px;  /* 固定宽度 */
+    height: 100px; /* 固定高度 */
+    border-radius: 10px;
+    padding: 15px;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+    display: flex; /* 使用 flex 布局 */
+    justify-content: space-between; /* 使内容在容器内均匀分布 */
+}
+
+.music-info-container {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    height: 20px; /* 固定高度 */
+    overflow: hidden; /* 隐藏超出的内容 */
+    white-space: nowrap;
+}
+
+.music-info-label {
+    color: white;
+    font-weight: 500;
+    font-size: 12px;
+    margin-right: 5px; /* 间隔 */
+}
+
+.music-info-scroll {
+    display: inline-block;
+    color: white;
+    font-weight: 500;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    box-sizing: border-box;
+    max-width: 120px; /* 控制滚动区域宽度 */
+    position: relative;
+}
+
+.music-info-scroll span {
+    display: inline-block;
+    transform: translateX(0);
+    animation: none;
+    white-space: nowrap;
+}
+
+.music-info-scroll.scroll span {
+    animation: scrollText 10s linear infinite; /* 启用滚动动画 */
+}
+
+/* 滚动文本动画 */
+@keyframes scrollText {
+    0% {
+        transform: translateX(100%);
+    }
+    100% {
+        transform: translateX(-100%);
+    }
+}
+
+.progress-bar {
+    width: 100%;
+    margin: 8px 0;
+    appearance: none;
+    height: 4px;
+    border-radius: 10px;
+    background: linear-gradient(90deg, #FC5C7D 0%, #6A82FB 100%);
+    outline: none;
+    transition: background 0.3s ease;
+}
+.progress-bar::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: white;
+    cursor: pointer;
+    box-shadow: 0px 0px 8px rgba(0, 0, 0, 0.2);
+}
+
+
+.music-controls {
+    display: flex;
+    justify-content: space-around;
+    width: 100%;
+}
+
+.control-button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s ease;
+}
+
+.control-button img {
+    width: 20px;
+    height: 20px;
+    filter: invert(1);
+}
+
+.control-button:hover {
+    transform: scale(1.1);
+}
+
+.close-button {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.close-button img {
+    width: 15px;
+    height: 15px;
+    filter: invert(1);
+}

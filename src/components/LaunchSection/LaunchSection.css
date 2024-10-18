@@ -1,0 +1,124 @@
+@keyframes bounceIn {
+    0% {
+        transform: scale(0.5) translateY(50px);
+        opacity: 0;
+    }
+    60% {
+        transform: scale(1.05) translateY(-10px);
+        opacity: 1;
+    }
+    100% {
+        transform: scale(1) translateY(0);
+    }
+}
+
+@keyframes bounceOut {
+    0% {
+        transform: scale(1) translateY(0);
+        opacity: 1;
+    }
+    50% {
+        transform: scale(1.05) translateY(-10px);
+    }
+    100% {
+        transform: scale(0.5) translateY(50px);
+        opacity: 0;
+    }
+}
+
+.launch-section {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+}
+
+.version-selector-container {
+    position: relative;
+    display: flex;
+    animation: bounceIn 0.6s ease-out;
+}
+
+.start-button {
+    background-color: var(--theme-color);
+    border: none;
+    border-radius: 6px 0 0 6px;
+    padding: 10px 20px;
+    font-size: 16px;
+    color: white;
+    cursor: pointer;
+    outline: none;
+    width: 180px;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.start-button .button-content {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+
+.arrow-button {
+    background-color: var(--theme-color);
+    border: none;
+    border-radius: 0 6px 6px 0;
+    padding: 10px 15px;
+    cursor: pointer;
+    outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.arrow {
+    transition: transform 0.3s ease;
+    color: white;
+}
+
+.arrow.open {
+    transform: rotate(180deg);
+}
+
+.version-list {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    background-color: white;
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+    overflow-y: scroll;
+    z-index: 1000;
+    width: 100%;
+    margin-bottom: 5px;
+    max-height: 200px;
+    animation: bounceIn 0.6s ease-out; /* 添加弹出效果 */
+}
+
+/* 设置滚动条样式 */
+.version-list::-webkit-scrollbar {
+    width: 8px;
+}
+
+.version-list::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+.version-item {
+    padding: 10px 15px;
+    cursor: pointer;
+    white-space: nowrap;
+    color: #333;
+    background-color: white;
+}
+
+.version-item:hover {
+    background-color: #f1f1f1;
+}
+
+.version-selector-container.bounce-out {
+    animation: bounceOut 0.6s ease-in; /* 添加收缩效果 */
+}

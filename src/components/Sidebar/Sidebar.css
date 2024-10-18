@@ -1,0 +1,97 @@
+.sidebar {
+  background-color: var(--theme-color);
+  color: white;
+  transition: width 0.3s ease;
+  overflow: hidden;
+  height: calc(100vh - 40px); /* Sidebar height excluding the Titlebar */
+  position: fixed;
+  top: 40px; /* Start directly under the Titlebar */
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between; /* Distribute space evenly, ensuring the last item is at the bottom */
+}
+
+.sidebar.expanded {
+  width: 160px; /* Adjusted width */
+}
+
+.sidebar.collapsed {
+  width: 50px;
+}
+
+/* Sidebar Toggle Button */
+.toggle-button {
+  background: transparent;
+  color: white;
+  border: none;
+  margin: 10px;
+  cursor: pointer;
+  transition: transform 0.3s ease;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Sidebar Icon Adjustment */
+.sidebar-icon img {
+  width: 24px; /* Maintain original size */
+  height: 24px; /* Maintain original size */
+  filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(360deg) brightness(100%) contrast(100%);
+}
+
+.toggle-icon {
+  width: 24px; /* Maintain original size */
+  height: 24px; /* Maintain original size */
+  filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(360deg) brightness(100%) contrast(100%);
+}
+
+.sidebar-options {
+  padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center; /* Align items in the center horizontally */
+}
+
+.sidebar-option {
+  width: 100%; /* Take full width of the sidebar */
+  padding: 15px 0; /* Add padding to ensure the icon is not too close to the edge */
+  cursor: pointer;
+  transition: background 0.3s ease, padding-left 0.3s ease; /* Synchronize padding and background transition */
+  display: flex;
+  align-items: center; /* Align icon and label on the same line */
+  justify-content: center; /* Center content when collapsed */
+  box-sizing: border-box; /* Ensure padding is included in the element's width */
+}
+
+.sidebar-label {
+  font-size: 16px; /* Restore original font size */
+  margin-left: 10px;
+  display: inline-block;
+  opacity: 1;
+  transition: opacity 0.3s ease, margin-left 0.3s ease; /* Synchronize opacity and margin transition */
+}
+
+/* Hide label when collapsed */
+.sidebar.collapsed .sidebar-label {
+  opacity: 0;
+  width: 0;
+  margin-left: 0;
+}
+
+/* Adjust alignment for expanded and collapsed states */
+.sidebar.expanded .sidebar-option {
+  justify-content: flex-start; /* Align icon and label to the left when expanded */
+  padding-left: 20px; /* Add padding to align with icon */
+}
+
+.sidebar-option:hover,
+.sidebar-option.active {
+  background-color: var(--theme-color); /* Lighter green for hover/active states */
+}
+
+/* Position the settings option at the bottom */
+.sidebar-settings {
+  margin-top: auto; /* Push the settings option to the bottom */
+  padding-bottom: 20px; /* Add some spacing at the bottom */
+}

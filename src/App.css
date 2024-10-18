@@ -1,0 +1,21 @@
+/* General App Styles */
+/* General App Styles */
+body {
+  user-select: none;
+  background-image: url('./assets/background.webp'); /* 确保路径正确 */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  flex-direction: row;
+}
+.app-container {
+  display: flex;
+  height: calc(98.4vh - 40px); /* Adjust height based on Titlebar size */
+  margin-top: 40px; /* Ensure content starts below Titlebar */
+}
+
+
+::-webkit-scrollbar {
+  display: none; /* Chrome Safari */
+}
+
