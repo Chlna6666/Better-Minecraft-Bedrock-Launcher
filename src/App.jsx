@@ -28,7 +28,7 @@ function App() {
                 console.log("Attempting to load configuration...");
                 const loadedConfig = await invoke("get_custom_style");
                 console.log("Configuration loaded:", loadedConfig);
-                logMessage('Info', `Configuration loaded: ${JSON.stringify(loadedConfig)}`);
+                logMessage('debug', `Configuration loaded: ${JSON.stringify(loadedConfig)}`);
                 setConfig(loadedConfig);
                 document.documentElement.style.setProperty('--theme-color', loadedConfig.theme_color|| '#90c7a8');
                 applyBackgroundStyle(loadedConfig);

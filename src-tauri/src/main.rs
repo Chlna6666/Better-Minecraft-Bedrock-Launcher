@@ -1,34 +1,42 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::arch::asm;
-use tauri::{AppHandle, Manager, Window};
-use tauri_plugin_fs::FsExt;
 mod utils;
-use utils::config::{get_custom_style, set_custom_style};
-use std::{env, fs, mem};
-use std::path::PathBuf;
-use winapi::um::winnls::GetACP;
-use std::os::windows::ffi::OsStringExt;
+use utils::config::{get_custom_style, read_config, set_custom_style};
+use utils::logger::log;
+
+use base64::{engine::general_purpose, Engine as _};
+use better_minecraft_bedrock_launcher_lib::utils::logger::init_logging;
 use lazy_static::lazy_static;
+use std::path::PathBuf;
+use std::{env, fs, mem};
+use tauri::{AppHandle, Manager};
+use tauri_plugin_fs::FsExt;
+use tauri_plugin_os::platform;
+use tracing::{debug, error, info};
+use winapi::um::winnls::GetACP;
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-use windows_sys::Win32::System::SystemInformation::{PROCESSOR_ARCHITECTURE_INTEL, PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_ARM};
-use crate::utils::logger::{clear_latest_log, log};
+use windows_sys::Win32::System::SystemInformation::{
+    PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_ARM, PROCESSOR_ARCHITECTURE_INTEL,
+};
 
 // 定义全局常量
-const APP_VERSION: &str = "0.0.1"; // 版本号
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION"); // 从 Cargo.toml 自动获取版本号
+const APP_LICENSE: &str = env!("CARGO_PKG_VERSION");
 
 #[tauri::command]
 fn get_app_version() -> &'static str {
     APP_VERSION
 }
-
+#[tauri::command]
+fn get_app_license() -> &'static str {
+    APP_LICENSE
+}
 
 lazy_static! {
     static ref APP_PATH: PathBuf = env::current_exe().unwrap(); // 程序路径
     static ref SYSTEM_ENCODING: u32 = detect_system_encoding(); // 系统编码
 }
-
 
 fn detect_system_encoding() -> u32 {
     // 获取当前活动代码页
@@ -63,7 +71,13 @@ fn read_music_directory(directory: &str) -> Result<Vec<String>, String> {
 
             // 仅添加支持的音频文件格式
             if let Some(extension) = path.extension() {
-                if extension == "m4a" || extension == "mp3" || extension == "wav" || extension == "flac" || extension == "ogg" || extension == "aac" {
+                if extension == "m4a"
+                    || extension == "mp3"
+                    || extension == "wav"
+                    || extension == "flac"
+                    || extension == "ogg"
+                    || extension == "aac"
+                {
                     files.push(path.to_string_lossy().to_string());
                 }
             }
@@ -78,10 +92,9 @@ fn read_music_directory(directory: &str) -> Result<Vec<String>, String> {
 #[tauri::command]
 fn read_file_content(file_path: String) -> Result<String, String> {
     // 读取文件内容，并返回 Base64 编码的字符串
-    let file_content = std::fs::read(&file_path).map_err(|e| e.to_string())?;
-    Ok(base64::encode(file_content))
+    let file_content = fs::read(&file_path).map_err(|e| e.to_string())?;
+    Ok(general_purpose::STANDARD.encode(file_content))
 }
-
 
 #[tauri::command]
 async fn close_splashscreen(window: tauri::Window) {
@@ -110,8 +123,30 @@ fn show_window(app: &AppHandle) {
         .expect("Can't Bring Window to Focus");
 }
 
+fn handle_debug_mode(app: &tauri::App) -> std::io::Result<()> {
+    // 读取配置文件
+    let config = read_config()?;
+
+    // 获取窗口对象
+    if let Some(window) = app.get_webview_window("main") {
+        if config.launcher.debug {
+            // 打开开发者工具
+            window.open_devtools();
+        } else {
+            // 关闭开发者工具
+            window.close_devtools();
+        }
+    } else {
+        error!("Failed to get main window.");
+    }
+
+    Ok(())
+}
+
 fn main() {
+    init_logging();
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = show_window(app);
         }))
@@ -123,20 +158,19 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_prevent_default::init())
         .setup(|app| {
-            clear_latest_log();
-            info!("[APP] BMCBL Start! Version: {}", APP_VERSION);
-            info!("[APP] App Path: {:?}", *APP_PATH);
-            info!("[APP] System Encoding: {}", *SYSTEM_ENCODING);
+            info!("BMCBL Start! Version: {}", APP_VERSION);
+            info!("App Path: {:?}", *APP_PATH);
+            info!("System Encoding: {}", *SYSTEM_ENCODING);
+            let platform = tauri_plugin_os::platform();
+            info!("Platform: {}", platform);
             let cpu_architecture = unsafe { get_cpu_architecture() };
-            info!("[APP] CPU Architecture: {}", cpu_architecture);
+            info!("CPU Architecture: {}", cpu_architecture);
             utils::file_ops::create_initial_directories(); // 创建初始目录
-                let window = app.get_webview_window("main").unwrap();
-                window.open_devtools();
-                window.close_devtools();
-            // 允许指定目录
+            handle_debug_mode(app)?; //debug
+                                     // 允许指定目录
             let scope = app.fs_scope();
-            scope.allow_directory("*", true);
-            debug!("{:?}", scope.allowed());
+            let _ = scope.allow_directory("*", true);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

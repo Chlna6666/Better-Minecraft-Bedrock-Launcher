@@ -1,34 +1,28 @@
+use crate::utils::config::read_config;
 use chrono::Local;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
 use std::fs::{create_dir_all, OpenOptions};
-use std::io::Write;
 use std::time::Instant;
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
-#[derive(Serialize, Deserialize)]
-pub enum LogLevel {
-    Info,
-    Warning,
-    Error,
-    Debug,
-}
-
-// 记录程序启动时的时间
+// 程序启动时间
 static START_TIME: Lazy<Instant> = Lazy::new(Instant::now);
 
-pub fn clear_latest_log() {
-    let logs_dir = "BMCBL/logs";
-    let latest_log_file = format!("{}/latest.log", logs_dir);
-    create_dir_all(logs_dir).expect("Unable to create logs directory");
-    // 清空 latest.log 文件的内容
-    OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true) // 清空文件内容
-        .open(latest_log_file)
-        .expect("Unable to open latest log file");
+// 自定义启动时间计时器
+struct UptimeTimer;
+
+impl FormatTime for UptimeTimer {
+    fn format_time(&self, w: &mut Writer<'_>) -> Result<(), std::fmt::Error> {
+        write!(w, "{}", elapsed_time()) // 直接返回 `write!` 的结果
+    }
 }
 
+// 返回程序启动后的运行时间
 fn elapsed_time() -> String {
     let elapsed = START_TIME.elapsed();
     let millis = elapsed.as_millis();
@@ -44,90 +38,100 @@ fn elapsed_time() -> String {
     format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
 }
 
+// 日志命令接口，支持多级日志写入
 #[tauri::command]
-pub fn log(level: String, message: &str) {
-    let log_level = match level.as_str() {
-        "Info" => LogLevel::Info,
-        "Warning" => LogLevel::Warning,
-        "Error" => LogLevel::Error,
-        "Debug" => LogLevel::Debug,
-        _ => LogLevel::Info, // 默认情况下使用 Info 级别
-    };
+pub fn log(level: &str, message: &str) {
+    match level {
+        "info" => info!("{}", message),
+        "warning" | "warn" => warn!("{}", message),
+        "error" => error!("{}", message),
+        "debug" => debug!("{}", message),
+        _ => info!("{}", message), // 默认使用 info
+    }
+}
 
-    let timestamp = elapsed_time();
-
-    let (log_level_str, log_level_str_no_color) = match log_level {
-        LogLevel::Info => ("\x1b[32mINFO\x1b[0m", "INFO"),
-        LogLevel::Warning => ("\x1b[33mWARNING\x1b[0m", "WARNING"),
-        LogLevel::Error => ("\x1b[31mERROR\x1b[0m", "ERROR"),
-        LogLevel::Debug => ("\x1b[34mDEBUG\x1b[0m", "DEBUG"),
-    };
-
-    // 终端输出带颜色的日志
-    println!("[{}] {} {}", timestamp, log_level_str, message);
-
-    // 创建 logs 目录
+// 初始化日志系统
+pub fn init_logging() {
     let logs_dir = "BMCBL/logs";
-    create_dir_all(logs_dir).expect("Unable to create logs directory");
-
-    // 生成按年-月-日格式的日志文件名
-    let log_file_name = format!("{}/{}.log", logs_dir, Local::now().format("%Y-%m-%d"));
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_file_name)
-        .expect("Unable to open log file");
-
-    // 文件写入不带颜色的日志
-    writeln!(
-        &mut file,
-        "[{}] [{}] {}",
-        timestamp, log_level_str_no_color, message
-    )
-    .expect("Unable to write to log file");
-
-    // 处理 latest.log 文件
     let latest_log_file = format!("{}/latest.log", logs_dir);
-    let mut latest_file = OpenOptions::new()
+
+    // 确保日志目录存在
+    if let Err(e) = create_dir_all(logs_dir) {
+        eprintln!("Failed to create logs directory: {}", e);
+        return;
+    }
+
+    // 清空 `latest.log`
+    if let Err(e) = OpenOptions::new()
         .create(true)
-        .append(true)
-        .open(latest_log_file)
-        .expect("Unable to open latest log file");
+        .write(true)
+        .truncate(true) // 清空文件内容
+        .open(&latest_log_file)
+    {
+        eprintln!("Failed to clear latest.log: {}", e);
+        return;
+    }
 
-    // 文件写入最新的日志
-    writeln!(
-        latest_file,
-        "[{}] [{}] {}",
-        timestamp, log_level_str_no_color, message
-    )
-    .expect("Unable to write to latest log file");
-}
-
-#[macro_export]
-macro_rules! info {
-    ($($arg:tt)*) => {
-        $crate::utils::logger::log("Info".to_string(), &format!($($arg)*));
+    // 判断是否启用 debug 日志
+    let debug_enabled = match read_config() {
+        Ok(config) => config.launcher.debug,
+        Err(err) => {
+            eprintln!("Failed to read config, defaulting to info logging: {}", err);
+            false
+        }
     };
-}
 
-#[macro_export]
-macro_rules! warning {
-    ($($arg:tt)*) => {
-        $crate::utils::logger::log("Warning".to_string(), &format!($($arg)*));
-    };
-}
+    // 设置日志级别
+    let log_level = if debug_enabled { "debug" } else { "info" };
 
-#[macro_export]
-macro_rules! error {
-    ($($arg:tt)*) => {
-        $crate::utils::logger::log("Error".to_string(), &format!($($arg)*));
-    };
-}
+    // 控制台层
+    let console_layer = tracing_subscriber::fmt::layer()
+        .with_timer(UptimeTimer) // 使用启动时间计时器
+        .with_ansi(true) // 控制台输出时使用 ANSI 转义字符
+        .with_target(true); // 显示目标模块
 
-#[macro_export]
-macro_rules! debug {
-    ($($arg:tt)*) => {
-        $crate::utils::logger::log("Debug".to_string(), &format!($($arg)*));
-    };
+    // 文件层 - 按日期记录日志
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_timer(UptimeTimer)
+        .with_ansi(false) // 文件无 ANSI 转义
+        .with_target(true) // 显示目标模块
+        .with_writer(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(format!(
+                    "{}/{}.log",
+                    logs_dir,
+                    Local::now().format("%Y-%m-%d")
+                ))
+                .unwrap(),
+        ); // 明确指定文件输出
+
+    // 文件层 - latest.log
+    let latest_log_layer = tracing_subscriber::fmt::layer()
+        .with_timer(UptimeTimer)
+        .with_ansi(false) // 文件无 ANSI 转义
+        .with_target(true) // 显示目标模块
+        .with_writer(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&latest_log_file)
+                .unwrap(),
+        ); // 明确指定文件输出
+
+    // 初始化日志订阅器
+    tracing_subscriber::registry()
+        .with(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)), // 根据配置设置日志级别
+        )
+        .with(console_layer) // 控制台日志层
+        .with(file_layer) // 按日期日志文件层
+        .with(latest_log_layer) // 最新日志文件层
+        .init(); // 初始化日志系统
+
+    info!("Logging initialized. Level: {}", log_level);
+    if debug_enabled {
+        debug!("Debug logging is enabled based on config.");
+    }
 }
