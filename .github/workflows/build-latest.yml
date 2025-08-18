@@ -1,0 +1,43 @@
+name: build-latest
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:  # Manual trigger option
+
+jobs:
+  build_windows:
+    name: Build on Windows
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: ⬇️ Checkout
+        uses: actions/checkout@v4
+
+      - name: ♻️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 🦀 Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 📦 Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: 🚚 Install Tauri CLI
+        run: cargo install tauri-cli
+
+      - name: 🚀 Build Tauri App
+        run: cargo tauri build
+
+      - name: 📤 Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-windows-build
+          path: |
+            src-tauri/target/release/bundle
+            src-tauri/target/release/*.exe

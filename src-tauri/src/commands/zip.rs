@@ -89,7 +89,7 @@ pub async fn extract_zip_appx(
         }
     }
 
-    /* 删除签名（可选）
+    //删除签名（可选）
     let sig = extract_to.join("AppxSignature.p7x");
     if sig.exists() {
         info!("删除解压目录中的签名文件：{}", sig.display());
@@ -100,7 +100,7 @@ pub async fn extract_zip_appx(
     } else {
         debug!("未在解压目录找到签名文件（无需删除）：{}", sig.display());
     }
-    */
+
 
 
     // 创建 mods 目录
