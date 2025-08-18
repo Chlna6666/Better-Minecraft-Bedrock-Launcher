@@ -1,0 +1,241 @@
+:root{
+    --control-height: 56px;          /* 稍微缩短高度 */
+    --control-padding: 8px;          /* 更小的内边距 */
+    --control-gap: 10px;             /* 更紧凑的间隙 */
+    --search-max-width: 200px;       /* 搜索框最大宽度（可调） */
+    --refresh-right-offset: 12px;    /* 刷新按钮离右侧的间距 */
+    --search-right-offset: 48px;     /* 搜索 wrapper 的 right 偏移（离右侧） */
+}
+
+
+.container {
+    flex: 1;
+    overflow-y: auto;
+    background-color: #f9f9f9;
+    border-radius: 6px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.info {
+    margin-bottom: 1rem;
+    font-size: 1rem;
+    color: #333;
+}
+
+.info.error {
+    color: red;
+}
+
+/* control bar: 相对定位，右侧 actions 使用绝对布局来避免宽度变动导致整体抖动 */
+.control-bar {
+    display: flex;
+    align-items: center;
+    background-color: #fff;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    padding: var(--control-padding);
+    border-bottom: 1px solid #e6e6e6;
+    gap: var(--control-gap);
+    min-height: var(--control-height);
+    /* 防止内部元素假装很宽导致横向滚动 */
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.filter-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.checkbox-label {
+    font-size: 0.9rem;
+    color: #333;
+    display: flex;
+    align-items: center;
+}
+
+.checkbox {
+    margin-right: 0.5rem;
+}
+
+.middle-placeholder {
+    flex: 1 1 auto;
+    min-width: 0; /* 关键：允许收缩以避免控制栏被撑宽 */
+}
+
+.actions {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+}
+
+/* search-wrapper 绝对定位于 actions 的右侧，right 对齐 refresh 左边，展开时向左扩展 */
+.search-wrapper {
+    position: absolute;
+    right: var(--search-right-offset);
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    transition: width 0.18s ease, opacity 0.18s ease;
+    overflow: visible;
+}
+
+.search-wrapper.closed .search-container {
+    width: 0;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+}
+
+.search-wrapper.open .search-container {
+    width: var(--search-max-width);
+    max-width: calc(min(var(--search-max-width), 100vw - 220px)); /* 防止窄屏溢出 */
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+}
+.search-icon-btn {
+    width: 18px;
+    height: 18px;
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+.search-container {
+    display: flex;
+    align-items: center;
+    background: #fff;
+    border: 1px solid #e3e3e3;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+    border-radius: 6px;
+    padding: 1px 3px;
+    transform-origin: right center;
+    transition: width 0.18s ease, opacity 0.18s ease;
+    box-sizing: border-box;
+}
+
+.search-input {
+    flex: 1 1 auto;
+    border: none;
+    outline: none;
+    font-size: 0.95rem;
+    min-width: 28px;
+}
+
+.close-search-btn {
+    background: transparent;
+    border: none;
+    padding: 4px;
+    margin-left: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+}
+
+.refresh-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: 6px;
+    padding: 6px;
+    position: absolute;
+    right: var(--refresh-right-offset);
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.inner-search-icon {
+    width: 18px;
+    height: 18px;
+}
+
+.table {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+}
+
+.table-row {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid #eee;
+    padding: 4px 8px;
+    height: 45px;
+}
+
+.table-icon-cell {
+    flex: 0 0 50px; /* 固定 50px */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.table-cell {
+    flex: 1; /* 自动撑满剩余空间 */
+    min-width: 100px; /* 最小宽度避免太窄 */
+    padding: 0 9px;
+    font-size: 1rem;
+    color: #333;
+    display: flex;
+    flex-direction: column;
+}
+
+.table-version-number {
+    font-weight: 500;
+    font-size: 1rem;
+}
+
+.table-version-type {
+    font-size: 0.85rem;
+    color: #777;
+}
+
+.table-download-cell {
+    flex: 0 0 60px; /* 下载按钮固定宽度 */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.table-version-icon {
+    width: 32px;
+    height: 32px;
+}
+
+.download-button {
+    padding: 0.5rem;
+    background-color: transparent;
+    border: none;
+    cursor: pointer;
+}
+
+.download-icon {
+    width: 24px;
+    height: 24px;
+    color: #007BFF;
+}
+
+.no-data {
+    padding: 1rem;
+    text-align: center;
+    color: #777;
+}
+
+/* 虚拟列表容器（保留，可按需使用） */
+.virtual-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.virtualized-list {
+    flex: 1;
+}

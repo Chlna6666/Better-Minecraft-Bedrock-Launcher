@@ -1,11 +1,14 @@
 import React, { useState } from "react";
 import "./SettingsSection.css";
+import "./Settings.css";
 import GameSettings from "./GameSettings";
 import CustomizationSettings from "./CustomizationSettings";
 import LauncherSettings from "./LauncherSettings";
 import AboutSection from "./AboutSection";
+import { useTranslation } from 'react-i18next';
 
 function SettingsSection() {
+    const { t, i18n } = useTranslation();
     const [activeTab, setActiveTab] = useState("game");
     const [isVisible, setIsVisible] = useState(true);
 
@@ -37,10 +40,18 @@ function SettingsSection() {
     return (
         <div className="settings-section">
             <div className="settings-header">
-                <button className={`nav-button ${activeTab === "game" ? "active" : ""}`} onClick={() => handleTabChange("game")}>游戏</button>
-                <button className={`nav-button ${activeTab === "customization" ? "active" : ""}`} onClick={() => handleTabChange("customization")}>个性化</button>
-                <button className={`nav-button ${activeTab === "launcher" ? "active" : ""}`} onClick={() => handleTabChange("launcher")}>启动器</button>
-                <button className={`nav-button ${activeTab === "about" ? "active" : ""}`} onClick={() => handleTabChange("about")}>关于</button>
+                <button className={`nav-button ${activeTab === "game" ? "active" : ""}`} onClick={() => handleTabChange("game")}>
+                    {t('Settings.tabs.game')}
+                </button>
+                <button className={`nav-button ${activeTab === "customization" ? "active" : ""}`} onClick={() => handleTabChange("customization")}>
+                    {t('Settings.tabs.customization')}
+                </button>
+                <button className={`nav-button ${activeTab === "launcher" ? "active" : ""}`} onClick={() => handleTabChange("launcher")}>
+                    {t('Settings.tabs.launcher')}
+                </button>
+                <button className={`nav-button ${activeTab === "about" ? "active" : ""}`} onClick={() => handleTabChange("about")}>
+                    {t('Settings.tabs.about')}
+                </button>
             </div>
 
             <div className={`settings-content ${isVisible ? "bounce-in" : "bounce-out"}`}>

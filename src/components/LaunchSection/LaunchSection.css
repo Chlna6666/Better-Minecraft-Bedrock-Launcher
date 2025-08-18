@@ -1,28 +1,26 @@
-@keyframes bounceIn {
+@keyframes slideDown {
     0% {
-        transform: scale(0.5) translateY(50px);
         opacity: 0;
-    }
-    60% {
-        transform: scale(1.05) translateY(-10px);
-        opacity: 1;
+        transform: translateY(0px);
+        max-height: 0;
     }
     100% {
-        transform: scale(1) translateY(0);
+        opacity: 1;
+        transform: translateY(0);
+        max-height: 230px;
     }
 }
 
-@keyframes bounceOut {
+@keyframes slideUp {
     0% {
-        transform: scale(1) translateY(0);
         opacity: 1;
-    }
-    50% {
-        transform: scale(1.05) translateY(-10px);
+        transform: translateY(0);
+        max-height: 230px;
     }
     100% {
-        transform: scale(0.5) translateY(50px);
         opacity: 0;
+        transform: translateY(0px);
+        max-height: 0;
     }
 }
 
@@ -37,6 +35,8 @@
     display: flex;
     animation: bounceIn 0.6s ease-out;
 }
+
+
 
 .start-button {
     background-color: var(--theme-color);
@@ -82,19 +82,84 @@
     transform: rotate(180deg);
 }
 
+.version {
+    font-size: 12px;
+}
+
+.version-sub {
+    font-size: 12px;
+    color: #888;
+    margin-top: 4px;
+    line-height: 1.2;
+}
+
+
+.version-title {
+    font-weight: 500;
+    color: #222;
+}
+
+.version-item {
+    padding: 10px 15px;
+    cursor: pointer;
+    white-space: nowrap;
+    color: #333;
+    background-color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.version-item:hover {
+    background-color: #f1f1f1;
+}
+
+.version-icon {
+    width: 32px;
+    height: 32px;
+    margin-right: 10px;
+}
+
+.version-info {
+    display: flex;
+    flex-direction: column;
+}
+
 .version-list {
     position: absolute;
     bottom: 100%;
-    left: 0;
+    right: 0;
     background-color: white;
     box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
     border-radius: 6px;
-    overflow-y: scroll;
+    overflow-y: auto;
     z-index: 1000;
-    width: 100%;
+    min-width: 200px;
+    max-width: 80vw;
     margin-bottom: 5px;
-    max-height: 200px;
-    animation: bounceIn 0.6s ease-out; /* 添加弹出效果 */
+    max-height: 300px;
+    opacity: 0;
+    transform: translateY(-20px);
+    transform-origin: top right;
+    pointer-events: none;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.version-list.slide-down {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+
+
+.version-list.slide-down {
+    animation: slideDown 0.4s ease forwards;
+    pointer-events: auto;
+}
+
+.version-list.slide-up {
+    animation: slideUp 0.4s ease forwards;
 }
 
 /* 设置滚动条样式 */
@@ -107,17 +172,7 @@
     border-radius: 4px;
 }
 
-.version-item {
-    padding: 10px 15px;
-    cursor: pointer;
-    white-space: nowrap;
-    color: #333;
-    background-color: white;
-}
 
-.version-item:hover {
-    background-color: #f1f1f1;
-}
 
 .version-selector-container.bounce-out {
     animation: bounceOut 0.6s ease-in; /* 添加收缩效果 */

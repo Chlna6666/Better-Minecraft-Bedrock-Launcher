@@ -1,6 +1,6 @@
 {
   "productName": "better_minecraft_bedrock_launcher",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "identifier": "com.bmcbl",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -23,7 +23,8 @@
         "center": true,
         "decorations": false,
         "transparent": true,
-        "visible": false
+        "visible": false,
+        "dragDropEnabled": false
       },
       {
         "width": 600,
@@ -39,7 +40,21 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": {
+        "default-src": "*",
+        "script-src": "* 'unsafe-eval' 'unsafe-inline' blob: data:",
+        "style-src": "* 'unsafe-inline'",
+        "img-src": "* data: blob:",
+        "font-src": "* data:",
+        "connect-src": "*",
+        "media-src": "*",
+        "object-src": "*",
+        "frame-src": "*"
+      },
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**/*"]
+      },
       "capabilities": [
         {
           "identifier": "default",
@@ -49,11 +64,16 @@
           ],
           "platforms": ["windows"],
           "permissions": [
+            {
+              "identifier": "fs:scope",
+              "allow": [{ "path": "**/*" }]
+            },
             "fs:default",
             "fs:allow-write-text-file",
             "fs:allow-create",
             "fs:allow-write",
             "fs:allow-read",
+            "fs:allow-read-file",
             "shell:allow-open",
             "core:default",
             "core:path:default",
@@ -91,7 +111,10 @@
             "core:window:allow-set-cursor-position",
             "core:window:allow-set-ignore-cursor-events",
             "core:window:allow-start-dragging",
-            "core:webview:allow-print"
+            "core:webview:allow-print",
+            "dialog:default",
+            "dialog:allow-open",
+            "fs:allow-exe-read-recursive"
           ]
         }
       ]
@@ -99,13 +122,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/logo.png",
       "icons/icon.ico"
     ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "minimumWebview2Version": "110.0.1531.0",
+        "installMode": "perMachine",
+        "displayLanguageSelector": true,
+        "languages": ["SimpChinese", "English"]
+      }
+    },
     "resources": [
-
     ]
   }
 }

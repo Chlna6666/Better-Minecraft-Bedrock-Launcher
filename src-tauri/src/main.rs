@@ -1,117 +1,29 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod utils;
-use utils::config::{get_custom_style, read_config, set_custom_style};
-use utils::logger::log;
+pub mod i18n;
+pub mod utils;
+pub mod core;
+pub mod commands;
+pub mod config;
+pub mod plugins;
 
-use base64::{engine::general_purpose, Engine as _};
-use better_minecraft_bedrock_launcher_lib::utils::logger::init_logging;
+use std::alloc::System;
 use lazy_static::lazy_static;
-use std::path::PathBuf;
-use std::{env, fs, mem};
+use std::path::{PathBuf};
+use std::{env};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_fs::FsExt;
-use tauri_plugin_os::platform;
 use tracing::{debug, error, info};
-use winapi::um::winnls::GetACP;
-use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-use windows_sys::Win32::System::SystemInformation::{
-    PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_ARM, PROCESSOR_ARCHITECTURE_INTEL,
-};
+use crate::i18n::I18n;
+use crate::utils::logger::{init_logging, log};
+use crate::config::config::{read_config, Config};
+use crate::commands::{get_config, set_config, get_locale, download_appx, show_splashscreen, close_splashscreen, read_music_directory, extract_zip_appx, launch_appx, load_plugin_script, get_plugins_list, get_webview2_version, get_version_list, get_app_license, get_app_version, get_tauri_sdk_version, get_full_build_info, cancel_install};
+use crate::utils::appx_dependency::ensure_uwp_dependencies_or_prompt;
+use crate::utils::developer_mode::ensure_developer_mode_enabled;
+use crate::utils::system_info::{detect_system_encoding, get_cpu_architecture, get_system_language};
+use crate::utils::{app_info, webview2_manager};
 
-// 定义全局常量
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION"); // 从 Cargo.toml 自动获取版本号
-const APP_LICENSE: &str = env!("CARGO_PKG_VERSION");
-
-#[tauri::command]
-fn get_app_version() -> &'static str {
-    APP_VERSION
-}
-#[tauri::command]
-fn get_app_license() -> &'static str {
-    APP_LICENSE
-}
-
-lazy_static! {
-    static ref APP_PATH: PathBuf = env::current_exe().unwrap(); // 程序路径
-    static ref SYSTEM_ENCODING: u32 = detect_system_encoding(); // 系统编码
-}
-
-fn detect_system_encoding() -> u32 {
-    // 获取当前活动代码页
-    let codepage = unsafe { GetACP() };
-    codepage
-}
-// 获取 CPU 架构
-unsafe fn get_cpu_architecture() -> String {
-    let mut sys_info: SYSTEM_INFO = unsafe { mem::zeroed() };
-    unsafe {
-        GetSystemInfo(&mut sys_info);
-    }
-
-    // Access the processor architecture through the nested Anonymous field
-    match sys_info.Anonymous.Anonymous.wProcessorArchitecture {
-        PROCESSOR_ARCHITECTURE_INTEL => "x86".to_string(),
-        PROCESSOR_ARCHITECTURE_AMD64 => "x64".to_string(),
-        PROCESSOR_ARCHITECTURE_ARM => "ARM".to_string(),
-        _ => "Unknown".to_string(),
-    }
-}
-
-#[tauri::command]
-fn read_music_directory(directory: &str) -> Result<Vec<String>, String> {
-    let path = PathBuf::from(directory);
-    let mut files = Vec::new();
-
-    if path.exists() && path.is_dir() {
-        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
-
-            // 仅添加支持的音频文件格式
-            if let Some(extension) = path.extension() {
-                if extension == "m4a"
-                    || extension == "mp3"
-                    || extension == "wav"
-                    || extension == "flac"
-                    || extension == "ogg"
-                    || extension == "aac"
-                {
-                    files.push(path.to_string_lossy().to_string());
-                }
-            }
-        }
-    } else {
-        return Err("Directory not found or not accessible".into());
-    }
-
-    Ok(files)
-}
-
-#[tauri::command]
-fn read_file_content(file_path: String) -> Result<String, String> {
-    // 读取文件内容，并返回 Base64 编码的字符串
-    let file_content = fs::read(&file_path).map_err(|e| e.to_string())?;
-    Ok(general_purpose::STANDARD.encode(file_content))
-}
-
-#[tauri::command]
-async fn close_splashscreen(window: tauri::Window) {
-    // 关闭初始屏幕
-    if let Some(splashscreen) = window.get_window("splashscreen") {
-        splashscreen.close().unwrap();
-    }
-    // 显示主窗口
-    window.get_window("main").unwrap().show().unwrap();
-}
-
-#[tauri::command]
-async fn show_splashscreen(window: tauri::Window) {
-    if let Some(splashscreen) = window.get_window("splashscreen") {
-        splashscreen.show().unwrap(); // 显示启动窗口
-    }
-}
 
 fn show_window(app: &AppHandle) {
     let windows = app.webview_windows();
@@ -123,7 +35,7 @@ fn show_window(app: &AppHandle) {
         .expect("Can't Bring Window to Focus");
 }
 
-fn handle_debug_mode(app: &tauri::App) -> std::io::Result<()> {
+fn debug_mode(app: &tauri::App) -> std::io::Result<()> {
     // 读取配置文件
     let config = read_config()?;
 
@@ -143,8 +55,25 @@ fn handle_debug_mode(app: &tauri::App) -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() {
+
+
+fn main() -> anyhow::Result<()> {
     init_logging();
+    utils::file_ops::create_initial_directories(); // 创建初始目录
+    let config: Config = read_config()?;
+    let locale = match config.launcher.language.as_str() {
+        "auto" => get_system_language(),
+        "" => "en-US".to_string(),
+        other => other.to_string(),
+    };
+    // 初始化 i18n
+    I18n::init(&locale);
+
+    let webview2_ver = webview2_manager::ensure_webview2_or_fallback()
+        .expect("WebView2 Runtime 安装检测失败，程序已退出");
+    let _ = ensure_developer_mode_enabled();
+    let _ = ensure_uwp_dependencies_or_prompt();
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -157,32 +86,64 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_prevent_default::init())
-        .setup(|app| {
-            info!("BMCBL Start! Version: {}", APP_VERSION);
-            info!("App Path: {:?}", *APP_PATH);
-            info!("System Encoding: {}", *SYSTEM_ENCODING);
-            let platform = tauri_plugin_os::platform();
-            info!("Platform: {}", platform);
-            let cpu_architecture = unsafe { get_cpu_architecture() };
-            info!("CPU Architecture: {}", cpu_architecture);
-            utils::file_ops::create_initial_directories(); // 创建初始目录
-            handle_debug_mode(app)?; //debug
-                                     // 允许指定目录
+        .setup(move |app| {
+            // 获取系统信息
+            let mut sys = sysinfo::System::new_all();
+            sys.refresh_all();
+            let sys_name = sysinfo::System::name().unwrap_or_else(|| "未知系统".to_string());
+            let kernel_version = sysinfo::System::kernel_version().unwrap_or_else(|| "未知内核版本".to_string());
+            let os_version = sysinfo::System::os_version().unwrap_or_else(|| "未知OS版本".to_string());
+
+
+            info!(
+                "BMCBL Start! Version: {} | Tauri SDK: {} | WebView2: {} | Git Commit: {} | Built At: {}",
+                app_info::get_version(),
+                app_info::get_tauri_version(),
+                webview2_ver,
+                env!("GIT_COMMIT_HASH"),
+                env!("BUILD_TIME"),
+            );
+            info!("App Path: {:?}", env::current_exe().unwrap());
+            info!(
+                "System Info: Encoding: {} | System: {} | Kernel: {} | OS Version: {} | CPU Architecture: {} | Language: {}",
+                detect_system_encoding(),
+                sys_name,
+                kernel_version,
+                os_version,
+                get_cpu_architecture(),
+                get_system_language()
+            );
+            
+            debug_mode(app)?; //debug
+            // 允许指定目录
             let scope = app.fs_scope();
-            let _ = scope.allow_directory("*", true);
+            let _ = scope.allow_directory("**", true);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            close_splashscreen,
+            log,
+            get_locale,
+            set_config,
+            get_config,
+            get_system_language,
             show_splashscreen,
+            close_splashscreen,
+            download_appx,
+            cancel_install,
             get_app_version,
-            get_custom_style,
-            set_custom_style,
+            get_app_license,
+            get_tauri_sdk_version,
+            get_full_build_info,
+            get_webview2_version,
             read_music_directory,
-            read_file_content,
-            log
+            extract_zip_appx,
+            launch_appx,
+            load_plugin_script,
+            get_plugins_list,
+            get_version_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+    Ok(())
 }

@@ -1,0 +1,194 @@
+{
+  "common": {
+    "release": "正式版",
+    "beta": "测试版",
+    "preview": "预览版",
+    "education": "教育版",
+    "education_preview": "教育预览版"
+  },
+  "MusicPlayer": {
+    "now_playing": "正在播放:"
+  },
+  "Sidebar": {
+    "launch": "启动",
+    "download": "下载",
+    "versions":" 列表",
+    "tools": "工具",
+    "settings": "设置"
+  },
+  "LaunchSection": {
+    "start_game": "启动游戏",
+    "not_installed": "未安装游戏"
+  },
+  "Download": {
+    "minecraft": "游戏",
+    "mod":       "模组",
+    "map":       "地图",
+    "mcpack":    "资源包"
+  },
+  "DownloadMinecraft": {
+    "search_placeholder": "搜索版本号...",
+    "no_data": "暂无数据",
+    "info": "正在加载版本信息…",
+    "info_error": "获取版本信息出错：{{error}}"
+  },
+
+  "InstallProgressBar": {
+    "stage_extracting": "正在解压",
+    "stage_downloading": "正在下载",
+    "extracting_sub": "正在将文件解压到目标位置，请稍候…",
+    "downloading_sub": "正在从服务器下载文件，下载过程中请勿关闭程序。",
+    "cancelling": "取消中…",
+    "close": "关闭",
+    "retry": "重试",
+    "processed_label": "已下载",
+    "speed_label": "速度 / 剩余时间",
+    "cancel_download": "取消下载"
+  },
+  "Settings": {
+    "tabs": {
+      "game": "游戏",
+      "customization": "个性化",
+      "launcher": "启动器",
+      "about": "关于"
+    }
+  },
+  "LauncherSettings": {
+    "debug": "调试模式",
+    "language": "语言",
+    "lang_options": {
+      "auto": "自动",
+      "en": "英文",
+      "zh": "中文"
+    },
+    "custom_appx_api": "自定义 Appx API",
+    "download": {
+      "multi_thread": "多线程下载",
+      "auto_thread_count": "自动线程数",
+      "max_threads": "最大线程数",
+      "proxy": {
+        "disable_all_proxy": "禁用所有代理",
+        "use_system_proxy": "使用系统代理",
+        "enable_http_proxy": "启用 HTTP 代理",
+        "http_proxy_url": "HTTP 代理地址",
+        "enable_socks_proxy": "启用 SOCKS 代理",
+        "socks_proxy_url": "SOCKS 代理地址",
+        "enable_custom_proxy": "启用自定义代理",
+        "custom_proxy_url": "自定义代理地址"
+      }
+    }
+  },
+  "AboutSection": {
+    "dev": {
+      "description": "？？？",
+      "sponsor": "赞助"
+    },
+    "app": {
+      "name": "Better Minecraft:Bedrock Launcher",
+      "version": "App: {{appVersion}} │ Tauri: {{tauriVersion}} │ WebView2: {{webview2Version}}",
+      "official": "官网"
+    },
+    "thanks": {
+      "title": "鸣谢",
+      "tauri": "提供了开发框架",
+      "mcmrarm": "提供 mc-w10-versiondb 版本库。",
+      "fufuha": "提供背景图。",
+      "contributors": "所有贡献者",
+      "community": "感谢开源社区支持",
+      "sponsors": "赞助者",
+      "support": "感谢各位对BMCBL的支持。",
+      "users": "BMCBL用户",
+      "user_support": "对本项目的支持"
+    },
+    "legal": {
+      "title": "法律声明",
+      "copyright": {
+        "title": "版权",
+        "content": "版权所有 © Chlna6666"
+      },
+      "agreement": {
+        "title": "用户协议",
+        "content": "点击按键查看"
+      },
+      "license": {
+        "title": "开源协议"
+      }
+    },
+    "common": {
+      "view": "查看"
+    }
+  },
+  "GameSettings": {
+    "inject_dll": "启动游戏时注入 DLL",
+    "inject_delay": "注入延迟 (毫秒)：",
+    "lock_mouse": "启动时锁定鼠标",
+    "reduce_pixels": "裁剪鼠标区域减少的像素数：",
+    "unlock_hotkey": "解除锁定快捷键：",
+    "launcher_visibility": "启动器可见性：",
+    "visibility": {
+      "minimize": "游戏启动后最小化",
+      "close": "游戏启动后关闭启动器",
+      "keep": "保持不变"
+    }
+  },
+  "CustomizationSettings": {
+    "launch_animation": "启动时显示启动动画:",
+    "theme_color": "主题颜色:",
+    "custom_background": "自定义背景:",
+    "background_options": {
+      "default": "默认",
+      "local": "本地图片",
+      "network": "网络图片"
+    },
+    "local_image": "选择本地图片:",
+    "no_file": "未选择文件",
+    "select_file": "选择文件",
+    "network_image": "输入网络图片链接:",
+    "network_placeholder": "输入网络图片链接"
+  },
+  "UserAgreement": {
+    "title": "用户协议",
+    "introduction": "欢迎使用本应用！请在使用前仔细阅读以下条款，继续使用即表示您完全接受本协议：",
+    "sections": {
+      "privacy": {
+        "title": "隐私保护",
+        "content": [
+          "本软件不会收集任何个人信息，所有本地数据均存储在您的设备中",
+          "可能调用的第三方服务（如图片加载）不会传输您的私人信息"
+        ]
+      },
+      "license": {
+        "title": "软件许可",
+        "content": [
+          "本应用为免费开源软件，基于 GNU GPLv3 协议分发",
+          "您有权：查阅源代码、修改软件、自由分发衍生版本"
+        ]
+      },
+      "minecraft": {
+        "title": "Minecraft 使用规范",
+        "content": [
+          "此为非官方启动器，您必须拥有合法 Minecraft 授权",
+          "严格禁止：盗版行为、作弊工具、任何违反 EULA 的行为",
+          "模组/资源包使用风险由用户自行承担",
+          "本软件与 Mojang Studios/Microsoft 无任何关联"
+        ]
+      },
+      "disclaimer": {
+        "title": "免责声明",
+        "content": [
+          "开发者对因软件使用导致的间接损失不承担责任",
+          "第三方服务的内容与稳定性不受开发者控制"
+        ]
+      },
+      "updates": {
+        "title": "协议更新",
+        "content": [
+          "开发者保留修改本协议的权利，更新内容将通过应用内公告通知"
+        ]
+      }
+    },
+    "contact": "如有疑问或建议，请通过 [开发者联系方式] 反馈。",
+    "thanks": "感谢您的支持！请合法合规地享受游戏乐趣。",
+    "accept_button": "同意并继续"
+  }
+}

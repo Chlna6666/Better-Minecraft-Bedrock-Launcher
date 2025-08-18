@@ -7,6 +7,7 @@ pub fn create_initial_directories() {
         "BMCBL/plugins",
         "BMCBL/config",
         "BMCBL/music",
+        "BMCBL/versions"
     ];
 
     for dir in &dirs {

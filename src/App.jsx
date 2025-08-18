@@ -1,97 +1,122 @@
-import React, { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import React, {useState, useEffect, useCallback, useMemo, lazy, Suspense, useTransition, useDeferredValue} from "react";
+import { invoke , convertFileSrc  } from "@tauri-apps/api/core";
+
 import Titlebar from "./components/Titlebar/Titlebar";
 import Sidebar from "./components/Sidebar/Sidebar";
-import Content from "./components/Content/Content";
-import { logMessage } from './logger';
+import UserAgreement from "./components/UserAgreement/UserAgreement";
+
+import { getConfig } from "./utils/config.jsx";
 import "./App.css";
 
 
+// https://launchercontent.mojang.com/v2/bedrockPatchNotes.json
 
-const appWindow = getCurrentWindow();
+
+const LazyContent = lazy(() => import("./components/Content/Content"));
 
 function App() {
-    const defaultConfig = {
+    const defaultConfig = useMemo(() => ({
         theme_color: '#90c7a8',
         background_option: 'default',
         local_image_path: '',
         network_image_url: '',
-        show_launch_animation: true
-    };
+        show_launch_animation: true,
+    }), []);
 
     const [config, setConfig] = useState(defaultConfig);
+    const [activeSection, setActiveSection] = useState('launch');
+    const [isDownloading, setIsDownloading] = useState(false);
+    const [isPending, startTransition] = useTransition();
+
+    // Batch styling changes
+    const applyBackgroundStyle = useCallback(async ({ background_option, local_image_path, network_image_url }) => {
+        const baseStyle = {
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+        };
+        try {
+            if (background_option === 'local') {
+                const fileUrl = convertFileSrc(local_image_path);
+                document.body.style.backgroundImage = `url(${fileUrl})`;
+            } else if (background_option === 'network') {
+                await new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = resolve;
+                    img.onerror = () => reject();
+                    img.src = network_image_url;
+                });
+                document.body.style.backgroundImage = `url(${network_image_url})`;
+            } else {
+                document.body.style.backgroundImage = '';
+            }
+            Object.assign(document.body.style, baseStyle);
+        } catch {
+            document.body.style.backgroundImage = '';
+            Object.assign(document.body.style, baseStyle);
+        }
+    }, []);
 
     useEffect(() => {
-        async function initializeConfig() {
+        let timeoutId;
+        const init = async () => {
             try {
-                console.log("Attempting to load configuration...");
-                const loadedConfig = await invoke("get_custom_style");
-                console.log("Configuration loaded:", loadedConfig);
-                logMessage('debug', `Configuration loaded: ${JSON.stringify(loadedConfig)}`);
-                setConfig(loadedConfig);
-                document.documentElement.style.setProperty('--theme-color', loadedConfig.theme_color|| '#90c7a8');
-                applyBackgroundStyle(loadedConfig);
-                await invoke("show_splashscreen");
-                if (loadedConfig.show_launch_animation) {
-                    await invoke("show_splashscreen");
-
-                    // 使用 setTimeout 延迟关闭启动画面
-                    const timeoutId = setTimeout(async () => {
-                        await invoke("close_splashscreen");
+                const fullConfig = await getConfig();
+                const style = fullConfig.custom_style || defaultConfig;
+                setConfig(style);
+                document.documentElement.style.setProperty('--theme-color', style.theme_color);
+                startTransition(() => {
+                    applyBackgroundStyle(style);
+                });
+                // 加一个短暂延迟，确保 bridge 和 DOM 就绪
+                await new Promise(resolve => setTimeout(resolve, 50));
+                if (style.show_launch_animation) {
+                    await invoke('show_splashscreen');
+                    timeoutId = setTimeout(() => {
+                        invoke('close_splashscreen');
                     }, 3000);
-
-                    // 清理定时器
-                    return () => clearTimeout(timeoutId);
                 } else {
-                    // 如果不显示启动动画，立即关闭启动画面
-                    await invoke("close_splashscreen");
+                    await invoke('close_splashscreen');
                 }
             } catch (error) {
-                console.error('Failed to initialize configuration:', error);
+                console.error(error);
             }
-        }
+        };
+        init();
+        const prevent = e => e.preventDefault();
+        document.addEventListener('contextmenu', prevent);
+        return () => {
+            clearTimeout(timeoutId);
+            document.removeEventListener('contextmenu', prevent);
+        };
+    }, [applyBackgroundStyle, defaultConfig]);
 
-        initializeConfig();
-    }, []); // 空依赖数组，确保只在组件挂载时运行一次
+    const onSectionChange = useCallback((section) => {
+        startTransition(() => setActiveSection(section));
+    }, []);
 
-    const applyBackgroundStyle = (config) => {
-        switch (config.background_option) {
-            case 'local':
-                document.body.style.backgroundImage = `url(${config.local_image_path})`;
-                break;
-            case 'network':
-                document.body.style.backgroundImage = `url(${config.network_image_url})`;
-                break;
-            default:
-                break;
-        }
-        document.body.style.backgroundSize = 'cover';
-        document.body.style.backgroundPosition = 'center';
-        document.body.style.backgroundRepeat = 'no-repeat';
-    };
-
-    const [activeSection, setActiveSection] = useState("launch");
-
-    document.addEventListener('contextmenu', event => event.preventDefault());
-
-    const handleMinimize = () => {
-        appWindow.minimize();
-    };
-
-    const handleClose = () => {
-        appWindow.close();
-    };
+    const deferredSection = useDeferredValue(activeSection);
 
     return (
-        <>
-            <Titlebar onMinimize={handleMinimize} onClose={handleClose} />
+    <>
+        <UserAgreement/>
+            <Titlebar />
             <div className="app-container">
-                <Sidebar activeSection={activeSection} setActiveSection={setActiveSection} />
-                <Content activeSection={activeSection} />
+                <Sidebar
+                    activeSection={activeSection}
+                    setActiveSection={onSectionChange}
+                    disableSwitch={isDownloading || isPending}
+                />
+                <Suspense fallback={<div className="loading">Loading...</div>}>
+                    <LazyContent
+                        activeSection={deferredSection}
+                        disableSwitch={isDownloading || isPending}
+                        onStatusChange={setIsDownloading}
+                    />
+                </Suspense>
             </div>
         </>
     );
 }
 
-export default App;
+export default React.memo(App);

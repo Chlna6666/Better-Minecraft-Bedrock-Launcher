@@ -1,8 +1,13 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import "./CustomizationSettings.css";
+import React, {useCallback, useEffect, useState} from "react";
+import {convertFileSrc, invoke} from "@tauri-apps/api/core";
+import {open} from '@tauri-apps/plugin-dialog';
+import {getConfig} from "../../utils/config.jsx";
+import Switch from "../UI/Switch.jsx";
+import { useTranslation } from 'react-i18next';
+
 
 function CustomizationSettings() {
+    const { t, i18n } = useTranslation();
     const [themeColor, setThemeColor] = useState("#90c7a8");
     const [backgroundOption, setBackgroundOption] = useState("default");
     const [localImagePath, setLocalImagePath] = useState("");
@@ -12,68 +17,55 @@ function CustomizationSettings() {
     useEffect(() => {
         async function fetchConfig() {
             try {
-                const config = await invoke("get_custom_style");
+                const fullConfig = await getConfig();
+                const config = fullConfig.custom_style || {};
+
                 setThemeColor(config.theme_color || "#90c7a8");
                 setBackgroundOption(config.background_option || "default");
                 setLocalImagePath(config.local_image_path || "");
                 setNetworkImageUrl(config.network_image_url || "");
                 setShowLaunchAnimation(config.show_launch_animation !== undefined ? config.show_launch_animation : true);
 
-                // Ensure the background is applied after the config is fetched
-                applyBackgroundStyle(config.background_option || "default", config.local_image_path || "", config.network_image_url || "");
+                await applyBackgroundStyle(
+                    config.background_option || "default",
+                    config.local_image_path || "",
+                    config.network_image_url || ""
+                );
             } catch (error) {
                 console.error('Failed to fetch config:', error);
             }
         }
+
         fetchConfig();
     }, []);
 
-    const applyBackgroundStyle = (option, localPath, networkUrl) => {
+    const applyBackgroundStyle = async (option, local_image_path, networkUrl) => {
         let backgroundImage = '';
-
-        if (option === 'local' && localPath) {
-            backgroundImage = `url(${localPath})`;
+        if (option === 'local' && local_image_path) {
+            const fileDataUrl = convertFileSrc(local_image_path);
+            backgroundImage = `url(${fileDataUrl})`;
         } else if (option === 'network' && networkUrl) {
             backgroundImage = `url(${networkUrl})`;
-        } else {
-            backgroundImage = ''; // No image or default image can be set here
         }
-
         document.body.style.backgroundImage = backgroundImage;
         document.body.style.backgroundSize = 'cover';
         document.body.style.backgroundPosition = 'center';
         document.body.style.backgroundRepeat = 'no-repeat';
-    };
-
-    async function saveConfig(config) {
-        try {
-            console.log("Saving config with:", { customStyle: config });
-            await invoke('set_custom_style', { customStyle: config });
-            console.log('Config saved successfully');
-        } catch (error) {
-            console.error('Failed to save config:', error);
-        }
     }
 
-    const debounceSaveConfig = useCallback((updatedConfig, delay = 500) => {
-        const handler = setTimeout(() => {
-            saveConfig(updatedConfig);
-        }, delay);
-
-        return () => clearTimeout(handler);
-    }, []);
+    async function saveConfig(customStyle) {
+        try {
+            await invoke("set_config", { key: "custom_style", value: customStyle });
+        } catch (error) {
+            console.error("Failed to save config:", error);
+        }
+    }
 
     const handleColorChange = (event) => {
         const newColor = event.target.value;
         setThemeColor(newColor);
         document.documentElement.style.setProperty('--theme-color', newColor);
-        debounceSaveConfig({
-            theme_color: newColor,
-            background_option: backgroundOption,
-            local_image_path: localImagePath,
-            network_image_url: networkImageUrl,
-            show_launch_animation: showLaunchAnimation
-        });
+        saveConfig({ theme_color: newColor, background_option: backgroundOption, local_image_path: localImagePath, network_image_url: networkImageUrl, show_launch_animation: showLaunchAnimation });
     };
 
     const handleHexInputChange = (event) => {
@@ -81,13 +73,7 @@ function CustomizationSettings() {
         if (/^#[0-9A-Fa-f]{6}$/.test(hexValue)) {
             setThemeColor(hexValue);
             document.documentElement.style.setProperty('--theme-color', hexValue);
-            debounceSaveConfig({
-                theme_color: hexValue,
-                background_option: backgroundOption,
-                local_image_path: localImagePath,
-                network_image_url: networkImageUrl,
-                show_launch_animation: showLaunchAnimation
-            });
+            saveConfig({ theme_color: hexValue, background_option: backgroundOption, local_image_path: localImagePath, network_image_url: networkImageUrl, show_launch_animation: showLaunchAnimation });
         }
     };
 
@@ -101,26 +87,28 @@ function CustomizationSettings() {
             network_image_url: networkImageUrl,
             show_launch_animation: showLaunchAnimation
         });
-        applyBackgroundStyle(newBackgroundOption, localImagePath, networkImageUrl);
+        await applyBackgroundStyle(newBackgroundOption, localImagePath, networkImageUrl);
     };
 
-    const handleLocalImageChange = async (event) => {
-        const file = event.target.files[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                const fileDataUrl = reader.result;
-                setLocalImagePath(fileDataUrl);
-                await saveConfig({
-                    theme_color: themeColor,
-                    background_option: backgroundOption,
-                    local_image_path: fileDataUrl,
-                    network_image_url: networkImageUrl,
-                    show_launch_animation: showLaunchAnimation
-                });
-                applyBackgroundStyle(backgroundOption, fileDataUrl, networkImageUrl);
+    const handleLocalImageChange = async () => {
+        try {
+            const selected = await open({
+                filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }],
+                multiple: false,
+            });
+            if (!selected) return;
+            setLocalImagePath(selected);
+            const updatedConfig = {
+                theme_color: themeColor,
+                background_option: backgroundOption,
+                local_image_path: selected,
+                network_image_url: networkImageUrl,
+                show_launch_animation: showLaunchAnimation
             };
-            reader.readAsDataURL(file);
+            await saveConfig(updatedConfig);
+            await applyBackgroundStyle(backgroundOption, selected, networkImageUrl);
+        } catch (error) {
+            console.error('Failed to handle local image change:', error);
         }
     };
 
@@ -134,7 +122,7 @@ function CustomizationSettings() {
             network_image_url: newUrl,
             show_launch_animation: showLaunchAnimation
         });
-        applyBackgroundStyle(backgroundOption, localImagePath, newUrl);
+        await applyBackgroundStyle(backgroundOption, localImagePath, newUrl);
     };
 
     const handleLaunchAnimationChange = async () => {
@@ -149,26 +137,18 @@ function CustomizationSettings() {
         });
     };
 
-
-
     return (
-        <div>
+        <>
             <div className="setting-item">
-                <label htmlFor="launch-animation-toggle">启动时显示启动动画:</label>
-                <div className="switch">
-                    <input
-                        id="launch-animation-toggle"
-                        className="switch-input"
-                        type="checkbox"
-                        checked={showLaunchAnimation}
-                        onChange={handleLaunchAnimationChange}
-                    />
-                    <span className="slider round"></span>
-                </div>
+                <label>{t("CustomizationSettings.launch_animation")}</label>
+                <Switch
+                    checked={showLaunchAnimation}
+                    onChange={handleLaunchAnimationChange}
+                />
             </div>
 
             <div className="setting-item">
-                <label htmlFor="theme-color-picker">主题颜色:</label>
+                <label>{t("CustomizationSettings.theme_color")}</label>
                 <input
                     className="hex-input"
                     type="text"
@@ -178,7 +158,6 @@ function CustomizationSettings() {
                     maxLength="7"
                 />
                 <input
-                    id="theme-color-picker"
                     className="color-input"
                     type="color"
                     value={themeColor}
@@ -187,59 +166,49 @@ function CustomizationSettings() {
             </div>
 
             <div className="setting-item">
-                <label htmlFor="background-option">自定义背景:</label>
+                <label>{t("CustomizationSettings.custom_background")}</label>
                 <select
-                    id="background-option"
                     className="select-input"
                     value={backgroundOption}
                     onChange={handleBackgroundChange}
                 >
-                    <option value="default">默认</option>
-                    <option value="local">本地图片</option>
-                    <option value="network">网络图片</option>
+                    <option value="default">{t("CustomizationSettings.background_options.default")}</option>
+                    <option value="local">{t("CustomizationSettings.background_options.local")}</option>
+                    <option value="network">{t("CustomizationSettings.background_options.network")}</option>
                 </select>
-
             </div>
 
             {backgroundOption === "local" && (
                 <div className="setting-item">
-                    <label htmlFor="local-image-path">选择本地图片:</label>
+                    <label>{t("CustomizationSettings.local_image")}</label>
                     <div className="file-input-container">
                         <input
-                            id="local-image-path"
                             className="text-input"
                             type="text"
                             value={localImagePath}
                             readOnly
-                            placeholder="未选择文件"
+                            placeholder={t("CustomizationSettings.no_file")}
                         />
-                        <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleLocalImageChange}
-                            id="file-input"
-                        />
-                        <label htmlFor="file-input" className="file-button">
-                            选择文件
-                        </label>
+                        <button type="button" className="file-button" onClick={handleLocalImageChange}>
+                            {t("CustomizationSettings.select_file")}
+                        </button>
                     </div>
                 </div>
             )}
 
             {backgroundOption === "network" && (
                 <div className="setting-item">
-                    <label htmlFor="network-image-url">输入网络图片链接:</label>
+                    <label>{t("CustomizationSettings.network_image")}</label>
                     <input
-                        id="network-image-url"
                         className="text-input"
                         type="text"
                         value={networkImageUrl}
                         onChange={handleNetworkImageChange}
-                        placeholder="输入网络图片链接"
+                        placeholder={t("CustomizationSettings.network_placeholder")}
                     />
                 </div>
             )}
-        </div>
+        </>
     );
 }
 

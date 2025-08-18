@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
 import "./MusicPlayer.css";
 
 import music from "../../assets/feather/music.svg";
@@ -8,184 +9,292 @@ import play from "../../assets/feather/play.svg";
 import pause from "../../assets/feather/pause.svg";
 import next from "../../assets/feather/skip-forward.svg";
 import previous from "../../assets/feather/skip-back.svg";
-import shuffle from "../../assets/feather/shuffle.svg";
-import repeat from "../../assets/feather/repeat.svg";
+import shuffleIcon from "../../assets/feather/shuffle.svg";
+import repeatIcon from "../../assets/feather/repeat.svg";
 
 function MusicPlayer() {
+    const { t } = useTranslation();
     const [isExpanded, setIsExpanded] = useState(false);
     const [selectedTrack, setSelectedTrack] = useState(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [tracks, setTracks] = useState([]);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
-    const [isShuffle, setIsShuffle] = useState(false);
+
+    const [mode, setMode] = useState("repeat");
     const audioRef = useRef(null);
+    const scrollContainerRef = useRef(null);
 
     const musicDirectory = "BMCBL/music/";
+    const LOCALSTORAGE_KEY = "musicPlayerMode";
+
+    useEffect(() => {
+        try {
+            const stored = localStorage.getItem(LOCALSTORAGE_KEY);
+            if (stored === "shuffle" || stored === "repeat") {
+                setMode(stored);
+            }
+        } catch (e) {
+            // ignore
+        }
+    }, []);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(LOCALSTORAGE_KEY, mode);
+        } catch (e) {
+            // ignore
+        }
+    }, [mode]);
 
     useEffect(() => {
         const loadTracks = async () => {
             try {
-                const files = await invoke('read_music_directory', { directory: musicDirectory });
+                const files = await invoke("read_music_directory", { directory: musicDirectory });
+                console.log("读取到的音乐文件列表:", files);
                 if (files && files.length > 0) {
                     setTracks(files);
-                    setSelectedTrack(files[0]);
+                    setSelectedTrack((prev) => prev ?? files[0]);
                 } else {
                     setTracks([]);
+                    setSelectedTrack(null);
                 }
             } catch (error) {
-                console.error("Error reading music directory:", error);
+                console.error("读取音乐目录时出错:", error);
+                setTracks([]);
+                setSelectedTrack(null);
             }
         };
         loadTracks();
     }, []);
 
     useEffect(() => {
-        const loadTrackContent = async () => {
-            if (selectedTrack && audioRef.current) {
-                try {
-                    const fileContent = await invoke('read_file_content', { filePath: selectedTrack });
-                    const base64String = `data:audio/mp4;base64,${fileContent}`;
-                    audioRef.current.src = base64String;
-                    audioRef.current.play();
-                    setIsPlaying(true);
-                } catch (error) {
-                    console.error("Error loading track content:", error);
-                }
-            }
-        };
-        loadTrackContent();
+        const audio = audioRef.current;
+        if (!audio) return;
+        if (!selectedTrack) {
+            audio.pause();
+            audio.src = "";
+            setIsPlaying(false);
+            setCurrentTime(0);
+            setDuration(0);
+            return;
+        }
+
+        try {
+            audio.src = convertFileSrc(selectedTrack);
+            audio.load();
+            audio.play().then(() => {
+                setIsPlaying(true);
+            }).catch((err) => {
+                console.warn("播放被阻止或失败:", err);
+                setIsPlaying(false);
+            });
+        } catch (e) {
+            console.error("设置音频源失败:", e);
+        }
     }, [selectedTrack]);
 
     useEffect(() => {
-        if (audioRef.current) {
-            const handleTimeUpdate = () => setCurrentTime(audioRef.current.currentTime);
-            const handleLoadedMetadata = () => setDuration(audioRef.current.duration);
+        const audio = audioRef.current;
+        if (!audio) return;
 
-            audioRef.current.addEventListener("timeupdate", handleTimeUpdate);
-            audioRef.current.addEventListener("loadedmetadata", handleLoadedMetadata);
+        const handleTimeUpdate = () => {
+            setCurrentTime(audio.currentTime || 0);
+        };
+        const handleLoadedMetadata = () => {
+            setDuration(audio.duration || 0);
+        };
+        const handlePlay = () => setIsPlaying(true);
+        const handlePause = () => setIsPlaying(false);
 
-            return () => {
-                if (audioRef.current) {
-                    audioRef.current.removeEventListener("timeupdate", handleTimeUpdate);
-                    audioRef.current.removeEventListener("loadedmetadata", handleLoadedMetadata);
-                }
-            };
-        }
+        audio.addEventListener("timeupdate", handleTimeUpdate);
+        audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+        audio.addEventListener("play", handlePlay);
+        audio.addEventListener("pause", handlePause);
+
+        return () => {
+            audio.removeEventListener("timeupdate", handleTimeUpdate);
+            audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+            audio.removeEventListener("play", handlePlay);
+            audio.removeEventListener("pause", handlePause);
+        };
     }, []);
 
     useEffect(() => {
-        if (isExpanded && selectedTrack) {
-            const textElement = document.querySelector('.music-info-scroll span');
-            const containerElement = document.querySelector('.music-info-scroll');
-            if (textElement && containerElement) {
-                if (textElement.scrollWidth > containerElement.clientWidth) {
-                    containerElement.classList.add('scroll');
-                } else {
-                    containerElement.classList.remove('scroll');
-                }
+        if (isExpanded && selectedTrack && scrollContainerRef.current) {
+            const container = scrollContainerRef.current;
+            const textElement = container.querySelector("span");
+            if (textElement) {
+                container.classList.toggle("scroll", textElement.scrollWidth > container.clientWidth);
             }
         }
     }, [isExpanded, selectedTrack]);
 
-    const toggleExpand = () => {
-        setIsExpanded(!isExpanded);
-    };
+    const toggleExpand = useCallback(() => {
+        setIsExpanded((prev) => !prev);
+    }, []);
 
-    const handlePlayPause = () => {
+    const handlePlayPause = useCallback(() => {
+        const audio = audioRef.current;
+        if (!audio) return;
         if (isPlaying) {
-            audioRef.current.pause();
+            audio.pause();
         } else {
-            audioRef.current.play();
+            audio.play().catch((err) => {
+                console.warn("播放失败:", err);
+            });
         }
-        setIsPlaying(!isPlaying);
-    };
+    }, [isPlaying]);
 
-    const getRandomTrack = () => {
-        const randomIndex = Math.floor(Math.random() * tracks.length);
-        return tracks[randomIndex];
-    };
-
-    const handleNextTrack = () => {
-        if (isShuffle) {
-            setSelectedTrack(getRandomTrack());
-        } else {
-            const currentIndex = tracks.indexOf(selectedTrack);
-            const nextIndex = (currentIndex + 1) % tracks.length;
-            setSelectedTrack(tracks[nextIndex]);
-        }
-    };
-
-    const handlePreviousTrack = () => {
+    const getRandomTrack = useCallback(() => {
+        if (!tracks || tracks.length === 0) return null;
+        if (tracks.length === 1) return tracks[0];
         const currentIndex = tracks.indexOf(selectedTrack);
+        let randomIndex = Math.floor(Math.random() * tracks.length);
+        let tries = 0;
+        while (randomIndex === currentIndex && tries < 5) {
+            randomIndex = Math.floor(Math.random() * tracks.length);
+            tries++;
+        }
+        return tracks[randomIndex];
+    }, [tracks, selectedTrack]);
+
+    const handleNextTrack = useCallback(() => {
+        if (!tracks || tracks.length === 0) return;
+        if (mode === "shuffle") {
+            const random = getRandomTrack();
+            if (random) setSelectedTrack(random);
+            return;
+        }
+        let currentIndex = tracks.indexOf(selectedTrack);
+        if (currentIndex === -1) currentIndex = 0;
+        const nextIndex = (currentIndex + 1) % tracks.length;
+        setSelectedTrack(tracks[nextIndex]);
+    }, [mode, tracks, selectedTrack, getRandomTrack]);
+
+    const handlePreviousTrack = useCallback(() => {
+        if (!tracks || tracks.length === 0) return;
+        let currentIndex = tracks.indexOf(selectedTrack);
+        if (currentIndex === -1) currentIndex = 0;
         const previousIndex = (currentIndex - 1 + tracks.length) % tracks.length;
         setSelectedTrack(tracks[previousIndex]);
-    };
+    }, [tracks, selectedTrack]);
 
-    const handleProgressChange = (event) => {
-        const newTime = (event.target.value / 100) * duration;
-        audioRef.current.currentTime = newTime;
+    const handleProgressChange = useCallback((event) => {
+        const audio = audioRef.current;
+        if (!audio) return;
+        const value = Number(event.target.value);
+        const dur = Number(duration) || 0;
+        if (isNaN(value) || dur <= 0) return;
+        const newTime = (value / 100) * dur;
+        audio.currentTime = newTime;
         setCurrentTime(newTime);
-    };
+    }, [duration]);
 
-    const handleTrackEnd = () => {
+    const handleTrackEnd = useCallback(() => {
+        if (!tracks || tracks.length === 0) return;
+
+        if (mode === "shuffle") {
+            const random = getRandomTrack();
+            if (random) {
+                setSelectedTrack(random);
+                return;
+            }
+        }
+
+        if (tracks.length === 1) {
+            const audio = audioRef.current;
+            if (audio) {
+                audio.currentTime = 0;
+                audio.play().catch((err) => {
+                    console.warn("单曲循环重放失败:", err);
+                });
+            }
+            return;
+        }
+
         handleNextTrack();
-    };
+    }, [mode, tracks, getRandomTrack, handleNextTrack]);
 
-    const getFileName = (path) => {
-        const fileName = path.split('/').pop();
-        return fileName.split('.').slice(0, -1).join('.');
-    };
+    const getFileName = useCallback((path) => {
+        if (!path) return "";
+        const fileNameWithExt = path.split(/[/\\]/).pop();
+        if (!fileNameWithExt) return "";
+        const lastDotIndex = fileNameWithExt.lastIndexOf(".");
+        return lastDotIndex !== -1 ? fileNameWithExt.substring(0, lastDotIndex) : fileNameWithExt;
+    }, []);
+
+    const toggleMode = useCallback(() => {
+        setMode((prev) => (prev === "shuffle" ? "repeat" : "shuffle"));
+    }, []);
+
+    const progressPercent = (() => {
+        const d = Number(duration) || 0;
+        if (d <= 0) return 0;
+        const p = (Number(currentTime) || 0) / d * 100;
+        if (isNaN(p) || !isFinite(p)) return 0;
+        return Math.min(100, Math.max(0, p));
+    })();
+
+    if (tracks.length === 0) {
+        return null; // 没有音乐文件时直接隐藏组件
+    }
 
     return (
         <div>
-            {tracks.length > 0 && (
-                <div className={`music-player-container ${isExpanded ? "expanded" : ""}`}>
-                    {isExpanded && (
-                        <>
-                            <button className="close-button" onClick={toggleExpand}>
-                                <img src={close} alt="close" />
-                            </button>
-                            <div className="music-player">
-                                <div className="music-info-container">
-                                    <div className="music-info-label">正在播放:</div>
-                                    <div className="music-info-scroll">
-                                        <span>{getFileName(selectedTrack)}</span>
-                                    </div>
-                                </div>
-                                <input
-                                    type="range"
-                                    className="progress-bar"
-                                    value={(currentTime / duration) * 100 || 0}
-                                    onInput={handleProgressChange}
-                                />
-                                <div className="music-controls">
-                                    <button className="control-button" onClick={handlePreviousTrack}>
-                                        <img src={previous} alt="previous" />
-                                    </button>
-                                    <button className="control-button" onClick={handlePlayPause}>
-                                        <img src={isPlaying ? pause : play} alt="play/pause" />
-                                    </button>
-                                    <button className="control-button" onClick={handleNextTrack}>
-                                        <img src={next} alt="next" />
-                                    </button>
-                                    <button className="control-button" onClick={() => setIsShuffle(!isShuffle)}>
-                                        <img src={isShuffle ? shuffle : repeat} alt="shuffle/repeat" />
-                                    </button>
+            <div className={`music-player-container ${isExpanded ? "expanded" : ""}`}>
+                {isExpanded ? (
+                    <>
+                        <button className="close-button" onClick={toggleExpand} aria-label="close">
+                            <img src={close} alt="close" />
+                        </button>
+                        <div className="music-player">
+                            <div className="music-info-container">
+                                <div className="music-info-label">{t('MusicPlayer.now_playing')}</div>
+                                <div ref={scrollContainerRef} className="music-info-scroll">
+                                    <span>{getFileName(selectedTrack)}</span>
                                 </div>
                             </div>
-                        </>
-                    )}
-                    {!isExpanded && (
-                        <button className="music-player-container" onClick={toggleExpand}>
-                            <img src={music} alt="music" />
-                        </button>
-                    )}
-                </div>
-            )}
-            <audio ref={audioRef} onEnded={handleTrackEnd} />
+
+                            <input
+                                type="range"
+                                className="progress-bar"
+                                min={0}
+                                max={100}
+                                step={0.1}
+                                value={progressPercent}
+                                onInput={handleProgressChange}
+                            />
+
+                            <div className="music-controls">
+                                <button className="control-button" onClick={handlePreviousTrack} aria-label="previous">
+                                    <img src={previous} alt="previous" />
+                                </button>
+                                <button className="control-button" onClick={handlePlayPause} aria-label="play-pause">
+                                    <img src={isPlaying ? pause : play} alt="play/pause" />
+                                </button>
+                                <button className="control-button" onClick={handleNextTrack} aria-label="next">
+                                    <img src={next} alt="next" />
+                                </button>
+                                <button className="control-button" onClick={toggleMode} aria-label="mode">
+                                    <img src={mode === "shuffle" ? shuffleIcon : repeatIcon} alt={mode} />
+                                </button>
+                            </div>
+                        </div>
+                    </>
+                ) : (
+                    <button className="music-player-container" onClick={toggleExpand} aria-label="open-player">
+                        <img src={music} alt="music" />
+                    </button>
+                )}
+            </div>
+
+            <audio
+                ref={audioRef}
+                onEnded={handleTrackEnd}
+            />
         </div>
     );
 }
 
-export default MusicPlayer;
+export default React.memo(MusicPlayer);

@@ -1,0 +1,171 @@
+:root {
+    --theme-color: #0ea5e9;
+    --ok-color: #10b981;
+    --error-color: #ef4444;
+    --info-color: #6b7280;
+    --card-bg: #ffffff;
+    --card-fore: #0b1220;
+    --muted: #6b7280;
+    --border: #eef2f7;
+    --shadow: 0 12px 40px rgba(16,24,40,0.08);
+}
+
+/* overlay 基础 - 我们在类名里增加阶段后缀用于动画 */
+.lm-overlay {
+    position: fixed;
+    inset: 0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index: 2000;
+    backdrop-filter: blur(3px);
+    pointer-events: auto;
+}
+
+/* overlay phases 保持，但背景透明（动画仍可用用于交互） */
+.lm-overlay-entering { transition: background 320ms ease; }
+.lm-overlay-entered  { transition: background 320ms ease; }
+.lm-overlay-exiting  { transition: background 320ms ease; }
+.lm-overlay-exited   { transition: background 180ms ease; }
+
+/* 卡片：基准样式 */
+.lm-card {
+    width: 460px;
+    max-width: calc(100% - 32px);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 14px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--card-fore);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    transform-origin: center;
+}
+
+/* 卡片阶段： entering -> small translateY + scale + opacity */
+.lm-card-entering {
+    transform: translateY(18px) scale(0.98);
+    opacity: 0;
+    transition: transform 320ms cubic-bezier(.2,.9,.2,1), opacity 260ms ease;
+}
+.lm-card-entered {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+    transition: transform 320ms cubic-bezier(.2,.9,.2,1), opacity 260ms ease;
+}
+.lm-card-exiting {
+    transform: translateY(8px) scale(0.995);
+    opacity: 0;
+    transition: transform 260ms ease, opacity 260ms ease;
+}
+.lm-card-exited {
+    transform: translateY(18px) scale(0.98);
+    opacity: 0;
+    transition: none;
+}
+
+/* 成功态小脉冲（短暂） */
+.lm-card-success-pulse {
+    /* subtle pop to highlight success */
+    animation: lm-success-pop 520ms ease forwards;
+}
+@keyframes lm-success-pop {
+    0%   { transform: scale(1); }
+    40%  { transform: scale(1.035); }
+    100% { transform: scale(1); }
+}
+
+/* header / body / footer 保持原样（简洁） */
+.lm-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.lm-header-left { display:flex; flex-direction:column; }
+.lm-title { margin:0; font-size:16px; font-weight:700; color:var(--card-fore); letter-spacing:0.1px; }
+.lm-subtitle { margin-top:2px; font-size:12px; color:var(--muted); }
+.lm-close { background:transparent; border:none; font-size:16px; cursor:pointer; color:var(--muted); }
+
+/* 主体 */
+.lm-body { padding-top:2px; padding-bottom:2px; display:flex; flex-direction:column; gap:10px; min-height:84px; }
+
+/* spinner */
+.lm-launching-compact { display:flex; gap:12px; align-items:center; }
+.lm-spinner-small { width:44px; height:44px; display:flex; align-items:center; justify-content:center; }
+.lm-spinner-svg { width:44px; height:44px; transform-origin:center; animation: lm-rotate 1.2s linear infinite; }
+.lm-path { stroke: var(--theme-color); stroke-linecap:round; stroke-dasharray: 80; stroke-dashoffset: 50; animation: lm-dash 1.05s ease-in-out infinite; }
+@keyframes lm-rotate { 100% { transform: rotate(360deg); } }
+@keyframes lm-dash {
+    0% { stroke-dashoffset: 80; stroke-dasharray: 80; }
+    50% { stroke-dashoffset: 30; stroke-dasharray: 50; }
+    100% { stroke-dashoffset: -20; stroke-dasharray: 80; }
+}
+
+/* detail line */
+.lm-detail-line {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:8px 10px;
+    border-radius:8px;
+    font-size:13px;
+    width:100%;
+    box-sizing:border-box;
+    background:#f8fafc;
+    color:#374151;
+    max-height: calc(4 * 1.5em);
+    overflow-y: auto;
+}
+.lm-detail-text { display:block; min-width:0; white-space: normal; overflow-wrap:anywhere; word-break:break-word; line-height:1.2em; }
+
+/* dot */
+.lm-dot { display:inline-block; width:10px; height:10px; border-radius:999px; flex:0 0 10px; margin-top:2px; }
+.lm-dot-ok { background: var(--ok-color); box-shadow:0 0 8px rgba(16,185,129,0.12); }
+.lm-dot-error { background: var(--error-color); box-shadow:0 0 8px rgba(239,68,68,0.12); }
+.lm-dot-info { background: var(--info-color); box-shadow:0 0 6px rgba(107,114,128,0.08); }
+
+.lm-detail-ok { background: rgba(16,185,129,0.06); color: #065f46; }
+.lm-detail-error { background: rgba(239,68,68,0.06); color: #7f1d1d; }
+.lm-detail-info { background: rgba(99,102,241,0.03); color: #374151; }
+
+.lm-info-block { flex:1; display:flex; flex-direction:column; gap:6px; min-width: 0; }
+
+/* error compact */
+.lm-error-compact { display:flex; flex-direction:column; gap:8px; width:100%; }
+.lm-error-row-compact { display:flex; gap:8px; align-items:center; }
+.lm-error-label-compact { font-size:13px; color:var(--muted); min-width:48px; }
+.lm-error-value-compact { font-weight:700; color:var(--error-color); }
+
+/* error link */
+.lm-error-link { background:transparent; border:none; color:var(--error-color); font-weight:700; cursor:pointer; padding:0; font-size:13px; text-decoration:underline; text-underline-offset:3px; }
+.lm-error-link:hover { text-decoration-thickness:2px; opacity:0.95; }
+
+/* success compact + pulse animation for check */
+.lm-success-compact { display:flex; flex-direction:column; gap:8px; align-items:center; }
+.lm-success-pulse .lm-success-icon,
+.lm-success-compact.lm-success-pulse .lm-success-icon {
+    animation: lm-check-pop 520ms cubic-bezier(.2,.9,.2,1);
+}
+@keyframes lm-check-pop {
+    0% { transform: scale(0.6); opacity:0; }
+    40% { transform: scale(1.12); opacity:1; }
+    100% { transform: scale(1); opacity:1; }
+}
+.lm-success-icon { font-size:20px; color:var(--ok-color); background: rgba(16,185,129,0.06); padding:6px 8px; border-radius:999px; }
+.lm-success-text { font-weight:600; color:#065f46; }
+
+/* footer & buttons */
+.lm-footer { display:flex; gap:8px; justify-content:flex-end; padding-top:6px; }
+.lm-btn { padding:8px 14px; border-radius:8px; cursor:pointer; border:none; font-weight:600; font-size:13px; }
+.lm-btn-primary { background: transparent; color:var(--muted); border:1px solid #eef2f7; }
+.lm-btn-outline { background: transparent; color:var(--muted); border:1px solid #eef2f7; }
+
+/* copy button */
+.lm-copy-btn { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:8px; border:1px solid #e6eef8; background:transparent; color:var(--muted); cursor:pointer; transition: all 160ms ease; font-weight:600; font-size:13px; }
+.lm-copy-btn.lm-copied { background: rgba(16,185,129,0.08); color:var(--ok-color); border-color: rgba(16,185,129,0.12); }
+
+/* responsive */
+@media (max-width:520px) {
+    .lm-card { width: 92%; padding:12px; }
+    .lm-spinner-small { width:38px; height:38px; }
+    .lm-detail-line { font-size:12px; padding:8px; }
+}

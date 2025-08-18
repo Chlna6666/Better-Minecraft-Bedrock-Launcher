@@ -136,7 +136,7 @@
     display: none;
 }
 
-/* Toggle Switch 样式 */
+
 .switch {
     position: relative;
     display: inline-block;
@@ -156,6 +156,8 @@
     z-index: 2;
     cursor: pointer;
 }
+
+
 
 .slider {
     position: absolute;
@@ -181,13 +183,6 @@
     border-radius: 50%;
 }
 
-input:checked + .slider {
-    background-color: var(--theme-color);
-}
-
-input:checked + .slider:before {
-    transform: translateX(20px);
-}
 
 .round {
     border-radius: 34px;
@@ -196,4 +191,48 @@ input:checked + .slider:before {
 /* 增强互动反馈效果 */
 .color-input:hover, .text-input:hover, .select-input:hover {
     border-color: var(--theme-color);
+}
+
+.slider-container {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* 这里用 --slider-percent 动态传入当前填充比例 */
+.range-input {
+    /* 保留已有样式 */
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    width: 200px;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(
+            to right,
+            var(--theme-color) 0%,
+            var(--theme-color) var(--slider-percent),
+            #ccc var(--slider-percent),
+            #ccc 100%
+    );
+    outline: none;
+    margin: 0;
+    padding: 0;
+    position: relative;
+}
+.range-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--theme-color);
+}
+
+.slider-value {
+    width: 3rem;
+    text-align: right;
+    font-size: 0.9rem;
+    padding: 0.1rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
 }

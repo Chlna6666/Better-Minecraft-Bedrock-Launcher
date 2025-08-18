@@ -73,7 +73,16 @@
     "process:allow-exit",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
-    "os:default"
+    "os:default",
+    "os:allow-locale",
+    "fs:default",
+    "fs:allow-read-file",
+    "dialog:default",
+    "dialog:allow-open",
+    {
+      "identifier": "fs:allow-exe-read-recursive",
+      "allow": [{ "path": "**" }]
+    }
   ],
   "capabilities": []
 }

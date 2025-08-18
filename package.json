@@ -1,28 +1,37 @@
 {
   "name": "better_minecraft_bedrock_launcher",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "tauri dev",
     "tauri build": "npm run tauri build"
   },
   "dependencies": {
-    "@refinedev/antd": "^5.43.1",
-    "@tauri-apps/api": "^2.1.1",
+    "@react-spring/web": "^10.0.1",
+    "@tauri-apps/api": "^2.6.0",
     "@tauri-apps/plugin-autostart": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-fs": "^2.0.0-rc.0",
     "@tauri-apps/plugin-os": "^2.2.0",
     "@tauri-apps/plugin-shell": ">=2.0.0-rc.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "classnames": "^2.5.1",
+    "i18next": "^25.2.1",
+    "prop-types": "^15.8.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-i18next": "^15.5.3",
+    "react-icons": "^5.5.0",
+    "react-virtualized": "^9.22.6",
+    "react-virtualized-auto-sizer": "^1.0.26",
+    "react-window": "^1.8.11"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0",
-    "@vitejs/plugin-react": "^4.2.1",
-    "vite": "^5.3.1"
+    "@tauri-apps/cli": "^2.6.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "vite": "^6.2.6"
   }
 }

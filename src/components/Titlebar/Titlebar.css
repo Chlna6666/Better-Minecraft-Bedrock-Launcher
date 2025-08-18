@@ -43,7 +43,6 @@
     cursor: pointer;
     padding: 5px;
     margin-left: 5px;
-    transition: background 0.2s ease, transform 0.2s ease;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -53,10 +52,12 @@
 .titlebar-button img {
     width: 20px;
     height: 20px;
+    filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(360deg) brightness(100%) contrast(100%);
 }
 
 .titlebar-button:hover {
     background: rgba(255, 255, 255, 0.1);
+    border-radius: 50%;
 }
 
 .titlebar-button:active {
@@ -65,8 +66,6 @@
 }
 
 :root {
-    --theme-color: #4A90E2;
     --background-color: #333;
     --text-color: #fff;
-    --button-hover-color: #357ABD;
 }

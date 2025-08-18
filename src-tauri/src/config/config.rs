@@ -2,38 +2,69 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
 use std::{fs, io};
+use tauri_plugin_store::JsonValue;
 use tracing::{debug, error};
 
-// 定义 CustomStyle 结构
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone,Default)]
 pub struct CustomStyle {
-    theme_color: String,
-    background_option: String,
-    local_image_path: String,
-    network_image_url: String,
-    show_launch_animation: bool,
+    pub theme_color: String,
+    pub background_option: String,
+    pub local_image_path: String,
+    pub network_image_url: String,
+    pub show_launch_animation: bool,
 }
 
-// 定义 Launcher 结构
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+pub struct GameConfig {
+    pub inject_on_launch: bool,
+    pub inject_delay: u32,
+    pub lock_mouse_on_launch: bool,
+    pub reduce_pixels: i32, // 减少的像素数
+    pub unlock_mouse_hotkey: String,
+    pub launcher_visibility: String, // "minimize", "close", "keep"
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+pub struct ProxyConfig {
+    pub disable_all_proxy: bool,
+    pub use_system_proxy: bool,
+    pub enable_http_proxy: bool,
+    pub http_proxy_url: String,
+    pub enable_socks_proxy: bool,
+    pub socks_proxy_url: String,
+    pub enable_custom_proxy: bool,
+    pub custom_proxy_url: String,
+}
+
+
+#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+pub struct DownloadConfig {
+    pub multi_thread: bool,
+    pub max_threads: u32,
+    pub auto_thread_count: bool,
+    pub proxy: ProxyConfig,
+}
+#[derive(Serialize, Deserialize, Debug, Clone,Default)]
 pub struct Launcher {
-    pub(crate) debug: bool,
+    pub debug: bool,
+    pub language: String, // "auto", "en-US", "zh-CN" 等
+    pub custom_appx_api: String,
+    pub download: DownloadConfig,
 }
 
-// 定义 Config 结构
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone,Default)]
 pub struct Config {
-    custom_style: CustomStyle,
-    pub(crate) launcher: Launcher,
+    pub custom_style: CustomStyle,
+    pub launcher: Launcher,
+    pub game: GameConfig,
+    pub agreement_accepted: bool,
 }
 
-// 获取配置文件路径
 pub fn get_config_file_path() -> PathBuf {
     let config_dir = std::env::current_dir().unwrap().join("BMCBL/config");
     config_dir.join("settings.toml")
 }
 
-// 确保配置文件夹存在
 pub fn ensure_config_dir() -> std::io::Result<()> {
     let config_dir = std::env::current_dir().unwrap().join("BMCBL/config");
     if !config_dir.exists() {
@@ -42,20 +73,10 @@ pub fn ensure_config_dir() -> std::io::Result<()> {
     Ok(())
 }
 
-// 确保配置文件存在
 pub fn ensure_config_file() -> std::io::Result<()> {
     let config_file = get_config_file_path();
     if !config_file.exists() {
-        let default_config = Config {
-            custom_style: CustomStyle {
-                theme_color: "".to_string(),
-                background_option: "default".to_string(),
-                local_image_path: "".to_string(),
-                network_image_url: "".to_string(),
-                show_launch_animation: true,
-            },
-            launcher: Launcher { debug: false },
-        };
+        let default_config = get_default_config();
         let toml_content = toml::to_string(&default_config).unwrap();
         let mut file = fs::File::create(config_file)?;
         file.write_all(toml_content.as_bytes())?;
@@ -63,21 +84,46 @@ pub fn ensure_config_file() -> std::io::Result<()> {
     Ok(())
 }
 
-// 读取配置文件
-fn get_default_config() -> Config {
+pub fn get_default_config() -> Config {
     Config {
         custom_style: CustomStyle {
-            theme_color: "".to_string(),
+            theme_color: "#90c7a8".to_string(),
             background_option: "default".to_string(),
             local_image_path: "".to_string(),
             network_image_url: "".to_string(),
             show_launch_animation: true,
         },
-        launcher: Launcher { debug: false },
+        launcher: Launcher {
+            debug: false,
+            language: "auto".to_string(),
+            custom_appx_api: "https://raw.githubusercontent.com/LiteLDev/mc-w10-versiondb-auto-update/refs/heads/master/versions.json.min".to_string(),
+            download: DownloadConfig {
+                multi_thread: false,
+                max_threads: 8,
+                auto_thread_count: true,
+                proxy: ProxyConfig {
+                    disable_all_proxy: true,
+                    use_system_proxy: false,
+                    enable_http_proxy: false,
+                    http_proxy_url: "".to_string(),
+                    enable_socks_proxy: false,
+                    socks_proxy_url: "".to_string(),
+                    enable_custom_proxy: false,
+                    custom_proxy_url: "".to_string(),
+                },
+            },
+        },
+        game: GameConfig {
+            inject_on_launch: true,
+            inject_delay: 0,
+            lock_mouse_on_launch: false,
+            reduce_pixels: 10,
+            unlock_mouse_hotkey: "ALT".to_string(),
+            launcher_visibility: "keep".to_string(),
+        },
+        agreement_accepted: false,
     }
 }
-
-// 读取配置文件并补充缺失部分
 
 pub fn read_config() -> io::Result<Config> {
     ensure_config_dir()?;
@@ -91,7 +137,6 @@ pub fn read_config() -> io::Result<Config> {
         Err(err) => {
             error!("Failed to parse config on first attempt: {:?}", err);
 
-            // 如果解析失败，尝试将默认配置与现有配置合并
             let default_config = get_default_config();
             if let Ok(existing_config) = toml::from_str::<toml::Value>(&content) {
                 if let toml::Value::Table(existing_table) = existing_config {
@@ -99,18 +144,15 @@ pub fn read_config() -> io::Result<Config> {
                         toml::Value::try_from(&default_config)
                             .unwrap_or(toml::Value::Table(Default::default()))
                     {
-                        // 合并默认配置和现有配置
                         let merged_config = merge_tables(default_table, existing_table);
                         let updated_content =
                             toml::ser::to_string(&toml::Value::Table(merged_config))
                                 .expect("Failed to serialize merged config");
-
                         fs::write(&config_file, updated_content)?;
                     }
                 }
             }
 
-            // 尝试再次读取并解析
             let updated_content = fs::read_to_string(&config_file)?;
             toml::from_str(&updated_content).unwrap_or_else(|second_err| {
                 error!("Failed to parse config on second attempt: {:?}", second_err);
@@ -133,16 +175,13 @@ fn merge_tables(
                 if let (toml::Value::Table(default_table), toml::Value::Table(existing_table)) =
                     (default_value.clone(), existing_value.clone())
                 {
-                    // 递归合并嵌套表
                     *default_value =
                         toml::Value::Table(merge_tables(default_table, existing_table));
                 } else {
-                    // 如果类型不匹配或非嵌套表，直接覆盖
                     *default_value = existing_value;
                 }
             }
             None => {
-                // 如果默认值中不存在该键，直接插入
                 default.insert(key, existing_value);
             }
         }
@@ -150,7 +189,6 @@ fn merge_tables(
     default
 }
 
-// 写入配置文件
 pub fn write_config(config: &Config) -> std::io::Result<()> {
     ensure_config_dir()?;
     let config_file = get_config_file_path();
@@ -160,73 +198,34 @@ pub fn write_config(config: &Config) -> std::io::Result<()> {
     Ok(())
 }
 
-// Tauri命令，供前端调用，获取 custom_style
-#[tauri::command]
-pub fn get_custom_style() -> Result<CustomStyle, String> {
-    match read_config() {
-        Ok(config) => Ok(config.custom_style),
-        Err(err) => {
-            let error_message = format!("Failed to read config: {}", err);
-            error!("{}", error_message); // 记录读取错误
-            Err(error_message)
-        }
+pub fn get_nested_value(data: &JsonValue, key: &str) -> Option<JsonValue> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let mut current = data;
+    for part in parts {
+        current = current.get(part)?;
     }
+    Some(current.clone())
 }
 
-// Tauri命令，供前端调用，设置 custom_style
-#[tauri::command]
-pub fn set_custom_style(custom_style: CustomStyle) -> Result<(), String> {
-    debug!("Received custom_style: {:?}", custom_style); // 打印接收到的参数
-    let mut config = match read_config() {
-        Ok(config) => config,
-        Err(err) => {
-            let error_message = format!("Failed to read config: {}", err);
-            error!("{}", error_message); // 记录读取错误
-            return Err(error_message);
-        }
-    };
-    config.custom_style = custom_style;
-    match write_config(&config) {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            let error_message = format!("Failed to write config: {}", err);
-            error!("{}", error_message); // 记录写入错误
-            Err(error_message)
-        }
-    }
-}
+pub fn set_nested_value(data: &mut JsonValue, key: &str, value: JsonValue) -> Result<(), String> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let mut current = data;
 
-// Tauri命令，供前端调用，获取 launcher.debug
-#[tauri::command]
-pub fn get_launcher_debug() -> Result<bool, String> {
-    match read_config() {
-        Ok(config) => Ok(config.launcher.debug),
-        Err(err) => {
-            let error_message = format!("Failed to read config: {}", err);
-            error!("{}", error_message); // 记录读取错误
-            Err(error_message)
+    for i in 0..parts.len() {
+        let part = parts[i];
+        if i == parts.len() - 1 {
+            return if let Some(obj) = current.as_object_mut() {
+                obj.insert(part.to_string(), value);
+                Ok(())
+            } else {
+                Err(format!("Key '{}' is not an object", part))
+            };
+        } else {
+            current = current
+                .get_mut(part)
+                .ok_or_else(|| format!("Key '{}' not found", part))?;
         }
     }
-}
 
-// Tauri命令，供前端调用，设置 launcher.debug
-#[tauri::command]
-pub fn set_launcher_debug(debug: bool) -> Result<(), String> {
-    let mut config = match read_config() {
-        Ok(config) => config,
-        Err(err) => {
-            let error_message = format!("Failed to read config: {}", err);
-            error!("{}", error_message); // 记录读取错误
-            return Err(error_message);
-        }
-    };
-    config.launcher.debug = debug;
-    match write_config(&config) {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            let error_message = format!("Failed to write config: {}", err);
-            error!("{}", error_message); // 记录写入错误
-            Err(error_message)
-        }
-    }
+    Err("Invalid key".to_string())
 }

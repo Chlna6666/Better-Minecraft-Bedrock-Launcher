@@ -1,4 +1,4 @@
-use crate::utils::config::read_config;
+
 use chrono::Local;
 use once_cell::sync::Lazy;
 use std::fs::{create_dir_all, OpenOptions};
@@ -9,6 +9,7 @@ use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use crate::config::config::{read_config};
 
 // 程序启动时间
 static START_TIME: Lazy<Instant> = Lazy::new(Instant::now);
@@ -129,9 +130,4 @@ pub fn init_logging() {
         .with(file_layer) // 按日期日志文件层
         .with(latest_log_layer) // 最新日志文件层
         .init(); // 初始化日志系统
-
-    info!("Logging initialized. Level: {}", log_level);
-    if debug_enabled {
-        debug!("Debug logging is enabled based on config.");
-    }
 }

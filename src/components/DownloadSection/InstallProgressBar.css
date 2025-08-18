@@ -1,0 +1,210 @@
+/* --- Overlay & Modal --- */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    backdrop-filter: blur(3px);
+    animation: overlayFadeIn 200ms ease forwards;
+}
+
+@keyframes overlayFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* 卡片容器 */
+.install-modal {
+    width: 420px;
+    max-width: calc(100% - 40px);
+    background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,250,250,0.98));
+    border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(2,6,23,0.45);
+    padding: 18px;
+    transform: translateY(8px) scale(0.98);
+    opacity: 0;
+    transition: transform 240ms cubic-bezier(.2,.9,.25,1), opacity 200ms ease;
+    will-change: transform, opacity;
+    overflow: hidden;
+    border: 1px solid rgba(18,20,22,0.06);
+    animation: modalEntrance 260ms cubic-bezier(.2,.9,.25,1) forwards;
+}
+
+@keyframes modalEntrance {
+    from { transform: translateY(12px) scale(0.98); opacity: 0; }
+    to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.install-modal.modal-error {
+    /* 更明显的边框颜色用于错误态 */
+    border: 1px solid rgba(220,53,69,0.12);
+}
+
+/* header */
+.modal-header {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.modal-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #111;
+}
+
+.modal-subtitle {
+    font-size: 0.85rem;
+    color: #666;
+}
+
+/* body */
+.download-progress-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* --- Progress bar row --- */
+.progress-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+/* 百分比大数字 */
+.progress-percentage {
+    min-width: 56px;
+    text-align: left;
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: var(--theme-color);
+}
+
+/* 自定义进度条外壳 */
+.progress-bar-outer {
+    position: relative;
+    flex: 1;
+    height: 12px;
+    background: #eef3ff;
+    border-radius: 999px;
+    overflow: hidden;
+    box-shadow: inset 0 -1px 0 rgba(255,255,255,0.5);
+}
+
+/* 内部进度条（纯色，更平滑）*/
+.progress-bar-inner {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background-color: var(--theme-color);
+    transition: width 420ms cubic-bezier(.2,.9,.25,1); /* 更平滑的过渡 */
+    box-shadow: 0 2px 10px rgba(11,92,255,0.12);
+}
+
+/* 信息网格 */
+.progress-info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    align-items: center;
+}
+
+.info-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.info-label {
+    font-size: 0.78rem;
+    color: #7b7f87;
+}
+
+.info-value {
+    font-size: 0.95rem;
+    color: #222;
+    font-weight: 600;
+}
+
+/* 操作区 */
+.actions-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* --- 错误样式（自动换行+可滚动）--- */
+.error-message {
+    font-size: 0.95rem;
+    color: #721c24;
+    background-color: #fff0f1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #f5c6cb;
+    max-height: 180px; /* 控制高度，超过则滚动 */
+    overflow-y: auto;
+    overflow-x: hidden;
+    word-break: break-word;
+}
+
+/* 保证多行文本换行且保留换行符 */
+.error-message .error-text {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", monospace;
+    font-size: 0.9rem;
+    color: #6a1d2a;
+}
+
+/* 居中 error actions */
+.error-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+}
+
+/* 重试按钮（没有悬浮效果） */
+.retry-button {
+    background-color: #007bff;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+/* 让重试按钮在禁用时视觉变浅 */
+.retry-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* --- 保留你原样的 cancel-button 样式（**未修改**） --- */
+.cancel-button {
+    background-color: #dc3545;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    pointer-events: auto !important;
+}
+
+.cancel-button:disabled {
+    background-color: #e0aeb5;
+    cursor: not-allowed;
+    pointer-events: auto !important;
+}
+
+/* 额外小屏样式适配 */
+@media (max-width: 480px) {
+    .install-modal { width: calc(100% - 28px); padding: 14px; border-radius: 10px; }
+    .progress-percentage { min-width: 48px; font-size: 1rem; }
+    .progress-bar-outer { height: 10px; }
+}
