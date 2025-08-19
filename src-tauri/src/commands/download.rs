@@ -122,9 +122,16 @@ pub async fn download_appx(
         }
         Ok(CoreResult::Cancelled) => {
             debug!("下载被取消");
+            let _ = fs::remove_file(&dest); // 删除部分下载文件
             Ok("cancelled".into())
         }
-        Ok(CoreResult::Error(err)) => Err(format!("下载出错：{}", err)),
-        Err(err) => Err(format!("下载发生异常：{}", err)),
+        Ok(CoreResult::Error(err)) => {
+            let _ = fs::remove_file(&dest); // 删除部分下载文件
+            Err(format!("下载出错：{}", err))
+        }
+        Err(err) => {
+            let _ = fs::remove_file(&dest); // 删除部分下载文件
+            Err(format!("下载发生异常：{}", err))
+        }
     }
 }

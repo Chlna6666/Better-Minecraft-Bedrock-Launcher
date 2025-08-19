@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { basename, extname } from "@tauri-apps/api/path";
 import { useTranslation } from "react-i18next";
 import "./InstallProgressBar.css";
 
@@ -11,6 +12,8 @@ const InstallProgressBar = ({
                                 onStatusChange,
                                 onCompleted,
                                 onCancel,
+                                isImport = false,
+                                sourcePath = null,
                                 children,
                             }) => {
     const { t } = useTranslation();
@@ -30,13 +33,17 @@ const InstallProgressBar = ({
     const [error, setError] = useState(null);
     const [cachedData, setCachedData] = useState(null);
 
+    const [confirmed, setConfirmed] = useState(false);
+    const [fileNameInput, setFileNameInput] = useState(String(version || ""));
+    const [originalExtension, setOriginalExtension] = useState("");
+    const [open, setOpen] = useState(true);
+
     const unlistenRef = useRef(null);
     const startingRef = useRef(false);
     const finishedRef = useRef(false);
     const rafRef = useRef(null);
     const prevStageRef = useRef(null);
 
-    // 平滑动画：displayPercent -> progressData.percent
     useEffect(() => {
         cancelAnimationFrame(rafRef.current);
         const step = () => {
@@ -54,14 +61,44 @@ const InstallProgressBar = ({
     }, [progressData.percent]);
 
     useEffect(() => {
+        async function setInitialFileName() {
+            if (isImport && sourcePath) {
+                const fullBase = await basename(sourcePath);
+                const ext = await extname(sourcePath);
+                const baseName = ext ? fullBase.slice(0, -(ext.length + 1)) : fullBase;
+                setFileNameInput(baseName);
+                setOriginalExtension(ext ? `.${ext}` : "");
+            } else {
+                setFileNameInput(String(version || ""));
+                setOriginalExtension("");
+            }
+        }
+        setInitialFileName();
+    }, [isImport, sourcePath, version]);
+
+    useEffect(() => {
         finishedRef.current = false;
-        startDownload();
+        startingRef.current = false;
+        cleanupListener();
+        setError(null);
+        setIsDownloading(false);
+        setIsCancelling(false);
+
+        setConfirmed(false);
+        setOpen(true);
+
+        setCachedData(null);
+        setDisplayPercent(0);
+        setProgressData((p) => ({ ...p, percent: 0, processed: 0, total: 0, stage: isImport ? "importing" : "downloading" }));
+        setOriginalExtension("");
+
         return () => {
             cleanupListener();
             startingRef.current = false;
             onStatusChange?.(false);
         };
-    }, [packageId]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [packageId, isImport, sourcePath]);
 
     useEffect(() => {
         onStatusChange?.(isDownloading);
@@ -74,35 +111,45 @@ const InstallProgressBar = ({
         }
     };
 
-    const startDownload = async () => {
+    // 允许 Windows 支持的文件名字符
+    const sanitizeFileName = (name) => {
+        if (!name) return "";
+        let s = String(name).trim();
+        // 移除换行、制表符
+        s = s.replace(/[\r\n\t]/g, "");
+        // 只替换 Windows 不允许的字符
+        s = s.replace(/[\\/:*?"<>|]+/g, "_");
+        // 再去掉首尾空格或下划线
+        s = s.replace(/^[\s_]+|[\s_]+$/g, "");
+        return s;
+    };
+
+    const startDownload = async (fileName) => {
         if (startingRef.current) return;
         startingRef.current = true;
         setError(null);
         setIsDownloading(true);
 
-        const revision = "1";
-        const fullId = `${packageId}_${revision}`;
-        const fileName = `${version}.appx`;
-        setCachedData({ fullId, fileName });
-        setProgressData((p) => ({ ...p, stage: "downloading", percent: 0, processed: 0, total: 0 }));
+        let safe = sanitizeFileName(fileName || "");
+        if (!safe) {
+            safe = `${version}${isImport && originalExtension ? originalExtension : ".appx"}`;
+        } else if (!safe.toLowerCase().endsWith(".appx") && !safe.toLowerCase().endsWith(".zip")) {
+            safe = `${safe}${isImport && originalExtension ? originalExtension : ".appx"}`;
+        }
+        setCachedData({ fileName: safe });
+        setProgressData((p) => ({ ...p, stage: isImport ? "importing" : "downloading", percent: 0, processed: 0, total: 0 }));
         setDisplayPercent(0);
 
         try {
             const off = await listen("install-progress", (e) => {
-                const {
-                    processed = 0,
-                    total = 0,
-                    speed = "0 B/s",
-                    eta = "00:00:00",
-                    status,
-                    percent = 0,
-                    stage,
-                } = e.payload || {};
+                let { processed = 0, total = 0, speed = "0 B/s", eta = "00:00:00", status, percent = 0, stage } = e.payload || {};
+                if (isImport && stage === "downloading") {
+                    stage = "importing";
+                }
 
-                // 阶段切换时立即重置 progress
                 if (prevStageRef.current && prevStageRef.current !== stage) {
-                    if (prevStageRef.current === "downloading" && stage === "extracting") {
-                        cancelAnimationFrame(rafRef.current); // 停止动画
+                    if (prevStageRef.current === (isImport ? "importing" : "downloading") && stage === "extracting") {
+                        cancelAnimationFrame(rafRef.current);
                         setDisplayPercent(0);
                         setProgressData({
                             processed,
@@ -131,22 +178,28 @@ const InstallProgressBar = ({
             });
             unlistenRef.current = off;
 
-            const result = await invoke("download_appx", { packageId: fullId, fileName });
-            if (result === "cancelled") {
-                if (!finishedRef.current) {
-                    finishedRef.current = true;
-                    onStatusChange?.(false);
-                    onCancel?.(packageId);
+            if (isImport) {
+                await invoke("import_appx", { sourcePath: sourcePath, fileName: safe });
+            } else {
+                const revision = "1";
+                const fullId = `${packageId}_${revision}`;
+                const result = await invoke("download_appx", { packageId: fullId, fileName: safe });
+                if (result === "cancelled") {
+                    if (!finishedRef.current) {
+                        finishedRef.current = true;
+                        onStatusChange?.(false);
+                        onCancel?.(packageId);
+                    }
+                    return;
                 }
-                return;
-            }
 
-            await invoke("extract_zip_appx", {
-                fileName,
-                destination: result,
-                forceReplace: true,
-                deleteSignature: true,
-            });
+                await invoke("extract_zip_appx", {
+                    fileName: safe,
+                    destination: result,
+                    forceReplace: true,
+                    deleteSignature: true,
+                });
+            }
         } catch (e) {
             console.error(e);
             setError(e?.message ?? String(e) ?? "Unknown error");
@@ -161,6 +214,13 @@ const InstallProgressBar = ({
     };
 
     const cancelInstall = async () => {
+        if (!isDownloading && !error && !confirmed) {
+            finishedRef.current = true;
+            setOpen(false);
+            onCancel?.(packageId);
+            return;
+        }
+
         if (!isDownloading && !error) return;
         setIsCancelling(true);
         try {
@@ -186,7 +246,21 @@ const InstallProgressBar = ({
     };
 
     const formatMB = (bytes) => ((bytes || 0) / 1e6).toFixed(2);
-    const showModal = isDownloading || error || (typeof progressData.percent === "number" && progressData.percent > 0);
+
+    const showModal = open;
+
+    const handleConfirmStart = () => {
+        setConfirmed(true);
+        setOpen(true);
+        onStatusChange?.(true);
+        startDownload(fileNameInput);
+    };
+
+    const handleCancelBeforeStart = () => {
+        setOpen(false);
+        finishedRef.current = true;
+        onCancel?.(packageId);
+    };
 
     return (
         <>
@@ -195,62 +269,100 @@ const InstallProgressBar = ({
             {showModal && (
                 <div className="modal-overlay" role="dialog" aria-modal="true">
                     <div className={`install-modal ${error ? "modal-error" : ""}`} aria-live="polite">
-                        <div className="modal-header">
-                            <div className="modal-title">
-                                {progressData.stage === "extracting"
-                                    ? t("InstallProgressBar.stage_extracting")
-                                    : t("InstallProgressBar.stage_downloading")}
-                            </div>
-                            <div className="modal-subtitle">
-                                {progressData.stage === "extracting"
-                                    ? t("InstallProgressBar.extracting_sub")
-                                    : t("InstallProgressBar.downloading_sub")}
-                            </div>
-                        </div>
+                        {!confirmed && !error ? (
+                            <>
+                                <div className="modal-header">
+                                    <div className="modal-title">{isImport ? t("InstallProgressBar.import_title") : t("InstallProgressBar.confirm_title")}</div>
+                                    <div className="modal-subtitle">{isImport ? t("InstallProgressBar.import_sub",) : t("InstallProgressBar.confirm_sub")}</div>
+                                </div>
 
-                        {error ? (
-                            <div className="download-progress-body">
-                                <div className="error-message" title={String(error)}>
-                                    <pre className="error-text">{String(error)}</pre>
+                                <div className="download-progress-body">
+                                    <label className="filename-label">{t("InstallProgressBar.filename_label")}</label>
+                                    <input
+                                        className="filename-input"
+                                        value={fileNameInput}
+                                        onChange={(e) => setFileNameInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === "Enter") handleConfirmStart();
+                                            if (e.key === "Escape") handleCancelBeforeStart();
+                                        }}
+                                    />
+                                    <div className="confirm-actions">
+                                        <button className="cancel-button" onClick={handleCancelBeforeStart}>
+                                            {t("InstallProgressBar.cancel")}
+                                        </button>
+                                        <button className="retry-button" onClick={handleConfirmStart}>
+                                            {isImport ? t("InstallProgressBar.start_import") : t("InstallProgressBar.start_download")}
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="error-actions">
-                                    <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
-                                        {isCancelling ? t("InstallProgressBar.cancelling") : t("InstallProgressBar.close")}
-                                    </button>
-                                    <button className="retry-button" onClick={() => { setError(null); startDownload(); }} disabled={isCancelling}>
-                                        {t("InstallProgressBar.retry")}
-                                    </button>
-                                </div>
-                            </div>
-                        ) : (
-                            <div className="download-progress-body">
-                                <div className="progress-row">
-                                    <div className="progress-percentage">{displayPercent.toFixed(1)}%</div>
-                                    <div className="progress-bar-outer" key={progressData.stage}>
-                                        <div
-                                            className="progress-bar-inner"
-                                            style={{ width: `${Math.max(0, Math.min(100, displayPercent))}%` }}
-                                        />
+                            </>
+                        ) : null}
+
+                        {(confirmed || error) && (
+                            <>
+                                <div className="modal-header">
+                                    <div className="modal-title">
+                                        {progressData.stage === "extracting"
+                                            ? t("InstallProgressBar.stage_extracting")
+                                            : isImport
+                                                ? t("InstallProgressBar.stage_importing")
+                                                : t("InstallProgressBar.stage_downloading")}
+                                    </div>
+                                    <div className="modal-subtitle">
+                                        {progressData.stage === "extracting"
+                                            ? t("InstallProgressBar.extracting_sub")
+                                            : isImport
+                                                ? t("InstallProgressBar.importing_sub")
+                                                : t("InstallProgressBar.downloading_sub")}
                                     </div>
                                 </div>
 
-                                <div className="progress-info-grid">
-                                    <div className="info-block">
-                                        <div className="info-label">{t("InstallProgressBar.processed_label")}</div>
-                                        <div className="info-value">{`${formatMB(progressData.processed)} / ${formatMB(progressData.total)} MB`}</div>
+                                {error ? (
+                                    <div className="download-progress-body">
+                                        <div className="error-message" title={String(error)}>
+                                            <pre className="error-text">{String(error)}</pre>
+                                        </div>
+                                        <div className="error-actions">
+                                            <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
+                                                {isCancelling ? t("InstallProgressBar.cancelling") : t("InstallProgressBar.close")}
+                                            </button>
+                                            <button className="retry-button" onClick={() => { setError(null); startDownload(cachedData?.fileName || fileNameInput); }} disabled={isCancelling}>
+                                                {t("InstallProgressBar.retry")}
+                                            </button>
+                                        </div>
                                     </div>
-                                    <div className="info-block">
-                                        <div className="info-label">{t("InstallProgressBar.speed_label")}</div>
-                                        <div className="info-value">{progressData.speed} · {progressData.eta}</div>
-                                    </div>
-                                </div>
+                                ) : (
+                                    <div className="download-progress-body">
+                                        <div className="progress-row">
+                                            <div className="progress-percentage">{displayPercent.toFixed(1)}%</div>
+                                            <div className="progress-bar-outer" key={progressData.stage}>
+                                                <div
+                                                    className="progress-bar-inner"
+                                                    style={{ width: `${Math.max(0, Math.min(100, displayPercent))}%` }}
+                                                />
+                                            </div>
+                                        </div>
 
-                                <div className="actions-row">
-                                    <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
-                                        {isCancelling ? t("InstallProgressBar.cancelling") : t("InstallProgressBar.cancel_download")}
-                                    </button>
-                                </div>
-                            </div>
+                                        <div className="progress-info-grid">
+                                            <div className="info-block">
+                                                <div className="info-label">{t("InstallProgressBar.processed_label")}</div>
+                                                <div className="info-value">{`${formatMB(progressData.processed)} / ${formatMB(progressData.total)} MB`}</div>
+                                            </div>
+                                            <div className="info-block">
+                                                <div className="info-label">{t("InstallProgressBar.speed_label")}</div>
+                                                <div className="info-value">{progressData.speed} · {progressData.eta}</div>
+                                            </div>
+                                        </div>
+
+                                        <div className="actions-row">
+                                            <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
+                                                {isCancelling ? t("InstallProgressBar.cancelling") : t("InstallProgressBar.cancel_download")}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </>
                         )}
                     </div>
                 </div>

@@ -19,6 +19,7 @@ use crate::i18n::I18n;
 use crate::utils::logger::{init_logging, log};
 use crate::config::config::{read_config, Config};
 use crate::commands::{get_config, set_config, get_locale, download_appx, show_splashscreen, close_splashscreen, read_music_directory, extract_zip_appx, launch_appx, load_plugin_script, get_plugins_list, get_webview2_version, get_version_list, get_app_license, get_app_version, get_tauri_sdk_version, get_full_build_info, cancel_install};
+use crate::commands::import_appx::import_appx;
 use crate::utils::appx_dependency::ensure_uwp_dependencies_or_prompt;
 use crate::utils::developer_mode::ensure_developer_mode_enabled;
 use crate::utils::system_info::{detect_system_encoding, get_cpu_architecture, get_system_language};
@@ -138,6 +139,7 @@ fn main() -> anyhow::Result<()> {
             get_webview2_version,
             read_music_directory,
             extract_zip_appx,
+            import_appx,
             launch_appx,
             load_plugin_script,
             get_plugins_list,

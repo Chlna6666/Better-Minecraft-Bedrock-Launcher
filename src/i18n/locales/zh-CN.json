@@ -32,18 +32,27 @@
     "info": "正在加载版本信息…",
     "info_error": "获取版本信息出错：{{error}}"
   },
-
   "InstallProgressBar": {
+    "confirm_title": "确认下载",
+    "confirm_sub": "自定义游戏版本名称",
+    "filename_label": "文件名",
+    "start_download": "开始下载",
     "stage_extracting": "正在解压",
     "stage_downloading": "正在下载",
     "extracting_sub": "正在将文件解压到目标位置，请稍候…",
     "downloading_sub": "正在从服务器下载文件，下载过程中请勿关闭程序。",
     "cancelling": "取消中…",
+    "cancel": "取消",
     "close": "关闭",
     "retry": "重试",
     "processed_label": "已下载",
     "speed_label": "速度 / 剩余时间",
-    "cancel_download": "取消下载"
+    "cancel_download": "取消下载",
+    "import_title": "导入",
+    "import_sub": "自定义导入游戏版本名称",
+    "start_import": "开始导入",
+    "stage_importing": "导入中...",
+    "importing_sub": "正在导入包..."
   },
   "Settings": {
     "tabs": {
@@ -129,7 +138,9 @@
       "minimize": "游戏启动后最小化",
       "close": "游戏启动后关闭启动器",
       "keep": "保持不变"
-    }
+    },
+    "keep_appx_after_install": "安装完成保留 APPX",
+    "modify_appx_manifest": "修改AppxManifest"
   },
   "CustomizationSettings": {
     "launch_animation": "启动时显示启动动画:",

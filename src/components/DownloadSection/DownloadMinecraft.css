@@ -1,10 +1,15 @@
+/* DownloadMinecraft.css */
 :root{
     --control-height: 56px;          /* 稍微缩短高度 */
     --control-padding: 8px;          /* 更小的内边距 */
     --control-gap: 10px;             /* 更紧凑的间隙 */
     --search-max-width: 200px;       /* 搜索框最大宽度（可调） */
     --refresh-right-offset: 12px;    /* 刷新按钮离右侧的间距 */
-    --search-right-offset: 48px;     /* 搜索 wrapper 的 right 偏移（离右侧） */
+    --import-right-offset: 88px;     /* 导入按钮的 right 偏移（离右侧） */
+    --search-right-offset: 62px;     /* 搜索 wrapper 的 right 偏移（离右侧） */
+    --action-icon-size: 18px;
+    --action-padding: 6px;
+    --action-border-radius: 6px;
 }
 
 
@@ -17,6 +22,12 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    position: relative;
+}
+
+.container.drag-over {
+    border: 2px dashed #007BFF;
+    background-color: rgba(0, 123, 255, 0.1);
 }
 
 .info {
@@ -69,10 +80,50 @@
 }
 
 .actions {
-    position: relative;
-    flex: 0 0 auto;
     display: flex;
     align-items: center;
+}
+
+.action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: var(--action-border-radius);
+    padding: var(--action-padding);
+    transition: background-color 0.2s;
+}
+
+.action-btn:hover {
+    background-color: rgba(0, 123, 255, 0.1);
+}
+
+.action-btn img {
+    width: var(--action-icon-size);
+    height: var(--action-icon-size);
+}
+/* import-container 绝对定位于 actions 的右侧，right 对齐 search 左边 */
+.import-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: var(--action-border-radius);
+    padding: var(--action-padding);
+    position: absolute;
+    right: var(--import-right-offset);
+    top: 50%;
+    transform: translateY(-50%);
+    transition: background-color 0.2s;
+}
+
+.import-container:hover {
+    background-color: rgba(0, 123, 255, 0.1);
+}
+
+.import-icon-btn {
+    width: var(--action-icon-size);
+    height: var(--action-icon-size);
 }
 
 /* search-wrapper 绝对定位于 actions 的右侧，right 对齐 refresh 左边，展开时向左扩展 */
@@ -102,8 +153,8 @@
     visibility: visible;
 }
 .search-icon-btn {
-    width: 18px;
-    height: 18px;
+    width: var(--action-icon-size);
+    height: var(--action-icon-size);
     margin-right: 8px;
     cursor: pointer;
 }
@@ -144,17 +195,22 @@
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    border-radius: 6px;
-    padding: 6px;
+    border-radius: var(--action-border-radius);
+    padding: var(--action-padding);
     position: absolute;
     right: var(--refresh-right-offset);
     top: 50%;
     transform: translateY(-50%);
+    transition: background-color 0.2s;
+}
+
+.refresh-container:hover {
+    background-color: rgba(0, 123, 255, 0.1);
 }
 
 .inner-search-icon {
-    width: 18px;
-    height: 18px;
+    width: var(--action-icon-size);
+    height: var(--action-icon-size);
 }
 
 .table {

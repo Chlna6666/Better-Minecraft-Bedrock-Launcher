@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from 'react-i18next';
+import { open } from '@tauri-apps/plugin-dialog';
+import { listen } from "@tauri-apps/api/event";
 import searchIcon from "../../assets/feather/search.svg";
 import refreshIcon from "../../assets/feather/rotate-cw.svg";
 import closeIcon from "../../assets/feather/x.svg";
@@ -7,6 +9,7 @@ import releaseIcon from "../../assets/img/minecraft/Release.png";
 import previewIcon from "../../assets/img/minecraft/Preview.png";
 import unknownIcon from "../../assets/feather/box.svg";
 import downloadIcon from "../../assets/feather/download.svg";
+import uploadIcon from "../../assets/feather/upload.svg"; // 假设存在此图标，如果没有，可以替换为其他或使用文本按钮
 
 import "./DownloadMinecraft.css";
 import InstallProgressBar from "./InstallProgressBar.jsx";
@@ -40,6 +43,9 @@ function DownloadMinecraft({ onStatusChange }) {
 
     const [isDownloading, setIsDownloading] = useState(false);
     const [activeDownload, setActiveDownload] = useState(null);
+    const [isImporting, setIsImporting] = useState(false);
+    const [sourcePath, setSourcePath] = useState(null);
+    const [dragOver, setDragOver] = useState(false);
 
     const cachedVersions = useRef(null);
     const containerRef = useRef(null);
@@ -233,8 +239,55 @@ function DownloadMinecraft({ onStatusChange }) {
         // InstallProgressBar 会通过 onStatusChange(true) 通知父组件正在下载
     };
 
+    const handleImportClick = async () => {
+        if (isDownloading || activeDownload) return;
+        const selected = await open({
+            filters: [{ name: 'Packages', extensions: ['appx', 'zip'] }],
+            multiple: false,
+        });
+        if (selected) {
+            setSourcePath(selected);
+            setIsImporting(true);
+            setActiveDownload('import'); // 使用特殊值禁用其他操作
+        }
+    };
+
+    const handleDragOver = (e) => {
+        if (isDownloading || activeDownload) return;
+        e.preventDefault();
+        setDragOver(true);
+    };
+
+    const handleDragLeave = () => {
+        setDragOver(false);
+    };
+
+    const handleDrop = (e) => {
+        if (isDownloading || activeDownload) return;
+        e.preventDefault();
+        setDragOver(false);
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            const file = files[0];
+            const ext = file.name.toLowerCase().split('.').pop();
+            if (ext === 'appx' || ext === 'zip') {
+                setSourcePath(file.path || file.name);
+                setIsImporting(true);
+                setActiveDownload('import');
+            } else {
+                console.warn("Unsupported file type for import");
+            }
+        }
+    };
+
     return (
-        <div className="container" ref={containerRef}>
+        <div
+            className={`container ${dragOver ? 'drag-over' : ''}`}
+            ref={containerRef}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
             {/* 操作区域：使用相对定位，右侧放置 Refresh（始终固定），搜索采用绝对定位展开到左侧，不影响其他元素布局 */}
             <div
                 className="control-bar"
@@ -277,7 +330,7 @@ function DownloadMinecraft({ onStatusChange }) {
                 <div className="middle-placeholder" aria-hidden />
 
                 <div className="actions">
-                    {/* 搜索 wrapper：绝对定位到 Refresh 左侧，展开时向左生长（transform-origin: right） */}
+                    {/* 搜索 */}
                     <div className={`search-wrapper ${isSearchOpen ? 'open' : 'closed'}`}>
                         {!isSearchOpen && (
                             <img
@@ -312,16 +365,22 @@ function DownloadMinecraft({ onStatusChange }) {
                         </div>
                     </div>
 
-                    {/* 刷新固定在最右侧，不受搜索宽度变化影响 */}
+                    {/* 导入 */}
+                    <div className="action-btn" onClick={handleImportClick} title={t('DownloadMinecraft.import')}>
+                        <img src={uploadIcon} alt="Import" />
+                    </div>
+
+                    {/* 刷新 */}
                     <div
-                        className="refresh-container"
+                        className="action-btn"
                         onClick={() => { if (!loading) fetchVersions(true); }}
                         title={loading ? t('DownloadMinecraft.refresh_loading') : t('DownloadMinecraft.refresh')}
                         style={{ opacity: loading ? 0.6 : 1 }}
                     >
-                        <img src={refreshIcon} alt="Refresh" className="inner-search-icon" />
+                        <img src={refreshIcon} alt="Refresh" />
                     </div>
                 </div>
+
             </div>
 
             {/* 版本列表 */}
@@ -385,6 +444,28 @@ function DownloadMinecraft({ onStatusChange }) {
                     </div>
                 )}
             </div>
+
+            {/* 导入进度条（独立于列表） */}
+            {isImporting && (
+                <InstallProgressBar
+                    version="Imported"
+                    packageId={null}
+                    versionType={-1}
+                    isImport={true}
+                    sourcePath={sourcePath}
+                    onStatusChange={setIsDownloading}
+                    onCompleted={() => {
+                        setIsImporting(false);
+                        setActiveDownload(null);
+                        setSourcePath(null);
+                    }}
+                    onCancel={() => {
+                        setIsImporting(false);
+                        setActiveDownload(null);
+                        setSourcePath(null);
+                    }}
+                />
+            )}
         </div>
     );
 }

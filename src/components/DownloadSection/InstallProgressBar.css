@@ -171,7 +171,7 @@
 
 /* 重试按钮（没有悬浮效果） */
 .retry-button {
-    background-color: #007bff;
+    background-color: var(--theme-color);
     color: #fff;
     border: none;
     padding: 8px 16px;
@@ -185,7 +185,32 @@
     cursor: not-allowed;
 }
 
-/* --- 保留你原样的 cancel-button 样式（**未修改**） --- */
+/* 确认面板的文件名输入样式 */
+.filename-label {
+    font-size: 0.85rem;
+    color: #444;
+    margin-bottom: 6px;
+    display: block;
+}
+
+.filename-input {
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(18,20,22,0.08);
+    background: #fff;
+    font-size: 0.95rem;
+    margin-bottom: 12px;
+    box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);
+}
+
+/* 确认面板的按钮组：取消 + 开始 */
+.confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+
 .cancel-button {
     background-color: #dc3545;
     color: #fff;
@@ -202,9 +227,3 @@
     pointer-events: auto !important;
 }
 
-/* 额外小屏样式适配 */
-@media (max-width: 480px) {
-    .install-modal { width: calc(100% - 28px); padding: 14px; border-radius: 10px; }
-    .progress-percentage { min-width: 48px; font-size: 1rem; }
-    .progress-bar-outer { height: 10px; }
-}

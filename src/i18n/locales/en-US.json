@@ -33,14 +33,19 @@
     "info_error": "Failed to fetch versions: {{error}}"
   },
   "InstallProgressBar": {
+    "confirm_title": "Confirm download",
+    "confirm_sub": "Edit the file name ('.appx' will be added automatically) then press Start",
+    "filename_label": "File name",
+    "start_download": "Start",
     "stage_extracting": "Extracting",
     "stage_downloading": "Downloading",
-    "extracting_sub": "Extracting files to the destination, please wait…",
-    "downloading_sub": "Downloading from the server. Please do not close the app while downloading.",
+    "extracting_sub": "Extracting files to destination, please wait…",
+    "downloading_sub": "Downloading from server — please do not close the application while downloading.",
     "cancelling": "Cancelling…",
+    "cancel": "Cancel",
     "close": "Close",
     "retry": "Retry",
-    "processed_label": "Processed",
+    "processed_label": "Downloaded",
     "speed_label": "Speed / ETA",
     "cancel_download": "Cancel download"
   },

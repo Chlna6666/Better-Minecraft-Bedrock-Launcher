@@ -14,6 +14,9 @@ function GameSettings() {
     const [unlockHotkey, setUnlockHotkey] = useState("ALT");
     const [launcherVis, setLauncherVis] = useState("keep");
     const [reducePixels, setReducePixels] = useState(0); // 新增 reducePixels 状态
+    const [keepAppx, setKeepAppx] = useState(false);
+    const [modifyAppxManifest, setModifyAppxManifest] = useState(true);
+
 
     const VISIBILITY_OPTIONS = [
         { value: "minimize", label: t("GameSettings.visibility.minimize") },
@@ -32,6 +35,10 @@ function GameSettings() {
                 setUnlockHotkey(cfg.unlock_mouse_hotkey ?? "ALT");
                 setLauncherVis(cfg.launcher_visibility ?? "keep");
                 setReducePixels(cfg.reduce_pixels ?? 0); // 加载 reduce_pixels 配置
+                setKeepAppx(cfg.keep_appx_after_install ?? false);
+                setModifyAppxManifest(cfg.modify_appx_manifest ?? true);
+
+
             } catch (e) {
                 console.error("Failed to load game config", e);
             }
@@ -54,6 +61,8 @@ function GameSettings() {
             unlock_mouse_hotkey: unlockHotkey,
             launcher_visibility: launcherVis,
             reduce_pixels: reducePixels, // 更新 reduce_pixels 配置
+            keep_appx_after_install: keepAppx,
+            modify_appx_manifest: modifyAppxManifest,
             ...updatedFields,
         };
         saveGameConfig(updated);
@@ -164,6 +173,33 @@ function GameSettings() {
                     ))}
                 </select>
             </div>
+            {/* APPX 配置 */}
+            <div className="setting-item">
+                <label>{t("GameSettings.keep_appx_after_install")}</label>
+                <Switch
+                    checked={keepAppx}
+                    onChange={() => {
+                        const next = !keepAppx;
+                        setKeepAppx(next);
+                        updateConfig({ keep_appx_after_install: next });
+                    }}
+                />
+            </div>
+
+            {/* 修改 AppxManifest 开关 */}
+            <div className="setting-item">
+                <label>{t("GameSettings.modify_appx_manifest")}</label>
+                <Switch
+                    checked={modifyAppxManifest}
+                    onChange={() => {
+                        const next = !modifyAppxManifest;
+                        setModifyAppxManifest(next);
+                        updateConfig({ modify_appx_manifest: next });
+                    }}
+                />
+            </div>
+
+
         </div>
     );
 }

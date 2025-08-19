@@ -13,7 +13,8 @@ pub mod i18n;
 pub mod window;
 pub mod zip;
 pub mod cancel_install;
-mod install_appx;
+pub mod install_appx;
+pub mod import_appx;
 
 pub use app_info::*;
 pub use config::*;
@@ -28,3 +29,4 @@ pub use webview2::*;
 pub use window::*;
 pub use zip::*;
 pub use cancel_install::*;
+pub use install_appx::*;
