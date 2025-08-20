@@ -151,21 +151,21 @@ function AboutSection() {
 
                 <div className={`legal-notices-card ${loaded ? "loaded-content" : ""}`}>
                     <div className="legal-notices-card-content">
-                        <h4><a onClick={() => openInBrowser('https://github.com/BMCBL/Better-Minecraft-Bedrock-Launcher')}>{t("AboutSection.legal.copyright.title")}</a></h4>
+                        <h4><a onClick={() => openInBrowser('https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher')}>{t("AboutSection.legal.copyright.title")}</a></h4>
                         <p>{t("AboutSection.legal.copyright.content")}</p>
                     </div>
                 </div>
 
                 <div className={`legal-notices-card ${loaded ? "loaded-content" : ""}`}>
                     <div className="legal-notices-card-content">
-                        <h4><a onClick={() => openInBrowser('https://github.com/BMCBL/Better-Minecraft-Bedrock-Launcher')}>{t("AboutSection.legal.agreement.title")}</a></h4>
+                        <h4><a onClick={() => openInBrowser('https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher')}>{t("AboutSection.legal.agreement.title")}</a></h4>
                         <p>{t("AboutSection.legal.agreement.content")}</p>
                     </div>
                 </div>
 
                 <div className={`legal-notices-card ${loaded ? "loaded-content" : ""}`}>
                     <div className="legal-notices-card-content">
-                        <h4><a onClick={() => openInBrowser('https://github.com/BMCBL/Better-Minecraft-Bedrock-Launcher')}>{t("AboutSection.legal.license.title")}</a></h4>
+                        <h4><a onClick={() => openInBrowser('https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher')}>{t("AboutSection.legal.license.title")}</a></h4>
                         <p>{appLicense}</p>
                     </div>
                 </div>

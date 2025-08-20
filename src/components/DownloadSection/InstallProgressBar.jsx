@@ -44,6 +44,9 @@ const InstallProgressBar = ({
     const rafRef = useRef(null);
     const prevStageRef = useRef(null);
 
+    // 过渡标记（切阶段时短暂忽略新阶段的 percent）
+    const isTransitioningRef = useRef(false);
+
     useEffect(() => {
         cancelAnimationFrame(rafRef.current);
         const step = () => {
@@ -89,8 +92,17 @@ const InstallProgressBar = ({
 
         setCachedData(null);
         setDisplayPercent(0);
-        setProgressData((p) => ({ ...p, percent: 0, processed: 0, total: 0, stage: isImport ? "importing" : "downloading" }));
+        setProgressData((p) => ({
+            ...p,
+            percent: 0,
+            processed: 0,
+            total: 0,
+            stage: isImport ? "importing" : "downloading",
+        }));
         setOriginalExtension("");
+
+        prevStageRef.current = null;
+        isTransitioningRef.current = false;
 
         return () => {
             cleanupListener();
@@ -106,20 +118,18 @@ const InstallProgressBar = ({
 
     const cleanupListener = () => {
         if (unlistenRef.current) {
-            try { unlistenRef.current(); } catch (_) {}
+            try {
+                unlistenRef.current();
+            } catch (_) {}
             unlistenRef.current = null;
         }
     };
 
-    // 允许 Windows 支持的文件名字符
     const sanitizeFileName = (name) => {
         if (!name) return "";
         let s = String(name).trim();
-        // 移除换行、制表符
         s = s.replace(/[\r\n\t]/g, "");
-        // 只替换 Windows 不允许的字符
         s = s.replace(/[\\/:*?"<>|]+/g, "_");
-        // 再去掉首尾空格或下划线
         s = s.replace(/^[\s_]+|[\s_]+$/g, "");
         return s;
     };
@@ -133,27 +143,54 @@ const InstallProgressBar = ({
         let safe = sanitizeFileName(fileName || "");
         if (!safe) {
             safe = `${version}${isImport && originalExtension ? originalExtension : ".appx"}`;
-        } else if (!safe.toLowerCase().endsWith(".appx") && !safe.toLowerCase().endsWith(".zip")) {
+        } else if (
+            !safe.toLowerCase().endsWith(".appx") &&
+            !safe.toLowerCase().endsWith(".zip")
+        ) {
             safe = `${safe}${isImport && originalExtension ? originalExtension : ".appx"}`;
         }
         setCachedData({ fileName: safe });
-        setProgressData((p) => ({ ...p, stage: isImport ? "importing" : "downloading", percent: 0, processed: 0, total: 0 }));
+        setProgressData((p) => ({
+            ...p,
+            stage: isImport ? "importing" : "downloading",
+            percent: 0,
+            processed: 0,
+            total: 0,
+        }));
         setDisplayPercent(0);
 
         try {
             const off = await listen("install-progress", (e) => {
-                let { processed = 0, total = 0, speed = "0 B/s", eta = "00:00:00", status, percent = 0, stage } = e.payload || {};
-                if (isImport && stage === "downloading") {
-                    stage = "importing";
-                }
+                let {
+                    processed = 0,
+                    total = 0,
+                    speed = "0 B/s",
+                    eta = "00:00:00",
+                    status,
+                    percent = 0,
+                    stage,
+                } = e.payload || {};
 
-                if (prevStageRef.current && prevStageRef.current !== stage) {
-                    if (prevStageRef.current === (isImport ? "importing" : "downloading") && stage === "extracting") {
-                        cancelAnimationFrame(rafRef.current);
+                // import 的后端可能仍叫 downloading -> 统一成 importing
+                if (isImport && stage === "downloading") stage = "importing";
+
+                // percent 强制为数值并 clamp
+                percent = Number(percent);
+                if (!Number.isFinite(percent)) percent = 0;
+                percent = Math.max(0, Math.min(100, percent));
+
+                const prevStage = prevStageRef.current;
+                if (prevStage && prevStage !== stage) {
+                    const downloadStage = isImport ? "importing" : "downloading";
+                    if (prevStage === downloadStage && stage === "extracting") {
+                        // ---------- 关键修复 1 ----------
+                        // 切换到 extracting 时同时把 processed/total/percent 都重置为 0
+                        // 否则如果后端瞬间发下载完成的 processed===total，会显示“已下载”
+                        isTransitioningRef.current = true;
                         setDisplayPercent(0);
                         setProgressData({
-                            processed,
-                            total,
+                            processed: 0,   // <- 置 0
+                            total: 0,       // <- 置 0
                             speed,
                             eta,
                             percent: 0,
@@ -161,12 +198,37 @@ const InstallProgressBar = ({
                             stage,
                         });
                         prevStageRef.current = stage;
-                        return;
+                        // 两帧后结束过渡，保证浏览器把 0% 渲染出来
+                        requestAnimationFrame(() => {
+                            requestAnimationFrame(() => {
+                                isTransitioningRef.current = false;
+                            });
+                        });
+                        return; // 忽略这次 payload 的 percent/processed（等解压真正上报数据）
                     }
+                    prevStageRef.current = stage;
+                } else if (!prevStageRef.current) {
+                    prevStageRef.current = stage;
                 }
 
-                prevStageRef.current = stage;
-                setProgressData({ processed, total, speed, eta, percent, status, stage });
+                const effectivePercent = isTransitioningRef.current ? 0 : percent;
+
+                // ---------- 小改：当 extracting 且后端没提供 total 时，不把先前下载 total 再显示 ----------
+                // 如果当前阶段是 extracting 且后端发送的 total 与之前下载 total 相同（可能是残留），
+                // 但 percent 为 0，则优先保留 0/0，避免误显示已下载。
+                if (stage === "extracting" && isTransitioningRef.current) {
+                    // 过渡期上面已经提前返回了，所以正常分支到这里时意味着不是过渡期间
+                }
+
+                setProgressData({
+                    processed,
+                    total,
+                    speed,
+                    eta,
+                    percent: effectivePercent,
+                    status,
+                    stage,
+                });
 
                 if (status === "completed" && stage === "extracting" && !finishedRef.current) {
                     finishedRef.current = true;
@@ -225,14 +287,21 @@ const InstallProgressBar = ({
         setIsCancelling(true);
         try {
             await invoke("cancel_install", { fileName: cachedData?.fileName });
-        } catch (e) { console.error(e); }
-        finally {
+        } catch (e) {
+            console.error(e);
+        } finally {
             setIsCancelling(false);
             cleanupListener();
             setIsDownloading(false);
 
             if (!error) {
-                setProgressData({ processed: 0, total: 0, speed: "0 B/s", eta: "00:00:00", percent: 0 });
+                setProgressData({
+                    processed: 0,
+                    total: 0,
+                    speed: "0 B/s",
+                    eta: "00:00:00",
+                    percent: 0,
+                });
                 setDisplayPercent(0);
                 setCachedData(null);
             }
@@ -261,6 +330,13 @@ const InstallProgressBar = ({
         finishedRef.current = true;
         onCancel?.(packageId);
     };
+
+    // 根据当前阶段选择取消按钮文案
+    const cancelButtonText = isCancelling
+        ? t("InstallProgressBar.cancelling")
+        : progressData.stage === "extracting"
+            ? t("InstallProgressBar.cancel") // 或者添加专门的键 InstallProgressBar.cancel_extracting
+            : t("InstallProgressBar.cancel_download");
 
     return (
         <>
@@ -347,7 +423,13 @@ const InstallProgressBar = ({
                                         <div className="progress-info-grid">
                                             <div className="info-block">
                                                 <div className="info-label">{t("InstallProgressBar.processed_label")}</div>
-                                                <div className="info-value">{`${formatMB(progressData.processed)} / ${formatMB(progressData.total)} MB`}</div>
+                                                {/* ---------- 关键修复 2 ----------
+                            当处于 extracting 而 total 为 0 时，显示占位而不是“已下载” */}
+                                                <div className="info-value">
+                                                    {progressData.stage === "extracting" && (!progressData.total || progressData.total === 0)
+                                                        ? "—"
+                                                        : `${formatMB(progressData.processed)} / ${formatMB(progressData.total)} MB`}
+                                                </div>
                                             </div>
                                             <div className="info-block">
                                                 <div className="info-label">{t("InstallProgressBar.speed_label")}</div>
@@ -357,7 +439,7 @@ const InstallProgressBar = ({
 
                                         <div className="actions-row">
                                             <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
-                                                {isCancelling ? t("InstallProgressBar.cancelling") : t("InstallProgressBar.cancel_download")}
+                                                {cancelButtonText}
                                             </button>
                                         </div>
                                     </div>

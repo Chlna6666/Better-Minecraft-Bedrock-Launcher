@@ -262,6 +262,7 @@ function DownloadMinecraft({ onStatusChange }) {
         setDragOver(false);
     };
 
+    //
     const handleDrop = (e) => {
         if (isDownloading || activeDownload) return;
         e.preventDefault();

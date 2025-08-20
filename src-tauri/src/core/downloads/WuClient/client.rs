@@ -14,7 +14,6 @@ pub struct WuClient {
 }
 
 impl WuClient {
-    /// 通过传入的 Client 构造 WuClient（支持代理）
     pub fn with_client(client: Client) -> Self {
         Self {
             client,
@@ -22,8 +21,13 @@ impl WuClient {
         }
     }
 
-    /// 获取下载 URL，带重试逻辑
-    /// 返回类型改为 Result<CoreResult<String>, CoreError>
+    async fn wait_cancelled() {
+        // 轮询检查 atomic 标志；间隔可以根据需要调整（例如 50ms 或 100ms）
+        while !CANCEL_DOWNLOAD.load(Ordering::Relaxed) {
+            sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     pub async fn get_download_url(
         &self,
         update_id: &str,
@@ -34,47 +38,76 @@ impl WuClient {
         for attempt in 1..=3 {
             debug!("第 {} 次请求下载 URL", attempt);
 
-            // 如果外部请求已取消，则立即返回 Cancelled（作为正常分支）
+            // 先快速检查一次（避免不必要的工作）
             if CANCEL_DOWNLOAD.load(Ordering::Relaxed) {
-                debug!("下载已取消，停止获取 URL");
+                debug!("下载已取消（请求前）");
                 return Ok(CoreResult::Cancelled);
             }
 
-            let result = self
+            // 发起请求的 future（未 await）
+            let send_fut = self
                 .client
                 .post("https://fe3.delivery.mp.microsoft.com/ClientWebService/client.asmx/secured")
                 .header(header::CONTENT_TYPE, "application/soap+xml")
                 .body(request_xml.clone())
-                .send()
-                .await
-                .and_then(|resp| resp.error_for_status());
+                .send();
 
-            match result {
-                Ok(response) => {
-                    // response.text().await 会在出错时通过 ? 转为 CoreError::Request
-                    let xml = response.text().await?;
-                    debug!("响应 XML: {}", xml);
+            // 在请求发送阶段可取消
+            let send_result = tokio::select! {
+                biased;
 
-                    // parse_download_response 返回 Result<Vec<String>, xml::Error> (示例)
-                    // 使用 ? 将解析错误上抛为 CoreError::Xml（按你的 CoreError 定义）
-                    let urls = self.protocol.parse_download_response(&xml)?;
-                    debug!("解析到的 URL 列表: {:?}", urls);
+                // 取消信号先到，则中断请求 future（drop）
+                _ = Self::wait_cancelled() => {
+                    debug!("下载已取消（发送阶段）");
+                    return Ok(CoreResult::Cancelled);
+                }
 
-                    if let Some(url) = urls
-                        .into_iter()
-                        .find(|u| u.starts_with("http://tlu.dl.delivery.mp.microsoft.com/"))
-                    {
-                        // 找到合适的 URL —— 作为 Success 返回，并携带 String
-                        return Ok(CoreResult::Success(url));
-                    } else if attempt == 3 {
-                        // 三次尝试后仍然没有合适 URL —— 视为 BadUpdateIdentity（保持原有行为）
-                        return Err(CoreError::BadUpdateIdentity);
+                // 请求完成
+                res = send_fut => res
+            };
+
+            match send_result {
+                Ok(resp) => {
+                    // 检查 HTTP 状态
+                    match resp.error_for_status() {
+                        Ok(valid_resp) => {
+                            // 在读取 body 阶段也支持取消
+                            let text_result = tokio::select! {
+                                _ = Self::wait_cancelled() => {
+                                    debug!("下载已取消（读取 body 阶段）");
+                                    return Ok(CoreResult::Cancelled);
+                                }
+                                txt = valid_resp.text() => txt
+                            };
+
+                            // 读取 body 出错（会被 ? 转 CoreError::Request，前提是有 From impl）
+                            let xml = text_result?;
+                            debug!("响应 XML: {}", xml);
+
+                            // 解析 XML（协议层函数的错误请确认能转为 CoreError::Xml）
+                            let urls = self.protocol.parse_download_response(&xml)?;
+                            debug!("解析到的 URL 列表: {:?}", urls);
+
+                            if let Some(url) = urls
+                                .into_iter()
+                                .find(|u| u.starts_with("http://tlu.dl.delivery.mp.microsoft.com/"))
+                            {
+                                return Ok(CoreResult::Success(url));
+                            } else if attempt == 3 {
+                                return Err(CoreError::BadUpdateIdentity);
+                            }
+                        }
+                        Err(e) => {
+                            debug!("第 {} 次请求返回错误状态: {}", attempt, e);
+                            if attempt == 3 {
+                                return Err(CoreError::Request(e));
+                            }
+                        }
                     }
                 }
                 Err(err) => {
-                    debug!("第 {} 次请求或状态检查失败: {}", attempt, err);
+                    debug!("第 {} 次请求失败: {}", attempt, err);
                     if attempt == 3 {
-                        // 三次都失败，向上返回请求错误（保持原有行为）
                         return Err(CoreError::Request(err));
                     }
                 }
@@ -84,7 +117,6 @@ impl WuClient {
             sleep(Duration::from_millis(backoff as u64)).await;
         }
 
-        // 理论上不会到这里，但保底返回 BadUpdateIdentity
         Err(CoreError::BadUpdateIdentity)
     }
 }

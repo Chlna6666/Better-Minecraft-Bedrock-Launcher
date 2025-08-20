@@ -76,7 +76,6 @@ fn main() -> anyhow::Result<()> {
     let _ = ensure_uwp_dependencies_or_prompt();
     
     tauri::Builder::default()
-        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = show_window(app);
         }))

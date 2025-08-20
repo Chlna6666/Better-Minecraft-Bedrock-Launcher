@@ -31,6 +31,15 @@ pub enum CoreError {
 
     #[error("{0}")]
     Other(String),
+
+    #[error("Operation timed out")]
+    Timeout,
+}
+
+impl From<tokio::time::error::Elapsed> for CoreError {
+    fn from(_: tokio::time::error::Elapsed) -> Self {
+        CoreError::Timeout
+    }
 }
 
 /// 核心结果类型

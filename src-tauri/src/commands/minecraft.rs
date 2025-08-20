@@ -6,23 +6,12 @@ use crate::core::minecraft::appx::remove::remove_package;
 use crate::core::minecraft::appx::utils::{get_manifest_identity, get_package_info};
 use crate::core::minecraft::launcher::launch_uwp;
 use crate::core::minecraft::mouse_lock::start_window_monitor;
-use std::collections::HashMap;
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use std::{env, fs, ptr, thread};
-use tauri::async_runtime::spawn_blocking;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use windows::core::{w, BOOL, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, FALSE, HWND, LPARAM, POINT, RECT, TRUE};
-use windows::Win32::Graphics::Gdi::ClientToScreen;
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
-use windows::Win32::UI::WindowsAndMessaging::{ClipCursor, EnumWindows, FindWindowExW, GetAncestor, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsChild, IsIconic, IsWindow, IsWindowVisible, GA_ROOTOWNER, GW_OWNER};
-
 use serde_json::json;
 
 /// 将 manifest 中的 Identity name 映射到常见的 AUMID（示例）
