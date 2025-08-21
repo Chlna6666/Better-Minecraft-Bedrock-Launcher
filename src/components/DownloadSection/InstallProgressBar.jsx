@@ -338,6 +338,19 @@ const InstallProgressBar = ({
             ? t("InstallProgressBar.cancel") // 或者添加专门的键 InstallProgressBar.cancel_extracting
             : t("InstallProgressBar.cancel_download");
 
+    // 在组件函数顶部（例如在 formatMB 函数之后）添加：
+    const processedLabel = (() => {
+        if (progressData.stage === "extracting") {
+            return t("InstallProgressBar.extracted_label"); // 解压阶段显示 "已解压"
+        }
+        if (progressData.stage === "importing") {
+            return t("InstallProgressBar.imported_label"); // 导入阶段显示 "已导入"
+        }
+        // 默认（downloading / importing 未特别处理时）
+        return t("InstallProgressBar.processed_label"); //  "已下载"
+    })();
+
+
     return (
         <>
             <span style={{ cursor: isDownloading ? "default" : "pointer" }}>{children}</span>
@@ -422,7 +435,7 @@ const InstallProgressBar = ({
 
                                         <div className="progress-info-grid">
                                             <div className="info-block">
-                                                <div className="info-label">{t("InstallProgressBar.processed_label")}</div>
+                                                <div className="info-label">{processedLabel}</div>
                                                 {/* ---------- 关键修复 2 ----------
                             当处于 extracting 而 total 为 0 时，显示占位而不是“已下载” */}
                                                 <div className="info-value">

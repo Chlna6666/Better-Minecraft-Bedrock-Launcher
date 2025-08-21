@@ -1,7 +1,7 @@
 //! UWP 脱离沙盒运行并支持多开
 //!
 //! 本实现参考了 GPLv3 许可的 C# 项目
-//! mc-w10-version-launcher[](https://github.com/QYCottage/mc-w10-version-launcher)
+//! mc-w10-version-launcher[](https://github.com/QYCottage/mc-w10-version-launcher/blob/master/MCLauncher/ManifestHelper.cs)
 //! 和 【UWP】修改清单脱离沙盒运行[](https://www.cnblogs.com/wherewhere/p/18171253)
 //! 以及用户提供的 Node.js 脚本的多开功能
 //!

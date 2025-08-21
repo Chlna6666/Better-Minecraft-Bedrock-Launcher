@@ -1,148 +1,186 @@
-<meta charset="UTF-8">
-<div class="splash-screen">
-  <div class="logo-container">
-    <div class="cube">
-      <div class="face top"></div>
-      <div class="face front"></div>
-      <div class="face back"></div>
-      <div class="face left"></div>
-      <div class="face right"></div>
-      <div class="face bottom">
-        <span class="bottom-text">原神启动</span>
-      </div>
-    </div>
-    <div class="loading-text">Better Minecraft:Bedrock Launcher</div>
-  </div>
-</div>
-
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>3D Cube - Textured</title>
 <style>
-  /* Splash Screen */
-  .splash-screen {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: transparent;
-    z-index: 1000;
+  :root{
+    --size: 100px;               /* 立方体边长，修改这里可以整体放大/缩小 */
+    --half: calc(var(--size) / 2);
+    --overlap: -0.5px;
   }
 
-  /* Logo Container */
-  .logo-container {
+  html,body{ height:100%; margin:0; background:transparent; -webkit-tap-highlight-color: transparent; }
+
+  .splash-screen {
+    position: fixed;
+    inset: 0;
     display: flex;
-    flex-direction: column;
-    align-items: center;
     justify-content: center;
-    cursor: grab;
+    align-items: center;
+    z-index: 1000;
     user-select: none;
   }
 
-  /* 3D Cube */
+  .logo-container {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:16px;
+    cursor: grab;
+  }
+
   .cube {
+    width: var(--size);
+    height: var(--size);
     position: relative;
-    width: 100px;
-    height: 100px;
     transform-style: preserve-3d;
     transform: rotateX(-20deg) rotateY(45deg);
-    transition: transform 0.3s ease;
     animation: autoRotate 5s infinite linear;
+    will-change: transform;
+    touch-action: none; /* 让 pointer 事件可用并禁用浏览器的默认触摸手势 */
   }
 
   .face {
     position: absolute;
-    width: 100px;
-    height: 100px;
-    border: none;
-    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.2);
+    width: var(--size);
+    height: var(--size);
+    left: 0;
+    top: 0;
+    box-sizing: border-box;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    transform-origin: center center;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    outline: 1px solid transparent;
   }
 
-  /* Grass Block Colors */
-  .top {
-    background-color: #7ac157; /* Grass green */
-    transform: rotateX(90deg) translateZ(50px);
-  }
-
-  .front, .back, .left, .right {
-    background: linear-gradient(to top, #ac8a5b 70%, #7ac157 30%); /* Green to brown */
-  }
-
-  .front  { transform: translateZ(50px); }
-  .back   { transform: rotateY(180deg) translateZ(50px); }
-  .left   { transform: rotateY(-90deg) translateZ(50px); }
-  .right  { transform: rotateY(90deg) translateZ(50px); }
-
+  /* 六面，增加微量重叠 translateZ(... + var(--overlap)) 来覆盖缝隙 */
+  .top    { background-image: url("textures/top.png");    transform: rotateX(90deg) translateZ(calc(var(--half) + var(--overlap))); }
   .bottom {
-    background-color: #ac8a5b;
-    transform: rotateX(-90deg) translateZ(50px);
+    background-image: url("textures/bottom.png");
+    transform: rotateX(-90deg) translateZ(calc(var(--half) + var(--overlap)));
+    /* 使底面成为弹性容器，文字水平/垂直居中 */
     display: flex;
     justify-content: center;
     align-items: center;
+    padding: 4px; /* 防止文字贴边（可选） */
+    box-sizing: border-box;
+    text-align: center;
   }
+  .front  { background-image: url("textures/front.png");  transform: translateZ(calc(var(--half) + var(--overlap))); }
+  .back   { background-image: url("textures/front.png");   transform: rotateY(180deg) translateZ(calc(var(--half) + var(--overlap))); }
+  .left   { background-image: url("textures/front.png");   transform: rotateY(-90deg) translateZ(calc(var(--half) + var(--overlap))); }
+  .right  { background-image: url("textures/front.png");  transform: rotateY(90deg) translateZ(calc(var(--half) + var(--overlap))); }
 
   /* Text on Bottom Face */
   .bottom-text {
     font-family: 'Minecraft', sans-serif;
-    font-size: 24px;
+    font-size: 16px; /* 24px 对 100px 立方体可能偏大，改为 16px 更协调；按需调整 */
     color: white;
     text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+    line-height: 1;
+    display: inline-block;
+    /* 防止被 pointer 事件挡住拖拽（如果你想文字不拦指针可加 pointer-events: none;） */
+    /* pointer-events: none; */
+    max-width: 90%; /* 防止在小立方体上溢出，自动换行 */
+    word-break: break-word;
   }
 
-  /* Loading Text */
   .loading-text {
-    margin-top: 20px;
     font-size: 24px;
     font-weight: bold;
     font-family: 'Minecraft', sans-serif;
     color: #a0d9b6;
-    text-shadow: none;
     user-select: none;
   }
 
   @keyframes autoRotate {
-    0% { transform: rotateX(-20deg) rotateY(0deg); }
-    100% { transform: rotateX(-20deg) rotateY(360deg); }
+    from { transform: rotateX(-20deg) rotateY(0deg); }
+    to   { transform: rotateX(-20deg) rotateY(360deg); }
   }
 </style>
+</head>
+<body>
+  <div class="splash-screen">
+    <div class="logo-container">
+      <div class="cube" id="cube">
+        <div class="face top"></div>
+        <div class="face front"></div>
+        <div class="face back"></div>
+        <div class="face left"></div>
+        <div class="face right"></div>
+        <div class="face bottom">
+          <span class="bottom-text">原神启动</span>
+        </div>
+      </div>
+      <div class="loading-text">Better Minecraft:Bedrock Launcher</div>
+    </div>
+  </div>
 
 <script>
-  document.addEventListener("DOMContentLoaded", () => {
-    const cube = document.querySelector(".cube");
-    let isDragging = false;
-    let startX, startY, startRotationX, startRotationY;
+  (function(){
+    const cube = document.getElementById('cube');
 
-    const onDragStart = (event) => {
-      isDragging = true;
-      startX = event.clientX;
-      startY = event.clientY;
-      const matrix = window.getComputedStyle(cube).transform;
-      const values = matrix.match(/matrix.*\((.+)\)/)[1].split(', ');
-      startRotationX = Math.asin(values[8]) * (180 / Math.PI);
-      startRotationY = Math.atan2(values[4], values[0]) * (180 / Math.PI);
-      cube.style.animation = "none"; // Stop the auto-rotation on drag
+    // 初始角度（可调整）
+    let rotX = -20;
+    let rotY = 45;
+
+    // 用于拖拽
+    let dragging = false;
+    let pointerId = null;
+    let startX = 0, startY = 0;
+    let startRotX = 0, startRotY = 0;
+
+    // 应用初始变换
+    const applyTransform = () => {
+      cube.style.transform = `rotateX(${rotX}deg) rotateY(${rotY}deg)`;
     };
+    applyTransform();
 
-    const onDrag = (event) => {
-      if (!isDragging) return;
-      const dx = event.clientX - startX;
-      const dy = event.clientY - startY;
-      cube.style.transform = `rotateX(${startRotationX + dy}deg) rotateY(${startRotationY + dx}deg)`;
-    };
-
-    const onDragEnd = () => {
-      isDragging = false;
-      cube.style.animation = "autoRotate 5s infinite linear"; // Resume the auto-rotation
-    };
-
-    cube.addEventListener("mousedown", onDragStart);
-    document.addEventListener("mousemove", onDrag);
-    document.addEventListener("mouseup", onDragEnd);
-
-    /* Disable right-click */
-    document.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
+    // pointerdown 支持触摸和鼠标
+    cube.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      cube.setPointerCapture(e.pointerId);
+      pointerId = e.pointerId;
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      startRotX = rotX;
+      startRotY = rotY;
+      cube.style.animation = 'none';
+      cube.style.cursor = 'grabbing';
     });
-  });
+
+    // pointermove 在 document 上也监听以防指针移出 cube
+    document.addEventListener('pointermove', (e) => {
+      if (!dragging || e.pointerId !== pointerId) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const sensitivity = 0.45;
+      rotY = startRotY + dx * sensitivity;
+      rotX = startRotX + dy * sensitivity;
+      rotX = Math.max(-90, Math.min(90, rotX));
+      applyTransform();
+    });
+
+    // pointerup 或 pointercancel 结束拖拽
+    const endDrag = (e) => {
+      if (!dragging || e.pointerId !== pointerId) return;
+      dragging = false;
+      try { cube.releasePointerCapture(pointerId); } catch (err) {}
+      pointerId = null;
+      cube.style.animation = 'autoRotate 5s infinite linear';
+      cube.style.cursor = 'grab';
+    };
+    document.addEventListener('pointerup', endDrag);
+    document.addEventListener('pointercancel', endDrag);
+
+    // 禁用右键菜单（如你之前那样）
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
+  })();
 </script>
+</body>
+</html>

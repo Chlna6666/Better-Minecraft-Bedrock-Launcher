@@ -90,7 +90,7 @@ pub fn ensure_config_file() -> std::io::Result<()> {
 pub fn get_default_config() -> Config {
     Config {
         custom_style: CustomStyle {
-            theme_color: "#90c7a8".to_string(),
+            theme_color: "#a0d9b6".to_string(),
             background_option: "default".to_string(),
             local_image_path: "".to_string(),
             network_image_url: "".to_string(),

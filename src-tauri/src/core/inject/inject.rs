@@ -110,7 +110,7 @@ fn safe_inject(pid: u32, dll_path: &Path) -> Result<()> {
         let h_proc = OpenProcess(access, false, pid)
             .map_err(|e| anyhow!("OpenProcess 失败: {}", e.message()))?;
         let h_proc = RemoteHandle(h_proc);
-        
+
         // 在目标进程中分配内存
         let remote_addr = VirtualAllocEx(
             h_proc.0,
@@ -139,7 +139,7 @@ fn safe_inject(pid: u32, dll_path: &Path) -> Result<()> {
             byte_len,
             None,
         ).map_err(|e| anyhow!("WriteProcessMemory 失败: {}", e.message()))?;
-        
+
         // 获取 LoadLibraryW 地址
         let h_kernel = GetModuleHandleA(PCSTR(b"kernel32.dll\0".as_ptr()))
             .map_err(|e| anyhow!("GetModuleHandleA 失败: {}", e.message()))?;

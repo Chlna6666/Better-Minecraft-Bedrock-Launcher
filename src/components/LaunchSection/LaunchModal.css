@@ -102,20 +102,29 @@
 
 /* detail line */
 .lm-detail-line {
-    display:flex;
-    align-items:center;
-    gap:8px;
-    padding:8px 10px;
-    border-radius:8px;
-    font-size:13px;
-    width:100%;
-    box-sizing:border-box;
-    background:#f8fafc;
-    color:#374151;
-    max-height: calc(4 * 1.5em);
-    overflow-y: auto;
+    display: flex;
+    align-items: flex-start; /* 文字多行时从顶部对齐 */
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    width: 100%;
+    box-sizing: border-box;
+    background: #f8fafc;
+    color: #374151;
 }
-.lm-detail-text { display:block; min-width:0; white-space: normal; overflow-wrap:anywhere; word-break:break-word; line-height:1.2em; }
+
+.lm-detail-text {
+    display: block;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.2em;
+    max-height: calc(5 * 1.5em); /* 限制文字最多显示 5 行 */
+    overflow-y: auto;            /* 超出时在文字内部滚动 */
+}
+
 
 /* dot */
 .lm-dot { display:inline-block; width:10px; height:10px; border-radius:999px; flex:0 0 10px; margin-top:2px; }

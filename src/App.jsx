@@ -29,33 +29,51 @@ function App() {
     const [isPending, startTransition] = useTransition();
 
     // Batch styling changes
-    const applyBackgroundStyle = useCallback(async ({ background_option, local_image_path, network_image_url }) => {
-        const baseStyle = {
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            backgroundRepeat: 'no-repeat',
-        };
-        try {
-            if (background_option === 'local') {
-                const fileUrl = convertFileSrc(local_image_path);
-                document.body.style.backgroundImage = `url(${fileUrl})`;
-            } else if (background_option === 'network') {
-                await new Promise((resolve, reject) => {
-                    const img = new Image();
-                    img.onload = resolve;
-                    img.onerror = () => reject();
-                    img.src = network_image_url;
-                });
-                document.body.style.backgroundImage = `url(${network_image_url})`;
-            } else {
-                document.body.style.backgroundImage = '';
+    const applyBackgroundStyle = useCallback(
+        async ({ background_option, local_image_path, network_image_url }) => {
+            const baseStyle = {
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+                backgroundRepeat: "no-repeat",
+            };
+
+            try {
+                if (background_option === "local") {
+                    if (local_image_path) {
+                        try {
+                            const fileUrl = convertFileSrc(local_image_path);
+                            if (fileUrl) {
+                                document.body.style.backgroundImage = `url(${fileUrl})`;
+                                Object.assign(document.body.style, baseStyle);
+                            }
+                        } catch (e) {
+                            console.warn("local 路径转换失败，不替换背景:", e);
+                        }
+                    }
+                } else if (background_option === "network") {
+                    try {
+                        await new Promise((resolve, reject) => {
+                            const img = new Image();
+                            img.onload = resolve;
+                            img.onerror = reject;
+                            img.src = network_image_url;
+                        });
+                        document.body.style.backgroundImage = `url(${network_image_url})`;
+                        Object.assign(document.body.style, baseStyle);
+                    } catch (e) {
+                        console.warn("network 图片加载失败，不替换背景:", e);
+                    }
+                } else {
+                    // 其它情况：清空背景
+                    document.body.style.backgroundImage = "";
+                    Object.assign(document.body.style, baseStyle);
+                }
+            } catch (err) {
+                console.error("设置背景出错:", err);
             }
-            Object.assign(document.body.style, baseStyle);
-        } catch {
-            document.body.style.backgroundImage = '';
-            Object.assign(document.body.style, baseStyle);
-        }
-    }, []);
+        },
+        []
+    );
 
     useEffect(() => {
         let timeoutId;

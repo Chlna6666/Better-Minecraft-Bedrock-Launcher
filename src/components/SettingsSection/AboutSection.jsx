@@ -8,6 +8,7 @@ import Chlan6666 from "../../assets/img/about/Chlna6666.jpg";
 import github from "../../assets/img/about/github.png";
 import Tauri from "../../assets/img/about/Tauri.png";
 import Fufuha from "../../assets/img/about/Fufuha.jpg";
+import Ustiniana1641 from "../../assets/img/about/Ustiniana1641.jpg";
 import afdian from "../../assets/img/about/afdian.png";
 import logo from "../../assets/logo.png";
 
@@ -104,6 +105,18 @@ function AboutSection() {
                     </div>
                     <div className="special-thanks-card-buttons">
                         <button onClick={() => openInBrowser('https://space.bilibili.com/1798893653/')}>{t("AboutSection.common.view")}</button>
+                    </div>
+                </div>
+
+                {/* Ustiniana1641 */}
+                <div className={`special-thanks-card ${loaded ? "loaded-content" : ""}`}>
+                    <img src={Ustiniana1641} alt="icon"/>
+                    <div className="special-thanks-card-content">
+                        <h4>Ustiniana1641</h4>
+                        <p>{t("AboutSection.thanks.ustiniana1641")}</p>
+                    </div>
+                    <div className="special-thanks-card-buttons">
+                        <button onClick={() => openInBrowser('#')}>{t("AboutSection.common.view")}</button>
                     </div>
                 </div>
 

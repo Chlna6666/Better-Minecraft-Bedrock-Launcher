@@ -98,11 +98,20 @@
 
 ## 致谢与引用
 
-本项目中的 `src-tauri/src/core/downloads/WuClient/protocol.rs` 文件，  
-Windows Update 协议客户端实现，参考了 [mc-w10-version-launcher](https://github.com/MCMrARM/mc-w10-version-launcher) 项目（C#，GPLv3），  
-本项目以 Rust 语言重写，遵循 GPLv3 许可。
+本项目中的部分代码参考和致谢如下：
 
-原始项目作者：[MCMrARM](https://github.com/MCMrARM)
+- `src-tauri/src/core/downloads/WuClient/protocol.rs` 文件，  
+  Windows Update 协议客户端实现，参考了 [mc-w10-version-launcher](https://github.com/MCMrARM/mc-w10-version-launcher) 项目（C#，GPLv3），  
+  本项目以 Rust 语言重写，遵循 GPLv3 许可。  
+  原始项目作者：[MCMrARM](https://github.com/MCMrARM)
+
+- UWP 脱离沙盒运行及多开支持相关实现，  
+  参考了以下项目与文档：
+   - [mc-w10-version-launcher/ManifestHelper.cs](https://github.com/QYCottage/mc-w10-version-launcher/blob/master/MCLauncher/ManifestHelper.cs)（C#，GPLv3）
+   - [【UWP】修改清单脱离沙盒运行](https://www.cnblogs.com/wherewhere/p/18171253)
+   - 用户提供的 Node.js 多开脚本
+   - 微软官方文档：[UWP 多实例支持](https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/uwp/launch-resume/multi-instance-uwp.md)  
+     相关代码采用 Rust 语言实现，遵循 GPLv3 许可。
 
 ---
 

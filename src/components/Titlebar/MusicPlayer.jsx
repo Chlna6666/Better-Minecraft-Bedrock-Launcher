@@ -68,6 +68,7 @@ function MusicPlayer() {
         loadTracks();
     }, []);
 
+    // 当 selectedTrack 改变时设置音源并尝试播放（并处理 promise）
     useEffect(() => {
         const audio = audioRef.current;
         if (!audio) return;
@@ -83,17 +84,21 @@ function MusicPlayer() {
         try {
             audio.src = convertFileSrc(selectedTrack);
             audio.load();
+            // 尝试播放并根据结果设置状态
             audio.play().then(() => {
                 setIsPlaying(true);
             }).catch((err) => {
                 console.warn("播放被阻止或失败:", err);
+                // 确保状态为 false（播放被阻止时 play() reject）
                 setIsPlaying(false);
             });
         } catch (e) {
             console.error("设置音频源失败:", e);
+            setIsPlaying(false);
         }
     }, [selectedTrack]);
 
+    // 监听 audio 事件（timeupdate / metadata / play / pause）
     useEffect(() => {
         const audio = audioRef.current;
         if (!audio) return;
@@ -134,17 +139,32 @@ function MusicPlayer() {
         setIsExpanded((prev) => !prev);
     }, []);
 
+    // 关键：使用 audio.paused 判断真实状态，且在 play/pause 调用后立刻设置状态（并处理 promise）
     const handlePlayPause = useCallback(() => {
         const audio = audioRef.current;
         if (!audio) return;
-        if (isPlaying) {
-            audio.pause();
-        } else {
-            audio.play().catch((err) => {
+
+        // 使用 audio.paused 来判断真实播放状态
+        if (audio.paused) {
+            // 尝试播放
+            audio.play().then(() => {
+                setIsPlaying(true);
+            }).catch((err) => {
                 console.warn("播放失败:", err);
+                setIsPlaying(false);
             });
+        } else {
+            // 立即更新 UI 状态以保证图标变化（事件监听会进一步同步）
+            try {
+                audio.pause();
+                setIsPlaying(false);
+            } catch (err) {
+                console.warn("暂停失败:", err);
+                // 不要把 state 留在播放状态
+                setIsPlaying(false);
+            }
         }
-    }, [isPlaying]);
+    }, []);
 
     const getRandomTrack = useCallback(() => {
         if (!tracks || tracks.length === 0) return null;
@@ -263,7 +283,7 @@ function MusicPlayer() {
                                 max={100}
                                 step={0.1}
                                 value={progressPercent}
-                                onInput={handleProgressChange}
+                                onChange={handleProgressChange} // 改为 onChange
                             />
 
                             <div className="music-controls">
