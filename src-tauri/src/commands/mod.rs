@@ -15,6 +15,7 @@ pub mod zip;
 pub mod cancel_install;
 pub mod install_appx;
 pub mod import_appx;
+pub mod mc_pack;
 
 pub use app_info::*;
 pub use config::*;
@@ -30,3 +31,5 @@ pub use window::*;
 pub use zip::*;
 pub use cancel_install::*;
 pub use install_appx::*;
+pub use import_appx::*;
+pub use mc_pack::*;

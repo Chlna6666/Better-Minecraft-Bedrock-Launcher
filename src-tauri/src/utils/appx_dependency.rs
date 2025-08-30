@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use fluent_bundle::FluentArgs;
 use regex::Regex;
 use reqwest::Client;
-use tracing::{info, debug, error, warn};
+use tracing::{info, debug, warn};
 use tokio::runtime::Runtime;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
@@ -195,7 +195,7 @@ pub fn ensure_uwp_dependencies_or_prompt() {
     cfg.nDefaultButton = IDNO.0;
 
     let mut pressed = 0;
-    unsafe { TaskDialogIndirect(&mut cfg, Some(&mut pressed), None, None) };
+    unsafe { let _ = TaskDialogIndirect(&mut cfg, Some(&mut pressed), None, None); };
 
     if pressed == IDNO.0 {
         // 执行安装流程并捕获结果

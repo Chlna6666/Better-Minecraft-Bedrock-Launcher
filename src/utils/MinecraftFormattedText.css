@@ -1,0 +1,26 @@
+.mc-formatted-text {
+    white-space: pre-wrap;
+    font-family: inherit;
+    line-height: 1.2;
+    /* 提供一个可调的 css 变量（可在外部覆盖，例如 small/large 字体）*/
+    --mc-glyph-size: 1em; /* 语义上希望 glyph 与字体一样高 */
+}
+
+/* glyph 以 inline-flex 方式居中内容（即使我们只用背景图，也利于 future icon children） */
+.mc-formatted-text .mc-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle; /* 与文本垂直中线对齐 */
+    background-repeat: no-repeat;
+    background-position: center;
+    /* width/height 由内联 style 覆盖（JS 计算） */
+}
+
+/* 可选微调 — 当你需要把图片向上/下微调时使用 */
+.mc-formatted-text .mc-glyph.adjust-up { transform: translateY(-0.08em); }
+.mc-formatted-text .mc-glyph.adjust-down { transform: translateY(0.06em); }
+
+.mc-obfuscated {
+    letter-spacing: 0;
+}

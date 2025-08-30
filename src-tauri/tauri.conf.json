@@ -1,10 +1,10 @@
 {
   "productName": "better_minecraft_bedrock_launcher",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "identifier": "com.bmcbl",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1430",
     "beforeBuildCommand": "npm run build && copy .\\public\\SplashScreen.html .\\dist\\",
     "frontendDist": "../dist"
   },
@@ -44,7 +44,7 @@
         "default-src": "*",
         "script-src": "* 'unsafe-eval' 'unsafe-inline' blob: data:",
         "style-src": "* 'unsafe-inline'",
-        "img-src": "* data: blob:",
+        "img-src": "* data: blob: file:",
         "font-src": "* data:",
         "connect-src": "*",
         "media-src": "*",

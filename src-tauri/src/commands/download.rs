@@ -57,7 +57,6 @@ fn build_client_with_proxy(proxy_config: &ProxyConfig) -> Result<reqwest::Client
 
 #[tauri::command]
 pub async fn download_appx(
-    app: AppHandle,
     package_id: String,
     file_name: String,
 ) -> Result<String, String> {
@@ -112,7 +111,7 @@ pub async fn download_appx(
     debug!("拿到下载 URL：{}", url);
 
     let download_result = manager
-        .download(url, &dest, app.clone(), threads)
+        .download(url, &dest, threads)
         .await;
 
     match download_result {

@@ -3,7 +3,7 @@
 //! 本实现参考了GPLv3许可的C#项目 mc-w10-version-launcher (https://github.com/MCMrARM/mc-w10-version-launcher)
 //!
 //! 原始C#项目采用GPLv3许可，本项目使用 Rust实现，采用GPLv3许可
-use xml::reader::{EventReader, XmlEvent};
+use xmltree::{Element, XMLNode};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use crate::core::result::CoreError;
@@ -83,39 +83,54 @@ impl WuProtocol {
         tickets
     }
 
-    /// 利用 EventReader 解析响应 XML 中的 URL
+    /// 利用 xmltree 解析响应 XML 中的 URL
+    /// 利用 xmltree 解析响应 XML 中的 URL
+    ///
+    /// 解析逻辑：把 XML 解析成树，递归查找名为 `*FileLocation` 的元素（支持带命名空间前缀的标签，如 `wu:FileLocation`），
+    /// 然后从其子元素中查找名为 `*Url` 的元素并收集其文本内容（trim 后）。
     pub fn parse_download_response(&self, xml: &str) -> Result<Vec<String>, CoreError> {
-        let parser = EventReader::from_str(xml);
+        let root = Element::parse(xml.as_bytes())?;
         let mut urls = Vec::new();
-        let mut in_file_location = false;
-        let mut in_url = false;
-        for event in parser {
-            match event {
-                Ok(XmlEvent::StartElement { name, .. }) => {
-                    if name.local_name == "FileLocation" {
-                        in_file_location = true;
-                    } else if in_file_location && name.local_name == "Url" {
-                        in_url = true;
-                    }
+
+        // helper: 从一个 Element 的 children 中收集所有 Text 节点并拼成 String
+        fn element_text(elem: &Element) -> Option<String> {
+            let mut s = String::new();
+            for child in &elem.children {
+                if let XMLNode::Text(t) = child {
+                    s.push_str(t);
+                } else if let XMLNode::CData(t) = child {
+                    // 如果存在 CDATA，也一并处理
+                    s.push_str(t);
                 }
-                Ok(XmlEvent::EndElement { name }) => {
-                    if name.local_name == "FileLocation" {
-                        in_file_location = false;
-                    } else if name.local_name == "Url" {
-                        in_url = false;
-                    }
-                }
-                Ok(XmlEvent::Characters(text)) => {
-                    if in_url {
-                        urls.push(text.trim().to_string());
-                    }
-                }
-                Err(e) => {
-                    return Err(CoreError::Xml(e));
-                }
-                _ => {}
+            }
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
             }
         }
+
+        fn collect_urls(elem: &Element, urls: &mut Vec<String>) {
+            if elem.name.ends_with("FileLocation") {
+                for child in elem.children.iter() {
+                    if let XMLNode::Element(child_elem) = child {
+                        if child_elem.name.ends_with("Url") {
+                            if let Some(t) = element_text(child_elem) {
+                                urls.push(t);
+                            }
+                        }
+                    }
+                }
+            }
+            for child in elem.children.iter() {
+                if let XMLNode::Element(e) = child {
+                    collect_urls(e, urls);
+                }
+            }
+        }
+
+        collect_urls(&root, &mut urls);
         Ok(urls)
     }
 }

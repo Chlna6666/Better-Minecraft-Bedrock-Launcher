@@ -3,7 +3,6 @@
 //! 本实现参考了 GPLv3 许可的 C# 项目
 //! mc-w10-version-launcher[](https://github.com/QYCottage/mc-w10-version-launcher/blob/master/MCLauncher/ManifestHelper.cs)
 //! 和 【UWP】修改清单脱离沙盒运行[](https://www.cnblogs.com/wherewhere/p/18171253)
-//! 以及用户提供的 Node.js 脚本的多开功能
 //!
 //! 原始 C# 项目采用 GPLv3 许可，本项目使用 Rust 实现，采用 GPLv3 许可
 //!
@@ -11,14 +10,12 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::Path;
-use tokio::task;
-use xmltree::{AttributeMap, Element, XMLNode};
-use tracing::{debug, error, info};
-use xml::{EmitterConfig, EventReader};
-use xml::namespace::Namespace;
-use xml::reader::XmlEvent;
+use futures_util::TryFutureExt;
+use xmltree::{AttributeMap, Element, XMLNode, EmitterConfig, Namespace};
+use tracing::{debug};
+
 
 const SCCD_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <CustomCapabilityDescriptor xmlns="http://schemas.microsoft.com/appx/2018/sccd" xmlns:s="http://schemas.microsoft.com/appx/2018/sccd">
@@ -254,55 +251,57 @@ pub fn get_package_info(app_user_model_id: &str) -> windows::core::Result<Option
 
 /// 异步获取清单中的 Identity 信息
 pub async fn get_manifest_identity(appx_path: &str) -> Result<(String, String), String> {
-    let appx_path = appx_path.replace("\\", "/");
-    let manifest_path = format!("{}/AppxManifest.xml", appx_path);
-    debug!("Manifest 路径: {}", manifest_path);
+    let manifest_path = Path::new(appx_path).join("AppxManifest.xml");
+    debug!("Manifest 路径: {}", manifest_path.display());
 
-    // 使用 spawn_blocking 避免阻塞异步线程
-    let xml_data = task::spawn_blocking(move || {
-        let mut file = File::open(&manifest_path)
-            .map_err(|e| format!("无法打开文件 {}: {}", manifest_path, e))?;
+    // 异步读取（确保使用 tokio::fs）
+    let xml = tokio::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("无法打开/读取文件 {}: {}", manifest_path.display(), e)).await?;
 
-        let mut content = String::new();
-        file.read_to_string(&mut content)
-            .map_err(|e| format!("无法读取文件 {}: {}", manifest_path, e))?;
+    // 找到第一个 <Identity ...> 或 <Identity/...>
+    let start_idx = match xml.find("<Identity") {
+        Some(i) => i,
+        None => return Err("未找到 <Identity> 节点".to_string()),
+    };
+    // 找到标签结束符号 '>'（包括自闭合 "/>" 情况）
+    let rest = &xml[start_idx..];
+    let end_rel = rest.find('>').ok_or("无法定位 Identity 标签结束")?;
+    let tag = &rest[..=end_rel]; // 包含 '>'
 
-        Ok::<String, String>(content)
-    })
-        .await
-        .map_err(|e| format!("任务运行失败: {}", e))??;
-
-    // 使用 XML 事件解析器提取 Identity 信息
-    let parser = EventReader::from_str(&xml_data);
-    let mut identity_name = None;
-    let mut identity_version = None;
-
-    for event in parser {
-        match event {
-            Ok(XmlEvent::StartElement { name, attributes, .. }) if name.local_name == "Identity" => {
-                for attr in attributes {
-                    match attr.name.local_name.as_str() {
-                        "Name" => {
-                            debug!("找到 Name: {}", attr.value);
-                            identity_name = Some(attr.value);
-                        }
-                        "Version" => {
-                            debug!("找到 Version: {}", attr.value);
-                            identity_version = Some(attr.value);
-                        }
-                        _ => {}
-                    }
+    // 简单属性提取器（支持双引号或单引号）
+    fn extract_attr(tag: &str, key: &str) -> Option<String> {
+        let needle = format!("{}=", key);
+        let pos = tag.find(&needle)?;
+        let after = &tag[pos + needle.len()..].trim_start();
+        let mut chars = after.chars();
+        let first = chars.next()?;
+        if first == '"' || first == '\'' {
+            let quote = first;
+            let mut val = String::new();
+            for c in chars {
+                if c == quote {
+                    return Some(val);
                 }
+                val.push(c);
             }
-            Err(e) => return Err(format!("XML 解析失败: {}", e)),
-            _ => {}
+            None
+        } else {
+            // 非引号情况（罕见）——读到空白或'>'或'/'
+            let val: String = after
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/')
+                .collect();
+            if val.is_empty() { None } else { Some(val) }
         }
     }
 
-    match (identity_name, identity_version) {
-        (Some(name), Some(version)) => {
-            debug!("解析结果 => Name: {}, Version: {}", name, version);
-            Ok((name, version))
+    let name = extract_attr(tag, "Name");
+    let version = extract_attr(tag, "Version");
+
+    match (name, version) {
+        (Some(n), Some(v)) => {
+            debug!("解析结果 => Name: {}, Version: {}", n, v);
+            Ok((n, v))
         }
         _ => Err("未找到 Identity 的 Name 或 Version".to_string()),
     }

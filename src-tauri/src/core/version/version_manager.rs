@@ -1,7 +1,6 @@
 use serde::Serialize;
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, time::Instant, path::PathBuf};
 use futures::StreamExt;
-use tokio::{ task};
 use tokio::fs::read_dir;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::debug;
@@ -17,7 +16,6 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
     let start = Instant::now();
     debug!("开始读取目录: {}", folder);
 
-    // 打开目录
     let rd = match read_dir(folder).await {
         Ok(d) => d,
         Err(e) => {
@@ -26,36 +24,42 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
         }
     };
 
-    // 转成 Stream
-    let dir_stream = ReadDirStream::new(rd)
-        .filter_map(|res| async move {
+    let dir_stream = ReadDirStream::new(rd);
+
+    // 并发
+    let concurrency = (num_cpus::get() * 2).max(16);
+
+    let versions: Vec<(String, AppxVersion)> = dir_stream
+        .filter_map(|res| async {
             match res {
-                Ok(entry) if entry.path().is_dir() => Some(entry),
                 Ok(entry) => {
-                    debug!("跳过非目录: {:?}", entry.path());
-                    None
+                    // 注意：使用异步 API 判断是否目录，避免阻塞
+                    match entry.file_type().await {
+                        Ok(ft) if ft.is_dir() => Some(entry),
+                        Ok(_) => {
+                            debug!("跳过非目录: {:?}", entry.path());
+                            None
+                        }
+                        Err(e) => {
+                            debug!("获取文件类型失败: {}", e);
+                            None
+                        }
+                    }
                 }
                 Err(e) => {
                     debug!("遍历目录项出错: {}", e);
                     None
                 }
             }
-        });
-
-    // 并发度
-    let concurrency = num_cpus::get().max(2);
-
-    // 并发处理
-    let versions: Vec<(String, AppxVersion)> = dir_stream
+        })
         .map(|entry| {
-            let path_buf = entry.path();
+            // 这里是纯 async，调用已经不阻塞的 get_manifest_identity
             async move {
-                // 子目录名
+                let path_buf: PathBuf = entry.path();
                 let folder_name = match path_buf.file_name().and_then(|f| f.to_str()).map(str::to_string) {
                     Some(n) => n,
                     None => return None,
                 };
-                // 调用异步函数，内部已做 blocking 文件读取
                 match get_manifest_identity(&path_buf.to_string_lossy()).await {
                     Ok((name, version)) => {
                         debug!("解析成功 {} -> {} {}", folder_name, name, version);

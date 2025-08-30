@@ -2,7 +2,7 @@ use tracing::{info, error};
 use windows::core::{HRESULT, HSTRING};
 use windows::Management::Deployment::{PackageManager, RemovalOptions};
 
-/// 卸载并重注册 Appx 包：传入 packageFamilyName
+/// 卸载 Appx 包：传入 packageFamilyName
 pub async fn remove_package(package_family_name: &str) {
     let package_manager = PackageManager::new().expect("无法创建 PackageManager");
 

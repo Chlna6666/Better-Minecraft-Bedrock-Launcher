@@ -7,7 +7,7 @@ use tracing::{debug, error, info};
 use crate::commands::cancel_install::CANCEL_INSTALL;
 use crate::config::config::read_config;
 use crate::core::minecraft::appx::extract_zip::extract_zip;
-use crate::core::minecraft::appx::utils::patch_manifest;
+use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest};
 use crate::core::result::CoreResult;
 
 #[tauri::command]
@@ -16,7 +16,6 @@ pub async fn extract_zip_appx(
     destination: String,
     force_replace: bool,
     delete_signature: bool,
-    app: AppHandle,
 ) -> Result<(), String> {
     debug!(
         "收到解压请求：file_name='{}', destination='{}', force_replace={}, delete_signature={}",
@@ -58,7 +57,6 @@ pub async fn extract_zip_appx(
         archive,
         extract_to.to_str().unwrap(),
         force_replace,
-        app.clone(),
     ).await {
         Ok(CoreResult::Success(())) => {
             info!("解压完成：{}", extract_to.display());
@@ -129,19 +127,38 @@ pub async fn extract_zip_appx(
         })?;
     info!("已创建 mods 目录：{}", mods_dir.display());
     debug!("mods 目录路径：{}", mods_dir.display());
-    
-    if game_cfg.modify_appx_manifest {
-        match patch_manifest(&extract_to) {
-            Ok(true)  => info!("Manifest 修改成功"),
-            Ok(false) => info!("未找到 Manifest，跳过修改"),
-            Err(e)    => {
-                error!("修改 Manifest 失败：{}", e);
-                debug!("修改 Manifest 失败详细：{}，目录：{}", e, extract_to.display());
-                return Err(format!("修改 Manifest 失败：{}", e));
+
+
+    if let Some(extract_path_str) = extract_to.to_str() {
+        match get_manifest_identity(extract_path_str).await {
+            Ok((name, _version)) => {
+                debug!("解析到的 Manifest Identity Name: {}", name);
+
+                if matches!(name.as_str(), "Microsoft.MinecraftUWP" | "Microsoft.MinecraftWindowsBeta") {
+                    // 只有在识别为 Minecraft UWP/WindowsBeta 且配置允许时才修改
+                    if game_cfg.modify_appx_manifest {
+                        match patch_manifest(&extract_to) {
+                            Ok(true)  => info!("Manifest 修改成功"),
+                            Ok(false) => info!("未找到 Manifest，跳过修改"),
+                            Err(e)    => {
+                                error!("修改 Manifest 失败：{}", e);
+                                debug!("修改 Manifest 失败详细：{}，目录：{}", e, extract_to.display());
+                                return Err(format!("修改 Manifest 失败：{}", e));
+                            }
+                        }
+                    } else {
+                        info!("配置禁用了 Manifest 修改，跳过 patch_manifest");
+                    }
+                } else {
+                    info!("非 Minecraft UWP/WindowsBeta 包（{}），将跳过 Manifest 修改", name);
+                }
+            }
+            Err(e) => {
+                debug!("获取 Manifest Identity 失败，跳过 Manifest 修改：{}", e);
             }
         }
     } else {
-        info!("配置禁用了 Manifest 修改，跳过 patch_manifest");
+        debug!("extract_to 路径无法转换为字符串，跳过 Manifest 修改");
     }
 
     Ok(())

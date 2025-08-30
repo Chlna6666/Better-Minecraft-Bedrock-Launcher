@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{ Emitter, Manager};
+use crate::utils::AppHandle::GLOBAL_APP;
 
 /// 计算速度字符串（单位自适应：B/s、KB/s、MB/s）
 /// processed: 已处理的字节数（下载、解压等）
@@ -36,40 +37,37 @@ pub fn format_eta(total: Option<u64>, processed: u64, elapsed: f64) -> String {
 }
 
 
-/// 通用的进度推送器：下载或解压都可以用
+
+
 pub async fn emit_progress(
-    app: &AppHandle,
     processed: u64,
     total_opt: Option<u64>,
     speed: Option<&str>,
     eta: Option<&str>,
-    extra: Option<serde_json::Value>, // 可附加任意额外字段，例如 { "threads": 4 }
-    
+    extra: Option<serde_json::Value>,
 ) {
-    // 1. 计算 total / percent / status
     let total = total_opt.unwrap_or(processed);
+
+    // 保留 2 位小数的进度百分比
     let percent = if total > 0 {
-        (processed as f64 / total as f64 * 100.0).min(100.0)
+        let raw = (processed as f64 / total as f64 * 100.0).min(100.0);
+        format!("{:.2}%", raw)  // 直接格式化为 "xx.xx%"
     } else {
-        0.0
+        "0.00%".to_string()
     };
 
-    // 2. 构造基础 JSON
     let mut payload = json!({
         "processed": processed,
         "total": total,
         "percent": percent,
     });
 
-    // 3. speed / eta 字段（下载时提供，解压可传 None）
     if let Some(s) = speed {
         payload["speed"] = json!(s);
     }
     if let Some(e) = eta {
         payload["eta"] = json!(e);
     }
-
-    // 4. 附加 extra
     if let Some(extra_obj) = extra {
         if let Some(map) = extra_obj.as_object() {
             for (k, v) in map {
@@ -77,21 +75,15 @@ pub async fn emit_progress(
             }
         }
     }
-
-    // 5. 如果下载或解压刚好完成，标记 status
     if let Some(t) = total_opt {
         if processed >= t {
             payload["status"] = json!("completed");
         }
     }
 
-    // 6. 用 Arc + 单次 tokio::spawn 推送到所有窗口
-    let arc_payload = Arc::new(payload);
-    let windows = app.windows();
-    tokio::spawn(async move {
-        for window in windows.values() {
-            let p = Arc::clone(&arc_payload);
-            let _ = window.emit("install-progress", p.clone());
+    if let Some(app) = GLOBAL_APP.lock().unwrap().clone() {
+        for window in app.windows().values() {
+            let _ = window.emit("install-progress", payload.clone());
         }
-    });
+    }
 }

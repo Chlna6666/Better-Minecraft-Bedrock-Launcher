@@ -107,11 +107,13 @@
 
 - UWP 脱离沙盒运行及多开支持相关实现，  
   参考了以下项目与文档：
-   - [mc-w10-version-launcher/ManifestHelper.cs](https://github.com/QYCottage/mc-w10-version-launcher/blob/master/MCLauncher/ManifestHelper.cs)（C#，GPLv3）
-   - [【UWP】修改清单脱离沙盒运行](https://www.cnblogs.com/wherewhere/p/18171253)
-   - 用户提供的 Node.js 多开脚本
-   - 微软官方文档：[UWP 多实例支持](https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/uwp/launch-resume/multi-instance-uwp.md)  
-     相关代码采用 Rust 语言实现，遵循 GPLv3 许可。
+    - [mc-w10-version-launcher/ManifestHelper.cs](https://github.com/QYCottage/mc-w10-version-launcher/blob/master/MCLauncher/ManifestHelper.cs)（C#，GPLv3）
+    - [【UWP】修改清单脱离沙盒运行](https://www.cnblogs.com/wherewhere/p/18171253)
+    - 微软官方文档：[UWP 多实例支持](https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/uwp/launch-resume/multi-instance-uwp.md)  
+      相关代码采用 Rust 语言实现，遵循 GPLv3 许可。
+
+- 参考实现修复最小化 UWP 导致停滞的相关代码，  
+  致谢 [Aetopia/AppLifecycleOptOut](https://github.com/Aetopia/AppLifecycleOptOut)
 
 ---
 

@@ -18,13 +18,13 @@ pub struct CustomStyle {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct GameConfig {
     pub inject_on_launch: bool,
-    pub inject_delay: u32,
     pub lock_mouse_on_launch: bool,
     pub reduce_pixels: i32, // 减少的像素数
     pub unlock_mouse_hotkey: String,
     pub launcher_visibility: String, // "minimize", "close", "keep"
     pub keep_appx_after_install: bool, // 安装完成保留 APPX（默认关闭）
     pub modify_appx_manifest: bool,    // 是否修改 AppxManifest.xml
+    pub uwp_minimize_fix: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone,Default)]
@@ -118,13 +118,13 @@ pub fn get_default_config() -> Config {
         },
         game: GameConfig {
             inject_on_launch: true,
-            inject_delay: 0,
             lock_mouse_on_launch: false,
             reduce_pixels: 10,
             unlock_mouse_hotkey: "ALT".to_string(),
             launcher_visibility: "keep".to_string(),
             keep_appx_after_install: false,
             modify_appx_manifest: true,
+            uwp_minimize_fix: true,
         },
         agreement_accepted: false,
     }

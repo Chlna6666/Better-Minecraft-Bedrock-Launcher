@@ -1,75 +1,82 @@
+// extract_zip.rs
 use once_cell::sync::Lazy;
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant as StdInstant;
 
 use serde_json::json;
-use tauri::AppHandle;
 use tokio::sync::mpsc;
 use tokio::task;
+use tokio::time::{sleep, Duration};
 use tracing::{debug, info};
-
+use zip::result::ZipError;
 use zip::ZipArchive;
+
+use crate::progress::extract_progress::{report_extract_progress, ExtractProgress};
 
 pub static CANCEL_EXTRACT: Lazy<AtomicBool> = Lazy::new(Default::default);
 
-/// 从阻塞线程汇报的进度消息
 struct ProgressMsg {
-    extracted: u64,
+    // 这里 channel 仅用于发送 init / final 等控制消息
     total: Option<u64>,
-    speed: Option<String>,
-    eta: Option<String>,
     stage_meta: serde_json::Value,
 }
 
-/// 主接口（保持 async），内部 spawn_blocking 做实际解压
 pub async fn extract_zip<R: Read + Seek + Send + 'static>(
     mut archive: ZipArchive<R>,
     destination: &str,
     force_replace: bool,
-    app: AppHandle,
 ) -> Result<crate::core::result::CoreResult<()>, crate::core::result::CoreError> {
     CANCEL_EXTRACT.store(false, Ordering::SeqCst);
 
-    // channel 用于从阻塞线程发送进度
-    let (tx, mut rx) = mpsc::channel::<ProgressMsg>(16);
-    // 把必要参数克隆到阻塞线程
-    let dest = destination.to_string();
+    // 1) 共享原子计数器（阻塞线程直接更新）
+    let shared_extracted = Arc::new(AtomicU64::new(0));
+    let shared_extracted_for_thread = shared_extracted.clone();
 
-    // spawn_blocking 执行阻塞解压（在独立线程）
-    let handle = task::spawn_blocking(move || {
-        // 1) 先收集索引元数据（单次访问）
+    // channel 用于 init / final 控制消息
+    let (tx, mut rx) = mpsc::channel::<ProgressMsg>(8);
+
+    let dest = destination.to_string();
+    let handle = task::spawn_blocking(move || -> Result<(u64, u64), zip::result::ZipError> {
+        // 1) 先收集索引元数据（单次访问），并计算 total
         let mut total: u64 = 0;
         let mut entries_meta = Vec::with_capacity(archive.len());
         for i in 0..archive.len() {
-            let e = archive.by_index(i).map_err(|z| z)?;
+            let e = archive.by_index(i)?;
             let size = e.size();
             let name = e.mangled_name();
             let is_dir = e.is_dir();
             entries_meta.push((i, name, size, is_dir));
             total = total.saturating_add(size);
-            // 注意：不能把 `e` 保留（它借用 archive），只取元数据即可
         }
 
-        let start = Instant::now();
-        let mut extracted: u64 = 0;
+        // 发送初始化消息（告诉 async 端 total）
+        let _ = tx.blocking_send(ProgressMsg {
+            total: Some(total),
+            stage_meta: json!({ "stage": "init" }),
+        });
 
-        // 2) 逐项解压（在阻塞线程中）
+        let start = StdInstant::now();
+        // 逐项解压：**不再在这里计算 speed/eta**，而是直接更新 shared_extracted
         for (idx, name, size, is_dir) in entries_meta {
             if CANCEL_EXTRACT.load(Ordering::SeqCst) {
                 debug!("用户已取消解压（阻塞线程检测）");
-                return Ok((extracted, total)); // 返回已提取量以便上层处理
+                // 发送取消状态（可选）
+                let _ = tx.blocking_send(ProgressMsg {
+                    total: Some(total),
+                    stage_meta: json!({ "stage": "extracting", "status": "cancelled" }),
+                });
+                return Ok((shared_extracted_for_thread.load(Ordering::Relaxed), total));
             }
 
-            // 重新打开 entry（这里安全）
             let mut entry = archive.by_index(idx)?;
 
             let out_path = Path::new(&dest).join(&name);
             if is_dir {
-                // make dir and continue
                 if let Some(p) = out_path.parent() {
                     fs::create_dir_all(p).ok();
                 }
@@ -77,7 +84,6 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                 continue;
             }
 
-            // 已存在处理
             if out_path.exists() {
                 if force_replace {
                     if out_path.is_dir() {
@@ -86,18 +92,8 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                         let _ = fs::remove_file(&out_path);
                     }
                 } else {
-                    extracted = extracted.saturating_add(size);
-                    // send a progress update (一次性)
-                    let elapsed = start.elapsed().as_secs_f64();
-                    let speed = crate::core::minecraft::utils::format_speed(extracted, elapsed);
-                    let eta = crate::core::minecraft::utils::format_eta(Some(total), extracted, elapsed);
-                    let _ = tx.blocking_send(ProgressMsg {
-                        extracted,
-                        total: Some(total),
-                        speed: Some(speed),
-                        eta: Some(eta),
-                        stage_meta: json!({ "stage": "extracting" }),
-                    });
+                    // 已存在：直接视为已提取 size
+                    shared_extracted_for_thread.fetch_add(size, Ordering::Relaxed);
                     continue;
                 }
             }
@@ -106,51 +102,38 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                 fs::create_dir_all(p).ok();
             }
 
-            // 使用 BufWriter 减少系统调用
             let f = File::create(&out_path)?;
             let mut writer = BufWriter::new(f);
 
-            // 分片拷贝：手动 loop，便于打断与上报
-            let mut buf = [0u8; 64 * 1024]; // 64KiB
+            let mut buf = [0u8; 64 * 1024];
             loop {
                 if CANCEL_EXTRACT.load(Ordering::SeqCst) {
                     debug!("用户已取消解压（拷贝中检测）");
-                    return Ok((extracted, total));
+                    let _ = tx.blocking_send(ProgressMsg {
+                        total: Some(total),
+                        stage_meta: json!({ "stage": "extracting", "status": "cancelled" }),
+                    });
+                    return Ok((shared_extracted_for_thread.load(Ordering::Relaxed), total));
                 }
                 let bytes_read = match entry.read(&mut buf) {
-                    Ok(0) => break, // EOF
+                    Ok(0) => break,
                     Ok(n) => n,
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(ZipError::from(e)),
                 };
                 writer.write_all(&buf[..bytes_read])?;
-                extracted = extracted.saturating_add(bytes_read as u64);
-
-                // 控制上报频率：这里我们简单按 bytes 阈值或也可按时间阈值
-                // 例如：每写 256KiB 通知一次；这里直接每 64KiB 发一次（channel 带缓冲）
-                let elapsed = start.elapsed().as_secs_f64();
-                let speed = crate::core::minecraft::utils::format_speed(extracted, elapsed);
-                let eta = crate::core::minecraft::utils::format_eta(Some(total), extracted, elapsed);
-                let _ = tx.blocking_send(ProgressMsg {
-                    extracted,
-                    total: Some(total),
-                    speed: Some(speed),
-                    eta: Some(eta),
-                    stage_meta: json!({ "stage": "extracting" }),
-                });
+                // 直接更新共享原子计数器
+                shared_extracted_for_thread.fetch_add(bytes_read as u64, Ordering::Relaxed);
             }
 
-            // flush writer ensure data written
             writer.flush()?;
         }
 
-        // 解压完成，发送 final progress
-        let elapsed = start.elapsed().as_secs_f64();
-        let speed = crate::core::minecraft::utils::format_speed(total, elapsed);
+        // 完成：确保原子计数等于 total（有时可能略小，强制设置）
+        shared_extracted_for_thread.store(total, Ordering::Relaxed);
+
+        // 发送 final 完成消息
         let _ = tx.blocking_send(ProgressMsg {
-            extracted: total,
             total: Some(total),
-            speed: Some(speed),
-            eta: Some("00:00:00".to_string()),
             stage_meta: json!({ "stage": "extracting", "status": "completed" }),
         });
 
@@ -158,33 +141,66 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
         Ok((total, total))
     });
 
-    // async 端：接收进度并调用 emit_progress
-    // 注意：如果需要尽快响应取消，上层可以 set CANCEL_EXTRACT = true
+    // async 端：等待 init 消息来创建 ExtractProgress，并启动 monitor（periodic reporter）
+    let mut progress_opt: Option<ExtractProgress> = None;
+    let mut monitor_handle_opt = None;
+
     while let Some(msg) = rx.recv().await {
-        let _ = crate::core::minecraft::utils::emit_progress(
-            &app,
-            msg.extracted,
-            msg.total,
-            msg.speed.as_deref(),
-            msg.eta.as_deref(),
-            Some(msg.stage_meta),
-        ).await;
+        if msg.stage_meta.get("stage").and_then(|v| v.as_str()) == Some("init") {
+            let total = msg.total.unwrap_or(0);
+            // 用共享原子创建 ExtractProgress
+            let mut progress = ExtractProgress::with_extracted(total, shared_extracted.clone());
+
+            // spawn monitor task（每 500ms 检查并上报）
+            let mut mon_progress = progress; // 按你的示例，monitor 持有 progress (mutable)
+            let monitor = tokio::spawn(async move {
+                loop {
+                    // 退出条件：当 total>0 且已完成，或外部取消
+                    if mon_progress.total > 0 && mon_progress.extracted.load(Ordering::Relaxed) >= mon_progress.total {
+                        // final 上报
+                        report_extract_progress(&mut mon_progress, json!({"stage": "extracting", "status":"completed"})).await;
+                        break;
+                    }
+                    if CANCEL_EXTRACT.load(Ordering::SeqCst) {
+                        report_extract_progress(&mut mon_progress, json!({"stage": "extracting", "status":"cancelled"})).await;
+                        break;
+                    }
+
+                    if mon_progress.should_emit() {
+                        report_extract_progress(&mut mon_progress, json!({"stage": "extracting"})).await;
+                        mon_progress.update_prev();
+                        mon_progress.mark_emitted();
+                    }
+
+                    sleep(Duration::from_millis(500)).await;
+                }
+            });
+            monitor_handle_opt = Some(monitor);
+            // 把 progress 放入 progress_opt 以便后续（如果需要）
+            // NOTE: monitor 已拥有 mon_progress（moved），不用再保留 progress_opt if you don't need it.
+            continue;
+        }
+
+        // 处理 completed/cancelled 控制消息 —— 等待 monitor 结束
+        let status = msg.stage_meta.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status == "completed" || status == "cancelled" {
+            // 等待阻塞任务返回并等待 monitor 结束
+            if let Some(mh) = monitor_handle_opt.take() {
+                let _ = mh.await;
+            }
+            break;
+        }
     }
 
     // 等待阻塞任务完成并检查结果
     match handle.await {
-        Ok(Ok((extracted, _total))) => {
+        Ok(Ok((_extracted, _total))) => {
             if CANCEL_EXTRACT.load(Ordering::SeqCst) {
                 return Ok(crate::core::result::CoreResult::Cancelled);
             }
             Ok(crate::core::result::CoreResult::Success(()))
         }
-        Ok(Err(e)) => {
-            // map zip/io errors to CoreError
-            Err(crate::core::result::CoreError::from(e))
-        }
-        Err(join_err) => {
-            Err(crate::core::result::CoreError::Other(format!("join error: {}", join_err)))
-        }
+        Ok(Err(e)) => Err(crate::core::result::CoreError::from(e)),
+        Err(join_err) => Err(crate::core::result::CoreError::Other(format!("join error: {}", join_err))),
     }
 }

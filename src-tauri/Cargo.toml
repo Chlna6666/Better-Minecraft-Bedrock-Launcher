@@ -1,6 +1,6 @@
 [package]
 name = "better_minecraft_bedrock_launcher"
-version = "0.0.1"
+version = "0.0.2"
 license = "GPL-3.0-only"
 description = "一个minecraft bedrock启动器"
 authors = ["Chlna666"]
@@ -22,7 +22,7 @@ winreg = "0.55.0"
 tauri-plugin-single-instance = "2.0.0"
 
 [dependencies]
-tauri = { version = "2.8.2", features = ["unstable", "devtools", "protocol-asset"] }
+tauri = { version = "2.8.4", features = ["unstable", "devtools", "protocol-asset"] }
 tauri-plugin-shell = "2.2.1"
 tauri-plugin-dialog = "2.2.1"
 tauri-plugin-http = "2.4.3"
@@ -36,42 +36,30 @@ toml = "0.9.5"
 once_cell = "1.21.3"
 chrono = "0.4.40"
 lazy_static = "1.5.0"
-windows = { version = "0.61.1", features = ["Win32_System_LibraryLoader", "Win32_System_Com", "Win32_Foundation", "Data_Xml_Dom", "Management", "Management_Deployment", "Foundation_Collections", "Win32", "Win32_Data_Xml", "ApplicationModel", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "ApplicationModel_Activation", "Win32_System_Diagnostics_ToolHelp", "Win32_Security"] }
-windows-future ="0.2.0"
+windows = { version = "0.61.3", features = ["Win32_System_LibraryLoader", "Win32_System_Com", "Win32_Foundation",  "Data_Xml_Dom", "Management", "Management_Deployment", "Foundation_Collections", "Win32", "Win32_Data_Xml", "ApplicationModel", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "ApplicationModel_Activation", "Win32_System_Diagnostics_ToolHelp", "Win32_Security"] }
 winapi = { version = "0.3.9", features = ["minwindef", "windef", "libloaderapi", "ntdef", "memoryapi", "tlhelp32", "winnt", "commctrl", "winreg"] }
 serde_json="1.0.140"
 zip = "4.0.0"
-base64 = "0.22.1"
-rosetta-i18n ="0.1.3"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-tracing-appender ="0.2.3"
 tokio = { version = "1.44.2", features = ["rt", "rt-multi-thread", "macros"] }
 tokio-stream = { version = "0.1.17", features = ["fs"] }
 reqwest = { version = "0.12.8", features = ["stream"] }
 futures = "0.3.31"
 futures-util = "0.3.31"
-xml-rs ="0.8.26"
 xmltree ="0.11.0"
 thiserror = "2.0.3"
 uuid = { version = "1.10.0", features = ["v4"] }
 num_cpus = "1.16.0"
-async-trait = "0.1.86"
 regex = "1.11.1"
-dashmap = "7.0.0-rc2"
-rayon = "1.10.0"
 anyhow = "1.0.98"
 
 fluent-bundle = "0.16"
-fluent-resmgr = "0.0.8"
-intl-memoizer = "0.5.3"
 unic-langid = "0.9"
-i18n-embed = "0.16.0"
-i18n-embed-fl = "0.10.0"
-rust-embed = "8.7.2"
+rayon = "1.11.0"
 
 [profile.release]
-opt-level = 3        # 优化代码体积 ("s" = 小体积, "z" = 最小体积)
+opt-level = "s"        # 优化代码体积 ("s" = 小体积, "z" = 最小体积)
 lto = "fat"         # 启用 Link Time Optimization
 codegen-units = 1       # 单代码生成单元，有助于优化整个 crate
 panic = "abort"         # 遇到 panic 直接 abort，而不是展开堆栈（减少体积）

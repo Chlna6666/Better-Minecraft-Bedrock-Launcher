@@ -1,31 +1,28 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 use futures_util::StreamExt;
 use tokio::fs::{OpenOptions, File};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::time::{sleep, Instant, Duration};
-use tracing::{debug, info};
-use tauri::AppHandle;
+use tokio::time::{sleep, Duration};
+use tracing::{debug};
 use serde_json::json;
 use reqwest::header;
 use std::io::Write as StdWrite;
 
 use crate::core::downloads::cancel::is_cancelled;
 use crate::core::result::{CoreError, CoreResult};
-use crate::core::minecraft::utils::{emit_progress, format_eta, format_speed};
+use crate::progress::download_progress::{report_progress, DownloadProgress};
 
-/// 优化后的多线程分片下载
+/// 优化后的多线程分片下载（修复“多次下载/重复计数”问题）
 pub async fn download_multi(
     client: reqwest::Client,
     url: &str,
     dest: impl AsRef<Path>,
-    app: AppHandle,
     threads: usize,
 ) -> Result<CoreResult<()>, CoreError> {
     debug!("开始多线程下载: url={}, 线程数={}", url, threads);
 
-    // helper: 取消等待 future（每 50ms 轮询 is_cancelled）
     async fn cancelled_future() {
         use tokio::time::sleep;
         use std::time::Duration;
@@ -53,7 +50,6 @@ pub async fn download_multi(
         true
     } else {
         debug!("Accept-Ranges header 不明确，尝试小范围 GET 验证");
-        // 用 select 包裹以便能快速取消
         let get_fut = client
             .get(url)
             .header(header::RANGE, "bytes=0-0")
@@ -75,7 +71,7 @@ pub async fn download_multi(
 
     if !supports_range {
         debug!("服务器不支持分片下载，回退单线程");
-        return super::single::download_file(client, url, dest, app).await;
+        return super::single::download_file(client, url, dest).await;
     }
 
     // 若 head 没给 content-length，再尝试用 GET bytes=0-0 获取 total
@@ -138,40 +134,44 @@ pub async fn download_multi(
     debug!("分片大小: {} 字节, 分片数量: {}", chunk_size, chunk_count);
 
     // 4) 共享进度与索引
-    let downloaded = Arc::new(AtomicU64::new(0));
+    let progress = DownloadProgress::new(total);
+    let downloaded = progress.downloaded_arc(); // Arc<AtomicU64>
     let index = Arc::new(AtomicUsize::new(0));
-    let start = Instant::now();
 
     // 5) 进度监控 task（可被 abort）
-    let mon_dl = downloaded.clone();
-    let mon_app = app.clone();
+    let mut mon_progress = progress; // monitor 持有 progress，用于 mut 更新 prev 等
     let monitor_handle = tokio::spawn(async move {
-        while !is_cancelled() && mon_dl.load(Ordering::Relaxed) < total {
-            let done = mon_dl.load(Ordering::Relaxed);
-            let elapsed = start.elapsed().as_secs_f64();
-            let _ = emit_progress(
-                &mon_app,
-                done,
-                Some(total),
-                Some(&format_speed(done, elapsed)),
-                Some(&format_eta(Some(total), done, elapsed)),
-                Some(json!({"stage":"downloading"})),
-            ).await;
-            sleep(Duration::from_millis(500)).await;
-        }
-        // 结束前发送一次最终进度
-        let done = mon_dl.load(Ordering::Relaxed);
-        let elapsed = start.elapsed().as_secs_f64();
-        let _ = emit_progress(
-            &mon_app,
-            done,
-            Some(total),
-            Some(&format_speed(done, elapsed)),
-            Some(&format_eta(Some(total), done, elapsed)),
-            Some(json!({"stage": if is_cancelled() { "cancelled" } else { "finished" }})),
-        ).await;
-    });
+        loop {
+            // 先检查取消标志
+            if is_cancelled() {
+                break;
+            }
 
+            // 读取当前已下载字节
+            let done = mon_progress.downloaded.load(Ordering::Relaxed);
+
+            // 如果 total > 0 并且完成了，则退出循环（会在循环外发送最终进度）
+            if mon_progress.total > 0 && done >= mon_progress.total {
+                break;
+            }
+
+            // 若达到发送节流条件则发送（report_progress 会负责 mark_emitted / 更新 prev）
+            if mon_progress.should_emit() {
+                // 忽略发送失败（不要让监控因一次失败而停止）
+                let _ = report_progress(&mut mon_progress, json!({"stage": "downloading"})).await;
+                // 不要在这里再调用 mon_progress.mark_emitted() 或 mon_progress.update_prev()
+                // 因为 report_progress 已经在内部处理了这些（如果你的 report_progress 没有做，请在此处加上）
+            }
+
+            // 每轮 sleep，控制检查频率
+            sleep(Duration::from_millis(200)).await;
+        }
+
+        // 循环结束：发送一次最终状态（cancelled 或 finished）
+        let final_stage = if is_cancelled() { json!("cancelled") } else { json!("finished") };
+        // 再次尝试发送最终进度（忽略错误）
+        let _ = report_progress(&mut mon_progress, final_stage).await;
+    });
     // 6) 启动 worker tasks（每个 worker 打开自己的文件句柄，避免全局 Mutex）
     let client = Arc::new(client);
     let url = Arc::new(url.to_string());
@@ -220,9 +220,13 @@ pub async fn download_multi(
 
                 // partition 级别重试
                 let mut attempt = 0usize;
+                // partition_committed 用于记录已计入全局 downloaded 的字节（针对本分片）
+                let mut partition_committed: u64 = 0;
+
                 loop {
                     if is_cancelled() {
                         debug!("worker {} 检测到取消", worker_id);
+                        // 在取消时不尝试调整计数（monitor 之后会以 cancelled 终结）
                         return Ok(CoreResult::Cancelled);
                     }
 
@@ -260,6 +264,11 @@ pub async fn download_multi(
                                         }
                                         continue;
                                     } else {
+                                        // 在最终放弃前，回退本分片已计入的 global downloaded（如果有）
+                                        if partition_committed > 0 {
+                                            downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                            partition_committed = 0;
+                                        }
                                         return Err(CoreError::Request(e));
                                     }
                                 }
@@ -280,6 +289,10 @@ pub async fn download_multi(
                                     }
                                     continue;
                                 } else {
+                                    if partition_committed > 0 {
+                                        downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        partition_committed = 0;
+                                    }
                                     return Err(CoreError::Other(format!("Unexpected status {}", status)));
                                 }
                             }
@@ -314,16 +327,30 @@ pub async fn download_multi(
                                         received_for_this_partition += chunk.len() as u64;
 
                                         if local_buffer.len() >= BUFFER_FLUSH_THRESHOLD {
+                                            // 写入磁盘并同时更新全局计数与本分片计数
                                             if let Err(e) = file.seek(std::io::SeekFrom::Start(write_offset)).await {
                                                 debug!("worker {} seek 失败: {:?}", worker_id, e);
+                                                // 在致命 IO 错误时回退已计入的 bytes
+                                                if partition_committed > 0 {
+                                                    downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                                    partition_committed = 0;
+                                                }
                                                 return Err(CoreError::Io(e));
                                             }
                                             if let Err(e) = file.write_all(&local_buffer).await {
                                                 debug!("worker {} 写入失败: {:?}", worker_id, e);
+                                                if partition_committed > 0 {
+                                                    downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                                    partition_committed = 0;
+                                                }
                                                 return Err(CoreError::Io(e));
                                             }
                                             write_offset += local_buffer.len() as u64;
+
+                                            // 更新计数：把此次写入的字节既加入全局计数，也加入 partition_committed
                                             downloaded.fetch_add(local_buffer.len() as u64, Ordering::Relaxed);
+                                            partition_committed += local_buffer.len() as u64;
+
                                             local_buffer.clear();
                                         }
                                     }
@@ -337,6 +364,12 @@ pub async fn download_multi(
                             if stream_error {
                                 debug!("worker {} 分片读取中断，将重试分片 {}/{}", worker_id, i + 1, chunk_count);
                                 if attempt < MAX_RETRY {
+                                    // 回退本次 attempt 已经计入的 partition bytes（以免重复计数）
+                                    if partition_committed > 0 {
+                                        debug!("worker {} 在重试前回退已计入字节: {}", worker_id, partition_committed);
+                                        downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        partition_committed = 0;
+                                    }
                                     attempt += 1;
                                     let backoff_secs = (BASE_RETRY_DELAY_SECS << attempt).min(30);
                                     tokio::select! {
@@ -348,6 +381,11 @@ pub async fn download_multi(
                                     }
                                     continue;
                                 } else {
+                                    // 最终失败，回退并报错
+                                    if partition_committed > 0 {
+                                        downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        partition_committed = 0;
+                                    }
                                     return Err(CoreError::Other(format!("Partition {} read failed after retries", i)));
                                 }
                             }
@@ -356,20 +394,36 @@ pub async fn download_multi(
                             if !local_buffer.is_empty() {
                                 if let Err(e) = file.seek(std::io::SeekFrom::Start(write_offset)).await {
                                     debug!("worker {} seek 失败: {:?}", worker_id, e);
+                                    if partition_committed > 0 {
+                                        downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        partition_committed = 0;
+                                    }
                                     return Err(CoreError::Io(e));
                                 }
                                 if let Err(e) = file.write_all(&local_buffer).await {
                                     debug!("worker {} 写入失败: {:?}", worker_id, e);
+                                    if partition_committed > 0 {
+                                        downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        partition_committed = 0;
+                                    }
                                     return Err(CoreError::Io(e));
                                 }
                                 write_offset += local_buffer.len() as u64;
+
+                                // 更新计数（此次 flush 写入）
                                 downloaded.fetch_add(local_buffer.len() as u64, Ordering::Relaxed);
+                                partition_committed += local_buffer.len() as u64;
                                 local_buffer.clear();
                             }
 
                             if received_for_this_partition < expected_len {
                                 debug!("worker {} 分片 {}/{} 长度不够: recv={} expected={}", worker_id, i + 1, chunk_count, received_for_this_partition, expected_len);
                                 if attempt < MAX_RETRY {
+                                    // 回退本分片已计入的 bytes，然后重试
+                                    if partition_committed > 0 {
+                                        downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        partition_committed = 0;
+                                    }
                                     attempt += 1;
                                     let backoff_secs = (BASE_RETRY_DELAY_SECS << attempt).min(30);
                                     tokio::select! {
@@ -381,11 +435,16 @@ pub async fn download_multi(
                                     }
                                     continue;
                                 } else {
+                                    if partition_committed > 0 {
+                                        downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        partition_committed = 0;
+                                    }
                                     return Err(CoreError::Other(format!("Partition {} incomplete", i)));
                                 }
                             }
 
                             debug!("worker {} 完成分片 {}/{}", worker_id, i + 1, chunk_count);
+                            // 分片成功（partition_committed 已经包含了本分片所有写入并计入 global downloaded）
                             break; // 分片成功，处理下一个分片
                         } // Ok(resp)
                         Err(e) => {
@@ -403,6 +462,11 @@ pub async fn download_multi(
                                 continue;
                             } else {
                                 debug!("worker {} 分片 {} 最终失败: {:?}", worker_id, i + 1, e);
+                                // 最终失败前回退本分片已计入的 bytes（如果有）
+                                if partition_committed > 0 {
+                                    downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                    partition_committed = 0;
+                                }
                                 return Err(CoreError::Request(e));
                             }
                         }
@@ -411,19 +475,17 @@ pub async fn download_multi(
             } // worker while
 
             Ok(CoreResult::Success(()))
-        }));
+        } ));
     }
 
     // 等待所有 worker 完成 — 但如果检测到取消，尽快 abort 剩余 tasks 并返回 Cancelled
     let mut failed = false;
-    // 使用索引循环，这样可以在检测到取消时中止剩下的 handles
     let mut idx = 0usize;
     while idx < handles.len() {
         let h = handles.remove(0);
         if is_cancelled() {
             debug!("外部取消检测到，立即中止剩余 worker 和 monitor");
             monitor_handle.abort();
-            // abort the current and remaining one(s)
             h.abort();
             for remaining in handles.into_iter() {
                 remaining.abort();

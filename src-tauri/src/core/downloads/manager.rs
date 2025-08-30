@@ -1,6 +1,5 @@
 use reqwest::Client;
 use std::path::Path;
-use tauri::AppHandle;
 use tokio::time::{sleep, Duration};
 use crate::core::downloads::single;
 use crate::core::downloads::multi;
@@ -19,15 +18,14 @@ impl DownloaderManager {
         &self,
         url: String,
         dest: impl AsRef<Path>,
-        app: AppHandle,
         threads: usize,
     ) -> Result<CoreResult, CoreError> {
         let mut retry = 0;
         loop {
             let res = if threads > 1 {
-                multi::download_multi(self.client.clone(), &url, &dest, app.clone(), threads).await
+                multi::download_multi(self.client.clone(), &url, &dest,  threads).await
             } else {
-                single::download_file(self.client.clone(), &url, &dest, app.clone()).await
+                single::download_file(self.client.clone(), &url, &dest).await
             };
 
             match &res {

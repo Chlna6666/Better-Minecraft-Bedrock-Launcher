@@ -4,7 +4,6 @@ use windows::core::{HSTRING, Result, HRESULT};
 use windows::Foundation::{Uri};
 use windows::Management::Deployment::{DeploymentOptions,  DeploymentResult, PackageManager};
 
-use crate::core::minecraft::appx::utils::{ get_package_info};
 
 
 pub async fn register_appx_package_async(package_folder: &str) -> Result<DeploymentResult> {

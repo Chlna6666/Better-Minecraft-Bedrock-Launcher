@@ -4,7 +4,11 @@
     "beta": "测试版",
     "preview": "预览版",
     "education": "教育版",
-    "education_preview": "教育预览版"
+    "education_preview": "教育预览版",
+    "all_versions": "全部版本",
+    "launch_count": "启动次数",
+    "search_placeholder": "搜索版本或名称",
+    "refresh": "刷新"
   },
   "MusicPlayer": {
     "now_playing": "正在播放:"
@@ -32,10 +36,27 @@
     "info": "正在加载版本信息…",
     "info_error": "获取版本信息出错：{{error}}"
   },
+  "GameManager": {
+    "game": "游戏",
+    "mcpack": "资源",
+    "map": "地图"
+  },
+  "McPackManager": {
+    "search": "搜索",
+    "resourcePacks": "资源包",
+    "behaviorPacks": "行为包",
+    "loading": "加载中",
+    "refresh": "刷新",
+    "empty": "无",
+    "collapse": "缩回",
+    "details": "详情",
+    "manifest": "配置"
+  },
   "InstallProgressBar": {
     "confirm_title": "确认下载",
     "confirm_sub": "自定义游戏版本名称",
     "filename_label": "文件名",
+    "parsing_url": "正在解析URL",
     "start_download": "开始下载",
     "stage_extracting": "正在解压",
     "stage_downloading": "正在下载",
@@ -143,7 +164,8 @@
       "keep": "保持不变"
     },
     "keep_appx_after_install": "安装完成保留 APPX",
-    "modify_appx_manifest": "修改AppxManifest"
+    "modify_appx_manifest": "修改AppxManifest",
+    "uwp_minimize_fix": "修复UWP最小化停滞"
   },
   "CustomizationSettings": {
     "launch_animation": "启动时显示启动动画:",

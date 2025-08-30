@@ -51,7 +51,7 @@ fn find_uwp_frame(title_substring: &str) -> Option<HWND> {
     }
 
     let mut data = D { title: title_substring, hwnd: HWND(std::ptr::null_mut()) };
-    unsafe { EnumWindows(Some(enum_host), LPARAM(&mut data as *mut _ as isize)) };
+    unsafe { let _ = EnumWindows(Some(enum_host), LPARAM(&mut data as *mut _ as isize)); }
     if data.hwnd.0 != std::ptr::null_mut() { Some(data.hwnd) } else { None }
 }
 

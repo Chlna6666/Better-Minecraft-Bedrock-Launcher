@@ -2,19 +2,17 @@ use std::fs;
 use std::fs::File;
 use std::path::{Path};
 use std::sync::atomic::Ordering;
-use tauri::AppHandle;
 use tracing::{debug, error, info};
 use crate::commands::cancel_install::CANCEL_INSTALL;
 use crate::config::config::read_config;
 use crate::core::minecraft::appx::extract_zip::extract_zip;
-use crate::core::minecraft::appx::utils::patch_manifest;
+use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest};
 use crate::core::result::CoreResult;
 
 #[tauri::command]
 pub async fn import_appx(
     source_path: String,      // 前端传入的本地文件路径（绝对或相对）
     file_name: Option<String>,
-    app: AppHandle,
 ) -> Result<(), String> {
     debug!(
         "收到导入请求：source_path='{}', file_name='{:?}'",
@@ -101,7 +99,6 @@ pub async fn import_appx(
         archive,
         extract_to.to_str().unwrap(),
         true, // 导入默认 force_replace = true（如需可调整）
-        app.clone(),
     ).await {
         Ok(CoreResult::Success(())) => {
             info!("导入解压完成：{}", extract_to.display());
@@ -159,19 +156,37 @@ pub async fn import_appx(
 
     let config = read_config().map_err(|e| e.to_string())?;
     let game_cfg = &config.game;
-    // ✅ 判断配置是否启用 Manifest 修改
-    if game_cfg.modify_appx_manifest {
-        match patch_manifest(&extract_to) {
-            Ok(true)  => info!("Manifest 修改成功"),
-            Ok(false) => info!("未找到 Manifest，跳过修改"),
-            Err(e)    => {
-                error!("修改 Manifest 失败：{}", e);
-                debug!("修改 Manifest 失败详细：{}，目录：{}", e, extract_to.display());
-                return Err(format!("修改 Manifest 失败：{}", e));
+    
+    if let Some(extract_path_str) = extract_to.to_str() {
+        match get_manifest_identity(extract_path_str).await {
+            Ok((name, _version)) => {
+                debug!("解析到的 Manifest Identity Name: {}", name);
+
+                if matches!(name.as_str(), "Microsoft.MinecraftUWP" | "Microsoft.MinecraftWindowsBeta") {
+                    // 只有在识别为 Minecraft UWP/WindowsBeta 且配置允许时才修改
+                    if game_cfg.modify_appx_manifest {
+                        match patch_manifest(&extract_to) {
+                            Ok(true)  => info!("Manifest 修改成功"),
+                            Ok(false) => info!("未找到 Manifest，跳过修改"),
+                            Err(e)    => {
+                                error!("修改 Manifest 失败：{}", e);
+                                debug!("修改 Manifest 失败详细：{}，目录：{}", e, extract_to.display());
+                                return Err(format!("修改 Manifest 失败：{}", e));
+                            }
+                        }
+                    } else {
+                        info!("配置禁用了 Manifest 修改，跳过 patch_manifest");
+                    }
+                } else {
+                    info!("非 Minecraft UWP/WindowsBeta 包（{}），将跳过 Manifest 修改", name);
+                }
+            }
+            Err(e) => {
+                debug!("获取 Manifest Identity 失败，跳过 Manifest 修改：{}", e);
             }
         }
     } else {
-        info!("配置禁用了 Manifest 修改，跳过 patch_manifest");
+        debug!("extract_to 路径无法转换为字符串，跳过 Manifest 修改");
     }
 
     Ok(())

@@ -12,7 +12,7 @@ pub enum CoreError {
     Io(#[from] std::io::Error),
 
     #[error("XML parsing error: {0}")]
-    Xml(#[from] xml::reader::Error),
+    Xml(#[from] xmltree::ParseError),
 
     #[error("Zip error: {0}")]
     Zip(#[from] ZipError),

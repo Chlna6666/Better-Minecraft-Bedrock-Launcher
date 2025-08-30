@@ -9,13 +9,13 @@ const HOTKEY_OPTIONS = ["ALT", "CTRL", "SHIFT", "LWIN", "RWIN"];
 function GameSettings() {
     const { t, i18n } = useTranslation();
     const [injectOnLaunch, setInjectOnLaunch] = useState(true);
-    const [injectDelay, setInjectDelay] = useState(0);
     const [lockMouse, setLockMouse] = useState(false);
     const [unlockHotkey, setUnlockHotkey] = useState("ALT");
     const [launcherVis, setLauncherVis] = useState("keep");
-    const [reducePixels, setReducePixels] = useState(0); // 新增 reducePixels 状态
+    const [reducePixels, setReducePixels] = useState(0);
     const [keepAppx, setKeepAppx] = useState(false);
     const [modifyAppxManifest, setModifyAppxManifest] = useState(true);
+    const [uwpMinimizeFix, setUwpMinimizeFix] = useState(true);
 
 
     const VISIBILITY_OPTIONS = [
@@ -30,13 +30,13 @@ function GameSettings() {
                 const config = await getConfig();
                 const cfg = config.game || {};
                 setInjectOnLaunch(cfg.inject_on_launch ?? true);
-                setInjectDelay(cfg.inject_delay ?? 0);
                 setLockMouse(cfg.lock_mouse_on_launch ?? false);
                 setUnlockHotkey(cfg.unlock_mouse_hotkey ?? "ALT");
                 setLauncherVis(cfg.launcher_visibility ?? "keep");
                 setReducePixels(cfg.reduce_pixels ?? 0); // 加载 reduce_pixels 配置
                 setKeepAppx(cfg.keep_appx_after_install ?? false);
                 setModifyAppxManifest(cfg.modify_appx_manifest ?? true);
+                setUwpMinimizeFix(cfg.uwp_minimize_fix ?? true);
 
 
             } catch (e) {
@@ -56,13 +56,13 @@ function GameSettings() {
     const updateConfig = (updatedFields) => {
         const updated = {
             inject_on_launch: injectOnLaunch,
-            inject_delay: injectDelay,
             lock_mouse_on_launch: lockMouse,
             unlock_mouse_hotkey: unlockHotkey,
             launcher_visibility: launcherVis,
             reduce_pixels: reducePixels, // 更新 reduce_pixels 配置
             keep_appx_after_install: keepAppx,
             modify_appx_manifest: modifyAppxManifest,
+            uwp_minimize_fix: uwpMinimizeFix,
             ...updatedFields,
         };
         saveGameConfig(updated);
@@ -82,24 +82,6 @@ function GameSettings() {
                     }}
                 />
             </div>
-
-            {/* 延迟输入框 */}
-            {injectOnLaunch && (
-                <div className="setting-item">
-                    <label>{t("GameSettings.inject_delay")}</label>
-                    <input
-                        type="number"
-                        min="0"
-                        value={injectDelay}
-                        onChange={e => {
-                            const val = parseInt(e.target.value, 10) || 0;
-                            setInjectDelay(val);
-                            updateConfig({ inject_delay: val });
-                        }}
-                        className="text-input"
-                    />
-                </div>
-            )}
 
             {/* 锁鼠标开关及热键选择 */}
             {launcherVis !== "close" && (
@@ -173,6 +155,20 @@ function GameSettings() {
                     ))}
                 </select>
             </div>
+
+            {/* UWP 最小化修复开关 */}
+            <div className="setting-item">
+                <label>{t("GameSettings.uwp_minimize_fix")}</label>
+                <Switch
+                    checked={uwpMinimizeFix}
+                    onChange={() => {
+                        const next = !uwpMinimizeFix;
+                        setUwpMinimizeFix(next);
+                        updateConfig({ uwp_minimize_fix: next });
+                    }}
+                />
+            </div>
+
             {/* APPX 配置 */}
             <div className="setting-item">
                 <label>{t("GameSettings.keep_appx_after_install")}</label>

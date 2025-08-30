@@ -1,3 +1,5 @@
+/* Sidebar.css - 完整文件 */
+
 .sidebar {
   background-color: var(--theme-color);
   color: white;
@@ -5,15 +7,17 @@
   overflow: hidden;
   height: calc(100vh - 40px); /* Sidebar height excluding the Titlebar */
   position: fixed;
-  top: 40px; /* Start directly under the Titlebar */
+  top: 40px;
   left: 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between; /* Distribute space evenly, ensuring the last item is at the bottom */
+  justify-content: space-between;
+  box-sizing: border-box;
 }
 
+/* 状态宽度 */
 .sidebar.expanded {
-  width: 160px; /* Adjusted width */
+  width: 160px;
 }
 
 .sidebar.collapsed {
@@ -27,71 +31,123 @@
   border: none;
   margin: 10px;
   cursor: pointer;
-  transition: transform 0.3s ease;
+  transition: transform 0.18s ease;
   display: flex;
   justify-content: center;
   align-items: center;
 }
 
-/* Sidebar Icon Adjustment */
-.sidebar-icon img {
-  width: 24px; /* Maintain original size */
-  height: 24px; /* Maintain original size */
-  filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(360deg) brightness(100%) contrast(100%);
-}
-
+/* 图标（toggle）*/
 .toggle-icon {
-  width: 24px; /* Maintain original size */
-  height: 24px; /* Maintain original size */
+  width: 24px;
+  height: 24px;
   filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(360deg) brightness(100%) contrast(100%);
+  transition: transform 0.12s ease;
+  transform-origin: center;
 }
 
+/* 容器：选项列表 */
 .sidebar-options {
   padding: 20px 0;
   display: flex;
   flex-direction: column;
-  align-items: center; /* Align items in the center horizontally */
+  align-items: center;
 }
 
+/* 每一项 */
 .sidebar-option {
-  width: 100%; /* Take full width of the sidebar */
-  padding: 15px 0; /* Add padding to ensure the icon is not too close to the edge */
+  width: 100%;
+  /* 保证每项高度一致，利于垂直居中 */
+  min-height: 48px;
+  padding: 12px 0;
   cursor: pointer;
-  transition: background 0.3s ease, padding-left 0.3s ease; /* Synchronize padding and background transition */
+  transition: background 0.22s ease, padding-left 0.3s ease;
   display: flex;
-  align-items: center; /* Align icon and label on the same line */
-  justify-content: center; /* Center content when collapsed */
-  box-sizing: border-box; /* Ensure padding is included in the element's width */
+  align-items: center; /* 垂直居中图标和文字 */
+  box-sizing: border-box;
 }
 
+/* 让 icon 区块固定宽度，内部图片垂直水平居中 */
+.sidebar-icon {
+  display: flex;
+  align-items: center;        /* 垂直居中图片 */
+  justify-content: center;    /* 水平居中图片 */
+  width: 36px;                /* 固定 icon 区域宽度（便于标签对齐） */
+  height: 36px;               /* 与图片高度匹配，确保垂直居中 */
+  flex-shrink: 0;
+  margin-left: 12px;
+  transition: transform 0.12s ease;
+  transform-origin: center;
+}
+
+/* 图像大小与滤镜（不直接改变 img 的 display） */
+.sidebar-icon img {
+  width: 24px;
+  height: 24px;
+  display: block;             /* 移除可能的行内基线间隙 */
+  filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(360deg) brightness(100%) contrast(100%);
+  transition: transform 0.12s ease; /* 动画平滑 */
+  transform-origin: center;
+}
+
+/* 标签样式 */
 .sidebar-label {
-  font-size: 16px; /* Restore original font size */
+  font-size: 16px;
   margin-left: 10px;
   display: inline-block;
   opacity: 1;
-  transition: opacity 0.3s ease, margin-left 0.3s ease; /* Synchronize opacity and margin transition */
+  transition: opacity 0.22s ease, margin-left 0.3s ease;
+  white-space: nowrap;
+  /* 垂直对齐已经由父容器 align-items: center 负责 */
 }
 
-/* Hide label when collapsed */
+/* 折叠态下隐藏文字 */
 .sidebar.collapsed .sidebar-label {
   opacity: 0;
   width: 0;
   margin-left: 0;
 }
 
-/* Adjust alignment for expanded and collapsed states */
+/* 展开状态时左对齐并有左边距 */
 .sidebar.expanded .sidebar-option {
-  justify-content: flex-start; /* Align icon and label to the left when expanded */
-  padding-left: 20px; /* Add padding to align with icon */
+  justify-content: flex-start;
+  padding-left: 8px; /* 图标本身有 margin-left，这里是整体对齐的微调 */
 }
 
+/* hover / active 风格 */
 .sidebar-option:hover,
 .sidebar-option.active {
-  background-color: var(--theme-color); /* Lighter green for hover/active states */
+  background-color: rgba(255, 255, 255, 0.04); /* 轻微高亮，避免覆盖主题变量 */
 }
 
-/* Position the settings option at the bottom */
+/* 鼠标按下（按住）时放大效果：只放大图标，体验更自然 */
+.sidebar-option:active .sidebar-icon img,
+.sidebar-option:focus .sidebar-icon img,
+.sidebar-option:focus-visible .sidebar-icon img {
+  transform: scale(1.15);
+}
+
+/* 也可以同时微放大 icon 区域（可选） */
+.sidebar-option:active .sidebar-icon,
+.sidebar-option:focus .sidebar-icon,
+.sidebar-option:focus-visible .sidebar-icon {
+  transform: scale(1.05);
+}
+
+/* 如果你希望在 hover 时也有少量放大（可选），将下行取消注释 */
+/*.sidebar-option:hover .sidebar-icon img { transform: scale(1.08); }*/
+
+/* 禁用状态 */
+.sidebar-option.disabled {
+  cursor: default;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* 设置项固定在底部 */
 .sidebar-settings {
-  margin-top: auto; /* Push the settings option to the bottom */
-  padding-bottom: 20px; /* Add some spacing at the bottom */
+  margin-top: auto; /* push to bottom */
+  padding-bottom: 20px;
+  display: flex;
+  align-items: center;
 }

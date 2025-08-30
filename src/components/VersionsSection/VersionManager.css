@@ -1,0 +1,101 @@
+.vlist-container {
+    overflow-y: auto;
+    background: #fafafa;
+    padding: 10px;
+}
+
+
+.vtoolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #f5f5f5;
+    border: 1px solid #ddd;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.vsearch {
+    flex: 1;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.vsearch:focus {
+    outline: none;
+    border-color: var(--theme-color);
+    box-shadow: 0 0 4px rgba(52, 152, 219, 0.4);
+}
+
+.vfilter-dropdown {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #fff;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.vrefresh-btn {
+    padding: 6px 12px;
+    border: none;
+    background: var(--theme-color);
+    border-radius: 6px;
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.vcard {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: #fff;
+    border: 1px solid #e5e5e5;
+    border-radius: 6px;
+}
+
+
+.vimg {
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    object-fit: cover;
+    margin-right: 12px;
+}
+
+
+.vdetails {
+    display: flex;
+    flex-direction: column;
+}
+
+
+.vname {
+    font-size: 15px;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+
+.vmeta {
+    font-size: 13px;
+    color: #555;
+    margin-top: 3px;
+}
+
+
+.vbadge {
+    background: #3498db;
+    color: #fff;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-right: 6px;
+}

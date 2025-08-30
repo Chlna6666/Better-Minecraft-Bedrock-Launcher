@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
 import LaunchSection from "../LaunchSection/LaunchSection";
 import DownloadSection from "../DownloadSection/DownloadSection.jsx";
-import VersionsSection from "../VersionsSection/VersionsSection";
 import SettingsSection from "../SettingsSection/SettingsSection";
 import "./Content.css";
+import VersionSection from "../VersionsSection/GameManagerSection.jsx";
 
 function Content({ activeSection, disableSwitch,onStatusChange }) {
     const [displayedSection, setDisplayedSection] = useState(activeSection);
@@ -38,7 +38,7 @@ function Content({ activeSection, disableSwitch,onStatusChange }) {
                     onStatusChange={onStatusChange}
                 />;
             case "versions":
-                return <VersionsSection />;
+                return <VersionSection />;
             case "settings":
                 return <SettingsSection />;
             default:
