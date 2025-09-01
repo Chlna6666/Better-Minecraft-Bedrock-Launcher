@@ -59,9 +59,9 @@ jobs:
 
       - name: 📦 Move built exe & installer to root
         run: |
-          mkdir -p ./dist
-          cp src-tauri/target/release/*.exe ./dist/ || true
-          cp src-tauri/target/release/bundle/nsis/*.exe ./dist/ || true
+          if (!(Test-Path dist)) { New-Item -ItemType Directory -Path dist }
+          Copy-Item src-tauri/target/release/*.exe dist -ErrorAction SilentlyContinue
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe dist -ErrorAction SilentlyContinue
 
       - name: 📤 Upload Artifacts
         uses: actions/upload-artifact@v4
