@@ -57,15 +57,14 @@ jobs:
       - name: 🚀 Build Tauri App
         run: cargo tauri build
 
-      - name: 📦 Move built exe & installer to root
+      - name: 📦 Move built exe & installer to new build directory
         run: |
-          if (!(Test-Path dist)) { New-Item -ItemType Directory -Path dist }
-          Copy-Item src-tauri/target/release/*.exe dist -ErrorAction SilentlyContinue
-          Copy-Item src-tauri/target/release/bundle/nsis/*.exe dist -ErrorAction SilentlyContinue
+          if (!(Test-Path build)) { New-Item -ItemType Directory -Path build }
+          Copy-Item src-tauri/target/release/*.exe build -ErrorAction SilentlyContinue
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe build -ErrorAction SilentlyContinue
 
       - name: 📤 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: tauri-windows-build
-          path: ./dist
-
+          path: ./build
