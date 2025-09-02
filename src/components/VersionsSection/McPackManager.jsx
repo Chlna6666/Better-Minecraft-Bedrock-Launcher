@@ -5,7 +5,7 @@ import "./McPackManager.css";
 import { MinecraftFormattedText } from "../../utils/MinecraftFormattedText.jsx";
 
 function McPackManager() {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const [packs, setPacks] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -13,20 +13,27 @@ function McPackManager() {
     const [expanded, setExpanded] = useState(null);
     const [packType, setPackType] = useState("resource"); // Default to resource packs
 
+    // normalize i18n.language to backend-friendly format (e.g. zh-CN -> zh_CN)
+    const langParam = (i18n && i18n.language) ? i18n.language.replace("-", "_") : "en_US";
+
     const fetchPacks = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
-            const res = await invoke(packType === "resource" ? "get_all_resource_packs" : "get_all_behavior_packs");
+            const cmd = packType === "resource" ? "get_all_resource_packs" : "get_all_behavior_packs";
+            // pass language param to backend
+            const res = await invoke(cmd, { lang: langParam });
             setPacks(Array.isArray(res) ? res : []);
         } catch (e) {
             console.error(`${packType} packs fetch failed`, e);
             setError(String(e));
+            setPacks([]);
         } finally {
             setLoading(false);
         }
-    }, [packType]);
+    }, [packType, langParam]);
 
+    // refetch when packType or language changes
     useEffect(() => {
         fetchPacks();
     }, [fetchPacks]);
@@ -53,7 +60,6 @@ function McPackManager() {
     });
 
     return (
-
         <div className="mc-pack-section">
             <div className="vtoolbar">
                 <input
@@ -75,6 +81,7 @@ function McPackManager() {
                     {t('common.refresh')}
                 </button>
             </div>
+
             {error && <div className="mc-pack-error">Error: {error}</div>}
             {!error && loading && <div className="mc-pack-loading">Loading packs…</div>}
             {!loading && filtered.length === 0 && (
