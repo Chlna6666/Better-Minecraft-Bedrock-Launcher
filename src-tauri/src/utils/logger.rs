@@ -72,7 +72,7 @@ pub fn init_logging() {
         eprintln!("Failed to clear latest.log: {}", e);
         return;
     }
-
+    
     // 判断是否启用 debug 日志
     let debug_enabled = match read_config() {
         Ok(config) => config.launcher.debug,
@@ -130,4 +130,16 @@ pub fn init_logging() {
         .with(file_layer) // 按日期日志文件层
         .with(latest_log_layer) // 最新日志文件层
         .init(); // 初始化日志系统
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_logging_init() {
+        init_logging();
+        info!("这是 info 测试日志");
+        debug!("这是 debug 测试日志");
+        warn!("这是 warn 测试日志");
+        error!("这是 error 测试日志");
+    }
 }

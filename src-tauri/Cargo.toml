@@ -41,6 +41,7 @@ winapi = { version = "0.3.9", features = ["minwindef", "windef", "libloaderapi",
 serde_json="1.0.140"
 zip = "4.0.0"
 tracing = "0.1.41"
+tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tokio = { version = "1.44.2", features = ["rt", "rt-multi-thread", "macros"] }
 tokio-stream = { version = "0.1.17", features = ["fs"] }
@@ -57,6 +58,9 @@ anyhow = "1.0.98"
 fluent-bundle = "0.16"
 unic-langid = "0.9"
 rayon = "1.11.0"
+indexmap = { version = "2.11.0", features = ["serde"] }
+
+
 
 [profile.release]
 opt-level = "s"        # 优化代码体积 ("s" = 小体积, "z" = 最小体积)

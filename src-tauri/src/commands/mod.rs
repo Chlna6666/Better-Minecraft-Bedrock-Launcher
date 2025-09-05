@@ -16,6 +16,7 @@ pub mod cancel_install;
 pub mod install_appx;
 pub mod import_appx;
 pub mod mc_pack;
+pub mod mc_map;
 
 pub use app_info::*;
 pub use config::*;
@@ -33,3 +34,4 @@ pub use cancel_install::*;
 pub use install_appx::*;
 pub use import_appx::*;
 pub use mc_pack::*;
+pub use mc_map::*;

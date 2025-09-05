@@ -110,11 +110,55 @@ fn default_minecraft_behavior_packs_path() -> Option<PathBuf> {
 
 /// 尝试加载语言映射表（在并行线程中使用 std::fs 读取文件）
 fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String, String>> {
-    // 支持的目录与 lang 变体
     let candidates_dirs = ["texts", "text", "lang"];
-    let mut lang_variants = Vec::new();
 
-    // 常见变体：原样、全小写、全大写、下划线小写（zh_cn）-> zh_CN 的互换等
+    // helper: 解析单个 .lang 文件为 map
+    fn parse_lang_file(path: &PathBuf) -> Option<HashMap<String, String>> {
+        if let Ok(content) = fs::read_to_string(path) {
+            let mut map = HashMap::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                if line.starts_with('#') || line.starts_with("//") { continue; }
+                if let Some((k, val)) = line.split_once('=') {
+                    map.insert(k.trim().to_string(), val.trim().to_string());
+                } else if let Some((k, val)) = line.split_once(':') {
+                    map.insert(k.trim().to_string(), val.trim().to_string());
+                }
+            }
+            if map.is_empty() { None } else { Some(map) }
+        } else { None }
+    }
+
+    // 收集所有 .lang 文件 (path, stem)
+    let mut lang_files: Vec<(PathBuf, String)> = Vec::new();
+    for dir in &candidates_dirs {
+        let base = folder.join(dir);
+        if !base.exists() || !base.is_dir() { continue; }
+        if let Ok(entries) = fs::read_dir(&base) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_file() {
+                    if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                        if ext.eq_ignore_ascii_case("lang") {
+                            let stem = p.file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            lang_files.push((p, stem));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 如果只有一个语言文件，直接使用它
+    if lang_files.len() == 1 {
+        return parse_lang_file(&lang_files[0].0);
+    }
+
+    // 构造候选变体（宽松匹配）
+    let mut lang_variants = Vec::new();
     lang_variants.push(lang.to_string());
     lang_variants.push(lang.to_lowercase());
     lang_variants.push(lang.to_uppercase());
@@ -125,46 +169,52 @@ fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String
     if lang.contains('_') {
         lang_variants.push(lang.replace('_', "-"));
     }
-
-    // 去重
     lang_variants.sort();
     lang_variants.dedup();
 
-    for dir in &candidates_dirs {
-        let base = folder.join(dir);
-        if !base.exists() || !base.is_dir() {
-            continue;
-        }
-        for v in &lang_variants {
-            let f = base.join(format!("{}.lang", v));
-            if f.exists() && f.is_file() {
-                // 读取并解析
-                if let Ok(content) = fs::read_to_string(&f) {
-                    let mut map = HashMap::new();
-                    for line in content.lines() {
-                        let line = line.trim();
-                        if line.is_empty() { continue; }
-                        if line.starts_with('#') || line.starts_with("//") { continue; }
-                        // 支持 key=value 或 key: value 两种
-                        if let Some((k, val)) = line.split_once('=') {
-                            let key = k.trim().to_string();
-                            let value = val.trim().to_string();
-                            map.insert(key, value);
-                        } else if let Some((k, val)) = line.split_once(':') {
-                            let key = k.trim().to_string();
-                            let value = val.trim().to_string();
-                            map.insert(key, value);
-                        }
-                    }
-                    if !map.is_empty() {
-                        return Some(map);
-                    }
+    // helper: 按 stem 名称匹配并加载
+    let try_load_by_name = |target: &str| -> Option<HashMap<String, String>> {
+        for (path, stem) in &lang_files {
+            if stem.eq_ignore_ascii_case(target) {
+                if let Some(m) = parse_lang_file(path) {
+                    return Some(m);
                 }
             }
         }
+        None
+    };
+
+    // 1. 首先尝试传入 lang 的各种变体
+    for v in &lang_variants {
+        if let Some(m) = try_load_by_name(v) {
+            return Some(m);
+        }
     }
+
+    // 2. 再尝试标准英语后备（把 en_US 放在首位作为“标准”格式）
+    let fallback_candidates = ["en_US", "en-US", "en", "en_us"];
+    for fc in &fallback_candidates {
+        if let Some(m) = try_load_by_name(fc) {
+            return Some(m);
+        }
+    }
+
+    // 3. 最后做一次归一化模糊匹配（如 zh-cn vs zh_cn）
+    let requested_norm = lang.to_lowercase().replace('-', "_");
+    for (path, stem) in &lang_files {
+        let stem_norm = stem.to_lowercase().replace('-', "_");
+        if stem_norm == requested_norm {
+            if let Some(m) = parse_lang_file(path) {
+                return Some(m);
+            }
+        }
+    }
+
+    // 没有找到，返回 None
     None
 }
+
+
 
 /// 根据 manifest_value 和 lang_map 替换 header 中 name/description（如果它们是占位 key）
 fn replace_header_with_lang(manifest_value: &mut Value, lang_map: &HashMap<String, String>) {

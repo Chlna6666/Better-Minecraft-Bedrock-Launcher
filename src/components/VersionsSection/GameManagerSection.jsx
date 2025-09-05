@@ -5,7 +5,7 @@ import "./GameManagerSection.css";
 
 import VersionManager from "./VersionManager.jsx";
 import McPackManager from "./McPackManager.jsx";
-import MapManager from "./MapManager.jsx";
+import McMapManager from "./McMapManager.jsx";
 
 function GameManagerSection({ onStatusChange }) {
     const { t } = useTranslation();
@@ -69,8 +69,8 @@ function GameManagerSection({ onStatusChange }) {
                 return <VersionManager {...commonProps} />;
             case "McPackManager":
                 return <McPackManager {...commonProps} />;
-            case "MapManager":
-                return <MapManager {...commonProps} />;
+            case "McMapManager":
+                return <McMapManager {...commonProps} />;
             default:
                 return null;
         }
@@ -89,7 +89,7 @@ function GameManagerSection({ onStatusChange }) {
                 {[
                     "VersionManager",
                     "McPackManager",
-                    "MapManager",
+                    "McMapManager",
                 ].map((tab) => (
                     <button
                         key={tab}
@@ -99,7 +99,7 @@ function GameManagerSection({ onStatusChange }) {
                     >
                         {tab === "VersionManager" && t('GameManager.game')}
                         {tab === "McPackManager"       && t('GameManager.mcpack')}
-                        {tab === "MapManager"       && t('GameManager.map')}
+                        {tab === "McMapManager"       && t('GameManager.map')}
                     </button>
                 ))}
             </div>
