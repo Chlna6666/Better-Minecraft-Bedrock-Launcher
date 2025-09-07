@@ -29,6 +29,8 @@ function McMapManager() {
     }, []);
 
     async function handleRefresh() {
+        // 防止重复刷新：当已经在刷新或初次 loading 时禁用
+        if (refreshing || loading) return;
         setRefreshing(true);
         try {
             await fetchWorlds();
@@ -55,87 +57,101 @@ function McMapManager() {
         img.src = defaultWorldImg;
     };
 
-    // loading 简易显示
-    if (loading) return <div className="mc-map-manager-loading">{t('loading')}...</div>;
-
     return (
         <div className="mc-map-manager">
+            {/* toolbar 始终渲染 */}
             <div className="vtoolbar">
                 <input
                     type="text"
-                    placeholder={t("McPackManager.search") || "Search..."}
+                    placeholder={t("McPackManager.search")}
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     className="vsearch"
                 />
-                {search && (
-                    <button
-                        className="vclear-btn"
-                        title={t('common.clear') || 'Clear'}
-                        onClick={() => setSearch("")}
-                    >
-                        ×
-                    </button>
-                )}
-                <button
-                    onClick={handleRefresh}
-                    className="vrefresh-btn"
-                    disabled={refreshing}
-                    title={t('common.refresh') || 'Refresh'}
-                >
-                    {refreshing ? (t('common.refreshing') || 'Refreshing…') : (t('common.refresh') || 'Refresh')}
+                <button onClick={handleRefresh} className="vrefresh-btn">
+                    {t('common.refresh')}
                 </button>
             </div>
 
-            {filteredWorlds.length === 0 ? (
-                <div className="empty">
-                    {worlds.length === 0 ? t('no_worlds_found') : t('no_search_results') || 'No results found'}
+            {/* loading 区放在 toolbar 之后 */}
+            {loading ? (
+                <div className="mc-map-manager-loading" role="status" aria-live="polite">
+                    {t('loading') || 'Loading...'}
                 </div>
             ) : (
-                // 使用 div 代替 ul，并添加 role="list" 以保留语义
-                <div className="world-list" role="list" aria-label={t('world_list') || 'World list'}>
-                    {filteredWorlds.map((w, idx) => {
-                        const itemKey = w?.folder_name ?? w?.level_name ?? `world-${idx}`;
-                        const label = w?.level_name || w?.folder_name || '';
-                        // 选择图片源：优先使用 icon_path（经 convertFileSrc），否则使用默认图
-                        const src = w?.icon_path ? convertFileSrc(w.icon_path) : defaultWorldImg;
+                // 非 loading 时显示列表/空状态
+                <>
+                    {filteredWorlds.length === 0 ? (
+                        <div className="empty">
+                            {worlds.length === 0 ? t('no_worlds_found') : t('no_search_results') || 'No results found'}
+                        </div>
+                    ) : (
+                        <div className="world-list" role="list" aria-label={t('world_list') || 'World list'}>
+                            {filteredWorlds.map((w, idx) => {
+                                const itemKey = w?.folder_name ?? w?.level_name ?? `world-${idx}`;
+                                const label = w?.level_name || w?.folder_name || '';
+                                const src = w?.icon_path ? convertFileSrc(w.icon_path) : defaultWorldImg;
 
-                        return (
-                            // 每项用 div 并标注 role="listitem"，并允许键盘访问
-                            <div
-                                key={itemKey}
-                                className="world-item"
-                                role="listitem"
-                                tabIndex={0}
-                                onClick={() => {
-                                    console.log("clicked world:", w?.folder_name);
-                                }}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter' || e.key === ' ') {
-                                        e.preventDefault();
-                                        // 同 onClick 的行为
-                                        console.log("activated world (keyboard):", w?.folder_name);
-                                    }
-                                }}
-                                aria-label={label}
-                            >
-                                <img
-                                    src={src}
-                                    alt={label || t('world') || 'World'}
-                                    onError={handleImgError}
-                                    loading="lazy"
-                                    // 初始 data-fallback 标记为空，onError 会写入 "true"
-                                    data-fallback=""
-                                    // 为了更好的可访问性，声明 role
-                                    role="img"
-                                />
-                                <div className="world-meta">
-                                    <div className="world-name">{label}</div>
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
+                                // Packs count 和 size 回退显示
+                                const behaviorCount = (w?.behavior_packs_count ?? (Array.isArray(w?.behavior_packs) ? w.behavior_packs.length : 0));
+                                const resourceCount = (w?.resource_packs_count ?? (Array.isArray(w?.resource_packs) ? w.resource_packs.length : 0));
+                                const sizeReadable = w?.size_readable ?? (w?.size_bytes ? `${w.size_bytes} B` : t('unknown') || 'Unknown');
+
+                                return (
+                                    <div
+                                        key={itemKey}
+                                        className="world-item"
+                                        role="listitem"
+                                        tabIndex={0}
+                                        onClick={() => {
+                                            console.log("clicked world:", w?.folder_name);
+                                        }}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' || e.key === ' ') {
+                                                e.preventDefault();
+                                                console.log("activated world (keyboard):", w?.folder_name);
+                                            }
+                                        }}
+                                        aria-label={label}
+                                    >
+                                        <img
+                                            src={src}
+                                            alt={label || t('world') || 'World'}
+                                            onError={handleImgError}
+                                            loading="lazy"
+                                            data-fallback=""
+                                            role="img"
+                                        />
+                                        <div className="world-meta">
+                                            <div className="world-name">{label}</div>
+
+                                            {/* size 总是显示 */}
+                                            <div className="world-stats" aria-hidden="false">
+                                                <span className="stat stat-size">
+                                                    {sizeReadable}
+                                                </span>
+
+                                                {/* 仅当有行为包时显示 */}
+                                                {behaviorCount > 0 && (
+                                                    <span className="stat stat-behavior">
+                                                        {`${behaviorCount} ${t('McPackManager.behaviorPacks')}`}
+                                                    </span>
+                                                )}
+
+                                                {/* 仅当有资源包时显示 */}
+                                                {resourceCount > 0 && (
+                                                    <span className="stat stat-resource">
+                                                        {`${resourceCount} ${t('McPackManager.resourcePacks')}`}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </>
             )}
         </div>
     );

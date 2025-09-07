@@ -59,6 +59,7 @@ fluent-bundle = "0.16"
 unic-langid = "0.9"
 rayon = "1.11.0"
 indexmap = { version = "2.11.0", features = ["serde"] }
+walkdir = "2.5.0"
 
 
 

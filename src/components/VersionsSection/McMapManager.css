@@ -33,34 +33,36 @@
     padding: 10px;
 }
 
-
-/* 每项卡片化样式 */
+/* 每项卡片化样式（合并后的统一规则） */
 .mc-map-manager .world-item{
     display: flex;
-    align-items: center;
     gap: 12px;
-    padding: 5px;
+    padding: 8px;                /* 使用更宽松的间距（替换原 5px） */
+    align-items: center;
     box-sizing: border-box;
     background: var(--card-bg);
     border-radius: 6px;
     border: 1px solid #e6e9ed;
     min-height: 64px;
     cursor: pointer;              /* 可点击项提示 */
+    border-bottom: 1px solid rgba(0,0,0,0.06); /* 你的新增分隔线 */
 }
 
+/* focus 可访问性 */
 .mc-map-manager .world-item:focus,
 .mc-map-manager .world-item:focus-visible{
     outline: 3px solid rgba(79,156,249,0.18);
     outline-offset: 2px;
 }
 
-/* icon (img) */
 .mc-map-manager .world-item img{
     width: 56px;
     height: 56px;
-    border-radius: 3px;
     object-fit: cover;
+    border-radius: 6px; /* 保持圆角一致 */
+    flex-shrink: 0;
 }
+
 
 /* placeholder when icon missing */
 .mc-map-manager .world-item .icon-placeholder{
@@ -85,14 +87,16 @@
     gap: 4px;
     min-width: 0;
     overflow: hidden;
+    flex: 1; /* 确保 meta 占满剩余空间 */
 }
 .mc-map-manager .world-name{
     font-size: 14px;
-    font-weight: 600;
-    color: #0f1724;
+    color: #222;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    font-weight: 600;
+    margin-bottom: 6px;
 }
 .mc-map-manager .world-sub{
     font-size: 12px;
@@ -100,6 +104,26 @@
     overflow: hidden;
     text-overflow: ellipsis;
 }
+
+/* 新增：统计信息区域（大小与 packs 数量） */
+.world-stats {
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    color: #666;
+    align-items: center;
+    margin-top: 4px;
+    flex-wrap: wrap;
+}
+.stat {
+    background: rgba(0,0,0,0.03);
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+.stat-size { font-weight: 500; }
+.stat-behavior { /* 可单独样式化 */ }
+.stat-resource { /* 可单独样式化 */ }
 
 /* right side actions（如果需要放按钮/图标） */
 .mc-map-manager .world-actions{
@@ -119,8 +143,15 @@
     border: 1px solid rgba(16,24,40,0.03);
 }
 
-/* loading - simple text (no skeleton animation) */
+/* loading - centered */
 .mc-map-manager-loading{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    box-sizing: border-box;
     padding: 16px;
+    min-height: 120px; /* 可根据需要调整高度 */
     color: var(--muted);
+    text-align: center;
 }
