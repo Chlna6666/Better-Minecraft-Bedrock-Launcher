@@ -33,6 +33,7 @@ jobs:
 
       - name: Install dependencies (npm)
         run: npm ci --ignore-scripts
+        shell: pwsh
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -49,47 +50,61 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: 🚚 Install Tauri CLI (cached attempt)
-        # try to install tauri-cli; `|| true` 避免失败阻断（如果已存在）
+      - name: Install Tauri CLI (best-effort)
         run: |
-          set -e
-          cargo install tauri-cli --locked || true
-        shell: powershell
+          cargo install tauri-cli --locked
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "cargo install tauri-cli returned exit code $LASTEXITCODE — continuing"
+          } else {
+            Write-Host "tauri-cli installed successfully"
+          }
+        shell: pwsh
 
-      - name: Ensure tauri-cli in PATH
+      - name: Ensure tauri-cli in PATH (debug)
         run: |
-          echo "Tauri CLI path:"
-          where tauri || (echo "tauri not found in PATH; listing ~/.cargo/bin" ; dir $env:USERPROFILE\.cargo\bin)
-        shell: powershell
+          if (Get-Command tauri -ErrorAction SilentlyContinue) {
+            Write-Host "tauri found at: $(Get-Command tauri).Path"
+          } else {
+            Write-Host "tauri not found in PATH. Listing ~/.cargo/bin:"
+            Get-ChildItem $env:USERPROFILE\.cargo\bin | ForEach-Object { Write-Host $_.FullName }
+          }
+        shell: pwsh
 
       - name: Build Tauri App
         run: |
-          # 在仓库根目录运行 tauri build；如果你的 tauri 项目在子目录，可调整 working-directory
           cargo tauri build
         working-directory: .
-        shell: powershell
+        shell: pwsh
 
       - name: Collect build artifacts
         run: |
-          if (!(Test-Path -Path build)) { New-Item -ItemType Directory -Path build }
-          # 常见输出位置：src-tauri/target/release/*.exe (调试)、bundle 下可能有 msi/zip
-          Copy-Item -Path src-tauri\target\release\*.exe -Destination build -Force -ErrorAction SilentlyContinue
-          Copy-Item -Path src-tauri\target\release\buid\**\* -Destination build -Recurse -Force -ErrorAction SilentlyContinue || $null
-          # 也尝试复制 bundle 文件夹（msi, nsis, zip）
-          Copy-Item -Path src-tauri\target\release\bundle\**\* -Destination build -Recurse -Force -ErrorAction SilentlyContinue || $null
-        shell: powershell
+          if (-not (Test-Path -Path build)) { New-Item -ItemType Directory -Path build | Out-Null }
+
+          # 常见输出位置：src-tauri/target/release/*.exe
+          Try {
+            Copy-Item -Path src-tauri\target\release\*.exe -Destination build -Force -ErrorAction SilentlyContinue
+          } Catch {
+            Write-Host "no exe in target/release"
+          }
+
+          if (Test-Path "src-tauri/target/release/bundle") {
+            Copy-Item -Path src-tauri\target\release\bundle\**\* -Destination build -Recurse -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "no bundle directory found"
+          }
+        shell: pwsh
 
       - name: Get version from Cargo.toml
         id: get_version
-        shell: powershell
         run: |
           $ct = Get-Content src-tauri\Cargo.toml -Raw
-          if ($ct -match '^\s*version\s*=\s*"(.*?)"' ) {
+          if ($ct -match '^\s*version\s*=\s*"(.*?)"') {
             $v = $Matches[1]
           } else {
             $v = "0.0.0"
           }
           echo "version=$v" >> $env:GITHUB_OUTPUT
+        shell: pwsh
 
       - name: Create Pre-release and upload assets
         uses: ncipollo/release-action@v1
