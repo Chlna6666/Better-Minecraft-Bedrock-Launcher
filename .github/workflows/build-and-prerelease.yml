@@ -1,0 +1,101 @@
+name: build-and-prerelease
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build_windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Restore npm cache (optional)
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies (npm)
+        run: npm ci --ignore-scripts
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo (registry, git, target, bin)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v1
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: 🚚 Install Tauri CLI (cached attempt)
+        # try to install tauri-cli; `|| true` 避免失败阻断（如果已存在）
+        run: |
+          set -e
+          cargo install tauri-cli --locked || true
+        shell: powershell
+
+      - name: Ensure tauri-cli in PATH
+        run: |
+          echo "Tauri CLI path:"
+          where tauri || (echo "tauri not found in PATH; listing ~/.cargo/bin" ; dir $env:USERPROFILE\.cargo\bin)
+        shell: powershell
+
+      - name: Build Tauri App
+        run: |
+          # 在仓库根目录运行 tauri build；如果你的 tauri 项目在子目录，可调整 working-directory
+          cargo tauri build
+        working-directory: .
+        shell: powershell
+
+      - name: Collect build artifacts
+        run: |
+          if (!(Test-Path -Path build)) { New-Item -ItemType Directory -Path build }
+          # 常见输出位置：src-tauri/target/release/*.exe (调试)、bundle 下可能有 msi/zip
+          Copy-Item -Path src-tauri\target\release\*.exe -Destination build -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path src-tauri\target\release\buid\**\* -Destination build -Recurse -Force -ErrorAction SilentlyContinue || $null
+          # 也尝试复制 bundle 文件夹（msi, nsis, zip）
+          Copy-Item -Path src-tauri\target\release\bundle\**\* -Destination build -Recurse -Force -ErrorAction SilentlyContinue || $null
+        shell: powershell
+
+      - name: Get version from Cargo.toml
+        id: get_version
+        shell: powershell
+        run: |
+          $ct = Get-Content src-tauri\Cargo.toml -Raw
+          if ($ct -match '^\s*version\s*=\s*"(.*?)"' ) {
+            $v = $Matches[1]
+          } else {
+            $v = "0.0.0"
+          }
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Create Pre-release and upload assets
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ steps.get_version.outputs.version }}-pre
+          name: "Pre-release v${{ steps.get_version.outputs.version }}"
+          files: build/**/*
+          draft: false
+          prerelease: true
