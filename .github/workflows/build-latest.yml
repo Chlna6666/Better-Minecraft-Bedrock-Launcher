@@ -1,70 +1,68 @@
-name: build-latest
+name: build-and-prerelease
 
 on:
   push:
     branches: [ master ]
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build_windows:
-    name: Build on Windows
     runs-on: windows-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: ⬇️ Checkout
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: ♻️ Setup Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'   # 内置 npm 缓存
 
-      - name: ⚡ Restore node_modules cache (optional)
-        uses: actions/cache@v4
-        with:
-          path: |
-            node_modules
-            ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
-
-      - name: 🦀 Install Rust
+      - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: ⚡ Cache cargo (registry, git, target, bin)
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ~/.cargo/bin
             src-tauri/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v1
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: 📦 Install dependencies
+      - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: 🚚 Install Tauri CLI
-        run: cargo install tauri-cli --locked || true
-        # 如果缓存里已有 tauri-cli，就跳过
-
-      - name: 🚀 Build Tauri App
+      - name: Build Tauri App
         run: cargo tauri build
+        working-directory: .
 
-      - name: 📦 Move built exe & installer to new build directory
+      - name: Collect installer/exe
         run: |
-          if (!(Test-Path build)) { New-Item -ItemType Directory -Path build }
-          Copy-Item src-tauri/target/release/*.exe build -ErrorAction SilentlyContinue
-          Copy-Item src-tauri/target/release/bundle/nsis/*.exe build -ErrorAction SilentlyContinue
+          if (!(Test-Path -Path build)) { New-Item -ItemType Directory -Path build }
+          Copy-Item -Path src-tauri\target\release\*.exe -Destination build -Force -ErrorAction SilentlyContinue
 
-      - name: 📤 Upload Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Get version from Cargo.toml
+        id: get_version
+        shell: powershell
+        run: |
+          $ct = Get-Content src-tauri\Cargo.toml -Raw
+          if ($ct -match '^\s*version\s*=\s*"(.*?)"' ) {
+            $v = $Matches[1]
+          } else {
+            $v = "0.0.0"
+          }
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Create Pre-release and upload assets
+        uses: ncipollo/release-action@v1
         with:
-          name: tauri-windows-build
-          path: ./build
+          tag: v${{ steps.get_version.outputs.version }}-pre
+          name: "Pre-release v${{ steps.get_version.outputs.version }}"
+          files: build/*.exe
+          draft: false
+          prerelease: true
