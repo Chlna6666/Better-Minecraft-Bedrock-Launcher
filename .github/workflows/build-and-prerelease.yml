@@ -123,7 +123,7 @@ jobs:
                 if ($meta.packages.Count -gt 0) {
                   # typically the first package is the one
                   $v = $meta.packages[0].version
-                  Write-Host "Found version from src-tauri manifest package: $v"
+                  Write-Host ("Found version from src-tauri manifest package: {0}" -f $v)
                 } else {
                   Write-Host "cargo metadata returned no packages for src-tauri manifest"
                 }
@@ -149,7 +149,7 @@ jobs:
                 if (-not $pkg) { $pkg = $meta.packages | Select-Object -First 1 }
                 if ($pkg) {
                   $v = $pkg.version
-                  Write-Host "Found version from cargo metadata: $v (package manifest: $($pkg.manifest_path))"
+                  Write-Host ("Found version from cargo metadata: {0} (package manifest: {1})" -f $v, $pkg.manifest_path)
                 } else {
                   Write-Host "No package found in cargo metadata result"
                 }
@@ -169,14 +169,14 @@ jobs:
             if (Test-Path "Cargo.toml") { $paths += "Cargo.toml" }
 
             foreach ($p in $paths) {
-              Write-Host "Searching for version in $p"
+              Write-Host ("Searching for version in {0}" -f $p)
               $m = Select-String -Path $p -Pattern '^\s*version\s*=\s*"(.*?)"' -AllMatches
               if ($m -and $m.Matches.Count -gt 0) {
                 $v = $m.Matches[0].Groups[1].Value
-                Write-Host "Found version in $p: $v"
+                Write-Host ("Found version in {0}: {1}" -f $p, $v)
                 break
               } else {
-                Write-Host "No version= found in $p"
+                Write-Host ("No version= found in {0}" -f $p)
               }
             }
           }
@@ -186,7 +186,7 @@ jobs:
             $v = "0.0.0"
           }
 
-          Write-Host "Final extracted version: $v"
+          Write-Host ("Final extracted version: {0}" -f $v)
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
 
