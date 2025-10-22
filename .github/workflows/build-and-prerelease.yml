@@ -105,48 +105,90 @@ jobs:
           if (Test-Path "src-tauri/target/release/bundle") { Get-ChildItem src-tauri/target/release/bundle -Recurse | ForEach-Object { Write-Host $_.FullName } } else { Write-Host "not found" }
         shell: pwsh
 
-      - name: Get version via cargo metadata (workspace-safe)
+      - name: Get version via cargo metadata (robust, workspace-safe)
         id: get_version
+        shell: pwsh
         run: |
-          Write-Host "Running cargo metadata to extract package version..."
-          $meta_json = & cargo metadata --no-deps --format-version 1 2>$null
-          if ($LASTEXITCODE -ne 0 -or -not $meta_json) {
-            Write-Host "cargo metadata failed; falling back to src-tauri/Cargo.toml text parse"
-            if (Test-Path "src-tauri/Cargo.toml") {
-              $ct = Get-Content src-tauri/Cargo.toml -Raw
-              if ($ct -match '^\s*version\s*=\s*"(.*?)"') { $v = $Matches[1] } else { $v = "0.0.0" }
-            } elseif (Test-Path "Cargo.toml") {
-              $ct = Get-Content Cargo.toml -Raw
-              if ($ct -match '^\s*version\s*=\s*"(.*?)"') { $v = $Matches[1] } else { $v = "0.0.0" }
+          Write-Host "=== Extracting package version (robust) ==="
+
+          $v = $null
+
+          # 1) Try cargo metadata with explicit manifest-path for src-tauri
+          if (Test-Path "src-tauri/Cargo.toml") {
+            Write-Host "Trying: cargo metadata --manifest-path src-tauri/Cargo.toml ..."
+            $meta_json = & cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 2>$null
+            if ($LASTEXITCODE -eq 0 -and $meta_json) {
+              try {
+                $meta = $meta_json | ConvertFrom-Json
+                if ($meta.packages.Count -gt 0) {
+                  # typically the first package is the one
+                  $v = $meta.packages[0].version
+                  Write-Host "Found version from src-tauri manifest package: $v"
+                } else {
+                  Write-Host "cargo metadata returned no packages for src-tauri manifest"
+                }
+              } catch {
+                Write-Host "Failed to parse cargo metadata JSON for src-tauri: $_"
+              }
             } else {
-              $v = "0.0.0"
+              Write-Host "cargo metadata (src-tauri) failed or returned empty."
             }
           } else {
-            $meta = $meta_json | ConvertFrom-Json
+            Write-Host "src-tauri/Cargo.toml not found, skipping manifest-path attempt."
+          }
 
-            # 优先寻找 manifest_path 包含 src-tauri/Cargo.toml 的包
-            $pkg = $meta.packages | Where-Object { $_.manifest_path -like "*src-tauri*/Cargo.toml" } | Select-Object -First 1
-
-            if (-not $pkg) {
-              # 如果找不到，尝试找到任意 package 的第一个
-              $pkg = $meta.packages | Select-Object -First 1
-            }
-
-            if ($pkg) {
-              $v = $pkg.version
+          # 2) Try cargo metadata in repo root (if not found yet)
+          if (-not $v) {
+            Write-Host "Trying: cargo metadata (repo root) ..."
+            $meta_json = & cargo metadata --no-deps --format-version 1 2>$null
+            if ($LASTEXITCODE -eq 0 -and $meta_json) {
+              try {
+                $meta = $meta_json | ConvertFrom-Json
+                # prefer a package whose manifest_path contains src-tauri
+                $pkg = $meta.packages | Where-Object { $_.manifest_path -like "*src-tauri*/Cargo.toml" } | Select-Object -First 1
+                if (-not $pkg) { $pkg = $meta.packages | Select-Object -First 1 }
+                if ($pkg) {
+                  $v = $pkg.version
+                  Write-Host "Found version from cargo metadata: $v (package manifest: $($pkg.manifest_path))"
+                } else {
+                  Write-Host "No package found in cargo metadata result"
+                }
+              } catch {
+                Write-Host "Failed to parse cargo metadata JSON (root): $_"
+              }
             } else {
-              Write-Host "No package found in cargo metadata; fallback version"
-              if ($meta.packages.Count -gt 0) {
-                $v = $meta.packages[0].version
+              Write-Host "cargo metadata (root) failed or returned empty."
+            }
+          }
+
+          # 3) Fallback: parse src-tauri/Cargo.toml or root Cargo.toml via Select-String (robust)
+          if (-not $v) {
+            Write-Host "Falling back to text parse of Cargo.toml files..."
+            $paths = @()
+            if (Test-Path "src-tauri/Cargo.toml") { $paths += "src-tauri/Cargo.toml" }
+            if (Test-Path "Cargo.toml") { $paths += "Cargo.toml" }
+
+            foreach ($p in $paths) {
+              Write-Host "Searching for version in $p"
+              $m = Select-String -Path $p -Pattern '^\s*version\s*=\s*"(.*?)"' -AllMatches
+              if ($m -and $m.Matches.Count -gt 0) {
+                $v = $m.Matches[0].Groups[1].Value
+                Write-Host "Found version in $p: $v"
+                break
               } else {
-                $v = "0.0.0"
+                Write-Host "No version= found in $p"
               }
             }
           }
 
-          Write-Host "Extracted version: $v"
+          if (-not $v) {
+            Write-Host "WARNING: Unable to detect package version; defaulting to 0.0.0"
+            $v = "0.0.0"
+          }
+
+          Write-Host "Final extracted version: $v"
           echo "version=$v" >> $env:GITHUB_OUTPUT
-        shell: pwsh
+
 
       - name: Create Pre-release and upload assets
         uses: ncipollo/release-action@v1
