@@ -190,12 +190,38 @@ jobs:
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
 
-      - name: Create Pre-release and upload assets
+      - name: Find build files (for release upload)
+        id: find_build_files
+        shell: pwsh
+        run: |
+          Write-Host "Looking for files under build/ ..."
+          if (-not (Test-Path "build")) {
+            Write-Host "No build directory found"
+            echo "files=" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $files = Get-ChildItem build -File -Recurse | ForEach-Object {
+            # use forward slashes to be safer in action input
+            ($_.FullName -replace "\\", "/") -replace "^$PWD/", ""
+          } | Where-Object { $_ -ne $null } 
+
+          if (-not $files) {
+            Write-Host "No files found under build/"
+            echo "files=" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          # join by comma (ncipollo release-action accepts comma-separated list)
+          $joined = [string]::Join(',', $files)
+          Write-Host "Files to upload: $joined"
+          echo "files=$joined" >> $env:GITHUB_OUTPUT
+
+      - name: Create Pre-release and upload assets (per-file)
         uses: ncipollo/release-action@v1
         with:
           tag: v${{ steps.get_version.outputs.version }}-pre
           name: "Pre-release v${{ steps.get_version.outputs.version }}"
-          artifacts: build
+          artifacts: ${{ steps.find_build_files.outputs.files }}
           draft: false
           prerelease: true
         env:
