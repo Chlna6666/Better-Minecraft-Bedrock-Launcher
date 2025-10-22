@@ -249,83 +249,52 @@ jobs:
           Write-Host ("Files to upload: {0}" -f $joined)
           echo "files=$joined" >> $env:GITHUB_OUTPUT
 
-      - name: Upload (create or reuse release, replace assets)
+      - name: (Optional) Remove same-named assets from existing release (prevent duplicates)
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           VERSION: ${{ steps.get_version.outputs.version }}
-          FILES: ${{ steps.find_build_files.outputs.files }}
         run: |
-          if (-not $env:FILES) {
-            Write-Host "No files to upload, skipping."
-            exit 0
+          $tag = "v${{ steps.get_version.outputs.version }}-pre"
+          Write-Host "Preparing release tag: $tag"
+
+          # patterns to match existing asset names (use -like; supports '*' wildcard)
+          $targetPatterns = @(
+            "better_minecraft_bedrock_launcher.exe",
+            "better_minecraft_bedrock_launcher_*_*-setup.exe"
+          )
+
+          if (gh release view $tag >/dev/null 2>&1) {
+            Write-Host "Release $tag exists — checking assets to delete matching patterns..."
+            $json = gh release view $tag --json assets 2>$null || ""
+            if (-not [string]::IsNullOrWhiteSpace($json)) {
+              $obj = $json | ConvertFrom-Json
+              $existing = @($obj.assets)  # ensure array
+              foreach ($a in $existing) {
+                foreach ($pat in $targetPatterns) {
+                  if ($a.name -like $pat) {
+                    Write-Host ("Deleting existing asset: {0} (id={1})" -f $a.name, $a.id)
+                    gh api --method DELETE "/repos/${{ github.repository }}/releases/assets/$($a.id)" >/dev/null 2>&1 || Write-Host "Failed to delete asset $($a.name) — continuing"
+                    break
+                  }
+                }
+              }
+            } else {
+              Write-Host "No assets info returned; skipping deletion."
+            }
+          } else {
+            Write-Host "Release $tag does not exist — nothing to delete."
           }
 
-          $tag = "v$env:VERSION-pre"
-          $token = $env:GITHUB_TOKEN
-          $repo = $env:REPO
-          $files = $env:FILES -split ','
-
-          $headers = @{ Authorization = "token $token"; Accept = "application/vnd.github.v3+json" }
-
-          # check release
-          $getUrl = "https://api.github.com/repos/$repo/releases/tags/$tag"
-          Write-Host "Checking if release $tag exists..."
-          $release = $null
-          try {
-            $release = Invoke-RestMethod -Method Get -Uri $getUrl -Headers $headers -ErrorAction Stop
-            Write-Host "Release exists. id = $($release.id)"
-            $upload_url = $release.upload_url -replace '\{\?.*',''
-          } catch {
-            Write-Host "Release not found. Creating release $tag..."
-            $createUrl = "https://api.github.com/repos/$repo/releases"
-            $body = @{
-              tag_name = $tag
-              name = "Pre-release v$env:VERSION"
-              draft = $false
-              prerelease = $true
-            } | ConvertTo-Json
-            try {
-              $release = Invoke-RestMethod -Method Post -Uri $createUrl -Headers $headers -Body $body -ContentType "application/json" -ErrorAction Stop
-              Write-Host "Created release id = $($release.id)"
-              $upload_url = $release.upload_url -replace '\{\?.*',''
-            } catch {
-              Write-Error "Create release failed: $_"
-              exit 1
-            }
-          }
-
-          # list existing assets
-          try {
-            $existingAssets = Invoke-RestMethod -Method Get -Uri ("https://api.github.com/repos/$repo/releases/$($release.id)/assets") -Headers $headers -ErrorAction SilentlyContinue
-          } catch {
-            $existingAssets = @()
-          }
-
-          # upload each file (delete same-name asset first)
-          foreach ($f in $files) {
-            if (-not (Test-Path $f)) {
-              Write-Host "Skipping missing file: $f"
-              continue
-            }
-            $fname = [System.IO.Path]::GetFileName($f)
-            Write-Host "Uploading $f as $fname ..."
-
-            $same = $existingAssets | Where-Object { $_.name -eq $fname }
-            if ($same) {
-              Write-Host "Deleting existing asset '$fname' (id=$($same.id)) to replace..."
-              $delUrl = "https://api.github.com/repos/$repo/releases/assets/$($same.id)"
-              Invoke-RestMethod -Method Delete -Uri $delUrl -Headers $headers -ErrorAction SilentlyContinue
-            }
-
-            $uploadUri = "$upload_url?name=$([System.Uri]::EscapeDataString($fname))"
-            try {
-              Invoke-RestMethod -Method Post -Uri $uploadUri -Headers @{ Authorization = "token $token"; Accept = "application/vnd.github.v3+json" } -InFile $f -ContentType "application/octet-stream" -ErrorAction Stop
-              Write-Host "Uploaded $fname"
-            } catch {
-              Write-Error "Failed to upload $fname : $_"
-            }
-          }
-
-          Write-Host "Upload step finished."
+      - name: Create pre-release & upload selected assets (softprops/action-gh-release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}-pre
+          name: "Pre-release v${{ steps.get_version.outputs.version }}"
+          prerelease: true
+          files: |
+            src-tauri/target/release/better_minecraft_bedrock_launcher.exe
+            src-tauri/target/release/bundle/**/better_minecraft_bedrock_launcher_*_*-setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
