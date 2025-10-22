@@ -259,33 +259,70 @@ jobs:
           $tag = "v${{ steps.get_version.outputs.version }}-pre"
           Write-Host "Preparing release tag: $tag"
 
+          # 确认 gh 可用
+          if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            Write-Error "gh CLI not found on runner. Aborting deletion step."
+            exit 1
+          }
+
           # patterns to match existing asset names (use -like; supports '*' wildcard)
           $targetPatterns = @(
             "better_minecraft_bedrock_launcher.exe",
             "better_minecraft_bedrock_launcher_*_*-setup.exe"
           )
 
-          if (gh release view $tag >/dev/null 2>&1) {
-            Write-Host "Release $tag exists — checking assets to delete matching patterns..."
-            $json = gh release view $tag --json assets 2>$null || ""
-            if (-not [string]::IsNullOrWhiteSpace($json)) {
-              $obj = $json | ConvertFrom-Json
-              $existing = @($obj.assets)  # ensure array
-              foreach ($a in $existing) {
-                foreach ($pat in $targetPatterns) {
-                  if ($a.name -like $pat) {
-                    Write-Host ("Deleting existing asset: {0} (id={1})" -f $a.name, $a.id)
-                    gh api --method DELETE "/repos/${{ github.repository }}/releases/assets/$($a.id)" >/dev/null 2>&1 || Write-Host "Failed to delete asset $($a.name) — continuing"
-                    break
-                  }
-                }
-              }
-            } else {
-              Write-Host "No assets info returned; skipping deletion."
+          # 尝试获取 release 的 assets（用 try/catch 避免在不存在时抛错）
+          $exists = $false
+          $json = $null
+          try {
+            # 注意：在 pwsh 中将 stderr 丢弃要用 2>$null（不要用 >/dev/null）
+            $json = gh release view $tag --json assets 2>$null
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($json)) {
+              $exists = $true
             }
-          } else {
-            Write-Host "Release $tag does not exist — nothing to delete."
+          } catch {
+            $exists = $false
           }
+
+          if (-not $exists) {
+            Write-Host "Release $tag does not exist — nothing to delete."
+            exit 0
+          }
+
+          Write-Host "Release $tag exists — checking assets to delete matching patterns..."
+
+          # 解析 assets JSON（如果为空也要保护）
+          $obj = $null
+          try {
+            $obj = $json | ConvertFrom-Json
+          } catch {
+            Write-Host "Failed to parse release JSON; skipping deletion."
+            exit 0
+          }
+
+          $existing = @($obj.assets)
+
+          foreach ($a in $existing) {
+            foreach ($pat in $targetPatterns) {
+              try {
+                if ($a.name -like $pat) {
+                  Write-Host ("Deleting existing asset: {0} (id={1})" -f $a.name, $a.id)
+                  # 使用 gh api 删除 asset（若失败则记录并继续）
+                  gh api --method DELETE "/repos/${{ github.repository }}/releases/assets/$($a.id)" 2>$null
+                  if ($LASTEXITCODE -ne 0) {
+                    Write-Host "Warning: failed to delete asset id $($a.id) (name $($a.name)), continuing..."
+                  } else {
+                    Write-Host "Deleted asset: $($a.name)"
+                  }
+                  break
+                }
+              } catch {
+                Write-Host "Error while checking/deleting asset $($a.name): $_"
+              }
+            }
+          }
+
+          Write-Host "Asset deletion step finished."
 
       - name: Create pre-release & upload selected assets (softprops/action-gh-release)
         uses: softprops/action-gh-release@v2
