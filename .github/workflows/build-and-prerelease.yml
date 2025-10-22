@@ -190,33 +190,49 @@ jobs:
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
 
-      - name: Find build files (for release upload)
+      - name: Find exact build files (only main exe + nsis setup)
         id: find_build_files
         shell: pwsh
         run: |
-          Write-Host "Looking for files under build/ ..."
-          if (-not (Test-Path "build")) {
-            Write-Host "No build directory found"
+          Write-Host "Looking for main exe and nsis setup installer..."
+
+          $files = @()
+
+          # 1) main exe (expected path)
+          $main = "src-tauri/target/release/better_minecraft_bedrock_launcher.exe"
+          if (Test-Path $main) {
+            $p = (Resolve-Path $main).Path -replace "\\","/"
+            Write-Host ("Found main exe: {0}" -f $p)
+            $files += $p
+          } else {
+            Write-Host "Main exe not found at $main"
+          }
+
+          # 2) nsis setup installer (search bundle/nsis and other bundle subdirs)
+          $nsisCandidate = Get-ChildItem "src-tauri/target/release/bundle" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.Name -match '^better_minecraft_bedrock_launcher.*-setup\.exe$' -and ($_.FullName -match '\\nsis\\' -or $_.FullName -match '/nsis/')
+            } | Select-Object -First 1
+
+          if ($nsisCandidate) {
+            $p2 = $nsisCandidate.FullName -replace "\\","/"
+            Write-Host ("Found nsis installer: {0}" -f $p2)
+            $files += $p2
+          } else {
+            Write-Host "NSIS installer not found under src-tauri/target/release/bundle/*/nsis/"
+          }
+
+          if ($files.Count -eq 0) {
+            Write-Host "No target files found — outputting empty files variable."
             echo "files=" >> $env:GITHUB_OUTPUT
             exit 0
           }
-          $files = Get-ChildItem build -File -Recurse | ForEach-Object {
-            # use forward slashes to be safer in action input
-            ($_.FullName -replace "\\", "/") -replace "^$PWD/", ""
-          } | Where-Object { $_ -ne $null } 
 
-          if (-not $files) {
-            Write-Host "No files found under build/"
-            echo "files=" >> $env:GITHUB_OUTPUT
-            exit 0
-          }
-
-          # join by comma (ncipollo release-action accepts comma-separated list)
           $joined = [string]::Join(',', $files)
-          Write-Host "Files to upload: $joined"
+          Write-Host ("Files to upload: {0}" -f $joined)
           echo "files=$joined" >> $env:GITHUB_OUTPUT
 
-      - name: Create Pre-release and upload assets (per-file)
+      - name: Create Pre-release and upload selected assets
         uses: ncipollo/release-action@v1
         with:
           tag: v${{ steps.get_version.outputs.version }}-pre
@@ -226,3 +242,4 @@ jobs:
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
