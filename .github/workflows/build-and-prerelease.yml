@@ -50,8 +50,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked || true
+      - name: Install Tauri CLI (if missing)
+        shell: pwsh
+        run: |
+          Write-Host "Check tauri/cargo-tauri in PATH..."
+          $found = $false
+          if (Get-Command tauri -ErrorAction SilentlyContinue) {
+            Write-Host "Found 'tauri' command: $(Get-Command tauri).Path"
+            $found = $true
+          }
+          if (-not $found -and (Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {
+            Write-Host "Found 'cargo-tauri' command: $(Get-Command cargo-tauri).Path"
+            $found = $true
+          }
+          if ($found) {
+            Write-Host "Tauri CLI already present - skipping install."
+          } else {
+            Write-Host "Tauri CLI not found - installing (best-effort)..."
+            & cargo install tauri-cli --locked --force
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "cargo install returned exit code $LASTEXITCODE; continuing anyway."
+            } else {
+              Write-Host "tauri-cli installed."
+            }
+          }
 
       - name: Show environment (debug)
         run: |
@@ -74,19 +96,19 @@ jobs:
         run: |
           if (-not (Test-Path -Path build)) { New-Item -ItemType Directory -Path build | Out-Null }
 
-          # 复制 target/release 下的 exe（若存在）
+          # 复制 src-tauri/target/release 下的 exe（若存在）
           if (Test-Path "src-tauri/target/release") {
             Get-ChildItem src-tauri/target/release -Filter *.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
               Copy-Item -Path $_.FullName -Destination build -Force -ErrorAction SilentlyContinue
             }
           }
 
-          # 复制 bundle 下所有可能的安装器（msi, nsis, zip, exe）
+          # 复制 bundle 下所有安装器文件
           if (Test-Path "src-tauri/target/release/bundle") {
             Copy-Item -Path src-tauri/target/release/bundle/** -Destination build -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-          # 也尝试复制根 target/release（如果项目以不同方式输出）
+          # 根 target/release 作为备用
           if (Test-Path "target/release") {
             Get-ChildItem target/release -Filter *.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
               Copy-Item -Path $_.FullName -Destination build -Force -ErrorAction SilentlyContinue
@@ -97,7 +119,7 @@ jobs:
           Get-ChildItem build -Recurse | ForEach-Object { Write-Host $_.FullName }
         shell: pwsh
 
-      - name: list target directories
+      - name: list target directories (debug)
         run: |
           Write-Host "=== src-tauri/target/release ==="
           if (Test-Path "src-tauri/target/release") { Get-ChildItem src-tauri/target/release -Recurse | ForEach-Object { Write-Host $_.FullName } } else { Write-Host "not found" }
@@ -121,7 +143,6 @@ jobs:
               try {
                 $meta = $meta_json | ConvertFrom-Json
                 if ($meta.packages.Count -gt 0) {
-                  # typically the first package is the one
                   $v = $meta.packages[0].version
                   Write-Host ("Found version from src-tauri manifest package: {0}" -f $v)
                 } else {
@@ -144,7 +165,6 @@ jobs:
             if ($LASTEXITCODE -eq 0 -and $meta_json) {
               try {
                 $meta = $meta_json | ConvertFrom-Json
-                # prefer a package whose manifest_path contains src-tauri
                 $pkg = $meta.packages | Where-Object { $_.manifest_path -like "*src-tauri*/Cargo.toml" } | Select-Object -First 1
                 if (-not $pkg) { $pkg = $meta.packages | Select-Object -First 1 }
                 if ($pkg) {
@@ -161,13 +181,12 @@ jobs:
             }
           }
 
-          # 3) Fallback: parse src-tauri/Cargo.toml or root Cargo.toml via Select-String (robust)
+          # 3) Fallback: text parse
           if (-not $v) {
             Write-Host "Falling back to text parse of Cargo.toml files..."
             $paths = @()
             if (Test-Path "src-tauri/Cargo.toml") { $paths += "src-tauri/Cargo.toml" }
             if (Test-Path "Cargo.toml") { $paths += "Cargo.toml" }
-
             foreach ($p in $paths) {
               Write-Host ("Searching for version in {0}" -f $p)
               $m = Select-String -Path $p -Pattern '^\s*version\s*=\s*"(.*?)"' -AllMatches
@@ -189,16 +208,14 @@ jobs:
           Write-Host ("Final extracted version: {0}" -f $v)
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
-
       - name: Find exact build files (only main exe + nsis setup)
         id: find_build_files
         shell: pwsh
         run: |
           Write-Host "Looking for main exe and nsis setup installer..."
-
           $files = @()
 
-          # 1) main exe (expected path)
+          # main exe
           $main = "src-tauri/target/release/better_minecraft_bedrock_launcher.exe"
           if (Test-Path $main) {
             $p = (Resolve-Path $main).Path -replace "\\","/"
@@ -208,7 +225,7 @@ jobs:
             Write-Host "Main exe not found at $main"
           }
 
-          # 2) nsis setup installer (search bundle/nsis and other bundle subdirs)
+          # nsis installer
           $nsisCandidate = Get-ChildItem "src-tauri/target/release/bundle" -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
               $_.Name -match '^better_minecraft_bedrock_launcher.*-setup\.exe$' -and ($_.FullName -match '\\nsis\\' -or $_.FullName -match '/nsis/')
@@ -232,14 +249,83 @@ jobs:
           Write-Host ("Files to upload: {0}" -f $joined)
           echo "files=$joined" >> $env:GITHUB_OUTPUT
 
-      - name: Create Pre-release and upload selected assets
-        uses: ncipollo/release-action@v1
-        with:
-          tag: v${{ steps.get_version.outputs.version }}-pre
-          name: "Pre-release v${{ steps.get_version.outputs.version }}"
-          artifacts: ${{ steps.find_build_files.outputs.files }}
-          draft: false
-          prerelease: true
+      - name: Upload (create or reuse release, replace assets)
+        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+          FILES: ${{ steps.find_build_files.outputs.files }}
+        run: |
+          if (-not $env:FILES) {
+            Write-Host "No files to upload, skipping."
+            exit 0
+          }
 
+          $tag = "v$env:VERSION-pre"
+          $token = $env:GITHUB_TOKEN
+          $repo = $env:REPO
+          $files = $env:FILES -split ','
+
+          $headers = @{ Authorization = "token $token"; Accept = "application/vnd.github.v3+json" }
+
+          # check release
+          $getUrl = "https://api.github.com/repos/$repo/releases/tags/$tag"
+          Write-Host "Checking if release $tag exists..."
+          $release = $null
+          try {
+            $release = Invoke-RestMethod -Method Get -Uri $getUrl -Headers $headers -ErrorAction Stop
+            Write-Host "Release exists. id = $($release.id)"
+            $upload_url = $release.upload_url -replace '\{\?.*',''
+          } catch {
+            Write-Host "Release not found. Creating release $tag..."
+            $createUrl = "https://api.github.com/repos/$repo/releases"
+            $body = @{
+              tag_name = $tag
+              name = "Pre-release v$env:VERSION"
+              draft = $false
+              prerelease = $true
+            } | ConvertTo-Json
+            try {
+              $release = Invoke-RestMethod -Method Post -Uri $createUrl -Headers $headers -Body $body -ContentType "application/json" -ErrorAction Stop
+              Write-Host "Created release id = $($release.id)"
+              $upload_url = $release.upload_url -replace '\{\?.*',''
+            } catch {
+              Write-Error "Create release failed: $_"
+              exit 1
+            }
+          }
+
+          # list existing assets
+          try {
+            $existingAssets = Invoke-RestMethod -Method Get -Uri ("https://api.github.com/repos/$repo/releases/$($release.id)/assets") -Headers $headers -ErrorAction SilentlyContinue
+          } catch {
+            $existingAssets = @()
+          }
+
+          # upload each file (delete same-name asset first)
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) {
+              Write-Host "Skipping missing file: $f"
+              continue
+            }
+            $fname = [System.IO.Path]::GetFileName($f)
+            Write-Host "Uploading $f as $fname ..."
+
+            $same = $existingAssets | Where-Object { $_.name -eq $fname }
+            if ($same) {
+              Write-Host "Deleting existing asset '$fname' (id=$($same.id)) to replace..."
+              $delUrl = "https://api.github.com/repos/$repo/releases/assets/$($same.id)"
+              Invoke-RestMethod -Method Delete -Uri $delUrl -Headers $headers -ErrorAction SilentlyContinue
+            }
+
+            $uploadUri = "$upload_url?name=$([System.Uri]::EscapeDataString($fname))"
+            try {
+              Invoke-RestMethod -Method Post -Uri $uploadUri -Headers @{ Authorization = "token $token"; Accept = "application/vnd.github.v3+json" } -InFile $f -ContentType "application/octet-stream" -ErrorAction Stop
+              Write-Host "Uploaded $fname"
+            } catch {
+              Write-Error "Failed to upload $fname : $_"
+            }
+          }
+
+          Write-Host "Upload step finished."
