@@ -50,15 +50,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install Tauri CLI (best-effort)
-        run: |
-          & cargo install tauri-cli --locked
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "tauri-cli install returned exit code $LASTEXITCODE — continuing"
-          } else {
-            Write-Host "tauri-cli installed successfully"
-          }
-        shell: pwsh
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked || true
 
       - name: Show environment (debug)
         run: |
