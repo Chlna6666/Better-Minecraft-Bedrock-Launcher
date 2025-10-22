@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+        shell: pwsh
 
       - name: Restore npm cache (optional)
         uses: actions/cache@v4
@@ -52,20 +53,16 @@ jobs:
 
       - name: Install Tauri CLI (best-effort)
         run: |
-          cargo install tauri-cli --locked
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "cargo install tauri-cli returned exit code $LASTEXITCODE — continuing"
-          } else {
-            Write-Host "tauri-cli installed successfully"
-          }
+          cargo install tauri-cli --locked || Write-Host "tauri-cli install failed or already installed; continuing"
         shell: pwsh
 
-      - name: Ensure tauri-cli in PATH (debug)
+      - name: Show environment (debug)
         run: |
+          Write-Host "cargo: $(Get-Command cargo).Path"
           if (Get-Command tauri -ErrorAction SilentlyContinue) {
-            Write-Host "tauri found at: $(Get-Command tauri).Path"
+            Write-Host "tauri: $(Get-Command tauri).Path"
           } else {
-            Write-Host "tauri not found in PATH. Listing ~/.cargo/bin:"
+            Write-Host "tauri not in PATH; listing ~/.cargo/bin"
             Get-ChildItem $env:USERPROFILE\.cargo\bin | ForEach-Object { Write-Host $_.FullName }
           }
         shell: pwsh
@@ -76,33 +73,79 @@ jobs:
         working-directory: .
         shell: pwsh
 
-      - name: Collect build artifacts
+      - name: Collect build artifacts (copy to build/)
         run: |
           if (-not (Test-Path -Path build)) { New-Item -ItemType Directory -Path build | Out-Null }
 
-          # 常见输出位置：src-tauri/target/release/*.exe
-          Try {
-            Copy-Item -Path src-tauri\target\release\*.exe -Destination build -Force -ErrorAction SilentlyContinue
-          } Catch {
-            Write-Host "no exe in target/release"
+          # 复制 target/release 下的 exe（若存在）
+          if (Test-Path "src-tauri/target/release") {
+            Get-ChildItem src-tauri/target/release -Filter *.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination build -Force -ErrorAction SilentlyContinue
+            }
           }
 
+          # 复制 bundle 下所有可能的安装器（msi, nsis, zip, exe）
           if (Test-Path "src-tauri/target/release/bundle") {
-            Copy-Item -Path src-tauri\target\release\bundle\**\* -Destination build -Recurse -Force -ErrorAction SilentlyContinue
-          } else {
-            Write-Host "no bundle directory found"
+            Copy-Item -Path src-tauri/target/release/bundle/** -Destination build -Recurse -Force -ErrorAction SilentlyContinue
           }
+
+          # 也尝试复制根 target/release（如果项目以不同方式输出）
+          if (Test-Path "target/release") {
+            Get-ChildItem target/release -Filter *.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination build -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          Write-Host "===== build/ contents ====="
+          Get-ChildItem build -Recurse | ForEach-Object { Write-Host $_.FullName }
         shell: pwsh
 
-      - name: Get version from Cargo.toml
+      - name: list target directories
+        run: |
+          Write-Host "=== src-tauri/target/release ==="
+          if (Test-Path "src-tauri/target/release") { Get-ChildItem src-tauri/target/release -Recurse | ForEach-Object { Write-Host $_.FullName } } else { Write-Host "not found" }
+          Write-Host "=== src-tauri/target/release/bundle ==="
+          if (Test-Path "src-tauri/target/release/bundle") { Get-ChildItem src-tauri/target/release/bundle -Recurse | ForEach-Object { Write-Host $_.FullName } } else { Write-Host "not found" }
+        shell: pwsh
+
+      - name: Get version via cargo metadata (workspace-safe)
         id: get_version
         run: |
-          $ct = Get-Content src-tauri\Cargo.toml -Raw
-          if ($ct -match '^\s*version\s*=\s*"(.*?)"') {
-            $v = $Matches[1]
+          Write-Host "Running cargo metadata to extract package version..."
+          $meta_json = cargo metadata --no-deps --format-version 1 2>$null
+          if (-not $?) {
+            Write-Host "cargo metadata failed; falling back to src-tauri/Cargo.toml text parse"
+            if (Test-Path "src-tauri/Cargo.toml") {
+              $ct = Get-Content src-tauri/Cargo.toml -Raw
+              if ($ct -match '^\s*version\s*=\s*"(.*?)"') { $v = $Matches[1] } else { $v = "0.0.0" }
+            } elseif (Test-Path "Cargo.toml") {
+              $ct = Get-Content Cargo.toml -Raw
+              if ($ct -match '^\s*version\s*=\s*"(.*?)"') { $v = $Matches[1] } else { $v = "0.0.0" }
+            } else {
+              $v = "0.0.0"
+            }
           } else {
-            $v = "0.0.0"
+            $meta = $meta_json | ConvertFrom-Json
+
+            $pkg = $meta.packages | Where-Object { $_.manifest_path -like "*src-tauri*/Cargo.toml" } | Select-Object -First 1
+
+            if (-not $pkg) {
+              $pkg = $meta.packages | Where-Object { $_.manifest_path -like "*Cargo.toml" } | Select-Object -First 1
+            }
+
+            if ($pkg) {
+              $v = $pkg.version
+            } else {
+              Write-Host "No package found in cargo metadata; fallback to first package version if any"
+              if ($meta.packages.Count -gt 0) {
+                $v = $meta.packages[0].version
+              } else {
+                $v = "0.0.0"
+              }
+            }
           }
+
+          Write-Host "Extracted version: $v"
           echo "version=$v" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
@@ -111,6 +154,8 @@ jobs:
         with:
           tag: v${{ steps.get_version.outputs.version }}-pre
           name: "Pre-release v${{ steps.get_version.outputs.version }}"
-          files: build/**/*
+          artifacts: build
           draft: false
           prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
