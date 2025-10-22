@@ -20,7 +20,6 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-        shell: pwsh
 
       - name: Restore npm cache (optional)
         uses: actions/cache@v4
@@ -53,7 +52,12 @@ jobs:
 
       - name: Install Tauri CLI (best-effort)
         run: |
-          cargo install tauri-cli --locked || Write-Host "tauri-cli install failed or already installed; continuing"
+          & cargo install tauri-cli --locked
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "tauri-cli install returned exit code $LASTEXITCODE — continuing"
+          } else {
+            Write-Host "tauri-cli installed successfully"
+          }
         shell: pwsh
 
       - name: Show environment (debug)
@@ -112,8 +116,8 @@ jobs:
         id: get_version
         run: |
           Write-Host "Running cargo metadata to extract package version..."
-          $meta_json = cargo metadata --no-deps --format-version 1 2>$null
-          if (-not $?) {
+          $meta_json = & cargo metadata --no-deps --format-version 1 2>$null
+          if ($LASTEXITCODE -ne 0 -or -not $meta_json) {
             Write-Host "cargo metadata failed; falling back to src-tauri/Cargo.toml text parse"
             if (Test-Path "src-tauri/Cargo.toml") {
               $ct = Get-Content src-tauri/Cargo.toml -Raw
@@ -127,16 +131,18 @@ jobs:
           } else {
             $meta = $meta_json | ConvertFrom-Json
 
+            # 优先寻找 manifest_path 包含 src-tauri/Cargo.toml 的包
             $pkg = $meta.packages | Where-Object { $_.manifest_path -like "*src-tauri*/Cargo.toml" } | Select-Object -First 1
 
             if (-not $pkg) {
-              $pkg = $meta.packages | Where-Object { $_.manifest_path -like "*Cargo.toml" } | Select-Object -First 1
+              # 如果找不到，尝试找到任意 package 的第一个
+              $pkg = $meta.packages | Select-Object -First 1
             }
 
             if ($pkg) {
               $v = $pkg.version
             } else {
-              Write-Host "No package found in cargo metadata; fallback to first package version if any"
+              Write-Host "No package found in cargo metadata; fallback version"
               if ($meta.packages.Count -gt 0) {
                 $v = $meta.packages[0].version
               } else {
