@@ -1,4 +1,3 @@
-use tauri::command;
 
 // 全局常量
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");

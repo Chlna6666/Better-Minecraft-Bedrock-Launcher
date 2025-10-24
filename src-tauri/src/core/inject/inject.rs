@@ -1,9 +1,6 @@
 use anyhow::{anyhow, Result};
-use std::{ffi::OsStr, mem, os::windows::ffi::OsStrExt, path::Path, time::Duration};
-use std::collections::HashMap;
+use std::{mem, os::windows::ffi::OsStrExt, path::Path};
 use std::path::PathBuf;
-use tracing::debug;
-use tokio::task;
 use windows::core::{PCSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::Authorization::{ConvertStringSidToSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP};

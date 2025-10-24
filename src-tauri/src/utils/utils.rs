@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
 use std::iter::once;
-use std::os::windows::ffi::OsStrExt;
 
 pub fn to_wstr(s: &str) -> Vec<u16> {
     // 1) 统一换行到 Windows 风格，避免 TaskDialog 渲染异常

@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use serde_json::json;
 use tauri::{ Emitter, Manager};
 use crate::utils::AppHandle::GLOBAL_APP;

@@ -33,7 +33,6 @@ pub use webview2::*;
 pub use window::*;
 pub use zip::*;
 pub use cancel_install::*;
-pub use install_appx::*;
 pub use import_appx::*;
 pub use mc_pack::*;
 pub use mc_map::*;

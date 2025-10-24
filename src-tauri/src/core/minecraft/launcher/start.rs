@@ -6,9 +6,8 @@ use std::ptr;
 use std::io;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
-use tracing::{debug, error, info};
+use tracing::info;
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-use crate::core::minecraft::appx::utils::{ get_package_info};
 
 fn launch_uwp_winapi(app_user_model_id: &str) -> Result<u32, windows::core::Error> {
     let hr = unsafe { CoInitializeEx(Some(ptr::null()), COINIT_APARTMENTTHREADED) };

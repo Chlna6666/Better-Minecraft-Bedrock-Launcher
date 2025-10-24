@@ -1,7 +1,7 @@
 // uwp_minimize_fix.rs
 // 使用 Rust + windows crate 启用 UWP 包的调试（等同于 C++ 中的 IPackageDebugSettings::EnableDebugging）
 
-use std::{ffi::OsStr, os::windows::prelude::OsStrExt, ptr};
+use std::{ffi::OsStr, os::windows::prelude::OsStrExt};
 
 use windows::core::{GUID, HSTRING, PCWSTR, Result};
 use windows::Win32::System::Com::{

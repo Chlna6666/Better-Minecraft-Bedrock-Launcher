@@ -1,10 +1,9 @@
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::io::{self, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use tokio::fs::File;
 
 // NBT标签类型码（基于您的描述和文献）
 const TAG_END: u8 = 0x00;

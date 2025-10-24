@@ -1,7 +1,7 @@
 use std::process::exit;
 use tracing::info;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
     KEY_READ,
@@ -9,9 +9,7 @@ use windows::Win32::System::Registry::{
 use windows::Win32::UI::Controls::{TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TASKDIALOG_COMMON_BUTTON_FLAGS, TDF_ALLOW_DIALOG_CANCELLATION};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, LoadCursorW, LoadImageW, RegisterClassW, TranslateMessage,
-    CW_USEDEFAULT, IDC_ARROW, IDCANCEL, IDNO, IDYES, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
-    MSG, SW_SHOWNORMAL, WM_DESTROY, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    IDCANCEL, IDNO, IDYES, SW_SHOWNORMAL,
 };
 use crate::i18n::I18n;
 use crate::utils::utils::to_wstr;

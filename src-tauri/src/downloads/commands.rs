@@ -1,13 +1,12 @@
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use num_cpus;
 use crate::config::config::{read_config, ProxyConfig};
 use tracing::{debug, info};
 
 use reqwest::{ClientBuilder, Proxy};
 // use 新的全局名字与 per-task 新建函数
-use crate::downloads::cancel::{GLOBAL_CANCEL_DOWNLOAD, new_cancel_flag};
+use crate::downloads::cancel::new_cancel_flag;
 use crate::downloads::manager::DownloaderManager;
 use crate::downloads::WuClient::client::WuClient;
 use crate::result::{CoreError, CoreResult};

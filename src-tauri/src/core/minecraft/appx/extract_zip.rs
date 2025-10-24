@@ -142,14 +142,14 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
     });
 
     // async 端：等待 init 消息来创建 ExtractProgress，并启动 monitor（periodic reporter）
-    let mut progress_opt: Option<ExtractProgress> = None;
+    let progress_opt: Option<ExtractProgress> = None;
     let mut monitor_handle_opt = None;
 
     while let Some(msg) = rx.recv().await {
         if msg.stage_meta.get("stage").and_then(|v| v.as_str()) == Some("init") {
             let total = msg.total.unwrap_or(0);
             // 用共享原子创建 ExtractProgress
-            let mut progress = ExtractProgress::with_extracted(total, shared_extracted.clone());
+            let progress = ExtractProgress::with_extracted(total, shared_extracted.clone());
 
             // spawn monitor task（每 500ms 检查并上报）
             let mut mon_progress = progress; // 按你的示例，monitor 持有 progress (mutable)

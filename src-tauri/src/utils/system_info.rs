@@ -1,4 +1,4 @@
-use windows::Win32::Globalization::{GetACP, GetUserDefaultUILanguage, GetLocaleInfoW, LOCALE_SENGLISHLANGUAGENAME, LOCALE_SNAME};
+use windows::Win32::Globalization::{GetACP, GetUserDefaultUILanguage, GetLocaleInfoW, LOCALE_SNAME};
 use windows::Win32::System::SystemInformation::{
     GetSystemInfo, PROCESSOR_ARCHITECTURE_AMD64,
     PROCESSOR_ARCHITECTURE_ARM, PROCESSOR_ARCHITECTURE_INTEL, SYSTEM_INFO,

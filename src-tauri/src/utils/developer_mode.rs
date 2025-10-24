@@ -1,6 +1,3 @@
-use std::ffi::OsStr;
-use std::iter;
-use std::os::windows::ffi::OsStrExt;
 use std::ptr::{ null_mut};
 use std::process::Command;
 use tracing::debug;
@@ -12,7 +9,6 @@ use windows::Win32::System::Registry::{
 use windows::Win32::UI::Controls::{
     TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION,
 };
-use windows::Win32::UI::WindowsAndMessaging::{IDI_WARNING};
 use crate::i18n::I18n;
 use crate::utils::utils::to_wstr;
 

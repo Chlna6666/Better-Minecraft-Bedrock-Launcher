@@ -154,7 +154,7 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
         }
 
         // 3) 确保 runFullTrust 和 uap4 自定义存在
-        let mut ensure = |grp: &mut Vec<XMLNode>, tag: &str, name: &str| {
+        let ensure = |grp: &mut Vec<XMLNode>, tag: &str, name: &str| {
             if !grp.iter().any(|n| match n {
                 XMLNode::Element(e) => e.name == tag && e.attributes.get("Name") == Some(&name.to_string()),
                 _ => false,
