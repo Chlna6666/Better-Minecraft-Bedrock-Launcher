@@ -24,7 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 需要全部历史以便 tag/ref 能被正确识别
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -36,44 +36,24 @@ jobs:
         run: npm ci
         shell: pwsh
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo (registry, git, target, bin)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v1
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: (Optional) Ensure tauri-cli available (best-effort)
+      - name: Install @tauri-apps/cli (node CLI)
+        run: npm install -g @tauri-apps/cli
         shell: pwsh
-        run: |
-          if (Get-Command tauri -ErrorAction SilentlyContinue) {
-            Write-Host "tauri CLI found: $(Get-Command tauri).Path"
-          } else {
-            Write-Host "Installing tauri-cli (best-effort)..."
-            cargo install tauri-cli --locked --force
-          }
 
       - name: Build and publish release with tauri-action
         uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Release ${{ github.ref_name }}'
+          releaseBody: 'https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}'
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          updaterJsonKeepUniversal: true
+          tauriScript: 'npm run'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CI: false
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Release ${{ github.ref_name }}'
-          releaseBody: 'https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}'
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
-          updaterJsonKeepUniversal: true

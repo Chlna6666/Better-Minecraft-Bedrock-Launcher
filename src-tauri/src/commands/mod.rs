@@ -1,5 +1,4 @@
 pub mod config;
-pub mod download;
 pub mod splashscreen;
 pub mod music;
 pub mod utils;
@@ -23,7 +22,7 @@ pub mod http_client;
 
 pub use app_info::*;
 pub use config::*;
-pub use download::*;
+pub use crate::downloads::commands::*;
 pub use i18n::*;
 pub use minecraft::*;
 pub use music::*;
@@ -40,4 +39,4 @@ pub use mc_pack::*;
 pub use mc_map::*;
 pub use mc_dll_mods::*;
 pub use system::*;
-pub use  http_client::*;
+pub use http_client::*;

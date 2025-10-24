@@ -5,4 +5,5 @@ mod multi;
 
 pub mod WuClient;
 mod md5;
+pub mod commands;
 
