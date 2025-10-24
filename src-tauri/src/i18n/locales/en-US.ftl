@@ -17,11 +17,9 @@ developer-mode-cancel = Cancel
 
 appx-deps-title = Missing UWP Dependencies
 appx-deps-main = The following dependencies are not installed:
-appx-deps-content =
-    { $missing }
 
-        Please choose an action:
-            • Download and install automatically
-            • Exit
+appx-deps-content = {$missing}
+appx-deps-choices =
+    Please choose an action:
 appx-deps-button-install = Download and Install Automatically
 appx-deps-button-exit = Exit

@@ -99,7 +99,7 @@ pub fn get_default_config() -> Config {
         launcher: Launcher {
             debug: false,
             language: "auto".to_string(),
-            custom_appx_api: "https://raw.githubusercontent.com/LiteLDev/mc-w10-versiondb-auto-update/refs/heads/master/versions.json.min".to_string(),
+            custom_appx_api: "https://data.mcappx.com/v2/bedrock.json".to_string(),
             download: DownloadConfig {
                 multi_thread: false,
                 max_threads: 8,

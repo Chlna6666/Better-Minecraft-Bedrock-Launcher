@@ -30,7 +30,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
     mut archive: ZipArchive<R>,
     destination: &str,
     force_replace: bool,
-) -> Result<crate::core::result::CoreResult<()>, crate::core::result::CoreError> {
+) -> Result<crate::result::CoreResult<()>, crate::result::CoreError> {
     CANCEL_EXTRACT.store(false, Ordering::SeqCst);
 
     // 1) 共享原子计数器（阻塞线程直接更新）
@@ -196,11 +196,11 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
     match handle.await {
         Ok(Ok((_extracted, _total))) => {
             if CANCEL_EXTRACT.load(Ordering::SeqCst) {
-                return Ok(crate::core::result::CoreResult::Cancelled);
+                return Ok(crate::result::CoreResult::Cancelled);
             }
-            Ok(crate::core::result::CoreResult::Success(()))
+            Ok(crate::result::CoreResult::Success(()))
         }
-        Ok(Err(e)) => Err(crate::core::result::CoreError::from(e)),
-        Err(join_err) => Err(crate::core::result::CoreError::Other(format!("join error: {}", join_err))),
+        Ok(Err(e)) => Err(crate::result::CoreError::from(e)),
+        Err(join_err) => Err(crate::result::CoreError::Other(format!("join error: {}", join_err))),
     }
 }

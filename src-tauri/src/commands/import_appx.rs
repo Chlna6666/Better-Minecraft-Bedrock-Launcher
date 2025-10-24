@@ -7,7 +7,7 @@ use crate::commands::cancel_install::CANCEL_INSTALL;
 use crate::config::config::read_config;
 use crate::core::minecraft::appx::extract_zip::extract_zip;
 use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest};
-use crate::core::result::CoreResult;
+use crate::result::CoreResult;
 
 #[tauri::command]
 pub async fn import_appx(

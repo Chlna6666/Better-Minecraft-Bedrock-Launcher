@@ -1,35 +1,39 @@
 use tracing::{info, error};
-use windows::core::{HRESULT, HSTRING};
-use windows::Management::Deployment::{PackageManager, RemovalOptions};
+use windows::core::{HRESULT, HSTRING, Result as WinResult, Error as WinError};
+use windows::Management::Deployment::{PackageManager, RemovalOptions, DeploymentResult};
 
 /// 卸载 Appx 包：传入 packageFamilyName
-pub async fn remove_package(package_family_name: &str) {
-    let package_manager = PackageManager::new().expect("无法创建 PackageManager");
+pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
+    let package_manager = PackageManager::new().map_err(|e| {
+        error!("无法创建 PackageManager: {:?}", e);
+        e
+    })?;
 
-    match package_manager.RemovePackageWithOptionsAsync(
-        &HSTRING::from(package_family_name),
-        RemovalOptions::PreserveApplicationData,
-    ) {
-        Ok(async_op) => {
-            let async_result = async_op.get().expect("等待异步操作失败");
+    // 发起异步卸载请求（注意：这是一个 COM async 对象）
+    let async_op = package_manager
+        .RemovePackageWithOptionsAsync(
+            &HSTRING::from(package_family_name),
+            RemovalOptions::PreserveApplicationData,
+        )?;
 
-            match async_result.ExtendedErrorCode() {
-                Ok(hr) if hr == HRESULT(0) => {
-                    info!("包成功移除");
-                }
-                Ok(hr) => {
-                    error!("移除包失败，扩展错误代码: {:?}", hr);
-                    if let Ok(error_text) = async_result.ErrorText() {
-                        error!("错误文本: {:?}", error_text);
-                    }
-                }
-                Err(err) => {
-                    error!("获取扩展错误码失败: {:?}", err);
-                }
-            }
-        }
-        Err(err) => {
-            error!("调用 RemovePackageAsync 出错: {:?}", err);
-        }
+    // 关键：await 异步操作（而不是调用 .get()）
+    let result: DeploymentResult = async_op.await?;
+
+    // 获取扩展错误码（HRESULT）和错误文本（HSTRING -> String）
+    let extended_hr: HRESULT = result.ExtendedErrorCode()?;
+    let error_text: String = match result.ErrorText() {
+        Ok(h) => h.to_string_lossy(),
+        Err(_) => String::new(),
+    };
+
+    if extended_hr == HRESULT(0) {
+        info!("包成功移除: {}", package_family_name);
+        Ok(())
+    } else {
+        error!(
+            "移除包失败，扩展错误代码: {:?}, 错误文本: {}",
+            extended_hr, error_text
+        );
+        Err(WinError::new(extended_hr, error_text))
     }
 }

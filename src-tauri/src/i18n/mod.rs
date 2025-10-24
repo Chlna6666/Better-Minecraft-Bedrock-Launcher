@@ -3,7 +3,6 @@ use fluent_bundle::concurrent::FluentBundle;
 use unic_langid::LanguageIdentifier;
 use once_cell::sync::OnceCell;
 use std::sync::RwLock;
-use std::fs;
 use std::path::PathBuf;
 use tracing::debug;
 

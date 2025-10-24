@@ -8,7 +8,60 @@
     "all_versions": "全部版本",
     "launch_count": "启动次数",
     "search_placeholder": "搜索版本或名称",
-    "refresh": "刷新"
+    "refresh": "刷新",
+    "manage": "管理",
+    "delete": "删除",
+    "processing": "处理中…",
+    "confirm_title": "确认删除",
+    "cancel": "取消",
+    "confirm": "确认删除",
+    "delete_success": "删除成功",
+    "delete_failed": "删除失败",
+    "no_result": "没有结果",
+    "confirm_delete": "确定要删除吗？",
+    "confirm_delete_text": "确定要删除 '{{folder}}' 吗？此操作不可恢复。",
+    "close": "关闭",
+    "load_failed": "加载失败",
+    "no_path": "没有路径",
+    "open_failed": "打开失败",
+    "save_success": "保存成功",
+    "saved": "已保存",
+    "save_failed": "保存失败",
+    "loading": "加载中…"
+},
+  "manage": {
+    "title": "版本管理",
+    "open_folder": "打开目录",
+    "save_all": "保存全部",
+    "mods": "Mods 列表",
+    "no_mods": "没有检测到 mods",
+    "mod_id": "ID",
+    "enabled": "启用",
+    "delay_ms": "延迟（ms）",
+    "save": "保存",
+    "confirm_delete_version": "确定删除版本 {{folder}} 吗？",
+    "confirm_delete_selected": "确定删除选中的 {{count}} 个 Mod 吗？",
+    "import_mods": "导入 Mod(s)",
+    "open_mods_folder": "打开 Mod 文件夹",
+    "refresh": "刷新",
+    "search_placeholder": "搜索 name / id...",
+    "selected": "已选",
+    "enable_selected": "启用选中",
+    "disable_selected": "禁用选中",
+    "delete_selected": "删除选中",
+    "import_success": "导入完成",
+    "import_failed": "导入失败",
+    "enable_selected_success": "启用成功",
+    "enable_selected_failed": "启用失败",
+    "disable_selected_success": "禁用成功",
+    "disable_selected_failed": "禁用失败",
+    "delete_selected_success": "删除成功",
+    "delete_selected_failed": "删除失败"
+  },
+
+  "version_manager": {
+    "unknown_name": "未知版本",
+    "type_unknown": "未知类型"
   },
   "MusicPlayer": {
     "now_playing": "正在播放:"
@@ -20,7 +73,7 @@
     "tools": "工具",
     "settings": "设置"
   },
-  "LaunchSection": {
+  "Launch": {
     "start_game": "启动游戏",
     "not_installed": "未安装游戏"
   },
@@ -123,6 +176,7 @@
     "thanks": {
       "title": "鸣谢",
       "tauri": "提供了开发框架",
+      "MCAPPX": "提供游戏版本库 JSON 数据源",
       "mcmrarm": "提供 mc-w10-versiondb 版本库。",
       "fufuha": "提供背景图。",
       "ustiniana1641": "提供logo",
@@ -153,9 +207,9 @@
   },
   "GameSettings": {
     "inject_dll": "启动游戏时注入 DLL",
-    "inject_delay": "注入延迟 (毫秒)：",
+    "inject_delay": "注入延迟(ms):",
     "lock_mouse": "启动时锁定鼠标",
-    "reduce_pixels": "裁剪鼠标区域减少的像素数：",
+    "reduce_pixels": "裁剪窗口边缘像素(px):",
     "unlock_hotkey": "解除锁定快捷键：",
     "launcher_visibility": "启动器可见性：",
     "visibility": {
@@ -171,6 +225,7 @@
     "launch_animation": "启动时显示启动动画:",
     "theme_color": "主题颜色:",
     "custom_background": "自定义背景:",
+    "h": "请填写本地图片路径",
     "background_options": {
       "default": "默认",
       "local": "本地图片",

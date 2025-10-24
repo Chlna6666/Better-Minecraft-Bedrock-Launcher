@@ -1,0 +1,84 @@
+.ui-input-wrapper {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--ui-input-border-color, #e6e6e6);
+    padding: var(--ui-input-padding, 0px 8px);
+    border-radius: var(--ui-input-border-radius, 6px);
+    background: var(--ui-input-bg, #fff);
+    box-sizing: border-box;
+    width: var(--ui-input-width, auto);
+    max-width: 100%;
+}
+
+/* make it easy to set a fixed width using existing class name like .text-input */
+.text-input { width: 60%; }
+.text-input .ui-input { width: 100%; }
+
+/* full width helper */
+.ui-input-full { width: 100%; }
+
+/* inner input */
+.ui-input {
+    border: none;
+    outline: none;
+    font-size: var(--ui-input-font-size, 14px);
+    padding: var(--ui-input-inner-padding, 8px 0px);
+    min-width: 0; /* important for flex items to shrink properly */
+    flex: 1;      /* take remaining space */
+    background: transparent;
+    box-sizing: border-box;
+    height: var(--ui-input-height, auto);
+    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* focus state: highlight wrapper border */
+.ui-input:focus {
+    outline: none;
+}
+/* remove both glow and border-color change */
+.ui-input-wrapper:focus-within {
+    border-color: var(--ui-input-border-color, #e6e6e6);
+    box-shadow: none;
+}
+/* prefix / suffix */
+.ui-input-prefix, .ui-input-suffix {
+    font-size: var(--ui-input-font-size, 14px);
+    display: inline-flex;
+    align-items: center;
+    padding: 0 4px;
+}
+
+/* sizes */
+.ui-input-size-sm { --ui-input-inner-padding: 6px 0px; --ui-input-font-size: 13px; }
+.ui-input-size-md { --ui-input-inner-padding: 8px 0px; --ui-input-font-size: 14px; }
+.ui-input-size-lg { --ui-input-inner-padding: 10px 0px; --ui-input-font-size: 15px; }
+
+/* disabled */
+.ui-input[disabled], .ui-input-wrapper.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* 让 wrapper 支持绝对定位 */
+.ui-input-wrapper.input-with-swatch {
+    position: relative;
+    padding-right: 8px; /* 保留一点内边距给按钮的外壳（可调） */
+}
+
+/* 把 suffix 放到右侧 */
+.ui-input-wrapper.input-with-swatch .ui-input-suffix {
+    position: absolute;
+    right: 6px;          /* 距右边的距离，可微调 */
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+}
+
+/* 给输入留出内空间，避免文本被按钮覆盖（应 >= 按钮宽度 + 小间隔）*/
+.ui-input-wrapper.input-with-swatch .ui-input {
+    padding-right: 40px; /* 如果按钮宽 28px，这里设置 40px 比较安全 */
+}

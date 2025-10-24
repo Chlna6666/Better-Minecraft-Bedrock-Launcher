@@ -1,9 +1,9 @@
 import React, {useState, useEffect, useCallback, useMemo, lazy, Suspense, useTransition, useDeferredValue} from "react";
 import { invoke , convertFileSrc  } from "@tauri-apps/api/core";
 
-import Titlebar from "./components/Titlebar/Titlebar";
-import Sidebar from "./components/Sidebar/Sidebar";
-import UserAgreement from "./components/UserAgreement/UserAgreement";
+import Titlebar from "./pages/Titlebar/Titlebar";
+import Sidebar from "./pages/Sidebar/Sidebar";
+import UserAgreement from "./pages/UserAgreement/UserAgreement";
 
 import { getConfig } from "./utils/config.jsx";
 import "./App.css";
@@ -12,7 +12,7 @@ import "./App.css";
 // https://launchercontent.mojang.com/v2/bedrockPatchNotes.json
 
 
-const LazyContent = lazy(() => import("./components/Content/Content"));
+const LazyContent = lazy(() => import("./pages/Content/Content"));
 
 function App() {
     const defaultConfig = useMemo(() => ({

@@ -20,7 +20,5 @@ appx-deps-main = 检测到以下依赖未安装：
 appx-deps-content = {$missing}
 appx-deps-choices =
     请选择操作：
-        • 自动下载安装
-        • 退出程序
 appx-deps-button-install = 自动下载安装
 appx-deps-button-exit = 退出程序

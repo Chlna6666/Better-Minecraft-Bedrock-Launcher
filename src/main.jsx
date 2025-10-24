@@ -5,6 +5,7 @@ import i18n, { SUPPORTED_LANGUAGES } from "./i18n/i18n.js";
 import { I18nextProvider } from 'react-i18next';
 import PluginHost from "./PluginHost.jsx";
 import { invoke } from "@tauri-apps/api/core";
+import {Toast} from "./components/Toast.jsx";
 
 (async () => {
     const systemLocale = await invoke('get_locale');
@@ -14,7 +15,9 @@ import { invoke } from "@tauri-apps/api/core";
     createRoot(document.getElementById('root')).render(
         <I18nextProvider i18n={i18n}>
             <PluginHost>
+            <Toast>
                 <App />
+            </Toast>
             </PluginHost>
         </I18nextProvider>
     );

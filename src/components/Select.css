@@ -1,0 +1,147 @@
+/* Select.css （替换或追加到你的文件） */
+.select-root {
+    position: relative;
+    display: inline-block;
+    min-width: 20%;
+    right: auto;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", Arial, sans-serif;
+
+    /* 使用变量，方便在 props/外部覆盖 */
+    font-size: var(--select-font-size, 14px);
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    --select-padding: 8px 12px;
+    --select-item-padding: 8px 10px;
+    --select-border-radius: 8px;
+    --select-max-height: 240px;
+    --select-arrow-size: 15px;
+}
+
+/* 按钮 */
+.select-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: var(--select-padding);
+    border-radius: var(--select-border-radius);
+    border: 1px solid rgba(0,0,0,0.12);
+    background: white;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    font-size: inherit;
+    line-height: inherit;
+    user-select: none;
+    transition: border-color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
+}
+
+
+/* 让显示文本也作为 flex 居中，避免基线差异 */
+.select-value,
+.select-placeholder {
+    display: inline-flex;
+    align-items: center;
+    height: 100%;
+    line-height: normal; /* 重置行高 */
+}
+
+.select-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--select-arrow-size);
+    height: var(--select-arrow-size);
+    box-sizing: content-box;
+    line-height: 1;            /* 防止字体基线影响 */
+    font-size: calc(var(--select-arrow-size)); /* 使字符 ▾ 填满容器 */
+    transition: transform 180ms ease, color 120ms ease;
+    transform-origin: center;
+}
+
+/* 当箭头有 open 类时旋转 */
+.select-arrow.open {
+    transform: rotate(180deg);
+}
+
+/* 或者使用按钮的 is-open 状态（另一种选择） */
+.select-btn.is-open .select-arrow {
+    transform: rotate(180deg);
+}
+
+
+/* 列表容器 */
+.select-list-wrapper {
+    position: absolute;
+    left: 0;
+    right: auto;
+    margin-top: 6px;
+    transform-origin: top center;
+    z-index: 50;
+    pointer-events: none;
+    will-change: opacity, transform, width, left, right;
+}
+
+
+/* 列表 actual */
+.select-list-wrapper .select-list {
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    border-radius: calc(var(--select-border-radius));
+    box-shadow: 0 6px 20px rgba(16,24,40,0.12);
+    background: linear-gradient(180deg, rgba(255,255,255,1), rgba(250,250,255,1));
+    max-height: var(--select-max-height, 240px);
+    overflow: auto;
+    transform-origin: top center;
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+    transition: opacity 180ms cubic-bezier(.2,.9,.3,1), transform 180ms cubic-bezier(.2,.9,.3,1), width 160ms ease;
+    pointer-events: none;
+    font-size: inherit;
+    line-height: inherit;
+}
+
+/* 打开 */
+.select-list-wrapper.open .select-list {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+}
+
+/* 项目 */
+.select-item {
+    display: flex;
+    align-items: center;
+    padding: var(--select-item-padding);
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+    color: #000;
+    font-size: inherit;
+    line-height: inherit;
+    white-space: nowrap;
+}
+
+/* hover/highlight */
+.select-item:hover,
+.select-item.is-highlighted {
+    background: rgba(140, 140, 140, 0.13);
+}
+
+/* selected */
+.select-item.is-selected {
+    background: rgba(100, 150, 255, 0.10);
+}
+
+/* disabled */
+.select-item.is-disabled {
+    color: #9aa4b2;
+    cursor: not-allowed;
+}
+
+/* scrollbar */
+.select-list::-webkit-scrollbar { height: 8px; width: 8px; }
+.select-list::-webkit-scrollbar-thumb { border-radius: 8px; background: rgba(0,0,0,0.08); }

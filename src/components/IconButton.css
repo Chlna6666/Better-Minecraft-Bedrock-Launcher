@@ -1,0 +1,5 @@
+.ui-icon-btn { display:inline-flex; align-items:center; justify-content:center; border-radius:8px; border: none; background: transparent; padding: 6px; cursor: pointer; }
+.ui-icon-btn-sm { width: 32px; height: 32px; }
+.ui-icon-btn-md { width: 36px; height: 36px; }
+.ui-icon-btn-lg { width: 44px; height: 44px; }
+.ui-icon-btn:hover { background: rgba(0,0,0,0.04); }

@@ -1,0 +1,118 @@
+:root {
+    --section-bg: #f9f9f9;
+    --card-bg: #fff;
+    --border-radius: 8px;
+    --section-transition-ms: 320ms; /* will be overridden inline by component */
+}
+
+/* basic layout */
+.section-root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* header (tabs + header-right) */
+.section-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px; background: var(--card-bg); border-radius: var(--border-radius);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06); z-index: 10;
+}
+
+.section-tabs {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.section-tab {
+    background: transparent; border: 1px solid #ddd; padding: 8px 14px; border-radius: 6px;
+    cursor: pointer; transition: all .18s ease; color: #333;    position: relative;
+    z-index: 2;
+}
+@media (prefers-reduced-motion: reduce) {
+    .tab-indicator {
+        transition: none !important;
+    }
+}
+
+/* optional class to disable animations when animation === "none" */
+.tab-indicator.no-anim {
+    transition: none !important;
+}
+
+/* ensure tabs appear above indicator visually if needed */
+.section-tab {
+    position: relative;
+    z-index: 2;
+}
+.section-tab:hover { background: #f1f1f1; }
+.section-tab.active { background: var(--theme-color); color: #fff; border-color: var(--theme-color); }
+/* content card - relative so panes can be stacked absolutely */
+.section-content {
+    position: relative;
+    flex: 1;
+    margin-top: 14px;
+    padding: 0;
+    background: var(--section-bg);
+    border-radius: var(--border-radius);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    overflow: hidden;
+    will-change: opacity;
+}
+
+/* each pane is stacked, takes full area and can scroll internally */
+.section-pane {
+    position: absolute;
+    inset: 0;
+    padding: var(--section-padding);
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    opacity: 0;
+    transform: translateY(6px);
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+            opacity var(--section-transition-ms) ease,
+            transform var(--section-transition-ms) cubic-bezier(.2, .9, .2, 1);
+}
+
+.section-pane.is-active {
+    opacity: 1;
+    transform: translateY(0);
+    visibility: visible;
+    pointer-events: auto;
+}
+
+/* optional subtle differences for 'fade' mode */
+.section-content.fade-mode .section-pane {
+    transform: translateY(6px);
+}
+
+/* accessibility: respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .section-pane {
+        transition: none !important;
+        transform: none !important;
+    }
+}
+
+/* small helper for header right */
+.section-header-right {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+/* responsive tweaks */
+@media (max-width: 600px) {
+    .section-tab {
+        padding: 6px 10px;
+        font-size: 14px;
+    }
+    .section-header {
+        padding: 8px;
+    }
+}

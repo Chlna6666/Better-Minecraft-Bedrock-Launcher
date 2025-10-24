@@ -1,0 +1,95 @@
+/* Button base (no hover effects) */
+.ui-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: transform .06s ease, box-shadow .08s ease, opacity .12s ease;
+    line-height: 1;
+    user-select: none;
+    background: var(--btn-bg, var(--theme-color));
+    color: var(--btn-color, #fff);
+}
+
+/* remove hover-based styles intentionally (no :hover rules) */
+
+/* Click/Active animation: simple press effect */
+.ui-btn:active {
+    transform: translateY(1px) scale(0.995);
+}
+
+/* Focus visible (keep accessibility without hover) */
+.ui-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 4px rgba(0,0,0,0.04);
+}
+
+/* Disabled state */
+.ui-btn:disabled,
+.ui-btn[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+    transform: none;
+    box-shadow: none;
+    /* allow theme-aware disabled bg/text via vars */
+    background: var(--btn-disabled-bg, #f3f4f6);
+    color: var(--btn-disabled-color, #9aa0a6);
+    border-color: var(--btn-disabled-border-color, transparent);
+}
+
+/* Variants using CSS variables and defaults */
+.ui-btn-primary {
+    background: var(--btn-primary-bg, var(--theme-color, #2563eb));
+    color: var(--btn-primary-color, #fff);
+    border-color: var(--btn-primary-border, transparent);
+}
+
+.ui-btn-ghost {
+    color: var(--btn-ghost-color, #111);
+    border-color: var(--btn-ghost-border, #e6e6e6);
+}
+
+.ui-btn-danger {
+    background: var(--btn-danger-bg, #ef4444);
+    color: var(--btn-danger-color, #fff);
+    border-color: var(--btn-danger-border, transparent);
+}
+
+.ui-btn-success {
+    background: var(--btn-success-bg, #10b981);
+    color: var(--btn-success-color, #fff);
+    border-color: var(--btn-success-border, transparent);
+}
+
+/* Sizes (can still be overridden by inline props) */
+.ui-btn-sm { padding: 6px 10px; font-size: 13px; }
+.ui-btn-md { padding: 8px 12px; font-size: 14px; }
+.ui-btn-lg { padding: 10px 14px; font-size: 15px; }
+
+/* block/full width */
+.ui-btn-block { display: inline-flex; width: 100%; justify-content: center; }
+
+/* spinner */
+.ui-btn-spinner-wrap { display: inline-flex; align-items: center; margin-right: 8px; }
+.ui-btn-spinner { animation: ui-btn-spin 1s linear infinite; color: currentColor; }
+@keyframes ui-btn-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* icon helpers */
+.ui-btn-icon-left, .ui-btn-icon-right { display: inline-flex; align-items: center; }
+.ui-btn-icon-left { margin-right: 8px; }
+.ui-btn-icon-right { margin-left: 8px; }
+
+/* content span to help center when spinner/icon present */
+.ui-btn-content { display: inline-flex; align-items: center; justify-content: center; color: white; }
+
+/* Small accessibility tweak: make focus outline visible on keyboard navigation */
+.ui-btn:focus { outline: none; }
+.ui-btn:focus-visible { outline-offset: 2px; }
+
+

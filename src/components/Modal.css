@@ -1,0 +1,7 @@
+.ui-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index: 9999; }
+.ui-modal { background: #fff; border-radius: 10px; box-shadow: 0 18px 50px rgba(2,6,23,0.32); max-height: 90vh; overflow: hidden; display:flex; flex-direction: column; }
+.ui-modal-header { display:flex; align-items:center; justify-content:space-between; padding: 14px 16px; border-bottom: 1px solid #eef2f7; }
+.ui-modal-title { margin:0; font-size: 16px; font-weight: 700; }
+.ui-modal-close { background: transparent; border: none; cursor: pointer; padding:6px; border-radius:6px; }
+.ui-modal-body { padding: 16px; overflow:auto; }
+.ui-modal-footer { padding: 12px 16px; border-top: 1px solid #eef2f7; display:flex; justify-content:flex-end; gap:8px; }

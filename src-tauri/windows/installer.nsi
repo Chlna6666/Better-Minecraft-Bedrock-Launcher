@@ -500,7 +500,7 @@ Function .onInit
 FunctionEnd
 
 
-Section EarlyChecks
+ManageSection EarlyChecks
   ; Abort silent installer if downgrades is disabled
   !if "${ALLOWDOWNGRADES}" == "false"
   ${If} ${Silent}
@@ -519,7 +519,7 @@ Section EarlyChecks
 
 SectionEnd
 
-Section WebView2
+ManageSection WebView2
   ; Check if Webview2 is already installed and skip this section
   ${If} ${RunningX64}
     ReadRegStr $4 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
@@ -611,7 +611,7 @@ Section WebView2
   ${EndIf}
 SectionEnd
 
-Section Install
+ManageSection Install
   SetOutPath $INSTDIR
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
@@ -749,7 +749,7 @@ Function un.onInit
   ${EndIf}
 FunctionEnd
 
-Section Uninstall
+ManageSection Uninstall
 
   !ifmacrodef NSIS_HOOK_PREUNINSTALL
     !insertmacro NSIS_HOOK_PREUNINSTALL

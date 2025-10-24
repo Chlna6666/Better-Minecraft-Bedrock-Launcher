@@ -1,0 +1,10 @@
+.ui-textarea {
+    width: 100%;
+    min-height: 90px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #e6e6e6;
+    resize: vertical;
+    font-size: 14px;
+}
+.ui-textarea:focus { outline: none; border-color: #c7ddff; }

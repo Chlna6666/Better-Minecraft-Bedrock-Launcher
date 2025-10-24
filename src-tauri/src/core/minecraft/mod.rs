@@ -5,3 +5,5 @@ pub mod uwp_minimize_fix;
 pub mod resource_packs;
 pub mod map;
 pub mod nbt;
+pub mod dll_mods;
+pub mod key_patcher;

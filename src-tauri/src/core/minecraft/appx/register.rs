@@ -1,12 +1,11 @@
 use std::io;
-use tracing::{info, error, debug};
-use windows::core::{HSTRING, Result, HRESULT};
-use windows::Foundation::{Uri};
-use windows::Management::Deployment::{DeploymentOptions,  DeploymentResult, PackageManager};
+use tracing::{info, error};
+use windows::core::{HSTRING, Result as WinResult, HRESULT, Error as WinError};
+use windows::Foundation::Uri;
+use windows::Management::Deployment::{DeploymentOptions, DeploymentResult, PackageManager};
 
-
-
-pub async fn register_appx_package_async(package_folder: &str) -> Result<DeploymentResult> {
+pub async fn register_appx_package_async(package_folder: &str) -> WinResult<DeploymentResult> {
+    // 准备 manifest 路径
     let mut manifest_path = package_folder.replace('\\', "/");
     if manifest_path.ends_with('/') {
         manifest_path.pop();
@@ -31,25 +30,20 @@ pub async fn register_appx_package_async(package_folder: &str) -> Result<Deploym
     let package_manager = PackageManager::new().expect("无法创建 PackageManager");
     let uri = Uri::CreateUri(&HSTRING::from(uri_str))?;
 
-    let async_result = package_manager.RegisterPackageAsync(&uri, None, DeploymentOptions::DevelopmentMode)?;
-    match async_result.get() {
-        Ok(result) => {
-            let extended_error = result.ExtendedErrorCode().unwrap_or(HRESULT(0));
-            let error_text = result.ErrorText().unwrap_or(HSTRING::new()).to_string_lossy();
+    // 启动异步注册并 await 完成
+    let async_op = package_manager.RegisterPackageAsync(&uri, None, DeploymentOptions::DevelopmentMode)?;
+    let result: DeploymentResult = async_op.await?; // ← 关键：使用 await 而不是 get()
 
-            if extended_error == HRESULT(0) {
-                info!("APPX 注册成功");
-                Ok(result)
-            } else {
-                error!("APPX 注册失败");
-                error!("错误代码: {:?}", extended_error);
-                error!("错误信息: {}", error_text);
-                Err(windows::core::Error::new(extended_error, error_text))
-            }
-        }
-        Err(e) => {
-            error!("等待 APPX 注册异步操作失败: {:?}", e);
-            Err(e)
-        }
+    // 检查结果信息
+    let extended_error = result.ExtendedErrorCode()?; // 返回 HRESULT
+    let error_text_h = result.ErrorText()?; // 返回 HSTRING
+    let error_text = error_text_h.to_string_lossy();
+
+    if extended_error == HRESULT(0) {
+        info!("APPX 注册成功");
+        Ok(result)
+    } else {
+        error!("APPX 注册失败: {:?} - {}", extended_error, error_text);
+        Err(WinError::new(extended_error, error_text))
     }
 }

@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::{collections::HashMap, time::Instant, path::PathBuf};
 use futures::StreamExt;
+use tokio::fs;
 use tokio::fs::read_dir;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::debug;
@@ -10,6 +11,7 @@ use crate::core::minecraft::appx::utils::get_manifest_identity;
 struct AppxVersion {
     name: String,
     version: String,
+    path: String,   // 新增完整目录字段
 }
 
 pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
@@ -33,7 +35,7 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
         .filter_map(|res| async {
             match res {
                 Ok(entry) => {
-                    // 注意：使用异步 API 判断是否目录，避免阻塞
+                    // 使用异步 API 判断是否目录
                     match entry.file_type().await {
                         Ok(ft) if ft.is_dir() => Some(entry),
                         Ok(_) => {
@@ -53,18 +55,33 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
             }
         })
         .map(|entry| {
-            // 这里是纯 async，调用已经不阻塞的 get_manifest_identity
             async move {
-                let path_buf: PathBuf = entry.path();
-                let folder_name = match path_buf.file_name().and_then(|f| f.to_str()).map(str::to_string) {
+                let path_buf: PathBuf = match fs::canonicalize(entry.path()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        debug!("获取绝对路径失败 {}: {}", entry.path().display(), e);
+                        return None;
+                    }
+                };
+
+                let folder_name = path_buf.file_name()
+                    .and_then(|f| f.to_str())
+                    .map(str::to_string);
+
+                let folder_name = match folder_name {
                     Some(n) => n,
                     None => return None,
                 };
+
                 match get_manifest_identity(&path_buf.to_string_lossy()).await {
-                    Ok((name, version)) => {
-                        debug!("解析成功 {} -> {} {}", folder_name, name, version);
-                        Some((folder_name, AppxVersion { name, version }))
-                    }
+                    Ok((name, version)) => Some((
+                        folder_name.clone(),
+                        AppxVersion {
+                            name,
+                            version,
+                            path: path_buf.to_string_lossy().to_string(), // 绝对路径
+                        },
+                    )),
                     Err(e) => {
                         debug!("解析失败 {}: {}", path_buf.display(), e);
                         None
@@ -79,6 +96,10 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
 
     let result: HashMap<_, _> = versions.into_iter().collect();
 
-    debug!("get_appx_version_list 完成，用时: {:?}, 并发度: {}", start.elapsed(), concurrency);
+    debug!(
+        "get_appx_version_list 完成，用时: {:?}, 并发度: {}",
+        start.elapsed(),
+        concurrency
+    );
     serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({ "error": "序列化失败" }))
 }

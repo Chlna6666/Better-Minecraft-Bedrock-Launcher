@@ -3,17 +3,14 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use num_cpus;
 use crate::config::config::{read_config, ProxyConfig};
-use tauri::AppHandle;
 use tracing::{debug, info};
 
-
-
-
 use reqwest::{ClientBuilder, Proxy};
-use crate::core::downloads::cancel::CANCEL_DOWNLOAD;
-use crate::core::downloads::manager::DownloaderManager;
-use crate::core::downloads::WuClient::client::WuClient;
-use crate::core::result::{CoreError, CoreResult};
+// use 新的全局名字与 per-task 新建函数
+use crate::downloads::cancel::{GLOBAL_CANCEL_DOWNLOAD, new_cancel_flag};
+use crate::downloads::manager::DownloaderManager;
+use crate::downloads::WuClient::client::WuClient;
+use crate::result::{CoreError, CoreResult};
 
 fn apply_proxy_settings(client_builder: ClientBuilder, proxy_config: &ProxyConfig) -> Result<ClientBuilder, CoreError> {
     match proxy_config {
@@ -59,11 +56,13 @@ fn build_client_with_proxy(proxy_config: &ProxyConfig) -> Result<reqwest::Client
 pub async fn download_appx(
     package_id: String,
     file_name: String,
+    md5: Option<String>,
 ) -> Result<String, String> {
-    CANCEL_DOWNLOAD.store(false, Ordering::Relaxed);
-    let config = read_config().map_err(|e| e.to_string())?;
 
-    // 构建带代理的客户端
+    // per-task cancel handle
+    let cancel_flag = new_cancel_flag();
+
+    let config = read_config().map_err(|e| e.to_string())?;
     let client = build_client_with_proxy(&config.launcher.download.proxy)
         .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
@@ -76,6 +75,8 @@ pub async fn download_appx(
 
     let downloads_dir = Path::new("./BMCBL/downloads");
     fs::create_dir_all(downloads_dir).map_err(|e| e.to_string())?;
+
+    // 只在这里构造一次 PathBuf（用于传给下载函数）
     let dest = downloads_dir.join(&file_name);
 
     let threads = if config.launcher.download.auto_thread_count {
@@ -86,17 +87,15 @@ pub async fn download_appx(
         1
     };
 
-    // 新建 DownloaderManager，注入带代理的客户端
     let manager = DownloaderManager::with_client(client.clone());
     let wu_client = WuClient::with_client(client);
 
-    // 注意：get_download_url 现在返回 Result<DownloadResult<String>, DownloadError>
+    // 获取下载 URL（传入 per-task cancel_flag）
     let url_result = wu_client
-        .get_download_url(update_id, revision)
+        .get_download_url(update_id, revision, Some(cancel_flag.clone()))
         .await
         .map_err(|e| format!("获取下载地址失败：{}", e))?;
 
-    // 处理 DownloadResult
     let url = match url_result {
         CoreResult::Success(u) => u,
         CoreResult::Cancelled => {
@@ -110,26 +109,36 @@ pub async fn download_appx(
 
     debug!("拿到下载 URL：{}", url);
 
+    // 把 dest（owned PathBuf）移动给下载函数 —— **不再 clone dest**
     let download_result = manager
-        .download(url, &dest, threads)
+        .download_with_options(
+            url,
+            dest,                        // moved here, 不再可在本函数使用
+            threads,
+            md5,
+            Some(cancel_flag.clone()),   // per-task cancel flag
+        )
         .await;
+
+    // 需要在后面做删除或返回路径字符串时，重新用相同的构造方式生成 PathBuf（没有 clone）
+    let dest_after = downloads_dir.join(&file_name);
 
     match download_result {
         Ok(CoreResult::Success(_)) => {
             info!("下载完成 {}", file_name);
-            Ok(dest.to_string_lossy().to_string())
+            Ok(dest_after.to_string_lossy().to_string())
         }
         Ok(CoreResult::Cancelled) => {
             debug!("下载被取消");
-            let _ = fs::remove_file(&dest); // 删除部分下载文件
+            let _ = fs::remove_file(&dest_after); // 删除部分下载文件（使用重新构造的路径）
             Ok("cancelled".into())
         }
         Ok(CoreResult::Error(err)) => {
-            let _ = fs::remove_file(&dest); // 删除部分下载文件
+            let _ = fs::remove_file(&dest_after);
             Err(format!("下载出错：{}", err))
         }
         Err(err) => {
-            let _ = fs::remove_file(&dest); // 删除部分下载文件
+            let _ = fs::remove_file(&dest_after);
             Err(format!("下载发生异常：{}", err))
         }
     }

@@ -17,6 +17,9 @@ pub mod install_appx;
 pub mod import_appx;
 pub mod mc_pack;
 pub mod mc_map;
+pub mod mc_dll_mods;
+pub mod system;
+pub mod http_client;
 
 pub use app_info::*;
 pub use config::*;
@@ -35,3 +38,6 @@ pub use install_appx::*;
 pub use import_appx::*;
 pub use mc_pack::*;
 pub use mc_map::*;
+pub use mc_dll_mods::*;
+pub use system::*;
+pub use  http_client::*;

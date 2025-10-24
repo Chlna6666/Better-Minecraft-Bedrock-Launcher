@@ -1,0 +1,163 @@
+.toast-bottom-right { right: 20px; bottom: 20px; align-items: flex-end; }
+.toast-top-right    { right: 20px; top: 20px; align-items: flex-end; }
+.toast-bottom-left  { left: 20px; bottom: 20px; align-items: flex-start; }
+.toast-top-left     { left: 20px; top: 20px; align-items: flex-start; }
+
+.toast-container {
+    position: fixed;
+    z-index: 99999;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+}
+.toast-container .toast-item {
+    transition: transform 300ms ease, opacity 300ms ease, margin 300ms ease;
+}
+
+.toast-bottom-right { right: 20px; bottom: 20px; align-items: flex-end; }
+.toast-top-right { right: 20px; top: 20px; align-items: flex-end; }
+.toast-bottom-left { left: 20px; bottom: 20px; align-items: flex-start; }
+.toast-top-left { left: 20px; top: 20px; align-items: flex-start; }
+
+/* item */
+.toast-item {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    min-width: 220px;
+    max-width: 420px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    color: #fff;
+    box-shadow: 0 12px 30px rgba(8,15,36,0.18);
+    transform-origin: right bottom;
+    cursor: pointer;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+/* content */
+.toast-content { flex: 1; display:flex; align-items:center; gap:12px; }
+.toast-text { font-size: 14px; line-height: 1.2; color: #fff; }
+
+
+/* pure-flat colors (solid, tasteful) */
+.toast-item.info    { background: #0ea5e9; }
+.toast-item.success { background: rgba(47, 177, 101, 0.9); }
+.toast-item.error   { background: #ef4444; }
+
+.toast-container {
+    display: flex;
+    flex-direction: column;
+}
+
+/* 添加弹簧/缓动效果 */
+.toast-container .toast-item {
+    transition: transform 500ms cubic-bezier(0.22, 1.28, 0.36, 1),
+    opacity 400ms ease,
+    margin 400ms ease;
+}
+
+/* 进入时弹簧效果 */
+.toast-item.toast-enter {
+    transform: translateY(0);
+    opacity: 1;
+    transition: transform 500ms cubic-bezier(0.22, 1.28, 0.36, 1), opacity 400ms ease;
+}
+
+/* 退出时柔和下坠 */
+.toast-item.toast-exit {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+    transition: transform 400ms cubic-bezier(0.4, 0.0, 0.6, 1), opacity 300ms ease;
+}
+
+/* dark variant for right-aligned (optional contrast) */
+.toast-bottom-right .toast-item,
+.toast-top-right .toast-item {
+    /* keep same colors but slightly darker border for depth */
+    border-color: rgba(0,0,0,0.06);
+}
+
+/* close button */
+.toast-close {
+    border: none;
+    background: rgba(255,255,255,0);
+    color: #fff;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin-left: 12px;
+    font-size: 14px;
+    transition: transform 140ms ease, background 140ms ease;
+    border-radius: 50%;
+    outline: none;
+}
+
+.toast-close:focus {
+    outline: none;
+}
+
+
+.toast-bottom-right .toast-item,
+.toast-top-right .toast-item {
+    transform-origin: right center;
+    animation: toast-slide-in-right 280ms cubic-bezier(.2,.9,.3,1) both;
+}
+.toast-bottom-right .toast-item.toast-exit,
+.toast-top-right .toast-item.toast-exit {
+    animation: toast-slide-out-right 240ms cubic-bezier(.2,.9,.3,1) both;
+}
+
+.toast-item.toast-enter { transform: translateY(0); opacity: 1; transition: opacity 300ms, transform 300ms; }
+.toast-item.toast-exit  { opacity: 0; transform: translateY(8px); transition: opacity 300ms, transform 300ms; }
+
+/* LEFT-side: slide horizontally from left -> in */
+.toast-bottom-left .toast-item,
+.toast-top-left .toast-item {
+    transform-origin: left center;
+    animation: toast-slide-in-left 280ms cubic-bezier(.2,.9,.3,1) both;
+}
+.toast-bottom-left .toast-item.toast-exit,
+.toast-top-left .toast-item.toast-exit {
+    animation: toast-slide-out-left 240ms cubic-bezier(.2,.9,.3,1) both;
+}
+
+/* keyframes: right */
+@keyframes toast-slide-in-right {
+    from { transform: translateX(16px) scale(.98); opacity: 0; }
+    to   { transform: translateX(0)     scale(1);   opacity: 1; }
+}
+@keyframes toast-slide-out-right {
+    from { transform: translateX(0)     scale(1);   opacity: 1; }
+    to   { transform: translateX(16px)  scale(.98); opacity: 0; }
+}
+
+/* keyframes: left (左出效果) */
+@keyframes toast-slide-in-left {
+    from { transform: translateX(-16px) scale(.98); opacity: 0; }
+    to   { transform: translateX(0)     scale(1);   opacity: 1; }
+}
+@keyframes toast-slide-out-left {
+    from { transform: translateX(0)     scale(1);   opacity: 1; }
+    to   { transform: translateX(-16px) scale(.98); opacity: 0; }
+}
+
+/* small tweak when toast has icon (optional) */
+.toast-item .toast-icon {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    border-radius: 6px;
+    margin-right: 8px;
+}
+
