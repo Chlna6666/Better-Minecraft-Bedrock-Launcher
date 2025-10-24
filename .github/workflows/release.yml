@@ -4,56 +4,46 @@ on:
   push:
     tags:
       - 'v*'
-
-permissions:
-  contents: write
-
-concurrency:
-  group: release-${{ github.ref_name }}
-  cancel-in-progress: true
+  workflow_dispatch:
 
 jobs:
-  release_windows:
-    name: Build & Publish (Windows)
+  release:
     runs-on: windows-latest
-    env:
-      # 可在 repo secrets 中配置（需要的话）
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: lts/*
           cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
 
       - name: Install frontend dependencies
         run: npm ci
-        shell: pwsh
 
-      - name: Install @tauri-apps/cli (node CLI)
-        run: npm install -g @tauri-apps/cli
-        shell: pwsh
-
-      - name: Build and publish release with tauri-action
+      - name: Build the app
         uses: tauri-apps/tauri-action@v0
+        env:
+          CI: false
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Release ${{ github.ref_name }}'
+          releaseName: '${{ github.ref_name }}'
           releaseBody: 'https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}'
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          updaterJsonPreferNsis: true
           updaterJsonKeepUniversal: true
-          tauriScript: 'npm run'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CI: false
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
