@@ -6,49 +6,78 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: windows-latest
-    permissions:
-      contents: write
+    concurrency:
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: true
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (fetch tags)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 20
           cache: 'npm'
 
-      - name: Setup Rust
+      - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+      - name: Cache cargo (optional)
+        uses: actions/cache@v4
         with:
-          workspaces: './src-tauri -> target'
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v1
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Install frontend dependencies
         run: npm ci
+        shell: pwsh
 
-      - name: Build
-        uses: tauri-apps/tauri-action@v0
+      - name: Install @tauri-apps/cli globally (no npx)
+        run: npm install -g @tauri-apps/cli
+        shell: pwsh
+
+      - name: Build Tauri
+        run: npm run tauri:build
+        shell: pwsh
+        env:
+          CI: false
+
+      - name: Verify expected exe exists and set output
+        id: find_exe
+        shell: pwsh
+        run: |
+          $expected = "src-tauri/target/release/better_minecraft_bedrock_launcher.exe"
+          if (Test-Path $expected) {
+            $p = (Resolve-Path $expected).Path.Replace('\','/')
+            Write-Host "Found exe: $p"
+            echo "EXE_PATH=$p" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "Expected exe not found: $expected"
+            exit 1
+          }
+
+      - name: Upload single exe to GitHub Release (create if needed)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          body: "Automated release for ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          files: ${{ steps.find_exe.outputs.EXE_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CI: false
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-        with:
-          projectPath: src-tauri
-          tauriScript: 'npm run'        # 确保 `npm run tauri` 可用
-          args: --no-bundle             # 生成 unbundled exe
-          uploadPlainBinary: true       # 上传未打包的可执行文件
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Release ${{ github.ref_name }}'
-          releaseBody: 'Automated release'
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
-          updaterJsonKeepUniversal: true
