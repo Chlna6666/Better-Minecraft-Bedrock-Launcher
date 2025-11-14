@@ -42,7 +42,7 @@ function Launcher() {
                 setUserLanguage(launcher.language || "auto");
                 setCustomAppxApi(launcher.custom_appx_api || "");
                 setMultiThread(download.multi_thread || false);
-                setAutoThreadCount(download.auto_thread_count || true);
+                setAutoThreadCount(download.hasOwnProperty('auto_thread_count') ? download.auto_thread_count : true);
                 setMaxThreads(download.max_threads || 8);
 
                 // 新的代理读取：proxy.proxy_type 以及 url 字段
@@ -51,7 +51,7 @@ function Launcher() {
                 setHttpProxyUrl(proxy.http_proxy_url || "");
                 setSocksProxyUrl(proxy.socks_proxy_url || "");
 
-                setAutoCheckUpdates(launcher.auto_check_updates || true);
+                setAutoCheckUpdates(launcher.hasOwnProperty('auto_check_updates') ? launcher.auto_check_updates : true);
 
                 setLoaded(true);
             } catch (e) {

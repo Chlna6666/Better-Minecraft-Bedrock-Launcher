@@ -15,6 +15,7 @@ use app_lib::utils::system_info::{detect_system_encoding, get_cpu_architecture, 
 use app_lib::utils::{updater, webview2_manager};
 use app_lib::utils::appx_dependency::ensure_uwp_dependencies_or_prompt;
 use app_lib::utils::developer_mode::ensure_developer_mode_enabled;
+use app_lib::utils::updater::clean_old_versions;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -64,7 +65,8 @@ async fn main() {
         }
     }
 
-
+    clean_old_versions();
+    
     // 读取配置文件（如果失败，提示并退出）
     let config: Config = match read_config() {
         Ok(c) => c,

@@ -1,4 +1,3 @@
-// App.jsx
 import React, {
     useState,
     useEffect,
@@ -14,10 +13,12 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import Titlebar from "./pages/Titlebar/Titlebar";
 import Sidebar from "./pages/Sidebar/Sidebar";
 import UserAgreement from "./pages/UserAgreement/UserAgreement";
-import { useUpdater } from "./hooks/useUpdater";
 import UpdateModal from "./components/UpdateModal";
 
 import { getConfig } from "./utils/config.jsx";
+
+import { useUpdaterWithModal } from "./hooks/useUpdaterWithModal";
+
 import "./App.css";
 
 const LazyContent = lazy(() => import("./pages/Content/Content"));
@@ -34,52 +35,36 @@ function App() {
         []
     );
 
-    const { state: updState, actions: updActions } = useUpdater({
+    // 这里调用封装后的hook，自动管理弹窗
+    const {
+        state: updState,
+        actions: updActions,
+        modalOpen,
+        setModalOpen,
+        selectedRelease,
+    } = useUpdaterWithModal({
         owner: "Chlna6666",
         repo: "Better-Minecraft-Bedrock-Launcher",
+        autoCheck: true,
     });
 
-    // 控制弹窗
-    const [modalOpen, setModalOpen] = useState(false);
-    const [selectedRelease, setSelectedRelease] = useState(null);
-    // 记住已经展示过的 tag，避免每次 render 或状态变化都弹出
-    const [seenTag, setSeenTag] = useState("");
-
-    // 内容/界面状态
     const [config, setConfig] = useState(defaultConfig);
     const [activeSection, setActiveSection] = useState("launch");
     const [isDownloading, setIsDownloading] = useState(false);
     const [isPending, startTransition] = useTransition();
     const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
 
-    // 当检测到新 release（stable 或 prerelease）且未展示过时自动打开弹窗
-    useEffect(() => {
-        // 如果用户在配置里关闭了自动检查，则不自动弹窗
-        if (!autoCheckUpdates) return;
-
-        const latest = updState?.latestStable ?? updState?.latestPrerelease ?? null;
-        if (latest && latest.tag && latest.tag !== seenTag) {
-            setSeenTag(latest.tag);
-            setSelectedRelease(latest);
-            setModalOpen(true);
-        }
-    }, [updState?.latestStable, updState?.latestPrerelease, seenTag, autoCheckUpdates]);
-
-    // optional: 将 hook 的 downloading 状态同步到局部 state（用于禁用 UI）
+    // 同步下载状态，禁用 UI
     useEffect(() => {
         setIsDownloading(Boolean(updState?.downloading));
     }, [updState?.downloading]);
 
-    const handleDetails = useCallback((release) => {
-        setSelectedRelease(release);
-        setModalOpen(true);
-    }, []);
-
+    // 下载更新处理
     const handleDownload = useCallback(
         async (release) => {
             try {
                 await updActions.downloadAndApply(release);
-                // 你可以在这里触发 toast 或本地通知
+                // 这里可以触发通知
             } catch (e) {
                 console.error("下载失败", e);
                 alert("下载失败：" + (e?.toString?.() || e));
@@ -88,13 +73,12 @@ function App() {
         [updActions]
     );
 
+    // 应用更新处理（如果需要）
     const handleApply = useCallback(
         async (downloadedPath) => {
             try {
-                // 传空 target 让后端使用当前 exe（建议后端支持）
                 const resp = await updActions.applyUpdate(downloadedPath, "");
                 console.log("apply_update resp:", resp);
-                // 之后应退出程序以便脚本覆盖 exe
             } catch (e) {
                 console.error("应用更新失败", e);
                 alert("应用更新失败：" + (e?.toString?.() || e));
@@ -103,7 +87,7 @@ function App() {
         [updActions]
     );
 
-    // 背景样式函数（不变）
+    // 背景样式函数
     const applyBackgroundStyle = useCallback(
         async ({ background_option, local_image_path, network_image_url }) => {
             const baseStyle = {
@@ -149,8 +133,7 @@ function App() {
         []
     );
 
-
-
+    // 初始化配置
     useEffect(() => {
         let timeoutId;
         const init = async () => {
@@ -162,9 +145,7 @@ function App() {
                 startTransition(() => {
                     applyBackgroundStyle(style);
                 });
-                const autoCheck = Boolean(
-                    fullConfig?.launcher?.auto_check_updates ?? true
-                );
+                const autoCheck = Boolean(fullConfig?.launcher?.auto_check_updates ?? true);
                 setAutoCheckUpdates(autoCheck);
                 await new Promise((resolve) => setTimeout(resolve, 50));
                 if (style.show_launch_animation) {
@@ -201,20 +182,27 @@ function App() {
         <>
             <UserAgreement />
             <Titlebar />
-                <UpdateModal
-                    open={modalOpen}
-                    onClose={() => setModalOpen(false)}
-                    release={selectedRelease}
-                    onDownload={handleDownload}
-                    downloading={updState?.downloading}
-                    downloadResult={updState?.downloadResult}
-                    onApply={handleApply}
+            <UpdateModal
+                open={modalOpen}
+                onClose={() => setModalOpen(false)}
+                release={selectedRelease}
+                onDownload={handleDownload}
+                downloading={updState?.downloading}
+                downloadResult={updState?.downloadResult}
+                onApply={handleApply}
+            />
+            <Sidebar
+                activeSection={activeSection}
+                setActiveSection={onSectionChange}
+                disableSwitch={isDownloading || isPending}
+            />
+            <Suspense fallback={<div className="loading">Loading...</div>}>
+                <LazyContent
+                    activeSection={deferredSection}
+                    disableSwitch={isDownloading || isPending}
+                    onStatusChange={setIsDownloading}
                 />
-                <Sidebar activeSection={activeSection} setActiveSection={onSectionChange} disableSwitch={isDownloading || isPending} />
-                <Suspense fallback={<div className="loading">Loading...</div>}>
-                    <LazyContent activeSection={deferredSection} disableSwitch={isDownloading || isPending} onStatusChange={setIsDownloading} />
-                </Suspense>
-
+            </Suspense>
         </>
     );
 }

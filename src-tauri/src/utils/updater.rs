@@ -3,17 +3,16 @@ use anyhow::{Result};
 use semver::Version;
 use serde::Deserialize;
 use std::fs;
-use std::fs::{OpenOptions};
-use std::io::{Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
-use tracing::{error, info};
-use crate::http::proxy::{get_client_for_proxy};
-
+use tracing::{debug, error, info};
 use regex::Regex;
-use tauri::ipc::IpcResponse;
+use crate::downloads::manager::DownloaderManager;
+use crate::http::proxy::{get_client_for_proxy};
+use crate::result::CoreResult;
+use crate::tasks::task_manager::{create_task, finish_task};
 
 #[derive(Deserialize, Debug)]
 pub struct ApplyUpdateArgs {
@@ -184,6 +183,11 @@ pub async fn check_updates(owner: String, repo: String, api_base: Option<String>
     let latest_stable_changelog = latest_stable.as_ref().and_then(|s| s.body.clone());
     let latest_prerelease_changelog = latest_prerelease.as_ref().and_then(|s| s.body.clone());
 
+    debug!("当前版本：{}", current);
+    debug!("最新稳定版本：{:?}", latest_stable_ver);
+    debug!("是否有更新: {}", update_available);
+
+
     Ok(serde_json::json!({
         "current_version": current,
         "current_semver_parsed": current_ver.to_string(),
@@ -220,30 +224,42 @@ pub async fn download_and_apply_update(
     });
     let target = downloads_dir.join(&fname);
     info!("保存为: {}", target.display());
-    // 支持代理 via UPDATER_HTTP_PROXY 环境变量
-    let client_builder = reqwest::Client::builder();
-    let client = if let Ok(proxy) = std::env::var("UPDATER_HTTP_PROXY") {
-        client_builder
-            .proxy(reqwest::Proxy::all(&proxy).map_err(|e| format!("解析代理失败: {}", e))?)
-            .build()
-            .map_err(|e| format!("构建 client 失败: {}", e))?
-    } else {
-        client_builder.build().map_err(|e| format!("构建 client 失败: {}", e))?
+    let client = get_client_for_proxy()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let manager = DownloaderManager::with_client(client);
+    let task_id = create_task("ready", None);
+    let res = manager
+        .download_with_options(
+            &task_id,
+            url,
+            target.clone(),
+            None,
+        )
+        .await;
+    let bytes_len = match res {
+        Ok(CoreResult::Success(_)) => {
+            finish_task(&task_id, "completed", None);
+            fs::metadata(&target)
+                .map_err(|e| format!("获取文件大小失败: {}", e))?
+                .len()
+        }
+        Ok(CoreResult::Cancelled) => {
+            finish_task(&task_id, "cancelled", Some("download cancelled".into()));
+            let _ = fs::remove_file(&target);
+            return Err("下载已取消".to_string());
+        }
+        Ok(CoreResult::Error(err)) => {
+            finish_task(&task_id, "error", Some(format!("{:?}", err)));
+            let _ = fs::remove_file(&target);
+            return Err(format!("下载失败: {:?}", err));
+        }
+        Err(e) => {
+            finish_task(&task_id, "error", Some(format!("{:?}", e)));
+            let _ = fs::remove_file(&target);
+            return Err(format!("下载错误: {:?}", e));
+        }
     };
-    // 同步下载（使用 await）
-    let resp = client.get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("下载请求失败: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("下载响应失败: {}", resp.status()));
-    }
-    let bytes = resp.bytes()
-        .await
-        .map_err(|e| format!("读取下载内容失败: {}", e))?;
-    fs::write(&target, &bytes)
-        .map_err(|e| format!("写入文件失败: {} : {}", target.display(), e))?;
-    info!("下载完成: {} bytes", bytes.len());
+    info!("下载完成: {} bytes", bytes_len);
     // 现在应用更新（复用 apply_update 逻辑）
     let src = normalize_file_arg(&target.to_string_lossy()).map_err(|e| format!("处理下载路径失败: {}", e))?;
     let dst = if target_exe_path.trim().is_empty() {
@@ -253,15 +269,10 @@ pub async fn download_and_apply_update(
     };
     let exe = std::env::current_exe().map_err(|e| format!("获取 current_exe 失败: {}", e))?;
     let exe_str = exe.to_string_lossy().to_string();
-
-    // 使用 tracing 记录调用（不再写入 apply_update_call.log 文件）
     info!("[rust] download_and_apply called: exe='{}' src='{}' dst='{}' timeout={} auto_quit={}",
           exe_str, src.display(), dst.display(), timeout_secs, auto_quit);
-
-    // --- 新增：把当前 exe 拷贝为一个独立的 updater 可执行文件 ---
     let updater_filename = format!("updater_runner_{}.exe", std::process::id());
     let updater_path = downloads_dir.join(&updater_filename);
-    // 如果已存在同名文件，先尝试删除（忽略错误）
     let _ = std::fs::remove_file(&updater_path);
     std::fs::copy(&exe, &updater_path)
         .map_err(|e| format!("复制 updater 可执行失败: {} -> {} : {}", exe.display(), updater_path.display(), e))?;
@@ -278,7 +289,7 @@ pub async fn download_and_apply_update(
         let delay_ms = 300u64;
         info!("scheduling process exit in {} ms (pid {})", delay_ms, std::process::id());
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            std::thread::sleep(Duration::from_millis(delay_ms));
             std::process::exit(0);
         });
     }
@@ -286,10 +297,11 @@ pub async fn download_and_apply_update(
         "launched": true,
         "pid": child.id(),
         "saved_to": target.to_string_lossy(),
-        "bytes": bytes.len(),
+        "bytes": bytes_len,
         "src": src.to_string_lossy(),
         "dst": dst.to_string_lossy(),
-        "log": "tracing"
+        "log": "tracing",
+        "task_id": task_id
     }))
 }
 
@@ -361,7 +373,7 @@ pub fn run_updater_child(src: &Path, dst: &Path, timeout: Duration) -> Result<()
         }
 
         info!("尝试启动新 exe: {}", dst.display());
-        match std::process::Command::new(dst).spawn() {
+        match Command::new(dst).spawn() {
             Ok(_) => info!("已成功启动新程序"),
             Err(e) => {
                 error!("启动新程序失败: {}", e);
@@ -371,5 +383,51 @@ pub fn run_updater_child(src: &Path, dst: &Path, timeout: Duration) -> Result<()
 
         info!("替换完成，退出 updater 子进程");
         return Ok(());
+    }
+}
+
+pub fn clean_old_versions() {
+    let downloads_dir = Path::new("./BMCBL/downloads");
+    if !downloads_dir.exists() {
+        return; // 目录不存在就不清理
+    }
+    let pid = std::process::id();
+
+    let entries = match fs::read_dir(downloads_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            info!("清理旧版本时读取目录失败: {}", e);
+            return;
+        }
+    };
+
+    for entry_res in entries {
+        if let Ok(entry) = entry_res {
+            let path = entry.path();
+            if path.is_file() {
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+
+                // 跳过当前进程的 updater_runner_<pid>.exe
+                if file_name.starts_with("updater_runner_") && file_name.ends_with(".exe") {
+                    if let Some(pid_str) = file_name.strip_prefix("updater_runner_").and_then(|s| s.strip_suffix(".exe")) {
+                        if pid_str == pid.to_string() {
+                            continue;
+                        }
+                    }
+                }
+
+                // 只删除指定后缀文件
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                if !["exe", "msi", "zip", "7z", "bin"].contains(&ext.as_str()) {
+                    continue;
+                }
+
+                // 直接删除，不判断时间
+                match fs::remove_file(&path) {
+                    Ok(_) => info!("清理旧版本文件: {}", path.display()),
+                    Err(e) => info!("删除旧版本文件失败: {} ; err={}", path.display(), e),
+                }
+            }
+        }
     }
 }

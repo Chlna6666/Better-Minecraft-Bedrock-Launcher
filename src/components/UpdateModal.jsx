@@ -6,6 +6,7 @@ import "./update-modal.css";
 import close from "../assets/feather/x.svg";
 import externalLink from "../assets/feather/external-link.svg";
 import IconButton from "./IconButton";
+import { Button } from "./index.js";
 
 function Spinner() {
     return (
@@ -35,8 +36,9 @@ export default function UpdateModal({
                                         release,
                                         onDownload,
                                         downloading = false,
-                                        progress = null, // optional: number 0-100, 若为 null 则显示不确定进度
-                                        compact = false, // 新增：compact 模式，窗口更紧凑
+                                        progress = null, // number 0-100 or null
+                                        compact = false,
+                                        onCancel = null, // optional cancel callback while downloading
                                     }) {
     const latest = release || null;
 
@@ -68,6 +70,63 @@ export default function UpdateModal({
 
     if (!open) return null;
 
+    // 当正在下载时：仅显示简化的进度面板（满足“点击更新后应该只显示进度条”需求）
+    if (downloading) {
+        return (
+            <div
+                className="um-backdrop"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="um-progress-title"
+            >
+                <div className={`um-modal ${compact ? "um-modal--compact" : ""}`} role="document">
+                    <main className="um-body um-body--centered" aria-live="polite">
+                        <div className="um-progress-area" role="status" aria-label="下载进度">
+                            <div className="um-progress-row">
+                                <div className="um-progress-left">
+                                    <span id="um-progress-title" className="um-progress-label">
+                                        下载中
+                                    </span>
+                                    {progress !== null ? (
+                                        <span className="um-progress-percent">{Math.round(progress)}%</span>
+                                    ) : (
+                                        <span className="um-progress-percent">…</span>
+                                    )}
+                                </div>
+                                <div className="um-progress-right">
+                                    <Spinner />
+                                </div>
+                            </div>
+
+                            <div className="um-progress-bar" style={{ marginTop: 12 }}>
+                                <div
+                                    className={`um-progress-fill ${progress === null ? "indeterminate" : ""}`}
+                                    style={{
+                                        width: progress !== null ? `${Math.max(0, Math.min(100, progress))}%` : undefined,
+                                    }}
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={progress !== null ? Math.round(progress) : undefined}
+                                    role="progressbar"
+                                />
+                            </div>
+
+                            {/* 可选的取消按钮（若父组件提供 onCancel） */}
+                            {typeof onCancel === "function" ? (
+                                <div style={{ marginTop: 14, display: "flex", justifyContent: "center" }}>
+                                    <Button variant="ghost" onClick={onCancel} size="md">
+                                        取消
+                                    </Button>
+                                </div>
+                            ) : null}
+                        </div>
+                    </main>
+                </div>
+            </div>
+        );
+    }
+
+    // 非下载状态：恢复原有完整 UI
     return (
         <div
             className="um-backdrop"
@@ -142,8 +201,8 @@ export default function UpdateModal({
                                                 }
                                                 return (
                                                     <pre {...props}>
-                            <code className={className}>{children}</code>
-                          </pre>
+                                                        <code className={className}>{children}</code>
+                                                    </pre>
                                                 );
                                             },
                                         }}
@@ -160,44 +219,6 @@ export default function UpdateModal({
                     <div className="um-notes">
                         <div>建议：点击「更新」将会在下载完成后自动替换更新启动。</div>
                         <div>提示：在 设置 → 启动器 中可关闭自动检查更新。</div>
-                    </div>
-
-                    <div className="um-progress-area" aria-hidden={!downloading}>
-                        {downloading ? (
-                            <>
-                                <div className="um-progress-row">
-                                    <div className="um-progress-left">
-                                        <span className="um-progress-label">下载中</span>
-                                        {progress !== null ? (
-                                            <span className="um-progress-percent">{Math.round(progress)}%</span>
-                                        ) : (
-                                            <span className="um-progress-percent">…</span>
-                                        )}
-                                    </div>
-                                    <div className="um-progress-right">
-                                        <Spinner />
-                                    </div>
-                                </div>
-
-                                <div className="um-progress-bar">
-                                    <div
-                                        className={`um-progress-fill ${
-                                            progress === null ? "indeterminate" : ""
-                                        }`}
-                                        style={{
-                                            width:
-                                                progress !== null
-                                                    ? `${Math.max(0, Math.min(100, progress))}%`
-                                                    : undefined,
-                                        }}
-                                        aria-valuemin={0}
-                                        aria-valuemax={100}
-                                        aria-valuenow={progress !== null ? Math.round(progress) : undefined}
-                                        role="progressbar"
-                                    />
-                                </div>
-                            </>
-                        ) : null}
                     </div>
                 </main>
 
@@ -224,26 +245,18 @@ export default function UpdateModal({
                     </div>
 
                     <div className="um-right">
-                        <button className="um-btn um-btn-ghost" onClick={onClose}>
+                        <Button variant="ghost" onClick={onClose} size="md">
                             稍后
-                        </button>
+                        </Button>
 
-                        <button
-                            className="um-btn um-btn-primary"
+                        <Button
+                            variant="primary"
                             onClick={() => onDownload && onDownload(latest)}
-                            disabled={downloading || !latest || !assetUrl}
-                            aria-disabled={downloading || !latest || !assetUrl}
+                            disabled={!latest || !assetUrl}
+                            size="md"
                         >
-                            {downloading ? (
-                                <>
-                                    <Spinner /> <span className="um-btn-text">下载中…</span>
-                                </>
-                            ) : (
-                                <>
-                                    <span className="um-btn-text">更新</span>
-                                </>
-                            )}
-                        </button>
+                            更新
+                        </Button>
                     </div>
                 </footer>
             </div>

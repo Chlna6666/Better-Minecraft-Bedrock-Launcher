@@ -1,13 +1,14 @@
 // src/hooks/useUpdater.jsx
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+
 /**
  * useUpdater - hook to interact with backend updater API
  *
  * owner/repo: GitHub repository to check, e.g. "Chlna6666" / "Better-Minecraft-Bedrock-Launcher"
  *
  * Exposed:
- * - state: { checking, error, latestStable, latestPrerelease, currentVersion }
+ * - state: { checking, error, latestStable, latestPrerelease, currentVersion, updateAvailable }
  * - checkForUpdates()
  * - downloadAndApply(releaseSummary) -> starts backend download and apply, resolves when done
  */
@@ -23,23 +24,67 @@ export function useUpdater({
     const [latestStable, setLatestStable] = useState(null);
     const [latestPrerelease, setLatestPrerelease] = useState(null);
     const [downloading, setDownloading] = useState(false);
+    const [updateAvailable, setUpdateAvailable] = useState(false);
     const mounted = useRef(true);
     useEffect(() => () => { mounted.current = false; }, []);
+
+    // simple semver extractor + comparator fallback (only supports X.Y.Z, ignores prerelease/build)
+    const parseSemverSimple = (s) => {
+        if (!s || typeof s !== "string") return null;
+        // try common places: tag or version like "v1.2.3" or "1.2.3"
+        const m = s.match(/(\d+)\.(\d+)\.(\d+)/);
+        if (!m) return null;
+        return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+    };
+    const semverGreater = (aArr, bArr) => {
+        if (!aArr || !bArr) return false;
+        for (let i = 0; i < 3; i++) {
+            if (aArr[i] > bArr[i]) return true;
+            if (aArr[i] < bArr[i]) return false;
+        }
+        return false;
+    };
+
     const parseCheckResp = (resp) => {
-        // resp shape matches your Rust response JSON
         if (!resp) return;
         setCurrentVersion(resp.current_version || null);
         setLatestStable(resp.latest_stable || null);
         setLatestPrerelease(resp.latest_prerelease || null);
+
+        // Prefer explicit backend flag
+        if (typeof resp.update_available === "boolean") {
+            setUpdateAvailable(resp.update_available);
+            return;
+        }
+
+        // Fallback: do simple semver compare client-side using latest_stable.tag or latest_stable.asset_name
+        try {
+            const cur = resp.current_version || null;
+            const curArr = parseSemverSimple(cur);
+            let hasUpdate = false;
+            if (resp.latest_stable) {
+                const ls = resp.latest_stable;
+                // prefer tag field, fall back to name or asset name
+                const candidate = ls.tag || ls.name || (ls.asset_name ? ls.asset_name : null);
+                const lsArr = parseSemverSimple(candidate);
+                if (lsArr && curArr) {
+                    hasUpdate = semverGreater(lsArr, curArr);
+                }
+            }
+            setUpdateAvailable(Boolean(hasUpdate));
+        } catch (e) {
+            // on any error fallback to false
+            setUpdateAvailable(false);
+        }
     };
+
     const checkForUpdates = useCallback(async () => {
         setChecking(true);
         setError(null);
         try {
             const resp = await invoke("check_updates", { owner, repo });
-            // resp is a JS object from Rust serde_json
             parseCheckResp(resp);
-            setChecking(false);
+            if (mounted.current) setChecking(false);
             return resp;
         } catch (e) {
             console.error("check_updates error:", e);
@@ -50,6 +95,7 @@ export function useUpdater({
             throw e;
         }
     }, [owner, repo]);
+
     // optional auto-check on mount
     useEffect(() => {
         if (autoCheck) {
@@ -60,6 +106,7 @@ export function useUpdater({
             return () => clearInterval(id);
         }
     }, [autoCheck, autoCheckIntervalMs, checkForUpdates]);
+
     const downloadAndApply = useCallback(async (releaseSummary) => {
         if (!releaseSummary || !releaseSummary.asset_url) {
             throw new Error("releaseSummary or asset_url missing");
@@ -67,7 +114,6 @@ export function useUpdater({
         setDownloading(true);
         setError(null);
         try {
-            // optional filename hint uses asset_name
             const filename_hint = releaseSummary.asset_name || null;
             const resp = await invoke("download_and_apply_update", {
                 args: {
@@ -82,12 +128,9 @@ export function useUpdater({
             try {
                 await invoke("quit_app");
             } catch (qerr) {
-                // don't treat quit failure as fatal — just log and continue
                 console.warn("quit_app failed:", qerr);
             }
 
-
-            // resp should contain { saved_to, bytes, applied: true } or similar
             if (mounted.current) {
                 setDownloading(false);
             }
@@ -101,6 +144,7 @@ export function useUpdater({
             throw e;
         }
     }, []);
+
     return {
         state: {
             checking,
@@ -109,6 +153,7 @@ export function useUpdater({
             latestStable,
             latestPrerelease,
             downloading,
+            updateAvailable,
         },
         actions: {
             checkForUpdates,
