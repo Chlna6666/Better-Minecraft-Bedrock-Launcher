@@ -1,6 +1,7 @@
 use thiserror::Error;
 use tokio::task::JoinError;
 use zip::result::ZipError;
+use crate::show_windows_error;
 
 /// 核心错误类型
 #[derive(Debug, Error)]
@@ -72,7 +73,16 @@ impl<T> From<Result<T, CoreError>> for CoreResult<T> {
     fn from(r: Result<T, CoreError>) -> Self {
         match r {
             Ok(v) => CoreResult::Success(v),
-            Err(e) => CoreResult::Error(e),
+            Err(e) => {
+                let msg = e.to_string();
+                // 如果当前进程/线程没有 tokio 运行时，这里会 panic！
+                // 因此使用前请非常确定应用一定运行在 tokio runtime 中。
+                let _ = tokio::task::spawn_blocking(move || {
+                    show_windows_error("程序错误", &msg);
+                });
+                CoreResult::Error(e)
+            }
         }
     }
 }
+

@@ -1,13 +1,13 @@
-// core/downloader_manager.rs
+// src/downloads/manager.rs
 use reqwest::Client;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::path::PathBuf;
 use tracing::debug;
-use crate::downloads::{cancel};
 use crate::downloads::multi::download_multi;
 use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
+use crate::config::config::{read_config};
+use num_cpus;
+use crate::tasks::task_manager::{create_task, update_progress, finish_task};
 
 pub struct DownloaderManager {
     client: Client,
@@ -18,36 +18,48 @@ impl DownloaderManager {
         Self { client }
     }
 
-    /// 兼容并扩展：可传入 md5_expected 与 cancel_flag
+    /// 直接执行下载（不创建 task），使用已有 task_id（命令层传入）
     pub async fn download_with_options(
         &self,
+        task_id: &str,
         url: String,
-        dest: std::path::PathBuf,
-        threads: usize,
-        md5_expected: Option<String>,
-        cancel_flag: Option<Arc<AtomicBool>>,
+        dest: PathBuf,
+        md5_expected: Option<&str>,
     ) -> Result<CoreResult, CoreError> {
-        let mut retry = 0;
+        let config = read_config()
+            .map_err(|e| CoreError::Config(e.to_string()))?;
+
+        let threads = if config.launcher.download.auto_thread_count {
+            num_cpus::get()
+        } else if config.launcher.download.multi_thread {
+            config.launcher.download.max_threads as usize
+        } else {
+            1
+        };
+
+
+        update_progress(task_id, 0, None, Some("downloading"));
+
+        let mut retry = 0usize;
         loop {
-            debug!("DownloaderManager start download loop retry={}", retry);
+            debug!("DownloaderManager start download loop retry={} threads={}", retry, threads);
             let res = if threads > 1 {
-                // multi::download_multi 需要实现相同的参数签名（参见下面）
                 download_multi(
                     self.client.clone(),
+                    task_id,
                     &url,
                     &dest,
                     threads,
-                    md5_expected.as_deref(),
-                    cancel_flag.clone(),
+                    md5_expected,
                 )
                     .await
             } else {
                 download_file(
                     self.client.clone(),
+                    task_id,
                     &url,
                     &dest,
-                    md5_expected.as_deref(),
-                    cancel_flag.clone(),
+                    md5_expected,
                 )
                     .await
             };
@@ -64,35 +76,55 @@ impl DownloaderManager {
         }
     }
 
-    /// 启动后台下载任务并返回一个取消句柄（Arc<AtomicBool>），方便前端保存并在需要时调用 `store` 并 set(true)
-    pub fn start_download_task(
+    /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
+    pub fn start_download(
         &self,
         url: String,
-        dest: impl AsRef<Path> + Send + 'static,
-        threads: usize,
+        dest: PathBuf,
         md5_expected: Option<String>,
-    ) -> Arc<AtomicBool> {
-        let cancel_flag = cancel::new_cancel_flag();
-        let cancel_flag_for_task = cancel_flag.clone(); // <-- clone before moving into closure
-
+    ) -> String {
+        let task_id = create_task("ready", None);
         let client = self.client.clone();
-        let dest_buf = dest.as_ref().to_path_buf();
-        // spawn a background task, move the cloned flag into the task
+
+        // clones for task
+        let url_clone = url.clone();
+        let dest_clone = dest.clone();
+        let md5_clone = md5_expected.clone();
+        let task_id_clone = task_id.clone();
+
         tokio::spawn(async move {
-            let mgr = DownloaderManager::with_client(client);
-            let _ = mgr
+            update_progress(&task_id_clone, 0, None, Some("starting"));
+
+            let manager = DownloaderManager::with_client(client);
+
+            let res = manager
                 .download_with_options(
-                    url,
-                    dest_buf,
-                    threads,
-                    md5_expected,
-                    Some(cancel_flag_for_task), // move cloned flag here
+                    &task_id_clone,
+                    url_clone,
+                    dest_clone.clone(),
+                    md5_clone.as_deref(),
                 )
                 .await;
-            // 结果可以发事件给前端（可通过 tauri::event::emit 等）
+
+            match res {
+                Ok(CoreResult::Success(_)) => {
+                    finish_task(&task_id_clone, "completed", None);
+                }
+                Ok(CoreResult::Cancelled) => {
+                    finish_task(&task_id_clone, "cancelled", Some("download cancelled".into()));
+                    let _ = tokio::fs::remove_file(&dest_clone).await;
+                }
+                Ok(CoreResult::Error(err)) => {
+                    finish_task(&task_id_clone, "error", Some(format!("{:?}", err)));
+                    let _ = tokio::fs::remove_file(&dest_clone).await;
+                }
+                Err(e) => {
+                    finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                    let _ = tokio::fs::remove_file(&dest_clone).await;
+                }
+            }
         });
 
-        // return the original Arc so caller can cancel
-        cancel_flag
+        task_id
     }
 }

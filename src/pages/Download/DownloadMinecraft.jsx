@@ -28,15 +28,6 @@ function compareVersion(v1, v2) {
     return 0;
 }
 
-function mapArchivalToLabel(code) {
-    switch (code) {
-        case 3: return "已收录（可下载）";
-        case 2: return "已收录（未知/可能不可用）";
-        case 1: return "存在但未发布/无法证明发布";
-        case 0: return "已发布但已丢失";
-        default: return "未知";
-    }
-}
 
 function DownloadMinecraft({ onStatusChange }) {
     const { t } = useTranslation();
@@ -73,7 +64,7 @@ function DownloadMinecraft({ onStatusChange }) {
     const searchInputRef = useRef(null);
 
     // localStorage 缓存设置
-    const CACHE_KEY = "mcappx_bedrock_cache_v1";
+    const CACHE_KEY = "appx_api_cache";
     const CACHE_TTL = 1000 * 60 * 60 * 12; // 12 小时
 
     // 读取本地缓存（如果存在且未过期）
@@ -111,13 +102,18 @@ function DownloadMinecraft({ onStatusChange }) {
         }
     };
 
+    function mapArchivalToLabel(code) {
+        const key = ["0", "1", "2", "3"].includes(String(code)) ? String(code) : "unknown";
+        return t(`DownloadMinecraft.archival_status.${key}`);
+    }
+
     // 初始化：先尝试从 localStorage 加载缓存，减少网络请求（页面初始渲染）
     useEffect(() => {
         const cache = loadCacheFromLocalStorage();
         if (cache && Array.isArray(cache.parsed) && cache.parsed.length > 0) {
             cachedVersions.current = cache.parsed;
             setVersions(cache.parsed);
-            toast.info(t('DownloadMinecraft.cache_used_on_init') || "Loaded versions from cache.");
+            toast.info(t('DownloadMinecraft.cache_used_on_init'));
         }
         // 触发一次网络拉取（非强制，会在有缓存时直接使用缓存）
         fetchVersions(false);
@@ -216,7 +212,7 @@ function DownloadMinecraft({ onStatusChange }) {
                     // 使用本地缓存并提前返回
                     cachedVersions.current = localCache.parsed || [];
                     setVersions(localCache.parsed || []);
-                    toast.info(t('DownloadMinecraft.using_cache_when_api_not_newer') || "Using local cache (server data not newer).");
+                    toast.info(t('DownloadMinecraft.using_cache_when_api_not_newer'));
                     setLoading(false);
                     fetchLockRef.current = false;
                     return;
@@ -321,7 +317,7 @@ function DownloadMinecraft({ onStatusChange }) {
             cachedVersions.current = parsed;
             saveCacheToLocalStorage(backendRes.body, parsed, apiCreationTimeRaw);
             console.debug("[fetchVersions] v2 数据解析完成，版本数：", parsed.length);
-            toast.success(t('DownloadMinecraft.fetch_success') || "Version list loaded.");
+            toast.success(t('DownloadMinecraft.fetch_success'));
         } catch (e) {
             console.error("[fetchVersions] 拉取或解析版本数据失败：", e);
             setError(e.message || String(e));
@@ -330,11 +326,12 @@ function DownloadMinecraft({ onStatusChange }) {
             if (cache && Array.isArray(cache.parsed) && cache.parsed.length > 0) {
                 cachedVersions.current = cache.parsed;
                 setVersions(cache.parsed);
-                toast.info(t('DownloadMinecraft.using_cache_fallback') || "Using cached versions due to network error.");
+                toast.info(t('DownloadMinecraft.using_cache_fallback'));
             } else {
                 setVersions([]);
                 cachedVersions.current = [];
-                toast.error(t('DownloadMinecraft.fetch_failed') || `Failed to load versions: ${e.message || e}`);
+                toast.error(t('DownloadMinecraft.fetch_failed', { message: e.message || e }));
+
             }
         } finally {
             setLoading(false);
@@ -474,25 +471,25 @@ function DownloadMinecraft({ onStatusChange }) {
 
         const isGDK = buildType && String(buildType).toLowerCase() === "gdk";
         if (isGDK) {
-            toast.info(t('DownloadMinecraft.gdk_not_supported') || "GDK builds are not supported for install currently.");
+            toast.info(t('DownloadMinecraft.gdk_not_supported'));
             return;
         }
 
         if (!metaPresent) {
-            toast.error(t('DownloadMinecraft.no_metadata') || "Missing download address (MetaData).");
+            toast.error(t('DownloadMinecraft.no_metadata'));
             return;
         }
 
         // ArchivalStatus 逻辑：允许下载的状态这里设为 2 或 3（3 最安全，2 可能不可用）
         if (archivalStatus === null || archivalStatus === undefined) {
             // 未知状态，提示但允许（如果你想更严格可以把它禁止）
-            toast.info(t('DownloadMinecraft.archival_unknown') || "Archival status unknown — proceed with caution.");
+            toast.info(t('DownloadMinecraft.archival_unknown'));
         } else if (archivalStatus === 1 || archivalStatus === 0) {
-            toast.error(t('DownloadMinecraft.archival_not_available') || "This version is not available for download (archival status indicates missing/unreleased).");
+            toast.error(t('DownloadMinecraft.archival_not_available'));
             return;
         } else if (archivalStatus === 2) {
             // 允许但提醒
-            toast.info(t('DownloadMinecraft.archival_maybe_unavailable') || "Archival status 2: may be unavailable; proceed with caution.");
+            toast.info(t('DownloadMinecraft.archival_maybe_unavailable'));
         }
 
         // 通过校验：启动下载
@@ -537,7 +534,7 @@ function DownloadMinecraft({ onStatusChange }) {
                 setActiveDownload('import');
             } else {
                 console.warn("Unsupported file type for import");
-                toast.error(t('DownloadMinecraft.import_unsupported') || "Unsupported file type for import");
+                toast.error(t('DownloadMinecraft.import_unsupported'));
             }
         }
     };
@@ -601,9 +598,9 @@ function DownloadMinecraft({ onStatusChange }) {
 
                         // tooltip reason when disabled
                         let disabledReason = null;
-                        if (isGDK) disabledReason = t('DownloadMinecraft.gdk_not_supported') || "GDK builds are not supported for install currently.";
-                        else if (!metaPresent) disabledReason = t('DownloadMinecraft.no_metadata') || "Missing download address (MetaData).";
-                        else if (archivalStatus === 1 || archivalStatus === 0) disabledReason = t('DownloadMinecraft.archival_not_available') || "Not available for download (archival status).";
+                        if (isGDK) disabledReason = t('DownloadMinecraft.gdk_not_supported');
+                        else if (!metaPresent) disabledReason = t('DownloadMinecraft.no_metadata');
+                        else if (archivalStatus === 1 || archivalStatus === 0) disabledReason = t('DownloadMinecraft.archival_not_available');
 
                         return (
                             <div key={key} className="table-row" style={{ height: ROW_HEIGHT }}>
@@ -640,7 +637,7 @@ function DownloadMinecraft({ onStatusChange }) {
                                             onCompleted={(id) => handleChildCompleted(id)}
                                             onCancel={(id) => handleChildCancel(id)}
                                         >
-                                            <button className="download-button" disabled title={t('DownloadMinecraft.downloading') || "Downloading..."}>
+                                            <button className="download-button" disabled title={t('DownloadMinecraft.downloading')}>
                                                 <img src={downloadIcon} alt="Download" className="download-icon" />
                                             </button>
                                         </InstallProgressBar>
@@ -649,7 +646,7 @@ function DownloadMinecraft({ onStatusChange }) {
                                             className="download-button"
                                             onClick={() => handleDownloadClick(pkgId, buildType, archivalStatus, metaPresent, md5)}
                                             disabled={isDownloading || !!activeDownload || !canDownload}
-                                            title={(!canDownload && disabledReason) ? disabledReason : t('DownloadMinecraft.download') || "Download"}
+                                            title={(!canDownload && disabledReason) ? disabledReason : t('DownloadMinecraft.download')}
                                         >
                                             <img src={downloadIcon} alt="Download" className="download-icon" />
                                         </button>

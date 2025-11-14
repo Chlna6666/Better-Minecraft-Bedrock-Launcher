@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
 use std::{fs, io};
-use tauri_plugin_store::JsonValue;
+use serde_json::Value;
 use tracing::{debug, error};
 
 #[derive(Serialize, Deserialize, Debug, Clone,Default)]
@@ -27,16 +27,21 @@ pub struct GameConfig {
     pub uwp_minimize_fix: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyType {
+    #[default]
+    None,
+    System,
+    Http,
+    Socks5,
+}
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(default)]
 pub struct ProxyConfig {
-    pub disable_all_proxy: bool,
-    pub use_system_proxy: bool,
-    pub enable_http_proxy: bool,
+    pub proxy_type: ProxyType,
     pub http_proxy_url: String,
-    pub enable_socks_proxy: bool,
     pub socks_proxy_url: String,
-    pub enable_custom_proxy: bool,
-    pub custom_proxy_url: String,
 }
 
 
@@ -53,6 +58,9 @@ pub struct Launcher {
     pub language: String, // "auto", "en-US", "zh-CN" 等
     pub custom_appx_api: String,
     pub download: DownloadConfig,
+    pub auto_check_updates: bool,
+    pub check_on_start: bool,
+    pub update_check_interval_minutes: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone,Default)]
@@ -68,15 +76,15 @@ pub fn get_config_file_path() -> PathBuf {
     config_dir.join("settings.toml")
 }
 
-pub fn ensure_config_dir() -> std::io::Result<()> {
-    let config_dir = std::env::current_dir().unwrap().join("BMCBL/config");
+pub fn ensure_config_dir() -> io::Result<()> {
+    let config_dir = std::env::current_dir()?.join("BMCBL/config");
     if !config_dir.exists() {
         fs::create_dir_all(&config_dir)?;
     }
     Ok(())
 }
 
-pub fn ensure_config_file() -> std::io::Result<()> {
+pub fn ensure_config_file() -> io::Result<()> {
     let config_file = get_config_file_path();
     if !config_file.exists() {
         let default_config = get_default_config();
@@ -105,16 +113,14 @@ pub fn get_default_config() -> Config {
                 max_threads: 8,
                 auto_thread_count: true,
                 proxy: ProxyConfig {
-                    disable_all_proxy: true,
-                    use_system_proxy: false,
-                    enable_http_proxy: false,
+                    proxy_type: ProxyType::None,
                     http_proxy_url: "".to_string(),
-                    enable_socks_proxy: false,
                     socks_proxy_url: "".to_string(),
-                    enable_custom_proxy: false,
-                    custom_proxy_url: "".to_string(),
                 },
             },
+            auto_check_updates: true,
+            check_on_start: false,
+            update_check_interval_minutes: 60,
         },
         game: GameConfig {
             inject_on_launch: true,
@@ -203,7 +209,7 @@ pub fn write_config(config: &Config) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn get_nested_value(data: &JsonValue, key: &str) -> Option<JsonValue> {
+pub fn get_nested_value(data: &Value, key: &str) -> Option<Value> {
     let parts: Vec<&str> = key.split('.').collect();
     let mut current = data;
     for part in parts {
@@ -212,7 +218,7 @@ pub fn get_nested_value(data: &JsonValue, key: &str) -> Option<JsonValue> {
     Some(current.clone())
 }
 
-pub fn set_nested_value(data: &mut JsonValue, key: &str, value: JsonValue) -> Result<(), String> {
+pub fn set_nested_value(data: &mut Value, key: &str, value: Value) -> Result<(), String> {
     let parts: Vec<&str> = key.split('.').collect();
     let mut current = data;
 

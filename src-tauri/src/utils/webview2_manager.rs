@@ -49,7 +49,7 @@ fn read_webview2_version_from_registry() -> Option<String> {
                     Some(&mut size),
                 )
             };
-            unsafe { RegCloseKey(hkey) }.ok();
+            let _ = unsafe { RegCloseKey(hkey) }.ok();
             if res.is_ok() {
                 let len = (size as usize) / 2;
                 let version = String::from_utf16_lossy(&buf[..len]);

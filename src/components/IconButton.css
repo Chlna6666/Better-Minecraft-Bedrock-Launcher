@@ -1,5 +1,47 @@
-.ui-icon-btn { display:inline-flex; align-items:center; justify-content:center; border-radius:8px; border: none; background: transparent; padding: 6px; cursor: pointer; }
-.ui-icon-btn-sm { width: 32px; height: 32px; }
-.ui-icon-btn-md { width: 36px; height: 36px; }
-.ui-icon-btn-lg { width: 44px; height: 44px; }
-.ui-icon-btn:hover { background: rgba(0,0,0,0.04); }
+.ui-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    padding: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    color: #666666;
+}
+
+.ui-icon-btn:hover {
+    background: rgba(0, 0, 0, 0.07);
+    color: #333333;
+}
+
+
+
+.ui-icon-btn-sm {
+    width: 32px;
+    height: 32px;
+}
+
+.ui-icon-btn-md {
+    width: 36px;
+    height: 36px;
+}
+
+.ui-icon-btn-lg {
+    width: 44px;
+    height: 44px;
+}
+
+.ui-icon-btn:hover {
+    background: rgba(0, 0, 0, 0.07);
+}
+
+/* icon 内部svg或img填满按钮 */
+.ui-icon-btn > svg,
+.ui-icon-btn > img {
+    width: 60%;
+    height: 60%;
+    pointer-events: none;
+    display: block;
+}

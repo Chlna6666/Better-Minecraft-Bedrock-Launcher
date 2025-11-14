@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, io::BufReader, path::{Path, PathBuf}, sync::Mutex, time::SystemTime};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, Runtime};
+use tauri::{ Runtime};
 use tracing::info;
 use once_cell::sync::Lazy;
 
@@ -93,29 +93,6 @@ impl PluginScanner {
             }
         }
 
-        // 并行或串行加载 to_load
-        #[cfg(feature = "parallel")]
-        {
-            use rayon::prelude::*;
-            let loaded: Vec<_> = to_load.par_iter()
-                .map(|(dir, manifest_path, mtime)| {
-                    match Self::load_manifest_from_file(manifest_path) {
-                        Ok(manifest) => Some((dir.clone(), *mtime, manifest)),
-                        Err(e) => {
-                            tracing::error!("读取 manifest 失败 {:?}: {}", manifest_path, e);
-                            None
-                        }
-                    }
-                })
-                .filter_map(|x| x)
-                .collect();
-
-            for (dir, mtime, manifest) in loaded {
-                self.cache.insert(dir.clone(), (mtime, manifest.clone()));
-                manifests.push(manifest);
-            }
-        }
-        #[cfg(not(feature = "parallel"))]
         {
             for (dir, manifest_path, mtime) in to_load {
                 match Self::load_manifest_from_file(&manifest_path) {
@@ -129,7 +106,7 @@ impl PluginScanner {
         }
 
         if manifests.is_empty() {
-            tracing::info!("未加载到任何插件。");
+            info!("未加载到任何插件。");
         } else {
             // 可选：打印加载信息（作者合并字符串）
             for m in &manifests {

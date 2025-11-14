@@ -8,6 +8,6 @@ pub mod utils;
 pub mod appx_dependency;
 pub mod system_info;
 pub mod app_info;
-pub mod AppHandle;
-mod updater;
+pub mod app_handle;
+pub mod updater;
 

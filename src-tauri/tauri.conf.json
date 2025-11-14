@@ -1,6 +1,6 @@
 {
   "productName": "better_minecraft_bedrock_launcher",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "identifier": "com.bmcbl",
   "build": {
     "beforeDevCommand": "npm run dev",

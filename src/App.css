@@ -1,3 +1,6 @@
+/* @import "tailwindcss"; */
+
+
 body {
   user-select: none;
   background-image: url('./assets/background.webp'); /* 确保路径正确 */
@@ -6,14 +9,31 @@ body {
   background-repeat: no-repeat;
   flex-direction: row;
 }
-.app-container {
-  display: flex;
-  height: calc(98.4vh - 40px); /* Adjust height based on Titlebar size */
-  margin-top: 40px; /* Ensure content starts below Titlebar */
-}
 
 
 ::-webkit-scrollbar {
   display: none; /* Chrome Safari */
 }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  position: fixed;   /* 固定在视口，不能被偏移 */
+  inset: 0;          /* 等同于 top:0; right:0; bottom:0; left:0; */
+  overflow: hidden;  /* 禁止内部滚动 */
+  touch-action: none;/* 禁止触摸平移/缩放（移动端） */
+  user-select: none; /* 禁止选中 */
+  -webkit-app-region: no-drag; /* Electron/Tauri/Chromium 桌面应用：禁止该区域拖动窗口 */
+}
+
+/* 防止图片/链接被拖拽 */
+#root img, #root a {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
 

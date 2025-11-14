@@ -1,8 +1,9 @@
-use tauri_plugin_store::JsonValue;
 use crate::config::config::{get_nested_value, read_config, set_nested_value, write_config};
+use serde_json::Value;
+
 
 #[tauri::command]
-pub fn get_config(key: Option<String>) -> Result<JsonValue, String> {
+pub fn get_config(key: Option<String>) -> Result<Value, String> {
     let config = read_config().map_err(|e| format!("Failed to read config: {}", e))?;
     let config_json = serde_json::to_value(config).map_err(|e| e.to_string())?;
 
@@ -15,7 +16,7 @@ pub fn get_config(key: Option<String>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
-pub fn set_config(key: Option<String>, value: Option<JsonValue>, config: Option<JsonValue>) -> Result<(), String> {
+pub fn set_config(key: Option<String>, value: Option<Value>, config: Option<Value>) -> Result<(), String> {
     let mut current = read_config().map_err(|e| format!("Failed to read config: {}", e))?;
     let mut config_json = serde_json::to_value(&current).map_err(|e| e.to_string())?;
 

@@ -1,14 +1,15 @@
 /* Content Styles */
 .content {
-    flex: 1;
+    flex: 1 1 auto;
+    overflow: auto;
+    height: calc(100% - 50px - 40px);
+    margin: 50px 20px 40px 180px;
     padding: 20px;
-    margin-left: 160px; /* Space for the expanded Sidebar */
-    margin-right: 20px;
-    margin-top: 20px;
+    min-height: 0;
     color: white;
     border-radius: 12px;
     opacity: 1;
-    transition: opacity 0.5s ease, transform 0.5s ease; /* Smooth fade and transform animation */
+    transition: opacity 0.5s ease, transform 0.5s ease;
 }
 
 .content.blur {

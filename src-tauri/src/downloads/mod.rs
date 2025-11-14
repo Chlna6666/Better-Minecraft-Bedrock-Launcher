@@ -1,9 +1,8 @@
-pub mod cancel;
 pub mod manager;
 mod single;
 mod multi;
 
-pub mod WuClient;
+pub mod wu_client;
 mod md5;
 pub mod commands;
 

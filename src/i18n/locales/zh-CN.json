@@ -87,7 +87,27 @@
     "search_placeholder": "搜索版本号...",
     "no_data": "暂无数据",
     "info": "正在加载版本信息…",
-    "info_error": "获取版本信息出错：{{error}}"
+    "info_error": "获取版本信息出错：{{error}}",
+    "archival_status": {
+      "3": "已收录（可下载）",
+      "2": "已收录（未知/可能不可用）",
+      "1": "存在但未发布/无法证明发布",
+      "0": "已发布但已丢失",
+      "unknown": "未知"
+    },
+    "cache_used_on_init": "从缓存中加载数据",
+    "using_cache_when_api_not_newer": "从缓存加载数据（API没有新数据）",
+    "fetch_success": "获取信息成功",
+    "using_cache_fallback": "网络错误使用缓存数据",
+    "fetch_failed": "加载版本失败：{{message}}",
+    "gdk_not_supported": "暂不支持GDK构建版本",
+    "no_metadata": "缺少下载地址（元数据）",
+    "archival_unknown": "版本归档状态未知，请谨慎操作。",
+    "archival_not_available": "该版本无法下载（归档状态显示已丢失或未发布）。",
+    "archival_maybe_unavailable": "归档状态为2：可能不可用，请谨慎操作。",
+    "import_unsupported": "不支持的导入文件类型",
+    "downloading": "下载中",
+    "download": "下载"
   },
   "GameManager": {
     "game": "游戏",
@@ -146,20 +166,19 @@
       "en": "英文",
       "zh": "中文"
     },
-    "custom_appx_api": "自定义 Appx API",
+    "auto_check_updates": "自动检查更新",
     "download": {
       "multi_thread": "多线程下载",
       "auto_thread_count": "自动线程数",
       "max_threads": "最大线程数",
       "proxy": {
-        "disable_all_proxy": "禁用所有代理",
-        "use_system_proxy": "使用系统代理",
-        "enable_http_proxy": "启用 HTTP 代理",
+        "mode": "代理模式",
+        "none": "无代理",
+        "system": "系统代理",
+        "http": "HTTP",
+        "socks5": "SOCKS",
         "http_proxy_url": "HTTP 代理地址",
-        "enable_socks_proxy": "启用 SOCKS 代理",
-        "socks_proxy_url": "SOCKS 代理地址",
-        "enable_custom_proxy": "启用自定义代理",
-        "custom_proxy_url": "自定义代理地址"
+        "socks_proxy_url": "SOCKS5 代理地址"
       }
     }
   },

@@ -1,9 +1,21 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { basename, extname } from "@tauri-apps/api/path";
 import { useTranslation } from "react-i18next";
 import "./InstallProgressBar.css";
+
+/**
+ * InstallProgressBar (task_id polling version)
+ *
+ * 必需后端命令：
+ * - download_appx({ packageId, fileName, md5 }) -> returns task_id (String)
+ * - import_appx({ sourcePath, fileName }) -> returns task_id (String)
+ * - get_task_status({ taskId }) -> returns TaskSnapshot (serialized JSON)
+ * - cancel_task({ taskId }) -> Result
+ * - extract_zip_appx({ fileName, destination, forceReplace, deleteSignature }) -> Result (optional, used for download->extract step)
+ *
+ * 约定：后端在 download 完成时应把下载后的本地路径写入 TaskSnapshot.message（string），前端从 message 读取 destination。
+ */
 
 const InstallProgressBar = ({
                                 version,
@@ -24,9 +36,9 @@ const InstallProgressBar = ({
         total: 0,
         speed: "0 B/s",
         eta: "00:00:00",
-        percent: "0.00%", // ensure string format
+        percent: "0.00%",
         status: null,
-        stage: "downloading",
+        stage: isImport ? "importing" : "downloading",
     });
     const [displayPercent, setDisplayPercent] = useState(0);
 
@@ -41,20 +53,18 @@ const InstallProgressBar = ({
     const [originalExtension, setOriginalExtension] = useState("");
     const [open, setOpen] = useState(true);
 
-    // 标志：是否已收到第一个进度事件（用于 header 文案切换）
     const [hasProgressEvent, setHasProgressEvent] = useState(false);
 
+    // refs
     const startingRef = useRef(false);
-    const unlistenRef = useRef(null);
     const finishedRef = useRef(false);
     const rafRef = useRef(null);
     const prevStageRef = useRef(null);
-
-    const isTransitioningRef = useRef(false);
-    const listenerCounterRef = useRef(0);
-    const activeListenerTokenRef = useRef(0);
+    const pollIntervalRef = useRef(null);
+    const currentTaskIdRef = useRef(null);
     const targetPercentRef = useRef(0);
 
+    // animate percent
     useEffect(() => {
         const parsed = parseFloat(String(progressData.percent).replace("%", "")) || 0;
         targetPercentRef.current = parsed;
@@ -74,6 +84,7 @@ const InstallProgressBar = ({
         return () => cancelAnimationFrame(rafRef.current);
     }, []);
 
+    // set initial file name when importing
     useEffect(() => {
         async function setInitialFileName() {
             if (isImport && sourcePath) {
@@ -95,33 +106,26 @@ const InstallProgressBar = ({
         setInitialFileName();
     }, [isImport, sourcePath, version]);
 
-    const cleanupListener = async () => {
-        if (unlistenRef.current) {
-            try {
-                const res = unlistenRef.current();
-                if (res && typeof res.then === "function") {
-                    await res;
-                }
-            } catch (e) {
-                console.warn("cleanupListener error:", e);
-            } finally {
-                unlistenRef.current = null;
-            }
+    // cleanup polling
+    const stopPolling = () => {
+        if (pollIntervalRef.current !== null) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
         }
+        currentTaskIdRef.current = null;
     };
 
     useEffect(() => {
+        // reset UI when packageId / mode change
         finishedRef.current = false;
         startingRef.current = false;
         setIsStarting(false);
-        cleanupListener().catch(() => {});
+        stopPolling();
         setError(null);
         setIsDownloading(false);
         setIsCancelling(false);
-
         setConfirmed(false);
         setOpen(true);
-
         setCachedData(null);
         setDisplayPercent(0);
         setProgressData((p) => ({
@@ -134,12 +138,10 @@ const InstallProgressBar = ({
         setOriginalExtension("");
 
         prevStageRef.current = null;
-        isTransitioningRef.current = false;
-
         setHasProgressEvent(false);
 
         return () => {
-            cleanupListener().catch(() => {});
+            stopPolling();
             startingRef.current = false;
             setIsStarting(false);
             onStatusChange?.(false);
@@ -159,6 +161,173 @@ const InstallProgressBar = ({
         s = s.replace(/^[\s_]+|[\s_]+$/g, "");
         return s;
     };
+
+    const formatSpeed = (bytesPerSec) => {
+        if (!bytesPerSec || isNaN(bytesPerSec) || bytesPerSec <= 0) return "0 B/s";
+        const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+        let v = bytesPerSec;
+        let i = 0;
+        while (v >= 1024 && i < units.length - 1) {
+            v /= 1024;
+            i++;
+        }
+        return `${v.toFixed(2)} ${units[i]}`;
+    };
+
+    const formatPercentFromSnapshot = (snap) => {
+        if (snap.percent !== null && snap.percent !== undefined) {
+            // if backend returns percent as number (0..100)
+            const p = typeof snap.percent === "number" ? snap.percent : parseFloat(String(snap.percent) || "0");
+            return `${p.toFixed(2)}%`;
+        }
+        if (snap.total && snap.total > 0) {
+            const p = (snap.done / snap.total) * 100;
+            return `${p.toFixed(2)}%`;
+        }
+        return "0.00%";
+    };
+
+    // poll snapshot every 500ms (adjustable)
+// ---------- startPolling (替换原来函数体内实现) ----------
+    const startPolling = (taskId, onCompletedCallback = null) => {
+        stopPolling();
+        // 先把传入 id 暂时保存（后面会以 snap.id 为准）
+        currentTaskIdRef.current = taskId;
+        pollIntervalRef.current = window.setInterval(async () => {
+            try {
+                // 只传 task_id（snake_case），不要重复其他 key
+                const snap = await invoke("get_task_status", { task_id: taskId, taskId: taskId })
+
+                // debug 日志（便于定位）——可以在 console 中观察
+                console.debug("poll snap:", snap);
+
+                const {
+                    id,
+                    stage,
+                    total,
+                    done,
+                    speed_bytes_per_sec,
+                    eta,
+                    percent,
+                    status,
+                    message,
+                } = snap || {};
+
+                // 如果后端返回了 id，优先使用它（更新 currentTaskId）
+                if (id) {
+                    currentTaskIdRef.current = id;
+                }
+
+                // 防守式数值转换
+                const numericDone = Number(done || 0);
+                const numericTotal = Number(total || 0);
+                const numericPercent = (typeof percent === "number") ? percent : (percent ? parseFloat(String(percent)) : null);
+
+                // 标记已收到事件
+                if (!hasProgressEvent) setHasProgressEvent(true);
+
+                // 统一生成 percentStr（优先使用 numericPercent）
+                const percentStr = (numericPercent !== null && numericPercent !== undefined && !Number.isNaN(numericPercent))
+                    ? `${numericPercent.toFixed(2)}%`
+                    : (numericTotal > 0 ? `${((numericDone / numericTotal) * 100).toFixed(2)}%` : "0.00%");
+
+                // 更新 UI 数据
+                setProgressData({
+                    processed: numericDone,
+                    total: numericTotal,
+                    speed: formatSpeed(Number(speed_bytes_per_sec || 0)),
+                    eta: eta || "unknown",
+                    percent: percentStr,
+                    status: status || null,
+                    stage: stage || (isImport ? "importing" : "downloading"),
+                    message: message || null,
+                });
+
+                // 把动画目标设置为数值（0..100）
+                const target = (numericPercent !== null && numericPercent !== undefined && !Number.isNaN(numericPercent))
+                    ? numericPercent
+                    : (numericTotal > 0 ? (numericDone / numericTotal * 100) : 0);
+                targetPercentRef.current = Math.max(0, Math.min(100, target));
+
+                // 阶段切换逻辑：不要硬把 displayPercent 置 0（移除 setDisplayPercent(0)）
+                const prevStage = prevStageRef.current;
+                if (prevStage && prevStage !== stage) {
+                    const downloadStage = isImport ? "importing" : "downloading";
+                    if (prevStage === downloadStage && stage === "extracting") {
+                        // 不要把进度条硬清零，保留平滑过渡：
+                        // setDisplayPercent(0);  <-- 删除这行会避免进度条消失
+                    }
+                    prevStageRef.current = stage;
+                } else if (!prevStageRef.current) {
+                    prevStageRef.current = stage;
+                }
+
+                // 终态处理
+                if (status === "completed") {
+                    stopPolling();
+                    finishedRef.current = true;
+                    setIsDownloading(false);
+                    setIsStarting(false);
+                    startingRef.current = false;
+                    onStatusChange?.(false);
+
+                    if (!isImport) {
+                        const destination = message;
+                        if (destination) {
+                            try {
+                                // 注意：传入 snake_case 名称与 Rust 绑定一致
+                                const extractTaskId = await invoke("extract_zip_appx", {
+                                    fileName: cachedData?.fileName || fileNameInput,
+                                    destination: destination,
+                                    forceReplace: true,
+                                    deleteSignature: true,
+                                });
+
+                                // 如果返回了 taskId（字符串），开始轮询解压任务
+                                if (extractTaskId) {
+                                    // 重要：确保 currentTaskIdRef 更新为 extractTaskId
+                                    startPolling(String(extractTaskId));
+                                } else {
+                                    onCompleted?.(packageId);
+                                }
+                            } catch (e) {
+                                console.error("extract_zip_appx error:", e);
+                                setError(e?.message ?? String(e) ?? "extract error");
+                            }
+                        } else {
+                            onCompleted?.(packageId);
+                        }
+                    } else {
+                        onCompleted?.(packageId);
+                    }
+                } else if (status === "cancelled") {
+                    stopPolling();
+                    finishedRef.current = true;
+                    setIsDownloading(false);
+                    setIsStarting(false);
+                    startingRef.current = false;
+                    onStatusChange?.(false);
+                    onCancel?.(packageId);
+                } else if (status === "error") {
+                    stopPolling();
+                    finishedRef.current = true;
+                    setIsDownloading(false);
+                    setIsStarting(false);
+                    startingRef.current = false;
+                    setError(message || "task error");
+                    onStatusChange?.(false);
+                }
+            } catch (pollErr) {
+                console.error("poll get_task_status error:", pollErr);
+                setError(String(pollErr));
+                stopPolling();
+                setIsDownloading(false);
+                setIsStarting(false);
+                startingRef.current = false;
+            }
+        }, 500);
+    };
+
 
     const startDownload = async (fileName) => {
         if (!startingRef.current) {
@@ -191,111 +360,26 @@ const InstallProgressBar = ({
         setDisplayPercent(0);
 
         try {
-            cleanupListener().catch(() => {});
-
-            const myToken = ++listenerCounterRef.current;
-            activeListenerTokenRef.current = myToken;
-
-            const off = await listen("install-progress", (e) => {
-                if (myToken !== activeListenerTokenRef.current) return;
-                if (finishedRef.current) return;
-
-                let {
-                    processed = 0,
-                    total = 0,
-                    speed = "0 B/s",
-                    eta = "00:00:00",
-                    status,
-                    percent = "0.00%",
-                    stage,
-                } = e.payload || {};
-
-                if (isImport && stage === "downloading") stage = "importing";
-                const numericPercent = parseFloat(String(percent).replace("%", "")) || 0;
-
-                if (!hasProgressEvent) {
-                    setHasProgressEvent(true);
-                }
-
-                const prevStage = prevStageRef.current;
-                if (prevStage && prevStage !== stage) {
-                    const downloadStage = isImport ? "importing" : "downloading";
-                    if (prevStage === downloadStage && stage === "extracting") {
-                        isTransitioningRef.current = true;
-                        setDisplayPercent(0);
-                        setProgressData({
-                            processed: 0,
-                            total: 0,
-                            speed,
-                            eta,
-                            percent: `${numericPercent.toFixed(2)}%`,
-                            status,
-                            stage,
-                        });
-                        prevStageRef.current = stage;
-                        requestAnimationFrame(() => {
-                            requestAnimationFrame(() => {
-                                isTransitioningRef.current = false;
-                            });
-                        });
-                        return;
-                    }
-                    prevStageRef.current = stage;
-                } else if (!prevStageRef.current) {
-                    prevStageRef.current = stage;
-                }
-
-                const effectivePercent = isTransitioningRef.current ? 0 : numericPercent;
-
-                setProgressData({
-                    processed,
-                    total,
-                    speed,
-                    eta,
-                    percent: `${numericPercent.toFixed(2)}%`,
-                    status,
-                    stage,
-                });
-
-                targetPercentRef.current = effectivePercent;
-
-                if (status === "completed" && stage === "extracting" && !finishedRef.current) {
-                    finishedRef.current = true;
-                    cleanupListener().catch(() => {});
-                    setIsDownloading(false);
-                    setIsStarting(false);
-                    startingRef.current = false;
-                    onStatusChange?.(false);
-                    onCompleted?.(packageId);
-                }
-            });
-
-            unlistenRef.current = off;
-
             if (isImport) {
-                await invoke("import_appx", { sourcePath: sourcePath, fileName: safe });
+                // 注意：键名必须是 snake_case，和 Rust 函数参数名一致
+                const taskId = await invoke("import_appx", {
+                    source_path: sourcePath,
+                    sourcePath: sourcePath,
+                    file_name: safe,
+                    fileName: safe,
+                });
+                if (!taskId) throw new Error("no task id returned from import_appx");
+                startPolling(taskId);
             } else {
                 const revision = "1";
                 const fullId = `${packageId}_${revision}`;
-                const result = await invoke("download_appx", { packageId: fullId, fileName: safe, md5: md5 });
-                if (result === "cancelled") {
-                    if (!finishedRef.current) {
-                        finishedRef.current = true;
-                        setIsDownloading(false);
-                        setIsStarting(false);
-                        startingRef.current = false;
-                        onStatusChange?.(false);
-                        onCancel?.(packageId);
-                    }
-                    return;
-                }
-
-                await invoke("extract_zip_appx", {
+                const taskId = await invoke("download_appx", {
+                    packageId: fullId,
                     fileName: safe,
-                    destination: result,
-                    forceReplace: true,
-                    deleteSignature: true,
+                    md5: md5,
                 });
+                if (!taskId) throw new Error("no task id returned from download_appx");
+                startPolling(taskId);
             }
         } catch (e) {
             console.error(e);
@@ -303,38 +387,39 @@ const InstallProgressBar = ({
             setIsDownloading(false);
             setIsStarting(false);
             startingRef.current = false;
-            cleanupListener().catch(() => {});
-        } finally {
-            cleanupListener().catch(() => {});
-            setIsDownloading(false);
-            setIsStarting(false);
-            startingRef.current = false;
+            stopPolling();
         }
     };
 
+
     const cancelInstall = async () => {
+        // if hasn't started we just close
         if (!isDownloading && !error && !confirmed) {
             finishedRef.current = true;
             setOpen(false);
             setConfirmed(false);
             setIsStarting(false);
             startingRef.current = false;
-            activeListenerTokenRef.current = 0;
-            cleanupListener().catch(() => {});
+            stopPolling();
             onCancel?.(packageId);
             return;
         }
 
         if (!isDownloading && !error) return;
+
         setIsCancelling(true);
         try {
-            await invoke("cancel_install", { fileName: cachedData?.fileName });
+            const currentTaskId = currentTaskIdRef.current;
+            if (currentTaskId) {
+                await invoke("cancel_task", { taskId: currentTaskId });
+                console.log("Cancelling taskId:", currentTaskIdRef.current);
+
+            }
         } catch (e) {
-            console.error(e);
+            console.error("cancel error:", e);
         } finally {
             setIsCancelling(false);
-            activeListenerTokenRef.current = 0;
-            cleanupListener().catch(() => {});
+            stopPolling();
             setIsDownloading(false);
             setIsStarting(false);
             startingRef.current = false;
@@ -346,6 +431,8 @@ const InstallProgressBar = ({
                     speed: "0 B/s",
                     eta: "00:00:00",
                     percent: "0.00%",
+                    status: null,
+                    stage: isImport ? "importing" : "downloading",
                 });
                 setDisplayPercent(0);
                 setCachedData(null);
@@ -379,8 +466,7 @@ const InstallProgressBar = ({
         setConfirmed(false);
         setIsStarting(false);
         startingRef.current = false;
-        activeListenerTokenRef.current = 0;
-        cleanupListener().catch(() => {});
+        stopPolling();
         onCancel?.(packageId);
     };
 
@@ -452,7 +538,6 @@ const InstallProgressBar = ({
                                             ? t("InstallProgressBar.extracting_sub")
                                             : isImport
                                                 ? t("InstallProgressBar.importing_sub")
-                                                // 若是下载阶段并且仍未收到第一个进度事件，则显示 parsing_url
                                                 : (progressData.stage === "downloading" && isDownloading && !hasProgressEvent)
                                                     ? t("InstallProgressBar.parsing_url") || "正在解析URL"
                                                     : t("InstallProgressBar.downloading_sub")}
@@ -487,7 +572,6 @@ const InstallProgressBar = ({
                                     <div className="download-progress-body">
                                         <div className="progress-row">
                                             <div className="progress-percentage">
-                                                {/* 百分比区域恢复为始终显示 percent */}
                                                 {progressData.percent}
                                             </div>
                                             <div className="progress-bar-outer" key={progressData.stage}>

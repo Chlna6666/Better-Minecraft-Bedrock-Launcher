@@ -1,6 +1,6 @@
 [package]
 name = "better_minecraft_bedrock_launcher"
-version = "0.0.4"
+version = "0.0.5"
 license = "GPL-3.0-only"
 description = "一个minecraft bedrock启动器"
 authors = ["Chlna666"]
@@ -12,8 +12,8 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-chrono = "0.4.40"
-tauri-build = { version = "2.5.1", features = [] }
+chrono = "0.4.42"
+tauri-build = { version = "2.5.2", features = [] }
 
 [target.'cfg(windows)'.dependencies]
 runas = "=1.0.0"
@@ -24,13 +24,10 @@ winreg = "0.55.0"
 tauri-plugin-single-instance = "2.0.0"
 
 [dependencies]
-tauri = { version = "2.9.1", features = ["unstable", "devtools", "protocol-asset"] }
-tauri-plugin-shell = "2.3.1"
-tauri-plugin-dialog = "2.4.0"
-tauri-plugin-http = "2.5.2"
-tauri-plugin-fs = "2.4.2"
-tauri-plugin-store = "2.4.0"
-tauri-plugin-clipboard-manager = "2.3.0"
+tauri = { version = "2.9.3", features = ["unstable", "devtools", "protocol-asset"] }
+tauri-plugin-shell = "2.3.3"
+tauri-plugin-dialog = "2.4.2"
+tauri-plugin-fs = "2.4.4"
 
 serde = { version = "1.0.219", features = ["derive"] }
 sysinfo = "0.37.2"
@@ -46,10 +43,10 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros"] }
 tokio-stream = { version = "0.1.17", features = ["fs"] }
-reqwest = { version = "0.12.24", features = ["stream", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.12.24", features = ["stream", "gzip", "brotli", "deflate", "json"] }
 futures = "0.3.31"
 futures-util = "0.3.31"
-xmltree ="0.11.0"
+xmltree = "0.12.0"
 thiserror = "2.0.17"
 uuid = { version = "1.18.1", features = ["v4"] }
 num_cpus = "1.16.0"
@@ -62,6 +59,7 @@ rayon = "1.11.0"
 indexmap = { version = "2.12.0", features = ["serde"] }
 walkdir = "2.5.0"
 md5 = "0.8.0"
+semver = "1.0.27"
 
 
 

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use futures_util::StreamExt;
@@ -6,25 +6,25 @@ use tokio::fs::{OpenOptions, File};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::time::{sleep, Duration};
 use tracing::debug;
-use serde_json::json;
 use reqwest::header;
 use std::io::Write as StdWrite;
 
-use crate::downloads::cancel::is_cancelled;
 use crate::downloads::md5 as md5_utils;
+use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
-use crate::progress::download_progress::{report_progress, DownloadProgress};
+use crate::tasks::task_manager::{finish_task, is_cancelled, set_total, update_progress};
 
-/// 优化后的多线程分片下载，支持 md5 校验与 per-task cancel_flag
+/// 优化后的多线程分片下载（进度与取消通过 task_manager 管理）
+/// task_id: 由外层调用 create_task(...) 生成并传入
 pub async fn download_multi(
     client: reqwest::Client,
+    task_id: &str,
     url: &str,
     dest: impl AsRef<Path>,
     threads: usize,
-    md5_expected: Option<&str>,
-    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    md5_expected: Option<&str>
 ) -> Result<CoreResult<()>, CoreError> {
-    debug!("开始多线程下载: url={}, 线程数={}, md5={:?}", url, threads, md5_expected);
+    debug!("开始多线程下载: task={} url={} 线程数={} md5={:?}", task_id, url, threads, md5_expected);
 
     // 1) HEAD 尝试获取总长度与快速判断是否支持 Range
     let head = client.head(url)
@@ -45,37 +45,23 @@ pub async fn download_multi(
         true
     } else {
         debug!("Accept-Ranges header 不明确，尝试小范围 GET 验证");
-        let get_fut = client
+        // 直接尝试一个小范围请求（同步等待）
+        let resp = client
             .get(url)
             .header(header::RANGE, "bytes=0-0")
             .header(header::ACCEPT_ENCODING, "identity")
-            .send();
-        tokio::select! {
-            // 每次创建新的取消等待 future（捕获 clone）
-            _ = {
-                let cancel_check = cancel_flag.clone();
-                async move {
-                    while !is_cancelled(cancel_check.as_ref()) {
-                        sleep(Duration::from_millis(50)).await;
-                    }
-                }
-            } => {
-                debug!("取消检测到：在 range 检查阶段退出");
-                return Ok(CoreResult::Cancelled);
-            }
-            res = get_fut => {
-                match res {
-                    Ok(resp) => resp.status() == reqwest::StatusCode::PARTIAL_CONTENT,
-                    Err(_) => false,
-                }
-            }
+            .send()
+            .await;
+        match resp {
+            Ok(r) => r.status() == reqwest::StatusCode::PARTIAL_CONTENT,
+            Err(_) => false,
         }
     };
 
     if !supports_range {
         debug!("服务器不支持分片下载，回退单线程");
-        // 调用 single::download_file 时也把 md5_expected 与 cancel_flag 传入（single 需相应支持）
-        return super::single::download_file(client, url, dest, md5_expected, cancel_flag).await;
+        // 回退到 single，注意 single 需要使用同样的 task_id 上报
+        return download_file(client, task_id, url, dest, md5_expected).await;
     }
 
     // 若 head 没给 content-length，再尝试用 GET bytes=0-0 获取 total
@@ -83,52 +69,51 @@ pub async fn download_multi(
         len
     } else {
         debug!("HEAD 未提供 Content-Length，尝试通过范围请求获取总长度");
-        let get_fut = client
+        let resp = client
             .get(url)
             .header(header::RANGE, "bytes=0-0")
             .header(header::ACCEPT_ENCODING, "identity")
-            .send();
-        let resp = tokio::select! {
-            _ = {
-                let cancel_check = cancel_flag.clone();
-                async move {
-                    while !is_cancelled(cancel_check.as_ref()) {
-                        sleep(Duration::from_millis(50)).await;
-                    }
-                }
-            } => {
-                debug!("取消检测到：在获取 Content-Range 阶段退出");
-                return Ok(CoreResult::Cancelled);
-            }
-            r = get_fut => r?,
-        };
+            .send()
+            .await?;
         if let Some(cr) = resp.headers().get(header::CONTENT_RANGE) {
             let s = cr.to_str().ok().unwrap_or_default();
             if let Some(idx) = s.rfind('/') {
                 if let Ok(len) = s[idx+1..].parse::<u64>() {
                     len
                 } else {
+                    finish_task(task_id, "error", Some("Unknown content length".into()));
                     return Err(CoreError::UnknownContentLength);
                 }
             } else {
+                finish_task(task_id, "error", Some("Unknown content range format".into()));
                 return Err(CoreError::UnknownContentLength);
             }
         } else {
+            finish_task(task_id, "error", Some("No Content-Range".into()));
             return Err(CoreError::UnknownContentLength);
         }
     };
     debug!("总文件大小: {} 字节", total);
 
+    // 把 total 设置到 task_manager
+    set_total(task_id, Some(total));
+
     // 2) 预分配文件长度（使用 std::fs）
     {
         use std::fs::OpenOptions as StdOpen;
         let p = dest.as_ref();
-        let mut stdf = StdOpen::new()
-            .create(true)
-            .write(true)
-            .open(p)?;
-        stdf.set_len(total)?;
-        stdf.flush()?;
+        let mut stdf = match StdOpen::new().create(true).write(true).open(p) {
+            Ok(f) => f,
+            Err(e) => {
+                finish_task(task_id, "error", Some(format!("open dest failed: {:?}", e)));
+                return Err(CoreError::Io(e));
+            }
+        };
+        if let Err(e) = stdf.set_len(total) {
+            finish_task(task_id, "error", Some(format!("set_len failed: {:?}", e)));
+            return Err(CoreError::Io(e));
+        }
+        let _ = stdf.flush();
     }
     debug!("已预分配文件: {} 字节", total);
 
@@ -139,48 +124,20 @@ pub async fn download_multi(
     let chunk_size = estimated_chunk;
     let chunk_count_u64 = (total + chunk_size - 1) / chunk_size;
     if chunk_count_u64 == 0 {
+        finish_task(task_id, "error", Some("计算分片失败: chunk_count == 0".into()));
         return Err(CoreError::Other("计算分片失败: chunk_count == 0".into()));
     }
-    let chunk_count = usize::try_from(chunk_count_u64).map_err(|_| CoreError::Other("分片数过大".into()))?;
+    let chunk_count = usize::try_from(chunk_count_u64).map_err(|_| {
+        finish_task(task_id, "error", Some("分片数过大".into()));
+        CoreError::Other("分片数过大".into())
+    })?;
     debug!("分片大小: {} 字节, 分片数量: {}", chunk_size, chunk_count);
 
     // 4) 共享进度与索引
-    let progress = DownloadProgress::new(total);
-    let downloaded = progress.downloaded_arc(); // Arc<AtomicU64>
+    let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let index = Arc::new(AtomicUsize::new(0));
 
-    // 5) 进度监控 task（可被 abort）
-    let mut mon_progress = progress; // monitor 持有 progress，用于 mut 更新 prev 等
-    let cancel_flag_for_monitor = cancel_flag.clone();
-    let monitor_handle = tokio::spawn(async move {
-        loop {
-            // 先检查取消标志（使用传入的 cancel_flag）
-            if is_cancelled(cancel_flag_for_monitor.as_ref()) {
-                break;
-            }
-
-            // 读取当前已下载字节
-            let done = mon_progress.downloaded.load(Ordering::Relaxed);
-
-            // 如果 total > 0 并且完成了，则退出循环（会在循环外发送最终进度）
-            if mon_progress.total > 0 && done >= mon_progress.total {
-                break;
-            }
-
-            // 若达到发送节流条件则发送（report_progress 会负责 mark_emitted / 更新 prev）
-            if mon_progress.should_emit() {
-                let _ = report_progress(&mut mon_progress, json!({"stage": "downloading"})).await;
-            }
-
-            sleep(Duration::from_millis(200)).await;
-        }
-
-        // 循环结束：发送一次最终状态（cancelled 或 finished）
-        let final_stage = if is_cancelled(cancel_flag_for_monitor.as_ref()) { json!("cancelled") } else { json!("finished") };
-        let _ = report_progress(&mut mon_progress, final_stage).await;
-    });
-
-    // 6) 启动 worker tasks（每个 worker 打开自己的文件句柄，避免全局 Mutex）
+    // 5) 启动 worker tasks（每个 worker 打开自己的文件句柄，避免全局 Mutex）
     let client = Arc::new(client);
     let url = Arc::new(url.to_string());
     let mut handles = Vec::with_capacity(threads);
@@ -195,7 +152,7 @@ pub async fn download_multi(
         let downloaded = downloaded.clone();
         let index = index.clone();
         let dest_path = dest.as_ref().to_owned();
-        let cancel_flag_worker = cancel_flag.clone();
+        let task_id_owned = task_id.to_string();
 
         handles.push(tokio::spawn(async move {
             debug!("worker {} 启动", worker_id);
@@ -204,11 +161,12 @@ pub async fn download_multi(
                 Ok(f) => f,
                 Err(e) => {
                     debug!("worker {} 打开文件失败: {:?}", worker_id, e);
+                    finish_task(&task_id_owned, "error", Some(format!("open file failed: {:?}", e)));
                     return Err(CoreError::Io(e));
                 }
             };
 
-            while !is_cancelled(cancel_flag_worker.as_ref()) {
+            while !is_cancelled(&task_id_owned) {
                 let i = index.fetch_add(1, Ordering::Relaxed);
                 if i >= chunk_count {
                     debug!("worker {} 没有更多分片，退出", worker_id);
@@ -229,12 +187,13 @@ pub async fn download_multi(
 
                 // partition 级别重试
                 let mut attempt = 0usize;
-                // partition_committed 用于记录已计入全局 downloaded 的字节（针对本分片）
+                // partition_committed 用于记录已计入 global downloaded 的字节（针对本分片）
                 let mut partition_committed: u64 = 0;
 
                 loop {
-                    if is_cancelled(cancel_flag_worker.as_ref()) {
+                    if is_cancelled(&task_id_owned) {
                         debug!("worker {} 检测到取消", worker_id);
+                        finish_task(&task_id_owned, "cancelled", Some("user cancelled".into()));
                         return Ok(CoreResult::Cancelled);
                     }
 
@@ -245,14 +204,15 @@ pub async fn download_multi(
                         .header(header::ACCEPT_ENCODING, "identity");
 
                     // 使用 select 包裹 send()，使得可以快速响应取消
+                    let task_id_for_select = task_id_owned.clone();
                     let send_fut = req.send();
                     let resp_res = tokio::select! {
-                        _ = {
-                            let cancel_check = cancel_flag_worker.clone();
-                            async move {
-                                while !is_cancelled(cancel_check.as_ref()) {
-                                    sleep(Duration::from_millis(50)).await;
+                        _ = async {
+                            loop {
+                                if is_cancelled(&task_id_for_select) {
+                                    break;
                                 }
+                                sleep(Duration::from_millis(50)).await;
                             }
                         } => {
                             debug!("worker {} 在 send 前检测到取消", worker_id);
@@ -270,13 +230,13 @@ pub async fn download_multi(
                                     if attempt < MAX_RETRY {
                                         attempt += 1;
                                         let backoff_secs = (BASE_RETRY_DELAY_SECS << attempt).min(30);
+                                        // 等待或取消
+                                        let task_id_wait = task_id_owned.clone();
                                         tokio::select! {
-                                            _ = {
-                                                let cancel_check = cancel_flag_worker.clone();
-                                                async move {
-                                                    while !is_cancelled(cancel_check.as_ref()) {
-                                                        sleep(Duration::from_millis(50)).await;
-                                                    }
+                                            _ = async {
+                                                loop {
+                                                    if is_cancelled(&task_id_wait) { break; }
+                                                    sleep(Duration::from_millis(50)).await;
                                                 }
                                             } => {
                                                 debug!("worker {} 在重试等待中检测到取消", worker_id);
@@ -288,8 +248,9 @@ pub async fn download_multi(
                                     } else {
                                         if partition_committed > 0 {
                                             downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                            partition_committed = 0;
+                                            // 同步上报 task_manager 回退（用负值不可行），故此处不上报，task_manager 的 done 与 downloaded 可能不完全一致短时间内
                                         }
+                                        finish_task(&task_id_owned, "error", Some(format!("response status error: {:?}", e)));
                                         return Err(CoreError::Request(e));
                                     }
                                 }
@@ -301,13 +262,12 @@ pub async fn download_multi(
                                 if attempt < MAX_RETRY {
                                     attempt += 1;
                                     let backoff_secs = (BASE_RETRY_DELAY_SECS << attempt).min(30);
+                                    let task_id_wait = task_id_owned.clone();
                                     tokio::select! {
-                                        _ = {
-                                            let cancel_check = cancel_flag_worker.clone();
-                                            async move {
-                                                while !is_cancelled(cancel_check.as_ref()) {
-                                                    sleep(Duration::from_millis(50)).await;
-                                                }
+                                        _ = async {
+                                            loop {
+                                                if is_cancelled(&task_id_wait) { break; }
+                                                sleep(Duration::from_millis(50)).await;
                                             }
                                         } => {
                                             debug!("worker {} 在重试等待中检测到取消", worker_id);
@@ -319,8 +279,8 @@ pub async fn download_multi(
                                 } else {
                                     if partition_committed > 0 {
                                         downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                        partition_committed = 0;
                                     }
+                                    finish_task(&task_id_owned, "error", Some(format!("Unexpected status {}", status)));
                                     return Err(CoreError::Other(format!("Unexpected status {}", status)));
                                 }
                             }
@@ -333,13 +293,12 @@ pub async fn download_multi(
 
                             loop {
                                 // 在读取流时也要可取消
+                                let task_id_for_next = task_id_owned.clone();
                                 let next_chunk_opt = tokio::select! {
-                                    _ = {
-                                        let cancel_check = cancel_flag_worker.clone();
-                                        async move {
-                                            while !is_cancelled(cancel_check.as_ref()) {
-                                                sleep(Duration::from_millis(50)).await;
-                                            }
+                                    _ = async {
+                                        loop {
+                                            if is_cancelled(&task_id_for_next) { break; }
+                                            sleep(Duration::from_millis(50)).await;
                                         }
                                     } => {
                                         debug!("worker {} 在读取流时检测到取消", worker_id);
@@ -367,16 +326,16 @@ pub async fn download_multi(
                                                 debug!("worker {} seek 失败: {:?}", worker_id, e);
                                                 if partition_committed > 0 {
                                                     downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                                    partition_committed = 0;
                                                 }
+                                                finish_task(&task_id_owned, "error", Some(format!("seek fail: {:?}", e)));
                                                 return Err(CoreError::Io(e));
                                             }
                                             if let Err(e) = file.write_all(&local_buffer).await {
                                                 debug!("worker {} 写入失败: {:?}", worker_id, e);
                                                 if partition_committed > 0 {
                                                     downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                                    partition_committed = 0;
                                                 }
+                                                finish_task(&task_id_owned, "error", Some(format!("write fail: {:?}", e)));
                                                 return Err(CoreError::Io(e));
                                             }
                                             write_offset += local_buffer.len() as u64;
@@ -384,6 +343,9 @@ pub async fn download_multi(
                                             // 更新计数：把此次写入的字节既加入全局计数，也加入 partition_committed
                                             downloaded.fetch_add(local_buffer.len() as u64, Ordering::Relaxed);
                                             partition_committed += local_buffer.len() as u64;
+
+                                            // 上报给 task_manager（以 bytes 增量上报）
+                                            update_progress(&task_id_owned, local_buffer.len() as u64, Some(total), Some("downloading"));
 
                                             local_buffer.clear();
                                         }
@@ -401,17 +363,17 @@ pub async fn download_multi(
                                     if partition_committed > 0 {
                                         debug!("worker {} 在重试前回退已计入字节: {}", worker_id, partition_committed);
                                         downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
+                                        // 不对 task_manager 回退（保持短期误差），或你可实现一个回退 API
                                         partition_committed = 0;
                                     }
                                     attempt += 1;
                                     let backoff_secs = (BASE_RETRY_DELAY_SECS << attempt).min(30);
+                                    let task_id_wait = task_id_owned.clone();
                                     tokio::select! {
-                                        _ = {
-                                            let cancel_check = cancel_flag_worker.clone();
-                                            async move {
-                                                while !is_cancelled(cancel_check.as_ref()) {
-                                                    sleep(Duration::from_millis(50)).await;
-                                                }
+                                        _ = async {
+                                            loop {
+                                                if is_cancelled(&task_id_wait) { break; }
+                                                sleep(Duration::from_millis(50)).await;
                                             }
                                         } => {
                                             debug!("worker {} 在重试等待中检测到取消", worker_id);
@@ -423,8 +385,8 @@ pub async fn download_multi(
                                 } else {
                                     if partition_committed > 0 {
                                         downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                        partition_committed = 0;
                                     }
+                                    finish_task(&task_id_owned, "error", Some(format!("Partition {} read failed after retries", i)));
                                     return Err(CoreError::Other(format!("Partition {} read failed after retries", i)));
                                 }
                             }
@@ -435,23 +397,25 @@ pub async fn download_multi(
                                     debug!("worker {} seek 失败: {:?}", worker_id, e);
                                     if partition_committed > 0 {
                                         downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                        partition_committed = 0;
                                     }
+                                    finish_task(&task_id_owned, "error", Some(format!("seek fail: {:?}", e)));
                                     return Err(CoreError::Io(e));
                                 }
                                 if let Err(e) = file.write_all(&local_buffer).await {
                                     debug!("worker {} 写入失败: {:?}", worker_id, e);
                                     if partition_committed > 0 {
                                         downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                        partition_committed = 0;
                                     }
+                                    finish_task(&task_id_owned, "error", Some(format!("write fail: {:?}", e)));
                                     return Err(CoreError::Io(e));
                                 }
-                                write_offset += local_buffer.len() as u64;
 
                                 // 更新计数（此次 flush 写入）
                                 downloaded.fetch_add(local_buffer.len() as u64, Ordering::Relaxed);
                                 partition_committed += local_buffer.len() as u64;
+
+                                update_progress(&task_id_owned, local_buffer.len() as u64, Some(total), Some("downloading"));
+
                                 local_buffer.clear();
                             }
 
@@ -464,13 +428,12 @@ pub async fn download_multi(
                                     }
                                     attempt += 1;
                                     let backoff_secs = (BASE_RETRY_DELAY_SECS << attempt).min(30);
+                                    let task_id_wait = task_id_owned.clone();
                                     tokio::select! {
-                                        _ = {
-                                            let cancel_check = cancel_flag_worker.clone();
-                                            async move {
-                                                while !is_cancelled(cancel_check.as_ref()) {
-                                                    sleep(Duration::from_millis(50)).await;
-                                                }
+                                        _ = async {
+                                            loop {
+                                                if is_cancelled(&task_id_wait) { break; }
+                                                sleep(Duration::from_millis(50)).await;
                                             }
                                         } => {
                                             debug!("worker {} 在重试等待中检测到取消", worker_id);
@@ -482,8 +445,8 @@ pub async fn download_multi(
                                 } else {
                                     if partition_committed > 0 {
                                         downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                        partition_committed = 0;
                                     }
+                                    finish_task(&task_id_owned, "error", Some(format!("Partition {} incomplete", i)));
                                     return Err(CoreError::Other(format!("Partition {} incomplete", i)));
                                 }
                             }
@@ -497,13 +460,12 @@ pub async fn download_multi(
                                 attempt += 1;
                                 debug!("worker {} 分片 {} 网络错误，重试 {}/{}: {:?}", worker_id, i + 1, attempt, MAX_RETRY, e);
                                 let backoff_secs = (BASE_RETRY_DELAY_SECS << attempt).min(30);
+                                let task_id_wait = task_id_owned.clone();
                                 tokio::select! {
-                                    _ = {
-                                        let cancel_check = cancel_flag_worker.clone();
-                                        async move {
-                                            while !is_cancelled(cancel_check.as_ref()) {
-                                                sleep(Duration::from_millis(50)).await;
-                                            }
+                                    _ = async {
+                                        loop {
+                                            if is_cancelled(&task_id_wait) { break; }
+                                            sleep(Duration::from_millis(50)).await;
                                         }
                                     } => {
                                         debug!("worker {} 在网络重试等待中检测到取消", worker_id);
@@ -516,8 +478,8 @@ pub async fn download_multi(
                                 debug!("worker {} 分片 {} 最终失败: {:?}", worker_id, i + 1, e);
                                 if partition_committed > 0 {
                                     downloaded.fetch_sub(partition_committed, Ordering::Relaxed);
-                                    partition_committed = 0;
                                 }
+                                finish_task(&task_id_owned, "error", Some(format!("network error: {:?}", e)));
                                 return Err(CoreError::Request(e));
                             }
                         }
@@ -532,13 +494,12 @@ pub async fn download_multi(
     // 等待所有 worker 完成 — 但如果检测到取消，尽快 abort 剩余 tasks 并返回 Cancelled
     let mut failed = false;
     while let Some(h) = handles.pop() {
-        if is_cancelled(cancel_flag.as_ref()) {
-            debug!("外部取消检测到，立即中止剩余 worker 和 monitor");
-            monitor_handle.abort();
-            h.abort();
+        if is_cancelled(task_id) {
+            debug!("外部取消检测到，立即中止剩余 worker");
             for remaining in handles.into_iter() {
                 remaining.abort();
             }
+            finish_task(task_id, "cancelled", Some("user cancelled".into()));
             return Ok(CoreResult::Cancelled);
         }
 
@@ -546,7 +507,7 @@ pub async fn download_multi(
             Ok(Ok(CoreResult::Success(_))) => { /* 单个 worker 成功退出 */ },
             Ok(Ok(CoreResult::Cancelled)) => {
                 debug!("下载被取消，清理并返回");
-                monitor_handle.abort();
+                finish_task(task_id, "cancelled", Some("worker cancelled".into()));
                 return Ok(CoreResult::Cancelled);
             }
             Ok(Ok(CoreResult::Error(e))) => {
@@ -564,16 +525,16 @@ pub async fn download_multi(
         }
     }
 
-    if is_cancelled(cancel_flag.as_ref()) {
+    if is_cancelled(task_id) {
         debug!("外部取消检测到，退出");
-        monitor_handle.abort();
+        finish_task(task_id, "cancelled", Some("user cancelled".into()));
         return Ok(CoreResult::Cancelled);
     }
 
     if failed {
         debug!("部分分片失败，删除残留文件");
-        monitor_handle.abort();
         let _ = tokio::fs::remove_file(dest.as_ref()).await;
+        finish_task(task_id, "error", Some("multipart download failed".into()));
         return Err(CoreError::Other("多线程下载失败".into()));
     }
 
@@ -581,8 +542,8 @@ pub async fn download_multi(
     let done = downloaded.load(Ordering::Relaxed);
     if done != total {
         debug!("下载完成但字节数不一致: done={} total={}", done, total);
-        monitor_handle.abort();
         let _ = tokio::fs::remove_file(dest.as_ref()).await;
+        finish_task(task_id, "error", Some(format!("size mismatch: {} != {}", done, total)));
         return Err(CoreError::Other(format!("下载大小校验失败: {} != {}", done, total)));
     }
 
@@ -595,14 +556,14 @@ pub async fn download_multi(
             }
             Ok(false) => {
                 debug!("md5 校验失败，删除目标文件");
-                monitor_handle.abort();
                 let _ = tokio::fs::remove_file(dest.as_ref()).await;
+                finish_task(task_id, "error", Some("md5 mismatch".into()));
                 return Err(CoreError::ChecksumMismatch(format!("md5 mismatch for {:?}", dest.as_ref())));
             }
             Err(e) => {
                 debug!("md5 计算失败: {:?}", e);
-                monitor_handle.abort();
                 let _ = tokio::fs::remove_file(dest.as_ref()).await;
+                finish_task(task_id, "error", Some(format!("md5 compute failed: {:?}", e)));
                 return Err(CoreError::Io(e));
             }
         }
@@ -612,11 +573,11 @@ pub async fn download_multi(
     if let Ok(final_file) = File::open(dest.as_ref()).await {
         if let Err(e) = final_file.sync_all().await {
             debug!("fsync 失败: {:?}", e);
-            // 不致命，但提醒
+            // 非致命：只记录日志
         }
     }
 
-    monitor_handle.abort();
     debug!("所有工作线程完成，下载成功");
+    finish_task(task_id, "completed", None);
     Ok(CoreResult::Success(()))
 }

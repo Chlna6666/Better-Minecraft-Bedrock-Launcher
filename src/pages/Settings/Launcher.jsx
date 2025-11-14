@@ -17,38 +17,16 @@ function Launcher() {
     const [multiThread, setMultiThread] = useState(false);
     const [autoThreadCount, setAutoThreadCount] = useState(true);
     const [maxThreads, setMaxThreads] = useState(8);
+    const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
 
-    const [disableAllProxy, setDisableAllProxy] = useState(false);
-    const [useSystemProxy, setUseSystemProxy] = useState(true);
-    const [enableHttpProxy, setEnableHttpProxy] = useState(false);
+
+    // --- 新的代理状态（基于 ProxyConfig） ---
+    // proxyType: "none" | "system" | "http" | "socks5"
+    const [proxyType, setProxyType] = useState("system");
     const [httpProxyUrl, setHttpProxyUrl] = useState("");
-    const [enableSocksProxy, setEnableSocksProxy] = useState(false);
     const [socksProxyUrl, setSocksProxyUrl] = useState("");
-    const [enableCustomProxy, setEnableCustomProxy] = useState(false);
-    const [customProxyUrl, setCustomProxyUrl] = useState("");
 
     const DEFAULT_PROXY = "system";
-
-    // helper to switch proxy mode (keeps previous behavior)
-    const selectProxyMode = useCallback((mode) => {
-        if (mode === "none") {
-            if (disableAllProxy) {
-                selectProxyMode(DEFAULT_PROXY);
-            } else {
-                setDisableAllProxy(true);
-                setUseSystemProxy(false);
-                setEnableHttpProxy(false);
-                setEnableSocksProxy(false);
-                setEnableCustomProxy(false);
-            }
-            return;
-        }
-        setDisableAllProxy(false);
-        setUseSystemProxy(mode === "system");
-        setEnableHttpProxy(mode === "http");
-        setEnableSocksProxy(mode === "socks");
-        setEnableCustomProxy(mode === "custom");
-    }, [disableAllProxy]);
 
     // load config once
     useEffect(() => {
@@ -63,17 +41,17 @@ function Launcher() {
                 setLanguage(launcher.language || "auto");
                 setUserLanguage(launcher.language || "auto");
                 setCustomAppxApi(launcher.custom_appx_api || "");
-                setMultiThread(download.multi_thread ?? false);
-                setAutoThreadCount(download.auto_thread_count ?? true);
+                setMultiThread(download.multi_thread || false);
+                setAutoThreadCount(download.auto_thread_count || true);
                 setMaxThreads(download.max_threads || 8);
-                setDisableAllProxy(proxy.disable_all_proxy ?? false);
-                setUseSystemProxy(proxy.use_system_proxy ?? true);
-                setEnableHttpProxy(proxy.enable_http_proxy ?? false);
+
+                // 新的代理读取：proxy.proxy_type 以及 url 字段
+                const pt = (proxy.proxy_type || "system").toLowerCase();
+                setProxyType(["none","system","http","socks5"].includes(pt) ? pt : DEFAULT_PROXY);
                 setHttpProxyUrl(proxy.http_proxy_url || "");
-                setEnableSocksProxy(proxy.enable_socks_proxy ?? false);
                 setSocksProxyUrl(proxy.socks_proxy_url || "");
-                setEnableCustomProxy(proxy.enable_custom_proxy ?? false);
-                setCustomProxyUrl(proxy.custom_proxy_url || "");
+
+                setAutoCheckUpdates(launcher.auto_check_updates || true);
 
                 setLoaded(true);
             } catch (e) {
@@ -83,43 +61,42 @@ function Launcher() {
         fetchConfig();
     }, []);
 
-    // save whole launcher config whenever relevant states change (保留你原来的自动保存逻辑)
     useEffect(() => {
         if (!loaded) return;
 
-        const updated = {
-            debug: debugMode,
-            language,
-            custom_appx_api: customAppxApi,
-            download: {
-                multi_thread: multiThread,
-                max_threads: maxThreads,
-                auto_thread_count: autoThreadCount,
-                proxy: {
-                    disable_all_proxy: disableAllProxy,
-                    use_system_proxy: useSystemProxy,
-                    enable_http_proxy: enableHttpProxy,
-                    http_proxy_url: httpProxyUrl,
-                    enable_socks_proxy: enableSocksProxy,
-                    socks_proxy_url: socksProxyUrl,
-                    enable_custom_proxy: enableCustomProxy,
-                    custom_proxy_url: customProxyUrl,
-                },
-            },
-        };
-
         (async () => {
             try {
-                await invoke("set_config", { key: "launcher", value: updated });
+                // 先拿到完整的配置
+                const full = await invoke("get_config");
+                const launcher = full.launcher || {};
+
+                // 我们把要修改的字段写入 launcher（保留 launcher 里其他字段）
+                launcher.debug = debugMode;
+                launcher.language = language;
+                launcher.custom_appx_api = customAppxApi;
+                launcher.auto_check_updates = autoCheckUpdates;
+
+                launcher.download = launcher.download || {};
+                launcher.download.multi_thread = multiThread;
+                launcher.download.max_threads = maxThreads;
+                launcher.download.auto_thread_count = autoThreadCount;
+
+                launcher.download.proxy = launcher.download.proxy || {};
+                launcher.download.proxy.proxy_type = proxyType;
+                launcher.download.proxy.http_proxy_url = httpProxyUrl;
+                launcher.download.proxy.socks_proxy_url = socksProxyUrl;
+
+                // 最后一次性写回完整的 launcher 对象（包含后端原本有的字段）
+                await invoke("set_config", { key: "launcher", value: launcher });
             } catch (e) {
                 console.error("Failed to save launcher config:", e);
             }
         })();
     }, [
         loaded, debugMode, language, customAppxApi, multiThread, autoThreadCount, maxThreads,
-        disableAllProxy, useSystemProxy, enableHttpProxy, httpProxyUrl,
-        enableSocksProxy, socksProxyUrl, enableCustomProxy, customProxyUrl
+        proxyType, httpProxyUrl, socksProxyUrl, autoCheckUpdates
     ]);
+
 
     // 初次加载时：从后端取系统语言并切换（保留你原来逻辑）
     useEffect(() => {
@@ -180,17 +157,12 @@ function Launcher() {
         debouncedSave(v);
     };
 
-    // ---- 这里是关键：用自定义 Select 的回调（接收 value，而不是 event） ----
+    // ---- language change handler ----
     const handleLanguageChange = async (newLang) => {
-        // newLang 是 'auto' 或语言 key（与你传入的 options.value 对应）
         setUserLanguage(newLang);
-        setLanguage(newLang); // 更新要持久化的值（会被自动保存 effect 捕获）
-
-        // 切换 i18n：auto 时获取系统语言
+        setLanguage(newLang);
         const target = newLang === "auto" ? await invoke("get_system_language") : newLang;
         await i18n.changeLanguage(target);
-
-        // 立即同步写回后端（选做，auto-save effect 也会写）
         try {
             const full = await invoke("get_config");
             const launcher = full.launcher || {};
@@ -201,25 +173,19 @@ function Launcher() {
         }
     };
 
-    // helper to toggle setters (保持你原来的行为)
     const handleToggle = (setter, value) => setter(!value);
 
-    const handleToggleDisableAllProxy = () => {
-        const newValue = !disableAllProxy;
-        setDisableAllProxy(newValue);
-        if (newValue) {
-            setUseSystemProxy(false);
-            setEnableHttpProxy(false);
-            setEnableSocksProxy(false);
-            setEnableCustomProxy(false);
-        }
-    };
-
-    // 构造 Select 的 options（包含 auto）
-    const languageOptions = [
-        { value: "auto", label: t("LauncherSettings.lang_options.auto") || "Auto" },
-        ...Object.entries(SUPPORTED_LANGUAGES).map(([key, { label }]) => ({ value: key, label })),
+    const proxyOptions = [
+        { value: "none", label: t("LauncherSettings.download.proxy.none")},
+        { value: "system", label: t("LauncherSettings.download.proxy.system")},
+        { value: "http", label: t("LauncherSettings.download.proxy.http")},
+        { value: "socks5", label: t("LauncherSettings.download.proxy.socks5")},
     ];
+
+
+    const handleProxyTypeChange = (value) => {
+        setProxyType(value);
+    };
 
     return (
         <div className="launch-settings">
@@ -229,27 +195,26 @@ function Launcher() {
             </div>
 
             <div className="setting-item">
+                <label>{t("LauncherSettings.auto_check_updates")}</label>
+                <Switch
+                    checked={autoCheckUpdates}
+                    onChange={() => setAutoCheckUpdates(!autoCheckUpdates)}
+                />
+            </div>
+
+
+            <div className="setting-item">
                 <label>{t("LauncherSettings.language")}</label>
                 <Select
                     value={userLanguage}
                     onChange={handleLanguageChange}
-                    options={languageOptions}
+                    options={[
+                        { value: "auto", label: t("LauncherSettings.lang_options.auto") || "Auto" },
+                        ...Object.entries(SUPPORTED_LANGUAGES).map(([key, { label }]) => ({ value: key, label })),
+                    ]}
                     placeholder={t("LauncherSettings.lang_placeholder")}
                     inputStyle={{ height: '29px' }}
                     size={13}
-                />
-            </div>
-
-            <div className="setting-item">
-                <label>{t("LauncherSettings.custom_appx_api")}</label>
-                {/* 修复 Input onChange：直接使用 setter */}
-                <Input
-                    type="text"
-                    value={customAppxApi}
-                    onChange={(e) => setCustomAppxApi(e.target.value)}
-                    placeholder="https://..."
-                    inputStyle={{ height: '29px' }}
-                    size={12}
                 />
             </div>
 
@@ -295,7 +260,6 @@ function Launcher() {
                             min={1}
                             max={256}
                             inputStyle={{ height: '29px' }}
-
                         />
                     </div>
                 </div>
@@ -315,84 +279,44 @@ function Launcher() {
                 />
             </div>
 
+            {/* --- 新：代理选择器 --- */}
             <div className="setting-item">
-                <label>{t("LauncherSettings.download.proxy.disable_all_proxy")}</label>
-                <Switch
-                    checked={disableAllProxy}
-                    onChange={() => selectProxyMode("none")}
+                <label>{t("LauncherSettings.download.proxy.mode") || "Proxy Mode"}</label>
+                <Select
+                    value={proxyType}
+                    onChange={handleProxyTypeChange}
+                    options={proxyOptions}
+                    placeholder={t("LauncherSettings.download.proxy.mode_placeholder") || "Select proxy mode"}
+                    inputStyle={{ height: '29px' }}
+                    size={13}
                 />
             </div>
 
-            {!disableAllProxy && (
-                <>
-                    <div className="setting-item">
-                        <label>{t("LauncherSettings.download.proxy.use_system_proxy")}</label>
-                        <Switch
-                            checked={useSystemProxy}
-                            onChange={() => selectProxyMode("system")}
-                        />
-                    </div>
+            {/* 根据 proxyType 显示对应 URL 输入 */}
+            {proxyType === "http" && (
+                <div className="setting-item">
+                    <label>{t("LauncherSettings.download.proxy.http_proxy_url")}</label>
+                    <Input
+                        type="text"
+                        value={httpProxyUrl}
+                        onChange={(e) => setHttpProxyUrl(e.target.value)}
+                        placeholder="http(s)://host:port"
+                        inputStyle={{ height: '29px' }}
+                    />
+                </div>
+            )}
 
-                    <div className="setting-item">
-                        <label>{t("LauncherSettings.download.proxy.enable_http_proxy")}</label>
-                        <Switch
-                            checked={enableHttpProxy}
-                            onChange={() => selectProxyMode("http")}
-                        />
-                    </div>
-                    {enableHttpProxy && (
-                        <div className="setting-item">
-                            <label>{t("LauncherSettings.download.proxy.http_proxy_url")}</label>
-                            <Input
-                                type="text"
-                                value={httpProxyUrl}
-                                onChange={(e) => setHttpProxyUrl(e.target.value)}
-                                placeholder="https://..."
-                                inputStyle={{ height: '29px' }}
-                            />
-                        </div>
-                    )}
-
-                    <div className="setting-item">
-                        <label>{t("LauncherSettings.download.proxy.enable_socks_proxy")}</label>
-                        <Switch
-                            checked={enableSocksProxy}
-                            onChange={() => selectProxyMode("socks")}
-                        />
-                    </div>
-                    {enableSocksProxy && (
-                        <div className="setting-item">
-                            <label>{t("LauncherSettings.download.proxy.socks_proxy_url")}</label>
-                            <Input
-                                type="text"
-                                value={socksProxyUrl}
-                                onChange={(e) => setSocksProxyUrl(e.target.value)}
-                                placeholder="socks5://..."
-                                inputStyle={{ height: '29px' }}
-                            />
-                        </div>
-                    )}
-
-                    <div className="setting-item">
-                        <label>{t("LauncherSettings.download.proxy.enable_custom_proxy")}</label>
-                        <Switch
-                            checked={enableCustomProxy}
-                            onChange={() => selectProxyMode("custom")}
-                        />
-                    </div>
-                    {enableCustomProxy && (
-                        <div className="setting-item">
-                            <label>{t("LauncherSettings.download.proxy.custom_proxy_url")}</label>
-                            <Input
-                                type="text"
-                                value={customProxyUrl}
-                                onChange={(e) => setCustomProxyUrl(e.target.value)}
-                                placeholder="..."
-                                inputStyle={{ height: '29px' }}
-                            />
-                        </div>
-                    )}
-                </>
+            {proxyType === "socks5" && (
+                <div className="setting-item">
+                    <label>{t("LauncherSettings.download.proxy.socks_proxy_url")}</label>
+                    <Input
+                        type="text"
+                        value={socksProxyUrl}
+                        onChange={(e) => setSocksProxyUrl(e.target.value)}
+                        placeholder="socks5://host:port"
+                        inputStyle={{ height: '29px' }}
+                    />
+                </div>
             )}
         </div>
     );

@@ -1,7 +1,7 @@
 {
   "name": "better_minecraft_bedrock_launcher",
   "private": true,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,12 +25,19 @@
     "react-color": "^2.19.3",
     "react-dom": "^19.1.0",
     "react-i18next": "^15.5.3",
+    "react-markdown": "^10.1.0",
     "react-virtualized-auto-sizer": "^1.0.26",
-    "react-window": "^1.8.11"
+    "react-window": "^1.8.11",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.17",
     "@tauri-apps/cli": "^2.8.1",
     "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.22",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.17",
     "vite": "^6.2.6"
   }
 }

@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use crate::core::minecraft::launcher::start::launch_win32;
 use crate::core::minecraft::uwp_minimize_fix::enable_debugging_for_package;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +36,48 @@ pub struct DllConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InjectConfig {
     pub files: HashMap<String, DllConfig>,
+}
+
+/// 简单解析：每段保留为整数（不要把长段再拆）
+fn parse_version_to_vec_simple(v: &str) -> Vec<u64> {
+    v.split(|c| c == '.' || c == '-' || c == '+')
+        .map(|seg| {
+            let digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u64>().unwrap_or(0)
+        })
+        .collect()
+}
+
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let va = parse_version_to_vec_simple(a);
+    let vb = parse_version_to_vec_simple(b);
+    let n = std::cmp::max(va.len(), vb.len());
+    for i in 0..n {
+        let ai = *va.get(i).unwrap_or(&0);
+        let bi = *vb.get(i).unwrap_or(&0);
+        match ai.cmp(&bi) {
+            std::cmp::Ordering::Equal => continue,
+            non_eq => return non_eq,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// 新的判定函数：优先处理你观测到的特殊情况（1.21.12201.* 为 GDK），其余回退到阈值比较
+fn is_win32_version(version: &str) -> bool {
+    // 先把版本拆为数字段向量
+    let v = parse_version_to_vec_simple(version);
+
+    // 特殊规则：对于 1.21 系列，如果第三段 >= 12201，则视为 GDK/Win32（按你观测）
+    if v.len() >= 3 {
+        if v[0] == 1 && v[1] == 21 && v[2] >= 12201 {
+            return true;
+        }
+    }
+
+    // 否则按常规阈值比较（可以调整阈值）
+    const THRESHOLD: &str = "1.21.12000.21";
+    compare_versions(version, THRESHOLD) != std::cmp::Ordering::Less
 }
 
 /// 将 manifest 中的 Identity name 映射到常见的 AUMID（示例）
@@ -280,51 +323,69 @@ pub async fn register_and_start(
         }
     };
 
-    let aumid = match identity_to_aumid(&identity_name) {
-        Some(id) => id,
-        None => {
-            let msg = format!("未识别的 Identity Name: {}", identity_name);
-            error!("{}", msg);
-            emit_launch(app, "manifest", "error", Some(msg.clone()), None);
-            return Err(msg);
-        }
-    };
-    info!("目标包 AUMID = {}", aumid);
-    emit_launch(app, "lookup", "info", Some(format!("目标包 AUMID = {}", aumid)), None);
-
-    let mut need_register = true;
-    let mut package_full_name_opt: Option<String> = None;
-
-    match get_package_info(&aumid) {
-        Ok(Some((installed_version, _family_name, package_full_name))) => {
-            debug!("已安装包版本: {}", installed_version);
-            emit_launch(app, "lookup", "ok", Some(format!("已安装版本: {}", installed_version)), None);
-
-            package_full_name_opt = Some(package_full_name.clone());
-
-            if installed_version == identity_version {
-                info!("版本一致，无需重新注册");
-                emit_launch(app, "lookup", "info", Some("版本一致，准备启动".into()), None);
-                need_register = false;
-            } else {
-                info!("版本不一致，卸载旧包 {}", package_full_name);
-                emit_launch(app, "lookup", "info", Some(format!("版本不一致，卸载旧包 {}", package_full_name)), None);
-                remove_package(&package_full_name).await;
-                emit_launch(app, "remove", "info", Some(format!("已请求卸载 {}", package_full_name)), None);
-            }
-        }
-        Ok(None) => {
-            info!("系统中未找到包，准备注册");
-            emit_launch(app, "lookup", "ok", Some("未找到安装包，将注册".into()), None);
-        }
-        Err(e) => {
-            error!("查询已安装包信息失败: {:?}", e);
-            // 继续尝试注册
-        }
+    // 判断是否为 Win32/GDK 版本（若为 true 则跳过 Appx 注册流程）
+    let is_win32 = is_win32_version(&identity_version);
+    if is_win32 {
+        emit_launch(app, "manifest", "info", Some(format!("检测到 Win32/GDK 版本: {}，将跳过 Appx 注册", identity_version)), None);
     }
 
+    // 只有在非 Win32 时，才需要使用 aumid / get_package_info / register_appx
+    let mut need_register = true;
+    let mut package_full_name_opt: Option<String> = None;
+    let mut aumid_opt: Option<String> = None;
+
+    if !is_win32 {
+        // 计算 AUMID（仅用于 UWP/Appx 流程）
+        let aumid = match identity_to_aumid(&identity_name) {
+            Some(id) => id,
+            None => {
+                let msg = format!("未识别的 Identity Name: {}", identity_name);
+                error!("{}", msg);
+                emit_launch(app, "manifest", "error", Some(msg.clone()), None);
+                return Err(msg);
+            }
+        };
+        aumid_opt = Some(aumid.clone());
+        info!("目标包 AUMID = {}", aumid);
+        emit_launch(app, "lookup", "info", Some(format!("目标包 AUMID = {}", aumid)), None);
+
+        match get_package_info(&aumid) {
+            Ok(Some((installed_version, _family_name, package_full_name))) => {
+                debug!("已安装包版本: {}", installed_version);
+                emit_launch(app, "lookup", "ok", Some(format!("已安装版本: {}", installed_version)), None);
+
+                package_full_name_opt = Some(package_full_name.clone());
+
+                if installed_version == identity_version {
+                    info!("版本一致，无需重新注册");
+                    emit_launch(app, "lookup", "info", Some("版本一致，准备启动".into()), None);
+                    need_register = false;
+                } else {
+                    info!("版本不一致，卸载旧包 {}", package_full_name);
+                    emit_launch(app, "lookup", "info", Some(format!("版本不一致，卸载旧包 {}", package_full_name)), None);
+                    let _ = remove_package(&package_full_name).await;
+                    emit_launch(app, "remove", "info", Some(format!("已请求卸载 {}", package_full_name)), None);
+                }
+            }
+            Ok(None) => {
+                info!("系统中未找到包，准备注册");
+                emit_launch(app, "lookup", "ok", Some("未找到安装包，将注册".into()), None);
+            }
+            Err(e) => {
+                error!("查询已安装包信息失败: {:?}", e);
+                // 继续尝试注册
+            }
+        }
+    } else {
+        // Win32: 不需要注册 Appx
+        need_register = false;
+    }
+
+    // 执行注册（仅在 need_register 且 非 Win32 时）
     if need_register {
-        emit_launch(app, "register", "info", Some(format!("开始注册 APPX：{}", package_folder)), None);
+        // aumid_opt 应该存在
+        let aumid_for_log = aumid_opt.clone().unwrap_or_else(|| "<unknown aumid>".to_string());
+        emit_launch(app, "register", "info", Some(format!("开始注册 APPX：{} (aumid={})", package_folder, aumid_for_log)), None);
         match register_appx_package_async(package_folder).await {
             Ok(_) => {
                 info!("Appx 包注册成功");
@@ -343,6 +404,7 @@ pub async fn register_and_start(
         }
     }
 
+    // 剩余逻辑（mods_dir、注入准备等）保持不变...
     let mods_dir = Path::new(package_folder).join("mods");
 
     // ---------------------------------------------
@@ -381,11 +443,16 @@ pub async fn register_and_start(
 
     // ==== 统一启动流程 ====
     if auto_start {
-        let package_full_name = if let Some(full_name) = package_full_name_opt {
+        // 如果是 Win32 跳过获取 package_full_name（调试相关启用也与 Appx 无关）
+        let package_full_name = if is_win32 {
+            // 对 Win32，我们不需要 package_full_name 用于启用调试模式（uwp_minimize_fix 仅用于 UWP）
+            String::new()
+        } else if let Some(full_name) = package_full_name_opt {
             full_name
         } else {
-            // 获取最新注册包的 FullName
-            match get_package_info(&aumid) {
+            // 获取最新注册包的 FullName（仅在非 Win32 时有效）
+            let aumid = aumid_opt.as_ref().map(|s| s.as_str()).unwrap_or("");
+            match get_package_info(aumid) {
                 Ok(Some((_ver, _fam, full_name))) => full_name,
                 _ => {
                     let msg = "无法获取安装包 FullName，无法启用调试".to_string();
@@ -396,7 +463,7 @@ pub async fn register_and_start(
             }
         };
 
-        if game_cfg.uwp_minimize_fix {
+        if !is_win32 && game_cfg.uwp_minimize_fix {
             // 启用调试(修复UWP最小化停滞)
             match enable_debugging_for_package(&package_full_name) {
                 Ok(_) => info!("已启用调试模式: {}", package_full_name),
@@ -405,79 +472,147 @@ pub async fn register_and_start(
         }
 
         emit_launch(app, "launch", "info", Some(format!("开始启动: {}", identity_name)), None);
-        return match launch_uwp(&identity_name) {
-            Ok(pid_opt) => {
-                emit_launch(app, "launch", "ok", Some(format!("启动成功, PID: {:?}", pid_opt)), None);
 
-                // **立刻把 PID 写入 atomic 并通知所有等待任务开始注入（如果注入已准备好）**
-                if let Some(pid) = pid_opt {
-                    // 如果成功获取到 PID，则直接进行注入操作
-                    if let Some(pid_atomic) = &inject_pid_atomic_opt {
-                        pid_atomic.store(pid, Ordering::SeqCst);
-                        debug!("已设置 PID: {}", pid);
-                    }
-                    if let Some(notify) = &inject_notify_opt {
-                        // 立即通知所有等待的注入任务开始注入
-                        notify.notify_waiters();
-                    }
-                } else {
-                    // 如果没有成功获取 PID，尝试通过 find_pid 查找进程 ID
-                    debug!("未能直接获取 PID，尝试通过 find_pid 查找");
-                    match find_pid("Minecraft.Windows.exe") {
-                        Ok(pid) => {
-                            debug!("通过 find_pid 获取到 PID: {}", pid);
-                            if let Some(pid_atomic) = &inject_pid_atomic_opt {
-                                pid_atomic.store(pid, Ordering::SeqCst);
-                                debug!("已设置 PID: {}", pid);
+        // 如果是 Win32：使用 launch_win32（跳过 launch_uwp）
+        if is_win32 {
+            match launch_win32(package_folder) {
+                Ok(pid_opt) => {
+                    emit_launch(app, "launch", "ok", Some(format!("Win32 启动成功, PID: {:?}", pid_opt)), None);
+
+                    if let Some(pid) = pid_opt {
+                        if let Some(pid_atomic) = &inject_pid_atomic_opt {
+                            pid_atomic.store(pid, Ordering::SeqCst);
+                            debug!("已设置 PID: {}", pid);
+                        }
+                        if let Some(notify) = &inject_notify_opt {
+                            notify.notify_waiters();
+                        }
+                    } else {
+                        // 如果无法直接拿到 pid，尝试通过 find_pid 查找常见进程名
+                        debug!("Win32 无直接 PID，尝试通过 find_pid 查找");
+                        match find_pid("Minecraft.Windows.exe") {
+                            Ok(pid) => {
+                                if let Some(pid_atomic) = &inject_pid_atomic_opt {
+                                    pid_atomic.store(pid, Ordering::SeqCst);
+                                }
+                                if let Some(notify) = &inject_notify_opt {
+                                    notify.notify_waiters();
+                                }
                             }
-                            if let Some(notify) = &inject_notify_opt {
-                                // 立即通知所有等待的注入任务开始注入
-                                notify.notify_waiters();
+                            Err(e) => {
+                                error!("通过 find_pid 查找 PID 失败: {:?}", e);
+                                return Err("无法获取进程 PID，启动失败".to_string());
                             }
                         }
-                        Err(e) => {
-                            error!("通过 find_pid 查找 PID 失败: {:?}", e);
-                            return Err("无法获取进程 PID，启动失败".to_string());
-                        }
                     }
-                }
 
-
-                // 如果需要等待注入全部完成且有注入任务，可以等待所有 handles（可设置超时）
-                if !inject_handles.is_empty() {
-                    let join_all = futures::future::join_all(inject_handles);
-                    match tokio::time::timeout(Duration::from_secs(30), join_all).await {
-                        Ok(results) => {
-                            for (idx, r) in results.into_iter().enumerate() {
-                                match r {
-                                    Ok(_) => debug!("inject handle[{}] finished ok", idx),
-                                    Err(join_err) => {
-                                        error!("inject handle[{}] join error: {:?}", idx, join_err);
-                                        if join_err.is_panic() {
-                                            error!(" -> inject handle[{}] panicked", idx);
+                    // 等待注入任务（若存在）
+                    if !inject_handles.is_empty() {
+                        let join_all = futures::future::join_all(inject_handles);
+                        match tokio::time::timeout(Duration::from_secs(30), join_all).await {
+                            Ok(results) => {
+                                for (idx, r) in results.into_iter().enumerate() {
+                                    match r {
+                                        Ok(_) => debug!("inject handle[{}] finished ok", idx),
+                                        Err(join_err) => {
+                                            error!("inject handle[{}] join error: {:?}", idx, join_err);
+                                            if join_err.is_panic() {
+                                                error!(" -> inject handle[{}] panicked", idx);
+                                            }
                                         }
                                     }
                                 }
+                                debug!("所有注入任务已返回（在超时内）");
                             }
-                            debug!("所有注入任务已返回（在超时内）");
-                        }
-                        Err(_) => {
-                            debug!("等待注入任务超时（30s），继续后续流程");
+                            Err(_) => {
+                                debug!("等待注入任务超时（30s），继续后续流程");
+                            }
                         }
                     }
+
+                    return Ok(pid_opt)
                 }
-
-
-                // 其余行为保持不变（启动监控、窗口隐藏等）
-                Ok(pid_opt)
+                Err(e) => {
+                    let msg = format!("启动 Win32 可执行失败: {:?}", e);
+                    error!("{}", msg);
+                    emit_launch(app, "launch", "error", Some(msg.clone()), None);
+                    return  Err(msg)
+                }
             }
-            Err(e) => {
-                let msg = format!("启动失败: {}", e);
-                error!("{}", msg);
-                emit_launch(app, "launch", "error", Some(msg.clone()), None);
-                Err(msg)
-            }
-        };
+        } else {
+            // 原有 UWP 启动路径（保持不变）
+            return match launch_uwp(&identity_name) {
+                Ok(pid_opt) => {
+                    emit_launch(app, "launch", "ok", Some(format!("启动成功, PID: {:?}", pid_opt)), None);
+
+                    // **立刻把 PID 写入 atomic 并通知所有等待任务开始注入（如果注入已准备好）**
+                    if let Some(pid) = pid_opt {
+                        // 如果成功获取到 PID，则直接进行注入操作
+                        if let Some(pid_atomic) = &inject_pid_atomic_opt {
+                            pid_atomic.store(pid, Ordering::SeqCst);
+                            debug!("已设置 PID: {}", pid);
+                        }
+                        if let Some(notify) = &inject_notify_opt {
+                            // 立即通知所有等待的注入任务开始注入
+                            notify.notify_waiters();
+                        }
+                    } else {
+                        // 如果没有成功获取 PID，尝试通过 find_pid 查找进程 ID
+                        debug!("未能直接获取 PID，尝试通过 find_pid 查找");
+                        match find_pid("Minecraft.Windows.exe") {
+                            Ok(pid) => {
+                                debug!("通过 find_pid 获取到 PID: {}", pid);
+                                if let Some(pid_atomic) = &inject_pid_atomic_opt {
+                                    pid_atomic.store(pid, Ordering::SeqCst);
+                                    debug!("已设置 PID: {}", pid);
+                                }
+                                if let Some(notify) = &inject_notify_opt {
+                                    // 立即通知所有等待的注入任务开始注入
+                                    notify.notify_waiters();
+                                }
+                            }
+                            Err(e) => {
+                                error!("通过 find_pid 查找 PID 失败: {:?}", e);
+                                return Err("无法获取进程 PID，启动失败".to_string());
+                            }
+                        }
+                    }
+
+                    // 如果需要等待注入全部完成且有注入任务，可以等待所有 handles（可设置超时）
+                    if !inject_handles.is_empty() {
+                        let join_all = futures::future::join_all(inject_handles);
+                        match tokio::time::timeout(Duration::from_secs(30), join_all).await {
+                            Ok(results) => {
+                                for (idx, r) in results.into_iter().enumerate() {
+                                    match r {
+                                        Ok(_) => debug!("inject handle[{}] finished ok", idx),
+                                        Err(join_err) => {
+                                            error!("inject handle[{}] join error: {:?}", idx, join_err);
+                                            if join_err.is_panic() {
+                                                error!(" -> inject handle[{}] panicked", idx);
+                                            }
+                                        }
+                                    }
+                                }
+                                debug!("所有注入任务已返回（在超时内）");
+                            }
+                            Err(_) => {
+                                debug!("等待注入任务超时（30s），继续后续流程");
+                            }
+                        }
+                    }
+
+                    // 其余行为保持不变（启动监控、窗口隐藏等）
+                    Ok(pid_opt)
+                }
+                Err(e) => {
+                    let msg = format!("启动失败: {}", e);
+                    error!("{}", msg);
+                    emit_launch(app, "launch", "error", Some(msg.clone()), None);
+                    Err(msg)
+                }
+            };
+        }
     }
 
     Ok(None)
