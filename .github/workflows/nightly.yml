@@ -186,23 +186,76 @@ jobs:
 
           # 将 TAG_NAME 输出到 GitHub Actions 输出变量
           Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
-      
-      - name: 临时修改 src-tauri/Cargo.toml 的版本为 nightly（原版本-nightly.YYYYMMDD）
+
+      - name: 临时修改 src-tauri/Cargo.toml 的版本为 nightly（仅修改 [package] 区块）
         id: patch_cargo_version
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         shell: pwsh
         run: |
-          $orig = "${{ steps.read_cargo_version.outputs.ORIGINAL_VERSION }}"
-          $nightly = "${{ steps.make_tag_name.outputs.NIGHTLY_VERSION }}"
-          Write-Host "原始版本: $orig"
-          Write-Host "夜间版本 (将写入 src-tauri/Cargo.toml): $nightly"
+          $ErrorActionPreference = "Stop"
 
           $cargo_path = "src-tauri/Cargo.toml"
-          $content = Get-Content $cargo_path -Raw
-          $new = [regex]::Replace($content, 'version\s*=\s*"([^"]+)"', "version = `"$nightly`"", 1)
-          Set-Content -Path $cargo_path -Value $new -Encoding UTF8
-          Write-Host "已将 src-tauri/Cargo.toml 中的 version 修改为 nightly 版本（仅本地工作区）。"
-          echo "CARGO_NIGHTLY_VERSION=$nightly" >> $env:GITHUB_OUTPUT
+          if (-not (Test-Path $cargo_path)) {
+            Write-Error "找不到 $cargo_path"
+            exit 1
+          }
+
+          # 读取并备份（备份已存在时不覆盖）
+          $content = Get-Content $cargo_path -Raw -Encoding UTF8
+          $backup = ".cargo_backup_src_tauri.toml"
+          if (-not (Test-Path $backup)) { Set-Content -Path $backup -Value $content -Encoding UTF8; Write-Host "已备份到 $backup" } else { Write-Host "$backup 已存在，跳过备份覆盖" }
+
+          $nightly = "${{ steps.make_tag_name.outputs.NIGHTLY_VERSION }}"
+          Write-Host "将把 [package] 中的 version 修改为: $nightly"
+
+          # 按行拆分，定位 [package] 块并只在该块内部替换 version 行
+          $lines = [System.Text.RegularExpressions]::Split($content, "\r?\n")
+          $inPackage = $false
+          $replaced = $false
+          for ($i = 0; $i -lt $lines.Length; $i++) {
+            $line = $lines[$i]
+            if ($line -match '^\s*\[package\]\s*$') {
+              $inPackage = $true
+              continue
+            }
+            if ($inPackage -and $line -match '^\s*\[') {
+              # 遇到下一个区块，停止在 package 内搜索
+              break
+            }
+            if ($inPackage -and $line -match '^\s*version\s*=') {
+              # 替换该行为 nightly 版本（只替换第一个匹配）
+              $lines[$i] = "version = `"$nightly`""
+              $replaced = $true
+              break
+            }
+          }
+
+          if (-not $replaced) {
+            Write-Error "未在 [package] 区块中找到 version 字段，无法写入 nightly 版本。"
+            exit 1
+          }
+
+          # 写回文件（使用 Unix 换行符）
+          $newContent = ($lines -join "`n")
+          Set-Content -Path $cargo_path -Value $newContent -Encoding UTF8
+          Write-Host "已将 $cargo_path 中 [package] 的 version 设置为 $nightly（仅本地工作区）"
+
+          # 快速校验：确保依赖里没有被误替换成包含 -nightly 的版本号
+          $bad = Select-String -Path $cargo_path -Pattern '=\s*".*?-nightly\.\d{8,}' -SimpleMatch -AllMatches
+          if ($bad) {
+            Write-Host "检测到可能错误：Cargo.toml 中存在带 -nightly 的依赖版本（这通常是不对的）。列出匹配行："
+            $bad | ForEach-Object { Write-Host $_.Line }
+            # 还原备份以防止后续步骤继续失败
+            if (Test-Path $backup) { Get-Content $backup -Raw | Set-Content $cargo_path -Encoding UTF8; Write-Host "已从备份还原 $cargo_path"; }
+            Write-Error "发现依赖版本包含 -nightly，已还原并中止构建。请检查 Cargo.toml。"
+            exit 1
+          } else {
+            Write-Host "校验通过：没有在依赖版本中发现 -nightly 字符串。"
+          }
+
+          # 导出输出变量
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "CARGO_NIGHTLY_VERSION=$nightly"
+
 
       - name: 设置 Node.js
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
@@ -215,7 +268,7 @@ jobs:
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 缓存 cargo（可选）
+      - name: 缓存 cargo
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         uses: actions/cache@v4
         with:
