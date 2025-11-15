@@ -209,7 +209,7 @@ jobs:
           Write-Host "将把 [package] 中的 version 修改为: $nightly"
 
           # 按行拆分，定位 [package] 块并只在该块内部替换 version 行
-          $lines = [System.Text.RegularExpressions]::Split($content, "\r?\n")
+          $lines = $content -split "\r?\n"
           $inPackage = $false
           $replaced = $false
           for ($i = 0; $i -lt $lines.Length; $i++) {
