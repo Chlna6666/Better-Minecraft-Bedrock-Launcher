@@ -336,19 +336,20 @@ jobs:
           } catch {
             Write-Host "未找到 Release，准备创建新的 pre-release..."
           
-            $mdBody = @'
-              这是一个仅供开发者和测试者使用的夜间构建版本！
+          $mdBody = @'
+          这是一个仅供开发者和测试者使用的夜间构建版本！
               
-              普通用户应该下载最新的稳定版本，而不是这个夜间构建版本。
+          普通用户应该下载最新的稳定版本，而不是这个夜间构建版本。
             
-            ---
+          ---
               
-              ⚠️ 重要说明：
+            ⚠️ 重要说明：
             
-            - 此版本可能包含不稳定功能或错误
-            - 不推荐用于生产环境
-            - 功能可能未经通知而更改或删除
-            '@
+          - 此版本可能包含不稳定功能或错误
+          - 不推荐用于生产环境
+          - 功能可能未经通知而更改或删除
+          '@
+
 
             $body = @{
               tag_name  = $tag
@@ -357,6 +358,7 @@ jobs:
               draft     = $false
               prerelease= $true
             } | ConvertTo-Json -Depth 6
+          
             $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers -Method Post -Body $body
             Write-Host "已创建 Release (id=$($release.id))"
           }
