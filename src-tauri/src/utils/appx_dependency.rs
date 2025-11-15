@@ -340,6 +340,7 @@ pub fn ensure_uwp_dependencies_or_prompt() {
         ("Microsoft.VCLibs.140.00.UWPDesktop", None),
         ("Microsoft.Services.Store.Engagement", None),
         ("Microsoft.NET.Native.Framework.1.3", None),
+     // ("Microsoft.Services.Store.Engagement",None),
     ];
 
     let missing: Vec<(&str, Option<&str>)> = deps
