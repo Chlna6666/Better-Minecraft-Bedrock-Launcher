@@ -1,0 +1,227 @@
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # 注意：'0 0 * * 0' = 每周日 00:00（若要每天请改为 '0 0 * * *'）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    runs-on: windows-latest
+
+    steps:
+      - name: 签出代码（包含 tag 和完整历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          tags: true
+
+      - name: 获取仓库默认分支
+        id: get_default_branch
+        shell: pwsh
+        run: |
+          $repoApi = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+          $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          Write-Host "正在请求 GitHub API 以获取默认分支信息..."
+          $resp = Invoke-RestMethod -Uri $repoApi -Headers $headers
+          $default = $resp.default_branch
+          Write-Host "默认分支: $default"
+          echo "DEFAULT_BRANCH=$default" >> $env:GITHUB_OUTPUT
+
+      - name: 检查自上次 nightly tag 以来是否有新提交
+        id: check_commits
+        shell: pwsh
+        run: |
+          $default = "${{ steps.get_default_branch.outputs.DEFAULT_BRANCH }}"
+          Write-Host "正在检查分支 $default 上是否有新提交..."
+          git fetch origin $default --tags --no-recurse-submodules --depth=1
+
+          $latest = git tag -l "nightly-*" --sort=-creatordate | Select-Object -First 1
+          if (-not $latest) {
+            Write-Host "未找到之前的 nightly tag -> 将进行构建。"
+            echo "changed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          Write-Host "找到最近的 nightly tag: $latest"
+          $tagCommit = git rev-list -n 1 $latest
+          $tagDate = [int](git show -s --format=%ct $tagCommit)
+          $headCommit = git rev-parse origin/$default
+          $headDate = [int](git show -s --format=%ct $headCommit)
+
+          Write-Host "tag 提交时间戳: $tagDate"
+          Write-Host "分支 HEAD 提交时间戳: $headDate"
+
+          if ($headDate -gt $tagDate) {
+            Write-Host "自上次 nightly tag 后存在新提交 -> 将执行构建。"
+            echo "changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "自上次 nightly tag 后无新提交 -> 跳过构建。"
+            echo "changed=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: 警告（醒目标识）
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        shell: pwsh
+        run: |
+          Write-Host "==================================================="
+          Write-Host "⚠️  警告：这是自动化的 NIGHTLY 预发行版本（pre-release）。"
+          Write-Host "可能包含不稳定代码，请谨慎使用。"
+          Write-Host "==================================================="
+
+      - name: 创建或复用 nightly tag
+        id: make_tag
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        shell: pwsh
+        run: |
+          $default = "${{ steps.get_default_branch.outputs.DEFAULT_BRANCH }}"
+          $date = (Get-Date).ToString("yyyyMMdd")
+          $tag = "nightly-$date"
+          Write-Host "计划使用的 tag: $tag"
+
+          git fetch --tags
+
+          $exists = git tag -l $tag
+          if ($exists) {
+            Write-Host "Tag $tag 已存在，复用该 tag。"
+          } else {
+            Write-Host "Tag $tag 不存在，正在创建并推送到 origin..."
+            git fetch origin $default
+            $head = "origin/$default"
+            git tag $tag $head -m "Nightly build for $date"
+            git push origin $tag
+            Write-Host "已创建并推送 tag $tag"
+          }
+
+          echo "TAG_NAME=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: 设置 Node.js
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 设置 Rust (stable)
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo（可选）
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v1
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: 安装前端依赖
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: npm ci
+        shell: pwsh
+
+      - name: 全局安装 @tauri-apps/cli（避免使用 npx）
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: npm install -g @tauri-apps/cli
+        shell: pwsh
+
+      - name: 构建 Tauri
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: npm run tauri:build
+        shell: pwsh
+        env:
+          CI: false
+
+      - name: 验证 exe 是否存在并设置输出
+        id: find_exe
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        shell: pwsh
+        run: |
+          $expected = "src-tauri/target/release/better_minecraft_bedrock_launcher.exe"
+          Write-Host "检查文件: $expected"
+          if (Test-Path $expected) {
+            $p = (Resolve-Path $expected).Path.Replace('\','/')
+            Write-Host "找到可执行文件: $p"
+            echo "EXE_PATH=$p" >> $env:GITHUB_OUTPUT
+            $name = [IO.Path]::GetFileName($p)
+            echo "EXE_NAME=$name" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "未找到期望的 exe 文件: $expected"
+            exit 1
+          }
+
+      - name: 获取或创建对应的 Release（按 tag）并输出 upload_url
+        id: get_or_create_release
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.make_tag.outputs.TAG_NAME }}"
+          $repo = $env:GITHUB_REPOSITORY
+          $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          Write-Host "查找 tag 对应的 Release：$tag"
+          try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers $headers -ErrorAction Stop
+            Write-Host "找到已存在的 Release (id=$($release.id))"
+          } catch {
+            Write-Host "未找到 Release，准备创建新的 pre-release..."
+            $body = @{
+              tag_name = $tag
+              name = "Nightly $tag"
+              body = "自动化 nightly 预发行：$tag。`n`n⚠️ 警告：这是自动化生成的 nightly 预发行 (pre-release)，来自仓库默认分支的最新提交。可能包含不稳定或未充分测试的更改，请谨慎使用并在生产环境中小心部署。"
+              draft = $false
+              prerelease = $true
+            } | ConvertTo-Json -Depth 6
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers -Method Post -Body $body
+            Write-Host "已创建 Release (id=$($release.id))"
+          }
+          echo "RELEASE_ID=$($release.id)" >> $env:GITHUB_OUTPUT
+          echo "UPLOAD_URL=$($release.upload_url)" >> $env:GITHUB_OUTPUT
+
+      - name: 删除 Release 中同名旧资产（如果存在）
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        shell: pwsh
+        run: |
+          $repo = $env:GITHUB_REPOSITORY
+          $release_id = "${{ steps.get_or_create_release.outputs.RELEASE_ID }}"
+          $filename = "${{ steps.find_exe.outputs.EXE_NAME }}"
+          $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+
+          Write-Host "列出 Release($release_id) 的资产并检查是否存在同名文件: $filename"
+          $assets = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$release_id/assets" -Headers $headers
+          if ($assets) {
+            foreach ($a in $assets) {
+              if ($a.name -eq $filename) {
+                Write-Host "发现同名资产 (id=$($a.id))，正在删除..."
+                Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/assets/$($a.id)" -Headers $headers -Method Delete
+                Write-Host "已删除旧资产 $filename (id=$($a.id))"
+              }
+            }
+          } else {
+            Write-Host "Release 中没有资产。"
+          }
+
+      - name: 上传 exe 到 GitHub Release（创建为预发行）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.make_tag.outputs.TAG_NAME }}
+          name: "Nightly ${{ steps.make_tag.outputs.TAG_NAME }}"
+          body: |
+            自动化 nightly 预发行：${{ steps.make_tag.outputs.TAG_NAME }}。
+
+            ⚠️ 警告：这是自动化生成的 nightly 预发行 (pre-release)，来自仓库默认分支的最新提交。
+            可能包含不稳定或未充分测试的更改，请谨慎使用并在生产环境中小心部署。
+          draft: false
+          prerelease: true
+          files: ${{ steps.find_exe.outputs.EXE_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
