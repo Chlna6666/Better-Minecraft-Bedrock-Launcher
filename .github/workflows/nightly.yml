@@ -2,7 +2,7 @@ name: Nightly Release
 
 on:
   schedule:
-    - cron: '0 0 * * 0'   # 注意：'0 0 * * 0' = 每周日 00:00（若要每天请改为 '0 0 * * *'）
+    - cron: '0 0 * * 0'
   workflow_dispatch:
 
 permissions:
@@ -21,17 +21,37 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 获取仓库默认分支
+      - name: 获取仓库默认分支（通过 git 解析，避免调用 API 导致 token 问题）
         id: get_default_branch
         shell: pwsh
         run: |
-          $repoApi = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
-          $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
-          Write-Host "正在请求 GitHub API 以获取默认分支信息..."
-          $resp = Invoke-RestMethod -Uri $repoApi -Headers $headers
-          $default = $resp.default_branch
-          Write-Host "默认分支: $default"
+          Write-Host "尝试通过 git 解析 origin 的 HEAD 指向以获取默认分支..."
+          $ref = ""
+          try {
+            $ref = git symbolic-ref refs/remotes/origin/HEAD 2>$null
+          } catch {
+            $ref = ""
+          }
+          if (-not [string]::IsNullOrEmpty($ref)) {
+            # refs/remotes/origin/main -> 取最后一段
+            $parts = $ref -split "/"
+            $default = $parts[-1]
+            Write-Host "解析到默认分支（来自 origin/HEAD）: $default"
+          } else {
+            # fallback: 尝试通过 remote show origin
+            $out = git remote show origin 2>$null | Select-String -Pattern "HEAD branch:"
+            if ($out) {
+              $default = ($out -replace '.*HEAD branch:\s*','').Trim()
+              Write-Host "解析到默认分支（来自 remote show origin）: $default"
+            } else {
+              # 最后兜底为 main
+              $default = "main"
+              Write-Host "无法解析默认分支，使用默认值: $default"
+            }
+          }
           echo "DEFAULT_BRANCH=$default" >> $env:GITHUB_OUTPUT
 
       - name: 检查自上次 nightly tag 以来是否有新提交
@@ -40,10 +60,8 @@ jobs:
         run: |
           $default = "${{ steps.get_default_branch.outputs.DEFAULT_BRANCH }}"
           Write-Host "正在检查分支 $default 上是否有新提交..."
-          # fetch branch head and tags
           git fetch origin $default --tags --no-recurse-submodules --depth=1
 
-          # 查找最近的 nightly tag（格式 vX.Y.Z-nightly.YYYYMMDD）
           $latest = git tag -l "v*-nightly.*" --sort=-creatordate | Select-Object -First 1
           if (-not $latest) {
             Write-Host "未找到之前的 nightly tag -> 将进行构建。"
@@ -84,11 +102,10 @@ jobs:
         run: |
           $cargo_path = "src-tauri/Cargo.toml"
           if (-Not (Test-Path $cargo_path)) {
-            Write-Error "未在 src-tauri 目录找到 Cargo.toml，无法从中读取版本。路径: $cargo_path"
+            Write-Error "未在 src-tauri 目录找到 Cargo.toml，路径: $cargo_path"
             exit 1
           }
           $content = Get-Content $cargo_path -Raw
-          # 用正则提取 version = "x.y.z"
           $m = [regex]::Match($content, 'version\s*=\s*"([^"]+)"')
           if (-not $m.Success) {
             Write-Error "无法从 src-tauri/Cargo.toml 中解析 version 字段。"
@@ -97,7 +114,6 @@ jobs:
           $orig_ver = $m.Groups[1].Value
           Write-Host "从 src-tauri/Cargo.toml 读取到版本：$orig_ver"
           echo "ORIGINAL_VERSION=$orig_ver" >> $env:GITHUB_OUTPUT
-          # 备份原始 Cargo.toml 到临时文件，以便后续还原
           Set-Content -Path ".cargo_backup_src_tauri.toml" -Value $content -Encoding UTF8
           Write-Host "已备份 src-tauri/Cargo.toml 到 .cargo_backup_src_tauri.toml"
 
@@ -150,12 +166,9 @@ jobs:
 
           $cargo_path = "src-tauri/Cargo.toml"
           $content = Get-Content $cargo_path -Raw
-          # 替换第一个 version = "..." 字段
           $new = [regex]::Replace($content, 'version\s*=\s*"([^"]+)"', "version = `"$nightly`"", 1)
           Set-Content -Path $cargo_path -Value $new -Encoding UTF8
           Write-Host "已将 src-tauri/Cargo.toml 中的 version 修改为 nightly 版本（仅本地工作区）。"
-
-          # 将 nightly 版本输出，以便其它步骤使用（可选）
           echo "CARGO_NIGHTLY_VERSION=$nightly" >> $env:GITHUB_OUTPUT
 
       - name: 设置 Node.js
@@ -219,11 +232,17 @@ jobs:
       - name: 获取或创建对应的 Release（按 tag）并输出 upload_url
         id: get_or_create_release
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $tag = "${{ steps.create_or_reuse_tag.outputs.TAG_NAME }}"
           $repo = $env:GITHUB_REPOSITORY
-          $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "github-actions"
+            Accept = "application/vnd.github+json"
+          }
           Write-Host "查找 tag 对应的 Release：$tag"
           try {
             $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers $headers -ErrorAction Stop
@@ -245,12 +264,18 @@ jobs:
 
       - name: 删除 Release 中同名旧资产（如果存在）
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $repo = $env:GITHUB_REPOSITORY
           $release_id = "${{ steps.get_or_create_release.outputs.RELEASE_ID }}"
           $filename = "${{ steps.find_exe.outputs.EXE_NAME }}"
-          $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "github-actions" }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "github-actions"
+            Accept = "application/vnd.github+json"
+          }
 
           Write-Host "列出 Release($release_id) 的资产并检查是否存在同名文件: $filename"
           $assets = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$release_id/assets" -Headers $headers
