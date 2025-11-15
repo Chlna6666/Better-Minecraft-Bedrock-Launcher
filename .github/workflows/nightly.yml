@@ -136,9 +136,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # PowerShell 等价于 bash 的 set -e
+          # 在 PowerShell 中遇错时退出
           $ErrorActionPreference = "Stop"
 
+          # 为 tag 操作设置身份（仅仓库级，不使用 --global）
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -146,36 +147,46 @@ jobs:
           $tag = "${{ steps.make_tag_name.outputs.TAG_NAME }}"
           Write-Host "计划使用的 tag: $tag (基于分支: $default)"
 
+          # 拉取 tags 与目标分支的最新引用
           git fetch --tags origin
           git fetch origin $default
 
-          # 获取 origin/main 最新 commit
+          # 获取 origin/<default> 的 commit
           $headCommit = git rev-parse "origin/$default" 2>$null
           if (-not $headCommit) {
-            Write-Error "无法解析 origin/$default 的 commit"
+            Write-Error "无法解析 origin/$default 的 commit，终止。"
             exit 1
           }
-
           Write-Host "origin/$default 的 commit: $headCommit"
 
-          # 检查 tag 是否存在
+          # 检查 tag 是否已存在
           $exists = git tag -l $tag
           if ($exists) {
-            Write-Host "Tag $tag 已存在，复用"
+            Write-Host "Tag $tag 已存在，复用该 tag（不重新创建）。"
           } else {
-            Write-Host "Tag $tag 不存在，创建中..."
+            Write-Host "Tag $tag 不存在，准备创建..."
 
+            # 使用注释型 tag 指向 origin/$default 的 commit（需要 user.name/email）
             git tag -a $tag $headCommit -m "Nightly build for $tag"
-            Write-Host "推送 tag..."
-            git push origin "refs/tags/$tag:refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "创建 tag 失败（git tag 返回非零）。"
+              exit 1
+            }
 
-            Write-Host "Tag $tag 已创建并推送"
+            # 推送新 tag 到远端：使用简单可靠的推送（直接推 tag 名）
+            Write-Host "正在推送 tag 到 origin..."
+            git push origin $tag
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "推送 tag 到 origin 失败（git push 返回非零）。"
+              exit 1
+            }
+
+            Write-Host "Tag $tag 已创建并成功推送到 origin。"
           }
 
-          "TAG_NAME=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # 将 TAG_NAME 输出到 GitHub Actions 输出变量
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
       
-      
-
       - name: 临时修改 src-tauri/Cargo.toml 的版本为 nightly（原版本-nightly.YYYYMMDD）
         id: patch_cargo_version
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
