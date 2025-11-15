@@ -17,6 +17,7 @@ function Launcher() {
     const [multiThread, setMultiThread] = useState(false);
     const [autoThreadCount, setAutoThreadCount] = useState(true);
     const [maxThreads, setMaxThreads] = useState(8);
+    const [updateChannel, setUpdateChannel] = useState("stable");
     const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
 
 
@@ -51,6 +52,7 @@ function Launcher() {
                 setHttpProxyUrl(proxy.http_proxy_url || "");
                 setSocksProxyUrl(proxy.socks_proxy_url || "");
 
+                setUpdateChannel(launcher.update_channel || "stable");
                 setAutoCheckUpdates(launcher.hasOwnProperty('auto_check_updates') ? launcher.auto_check_updates : true);
 
                 setLoaded(true);
@@ -66,14 +68,13 @@ function Launcher() {
 
         (async () => {
             try {
-                // 先拿到完整的配置
                 const full = await invoke("get_config");
                 const launcher = full.launcher || {};
 
-                // 我们把要修改的字段写入 launcher（保留 launcher 里其他字段）
                 launcher.debug = debugMode;
                 launcher.language = language;
                 launcher.custom_appx_api = customAppxApi;
+                launcher.update_channel = updateChannel;  // 这里写回了 update_channel
                 launcher.auto_check_updates = autoCheckUpdates;
 
                 launcher.download = launcher.download || {};
@@ -86,7 +87,6 @@ function Launcher() {
                 launcher.download.proxy.http_proxy_url = httpProxyUrl;
                 launcher.download.proxy.socks_proxy_url = socksProxyUrl;
 
-                // 最后一次性写回完整的 launcher 对象（包含后端原本有的字段）
                 await invoke("set_config", { key: "launcher", value: launcher });
             } catch (e) {
                 console.error("Failed to save launcher config:", e);
@@ -94,7 +94,7 @@ function Launcher() {
         })();
     }, [
         loaded, debugMode, language, customAppxApi, multiThread, autoThreadCount, maxThreads,
-        proxyType, httpProxyUrl, socksProxyUrl, autoCheckUpdates
+        proxyType, httpProxyUrl, socksProxyUrl, autoCheckUpdates, updateChannel
     ]);
 
 
@@ -187,11 +187,32 @@ function Launcher() {
         setProxyType(value);
     };
 
+    const handleUpdateChannelChange = (value) => {
+        if (value === "stable" || value === "nightly") {
+            setUpdateChannel(value);
+        }
+    };
+
     return (
         <div className="launch-settings">
             <div className="setting-item">
                 <label>{t("LauncherSettings.debug")}</label>
                 <Switch checked={debugMode} onChange={() => handleToggle(setDebugMode, debugMode)} />
+            </div>
+
+            <div className="setting-item">
+                <label>{t("LauncherSettings.update_channel") || "Update Channel"}</label>
+                <Select
+                    value={updateChannel}
+                    onChange={handleUpdateChannelChange}
+                    options={[
+                        { value: "stable", label: t("LauncherSettings.update_channel.stable")},
+                        { value: "nightly", label: t("LauncherSettings.update_channel.nightly")},
+                    ]}
+                    placeholder={t("LauncherSettings.update_channel.placeholder")}
+                    inputStyle={{ height: '29px' }}
+                    size={13}
+                />
             </div>
 
             <div className="setting-item">

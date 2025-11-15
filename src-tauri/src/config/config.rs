@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
 use std::{fs, io};
+use std::str::FromStr;
 use serde_json::Value;
 use tracing::{debug, error};
 
@@ -36,6 +37,14 @@ pub enum ProxyType {
     Http,
     Socks5,
 }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    #[serde(alias = "stable")]
+    Stable,
+    Nightly,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(default)]
 pub struct ProxyConfig {
@@ -44,6 +53,22 @@ pub struct ProxyConfig {
     pub socks_proxy_url: String,
 }
 
+impl Default for UpdateChannel {
+    fn default() -> Self {
+        UpdateChannel::Stable
+    }
+}
+
+impl FromStr for UpdateChannel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "nightly" => Ok(UpdateChannel::Nightly),
+            _ => Ok(UpdateChannel::Stable),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone,Default)]
 pub struct DownloadConfig {
@@ -58,6 +83,8 @@ pub struct Launcher {
     pub language: String, // "auto", "en-US", "zh-CN" 等
     pub custom_appx_api: String,
     pub download: DownloadConfig,
+    #[serde(default)]
+    pub update_channel: UpdateChannel, // "stable" 或 "nightly"
     pub auto_check_updates: bool,
     pub check_on_start: bool,
     pub update_check_interval_minutes: u32,
@@ -118,6 +145,7 @@ pub fn get_default_config() -> Config {
                     socks_proxy_url: "".to_string(),
                 },
             },
+            update_channel: UpdateChannel::Stable,
             auto_check_updates: true,
             check_on_start: false,
             update_check_interval_minutes: 60,

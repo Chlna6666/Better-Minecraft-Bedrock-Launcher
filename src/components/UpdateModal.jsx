@@ -7,6 +7,7 @@ import close from "../assets/feather/x.svg";
 import externalLink from "../assets/feather/external-link.svg";
 import IconButton from "./IconButton";
 import { Button } from "./index.js";
+import {formatBytes} from "../utils/fileSize.js";
 
 function Spinner() {
     return (
@@ -175,7 +176,7 @@ export default function UpdateModal({
                             {latest?.asset_size ? (
                                 <div className="um-meta-row">
                                     <div className="um-label">大小</div>
-                                    <div className="um-value">{latest.asset_size}</div>
+                                    <div className="um-value">{formatBytes(latest?.asset_size, { defaultBytes: null, defaultText: "未知" })}</div>
                                 </div>
                             ) : null}
                         </div>

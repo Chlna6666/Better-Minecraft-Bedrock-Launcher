@@ -166,6 +166,10 @@
       "en": "英文",
       "zh": "中文"
     },
+    "update_channel": "更新通道",
+    "update_channel.stable": "正式版",
+    "update_channel.nightly": "夜版",
+    "update_channel.placeholder": "选择更新通道",
     "auto_check_updates": "自动检查更新",
     "download": {
       "multi_thread": "多线程下载",

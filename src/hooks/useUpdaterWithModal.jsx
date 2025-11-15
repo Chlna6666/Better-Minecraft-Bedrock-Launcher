@@ -18,32 +18,38 @@ export function useUpdaterWithModal({
     const [selectedRelease, setSelectedRelease] = useState(null);
     const [seenTag, setSeenTag] = useState("");
 
-    // 监听更新状态，自动弹窗
     useEffect(() => {
         if (!autoCheck) {
             if (modalOpen) setModalOpen(false);
             return;
         }
 
-        // 优先稳定版，没有则预发布
-        const latest = updState.latestStable ?? updState.latestPrerelease ?? null;
-        if (
-            latest &&
-            latest.tag &&
-            latest.tag !== seenTag &&
-            updState.updateAvailable
-        ) {
-            setSeenTag(latest.tag);
-            setSelectedRelease(latest);
+        const chosen = updState.chosenRelease ?? (updState.selectedChannel === "nightly"
+                ? (updState.latestPrerelease ?? updState.latestStable)
+                : (updState.latestStable ?? updState.latestPrerelease)
+        );
+
+        if (!chosen) {
+            setSelectedRelease(null);
+            return;
+        }
+
+        const tag = chosen.tag || chosen.name || (chosen.asset_name ?? "");
+
+        if (updState.updateAvailable && tag && tag !== seenTag) {
+            setSeenTag(tag);
+            setSelectedRelease(chosen);
             setModalOpen(true);
         }
     }, [
+        autoCheck,
+        modalOpen,
+        seenTag,
         updState.updateAvailable,
+        updState.chosenRelease,
+        updState.selectedChannel,
         updState.latestStable,
         updState.latestPrerelease,
-        seenTag,
-        modalOpen,
-        autoCheck,
     ]);
 
     return {

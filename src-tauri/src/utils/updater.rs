@@ -11,8 +11,9 @@ use tracing::{debug, error, info};
 use regex::Regex;
 use crate::downloads::manager::DownloaderManager;
 use crate::http::proxy::{get_client_for_proxy};
-use crate::result::CoreResult;
+use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{create_task, finish_task};
+use crate::config::config::{read_config};
 
 #[derive(Deserialize, Debug)]
 pub struct ApplyUpdateArgs {
@@ -86,9 +87,25 @@ fn extract_semver_substring(tag: &str) -> Option<String> {
 }
 
 /// 可选：从 GitHub Releases 获取（api_base 可指向镜像）
+
 #[tauri::command]
-pub async fn check_updates(owner: String, repo: String, api_base: Option<String>) -> Result<serde_json::Value, String> {
-    info!("检查更新：{}/{} (api_base={:?})", owner, repo, api_base);
+pub async fn check_updates(
+    owner: String,
+    repo: String,
+    api_base: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let config = read_config()
+        .map_err(|e| format!("读取配置失败: {}", e))?;
+    
+    let update_channel = config.launcher.update_channel;
+    let channel = match update_channel {
+        // 使用全限定路径以防命名空间问题（根据你的项目路径调整）
+        crate::config::config::UpdateChannel::Nightly => "nightly".to_string(),
+        _ => "stable".to_string(),
+    };
+    let channel = channel.to_lowercase();
+
+    info!("检查更新：{}/{} (api_base={:?}, channel={:?})", owner, repo, api_base, update_channel);
     let base = api_base.unwrap_or_else(|| "https://api.github.com".to_string());
     let url = format!("{}/repos/{}/{}/releases", base.trim_end_matches('/'), owner, repo);
     let client = get_client_for_proxy()
@@ -135,7 +152,7 @@ pub async fn check_updates(owner: String, repo: String, api_base: Option<String>
         for a in &r.assets {
             let name_l = a.name.to_lowercase();
             if name_l.ends_with(".exe") || name_l.ends_with(".msi") || name_l.ends_with(".zip") || name_l.ends_with(".7z") {
-                let size = a.size; // 访问字段（已在 struct 中声明）
+                let size = a.size;
                 chosen_asset = Some((a.name.clone(), a.browser_download_url.clone(), size));
                 break;
             }
@@ -149,10 +166,11 @@ pub async fn check_updates(owner: String, repo: String, api_base: Option<String>
             asset_name: chosen_asset.as_ref().map(|c| c.0.clone()),
             asset_url: chosen_asset.as_ref().map(|c| c.1.clone()),
             asset_size: chosen_asset.as_ref().map(|c| c.2),
-            body: r.body.clone(), // 访问字段而非方法
+            body: r.body.clone(),
         };
 
         if r.prerelease {
+            // 选择最新的 prerelease（按 semver 比较 prerelease 内部顺序）
             let take = match &latest_prerelease_ver {
                 Some(prev_v) => parsed_ver > *prev_v,
                 None => true,
@@ -162,6 +180,7 @@ pub async fn check_updates(owner: String, repo: String, api_base: Option<String>
                 latest_prerelease_ver = Some(parsed_ver);
             }
         } else {
+            // 选择最新的 stable
             let take = match &latest_stable_ver {
                 Some(prev_v) => parsed_ver > *prev_v,
                 None => true,
@@ -173,10 +192,55 @@ pub async fn check_updates(owner: String, repo: String, api_base: Option<String>
         }
     }
 
+    // 根据选择的 channel 决定是否有更新
     let mut update_available = false;
-    if let Some(ref ls_ver) = latest_stable_ver {
-        if ls_ver > &current_ver {
-            update_available = true;
+    let mut selected_release: Option<ReleaseSummary> = None;
+    if channel == "nightly" {
+        // 优先使用 prerelease（nightly）作为候选
+        if let Some(ref npv) = latest_prerelease_ver {
+            // semver 规则：pre-release 通常比同号正式版优先级低，
+            // 但我们希望 nightly（例如 0.0.7-nightly.20251115）在 same major.minor.patch 下也能被视为“更新”。
+            let newer = if npv > &current_ver {
+                true
+            } else {
+                // 如果 major.minor.patch 相同，且 nightly 有 pre-release，而当前为正式版（no pre），则认为 nightly 可作为更新
+                let same_core = npv.major == current_ver.major
+                    && npv.minor == current_ver.minor
+                    && npv.patch == current_ver.patch;
+                let np_has_pre = !npv.pre.is_empty();
+                let cur_has_pre = !current_ver.pre.is_empty();
+                same_core && np_has_pre && !cur_has_pre
+            };
+            if newer {
+                update_available = true;
+            }
+            selected_release = latest_prerelease.clone();
+        } else {
+            // 没有 prerelease 时回退到 stable
+            if let Some(ref ls) = latest_stable_ver {
+                if ls > &current_ver {
+                    update_available = true;
+                }
+                selected_release = latest_stable.clone();
+            }
+        }
+    } else {
+        // stable channel
+        if let Some(ref ls) = latest_stable_ver {
+            if ls > &current_ver {
+                update_available = true;
+            }
+            selected_release = latest_stable.clone();
+        } else {
+            // 没有 stable 时回退到 prerelease
+            if let Some(ref npv) = latest_prerelease_ver {
+                if npv > &current_ver {
+                    update_available = true;
+                } else {
+                    // same-core nightly fallback logic for stable channel not required normally
+                }
+                selected_release = latest_prerelease.clone();
+            }
         }
     }
 
@@ -185,12 +249,14 @@ pub async fn check_updates(owner: String, repo: String, api_base: Option<String>
 
     debug!("当前版本：{}", current);
     debug!("最新稳定版本：{:?}", latest_stable_ver);
-    debug!("是否有更新: {}", update_available);
-
+    debug!("最新 prerelease：{:?}", latest_prerelease_ver);
+    debug!("是否有更新: {} (channel={})", update_available, channel);
 
     Ok(serde_json::json!({
         "current_version": current,
         "current_semver_parsed": current_ver.to_string(),
+        "selected_channel": channel,
+        "selected_release": selected_release,
         "latest_stable": latest_stable,
         "latest_prerelease": latest_prerelease,
         "latest_stable_changelog": latest_stable_changelog,
@@ -198,6 +264,7 @@ pub async fn check_updates(owner: String, repo: String, api_base: Option<String>
         "update_available": update_available
     }))
 }
+
 
 
 #[tauri::command]
