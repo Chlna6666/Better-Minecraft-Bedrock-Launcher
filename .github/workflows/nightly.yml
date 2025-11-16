@@ -60,8 +60,12 @@ jobs:
         run: |
           $default = "${{ steps.get_default_branch.outputs.DEFAULT_BRANCH }}"
           Write-Host "正在检查分支 $default 上是否有新提交..."
-          git fetch origin $default --tags --no-recurse-submodules --depth=1
+          
+          # 先确保拿到远端最新 refs 和 tags（不要使用 --depth=1，会影响 tags）
+          git fetch origin $default
+          git fetch --tags origin
 
+          # 查找最新的 nightly tag（基于 creatordate），若没有则触发构建
           $latest = git tag -l "v*-nightly.*" --sort=-creatordate | Select-Object -First 1
           if (-not $latest) {
             Write-Host "未找到之前的 nightly tag -> 将进行构建。"
@@ -70,9 +74,23 @@ jobs:
           }
 
           Write-Host "找到最近的 nightly tag: $latest"
+
+          # tag 对应的 commit（先在本地解析）
           $tagCommit = git rev-list -n 1 $latest
+          if (-not $tagCommit) {
+            Write-Host "无法解析 tag 的 commit，触发构建以保险。"
+            echo "changed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
           $tagDate = [int](git show -s --format=%ct $tagCommit)
-          $headCommit = git rev-parse origin/$default
+
+          # origin/<default> 的最新 commit
+          $headCommit = git rev-parse "origin/$default"
+          if (-not $headCommit) {
+            Write-Host "无法解析 origin/$default 的 commit，触发构建以保险。"
+            echo "changed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
           $headDate = [int](git show -s --format=%ct $headCommit)
 
           Write-Host "tag 提交时间戳: $tagDate"
@@ -403,6 +421,79 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 清理旧 nightly tags 和 Release 资产（仅保留当前 tag）
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          # 不要在这里因为删除失败而中止整个 job：尽量删除但允许运行继续
+          $ErrorActionPreference = "Continue"
+
+          $repo = $env:GITHUB_REPOSITORY
+          $currentTag = "${{ steps.create_or_reuse_tag.outputs.TAG_NAME }}"
+          Write-Host "当前要保留的 tag: $currentTag"
+
+          # 确保本地有最新 tags
+          git fetch --tags origin
+
+          # 按创建时间降序列出所有 nightly tag（最新在前）
+          $tags = git tag -l "v*-nightly.*" --sort=-creatordate
+          if (-not $tags) {
+            Write-Host "未找到任何 nightly tags，跳过清理。"
+            exit 0
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "github-actions"
+            Accept = "application/vnd.github+json"
+          }
+
+          foreach ($t in $tags) {
+            if ($t -eq $currentTag) {
+              Write-Host "跳过当前 tag: $t"
+              continue
+            }
+
+            Write-Host "准备删除旧 nightly tag: $t"
+
+            # 1) 尝试删除与该 tag 对应的 Release（如果存在）
+            try {
+              $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$t" -Headers $headers -ErrorAction Stop
+              if ($rel -and $rel.id) {
+                Write-Host "找到 Release id=$($rel.id) -> 删除 Release..."
+                Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$($rel.id)" -Headers $headers -Method Delete -ErrorAction Stop
+                Write-Host "已删除 Release (id=$($rel.id))"
+              }
+            } catch {
+              Write-Host "未找到 Release 或删除 Release 失败（可忽略）: $($_.Exception.Message)"
+            }
+
+            # 2) 删除远程 git ref（refs/tags/<tag>）
+            try {
+              Write-Host "尝试通过 GitHub API 删除远程 tag ref: refs/tags/$t"
+              Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/git/refs/tags/$t" -Headers $headers -Method Delete -ErrorAction Stop
+              Write-Host "已删除远程 tag refs/tags/$t"
+            } catch {
+              Write-Host "通过 API 删除 refs/tags/$t 失败或不存在: $($_.Exception.Message)"
+              # fallback: 尝试 git push origin --delete <tag>
+              try {
+                git push origin --delete $t
+                Write-Host "通过 git push origin --delete $t 删除成功"
+              } catch {
+                Write-Host "git push --delete 失败: $($_.Exception.Message)"
+              }
+            }
+
+            try {
+              git tag -d $t 2>$null
+            } catch {
+              # 忽略
+            }
+          }
+
+          Write-Host "旧 nightly tag 清理完成。"
 
       - name: 还原原始 src-tauri/Cargo.toml（恢复版本）
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
