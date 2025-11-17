@@ -1,20 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
+import ReactDOM from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { basename, extname } from "@tauri-apps/api/path";
 import { useTranslation } from "react-i18next";
 import "./InstallProgressBar.css";
 
 /**
- * InstallProgressBar (task_id polling version)
+ * InstallProgressBar (task_id polling version) - dialog 版（使用 <dialog> + portal）
  *
- * 必需后端命令：
- * - download_appx({ packageId, fileName, md5 }) -> returns task_id (String)
- * - import_appx({ sourcePath, fileName }) -> returns task_id (String)
- * - get_task_status({ taskId }) -> returns TaskSnapshot (serialized JSON)
- * - cancel_task({ taskId }) -> Result
- * - extract_zip_appx({ fileName, destination, forceReplace, deleteSignature }) -> Result (optional, used for download->extract step)
- *
- * 约定：后端在 download 完成时应把下载后的本地路径写入 TaskSnapshot.message（string），前端从 message 读取 destination。
+ * 后端命令假定与原组件一致（download_appx / import_appx / get_task_status / cancel_task / extract_zip_appx）
  */
 
 const InstallProgressBar = ({
@@ -31,6 +25,7 @@ const InstallProgressBar = ({
                             }) => {
     const { t } = useTranslation();
 
+    // --- 状态（保持和你原来的一致） ---
     const [progressData, setProgressData] = useState({
         processed: 0,
         total: 0,
@@ -64,7 +59,10 @@ const InstallProgressBar = ({
     const currentTaskIdRef = useRef(null);
     const targetPercentRef = useRef(0);
 
-    // animate percent
+    // dialog ref for native dialog
+    const dialogRef = useRef(null);
+
+    // animate percent (保持你原逻辑)
     useEffect(() => {
         const parsed = parseFloat(String(progressData.percent).replace("%", "")) || 0;
         targetPercentRef.current = parsed;
@@ -187,18 +185,15 @@ const InstallProgressBar = ({
         return "0.00%";
     };
 
-    // poll snapshot every 500ms (adjustable)
-// ---------- startPolling (替换原来函数体内实现) ----------
+    // ---------- startPolling（与原实现一致，但保持调用签名） ----------
     const startPolling = (taskId, onCompletedCallback = null) => {
         stopPolling();
-        // 先把传入 id 暂时保存（后面会以 snap.id 为准）
         currentTaskIdRef.current = taskId;
         pollIntervalRef.current = window.setInterval(async () => {
             try {
                 // 只传 task_id（snake_case），不要重复其他 key
-                const snap = await invoke("get_task_status", { task_id: taskId, taskId: taskId })
+                const snap = await invoke("get_task_status", { task_id: taskId, taskId: taskId });
 
-                // debug 日志（便于定位）——可以在 console 中观察
                 console.debug("poll snap:", snap);
 
                 const {
@@ -213,25 +208,20 @@ const InstallProgressBar = ({
                     message,
                 } = snap || {};
 
-                // 如果后端返回了 id，优先使用它（更新 currentTaskId）
                 if (id) {
                     currentTaskIdRef.current = id;
                 }
 
-                // 防守式数值转换
                 const numericDone = Number(done || 0);
                 const numericTotal = Number(total || 0);
                 const numericPercent = (typeof percent === "number") ? percent : (percent ? parseFloat(String(percent)) : null);
 
-                // 标记已收到事件
                 if (!hasProgressEvent) setHasProgressEvent(true);
 
-                // 统一生成 percentStr（优先使用 numericPercent）
                 const percentStr = (numericPercent !== null && numericPercent !== undefined && !Number.isNaN(numericPercent))
                     ? `${numericPercent.toFixed(2)}%`
                     : (numericTotal > 0 ? `${((numericDone / numericTotal) * 100).toFixed(2)}%` : "0.00%");
 
-                // 更新 UI 数据
                 setProgressData({
                     processed: numericDone,
                     total: numericTotal,
@@ -243,26 +233,18 @@ const InstallProgressBar = ({
                     message: message || null,
                 });
 
-                // 把动画目标设置为数值（0..100）
                 const target = (numericPercent !== null && numericPercent !== undefined && !Number.isNaN(numericPercent))
                     ? numericPercent
                     : (numericTotal > 0 ? (numericDone / numericTotal * 100) : 0);
                 targetPercentRef.current = Math.max(0, Math.min(100, target));
 
-                // 阶段切换逻辑：不要硬把 displayPercent 置 0（移除 setDisplayPercent(0)）
                 const prevStage = prevStageRef.current;
                 if (prevStage && prevStage !== stage) {
-                    const downloadStage = isImport ? "importing" : "downloading";
-                    if (prevStage === downloadStage && stage === "extracting") {
-                        // 不要把进度条硬清零，保留平滑过渡：
-                        // setDisplayPercent(0);  <-- 删除这行会避免进度条消失
-                    }
                     prevStageRef.current = stage;
                 } else if (!prevStageRef.current) {
                     prevStageRef.current = stage;
                 }
 
-                // 终态处理
                 if (status === "completed") {
                     stopPolling();
                     finishedRef.current = true;
@@ -275,7 +257,6 @@ const InstallProgressBar = ({
                         const destination = message;
                         if (destination) {
                             try {
-                                // 注意：传入 snake_case 名称与 Rust 绑定一致
                                 const extractTaskId = await invoke("extract_zip_appx", {
                                     fileName: cachedData?.fileName || fileNameInput,
                                     destination: destination,
@@ -283,9 +264,7 @@ const InstallProgressBar = ({
                                     deleteSignature: true,
                                 });
 
-                                // 如果返回了 taskId（字符串），开始轮询解压任务
                                 if (extractTaskId) {
-                                    // 重要：确保 currentTaskIdRef 更新为 extractTaskId
                                     startPolling(String(extractTaskId));
                                 } else {
                                     onCompleted?.(packageId);
@@ -328,7 +307,7 @@ const InstallProgressBar = ({
         }, 500);
     };
 
-
+    // startDownload / cancelInstall 保持逻辑（仅略作小修改：保证 snake_case 调用）
     const startDownload = async (fileName) => {
         if (!startingRef.current) {
             startingRef.current = true;
@@ -361,7 +340,6 @@ const InstallProgressBar = ({
 
         try {
             if (isImport) {
-                // 注意：键名必须是 snake_case，和 Rust 函数参数名一致
                 const taskId = await invoke("import_appx", {
                     source_path: sourcePath,
                     sourcePath: sourcePath,
@@ -391,9 +369,7 @@ const InstallProgressBar = ({
         }
     };
 
-
     const cancelInstall = async () => {
-        // if hasn't started we just close
         if (!isDownloading && !error && !confirmed) {
             finishedRef.current = true;
             setOpen(false);
@@ -402,6 +378,10 @@ const InstallProgressBar = ({
             startingRef.current = false;
             stopPolling();
             onCancel?.(packageId);
+            // close dialog if present
+            if (dialogRef.current && typeof dialogRef.current.close === "function") {
+                try { dialogRef.current.close(); } catch (e) {}
+            }
             return;
         }
 
@@ -411,9 +391,9 @@ const InstallProgressBar = ({
         try {
             const currentTaskId = currentTaskIdRef.current;
             if (currentTaskId) {
-                await invoke("cancel_task", { taskId: currentTaskId });
+                // 使用 snake_case 参数名
+                await invoke("cancel_task", { task_id: currentTaskId, taskId: currentTaskId });
                 console.log("Cancelling taskId:", currentTaskIdRef.current);
-
             }
         } catch (e) {
             console.error("cancel error:", e);
@@ -448,8 +428,7 @@ const InstallProgressBar = ({
 
     const formatMB = (bytes) => ((bytes || 0) / 1e6).toFixed(2);
 
-    const showModal = open;
-
+    // 确认开始 / 取消前的处理
     const handleConfirmStart = () => {
         if (isStarting) return;
         setIsStarting(true);
@@ -468,6 +447,10 @@ const InstallProgressBar = ({
         startingRef.current = false;
         stopPolling();
         onCancel?.(packageId);
+        // close native dialog if open
+        if (dialogRef.current && typeof dialogRef.current.close === "function") {
+            try { dialogRef.current.close(); } catch (e) {}
+        }
     };
 
     const cancelButtonText = isCancelling
@@ -486,128 +469,184 @@ const InstallProgressBar = ({
         return t("InstallProgressBar.processed_label");
     })();
 
+    // ---- dialog open/close effect ----
+    useEffect(() => {
+        const dlg = dialogRef.current;
+        if (!dlg) return;
+
+        try {
+            if (open) {
+                // showModal 会抛出 error 如果已打开，catch 掉
+                if (typeof dlg.showModal === "function" && !dlg.open) {
+                    dlg.showModal();
+                }
+            } else {
+                if (typeof dlg.close === "function" && dlg.open) {
+                    dlg.close();
+                }
+            }
+        } catch (e) {
+            // 某些浏览器可能不支持 dialog
+            console.warn("dialog.showModal error:", e);
+        }
+
+        // 绑定 cancel（Esc/backdrop）事件，阻止默认关闭并使用我们的逻辑
+        const onCancelEvent = (ev) => {
+            // ev.preventDefault(); // 如果不希望 dialog 自动关闭，可以 preventDefault 再做自定义
+            // 这里我们允许默认关闭并走 cancelInstall 行为
+            // 但为了避免重复调用（dialog 自动关闭同时 state 变化），我们直接调用 cancelInstall
+            cancelInstall();
+        };
+        dlg.addEventListener && dlg.addEventListener("cancel", onCancelEvent);
+
+        return () => {
+            dlg.removeEventListener && dlg.removeEventListener("cancel", onCancelEvent);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, dialogRef.current]);
+
+    // 根据浏览器能力选择渲染方式：如果支持 dialog 元素且 showModal 存在 -> 使用 dialog；否则退回 overlay DOM
+    const supportsDialog = typeof HTMLDialogElement === "function" || (typeof document !== "undefined" && "showModal" in document.createElement("dialog"));
+
+    // --- Modal content (抽取复用) ---
+    const modalContent = (
+        <div className={`install-modal ${error ? "modal-error" : ""}`} aria-live="polite" role="dialog">
+            {!confirmed && !error ? (
+                <>
+                    <div className="modal-header">
+                        <div className="modal-title">{isImport ? t("InstallProgressBar.import_title") : t("InstallProgressBar.confirm_title")}</div>
+                        <div className="modal-subtitle">{isImport ? t("InstallProgressBar.import_sub") : t("InstallProgressBar.confirm_sub")}</div>
+                    </div>
+
+                    <div className="download-progress-body">
+                        <label className="filename-label">{t("InstallProgressBar.filename_label")}</label>
+                        <input
+                            className="filename-input"
+                            value={fileNameInput}
+                            onChange={(e) => setFileNameInput(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") handleConfirmStart();
+                                if (e.key === "Escape") handleCancelBeforeStart();
+                            }}
+                        />
+                        <div className="confirm-actions">
+                            <button className="cancel-button" onClick={handleCancelBeforeStart} disabled={isStarting}>
+                                {t("InstallProgressBar.cancel")}
+                            </button>
+                            <button className="retry-button" onClick={handleConfirmStart} disabled={isStarting}>
+                                {isImport ? t("InstallProgressBar.start_import") : t("InstallProgressBar.start_download")}
+                            </button>
+                        </div>
+                    </div>
+                </>
+            ) : null}
+
+            {(confirmed || error) && (
+                <>
+                    <div className="modal-header">
+                        <div className="modal-title">
+                            {progressData.stage === "extracting"
+                                ? t("InstallProgressBar.stage_extracting")
+                                : isImport
+                                    ? t("InstallProgressBar.stage_importing")
+                                    : t("InstallProgressBar.stage_downloading")}
+                        </div>
+                        <div className="modal-subtitle">
+                            {progressData.stage === "extracting"
+                                ? t("InstallProgressBar.extracting_sub")
+                                : isImport
+                                    ? t("InstallProgressBar.importing_sub")
+                                    : (progressData.stage === "downloading" && isDownloading && !hasProgressEvent)
+                                        ? t("InstallProgressBar.parsing_url") || "正在解析URL"
+                                        : t("InstallProgressBar.downloading_sub")}
+                        </div>
+                    </div>
+
+                    {error ? (
+                        <div className="download-progress-body">
+                            <div className="error-message" title={String(error)}>
+                                <pre className="error-text">{String(error)}</pre>
+                            </div>
+                            <div className="error-actions">
+                                <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
+                                    {isCancelling ? t("InstallProgressBar.cancelling") : t("InstallProgressBar.close")}
+                                </button>
+                                <button
+                                    className="retry-button"
+                                    onClick={() => {
+                                        if (isStarting) return;
+                                        setIsStarting(true);
+                                        startingRef.current = true;
+                                        setError(null);
+                                        startDownload(cachedData?.fileName || fileNameInput);
+                                    }}
+                                    disabled={isCancelling || isStarting}
+                                >
+                                    {t("InstallProgressBar.retry")}
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="download-progress-body">
+                            <div className="progress-row">
+                                <div className="progress-percentage">
+                                    {progressData.percent}
+                                </div>
+                                <div className="progress-bar-outer" key={progressData.stage}>
+                                    <div
+                                        className="progress-bar-inner"
+                                        style={{ width: `${Math.max(0, Math.min(100, displayPercent))}%` }}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="progress-info-grid">
+                                <div className="info-block">
+                                    <div className="info-label">{processedLabel}</div>
+                                    <div className="info-value">
+                                        {progressData.stage === "extracting" && (!progressData.total || progressData.total === 0)
+                                            ? "—"
+                                            : `${formatMB(progressData.processed)} / ${formatMB(progressData.total)} MB`}
+                                    </div>
+                                </div>
+                                <div className="info-block">
+                                    <div className="info-label">{t("InstallProgressBar.speed_label")}</div>
+                                    <div className="info-value">{progressData.speed} · {progressData.eta}</div>
+                                </div>
+                            </div>
+
+                            <div className="actions-row">
+                                <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
+                                    {cancelButtonText}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    );
+
+    // 挂载到 body 的 portal（如果支持 dialog，会把 modalContent 放进 dialog）
     return (
         <>
             <span style={{ cursor: isDownloading ? "default" : "pointer" }}>{children}</span>
 
-            {showModal && (
+            {supportsDialog ? ReactDOM.createPortal(
+                <dialog
+                    ref={dialogRef}
+                    className="install-dialog"
+                    aria-label={isImport ? t("InstallProgressBar.import_title") : t("InstallProgressBar.confirm_title")}
+                >
+                    {modalContent}
+                </dialog>,
+                document.body
+            ) : ReactDOM.createPortal(
+                // 回退 overlay（旧实现样式，保证兼容）
                 <div className="modal-overlay" role="dialog" aria-modal="true">
-                    <div className={`install-modal ${error ? "modal-error" : ""}`} aria-live="polite">
-                        {!confirmed && !error ? (
-                            <>
-                                <div className="modal-header">
-                                    <div className="modal-title">{isImport ? t("InstallProgressBar.import_title") : t("InstallProgressBar.confirm_title")}</div>
-                                    <div className="modal-subtitle">{isImport ? t("InstallProgressBar.import_sub") : t("InstallProgressBar.confirm_sub")}</div>
-                                </div>
-
-                                <div className="download-progress-body">
-                                    <label className="filename-label">{t("InstallProgressBar.filename_label")}</label>
-                                    <input
-                                        className="filename-input"
-                                        value={fileNameInput}
-                                        onChange={(e) => setFileNameInput(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === "Enter") handleConfirmStart();
-                                            if (e.key === "Escape") handleCancelBeforeStart();
-                                        }}
-                                    />
-                                    <div className="confirm-actions">
-                                        <button className="cancel-button" onClick={handleCancelBeforeStart} disabled={isStarting}>
-                                            {t("InstallProgressBar.cancel")}
-                                        </button>
-                                        <button className="retry-button" onClick={handleConfirmStart} disabled={isStarting}>
-                                            {isImport ? t("InstallProgressBar.start_import") : t("InstallProgressBar.start_download")}
-                                        </button>
-                                    </div>
-                                </div>
-                            </>
-                        ) : null}
-
-                        {(confirmed || error) && (
-                            <>
-                                <div className="modal-header">
-                                    <div className="modal-title">
-                                        {progressData.stage === "extracting"
-                                            ? t("InstallProgressBar.stage_extracting")
-                                            : isImport
-                                                ? t("InstallProgressBar.stage_importing")
-                                                : t("InstallProgressBar.stage_downloading")}
-                                    </div>
-                                    <div className="modal-subtitle">
-                                        {progressData.stage === "extracting"
-                                            ? t("InstallProgressBar.extracting_sub")
-                                            : isImport
-                                                ? t("InstallProgressBar.importing_sub")
-                                                : (progressData.stage === "downloading" && isDownloading && !hasProgressEvent)
-                                                    ? t("InstallProgressBar.parsing_url") || "正在解析URL"
-                                                    : t("InstallProgressBar.downloading_sub")}
-                                    </div>
-                                </div>
-
-                                {error ? (
-                                    <div className="download-progress-body">
-                                        <div className="error-message" title={String(error)}>
-                                            <pre className="error-text">{String(error)}</pre>
-                                        </div>
-                                        <div className="error-actions">
-                                            <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
-                                                {isCancelling ? t("InstallProgressBar.cancelling") : t("InstallProgressBar.close")}
-                                            </button>
-                                            <button
-                                                className="retry-button"
-                                                onClick={() => {
-                                                    if (isStarting) return;
-                                                    setIsStarting(true);
-                                                    startingRef.current = true;
-                                                    setError(null);
-                                                    startDownload(cachedData?.fileName || fileNameInput);
-                                                }}
-                                                disabled={isCancelling || isStarting}
-                                            >
-                                                {t("InstallProgressBar.retry")}
-                                            </button>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div className="download-progress-body">
-                                        <div className="progress-row">
-                                            <div className="progress-percentage">
-                                                {progressData.percent}
-                                            </div>
-                                            <div className="progress-bar-outer" key={progressData.stage}>
-                                                <div
-                                                    className="progress-bar-inner"
-                                                    style={{ width: `${Math.max(0, Math.min(100, displayPercent))}%` }}
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <div className="progress-info-grid">
-                                            <div className="info-block">
-                                                <div className="info-label">{processedLabel}</div>
-                                                <div className="info-value">
-                                                    {progressData.stage === "extracting" && (!progressData.total || progressData.total === 0)
-                                                        ? "—"
-                                                        : `${formatMB(progressData.processed)} / ${formatMB(progressData.total)} MB`}
-                                                </div>
-                                            </div>
-                                            <div className="info-block">
-                                                <div className="info-label">{t("InstallProgressBar.speed_label")}</div>
-                                                <div className="info-value">{progressData.speed} · {progressData.eta}</div>
-                                            </div>
-                                        </div>
-
-                                        <div className="actions-row">
-                                            <button className="cancel-button" onClick={cancelInstall} disabled={isCancelling}>
-                                                {cancelButtonText}
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </>
-                        )}
-                    </div>
-                </div>
+                    {modalContent}
+                </div>,
+                document.body
             )}
         </>
     );
