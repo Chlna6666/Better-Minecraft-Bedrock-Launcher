@@ -185,10 +185,24 @@ const InstallProgressBar = ({
         return "0.00%";
     };
 
-    // ---------- startPolling（与原实现一致，但保持调用签名） ----------
     const startPolling = (taskId, onCompletedCallback = null) => {
         stopPolling();
         currentTaskIdRef.current = taskId;
+
+        // reset stage tracking / visual state for a fresh task
+        prevStageRef.current = null;
+        targetPercentRef.current = 0;
+        setDisplayPercent(0);
+        setProgressData((p) => ({
+            ...p,
+            percent: "0.00%",
+            processed: 0,
+            total: 0,
+            speed: "0 B/s",
+            eta: "00:00:00",
+        }));
+        setHasProgressEvent(false);
+
         pollIntervalRef.current = window.setInterval(async () => {
             try {
                 // 只传 task_id（snake_case），不要重复其他 key
@@ -216,7 +230,26 @@ const InstallProgressBar = ({
                 const numericTotal = Number(total || 0);
                 const numericPercent = (typeof percent === "number") ? percent : (percent ? parseFloat(String(percent)) : null);
 
-                if (!hasProgressEvent) setHasProgressEvent(true);
+                // 如果阶段发生变化 -> 重置动画相关状态（从 0 开始）
+                const prevStage = prevStageRef.current;
+                if (prevStage !== stage) {
+                    // stage changed (包括第一次 poll)，重置显示与目标
+                    targetPercentRef.current = 0;
+                    setDisplayPercent(0);
+                    setHasProgressEvent(false);
+                    // 也把进度计数清空，避免显示上个阶段的 processed/total
+                    setProgressData((p) => ({
+                        ...p,
+                        processed: 0,
+                        total: 0,
+                        percent: "0.00%",
+                        speed: "0 B/s",
+                        eta: "00:00:00",
+                        stage: stage || (isImport ? "importing" : "downloading"),
+                    }));
+                }
+                // 更新 prevStage（无论是否相同）
+                prevStageRef.current = stage || prevStageRef.current;
 
                 const percentStr = (numericPercent !== null && numericPercent !== undefined && !Number.isNaN(numericPercent))
                     ? `${numericPercent.toFixed(2)}%`
@@ -238,13 +271,6 @@ const InstallProgressBar = ({
                     : (numericTotal > 0 ? (numericDone / numericTotal * 100) : 0);
                 targetPercentRef.current = Math.max(0, Math.min(100, target));
 
-                const prevStage = prevStageRef.current;
-                if (prevStage && prevStage !== stage) {
-                    prevStageRef.current = stage;
-                } else if (!prevStageRef.current) {
-                    prevStageRef.current = stage;
-                }
-
                 if (status === "completed") {
                     stopPolling();
                     finishedRef.current = true;
@@ -265,6 +291,7 @@ const InstallProgressBar = ({
                                 });
 
                                 if (extractTaskId) {
+                                    // startPolling 时会重置 prevStageRef 和显示状态
                                     startPolling(String(extractTaskId));
                                 } else {
                                     onCompleted?.(packageId);
