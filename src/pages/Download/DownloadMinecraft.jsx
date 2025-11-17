@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
 import releaseIcon from "../../assets/img/minecraft/Release.png";
@@ -13,7 +13,6 @@ import {Input, Select} from "../../components/index.js";
 import "../Manage/VersionManager.css";
 import {invoke} from "@tauri-apps/api/core";
 import { useToast } from "../../components/Toast"; // 如有路径差异请调整
-
 // 比较两个版本号，返回 -1, 0, 1
 function compareVersion(v1, v2) {
     const parts1 = String(v1).split(".").map(Number);
@@ -27,12 +26,9 @@ function compareVersion(v1, v2) {
     }
     return 0;
 }
-
-
 function DownloadMinecraft({ onStatusChange }) {
     const { t } = useTranslation();
     const toast = useToast();
-
     const [versions, setVersions] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -42,31 +38,24 @@ function DownloadMinecraft({ onStatusChange }) {
     const [showBeta, setShowBeta] = useState(true);
     const [showPreview, setShowPreview] = useState(true);
     const [displayCount, setDisplayCount] = useState(10);
-
     const [isDownloading, setIsDownloading] = useState(false);
     const [activeDownload, setActiveDownload] = useState(null);
     const [isImporting, setIsImporting] = useState(false);
     const [sourcePath, setSourcePath] = useState(null);
     const [dragOver, setDragOver] = useState(false);
-
     const cachedVersions = useRef(null);
     const containerRef = useRef(null);
     const fetchLockRef = useRef(false);
-
     // 记录取消的 packageId（短时间冷却，防止立即重试）
     const cancelledRef = useRef(new Map());
     const CANCEL_BLOCK_MS = 1500; // ms
-
     const ROW_HEIGHT = 45;
     const OVERSCAN = 6;
     const [scrollTop, setScrollTop] = useState(0);
-
     const searchInputRef = useRef(null);
-
     // localStorage 缓存设置
     const CACHE_KEY = "appx_api_cache";
     const CACHE_TTL = 1000 * 60 * 60 * 12; // 12 小时
-
     // 读取本地缓存（如果存在且未过期）
     const loadCacheFromLocalStorage = () => {
         try {
@@ -85,7 +74,6 @@ function DownloadMinecraft({ onStatusChange }) {
             return null;
         }
     };
-
     // 保存缓存：增加 rawCreationTime 字段（如果有）
     const saveCacheToLocalStorage = (rawBody, parsed, rawCreationTime = null) => {
         try {
@@ -101,12 +89,10 @@ function DownloadMinecraft({ onStatusChange }) {
             console.warn("[saveCacheToLocalStorage] 写入缓存失败", e);
         }
     };
-
     function mapArchivalToLabel(code) {
         const key = ["0", "1", "2", "3"].includes(String(code)) ? String(code) : "unknown";
         return t(`DownloadMinecraft.archival_status.${key}`);
     }
-
     // 初始化：先尝试从 localStorage 加载缓存，减少网络请求（页面初始渲染）
     useEffect(() => {
         const cache = loadCacheFromLocalStorage();
@@ -119,11 +105,9 @@ function DownloadMinecraft({ onStatusChange }) {
         fetchVersions(false);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-
     useEffect(() => {
         onStatusChange && onStatusChange(isDownloading);
     }, [isDownloading, onStatusChange]);
-
     useEffect(() => {
         if (isSearchOpen && searchInputRef.current) {
             // 等待展开动画后 focus
@@ -131,7 +115,6 @@ function DownloadMinecraft({ onStatusChange }) {
             return () => clearTimeout(id);
         }
     }, [isSearchOpen]);
-
     // 点击外部关闭搜索
     useEffect(() => {
         const handleDocClick = (e) => {
@@ -145,7 +128,6 @@ function DownloadMinecraft({ onStatusChange }) {
         document.addEventListener('mousedown', handleDocClick);
         return () => document.removeEventListener('mousedown', handleDocClick);
     }, [isSearchOpen]);
-
     const fetchVersions = async (forceRefresh = false) => {
         // 如果不强制并且有内存缓存，直接用缓存
         if (!forceRefresh && cachedVersions.current) {
@@ -159,14 +141,11 @@ function DownloadMinecraft({ onStatusChange }) {
         fetchLockRef.current = true;
         setLoading(true);
         setError(null);
-
         // 读取本地缓存以便和 API CreationTime 对比
         const localCache = loadCacheFromLocalStorage();
-
         try {
             const config = await getConfig().catch(() => ({}));
             const api = (config && config.launcher && config.launcher.custom_appx_api) || "https://data.mcappx.com/v2/bedrock.json";
-
             const defaultUA = (config && config.launcher && config.launcher.user_agent) || "BMCBL";
             const allowedHosts = [];
             try {
@@ -174,7 +153,6 @@ function DownloadMinecraft({ onStatusChange }) {
                 if (u.hostname) allowedHosts.push(u.hostname);
             } catch (e) {
             }
-
             const backendOptions = {
                 method: "GET",
                 headers: { "User-Agent": defaultUA, "Accept": "application/json, text/*" },
@@ -182,20 +160,16 @@ function DownloadMinecraft({ onStatusChange }) {
                 allow_redirects: true,
                 allowed_hosts: allowedHosts.length ? allowedHosts : undefined,
             };
-
             const backendRes = await invoke("fetch_remote", { url: api, options: backendOptions });
-
             if (!backendRes || !backendRes.body) {
                 throw new Error("empty response from backend");
             }
-
             let data;
             try {
                 data = JSON.parse(backendRes.body);
             } catch (e) {
                 throw new Error("invalid json from backend: " + (e.message || e));
             }
-
             // 取 CreationTime（若有）
             const apiCreationTimeRaw = (data && data.CreationTime) ? String(data.CreationTime) : null;
             let apiCreationTs = null;
@@ -203,7 +177,6 @@ function DownloadMinecraft({ onStatusChange }) {
                 const parsedTs = Date.parse(apiCreationTimeRaw);
                 if (!isNaN(parsedTs)) apiCreationTs = parsedTs;
             }
-
             // 如果本地有缓存，并且 API 提供了 CreationTime，且 API 的 CreationTime <= 本地缓存的 rawCreationTime，
             // 则认为远端数据并不新，直接使用本地缓存（避免覆盖更新的缓存）
             if (!forceRefresh && localCache && localCache.rawCreationTime && apiCreationTs) {
@@ -218,7 +191,6 @@ function DownloadMinecraft({ onStatusChange }) {
                     return;
                 }
             }
-
             // 找到包含版本对象的字段
             let src = null;
             if (data && typeof data === 'object') {
@@ -232,20 +204,16 @@ function DownloadMinecraft({ onStatusChange }) {
                 }
             }
             src = src || data;
-
             // 现在 parsed 每项改为数组结构：
             // [ versionKey, packageId, typeNum, typeStr, buildType, archivalStatus, metaPresent ]
             const parsed = [];
-
             Object.entries(src).forEach(([versionKey, item]) => {
                 try {
                     if (!item || typeof item !== "object") return;
-
                     // 优先使用 item.Type 字符串（如果存在）
                     const typeStr = (item.Type && String(item.Type).trim()) || "";
                     const typeMap = { "Release": 0, "Beta": 1, "Preview": 2 };
                     let typeNum = typeMap[typeStr];
-
                     // 从 Variations[*].ArchivalStatus 回退映射
                     if (typeNum === undefined) {
                         let archival = undefined;
@@ -265,7 +233,6 @@ function DownloadMinecraft({ onStatusChange }) {
                             typeNum = 2;
                         }
                     }
-
                     // **只选择 x64 架构**（如果没找到 x64 则跳过该版本）
                     let chosenVar = null;
                     if (Array.isArray(item.Variations) && item.Variations.length > 0) {
@@ -274,7 +241,6 @@ function DownloadMinecraft({ onStatusChange }) {
                     } else {
                         return; // skip
                     }
-
                     // 拿 packageId（以前的逻辑）
                     let packageId = "";
                     if (chosenVar) {
@@ -288,30 +254,24 @@ function DownloadMinecraft({ onStatusChange }) {
                     }
                     if (!packageId && item.ID) packageId = item.ID;
                     packageId = packageId || "";
-
                     // BuildType 可能为 "GDK" 或 "UWP"
                     const buildType = item.BuildType ? String(item.BuildType) : "";
-
                     // ArchivalStatus 优先取 chosenVar 的字段
                     const archivalStatus = (chosenVar && (chosenVar.ArchivalStatus !== undefined && chosenVar.ArchivalStatus !== null))
                         ? Number(chosenVar.ArchivalStatus)
                         : (item.ArchivalStatus !== undefined ? Number(item.ArchivalStatus) : null);
-
                     // metaPresent 表示 Variations.MetaData 存在且第一个元素非空
                     const metaPresent = !!(
                         (chosenVar && Array.isArray(chosenVar.MetaData) && chosenVar.MetaData.length > 0 && String(chosenVar.MetaData[0]).trim() !== "")
                         || (chosenVar && chosenVar.MetaData && typeof chosenVar.MetaData === "string" && String(chosenVar.MetaData).trim() !== "")
                     );
-
                     const md5Value = (chosenVar && chosenVar.MD5) ? String(chosenVar.MD5) : null;
                     parsed.push([versionKey, packageId, typeNum, typeStr, buildType, archivalStatus, metaPresent, md5Value]);
                 } catch (e) {
                     console.warn("[fetchVersions] 解析单个版本失败", versionKey, e);
                 }
             });
-
             parsed.sort((a, b) => compareVersion(b[0], a[0]));
-
             // 设置并缓存到 localStorage，保存 apiCreationTimeRaw 便于下次比较
             setVersions(parsed);
             cachedVersions.current = parsed;
@@ -331,39 +291,52 @@ function DownloadMinecraft({ onStatusChange }) {
                 setVersions([]);
                 cachedVersions.current = [];
                 toast.error(t('DownloadMinecraft.fetch_failed', { message: e.message || e }));
-
             }
         } finally {
             setLoading(false);
             fetchLockRef.current = false;
         }
     };
-
     // 无限滚动：接近底部增加 displayCount
+    const handleScrollBottom = useCallback(() => {
+        const c = containerRef.current;
+        if (!c || isDownloading) return;
+        if (c.scrollTop + c.clientHeight >= c.scrollHeight - 50) {
+            setDisplayCount((prev) => prev + 20);
+        }
+    }, [isDownloading]);
+
     useEffect(() => {
         const c = containerRef.current;
         if (!c) return;
-        const onScrollBottom = () => {
-            if (isDownloading) return;
-            if (c.scrollTop + c.clientHeight >= c.scrollHeight - 50) {
-                setDisplayCount((prev) => prev + 20);
+        c.addEventListener("scroll", handleScrollBottom);
+        return () => c.removeEventListener("scroll", handleScrollBottom);
+    }, [handleScrollBottom]);
+
+    // 滚动处理：使用 throttle 减少 setScrollTop 调用频率，降低 re-render
+    const throttle = (func, delay) => {
+        let lastCall = 0;
+        return (...args) => {
+            const now = Date.now();
+            if (now - lastCall >= delay) {
+                lastCall = now;
+                func(...args);
             }
         };
-        c.addEventListener("scroll", onScrollBottom);
-        return () => c.removeEventListener("scroll", onScrollBottom);
-    }, [isDownloading]);
+    };
 
-    // 记录 scrollTop 用于虚拟列表
+    const handleScroll = useCallback(throttle(() => {
+        const c = containerRef.current;
+        if (!c || isDownloading) return;
+        setScrollTop(c.scrollTop);
+    }, 50), [isDownloading]); // 50ms throttle
+
     useEffect(() => {
         const c = containerRef.current;
         if (!c) return;
-        const onScroll = () => {
-            if (isDownloading) return;
-            setScrollTop(c.scrollTop);
-        };
-        c.addEventListener("scroll", onScroll);
-        return () => c.removeEventListener("scroll", onScroll);
-    }, [isDownloading]);
+        c.addEventListener("scroll", handleScroll);
+        return () => c.removeEventListener("scroll", handleScroll);
+    }, [handleScroll]);
 
     // 修复 passive listener 错误：给容器添加非被动 wheel listener
     useEffect(() => {
@@ -373,26 +346,21 @@ function DownloadMinecraft({ onStatusChange }) {
             if (isDownloading) e.preventDefault();
         };
         el.addEventListener("wheel", onWheel, { passive: false });
-        return () => el.removeEventListener("wheel", onWheel, { passive: false });
+        return () => el.removeEventListener("wheel", onWheel);
     }, [isDownloading]);
-
     // 排序与过滤
     const sorted = React.useMemo(
         () => [...versions].sort((a, b) => compareVersion(b[0], a[0])),
         [versions]
     );
-
     const filterOptions = [
         { value: "all", label: t('common.all_versions') || 'All' },
         { value: "release", label: t('common.release') || 'Release' },
         { value: "beta", label: t('common.beta') || 'Beta' },
         { value: "preview", label: t('common.preview') || 'Preview' },
     ];
-
     const [filter, setFilter] = useState("all");
-
     const reload = () => { if (!loading) fetchVersions(true); };
-
     // 修改 filtered 的过滤函数以支持 filter Select
     const filtered = React.useMemo(() => {
         const showType = (type) => {
@@ -404,22 +372,32 @@ function DownloadMinecraft({ onStatusChange }) {
             if (filter === "preview") return type === 2;
             return true;
         };
-
+        const trimmedSearch = searchTerm.trim();
         return sorted
-            .filter(([v, , t]) => showType(t) && (!searchTerm || String(v).includes(searchTerm.trim())))
+            .filter(([v, , t]) => showType(t) && (!trimmedSearch || String(v).includes(trimmedSearch)))
             .slice(0, displayCount);
     }, [sorted, showRelease, showBeta, showPreview, searchTerm, displayCount, filter]);
-
     // 虚拟列表计算
-    const containerHeight = containerRef.current ? containerRef.current.clientHeight : 0;
+    const [containerHeight, setContainerHeight] = useState(0);
+
+    // 使用 ResizeObserver 监听容器高度变化，减少 render 时计算
+    useEffect(() => {
+        const c = containerRef.current;
+        if (!c) return;
+        const resizeObserver = new ResizeObserver(() => {
+            setContainerHeight(c.clientHeight);
+        });
+        resizeObserver.observe(c);
+        return () => resizeObserver.unobserve(c);
+    }, []);
+
     const totalCount = filtered.length;
     const visibleCount = containerHeight ? Math.ceil(containerHeight / ROW_HEIGHT) : 10;
     const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
     const endIndex = Math.min(totalCount, startIndex + visibleCount + OVERSCAN * 2);
     const topPadding = startIndex * ROW_HEIGHT;
     const bottomPadding = (totalCount - endIndex) * ROW_HEIGHT;
-    const visibleList = filtered.slice(startIndex, endIndex);
-
+    const visibleList = React.useMemo(() => filtered.slice(startIndex, endIndex), [filtered, startIndex, endIndex]);
     const mapVersionTypeToLabel = (type) => {
         switch (type) {
             case 0:
@@ -432,13 +410,11 @@ function DownloadMinecraft({ onStatusChange }) {
                 return t('common.unknown');
         }
     };
-
     const getVersionIconByType = (type) => {
         if (type === 0 || type === 1) return releaseIcon;
         if (type === 2) return previewIcon;
         return unknownIcon;
     };
-
     // 当 child 通知取消（带 packageId）
     const handleChildCancel = (pkgId) => {
         if (pkgId) {
@@ -447,7 +423,6 @@ function DownloadMinecraft({ onStatusChange }) {
         setActiveDownload(null);
         setIsDownloading(false);
     };
-
     // 当 child 通知完成（带 packageId）
     const handleChildCompleted = (pkgId) => {
         if (pkgId && cancelledRef.current.has(pkgId)) {
@@ -456,11 +431,9 @@ function DownloadMinecraft({ onStatusChange }) {
         setActiveDownload(null);
         setIsDownloading(false);
     };
-
     // 点击下载：现在接收额外元信息用于校验
     const handleDownloadClick = (pkgId, buildType, archivalStatus, metaPresent, md5) => {
         if (isDownloading || activeDownload) return;
-
         // 检查是否被短期取消
         const ts = cancelledRef.current.get(pkgId);
         if (ts && Date.now() - ts < CANCEL_BLOCK_MS) {
@@ -468,18 +441,15 @@ function DownloadMinecraft({ onStatusChange }) {
             return;
         }
         if (ts) cancelledRef.current.delete(pkgId);
-
         const isGDK = buildType && String(buildType).toLowerCase() === "gdk";
         if (isGDK) {
             toast.info(t('DownloadMinecraft.gdk_not_supported'));
             return;
         }
-
         if (!metaPresent) {
             toast.error(t('DownloadMinecraft.no_metadata'));
             return;
         }
-
         // ArchivalStatus 逻辑：允许下载的状态这里设为 2 或 3（3 最安全，2 可能不可用）
         if (archivalStatus === null || archivalStatus === undefined) {
             // 未知状态，提示但允许（如果你想更严格可以把它禁止）
@@ -491,12 +461,10 @@ function DownloadMinecraft({ onStatusChange }) {
             // 允许但提醒
             toast.info(t('DownloadMinecraft.archival_maybe_unavailable'));
         }
-
         // 通过校验：启动下载
         setActiveDownload(pkgId);
         // InstallProgressBar 会通过 onStatusChange(true) 通知父组件正在下载
     };
-
     const handleImportClick = async () => {
         if (isDownloading || activeDownload) return;
         const selected = await open({
@@ -509,17 +477,14 @@ function DownloadMinecraft({ onStatusChange }) {
             setActiveDownload('import'); // 使用特殊值禁用其他操作
         }
     };
-
     const handleDragOver = (e) => {
         if (isDownloading || activeDownload) return;
         e.preventDefault();
         setDragOver(true);
     };
-
     const handleDragLeave = () => {
         setDragOver(false);
     };
-
     const handleDrop = (e) => {
         if (isDownloading || activeDownload) return;
         e.preventDefault();
@@ -538,7 +503,6 @@ function DownloadMinecraft({ onStatusChange }) {
             }
         }
     };
-
     return (
         <div
             className={`container ${dragOver ? 'drag-over' : ''}`}
@@ -567,7 +531,6 @@ function DownloadMinecraft({ onStatusChange }) {
                     style={{ flex: 1 }}
                     inputStyle={{ height: '29px' }}
                 />
-
                 <Select
                     size={13}
                     value={filter}
@@ -575,33 +538,27 @@ function DownloadMinecraft({ onStatusChange }) {
                     options={filterOptions}
                     placeholder={t('common.all_versions')}
                 />
-
                 <button onClick={reload} className="vrefresh-btn" title={t('common.refresh')}>
                     {t('common.refresh')}
                 </button>
-
                 <div className="action-btn" onClick={handleImportClick} title={t('DownloadMinecraft.import')}>
                     <img src={uploadIcon} alt="Import" />
                 </div>
             </div>
-
             {/* 版本列表 */}
             <div className="table">
                 <div style={{ paddingTop: topPadding, paddingBottom: bottomPadding }}>
                     {visibleList.map(([version, pkgId, type, typeStr, buildType, archivalStatus, metaPresent, md5],idx) => {
                         const key = pkgId || version || idx;
-
                         const isGDK = buildType && String(buildType).toLowerCase() === "gdk";
                         // ArchivalStatus: 3 可下载；2 可能不可用；1/0 不可下载
                         const archivalLabel = mapArchivalToLabel(archivalStatus);
                         const canDownload = !isGDK && metaPresent && (archivalStatus === 3 || archivalStatus === 2);
-
                         // tooltip reason when disabled
                         let disabledReason = null;
                         if (isGDK) disabledReason = t('DownloadMinecraft.gdk_not_supported');
                         else if (!metaPresent) disabledReason = t('DownloadMinecraft.no_metadata');
                         else if (archivalStatus === 1 || archivalStatus === 0) disabledReason = t('DownloadMinecraft.archival_not_available');
-
                         return (
                             <div key={key} className="table-row" style={{ height: ROW_HEIGHT }}>
                                 <div className="table-icon-cell">
@@ -618,12 +575,10 @@ function DownloadMinecraft({ onStatusChange }) {
                                         {isGDK && (
                                             <span className="build-note" title="GDK: 暂不支持安装">· 暂不支持GDK</span>
                                         )}
-
                                         {(archivalStatus !== null && archivalStatus !== undefined && archivalStatus !== 3) ? (
                                             <span title={`ArchivalStatus: ${archivalStatus}`}>· {archivalLabel}</span>
                                         ) : null}
                                     </div>
-
                                 </div>
                                 <div className="table-download-cell">
                                     {activeDownload === pkgId ? (
@@ -656,7 +611,6 @@ function DownloadMinecraft({ onStatusChange }) {
                         );
                     })}
                 </div>
-
                 {/* 空数据或错误提示 */}
                 {filtered.length === 0 && (
                     <div className="no-data">
@@ -674,7 +628,6 @@ function DownloadMinecraft({ onStatusChange }) {
                     </div>
                 )}
             </div>
-
             {/* 导入进度条（独立于列表） */}
             {isImporting && (
                 <InstallProgressBar
@@ -699,5 +652,4 @@ function DownloadMinecraft({ onStatusChange }) {
         </div>
     );
 }
-
 export default DownloadMinecraft;
