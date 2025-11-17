@@ -171,20 +171,6 @@ const InstallProgressBar = ({
         }
         return `${v.toFixed(2)} ${units[i]}`;
     };
-
-    const formatPercentFromSnapshot = (snap) => {
-        if (snap.percent !== null && snap.percent !== undefined) {
-            // if backend returns percent as number (0..100)
-            const p = typeof snap.percent === "number" ? snap.percent : parseFloat(String(snap.percent) || "0");
-            return `${p.toFixed(2)}%`;
-        }
-        if (snap.total && snap.total > 0) {
-            const p = (snap.done / snap.total) * 100;
-            return `${p.toFixed(2)}%`;
-        }
-        return "0.00%";
-    };
-
     const startPolling = (taskId, onCompletedCallback = null) => {
         stopPolling();
         currentTaskIdRef.current = taskId;
