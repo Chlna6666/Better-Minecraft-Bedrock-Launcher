@@ -134,13 +134,13 @@
 }
 
 /* empty state */
-.mc-map-manager .empty{
+.mc-map-manager .empty {
     text-align: center;
     padding: 28px;
     color: var(--muted);
-    background: var(--card-bg);
+    /* background: var(--card-bg); */
     border-radius: var(--radius);
-    border: 1px solid rgba(16,24,40,0.03);
+    /* border: 1px solid rgba(16, 24, 40, 0.03); */
 }
 
 /* loading - centered */

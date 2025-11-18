@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import VersionManagePage from "./VersionManagePage.jsx";
 import {useToast} from "../../components/Toast.jsx";
 import Select from "../../components/Select.jsx";
-import {Input} from "../../components/index.js"; // <- 新增导入
+import {Input} from "../../components/index.js";
 
 function VersionManager() {
     const { t } = useTranslation();
@@ -149,7 +149,7 @@ function VersionManager() {
             </div>
 
             <div className="vlist-container">
-                {filteredVersions.map(({ folder, path, name, version, type, icon }) => {
+                {filteredVersions.map(({folder, name, version, path, kind, kindLabe, versionType, versionTypeLabel, icon}) => {
                     const count = counts[folder] || 0;
                     const isDeleting = !!deleting[folder];
                     return (
@@ -163,7 +163,7 @@ function VersionManager() {
                             <div className="vdetails">
                                 <div className="vname">{folder}</div>
                                 <div className="vmeta">
-                                    <span className="vbadge">{type}</span> {version} · {t('common.launch_count')}: {count}
+                                    <span className="vbadge">{versionTypeLabel}</span> {version} · {t('common.launch_count')}: {count}
                                 </div>
                             </div>
                             <div className="vactions">

@@ -3,24 +3,102 @@ use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
+use std::fs as stdfs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::fs as tokio_fs;
 
-use walkdir::WalkDir; // 新增
+use walkdir::WalkDir; // 确保在 Cargo.toml 添加 walkdir = "2"
+use num_cpus; // 确保在 Cargo.toml 添加 num_cpus = "1"
 
-fn default_minecraft_worlds_path() -> Option<PathBuf> {
+/// 表示发现的一个 “base” 源（例如 UWP LocalState 或 Roaming Users/<user>）
+/// path: 指向 minecraftWorlds 目录本身
+/// source: "UWP" 或 "GDK"
+/// edition: "正式版" 或 "预览版"
+/// source_root: 更详细的来源根（例如 LocalState 路径或 Users/<user> 路径）
+#[derive(Debug, Clone)]
+struct WorldBase {
+    path: PathBuf,
+    source: String,
+    edition: String,
+    source_root: String,
+}
+
+/// 返回可能存在的 minecraftWorlds 源集合（UWP LocalState + Roaming Bedrock Users/*）
+/// 顺序：UWP release -> UWP preview -> Roaming Bedrock (release) -> Roaming Bedrock Preview
+fn default_minecraft_worlds_sources() -> Vec<WorldBase> {
+    let mut res: Vec<WorldBase> = Vec::new();
+
+    // 1) UWP LocalState（正式版）
     if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-        Some(PathBuf::from(local_appdata)
+        let uwp_root = PathBuf::from(&local_appdata).join("Packages").join("Microsoft.MinecraftUWP_8wekyb3d8bbwe").join("LocalState");
+        let uwp_worlds = uwp_root.join("games").join("com.mojang").join("minecraftWorlds");
+        if uwp_worlds.exists() && uwp_worlds.is_dir() {
+            res.push(WorldBase {
+                path: uwp_worlds.clone(),
+                source: "UWP".to_string(),
+                edition: "正式版".to_string(),
+                source_root: uwp_root.to_string_lossy().into_owned(),
+            });
+        }
+
+        // 2) UWP Preview/Beta
+        let uwp_preview_root = PathBuf::from(&local_appdata)
             .join("Packages")
-            .join("Microsoft.MinecraftUWP_8wekyb3d8bbwe")
-            .join("LocalState")
-            .join("games")
-            .join("com.mojang")
-            .join("minecraftWorlds"))
-    } else {
-        None
+            .join("Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe")
+            .join("LocalState");
+        let uwp_preview_worlds = uwp_preview_root.join("games").join("com.mojang").join("minecraftWorlds");
+        if uwp_preview_worlds.exists() && uwp_preview_worlds.is_dir() {
+            res.push(WorldBase {
+                path: uwp_preview_worlds.clone(),
+                source: "UWP".to_string(),
+                edition: "预览版".to_string(),
+                source_root: uwp_preview_root.to_string_lossy().into_owned(),
+            });
+        }
     }
+
+    // 3) Roaming (GDK) 下的 Minecraft Bedrock / Minecraft Bedrock Preview -> Users\<user>\games\com.mojang\minecraftWorlds
+    if let Ok(roaming) = std::env::var("APPDATA") {
+        for (candidate, edition_label) in &[("Minecraft Bedrock", "正式版"), ("Minecraft Bedrock Preview", "预览版")] {
+            let users_dir = PathBuf::from(&roaming).join(candidate).join("Users");
+            if users_dir.exists() && users_dir.is_dir() {
+                if let Ok(entries) = stdfs::read_dir(&users_dir) {
+                    for e in entries.filter_map(|e| e.ok()) {
+                        // 忽略非目录、隐藏文件等
+                        let user_folder = e.path();
+                        if !user_folder.exists() || !user_folder.is_dir() {
+                            continue;
+                        }
+                        let p = user_folder.join("games").join("com.mojang").join("minecraftWorlds");
+                        if p.exists() && p.is_dir() {
+                            res.push(WorldBase {
+                                path: p.clone(),
+                                source: "GDK".to_string(), // 你说 GDK 就是 Roaming
+                                edition: edition_label.to_string(),
+                                source_root: user_folder.to_string_lossy().into_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 去重：按 canonical display path 去重（避免同一路径重复入列）
+    let mut seen = HashSet::new();
+    res.retain(|wb| {
+        let k = wb.path.to_string_lossy().to_lowercase();
+        if seen.contains(&k) {
+            false
+        } else {
+            seen.insert(k);
+            true
+        }
+    });
+
+    res
 }
 
 #[derive(Debug, Serialize)]
@@ -36,6 +114,14 @@ pub struct McMapInfo {
     pub resource_packs: Option<Value>,
     pub behavior_packs_count: Option<usize>,
     pub resource_packs_count: Option<usize>,
+
+    // 新增字段：来源与版本、以及根来源信息（便于 UI/日志展示）
+    pub source: Option<String>,      // "UWP" or "GDK"
+    pub edition: Option<String>,     // "正式版" or "预览版"
+    pub source_root: Option<String>, // 具体 root（LocalState 或 Users/<user>）
+
+    // 新增字段：若来自 GDK（Roaming），解析出 Users\<X> 中的 X（用户文件夹名）
+    pub gdk_user: Option<String>,
 }
 
 fn systemtime_to_iso(t: SystemTime) -> String {
@@ -104,28 +190,61 @@ async fn parse_json_value_blocking(s: String) -> Option<Value> {
         .flatten()
 }
 
+/// 列出所有世界（支持多来源：UWP + GDK/Users 多用户）
+/// concurrency: 0 表示使用默认并发 (num_cpus * 8)
 pub async fn list_minecraft_worlds(concurrency: usize) -> Result<Vec<McMapInfo>> {
-    let base = default_minecraft_worlds_path().context("无法确定 minecraftWorlds 路径")?;
-    if !base.exists() || !base.is_dir() {
-        anyhow::bail!("路径不存在: {}", base.display());
+    // 收集所有 base sources
+    let bases = default_minecraft_worlds_sources();
+    if bases.is_empty() {
+        anyhow::bail!("无法确定 minecraftWorlds 路径（未找到 UWP LocalState 或 Roaming Minecraft Bedrock Users）");
     }
 
-    let mut dir = tokio_fs::read_dir(&base).await?;
-    let mut paths = Vec::new();
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        paths.push(entry.path());
+    // 为每个 base 收集其下的世界目录（并记录来源信息）
+    let mut world_items: Vec<(PathBuf, String, String, String)> = Vec::new();
+    for b in bases.into_iter() {
+        if !b.path.exists() || !b.path.is_dir() {
+            continue;
+        }
+        match tokio_fs::read_dir(&b.path).await {
+            Ok(mut dir) => {
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    let p = entry.path();
+                    // 只加入目录条目（具体验证在 worker 中完成）
+                    world_items.push((p, b.source.clone(), b.edition.clone(), b.source_root.clone()));
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: read_dir failed for {}: {:?}", b.path.display(), e);
+                continue;
+            }
+        }
     }
 
-    // 合理默认并发：至少 1，且不超过 CPU * 4（可以根据 IO 特性调优）
+    if world_items.is_empty() {
+        anyhow::bail!("未在任何已知目录下找到世界数据：请检查路径或权限");
+    }
+
+    // 去重 world_items（按路径）
+    let mut seen = HashSet::new();
+    world_items.retain(|(p, _, _, _)| {
+        let k = p.to_string_lossy().to_lowercase();
+        if seen.contains(&k) {
+            false
+        } else {
+            seen.insert(k);
+            true
+        }
+    });
+
+    // 并发策略：默认使用 num_cpus * 8（I/O 密集型场景可以用更高倍数）
     let concurrency = if concurrency == 0 {
-        std::cmp::max(1, num_cpus::get().saturating_mul(4))
+        std::cmp::max(1, num_cpus::get() * 8)
     } else {
         concurrency
     };
-    let base_clone = base.clone();
 
-    let tasks_stream = stream::iter(paths.into_iter().map(move |path| {
-        let base_for_task = base_clone.clone();
+    // 构建 stream 并发处理每个 world item
+    let tasks_stream = stream::iter(world_items.into_iter().map(move |(path, source, edition, source_root)| {
         async move {
             // 跳过非目录或隐藏目录（以 '.' 开头）
             let md = tokio_fs::metadata(&path).await.ok()?;
@@ -140,6 +259,18 @@ pub async fn list_minecraft_worlds(concurrency: usize) -> Result<Vec<McMapInfo>>
 
             let folder_name = path.file_name()?.to_string_lossy().into_owned();
             let folder_path_str = path.to_string_lossy().into_owned();
+
+            // 解析 gdk_user（如果来源是 GDK，则尝试从 source_root 提取 Users\<X> 的 X）
+            let gdk_user = if source == "GDK" {
+                // source_root 在构建 WorldBase 时为 Users\<X> 的路径（user_folder）
+                Path::new(&source_root)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+
             let mut info = McMapInfo {
                 folder_name: folder_name.clone(),
                 folder_path: folder_path_str.clone(),
@@ -152,6 +283,10 @@ pub async fn list_minecraft_worlds(concurrency: usize) -> Result<Vec<McMapInfo>>
                 resource_packs: None,
                 behavior_packs_count: None,
                 resource_packs_count: None,
+                source: Some(source.clone()),
+                edition: Some(edition.clone()),
+                source_root: Some(source_root.clone()),
+                gdk_user,
             };
 
             // level name（小文件，异步读取）
@@ -200,6 +335,7 @@ pub async fn list_minecraft_worlds(concurrency: usize) -> Result<Vec<McMapInfo>>
     }))
         .buffer_unordered(concurrency);
 
+    // 收集结果并返回
     Ok(tasks_stream.filter_map(|m| async move { m }).collect().await)
 }
 

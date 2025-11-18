@@ -1,17 +1,75 @@
 use serde::Serialize;
-use std::{collections::HashMap, time::Instant, path::PathBuf};
+use std::{collections::HashMap, time::Instant, path::{Path, PathBuf}};
 use futures::StreamExt;
 use tokio::fs;
 use tokio::fs::read_dir;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::debug;
-use crate::core::minecraft::appx::utils::get_manifest_identity;
+use crate::core::minecraft::appx::utils::get_manifest_identity; // 若同文件有实现请去重
 
 #[derive(Serialize, Clone)]
 struct AppxVersion {
     name: String,
     version: String,
-    path: String,   // 新增完整目录字段
+    path: String,   // 完整绝对路径
+    kind: String,   // "UWP" 或 "GDK"
+}
+
+/// 简单解析：把版本段尽量保留为整数（不要把长段再拆）
+/// 例如 "1.21.12201.0" -> vec![1,21,12201,0]
+fn parse_version_to_vec_simple(v: &str) -> Vec<u64> {
+    v.split(|c| c == '.' || c == '-' || c == '+')
+        .map(|seg| {
+            let digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u64>().unwrap_or(0)
+        })
+        .collect()
+}
+
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let va = parse_version_to_vec_simple(a);
+    let vb = parse_version_to_vec_simple(b);
+    let n = std::cmp::max(va.len(), vb.len());
+    for i in 0..n {
+        let ai = *va.get(i).unwrap_or(&0);
+        let bi = *vb.get(i).unwrap_or(&0);
+        match ai.cmp(&bi) {
+            std::cmp::Ordering::Equal => continue,
+            non_eq => return non_eq,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// 新的判定函数：优先处理你观测到的特殊情况（1.21.12201.* 为 GDK），其余回退到阈值比较
+fn is_win32_version(version: &str) -> bool {
+    // 先把版本拆为数字向量
+    let v = parse_version_to_vec_simple(version);
+
+    // 特殊规则：对于 1.21 系列，如果第三段 >= 12201，则视为 GDK（按你观测）
+    if v.len() >= 3 {
+        if v[0] == 1 && v[1] == 21 && v[2] >= 12201 {
+            return true;
+        }
+    }
+
+    // 否则按常规阈值比较（可以调整阈值）
+    const THRESHOLD: &str = "1.21.12000.21";
+    compare_versions(version, THRESHOLD) != std::cmp::Ordering::Less
+}
+
+/// 根据版本字符串返回 "GDK" 或 "UWP"
+fn determine_kind_from_version(version: &str) -> String {
+    // 特例：1.21.12020.0 明确是唯一一个 UWP（按你的备注）
+    if version == "1.21.12020.0" {
+        return "UWP".to_string();
+    }
+
+    if is_win32_version(version) {
+        "GDK".to_string()
+    } else {
+        "UWP".to_string()
+    }
 }
 
 pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
@@ -29,13 +87,12 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
     let dir_stream = ReadDirStream::new(rd);
 
     // 并发
-    let concurrency = (num_cpus::get() * 2).max(16);
+    let concurrency = (num_cpus::get() * 8).max(16);
 
     let versions: Vec<(String, AppxVersion)> = dir_stream
         .filter_map(|res| async {
             match res {
                 Ok(entry) => {
-                    // 使用异步 API 判断是否目录
                     match entry.file_type().await {
                         Ok(ft) if ft.is_dir() => Some(entry),
                         Ok(_) => {
@@ -73,15 +130,21 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
                     None => return None,
                 };
 
+                // 使用你已有的 get_manifest_identity 获取 name/version
                 match get_manifest_identity(&path_buf.to_string_lossy()).await {
-                    Ok((name, version)) => Some((
-                        folder_name.clone(),
-                        AppxVersion {
-                            name,
-                            version,
-                            path: path_buf.to_string_lossy().to_string(), // 绝对路径
-                        },
-                    )),
+                    Ok((name, version)) => {
+                        // 基于 version 判定类型
+                        let kind = determine_kind_from_version(&version);
+                        Some((
+                            folder_name.clone(),
+                            AppxVersion {
+                                name,
+                                version,
+                                path: path_buf.to_string_lossy().to_string(),
+                                kind,
+                            },
+                        ))
+                    },
                     Err(e) => {
                         debug!("解析失败 {}: {}", path_buf.display(), e);
                         None

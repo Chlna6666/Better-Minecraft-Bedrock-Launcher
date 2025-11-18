@@ -3,11 +3,10 @@ import { useTranslation } from 'react-i18next';
 import "./Launch.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-
-import useVersions from "../../hooks/useVersions.jsx"; // <- 使用 hook
-import unknownIcon from "../../assets/feather/box.svg";
-
+import useVersions from "../../hooks/useVersions.jsx";
 import LaunchModal from "./LaunchModal.jsx";
+
+import unknownIcon from "../../assets/feather/box.svg";
 
 function Launch() {
     const { t } = useTranslation();
@@ -300,7 +299,7 @@ function Launch() {
                         ref={containerRef}
                         style={{ maxHeight: 300, overflowY: 'auto' }}
                     >
-                        {versions.map(({ folder, name, version, type, icon }) => {
+                        {versions.map(({folder, name, version, path, kind, kindLabe, versionType, versionTypeLabel, icon}) => {
                             const count = counts[folder] || 0;
                             return (
                                 <div
@@ -317,7 +316,7 @@ function Launch() {
                                         <div className="version-info">
                                             <div className="version-title">{folder}</div>
                                             <div className="version-sub">
-                                                {version} {type}
+                                                {version} {versionTypeLabel}
                                             </div>
                                         </div>
                                     </div>

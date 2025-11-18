@@ -1,14 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs as tokio_fs;
 use std::time::Instant;
 use tracing::debug;
+use walkdir::WalkDir; // for any future use (kept)
+use num_cpus;
 
 /// ---------- 结构化 manifest 类型（按你的示例与常见字段建模） ----------
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -65,50 +67,90 @@ pub struct Manifest {
 }
 
 /// ---------- 返回给前端的资源包信息结构 ----------
-/// 通用的 McPackInfo 结构
 #[derive(Debug, Serialize)]
 pub struct McPackInfo {
     pub folder_name: String,
     pub folder_path: String,
-    pub manifest: Value,                   // 解析后的 Value（原始 JSON）
+    pub manifest: Value,                   // 解析后的 Value（原始 JSON，可能被语言替换）
     pub manifest_raw: String,              // 原始 json 文本
     pub manifest_parsed: Option<Manifest>, // 尝试解析成结构化 Manifest
     pub icon_path: Option<String>,         // 如果存在 pack_icon.png
-    pub icon_rel: Option<String>,          // 相对 resource_packs 的路径 (比如 "ThreeD-.../pack_icon.png")
+    pub icon_rel: Option<String>,          // 相对 base 的路径
     pub short_description: Option<String>,
+
+    // 来源信息（新增）
+    pub source: Option<String>,      // "UWP" or "GDK"
+    pub edition: Option<String>,     // "正式版" or "预览版"
+    pub source_root: Option<String>, // 具体 root（LocalState 或 Users/<user>）
+    pub gdk_user: Option<String>,    // 若来自 GDK，则为 Users\<X> 的 X
 }
 
-/// 获取 Windows 上 Minecraft UWP resource_packs 路径（若非 Windows 可自行调整）
-fn default_minecraft_resource_packs_path() -> Option<PathBuf> {
+/// 获取可能的 resource/behavior packs 源集合（UWP LocalState + Roaming Users/*）
+/// 返回 (base_path, source, edition, source_root)
+fn default_pack_sources_for(kind: &str) -> Vec<(PathBuf, String, String, String)> {
+    // kind: "resource_packs" 或 "behavior_packs"
+    let mut res: Vec<(PathBuf, String, String, String)> = Vec::new();
+
+    // 1) UWP LocalState（正式版）
     if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-        let p = PathBuf::from(local_appdata)
+        let uwp_root = PathBuf::from(&local_appdata)
             .join("Packages")
             .join("Microsoft.MinecraftUWP_8wekyb3d8bbwe")
-            .join("LocalState")
-            .join("games")
-            .join("com.mojang")
-            .join("resource_packs");
-        return Some(p);
-    }
-    None
-}
+            .join("LocalState");
+        let uwp_base = uwp_root.join("games").join("com.mojang").join(kind);
+        if uwp_base.exists() && uwp_base.is_dir() {
+            res.push((uwp_base.clone(), "UWP".to_string(), "正式版".to_string(), uwp_root.to_string_lossy().into_owned()));
+        }
 
-/// 获取 Windows 上 Minecraft UWP behavior_packs 路径（若非 Windows 可自行调整）
-fn default_minecraft_behavior_packs_path() -> Option<PathBuf> {
-    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-        let p = PathBuf::from(local_appdata)
+        // UWP Preview
+        let uwp_preview_root = PathBuf::from(&local_appdata)
             .join("Packages")
-            .join("Microsoft.MinecraftUWP_8wekyb3d8bbwe")
-            .join("LocalState")
-            .join("games")
-            .join("com.mojang")
-            .join("behavior_packs");
-        return Some(p);
+            .join("Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe")
+            .join("LocalState");
+        let uwp_preview_base = uwp_preview_root.join("games").join("com.mojang").join(kind);
+        if uwp_preview_base.exists() && uwp_preview_base.is_dir() {
+            res.push((uwp_preview_base.clone(), "UWP".to_string(), "预览版".to_string(), uwp_preview_root.to_string_lossy().into_owned()));
+        }
     }
-    None
+
+    // 2) Roaming (GDK) 下的 Minecraft Bedrock / Minecraft Bedrock Preview -> Users\<user>\games\com.mojang\<kind>
+    if let Ok(roaming) = std::env::var("APPDATA") {
+        for (candidate, edition_label) in &[("Minecraft Bedrock", "正式版"), ("Minecraft Bedrock Preview", "预览版")] {
+            let users_dir = PathBuf::from(&roaming).join(candidate).join("Users");
+            if users_dir.exists() && users_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&users_dir) {
+                    for e in entries.filter_map(|e| e.ok()) {
+                        let user_folder = e.path();
+                        if !user_folder.exists() || !user_folder.is_dir() {
+                            continue;
+                        }
+                        let p = user_folder.join("games").join("com.mojang").join(kind);
+                        if p.exists() && p.is_dir() {
+                            res.push((p.clone(), "GDK".to_string(), edition_label.to_string(), user_folder.to_string_lossy().into_owned()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 去重
+    let mut seen = HashSet::new();
+    res.retain(|(p, _, _, _)| {
+        let k = p.to_string_lossy().to_lowercase();
+        if seen.contains(&k) {
+            false
+        } else {
+            seen.insert(k);
+            true
+        }
+    });
+
+    res
 }
 
-/// 尝试加载语言映射表（在并行线程中使用 std::fs 读取文件）
+/// 解析 lang 文本（同你已有实现）
+/// 返回 None 或 HashMap<key, value>
 fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String, String>> {
     let candidates_dirs = ["texts", "text", "lang"];
 
@@ -152,12 +194,15 @@ fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String
         }
     }
 
-    // 如果只有一个语言文件，直接使用它
+    if lang_files.is_empty() {
+        return None;
+    }
+
     if lang_files.len() == 1 {
         return parse_lang_file(&lang_files[0].0);
     }
 
-    // 构造候选变体（宽松匹配）
+    // 构造候选变体
     let mut lang_variants = Vec::new();
     lang_variants.push(lang.to_string());
     lang_variants.push(lang.to_lowercase());
@@ -172,7 +217,6 @@ fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String
     lang_variants.sort();
     lang_variants.dedup();
 
-    // helper: 按 stem 名称匹配并加载
     let try_load_by_name = |target: &str| -> Option<HashMap<String, String>> {
         for (path, stem) in &lang_files {
             if stem.eq_ignore_ascii_case(target) {
@@ -184,14 +228,12 @@ fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String
         None
     };
 
-    // 1. 首先尝试传入 lang 的各种变体
     for v in &lang_variants {
         if let Some(m) = try_load_by_name(v) {
             return Some(m);
         }
     }
 
-    // 2. 再尝试标准英语后备（把 en_US 放在首位作为“标准”格式）
     let fallback_candidates = ["en_US", "en-US", "en", "en_us"];
     for fc in &fallback_candidates {
         if let Some(m) = try_load_by_name(fc) {
@@ -199,7 +241,6 @@ fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String
         }
     }
 
-    // 3. 最后做一次归一化模糊匹配（如 zh-cn vs zh_cn）
     let requested_norm = lang.to_lowercase().replace('-', "_");
     for (path, stem) in &lang_files {
         let stem_norm = stem.to_lowercase().replace('-', "_");
@@ -210,13 +251,10 @@ fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String
         }
     }
 
-    // 没有找到，返回 None
     None
 }
 
-
-
-/// 根据 manifest_value 和 lang_map 替换 header 中 name/description（如果它们是占位 key）
+/// replace header name/description with lang_map if they are placeholder keys
 fn replace_header_with_lang(manifest_value: &mut Value, lang_map: &HashMap<String, String>) {
     if let Value::Object(ref mut root) = manifest_value {
         if let Some(Value::Object(ref mut header)) = root.get_mut("header") {
@@ -236,7 +274,6 @@ fn replace_header_with_lang(manifest_value: &mut Value, lang_map: &HashMap<Strin
     }
 }
 
-/// 清理并截断描述（与之前功能一致）
 fn short_desc_from_opt(raw: Option<String>, max_chars: usize) -> Option<String> {
     raw.map(|desc| {
         let cleaned: String = desc.chars().filter(|c| !c.is_control()).collect();
@@ -249,35 +286,56 @@ fn short_desc_from_opt(raw: Option<String>, max_chars: usize) -> Option<String> 
     })
 }
 
-
-
-pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
-    let start = Instant::now();
-    let resource_packs_dir = default_minecraft_resource_packs_path()
-        .context("无法确定 resource_packs 路径 (LOCALAPPDATA 未设置)")?;
-
-    if !resource_packs_dir.exists() {
+/// ---- helper: collect folders for a given kind from all sources ----
+/// 返回 Vec<(folder_path, base_path, source, edition, source_root)>
+fn collect_pack_folders(kind: &str) -> Result<Vec<(PathBuf, PathBuf, String, String, String)>> {
+    let sources = default_pack_sources_for(kind);
+    if sources.is_empty() {
         return Ok(Vec::new());
     }
 
-    // 异步列出子目录（仅收集路径）
-    let mut rd = tokio_fs::read_dir(&resource_packs_dir)
-        .await
-        .with_context(|| format!("无法打开目录 {}", resource_packs_dir.display()))?;
-
-    let mut folders: Vec<PathBuf> = Vec::new();
-    while let Some(entry) = rd.next_entry().await? {
-        let p = entry.path();
-        if p.is_dir() {
-            folders.push(p);
+    let mut items: Vec<(PathBuf, PathBuf, String, String, String)> = Vec::new();
+    for (base, source, edition, source_root) in sources {
+        // read sync (cheap) to gather folder names
+        if let Ok(entries) = fs::read_dir(&base) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    items.push((p.clone(), base.clone(), source.clone(), edition.clone(), source_root.clone()));
+                }
+            }
         }
     }
 
-    let base_arc = Arc::new(resource_packs_dir.clone());
-    // 并行处理
-    let results: Vec<McPackInfo> = folders
+    // 去重按 folder path
+    let mut seen = HashSet::new();
+    items.retain(|(p, base, _, _, _)| {
+        let k = p.to_string_lossy().to_lowercase();
+        if seen.contains(&k) {
+            false
+        } else {
+            seen.insert(k);
+            true
+        }
+    });
+
+    Ok(items)
+}
+
+/// 高性能并行读取 resource_packs
+pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
+    let start = Instant::now();
+    let items = collect_pack_folders("resource_packs")?;
+    if items.is_empty() {
+        debug!("no resource_packs found");
+        return Ok(Vec::new());
+    }
+
+    // 并行处理，rayon
+    let results: Vec<McPackInfo> = items
         .into_par_iter()
-        .filter_map(|folder_path: PathBuf| {
+        .filter_map(|(folder_path, base_path, source, edition, source_root)| {
+            // folder scanning in rayon thread
             let folder_name = folder_path
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
@@ -288,33 +346,26 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 return None;
             }
 
-            // 读取 manifest.json（阻塞，在 rayon 线程池中 ok）
             let manifest_raw = match fs::read_to_string(&manifest_path) {
                 Ok(s) => s,
                 Err(_) => return None,
             };
 
-            // 解析为 Value（原始）
             let mut manifest_value: Value = match serde_json::from_str(&manifest_raw) {
                 Ok(v) => v,
                 Err(_) => return None,
             };
 
-            // 试着加载语言文件（如果存在）
-            let lang_map_opt = load_lang_map_for_pack(&folder_path, lang);
-
-            if let Some(ref lang_map) = lang_map_opt {
-                // 如果 header.name/header.description 是像 "pack.name" 的 key，则替换为 lang 文件里的文本
-                replace_header_with_lang(&mut manifest_value, lang_map);
+            // 尝试加载语言替换
+            if let Some(lang_map) = load_lang_map_for_pack(&folder_path, lang) {
+                replace_header_with_lang(&mut manifest_value, &lang_map);
             }
 
-            // 尝试把（可能被替换过的）Value 反序列化为结构化 Manifest
             let manifest_parsed: Option<Manifest> = match serde_json::from_value(manifest_value.clone()) {
                 Ok(m) => Some(m),
                 Err(_) => None,
             };
 
-            // short description: 优先从已解析的结构体 header.description，fallback 为 manifest_value 的 header.description
             let short_description = manifest_parsed
                 .as_ref()
                 .and_then(|m| m.header.as_ref().and_then(|h| h.description.clone()))
@@ -326,7 +377,7 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 })
                 .and_then(|s| short_desc_from_opt(Some(s), 50));
 
-            // pack_icon.png 是否存在
+            // icon absolute
             let icon_abs = {
                 let p = folder_path.join("pack_icon.png");
                 if p.exists() {
@@ -336,9 +387,9 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 }
             };
 
-            // 相对路径
+            // icon relative to base_path if possible
             let icon_rel = icon_abs.as_ref().and_then(|_| {
-                match folder_path.strip_prefix(&*base_arc) {
+                match folder_path.strip_prefix(&base_path) {
                     Ok(rel) => {
                         let mut rp = rel.to_path_buf();
                         rp.push("pack_icon.png");
@@ -347,6 +398,13 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                     Err(_) => None,
                 }
             });
+
+            // derive gdk_user if source == "GDK"
+            let gdk_user = if source == "GDK" {
+                PathBuf::from(&source_root).file_name().and_then(|s| s.to_str()).map(|s| s.to_string())
+            } else {
+                None
+            };
 
             Some(McPackInfo {
                 folder_name,
@@ -357,6 +415,10 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 icon_path: icon_abs,
                 icon_rel,
                 short_description,
+                source: Some(source),
+                edition: Some(edition),
+                source_root: Some(source_root),
+                gdk_user,
             })
         })
         .collect();
@@ -365,32 +427,18 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
     Ok(results)
 }
 
-/// ---------- read_all_behavior_packs (带 language 参数) ----------
+/// 高性能并行读取 behavior_packs
 pub async fn read_all_behavior_packs(lang: &str) -> Result<Vec<McPackInfo>> {
     let start = Instant::now();
-    let behavior_packs_dir = default_minecraft_behavior_packs_path()
-        .context("无法确定 behavior_packs 路径 (LOCALAPPDATA 未设置)")?;
-
-    if !behavior_packs_dir.exists() {
+    let items = collect_pack_folders("behavior_packs")?;
+    if items.is_empty() {
+        debug!("no behavior_packs found");
         return Ok(Vec::new());
     }
 
-    let mut rd = tokio_fs::read_dir(&behavior_packs_dir)
-        .await
-        .with_context(|| format!("无法打开目录 {}", behavior_packs_dir.display()))?;
-
-    let mut folders: Vec<PathBuf> = Vec::new();
-    while let Some(entry) = rd.next_entry().await? {
-        let p = entry.path();
-        if p.is_dir() {
-            folders.push(p);
-        }
-    }
-
-    let base_arc = Arc::new(behavior_packs_dir.clone());
-    let results: Vec<McPackInfo> = folders
+    let results: Vec<McPackInfo> = items
         .into_par_iter()
-        .filter_map(|folder_path: PathBuf| {
+        .filter_map(|(folder_path, base_path, source, edition, source_root)| {
             let folder_name = folder_path
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
@@ -411,7 +459,6 @@ pub async fn read_all_behavior_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 Err(_) => return None,
             };
 
-            // 尝试加载语言文件并替换
             if let Some(lang_map) = load_lang_map_for_pack(&folder_path, lang) {
                 replace_header_with_lang(&mut manifest_value, &lang_map);
             }
@@ -442,7 +489,7 @@ pub async fn read_all_behavior_packs(lang: &str) -> Result<Vec<McPackInfo>> {
             };
 
             let icon_rel = icon_abs.as_ref().and_then(|_| {
-                match folder_path.strip_prefix(&*base_arc) {
+                match folder_path.strip_prefix(&base_path) {
                     Ok(rel) => {
                         let mut rp = rel.to_path_buf();
                         rp.push("pack_icon.png");
@@ -451,6 +498,12 @@ pub async fn read_all_behavior_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                     Err(_) => None,
                 }
             });
+
+            let gdk_user = if source == "GDK" {
+                PathBuf::from(&source_root).file_name().and_then(|s| s.to_str()).map(|s| s.to_string())
+            } else {
+                None
+            };
 
             Some(McPackInfo {
                 folder_name,
@@ -461,6 +514,10 @@ pub async fn read_all_behavior_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 icon_path: icon_abs,
                 icon_rel,
                 short_description,
+                source: Some(source),
+                edition: Some(edition),
+                source_root: Some(source_root),
+                gdk_user,
             })
         })
         .collect();

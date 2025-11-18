@@ -5,6 +5,8 @@
     "preview": "预览版",
     "education": "教育版",
     "education_preview": "教育预览版",
+    "gdk": "GDK",
+    "uwp": "UWP",
     "all_versions": "全部版本",
     "launch_count": "启动次数",
     "search_placeholder": "搜索版本或名称",

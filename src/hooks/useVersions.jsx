@@ -29,21 +29,42 @@ const useVersions = () => {
         }
     };
 
-    const getVersionType = (name) => {
-        if (!name) return t('common.release');
-        if (name.includes("EducationPreview")) return t('common.education_preview');
-        if (name.includes("Education")) return t('common.education');
-        if (name.includes("Preview")) return t('common.preview');
-        if (name.includes("Beta")) return t('common.preview');
-        return t('common.release');
+    // 返回规范化的版本类型 code（便于判断）
+    const detectVersionType = (name) => {
+        if (!name) return "release";
+        if (name.includes("EducationPreview")) return "education_preview";
+        if (name.includes("Education")) return "education";
+        if (name.includes("Preview")) return "preview";
+        if (name.includes("Beta")) return "preview";
+        return "release";
     };
 
+    // 本地化版本类型显示文本
+    const versionTypeLabel = (type) => {
+        switch (type) {
+            case "education_preview": return t('common.education_preview');
+            case "education": return t('common.education');
+            case "preview": return t('common.preview');
+            case "release": default: return t('common.release');
+        }
+    };
+
+    // 版本图标仍然基于 name（如果需要也可以改为基于 kind）
     const getVersionIcon = (name) => {
         if (!name) return unknownIcon;
         if (name.includes("EducationPreview")) return educationPreviewIcon;
         if (name.includes("Education")) return educationIcon;
         if (name.includes("Beta")) return previewIcon;
         return releaseIcon;
+    };
+
+    // 应用类型 kind 本地化
+    const getKindLabel = (kind) => {
+        if (!kind) return null;
+        const k = String(kind).toUpperCase();
+        if (k === "GDK") return t('common.gdk') || "GDK";
+        if (k === "UWP") return t('common.uwp') || "UWP";
+        return k;
     };
 
     const compareVersion = (a = "", b = "") => {
@@ -70,14 +91,26 @@ const useVersions = () => {
                 saveLaunchCounts(initCounts);
                 setCounts(initCounts);
 
-                let list = Object.entries(map).map(([folder, info]) => ({
-                    folder,
-                    name: info.name || "",
-                    version: info.version || "",
-                    path: info.path || "",
-                    type: getVersionType(info.name || ""),
-                    icon: getVersionIcon(info.name || ""),
-                }));
+                let list = Object.entries(map).map(([folder, info]) => {
+                    const kind = info.kind || null; // 应用类型：GDK / UWP
+                    const kindLbl = getKindLabel(kind); // 本地化显示（如果有）
+                    const name = info.name || "";
+                    const version = info.version || "";
+                    const vType = detectVersionType(name); // 版本类型 code
+                    const vTypeLbl = versionTypeLabel(vType); // 本地化显示
+
+                    return {
+                        folder,
+                        name,
+                        version,
+                        path: info.path || "",
+                        kind,           // 原始 kind 字段（方便逻辑判断）
+                        kindLabel: kindLbl, // 本地化显示（可能为 null）
+                        versionType: vType, // "release" | "preview" | "education" | "education_preview"
+                        versionTypeLabel: vTypeLbl, // 用于 UI 显示
+                        icon: getVersionIcon(name),
+                    };
+                });
 
                 list.sort((a, b) => {
                     const d = (initCounts[b.folder] || 0) - (initCounts[a.folder] || 0); // launch count 降序
@@ -90,6 +123,7 @@ const useVersions = () => {
             console.error("获取版本列表失败:", e);
         }
     }, [t]);
+
     useEffect(() => {
         fetchVersions();
     }, [fetchVersions]);
