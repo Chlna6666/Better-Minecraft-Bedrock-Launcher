@@ -62,8 +62,8 @@ const useVersions = () => {
     const getKindLabel = (kind) => {
         if (!kind) return null;
         const k = String(kind).toUpperCase();
-        if (k === "GDK") return t('common.gdk') || "GDK";
-        if (k === "UWP") return t('common.uwp') || "UWP";
+        if (k === "GDK") return t('common.gdk');
+        if (k === "UWP") return t('common.uwp');
         return k;
     };
 
