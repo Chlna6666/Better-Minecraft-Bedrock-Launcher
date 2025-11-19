@@ -60,7 +60,7 @@ pub async fn import_appx(
         };
 
         // 准备版本目录
-        let versions_root = Path::new("../../BMCBL/versions");
+        let versions_root = Path::new("./BMCBL/versions");
         if let Err(e) = fs::create_dir_all(versions_root) {
             let msg = format!("创建 versions 目录失败：{}，目录：{}", e, versions_root.display());
             error!("{}", msg);
