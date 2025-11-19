@@ -299,7 +299,7 @@ function Launch() {
                         ref={containerRef}
                         style={{ maxHeight: 300, overflowY: 'auto' }}
                     >
-                        {versions.map(({folder, name, version, path, kind, kindLabe, versionType, versionTypeLabel, icon}) => {
+                        {versions.map(({folder, name, version, path, kind, kindLabel, versionType, versionTypeLabel, icon}) => {
                             const count = counts[folder] || 0;
                             return (
                                 <div
