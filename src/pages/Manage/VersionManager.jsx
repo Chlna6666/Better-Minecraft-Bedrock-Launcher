@@ -1,71 +1,114 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { createPortal } from "react-dom"; // <- 用于 portal
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from 'react-i18next';
 import useVersions from "../../hooks/useVersions.jsx";
 import "./VersionManager.css";
 import unknownIcon from "../../assets/feather/box.svg";
 import { invoke } from "@tauri-apps/api/core";
 import VersionManagePage from "./VersionManagePage.jsx";
-import {useToast} from "../../components/Toast.jsx";
+import { useToast } from "../../components/Toast.jsx";
 import Select from "../../components/Select.jsx";
-import {Input} from "../../components/index.js";
+import { Input } from "../../components/index.js";
+
+/**
+ * VersionManager
+ * - 过滤基于 versionTypeLabel（本地化文本）
+ * - 搜索防抖（debounce）
+ * - useMemo/useCallback 优化性能
+ */
 
 function VersionManager() {
     const { t } = useTranslation();
     const { versions, counts, reload } = useVersions();
+
     const [filter, setFilter] = useState("");
+    // 原始输入（立刻更新），用于防抖
+    const [rawSearch, setRawSearch] = useState("");
+    // 实际用于过滤的搜索值（防抖结果）
     const [search, setSearch] = useState("");
     const [deleting, setDeleting] = useState({});
 
     const [manageOpen, setManageOpen] = useState(false);
     const [manageVersion, setManageVersion] = useState(null);
 
-    // 确认弹窗状态
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [confirmTarget, setConfirmTarget] = useState(null);
 
-    // useToast for notifications (ToastProvider must wrap app)
     const toast = useToast();
 
-    // 筛选逻辑
-    const filteredVersions = useMemo(() => {
-        return versions.filter(v => {
-            const matchType = filter ? v.type?.toLowerCase() === filter.toLowerCase() : true;
-            const matchSearch = search
-                ? (v.name?.toLowerCase().includes(search.toLowerCase()) ||
-                    v.version?.toLowerCase().includes(search.toLowerCase()) ||
-                    v.folder?.toLowerCase().includes(search.toLowerCase()))
-                : true;
-            return matchType && matchSearch;
-        });
-    }, [filter, search, versions]);
+    const debounceRef = useRef(null);
+    useEffect(() => {
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        debounceRef.current = setTimeout(() => {
+            setSearch(rawSearch.trim().toLowerCase());
+        }, 300);
+        return () => clearTimeout(debounceRef.current);
+    }, [rawSearch]);
 
-    const uniqueTypes = useMemo(() => {
-        const types = Array.from(new Set(versions.map(v => v.type)));
-        return types.filter(Boolean);
+
+    const uniqueLabels = useMemo(() => {
+        // versions可能为空或尚未加载，防守检查
+        if (!versions || versions.length === 0) return [];
+
+        const seen = new Set();
+        const labels = [];
+        for (const v of versions) {
+            const lbl = v.versionTypeLabel || "";
+            if (!lbl) continue;
+            if (!seen.has(lbl)) {
+                seen.add(lbl);
+                labels.push(lbl);
+            }
+        }
+        return labels;
     }, [versions]);
 
-    // 为自定义 Select 构造 options（第一个为 "全部"）
+    // 构造 filterOptions：先放 All，然后把 uniqueLabels 放入（保持本地化文本为 value）
     const filterOptions = useMemo(() => {
-        const opts = [{ value: '', label: t('common.all_versions') || 'All' }];
-        uniqueTypes.forEach(type => opts.push({ value: type, label: type }));
-        return opts;
-    }, [uniqueTypes, t]);
+        const base = [
+            { value: '', label: t('common.all_versions') || 'All' },
+        ];
+        // 保留 uniqueLabels 的排序，并去重已由 uniqueLabels 保证
+        uniqueLabels.forEach(lbl => base.push({ value: lbl, label: lbl }));
+        return base;
+    }, [uniqueLabels, t]);
 
-    // 打开确认弹窗（用于点击删除）
-    const openConfirm = (folder) => {
+    const filteredVersions = useMemo(() => {
+        if (!versions || versions.length === 0) return [];
+
+        const normalized = versions.map(v => ({
+            ...v,
+            __searchName: (v.name || "").toLowerCase(),
+            __searchVersion: (v.version || "").toLowerCase(),
+            __searchFolder: (v.folder || "").toLowerCase(),
+            __labelLower: (v.versionTypeLabel || "").toLowerCase(),
+        }));
+
+        const wantLabel = (filter || "").toLowerCase();
+
+        return normalized.filter(v => {
+            // 1) 类型过滤（'' 表示全部）
+            if (wantLabel && wantLabel !== '') {
+                if (v.__labelLower !== wantLabel) return false;
+            }
+            // 2) 搜索匹配（若 search 为空则通过）
+            if (!search) return true;
+            const s = search;
+            return v.__searchName.includes(s) || v.__searchVersion.includes(s) || v.__searchFolder.includes(s);
+        });
+    }, [versions, filter, search]);
+
+    const openConfirm = useCallback((folder) => {
         setConfirmTarget(folder);
         setConfirmOpen(true);
-    };
+    }, []);
 
-    // 关闭弹窗
-    const closeConfirm = () => {
+    const closeConfirm = useCallback(() => {
         setConfirmOpen(false);
         setConfirmTarget(null);
-    };
+    }, []);
 
-    // 真正执行删除（确认后）
-    const confirmDelete = async () => {
+    const confirmDelete = useCallback(async () => {
         const folder = confirmTarget;
         if (!folder) return;
         setDeleting(prev => ({ ...prev, [folder]: true }));
@@ -90,80 +133,70 @@ function VersionManager() {
                 return copy;
             });
         }
-    };
+    }, [confirmTarget, closeConfirm, reload, t, toast]);
 
-    const handleManage = (version) => {
+    const handleManage = useCallback((version) => {
         setManageVersion(version);
         setManageOpen(true);
-    };
+    }, []);
 
-    const handleManageDone = (result) => {
+    const handleManageDone = useCallback((result) => {
         setManageOpen(false);
         setManageVersion(null);
         if (result?.action === 'deleted' && typeof reload === 'function') {
             reload();
         }
-    };
+    }, [reload]);
 
-    // ---- Portal 渲染的 Modal（删除确认） ----
-    const modalPortal = confirmOpen ? createPortal(
-        <div className="modal-overlay" onClick={closeConfirm}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-                <div className="modal-title">{t('common.confirm_title') || '确认删除'}</div>
-                <div className="modal-body">
-                    {t('common.confirm_delete_text', { folder: confirmTarget })}
-                </div>
-                <div className="modal-actions">
-                    <button className="modal-btn modal-cancel" onClick={closeConfirm}>
-                        {t('common.cancel') || '取消'}
-                    </button>
-                    <button className="modal-btn modal-confirm" onClick={confirmDelete}>
-                        {t('common.confirm') || '确认删除'}
-                    </button>
-                </div>
-            </div>
-        </div>,
-        document.body
-    ) : null;
+    const handleImgError = useCallback((e) => {
+        try { e.target.src = unknownIcon; } catch (_) {}
+    }, []);
+
+    const handleReload = useCallback(() => {
+        if (typeof reload === 'function') reload();
+    }, [reload]);
+    
     return (
         <div className="vlist-wrapper">
             <div className="vtoolbar">
                 <Input
                     type="text"
                     placeholder={t('common.search_placeholder')}
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    value={rawSearch}
+                    onChange={(e) => setRawSearch(e.target.value)}
                     style={{ flex: 1 }}
                     inputStyle={{ height: '29px' }}
                 />
                 <Select
                     size={13}
                     value={filter}
-                    onChange={(val) => setFilter(val)}
+                    onChange={(val) => setFilter(String(val))}
                     options={filterOptions}
                     placeholder={t('common.all_versions')}
                 />
-                <button onClick={reload} className="vrefresh-btn">
+                <button onClick={handleReload} className="vrefresh-btn">
                     {t('common.refresh')}
                 </button>
             </div>
 
             <div className="vlist-container">
-                {filteredVersions.map(({folder, name, version, path, kind, kindLabel, versionType, versionTypeLabel, icon}) => {
+                {filteredVersions.map(({ folder, name, version, path, kind, kindLabel, versionType, versionTypeLabel, icon }) => {
                     const count = counts[folder] || 0;
                     const isDeleting = !!deleting[folder];
                     return (
                         <div key={folder} className="vcard">
                             <img
-                                src={icon}
+                                src={icon || unknownIcon}
                                 alt={name}
                                 className="vimg"
-                                onError={(e) => (e.target.src = unknownIcon)}
+                                onError={handleImgError}
                             />
                             <div className="vdetails">
                                 <div className="vname">{folder}</div>
                                 <div className="vmeta">
-                                    <span className="vbadge">{versionTypeLabel}</span> <span className="vbadge">{kindLabel}</span> {version} · {t('common.launch_count')}: {count}
+                                    <span className="vbadge">{versionTypeLabel}</span>{" "}
+                                    <span className="vbadge">{kindLabel}</span>{" "}
+                                    {version} · {t('common.launch_count')}: {count}
                                 </div>
                             </div>
                             <div className="vactions">
@@ -185,12 +218,13 @@ function VersionManager() {
                         </div>
                     );
                 })}
+
                 {filteredVersions.length === 0 && (
                     <div className="vempty">{t('common.no_result')}</div>
                 )}
             </div>
 
-            {/* 管理页 Modal：这里不再渲染 Close 按钮，全部交给子组件自己布局 */}
+            {/* 管理页 Modal */}
             {manageOpen && createPortal(
                 <div className="version-manage-modal-overlay">
                     <div className="version-manage-modal">
@@ -205,7 +239,26 @@ function VersionManager() {
                 document.body
             )}
 
-            {modalPortal}
+            {/* 删除确认 Modal */}
+            {confirmOpen && createPortal(
+                <div className="modal-overlay" onClick={closeConfirm}>
+                    <div className="modal" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-title">{t('common.confirm_title') || '确认删除'}</div>
+                        <div className="modal-body">
+                            {t('common.confirm_delete_text', { folder: confirmTarget })}
+                        </div>
+                        <div className="modal-actions">
+                            <button className="modal-btn modal-cancel" onClick={closeConfirm}>
+                                {t('common.cancel') || '取消'}
+                            </button>
+                            <button className="modal-btn modal-confirm" onClick={confirmDelete}>
+                                {t('common.confirm') || '确认删除'}
+                            </button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
         </div>
     );
 }
