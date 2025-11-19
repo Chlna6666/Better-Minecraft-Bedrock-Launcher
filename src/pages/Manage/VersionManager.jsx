@@ -149,7 +149,7 @@ function VersionManager() {
             </div>
 
             <div className="vlist-container">
-                {filteredVersions.map(({folder, name, version, path, kind, kindLabe, versionType, versionTypeLabel, icon}) => {
+                {filteredVersions.map(({folder, name, version, path, kind, kindLabel, versionType, versionTypeLabel, icon}) => {
                     const count = counts[folder] || 0;
                     const isDeleting = !!deleting[folder];
                     return (
@@ -163,7 +163,7 @@ function VersionManager() {
                             <div className="vdetails">
                                 <div className="vname">{folder}</div>
                                 <div className="vmeta">
-                                    <span className="vbadge">{versionTypeLabel}</span> {version} · {t('common.launch_count')}: {count}
+                                    <span className="vbadge">{versionTypeLabel}</span> <span className="vbadge">{kindLabel}</span> {version} · {t('common.launch_count')}: {count}
                                 </div>
                             </div>
                             <div className="vactions">
