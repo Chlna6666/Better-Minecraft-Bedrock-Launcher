@@ -155,7 +155,7 @@ function VersionManager() {
     const handleReload = useCallback(() => {
         if (typeof reload === 'function') reload();
     }, [reload]);
-    
+
     return (
         <div className="vlist-wrapper">
             <div className="vtoolbar">

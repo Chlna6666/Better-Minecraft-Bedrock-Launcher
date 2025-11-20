@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
+import { listen } from '@tauri-apps/api/event';
 import releaseIcon from "../../assets/img/minecraft/Release.png";
 import previewIcon from "../../assets/img/minecraft/Preview.png";
 import unknownIcon from "../../assets/feather/box.svg";
@@ -135,7 +136,7 @@ function DownloadMinecraft({ onStatusChange }) {
             return;
         }
         if (fetchLockRef.current) {
-            console.debug("[fetchVersions] 正在进行中，忽略并发请求");
+            console.log("[fetchVersions] 正在进行中，忽略并发请求");
             return;
         }
         fetchLockRef.current = true;
@@ -276,7 +277,7 @@ function DownloadMinecraft({ onStatusChange }) {
             setVersions(parsed);
             cachedVersions.current = parsed;
             saveCacheToLocalStorage(backendRes.body, parsed, apiCreationTimeRaw);
-            console.debug("[fetchVersions] v2 数据解析完成，版本数：", parsed.length);
+            console.log("[fetchVersions] v2 数据解析完成，版本数：", parsed.length);
             toast.success(t('DownloadMinecraft.fetch_success'));
         } catch (e) {
             console.error("[fetchVersions] 拉取或解析版本数据失败：", e);
@@ -305,14 +306,12 @@ function DownloadMinecraft({ onStatusChange }) {
             setDisplayCount((prev) => prev + 20);
         }
     }, [isDownloading]);
-
     useEffect(() => {
         const c = containerRef.current;
         if (!c) return;
         c.addEventListener("scroll", handleScrollBottom);
         return () => c.removeEventListener("scroll", handleScrollBottom);
     }, [handleScrollBottom]);
-
     // 滚动处理：使用 throttle 减少 setScrollTop 调用频率，降低 re-render
     const throttle = (func, delay) => {
         let lastCall = 0;
@@ -324,20 +323,17 @@ function DownloadMinecraft({ onStatusChange }) {
             }
         };
     };
-
     const handleScroll = useCallback(throttle(() => {
         const c = containerRef.current;
         if (!c || isDownloading) return;
         setScrollTop(c.scrollTop);
     }, 50), [isDownloading]); // 50ms throttle
-
     useEffect(() => {
         const c = containerRef.current;
         if (!c) return;
         c.addEventListener("scroll", handleScroll);
         return () => c.removeEventListener("scroll", handleScroll);
     }, [handleScroll]);
-
     // 修复 passive listener 错误：给容器添加非被动 wheel listener
     useEffect(() => {
         const el = containerRef.current;
@@ -348,6 +344,128 @@ function DownloadMinecraft({ onStatusChange }) {
         el.addEventListener("wheel", onWheel, { passive: false });
         return () => el.removeEventListener("wheel", onWheel);
     }, [isDownloading]);
+    const isDownloadingRef = useRef(isDownloading);
+    const activeDownloadRef = useRef(activeDownload);
+    const tRef = useRef(t);
+    const toastRef = useRef(toast);
+    useEffect(() => {
+        isDownloadingRef.current = isDownloading;
+    }, [isDownloading]);
+    useEffect(() => {
+        activeDownloadRef.current = activeDownload;
+    }, [activeDownload]);
+    useEffect(() => {
+        tRef.current = t;
+    }, [t]);
+    useEffect(() => {
+        toastRef.current = toast;
+    }, [toast]);
+    useEffect(() => {
+        let cleaned = false;
+        const unlisteners = [];
+
+        console.log("[DragEvents] useEffect mounted");
+
+        (async () => {
+            try {
+                console.log("[DragEvents] registering listeners...");
+
+                const uEnter = await listen('tauri://drag-enter', (event) => {
+                    console.log("[DragEvents] drag-enter event");
+                    if (!isDownloadingRef.current && !activeDownloadRef.current) {
+                        setDragOver(true);
+                    }
+                });
+                if (cleaned) {
+                    console.log("[DragEvents] component already cleaned — executing uEnter()");
+                    uEnter();
+                    return;
+                }
+                console.log("[DragEvents] registered drag-enter");
+                unlisteners.push(uEnter);
+
+                const uOver = await listen('tauri://drag-over', (event) => {
+                    console.log("[DragEvents] drag-over event");
+                    if (!isDownloadingRef.current && !activeDownloadRef.current) {
+                        setDragOver(true);
+                    }
+                });
+                if (cleaned) {
+                    console.log("[DragEvents] component already cleaned — executing uOver()");
+                    uOver();
+                    return;
+                }
+                console.log("[DragEvents] registered drag-over");
+                unlisteners.push(uOver);
+
+                const uLeave = await listen('tauri://drag-leave', () => {
+                    console.log("[DragEvents] drag-leave event");
+                    setDragOver(false);
+                });
+                if (cleaned) {
+                    console.log("[DragEvents] component already cleaned — executing uLeave()");
+                    uLeave();
+                    return;
+                }
+                console.log("[DragEvents] registered drag-leave");
+                unlisteners.push(uLeave);
+
+                const uDrop = await listen('tauri://drag-drop', (event) => {
+                    console.log("[DragEvents] drag-drop event", event.payload);
+                    setDragOver(false);
+
+                    if (isDownloadingRef.current || activeDownloadRef.current) {
+                        console.log("[DragEvents] drop ignored due to downloading");
+                        return;
+                    }
+
+                    const paths = event.payload?.paths;
+                    if (paths && paths.length > 0) {
+                        const path = paths[0];
+                        const ext = path.toLowerCase().split('.').pop();
+                        if (ext === 'appx' || ext === 'zip') {
+                            console.log("[DragEvents] accepted drop:", path);
+                            setSourcePath(path);
+                            setIsImporting(true);
+                            setActiveDownload('import');
+                        } else {
+                            console.log("[DragEvents] drop rejected, unsupported ext:", ext);
+                            toastRef.current.error(tRef.current('DownloadMinecraft.import_unsupported'));
+                        }
+                    } else {
+                        console.warn("[DragEvents] No paths in drop event");
+                    }
+                });
+                if (cleaned) {
+                    console.log("[DragEvents] component already cleaned — executing uDrop()");
+                    uDrop();
+                    return;
+                }
+                console.log("[DragEvents] registered drag-drop");
+                unlisteners.push(uDrop);
+
+                console.log("[DragEvents] all listeners registered");
+            } catch (e) {
+                console.warn("[DragEvents] setup failed", e);
+            }
+        })();
+
+        return () => {
+            console.log("[DragEvents] useEffect cleanup start");
+            cleaned = true;
+
+            for (const u of unlisteners) {
+                try {
+                    console.log("[DragEvents] calling unlisten function");
+                    u && u();
+                } catch (err) {
+                    console.warn("[DragEvents] unlisten failed", err);
+                }
+            }
+            console.log("[DragEvents] useEffect cleanup finished");
+        };
+    }, []);
+
     // 排序与过滤
     const sorted = React.useMemo(
         () => [...versions].sort((a, b) => compareVersion(b[0], a[0])),
@@ -379,7 +497,6 @@ function DownloadMinecraft({ onStatusChange }) {
     }, [sorted, showRelease, showBeta, showPreview, searchTerm, displayCount, filter]);
     // 虚拟列表计算
     const [containerHeight, setContainerHeight] = useState(0);
-
     // 使用 ResizeObserver 监听容器高度变化，减少 render 时计算
     useEffect(() => {
         const c = containerRef.current;
@@ -390,7 +507,6 @@ function DownloadMinecraft({ onStatusChange }) {
         resizeObserver.observe(c);
         return () => resizeObserver.unobserve(c);
     }, []);
-
     const totalCount = filtered.length;
     const visibleCount = containerHeight ? Math.ceil(containerHeight / ROW_HEIGHT) : 10;
     const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
@@ -437,7 +553,7 @@ function DownloadMinecraft({ onStatusChange }) {
         // 检查是否被短期取消
         const ts = cancelledRef.current.get(pkgId);
         if (ts && Date.now() - ts < CANCEL_BLOCK_MS) {
-            console.debug("[handleDownloadClick] 点击被忽略：刚被取消，等待冷却", pkgId);
+            console.log("[handleDownloadClick] 点击被忽略：刚被取消，等待冷却", pkgId);
             return;
         }
         if (ts) cancelledRef.current.delete(pkgId);
@@ -477,39 +593,10 @@ function DownloadMinecraft({ onStatusChange }) {
             setActiveDownload('import'); // 使用特殊值禁用其他操作
         }
     };
-    const handleDragOver = (e) => {
-        if (isDownloading || activeDownload) return;
-        e.preventDefault();
-        setDragOver(true);
-    };
-    const handleDragLeave = () => {
-        setDragOver(false);
-    };
-    const handleDrop = (e) => {
-        if (isDownloading || activeDownload) return;
-        e.preventDefault();
-        setDragOver(false);
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            const file = files[0];
-            const ext = file.name.toLowerCase().split('.').pop();
-            if (ext === 'appx' || ext === 'zip') {
-                setSourcePath(file.path || file.name);
-                setIsImporting(true);
-                setActiveDownload('import');
-            } else {
-                console.warn("Unsupported file type for import");
-                toast.error(t('DownloadMinecraft.import_unsupported'));
-            }
-        }
-    };
     return (
         <div
             className={`container ${dragOver ? 'drag-over' : ''}`}
             ref={containerRef}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
         >
             {/* 操作区域 */}
             <div
