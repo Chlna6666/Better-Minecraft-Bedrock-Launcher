@@ -9,9 +9,9 @@ class EventBus {
     emit(evt, data) { (this.handlers[evt] || []).forEach(fn => fn(data)); }
 }
 const pluginBus = new EventBus();
-const createdUrlsRef = useRef(new Set());
 
 export default function PluginHost({ children, autoReloadKey, concurrency = 4 }) {
+    const createdUrlsRef = useRef(new Set());
     const [manifests, setManifests] = useState([]);
 
     const containerRefs = useRef({});                // name -> DOM node
