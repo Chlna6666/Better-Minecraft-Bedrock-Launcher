@@ -3,8 +3,6 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import "./McPackManager.css";
 import { MinecraftFormattedText } from "../../utils/MinecraftFormattedText.jsx";
-
-// <-- 引入你自定义的 Select 组件（根据你项目实际路径调整）
 import Select from "../../components/Select.jsx";
 import {Input} from "../../components/index.js";
 
@@ -18,7 +16,8 @@ function McPackManager() {
     const [packType, setPackType] = useState("resource"); // Default to resource packs
 
     // normalize i18n.language to backend-friendly format (e.g. zh-CN -> zh_CN)
-    const langParam = (i18n && i18n.language) ? i18n.language.replace("-", "_") : "en_US";
+    const langParam = (i18n && i18n.language) ? i18n.language.replace(
+        "-", "_") : "en_US";
 
     const fetchPacks = useCallback(async () => {
         setLoading(true);
