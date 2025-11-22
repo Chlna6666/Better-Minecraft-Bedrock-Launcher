@@ -9,11 +9,11 @@ class EventBus {
     emit(evt, data) { (this.handlers[evt] || []).forEach(fn => fn(data)); }
 }
 const pluginBus = new EventBus();
+const createdUrlsRef = useRef(new Set());
 
 export default function PluginHost({ children, autoReloadKey, concurrency = 4 }) {
     const [manifests, setManifests] = useState([]);
 
-    // refs: 使用 Map/Object 均可，这里沿用 object 以兼容你的其他逻辑
     const containerRefs = useRef({});                // name -> DOM node
     const cleanupRef = useRef({});                   // name -> cleanup fn
     const moduleCacheRef = useRef(new Map());        // cacheKey -> module
@@ -21,25 +21,33 @@ export default function PluginHost({ children, autoReloadKey, concurrency = 4 })
     const pluginAPIRef = useRef({});                 // name -> module
     const nodeReadyResolversRef = useRef({});        // name -> { promise, resolve, reject, timer }
 
-    // 取消与清理（保持简洁）
     const cleanupAll = useCallback(() => {
         for (const [, task] of loadingTasksRef.current) {
             task.cancelled = true;
         }
         loadingTasksRef.current.clear();
 
-        // resolve pending node waiters
         Object.values(nodeReadyResolversRef.current).forEach(({ resolve, timer }) => {
             try { if (timer) clearTimeout(timer); resolve(null); } catch (e) {}
         });
         nodeReadyResolversRef.current = {};
 
-        // call cleanup fns
         Object.values(cleanupRef.current).forEach(fn => {
             try { fn(); } catch (e) {}
         });
         cleanupRef.current = {};
         pluginAPIRef.current = {};
+
+        // revoke any leftover object URLs (防御性回收)
+        try {
+            createdUrlsRef.current.forEach(u => {
+                try { URL.revokeObjectURL(u); } catch (e) {}
+            });
+        } finally {
+            createdUrlsRef.current.clear();
+        }
+
+        moduleCacheRef.current.clear();
     }, []);
 
     // waitForNode: 用 callback-ref + promise resolver (无轮询)
@@ -129,7 +137,7 @@ export default function PluginHost({ children, autoReloadKey, concurrency = 4 })
 
             const pluginFunc = module?.default;
             if (!pluginFunc || typeof pluginFunc !== 'function') {
-                throw new Error('插件未导出默认函数');
+                return Promise.reject(new Error('插件未导出默认函数'));
             }
 
             const maybeCleanup = pluginFunc(node, context);
@@ -145,7 +153,6 @@ export default function PluginHost({ children, autoReloadKey, concurrency = 4 })
         }
     }, [waitForNode]);
 
-    // 加载模块：同原逻辑，但保证在 module cache 快速返回（少量优化）
     const loadModuleForManifest = useCallback(async (manifest, { useCache = true, cancelToken } = {}) => {
         const name = manifest.name;
         const cacheKey = `${manifest.name}::${manifest.entry || ''}`;
@@ -169,12 +176,15 @@ export default function PluginHost({ children, autoReloadKey, concurrency = 4 })
 
         const blob = new Blob([code], { type: 'text/javascript' });
         const url = URL.createObjectURL(blob);
+        createdUrlsRef.current.add(url);
+
         try {
             const mod = await import(/* @vite-ignore */ url);
             moduleCacheRef.current.set(cacheKey, mod);
             return mod;
         } finally {
-            try { URL.revokeObjectURL(url); } catch {}
+            try { URL.revokeObjectURL(url); } catch (e) {}
+            createdUrlsRef.current.delete(url);
         }
     }, []);
 
@@ -183,7 +193,9 @@ export default function PluginHost({ children, autoReloadKey, concurrency = 4 })
         let manifestsList;
         try {
             manifestsList = await invoke('get_plugins_list');
-            if (!Array.isArray(manifestsList)) throw new Error('插件清单非数组');
+            if (!Array.isArray(manifestsList)) {
+                return Promise.reject(new Error('插件清单非数组'));
+            }
         } catch (e) {
             console.error('获取插件清单失败：', e);
             return;
@@ -237,7 +249,9 @@ export default function PluginHost({ children, autoReloadKey, concurrency = 4 })
                 loadingTasksRef.current.set(name, token);
                 try {
                     const mod = await loadModuleForManifest(manifest, { useCache: true, cancelToken: token });
-                    if (token.cancelled) throw new Error('cancelled');
+                    if (token.cancelled) {
+                        return Promise.reject(new Error('cancelled'));
+                    }
                     await mountPlugin(manifest, mod);
                 } catch (e) {
                     if (String(e) !== 'Error: cancelled') {
@@ -289,7 +303,9 @@ export default function PluginHost({ children, autoReloadKey, concurrency = 4 })
                 loadingTasksRef.current.set(name, token);
                 try {
                     const mod = await loadModuleForManifest(manifest, { useCache: true, cancelToken: token });
-                    if (token.cancelled) throw new Error('cancelled');
+                    if (token.cancelled) {
+                        return Promise.reject(new Error('cancelled'));
+                    }
                     await mountPlugin(manifest, mod);
                 } catch (e) {
                     if (String(e) !== 'Error: cancelled') {
