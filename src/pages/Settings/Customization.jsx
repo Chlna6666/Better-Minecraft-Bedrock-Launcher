@@ -415,7 +415,6 @@ export default function Customization() {
                     >
                         <Input
                             className="text-input-wrapper"
-                            inputClassName="text-input"
                             type="text"
                             value={localImagePath}
                             placeholder={t("CustomizationSettings.no_file")}
@@ -444,7 +443,6 @@ export default function Customization() {
                     <label>{t("CustomizationSettings.network_image")}</label>
                     <Input
                         className="text-input-wrapper"
-                        inputClassName="text-input"
                         type="text"
                         value={networkImageUrl}
                         onChange={(e) => setNetworkImageUrl(e.target.value)}
