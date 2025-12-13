@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 chrono = "0.4.42"
-tauri-build = { version = "2.5.2", features = [] }
+tauri-build = { version = "2.5.3", features = [] }
 
 [target.'cfg(windows)'.dependencies]
 runas = "=1.0.0"
@@ -24,7 +24,7 @@ winreg = "0.55.0"
 tauri-plugin-single-instance = "2.0.0"
 
 [dependencies]
-tauri = { version = "2.9.3", features = ["unstable", "devtools", "protocol-asset"] }
+tauri = { version = "2.9.5", features = ["unstable", "devtools", "protocol-asset"] }
 tauri-plugin-shell = "2.3.3"
 tauri-plugin-dialog = "2.4.2"
 tauri-plugin-fs = "2.4.4"
@@ -38,17 +38,17 @@ lazy_static = "1.5.0"
 windows = { version = "0.62.2", features = ["Win32_System_LibraryLoader", "Win32_System_Com", "Win32_Foundation", "Data_Xml_Dom", "Management", "Management_Deployment", "Foundation_Collections", "Win32", "Win32_Data_Xml", "ApplicationModel", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "ApplicationModel_Activation", "Win32_System_Diagnostics_ToolHelp", "Win32_Security", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_Globalization", "Win32_System_Threading", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_Security_Authorization", "Win32_System_Diagnostics_Debug", "Win32_Storage", "Win32_System_Memory", "Win32_Storage_FileSystem"] }
 serde_json="1.0.145"
 zip = "6.0.0"
-tracing = "0.1.41"
-tracing-appender = "0.2.3"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing = "0.1.43"
+tracing-appender = "0.2.4"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros"] }
 tokio-stream = { version = "0.1.17", features = ["fs"] }
-reqwest = { version = "0.12.24", features = ["stream", "gzip", "brotli", "deflate", "json"] }
+reqwest = { version = "0.12.25", features = ["stream", "gzip", "brotli", "deflate", "json"] }
 futures = "0.3.31"
 futures-util = "0.3.31"
 xmltree = "0.12.0"
 thiserror = "2.0.17"
-uuid = { version = "1.18.1", features = ["v4"] }
+uuid = { version = "1.19.0", features = ["v4"] }
 num_cpus = "1.16.0"
 regex = "1.12.2"
 anyhow = "1.0.100"
@@ -56,7 +56,7 @@ anyhow = "1.0.100"
 fluent-bundle = "0.16"
 unic-langid = "0.9"
 rayon = "1.11.0"
-indexmap = { version = "2.12.0", features = ["serde"] }
+indexmap = { version = "2.12.1", features = ["serde"] }
 walkdir = "2.5.0"
 md5 = "0.8.0"
 semver = "1.0.27"
