@@ -1,3 +1,5 @@
+use crate::i18n::I18n;
+use crate::utils::utils::to_wstr;
 use std::process::exit;
 use tracing::info;
 use windows::core::PCWSTR;
@@ -6,20 +8,28 @@ use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
     KEY_READ,
 };
-use windows::Win32::UI::Controls::{TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TASKDIALOG_COMMON_BUTTON_FLAGS, TDF_ALLOW_DIALOG_CANCELLATION};
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    IDCANCEL, IDNO, IDYES, SW_SHOWNORMAL,
+use windows::Win32::UI::Controls::{
+    TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TASKDIALOG_COMMON_BUTTON_FLAGS,
+    TDF_ALLOW_DIALOG_CANCELLATION,
 };
-use crate::i18n::I18n;
-use crate::utils::utils::to_wstr;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDNO, IDYES, SW_SHOWNORMAL};
 
 /// 读取注册表中 WebView2 Runtime 的 pv（版本）值
 fn read_webview2_version_from_registry() -> Option<String> {
     let subkeys = [
-        (HKEY_CURRENT_USER.0 as isize, r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
-        (HKEY_LOCAL_MACHINE.0 as isize, r"Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
-        (HKEY_LOCAL_MACHINE.0 as isize, r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+        (
+            HKEY_CURRENT_USER.0 as isize,
+            r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        ),
+        (
+            HKEY_LOCAL_MACHINE.0 as isize,
+            r"Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        ),
+        (
+            HKEY_LOCAL_MACHINE.0 as isize,
+            r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        ),
     ];
 
     for (hkey_raw, path) in &subkeys {
@@ -67,7 +77,6 @@ pub fn detect_webview2_runtime() -> Option<String> {
     read_webview2_version_from_registry()
 }
 
-
 /// 检测 WebView2，有则返回版本，否则弹 TaskDialog，让用户选择操作
 pub fn ensure_webview2_or_fallback() -> Result<String, ()> {
     const WEBVIEW2_DOWNLOAD_URL: &str = "https://developer.microsoft.com/microsoft-edge/webview2/";
@@ -77,7 +86,7 @@ pub fn ensure_webview2_or_fallback() -> Result<String, ()> {
 
     // 没有检测到 WebView2 Runtime，弹 TaskDialog 让用户三选
     let title_w = to_wstr("BMCBL");
-    
+
     let main_instruction = to_wstr(&I18n::t("webview2-main", None));
     // 子提示文本
     let content = I18n::t("webview2-content", None);
@@ -85,8 +94,8 @@ pub fn ensure_webview2_or_fallback() -> Result<String, ()> {
 
     // 按钮文本
     let btn_download = to_wstr(&I18n::t("webview2-button-download", None));
-    let btn_install  = to_wstr(&I18n::t("webview2-button-install", None));
-    let btn_exit     = to_wstr(&I18n::t("webview2-button-exit", None));
+    let btn_install = to_wstr(&I18n::t("webview2-button-install", None));
+    let btn_exit = to_wstr(&I18n::t("webview2-button-exit", None));
 
     // TASKDIALOG_BUTTON 中的 nButtonID 用 MESSAGEBOX_RESULT，因此这里直接给 IDYES、IDNO、IDCANCEL
     let buttons: [TASKDIALOG_BUTTON; 3] = [
@@ -107,7 +116,7 @@ pub fn ensure_webview2_or_fallback() -> Result<String, ()> {
     // 准备一个 TASKDIALOGCONFIG，注意所有 PCWSTR 类型的字段都要用 PCWSTR(...) 或 PCWSTR::null()
     let mut config: TASKDIALOGCONFIG = unsafe { std::mem::zeroed() };
     config.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
-    config.hwndParent = HWND(std::ptr::null_mut()); 
+    config.hwndParent = HWND(std::ptr::null_mut());
     config.hInstance = HINSTANCE(std::ptr::null_mut());
     config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
     config.dwCommonButtons = TASKDIALOG_COMMON_BUTTON_FLAGS(0);

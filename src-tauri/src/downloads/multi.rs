@@ -1,13 +1,13 @@
-use std::path::{Path};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use futures_util::StreamExt;
-use tokio::fs::{OpenOptions, File};
+use reqwest::header;
+use std::io::Write as StdWrite;
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::time::{sleep, Duration};
 use tracing::debug;
-use reqwest::header;
-use std::io::Write as StdWrite;
 
 use crate::downloads::md5 as md5_utils;
 use crate::downloads::single::download_file;
@@ -22,21 +22,27 @@ pub async fn download_multi(
     url: &str,
     dest: impl AsRef<Path>,
     threads: usize,
-    md5_expected: Option<&str>
+    md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
-    debug!("开始多线程下载: task={} url={} 线程数={} md5={:?}", task_id, url, threads, md5_expected);
+    debug!(
+        "开始多线程下载: task={} url={} 线程数={} md5={:?}",
+        task_id, url, threads, md5_expected
+    );
 
     // 1) HEAD 尝试获取总长度与快速判断是否支持 Range
-    let head = client.head(url)
+    let head = client
+        .head(url)
         .header(header::ACCEPT_ENCODING, "identity")
         .send()
         .await?;
-    let maybe_len = head.headers()
+    let maybe_len = head
+        .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    let accept_ranges_ok = head.headers()
+    let accept_ranges_ok = head
+        .headers()
         .get(header::ACCEPT_RANGES)
         .and_then(|v| v.to_str().ok().map(|s| s.to_lowercase().contains("bytes")))
         .unwrap_or(false);
@@ -78,14 +84,18 @@ pub async fn download_multi(
         if let Some(cr) = resp.headers().get(header::CONTENT_RANGE) {
             let s = cr.to_str().ok().unwrap_or_default();
             if let Some(idx) = s.rfind('/') {
-                if let Ok(len) = s[idx+1..].parse::<u64>() {
+                if let Ok(len) = s[idx + 1..].parse::<u64>() {
                     len
                 } else {
                     finish_task(task_id, "error", Some("Unknown content length".into()));
                     return Err(CoreError::UnknownContentLength);
                 }
             } else {
-                finish_task(task_id, "error", Some("Unknown content range format".into()));
+                finish_task(
+                    task_id,
+                    "error",
+                    Some("Unknown content range format".into()),
+                );
                 return Err(CoreError::UnknownContentLength);
             }
         } else {
@@ -124,7 +134,11 @@ pub async fn download_multi(
     let chunk_size = estimated_chunk;
     let chunk_count_u64 = (total + chunk_size - 1) / chunk_size;
     if chunk_count_u64 == 0 {
-        finish_task(task_id, "error", Some("计算分片失败: chunk_count == 0".into()));
+        finish_task(
+            task_id,
+            "error",
+            Some("计算分片失败: chunk_count == 0".into()),
+        );
         return Err(CoreError::Other("计算分片失败: chunk_count == 0".into()));
     }
     let chunk_count = usize::try_from(chunk_count_u64).map_err(|_| {
@@ -504,7 +518,7 @@ pub async fn download_multi(
         }
 
         match h.await {
-            Ok(Ok(CoreResult::Success(_))) => { /* 单个 worker 成功退出 */ },
+            Ok(Ok(CoreResult::Success(_))) => { /* 单个 worker 成功退出 */ }
             Ok(Ok(CoreResult::Cancelled)) => {
                 debug!("下载被取消，清理并返回");
                 finish_task(task_id, "cancelled", Some("worker cancelled".into()));
@@ -543,8 +557,15 @@ pub async fn download_multi(
     if done != total {
         debug!("下载完成但字节数不一致: done={} total={}", done, total);
         let _ = tokio::fs::remove_file(dest.as_ref()).await;
-        finish_task(task_id, "error", Some(format!("size mismatch: {} != {}", done, total)));
-        return Err(CoreError::Other(format!("下载大小校验失败: {} != {}", done, total)));
+        finish_task(
+            task_id,
+            "error",
+            Some(format!("size mismatch: {} != {}", done, total)),
+        );
+        return Err(CoreError::Other(format!(
+            "下载大小校验失败: {} != {}",
+            done, total
+        )));
     }
 
     // 如果用户提供了 md5_expected，则进行最终 md5 校验
@@ -558,12 +579,19 @@ pub async fn download_multi(
                 debug!("md5 校验失败，删除目标文件");
                 let _ = tokio::fs::remove_file(dest.as_ref()).await;
                 finish_task(task_id, "error", Some("md5 mismatch".into()));
-                return Err(CoreError::ChecksumMismatch(format!("md5 mismatch for {:?}", dest.as_ref())));
+                return Err(CoreError::ChecksumMismatch(format!(
+                    "md5 mismatch for {:?}",
+                    dest.as_ref()
+                )));
             }
             Err(e) => {
                 debug!("md5 计算失败: {:?}", e);
                 let _ = tokio::fs::remove_file(dest.as_ref()).await;
-                finish_task(task_id, "error", Some(format!("md5 compute failed: {:?}", e)));
+                finish_task(
+                    task_id,
+                    "error",
+                    Some(format!("md5 compute failed: {:?}", e)),
+                );
                 return Err(CoreError::Io(e));
             }
         }

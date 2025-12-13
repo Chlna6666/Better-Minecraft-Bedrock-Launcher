@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::Write;
 use std::path::PathBuf;
-use std::{fs, io};
 use std::str::FromStr;
-use serde_json::Value;
+use std::{fs, io};
 use tracing::{debug, error};
 
-#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CustomStyle {
     pub theme_color: String,
     pub background_option: String,
@@ -15,14 +15,13 @@ pub struct CustomStyle {
     pub show_launch_animation: bool,
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct GameConfig {
     pub inject_on_launch: bool,
     pub lock_mouse_on_launch: bool,
     pub reduce_pixels: i32, // 减少的像素数
     pub unlock_mouse_hotkey: String,
-    pub launcher_visibility: String, // "minimize", "close", "keep"
+    pub launcher_visibility: String,   // "minimize", "close", "keep"
     pub keep_appx_after_install: bool, // 安装完成保留 APPX（默认关闭）
     pub modify_appx_manifest: bool,    // 是否修改 AppxManifest.xml
     pub uwp_minimize_fix: bool,
@@ -70,14 +69,14 @@ impl FromStr for UpdateChannel {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DownloadConfig {
     pub multi_thread: bool,
     pub max_threads: u32,
     pub auto_thread_count: bool,
     pub proxy: ProxyConfig,
 }
-#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Launcher {
     pub debug: bool,
     pub language: String, // "auto", "en-US", "zh-CN" 等
@@ -90,7 +89,7 @@ pub struct Launcher {
     pub update_check_interval_minutes: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone,Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
     pub custom_style: CustomStyle,
     pub launcher: Launcher,

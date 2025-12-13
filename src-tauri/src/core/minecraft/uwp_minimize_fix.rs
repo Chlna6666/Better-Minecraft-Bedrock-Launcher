@@ -3,14 +3,13 @@
 
 use std::{ffi::OsStr, os::windows::prelude::OsStrExt};
 
-use windows::core::{GUID, HSTRING, PCWSTR, Result};
+use windows::core::{Result, GUID, HSTRING, PCWSTR};
+use windows::Management::Deployment::PackageManager;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
-    CLSCTX_INPROC_SERVER,
 };
 use windows::Win32::UI::Shell::IPackageDebugSettings;
-use windows::Management::Deployment::PackageManager;
 
 pub fn enable_debugging_for_package(package_name: &str) -> Result<()> {
     unsafe {
@@ -33,12 +32,16 @@ pub fn enable_debugging_for_package(package_name: &str) -> Result<()> {
                     if let Ok(full_name_hstr) = pkg_id.FullName() {
                         let full_name_str: String = full_name_hstr.to_string();
                         let wide: Vec<u16> = full_name_str.encode_utf16().chain([0]).collect();
-                        let _ = pkg_debug.EnableDebugging(PCWSTR(wide.as_ptr()), PCWSTR::null(), PCWSTR::null());
+                        let _ = pkg_debug.EnableDebugging(
+                            PCWSTR(wide.as_ptr()),
+                            PCWSTR::null(),
+                            PCWSTR::null(),
+                        );
                     }
                 }
             }
         }
-        
+
         CoUninitialize();
         Ok(())
     }

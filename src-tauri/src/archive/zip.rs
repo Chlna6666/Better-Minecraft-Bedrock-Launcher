@@ -50,7 +50,11 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
             if is_cancelled(&task_id_clone_for_block) {
                 debug!("解压已被取消（检测到 task cancelled）");
                 // 写最终状态并返回（注意：finish_task 也可以放到 async 侧，但这里放在 blocking 侧也可以）
-                finish_task(&task_id_clone_for_block, "cancelled", Some("user cancelled".into()));
+                finish_task(
+                    &task_id_clone_for_block,
+                    "cancelled",
+                    Some("user cancelled".into()),
+                );
                 return Ok(());
             }
 
@@ -74,7 +78,12 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                     }
                 } else {
                     // 已存在：视为已完成此 entry 的大小
-                    update_progress(&task_id_clone_for_block, size, Some(total), Some("extracting"));
+                    update_progress(
+                        &task_id_clone_for_block,
+                        size,
+                        Some(total),
+                        Some("extracting"),
+                    );
                     continue;
                 }
             }
@@ -91,7 +100,11 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                 // 取消检查
                 if is_cancelled(&task_id_clone_for_block) {
                     debug!("解压在写入过程中被取消");
-                    finish_task(&task_id_clone_for_block, "cancelled", Some("user cancelled".into()));
+                    finish_task(
+                        &task_id_clone_for_block,
+                        "cancelled",
+                        Some("user cancelled".into()),
+                    );
                     return Ok(());
                 }
 
@@ -103,7 +116,12 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
 
                 writer.write_all(&buf[..bytes_read])?;
                 // 上报增量到 task_manager（由 task_manager 计算速度/ETA）
-                update_progress(&task_id_clone_for_block, bytes_read as u64, Some(total), Some("extracting"));
+                update_progress(
+                    &task_id_clone_for_block,
+                    bytes_read as u64,
+                    Some(total),
+                    Some("extracting"),
+                );
             }
 
             writer.flush()?;
@@ -113,7 +131,11 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
         update_progress(&task_id_clone_for_block, 0, Some(total), Some("extracting"));
         finish_task(&task_id_clone_for_block, "completed", None);
 
-        info!("解压完成，总计 {} bytes, 总耗时 {:.2} 秒", total, start.elapsed().as_secs_f64());
+        info!(
+            "解压完成，总计 {} bytes, 总耗时 {:.2} 秒",
+            total,
+            start.elapsed().as_secs_f64()
+        );
         Ok(())
     });
 

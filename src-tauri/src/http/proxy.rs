@@ -1,13 +1,13 @@
 // src/http/proxy.rs
+use crate::config::config::{read_config, ProxyConfig, ProxyType};
+use crate::http::request::GLOBAL_CLIENT;
+use crate::result::CoreError;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Proxy};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{debug, error};
-use crate::config::config::{ProxyConfig, ProxyType, read_config};
-use crate::http::request::GLOBAL_CLIENT;
-use crate::result::CoreError;
 
 /// 全局 client 缓存（key -> Client）
 static CLIENT_CACHE: Lazy<Mutex<HashMap<String, Client>>> = Lazy::new(|| {
@@ -89,7 +89,10 @@ fn load_current_proxy_config() -> ProxyConfig {
     match read_config() {
         Ok(conf) => conf.launcher.download.proxy,
         Err(err) => {
-            error!("Failed to read config when building http client for proxy: {:?}", err);
+            error!(
+                "Failed to read config when building http client for proxy: {:?}",
+                err
+            );
             ProxyConfig::default()
         }
     }
@@ -145,8 +148,10 @@ pub fn rebuild_no_proxy_client_in_cache() {
 /// 调用处请不要使用 GLOBAL_CLIENT，改为使用本函数返回的 client。
 pub fn get_client_for_proxy() -> Result<Client, CoreError> {
     let cfg = load_current_proxy_config();
-    debug!("get_client_for_proxy: proxy_type={:?}, http='{}', socks='{}'",
-        cfg.proxy_type, cfg.http_proxy_url, cfg.socks_proxy_url);
+    debug!(
+        "get_client_for_proxy: proxy_type={:?}, http='{}', socks='{}'",
+        cfg.proxy_type, cfg.http_proxy_url, cfg.socks_proxy_url
+    );
 
     let key = client_key_from_config(&cfg);
     debug!("Computed client cache key = {}", key);
@@ -186,24 +191,29 @@ pub fn get_client_for_proxy() -> Result<Client, CoreError> {
                 builder.no_proxy()
             } else {
                 debug!("Building client with HTTP proxy: {}", normalized);
-                let proxy = Proxy::all(&normalized).map_err(|e| CoreError::Config(e.to_string()))?;
+                let proxy =
+                    Proxy::all(&normalized).map_err(|e| CoreError::Config(e.to_string()))?;
                 builder.proxy(proxy)
             }
         }
         ProxyType::Socks5 => {
-            let (normalized, _) = normalize_and_prepare_url(&ProxyType::Socks5, &cfg.socks_proxy_url);
+            let (normalized, _) =
+                normalize_and_prepare_url(&ProxyType::Socks5, &cfg.socks_proxy_url);
             if normalized.is_empty() {
                 debug!("SOCKS5 proxy selected but socks_proxy_url empty -> fallback to no_proxy");
                 builder.no_proxy()
             } else {
                 debug!("Building client with SOCKS5 proxy: {}", normalized);
-                let proxy = Proxy::all(&normalized).map_err(|e| CoreError::Config(e.to_string()))?;
+                let proxy =
+                    Proxy::all(&normalized).map_err(|e| CoreError::Config(e.to_string()))?;
                 builder.proxy(proxy)
             }
         }
     };
 
-    let client = builder.build().map_err(|e| CoreError::Config(e.to_string()))?;
+    let client = builder
+        .build()
+        .map_err(|e| CoreError::Config(e.to_string()))?;
 
     // 3) 写回缓存
     {
@@ -221,7 +231,8 @@ pub fn get_client_for_proxy() -> Result<Client, CoreError> {
 /// 在 tokio/async runtime 中调用：例如在初始化流程或 debug 命令中调用。
 pub async fn debug_check_proxy() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     debug!("debug_check_proxy: start");
-    let client = get_client_for_proxy().map_err(|e| format!("get_client_for_proxy err: {:?}", e))?;
+    let client =
+        get_client_for_proxy().map_err(|e| format!("get_client_for_proxy err: {:?}", e))?;
     debug!("debug_check_proxy: got client, sending request to httpbin.org/ip ...");
 
     let resp = client
@@ -229,7 +240,10 @@ pub async fn debug_check_proxy() -> Result<(), Box<dyn std::error::Error + Send 
         .send()
         .await
         .map_err(|e| format!("request err: {:?}", e))?;
-    let body = resp.text().await.map_err(|e| format!("read body err: {:?}", e))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("read body err: {:?}", e))?;
     debug!("httpbin.org/ip => {}", body);
     Ok(())
 }

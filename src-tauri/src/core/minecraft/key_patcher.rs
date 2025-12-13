@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 /// 支持的可执行文件名（小写比较）
-pub const VALID_EXE_NAME: &str = "minecraft.windows.exe";
+pub const VALID_EXE_NAMES: &[&str] = &["minecraft.windows.exe"];
 
 /// 旧/新公钥（Base64 文本），长度必须相同
 const OLD_ROOT_PUBLIC_KEY: &str = "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE8ELkixyLcwlZryUQcu1TvPOmI2B7vX83ndnWRUaXm74wFfa5f/lwQNTfrLVHa2PmenpGI6JhIMUJaWZrjmMj90NoKNFSNBuKdm8rYiXsfaz3K36x/1U26HpG0ZxK/V1V";
@@ -15,11 +15,19 @@ const NEW_ROOT_PUBLIC_KEY: &str = "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAECRXueJeTDqNRR
 /// 补丁错误类型
 #[derive(Debug)]
 pub enum PatchError {
-    Io(io::Error),          // 底层 IO 错误
-    InvalidExeName,         // 文件名不是 Minecraft.Windows.exe
-    KeyNotFound,            // 在文件中找不到旧公钥
-    BackupFailed(io::Error) // 备份创建失败
+    Io(io::Error),           // 底层 IO 错误
+    InvalidExeName,          // 文件名不是受支持的 exe
+    KeyNotFound,             // 在文件中找不到旧公钥
+    BackupFailed(io::Error), // 备份创建失败
 }
+
+/// 补丁操作的结果
+#[derive(Debug)]
+pub enum PatchResult {
+    Patched(PathBuf), // 成功应用补丁，值为备份文件路径
+    NotApplicable,    // 未找到适用的文件，无需操作
+}
+
 
 impl From<io::Error> for PatchError {
     fn from(err: io::Error) -> Self {
@@ -50,7 +58,10 @@ fn compute_lps(pattern: &[u8]) -> Vec<usize> {
         }
     }
 
-    debug!("compute_lps: 完成（前 10 项） = {:?}", &lps[..std::cmp::min(10, lps.len())]);
+    debug!(
+        "compute_lps: 完成（前 10 项） = {:?}",
+        &lps[..std::cmp::min(10, lps.len())]
+    );
     lps
 }
 
@@ -92,7 +103,10 @@ fn find_key_offset_in_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// 在磁盘上创建备份文件，返回备份路径
 fn backup_file(original: &Path) -> Result<PathBuf, io::Error> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let file_name = original
         .file_name()
         .and_then(|s| s.to_str())
@@ -113,13 +127,13 @@ fn backup_file(original: &Path) -> Result<PathBuf, io::Error> {
     Ok(bak_path)
 }
 
-/// 判断路径文件名是否为 Minecraft.Windows.exe（不区分大小写）
+/// 判断路径文件名是否为受支持的 exe 之一（不区分大小写）
 pub fn is_valid_exe_path(path: &Path) -> bool {
     match path.file_name().and_then(|s| s.to_str()) {
         Some(name) => {
             let lower = name.to_ascii_lowercase();
             debug!("is_valid_exe_path: 原文件名='{}' 小写='{}'", name, lower);
-            lower == VALID_EXE_NAME
+            VALID_EXE_NAMES.contains(&lower.as_str())
         }
         None => {
             debug!("is_valid_exe_path: 路径 '{}' 没有文件名", path.display());
@@ -128,7 +142,7 @@ pub fn is_valid_exe_path(path: &Path) -> bool {
     }
 }
 
-/// 在目录中查找 Minecraft.Windows.exe（第一个匹配的文件）
+/// 在目录中查找受支持的 exe（第一个匹配的文件）
 pub fn find_exe_in_dir(dir: &Path) -> Option<PathBuf> {
     if !dir.is_dir() {
         warn!("find_exe_in_dir: 提供的路径不是目录: {}", dir.display());
@@ -161,18 +175,35 @@ pub fn find_exe_in_dir(dir: &Path) -> Option<PathBuf> {
 
 /// 在原地补丁文件（先备份，再写入），成功返回备份路径
 pub fn patch_file_in_place(exe_path: &Path) -> Result<PathBuf, PatchError> {
-    info!("patch_file_in_place: 尝试对 '{}' 应用补丁", exe_path.display());
+    info!(
+        "patch_file_in_place: 尝试对 '{}' 应用补丁",
+        exe_path.display()
+    );
 
     if !is_valid_exe_path(exe_path) {
-        error!("patch_file_in_place: 无效的可执行文件名: {}", exe_path.display());
+        error!(
+            "patch_file_in_place: 无效的可执行文件名: {}",
+            exe_path.display()
+        );
         return Err(PatchError::InvalidExeName);
     }
 
-    debug_assert_eq!(OLD_ROOT_PUBLIC_KEY.len(), NEW_ROOT_PUBLIC_KEY.len(), "old/new key length mismatch");
+    debug_assert_eq!(
+        OLD_ROOT_PUBLIC_KEY.len(),
+        NEW_ROOT_PUBLIC_KEY.len(),
+        "old/new key length mismatch"
+    );
 
-    info!("patch_file_in_place: 读取文件到内存: {}", exe_path.display());
+    info!(
+        "patch_file_in_place: 读取文件到内存: {}",
+        exe_path.display()
+    );
     let file_bytes = fs::read(exe_path).map_err(|e| {
-        error!("patch_file_in_place: 无法读取文件 '{}': {}", exe_path.display(), e);
+        error!(
+            "patch_file_in_place: 无法读取文件 '{}': {}",
+            exe_path.display(),
+            e
+        );
         PatchError::Io(e)
     })?;
     debug!("patch_file_in_place: 文件大小 = {} 字节", file_bytes.len());
@@ -186,7 +217,10 @@ pub fn patch_file_in_place(exe_path: &Path) -> Result<PathBuf, PatchError> {
             off
         }
         None => {
-            info!("patch_file_in_place: 在 '{}' 中未发现旧公钥", exe_path.display());
+            info!(
+                "patch_file_in_place: 在 '{}' 中未发现旧公钥",
+                exe_path.display()
+            );
             return Err(PatchError::KeyNotFound);
         }
     };
@@ -198,14 +232,25 @@ pub fn patch_file_in_place(exe_path: &Path) -> Result<PathBuf, PatchError> {
             b
         }
         Err(e) => {
-            error!("patch_file_in_place: 备份创建失败 '{}': {}", exe_path.display(), e);
+            error!(
+                "patch_file_in_place: 备份创建失败 '{}': {}",
+                exe_path.display(),
+                e
+            );
             return Err(PatchError::BackupFailed(e));
         }
     };
 
-    info!("patch_file_in_place: 以写入模式打开文件: {}", exe_path.display());
+    info!(
+        "patch_file_in_place: 以写入模式打开文件: {}",
+        exe_path.display()
+    );
     let mut f = OpenOptions::new().write(true).open(exe_path).map_err(|e| {
-        error!("patch_file_in_place: 无法以写入模式打开 '{}': {}", exe_path.display(), e);
+        error!(
+            "patch_file_in_place: 无法以写入模式打开 '{}': {}",
+            exe_path.display(),
+            e
+        );
         PatchError::Io(e)
     })?;
 
@@ -215,7 +260,11 @@ pub fn patch_file_in_place(exe_path: &Path) -> Result<PathBuf, PatchError> {
         PatchError::Io(e)
     })?;
 
-    debug!("patch_file_in_place: 在偏移 0x{:X} 写入 {} 字节", offset, new_bytes.len());
+    debug!(
+        "patch_file_in_place: 在偏移 0x{:X} 写入 {} 字节",
+        offset,
+        new_bytes.len()
+    );
     f.write_all(new_bytes).map_err(|e| {
         error!("patch_file_in_place: 写入失败: {}", e);
         PatchError::Io(e)
@@ -226,32 +275,52 @@ pub fn patch_file_in_place(exe_path: &Path) -> Result<PathBuf, PatchError> {
         PatchError::Io(e)
     })?;
 
-    info!("patch_file_in_place: 对 '{}' 的补丁已成功应用", exe_path.display());
+    info!(
+        "patch_file_in_place: 对 '{}' 的补丁已成功应用",
+        exe_path.display()
+    );
     Ok(bak)
 }
 
-/// 支持传入目录或文件路径；若传入目录则在目录内查找可执行并补丁
-pub fn patch_path(path: &Path) -> Result<PathBuf, PatchError> {
+/// 支持传入目录或文件路径。
+/// 若传入目录，则在目录内查找受支持的 exe 并应用补丁。
+/// 若未找到适用文件，则返回 Ok(PatchResult::NotApplicable)。
+pub fn patch_path(path: &Path) -> Result<PatchResult, PatchError> {
     info!("patch_path: 入口，路径='{}'", path.display());
 
-    let exe_path = if path.is_dir() {
+    let exe_to_patch = if path.is_dir() {
         info!("patch_path: 提供的是目录，正在目录中查找 exe");
-        match find_exe_in_dir(path) {
-            Some(p) => p,
-            None => {
-                warn!("patch_path: 在 '{}' 中未找到匹配的 exe", path.display());
-                return Err(PatchError::KeyNotFound);
-            }
-        }
+        find_exe_in_dir(path)
     } else {
-        path.to_path_buf()
+        // 如果是文件，仅当它是有效 exe 时才处理
+        if is_valid_exe_path(path) {
+            Some(path.to_path_buf())
+        } else {
+            None
+        }
     };
 
-    if !exe_path.exists() {
-        error!("patch_path: 解析得到的 exe 路径不存在: {}", exe_path.display());
-        return Err(PatchError::Io(io::Error::new(io::ErrorKind::NotFound, "path does not exist")));
-    }
+    if let Some(exe_path) = exe_to_patch {
+        if !exe_path.exists() {
+            error!(
+                "patch_path: 解析得到的 exe 路径不存在: {}",
+                exe_path.display()
+            );
+            return Err(PatchError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "path does not exist",
+            )));
+        }
 
-    debug!("patch_path: 解析到 exe 路径 '{}'", exe_path.display());
-    patch_file_in_place(&exe_path)
+        debug!("patch_path: 解析到 exe 路径 '{}'", exe_path.display());
+        // 调用原地补丁函数，并映射结果
+        patch_file_in_place(&exe_path).map(PatchResult::Patched)
+    } else {
+        // 在目录中未找到，或提供的文件不是有效目标
+        info!(
+            "patch_path: 在 '{}' 中未找到可应用补丁的 exe，跳过操作。",
+            path.display()
+        );
+        Ok(PatchResult::NotApplicable)
+    }
 }

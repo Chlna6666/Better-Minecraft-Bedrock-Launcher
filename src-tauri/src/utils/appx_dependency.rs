@@ -1,30 +1,31 @@
 use std::cmp::Ordering;
 use std::env;
 use std::io::Write;
-use std::sync::{Mutex};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use fluent_bundle::FluentArgs;
 use lazy_static::lazy_static;
 use regex::Regex;
-use reqwest::Client;
 use reqwest::header::CONTENT_LENGTH;
+use reqwest::Client;
 use tokio::runtime::Runtime;
 use tokio::time::Duration;
-use tracing::{info, debug, warn, error};
-
+use tracing::{debug, error, info, warn};
 
 use tokio::io::AsyncWriteExt;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, WPARAM, LPARAM};
+use windows::Management::Deployment::PackageManager;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Controls::{
-    TaskDialogIndirect, TASKDIALOG_BUTTON, TASKDIALOG_COMMON_BUTTON_FLAGS, TASKDIALOGCONFIG,
+    TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TASKDIALOG_COMMON_BUTTON_FLAGS,
     TASKDIALOG_FLAGS,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::{IDNO, IDCANCEL, SW_SHOWNORMAL, SendMessageW, WM_USER};
-use windows::Management::Deployment::PackageManager;
+use windows::Win32::UI::WindowsAndMessaging::{
+    SendMessageW, IDCANCEL, IDNO, SW_SHOWNORMAL, WM_USER,
+};
 
 use crate::i18n::I18n;
 use crate::utils::utils::to_wstr;
@@ -32,13 +33,16 @@ use crate::utils::utils::to_wstr;
 /// 从字符串中提取第一个形如 `d+.d+.d+.d+` 的版本号（比如 `14.0.33519.0`）
 fn extract_version(s: &str) -> Option<String> {
     let re = Regex::new(r"(\d+\.\d+\.\d+\.\d+)").ok()?;
-    re.captures(s).and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+    re.captures(s)
+        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
 }
 
 /// 比较两个版本 `a` 和 `b`，格式假定为 `X.Y.Z.W`
 fn compare_versions(a: &str, b: &str) -> Ordering {
     let parse_parts = |v: &str| -> Vec<u64> {
-        v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>()
+        v.split('.')
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
     };
     let pa = parse_parts(a);
     let pb = parse_parts(b);
@@ -80,7 +84,10 @@ pub fn is_installed_with_min(prefix: &str, min_version: Option<&str>) -> bool {
                     if let Some(minv) = min_version {
                         match id.Version() {
                             Ok(ver) => {
-                                let inst_ver = format!("{}.{}.{}.{}", ver.Major, ver.Minor, ver.Build, ver.Revision);
+                                let inst_ver = format!(
+                                    "{}.{}.{}.{}",
+                                    ver.Major, ver.Minor, ver.Build, ver.Revision
+                                );
                                 debug!("已安装包版本（来自Id().Version()）: {}", inst_ver);
                                 match compare_versions(&inst_ver, minv) {
                                     Ordering::Greater | Ordering::Equal => {
@@ -113,7 +120,10 @@ pub fn is_installed_with_min(prefix: &str, min_version: Option<&str>) -> bool {
             }
         }
     }
-    debug!("未找到满足条件的依赖前缀: {} (min_version={:?})", prefix, min_version);
+    debug!(
+        "未找到满足条件的依赖前缀: {} (min_version={:?})",
+        prefix, min_version
+    );
     false
 }
 
@@ -159,8 +169,13 @@ lazy_static! {
     static ref TASK_DIALOG_HWND_RAW: Mutex<Option<isize>> = Mutex::new(None);
 }
 
-
-extern "system" fn task_dialog_callback(hwnd: HWND, msg: u32, _wparam: usize, _lparam: isize, _lp_ref_data: isize) -> i32 {
+extern "system" fn task_dialog_callback(
+    hwnd: HWND,
+    msg: u32,
+    _wparam: usize,
+    _lparam: isize,
+    _lp_ref_data: isize,
+) -> i32 {
     const TDN_CREATED: u32 = 0;
     if msg == TDN_CREATED {
         if let Ok(mut g) = TASK_DIALOG_HWND_RAW.lock() {
@@ -170,15 +185,18 @@ extern "system" fn task_dialog_callback(hwnd: HWND, msg: u32, _wparam: usize, _l
     0
 }
 
-
-
 fn update_task_dialog_progress(pos: u32) {
     if let Ok(g) = TASK_DIALOG_HWND_RAW.lock() {
         if let Some(raw) = *g {
             let hwnd = HWND(raw as *mut _);
             const TDM_SET_PROGRESS_BAR_POS: u32 = WM_USER + 105;
             unsafe {
-                let _res = SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_POS, Some(WPARAM(pos as usize)), Some(LPARAM(0)));
+                let _res = SendMessageW(
+                    hwnd,
+                    TDM_SET_PROGRESS_BAR_POS,
+                    Some(WPARAM(pos as usize)),
+                    Some(LPARAM(0)),
+                );
             }
         }
     }
@@ -198,7 +216,12 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
         } else {
             format!("{}{}", pkg, "_8wekyb3d8bbwe")
         };
-        debug!("准备请求 PackageFamilyName = {} (deps index {}/{})", pkg_family, idx + 1, deps.len());
+        debug!(
+            "准备请求 PackageFamilyName = {} (deps index {}/{})",
+            pkg_family,
+            idx + 1,
+            deps.len()
+        );
 
         let resp_text = client
             .post("https://store.rg-adguard.net/api/GetFiles")
@@ -209,9 +232,11 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
                 ("ring", "RP"),
                 ("lang", "en-US"),
             ])
-            .send().await
+            .send()
+            .await
             .with_context(|| format!("请求下载页面失败: {}", pkg_family))?
-            .text().await
+            .text()
+            .await
             .with_context(|| format!("读取页面内容失败: {}", pkg_family))?;
 
         let mut candidates = Vec::new();
@@ -221,7 +246,10 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
             let lname = name.to_lowercase();
             debug!("解析到链接: name = {}, href = {}", name, href);
             if (lname.contains("x64") || lname.contains("neutral"))
-                && (lname.ends_with(".appx") || lname.ends_with(".appxbundle") || lname.ends_with(".msixbundle") || lname.ends_with(".msix"))
+                && (lname.ends_with(".appx")
+                    || lname.ends_with(".appxbundle")
+                    || lname.ends_with(".msixbundle")
+                    || lname.ends_with(".msix"))
             {
                 candidates.push((name.to_string(), href.to_string()));
             }
@@ -241,8 +269,10 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
                 let file_path = temp_dir.join(&name);
                 debug!("临时文件路径: {}", file_path.display());
 
-                let mut resp = client.get(&url)
-                    .send().await
+                let mut resp = client
+                    .get(&url)
+                    .send()
+                    .await
                     .with_context(|| format!("下载 {} 失败", name))?;
 
                 let total_len_opt = resp
@@ -253,14 +283,16 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
 
                 debug!("Content-Length for {} = {:?}", name, total_len_opt);
 
-                let mut file = tokio::fs::File::create(&file_path).await
+                let mut file = tokio::fs::File::create(&file_path)
+                    .await
                     .with_context(|| format!("创建文件 {} 失败", file_path.display()))?;
 
                 let mut downloaded: u64 = 0;
                 let start = Instant::now();
                 while let Some(chunk_res) = resp.chunk().await.transpose() {
                     let chunk = chunk_res.with_context(|| format!("读取 {} 的数据块失败", name))?;
-                    file.write_all(&chunk).await
+                    file.write_all(&chunk)
+                        .await
                         .with_context(|| format!("写入文件 {} 失败", file_path.display()))?;
                     downloaded += chunk.len() as u64;
 
@@ -271,12 +303,18 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
                     } else {
                         let pseudo = (downloaded % 100) as u32;
                         update_task_dialog_progress(pseudo);
-                        debug!("下载 {}: {} bytes (无 Content-Length，可视化位置 {})", name, downloaded, pseudo);
+                        debug!(
+                            "下载 {}: {} bytes (无 Content-Length，可视化位置 {})",
+                            name, downloaded, pseudo
+                        );
                     }
                 }
 
                 let elapsed = start.elapsed();
-                info!("下载完成 {}，总字节 {}，耗时 {:.2?}", name, downloaded, elapsed);
+                info!(
+                    "下载完成 {}，总字节 {}，耗时 {:.2?}",
+                    name, downloaded, elapsed
+                );
 
                 file.flush().await.ok();
                 drop(file);
@@ -291,7 +329,10 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
                     install_cmd
                 );
 
-                debug!("使用 ShellExecuteW 启动 powershell 以管理员权限安装: {}", ps_args);
+                debug!(
+                    "使用 ShellExecuteW 启动 powershell 以管理员权限安装: {}",
+                    ps_args
+                );
                 unsafe {
                     ShellExecuteW(
                         None,
@@ -321,10 +362,16 @@ pub async fn download_and_install_deps_async(deps: &[(&str, Option<&str>)]) -> R
                 }
 
                 update_task_dialog_progress(100);
-                info!("安装流程对 {} 的处理已结束（可能成功或超时），请按需检查。", name);
+                info!(
+                    "安装流程对 {} 的处理已结束（可能成功或超时），请按需检查。",
+                    name
+                );
             }
             None => {
-                warn!("没有可用的候选来安装 {}（min_version={:?}），跳过", pkg_family, min_version);
+                warn!(
+                    "没有可用的候选来安装 {}（min_version={:?}），跳过",
+                    pkg_family, min_version
+                );
                 continue;
             }
         }
@@ -340,7 +387,7 @@ pub fn ensure_uwp_dependencies_or_prompt() {
         ("Microsoft.VCLibs.140.00.UWPDesktop", None),
         ("Microsoft.Services.Store.Engagement", None),
         ("Microsoft.NET.Native.Framework.1.3", None),
-     // ("Microsoft.Services.Store.Engagement",None),
+        // ("Microsoft.Services.Store.Engagement",None),
     ];
 
     let missing: Vec<(&str, Option<&str>)> = deps
@@ -354,11 +401,25 @@ pub fn ensure_uwp_dependencies_or_prompt() {
         return;
     }
 
-    debug!("缺失或版本不足依赖: {:?}", missing.iter().map(|(k, v)| format!("{}:{:?}", k, v)).collect::<Vec<_>>());
+    debug!(
+        "缺失或版本不足依赖: {:?}",
+        missing
+            .iter()
+            .map(|(k, v)| format!("{}:{:?}", k, v))
+            .collect::<Vec<_>>()
+    );
 
-    let missing_str = missing.iter().map(|(k, v)| {
-        if let Some(min) = v { format!("{} (min {})", k, min) } else { k.to_string() }
-    }).collect::<Vec<_>>().join("\n");
+    let missing_str = missing
+        .iter()
+        .map(|(k, v)| {
+            if let Some(min) = v {
+                format!("{} (min {})", k, min)
+            } else {
+                k.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let mut args = FluentArgs::new();
     args.set("missing", missing_str);
@@ -374,8 +435,14 @@ pub fn ensure_uwp_dependencies_or_prompt() {
     let btn_exit = to_wstr(&I18n::t("appx-deps-button-exit", None));
 
     let buttons = [
-        TASKDIALOG_BUTTON { nButtonID: IDNO.0, pszButtonText: PCWSTR(btn_auto.as_ptr()) },
-        TASKDIALOG_BUTTON { nButtonID: IDCANCEL.0, pszButtonText: PCWSTR(btn_exit.as_ptr()) },
+        TASKDIALOG_BUTTON {
+            nButtonID: IDNO.0,
+            pszButtonText: PCWSTR(btn_auto.as_ptr()),
+        },
+        TASKDIALOG_BUTTON {
+            nButtonID: IDCANCEL.0,
+            pszButtonText: PCWSTR(btn_exit.as_ptr()),
+        },
     ];
 
     const TDF_ALLOW_DIALOG_CANCELLATION_LOCAL: u32 = 0x0008;
@@ -384,7 +451,9 @@ pub fn ensure_uwp_dependencies_or_prompt() {
     let mut cfg: TASKDIALOGCONFIG = unsafe { std::mem::zeroed() };
     cfg.cbSize = size_of::<TASKDIALOGCONFIG>() as u32;
     cfg.hwndParent = HWND(std::ptr::null_mut());
-    cfg.dwFlags = TASKDIALOG_FLAGS((TDF_ALLOW_DIALOG_CANCELLATION_LOCAL | TDF_SHOW_PROGRESS_BAR_LOCAL) as i32);
+    cfg.dwFlags = TASKDIALOG_FLAGS(
+        (TDF_ALLOW_DIALOG_CANCELLATION_LOCAL | TDF_SHOW_PROGRESS_BAR_LOCAL) as i32,
+    );
     cfg.dwCommonButtons = TASKDIALOG_COMMON_BUTTON_FLAGS(0);
     cfg.pszWindowTitle = PCWSTR(title.as_ptr());
     cfg.pszMainInstruction = PCWSTR(instr.as_ptr());
@@ -401,7 +470,8 @@ pub fn ensure_uwp_dependencies_or_prompt() {
     if pressed == IDNO.0 {
         info!("用户选择自动安装，开始下载并安装缺失依赖。");
 
-        let owned_missing: Vec<(String, Option<String>)> = missing.into_iter()
+        let owned_missing: Vec<(String, Option<String>)> = missing
+            .into_iter()
             .map(|(k, v)| (k.to_string(), v.map(|s| s.to_string())))
             .collect();
 
@@ -415,7 +485,10 @@ pub fn ensure_uwp_dependencies_or_prompt() {
                     let instr = to_wstr("无法创建后台运行环境。");
                     let content = to_wstr(&format!("{:?}", e));
                     let btn_ok = to_wstr("确定");
-                    let ok_button = [TASKDIALOG_BUTTON { nButtonID: IDNO.0, pszButtonText: PCWSTR(btn_ok.as_ptr()) }];
+                    let ok_button = [TASKDIALOG_BUTTON {
+                        nButtonID: IDNO.0,
+                        pszButtonText: PCWSTR(btn_ok.as_ptr()),
+                    }];
                     let mut cfg_err: TASKDIALOGCONFIG = unsafe { std::mem::zeroed() };
                     cfg_err.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
                     cfg_err.hwndParent = HWND(std::ptr::null_mut());
@@ -427,7 +500,9 @@ pub fn ensure_uwp_dependencies_or_prompt() {
                     cfg_err.cButtons = ok_button.len() as u32;
                     cfg_err.pButtons = ok_button.as_ptr();
                     cfg_err.nDefaultButton = IDNO.0;
-                    unsafe { let _ = TaskDialogIndirect(&mut cfg_err, None, None, None); };
+                    unsafe {
+                        let _ = TaskDialogIndirect(&mut cfg_err, None, None, None);
+                    };
                     std::process::exit(1);
                 }
             };
@@ -457,7 +532,10 @@ pub fn ensure_uwp_dependencies_or_prompt() {
             };
 
             let btn_ok = to_wstr("确定");
-            let ok_button = [TASKDIALOG_BUTTON { nButtonID: IDNO.0, pszButtonText: PCWSTR(btn_ok.as_ptr()) }];
+            let ok_button = [TASKDIALOG_BUTTON {
+                nButtonID: IDNO.0,
+                pszButtonText: PCWSTR(btn_ok.as_ptr()),
+            }];
             let mut cfg2: TASKDIALOGCONFIG = unsafe { std::mem::zeroed() };
             cfg2.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
             cfg2.hwndParent = HWND(std::ptr::null_mut());
@@ -469,7 +547,9 @@ pub fn ensure_uwp_dependencies_or_prompt() {
             cfg2.cButtons = ok_button.len() as u32;
             cfg2.pButtons = ok_button.as_ptr();
             cfg2.nDefaultButton = IDNO.0;
-            unsafe { let _ = TaskDialogIndirect(&mut cfg2, None, None, None); };
+            unsafe {
+                let _ = TaskDialogIndirect(&mut cfg2, None, None, None);
+            };
 
             std::process::exit(0);
         });
@@ -479,5 +559,4 @@ pub fn ensure_uwp_dependencies_or_prompt() {
         info!("用户取消安装依赖，程序退出");
         std::process::exit(0);
     }
-
 }

@@ -55,6 +55,8 @@ jobs:
         shell: pwsh
         env:
           CI: false
+          GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
+          GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
 
       - name: Verify expected exe exists and set output
         id: find_exe

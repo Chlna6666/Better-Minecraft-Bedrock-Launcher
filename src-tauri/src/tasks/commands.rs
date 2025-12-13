@@ -1,7 +1,7 @@
 use tauri::command;
 use tracing::debug;
 
-use crate::tasks::task_manager::{get_snapshot, cancel_task as tm_cancel_task};
+use crate::tasks::task_manager::{cancel_task as tm_cancel_task, get_snapshot};
 
 #[command]
 pub fn get_task_status(task_id: String) -> Result<serde_json::Value, String> {

@@ -1,4 +1,3 @@
-
 // 全局常量
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const APP_LICENSE: &str = env!("CARGO_PKG_LICENSE");

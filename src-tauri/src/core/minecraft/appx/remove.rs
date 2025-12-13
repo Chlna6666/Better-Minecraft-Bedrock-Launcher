@@ -1,6 +1,6 @@
-use tracing::{info, error};
-use windows::core::{HRESULT, HSTRING, Result as WinResult, Error as WinError};
-use windows::Management::Deployment::{PackageManager, RemovalOptions, DeploymentResult};
+use tracing::{error, info};
+use windows::core::{Error as WinError, Result as WinResult, HRESULT, HSTRING};
+use windows::Management::Deployment::{DeploymentResult, PackageManager, RemovalOptions};
 
 /// 卸载 Appx 包：传入 packageFamilyName
 pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
@@ -10,11 +10,10 @@ pub async fn remove_package(package_family_name: &str) -> WinResult<()> {
     })?;
 
     // 发起异步卸载请求（注意：这是一个 COM async 对象）
-    let async_op = package_manager
-        .RemovePackageWithOptionsAsync(
-            &HSTRING::from(package_family_name),
-            RemovalOptions::PreserveApplicationData,
-        )?;
+    let async_op = package_manager.RemovePackageWithOptionsAsync(
+        &HSTRING::from(package_family_name),
+        RemovalOptions::PreserveApplicationData,
+    )?;
 
     // 关键：await 异步操作（而不是调用 .get()）
     let result: DeploymentResult = async_op.await?;

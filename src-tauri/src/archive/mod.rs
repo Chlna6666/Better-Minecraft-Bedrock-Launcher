@@ -1,4 +1,3 @@
-
-pub mod zip;
-pub mod manager;
 pub mod commands;
+pub mod manager;
+pub mod zip;

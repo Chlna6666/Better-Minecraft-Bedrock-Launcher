@@ -1,5 +1,6 @@
-use crate::core::minecraft::resource_packs::{read_all_resource_packs,read_all_behavior_packs,McPackInfo };
-
+use crate::core::minecraft::resource_packs::{
+    read_all_behavior_packs, read_all_resource_packs, McPackInfo,
+};
 
 #[tauri::command]
 pub async fn get_all_resource_packs(lang: Option<String>) -> Result<Vec<McPackInfo>, String> {

@@ -1,4 +1,4 @@
-
+use crate::config::config::read_config;
 use chrono::Local;
 use once_cell::sync::Lazy;
 use std::fs::{create_dir_all, OpenOptions};
@@ -9,7 +9,6 @@ use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
-use crate::config::config::{read_config};
 
 // 程序启动时间
 static START_TIME: Lazy<Instant> = Lazy::new(Instant::now);
@@ -72,7 +71,7 @@ pub fn init_logging() {
         eprintln!("Failed to clear latest.log: {}", e);
         return;
     }
-    
+
     // 判断是否启用 debug 日志
     let debug_enabled = match read_config() {
         Ok(config) => config.launcher.debug,

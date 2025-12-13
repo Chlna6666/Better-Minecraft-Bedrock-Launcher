@@ -1,251 +1,408 @@
-/* --- Overlay & Modal --- */
+/* ================================================================================================
+   1. Design Tokens & Variables
+   ================================================================================================ */
+:root {
+    /* Color Palette - Modern Blue */
+    --bm-primary-hue: 212;
+    --bm-primary: hsl(var(--bm-primary-hue), 100%, 50%);
+    --bm-primary-hover: hsl(var(--bm-primary-hue), 100%, 45%);
+    --bm-primary-glow: hsla(var(--bm-primary-hue), 100%, 50%, 0.4);
 
-.install-dialog::backdrop {
-    background: rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(3px);
-    animation: overlayFadeIn 200ms ease forwards;
+    /* Semantic Colors */
+    --bm-danger: #ef4444;
+    --bm-danger-hover: #dc2626;
+    --bm-success: #22c55e;
+
+    /* Layout */
+    --bm-radius-lg: 16px;
+    --bm-radius-md: 10px;
+    --bm-radius-sm: 6px;
+    --bm-space-unit: 4px;
+
+    /* Animation */
+    --bm-ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.1); /* 弹性动画 */
+    --bm-ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.install-dialog {
-     border: none;
-     padding: 0;
-     background: transparent;
-     max-width: calc(100% - 40px);
-     width: 600px;
-     display: flex;
-     align-items: center;
-     justify-content: center;
- }
+/* Light Theme */
+:root, [data-theme='light'] {
+    --bm-bg-surface: #ffffff;
+    --bm-bg-subtle: #f8fafc;
+    --bm-text-main: #0f172a;
+    --bm-text-secondary: #64748b;
+    --bm-border-color: #e2e8f0;
+    --bm-shadow-dialog: 0 20px 40px -10px rgba(0,0,0,0.15), 0 0 15px rgba(0,0,0,0.05);
+    --bm-input-bg: #f1f5f9;
+    --bm-track-bg: #e2e8f0;
+}
 
-.install-dialog:focus {
+/* Dark Theme */
+[data-theme='dark'] {
+    --bm-bg-surface: #1e293b;
+    --bm-bg-subtle: #0f172a;
+    --bm-text-main: #f8fafc;
+    --bm-text-secondary: #94a3b8;
+    --bm-border-color: #334155;
+    --bm-shadow-dialog: 0 25px 50px -12px rgba(0,0,0,0.5);
+    --bm-input-bg: #0f172a;
+    --bm-track-bg: #334155;
+}
+
+/* ================================================================================================
+   2. Dialog Container & Animations
+   ================================================================================================ */
+
+.bm-install-dialog {
+    padding: 0;
+    border: none;
+    border-radius: var(--bm-radius-lg);
+    background: var(--bm-bg-surface);
+    color: var(--bm-text-main);
+    box-shadow: var(--bm-shadow-dialog);
+    width: 90%;
+    max-width: 480px;
+    overflow: hidden;
+
+    /* 初始状态用于动画 */
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+
+    /* 出现动画 */
+    animation: dialog-enter 0.4s var(--bm-ease-spring) forwards;
+}
+
+.bm-install-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(8px); /* 现代毛玻璃背景 */
+    animation: backdrop-enter 0.3s ease-out forwards;
+}
+
+.bm-install-dialog.is-closing {
+    animation: dialog-exit 0.2s ease-in forwards;
+    pointer-events: none;
+}
+
+.bm-install-dialog.is-closing::backdrop {
+    animation: backdrop-exit 0.2s ease-in forwards;
+}
+
+/* 内容包装器，用于视图切换动画 */
+.bm-view-wrapper {
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    animation: view-fade-in 0.3s var(--bm-ease-smooth);
+}
+
+/* ================================================================================================
+   3. Typography & Icons
+   ================================================================================================ */
+
+.bm-install-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+    color: var(--bm-text-main);
+    letter-spacing: -0.01em;
+}
+
+.bm-install-subtitle {
+    font-size: 14px;
+    color: var(--bm-text-secondary);
+    margin: 4px 0 0;
+    line-height: 1.5;
+}
+
+.bm-icon-circle {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 16px;
+}
+
+.bm-icon-circle.confirm {
+    background: hsla(var(--bm-primary-hue), 100%, 50%, 0.1);
+    color: var(--bm-primary);
+}
+
+.bm-icon-circle.error {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--bm-danger);
+}
+
+.bm-icon-circle svg {
+    width: 24px;
+    height: 24px;
+}
+
+/* 所有的数字都使用等宽，防止跳动 */
+.tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    letter-spacing: -0.5px;
+}
+
+/* ================================================================================================
+   4. Form Elements & Buttons
+   ================================================================================================ */
+
+.bm-input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.bm-input-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--bm-text-secondary);
+}
+
+.bm-modern-input {
+    width: 100%;
+    padding: 12px 16px;
+    background: var(--bm-input-bg);
+    border: 2px solid transparent;
+    border-radius: var(--bm-radius-md);
+    color: var(--bm-text-main);
+    font-size: 14px;
+    transition: all 0.2s var(--bm-ease-smooth);
+    box-sizing: border-box;
     outline: none;
 }
 
-.modal-overlay {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 9999;
-    backdrop-filter: blur(3px);
-    animation: overlayFadeIn 200ms ease forwards;
+.bm-modern-input:focus {
+    background: var(--bm-bg-surface);
+    border-color: var(--bm-primary);
+    box-shadow: 0 0 0 4px var(--bm-primary-glow);
 }
 
-@keyframes overlayFadeIn {
-    from { opacity: 0; }
+.bm-install-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.bm-btn {
+    padding: 10px 20px;
+    border-radius: var(--bm-radius-sm);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s var(--bm-ease-smooth);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.bm-btn.primary {
+    background: var(--bm-primary);
+    color: white;
+    box-shadow: 0 4px 12px var(--bm-primary-glow);
+}
+.bm-btn.primary:hover {
+    background: var(--bm-primary-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px var(--bm-primary-glow);
+}
+.bm-btn.primary:active {
+    transform: translateY(1px);
+    box-shadow: 0 2px 6px var(--bm-primary-glow);
+}
+
+.bm-btn.secondary {
+    background: transparent;
+    color: var(--bm-text-secondary);
+    border: 1px solid var(--bm-border-color);
+}
+.bm-btn.secondary:hover {
+    background: var(--bm-bg-subtle);
+    color: var(--bm-text-main);
+    border-color: var(--bm-text-secondary);
+}
+
+.bm-btn.danger.text-only {
+    background: transparent;
+    color: var(--bm-text-secondary);
+    padding: 8px 16px;
+}
+.bm-btn.danger.text-only:hover {
+    color: var(--bm-danger);
+    background: rgba(239, 68, 68, 0.05);
+}
+
+/* ================================================================================================
+   5. Progress Bar Component (The "Silky" Part)
+   ================================================================================================ */
+
+.bm-install-header.left-align {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 8px;
+}
+
+.bm-percent-large {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--bm-primary);
+}
+
+.bm-progress-track-wrapper {
+    position: relative;
+    padding: 2px 0; /* 给辉光留空间 */
+}
+
+.bm-progress-bar-track {
+    position: relative;
+    height: 8px;
+    background: var(--bm-track-bg);
+    border-radius: 4px;
+    overflow: hidden;
+    /* 解决 Safari 上的圆角溢出问题 */
+    transform: translateZ(0);
+}
+
+.bm-progress-bar-fill {
+    height: 100%;
+    background: var(--bm-primary);
+    border-radius: 4px;
+    /* 关键：使用 width 配合 CSS transition 实现平滑补间，
+       虽然 React 在用 requestAnimationFrame 更新 width，
+       但加上 transition 可以平滑后端 polling 数据到达时的突变 */
+    transition: width 0.1s linear;
+    position: relative;
+    z-index: 1;
+}
+
+/* 进度条上的动态流光 */
+.bm-progress-bar-fill::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(
+            90deg,
+            transparent 0%,
+            rgba(255, 255, 255, 0.4) 50%,
+            transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite linear;
+    transform: skewX(-20deg);
+}
+
+.no-transition .bm-progress-bar-fill,
+.no-transition .bm-progress-bar-glow {
+    transition: none !important;
+}
+
+/* 进度条下方的光晕 (Glow) */
+.bm-progress-bar-glow {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    background: var(--bm-primary);
+    filter: blur(6px);
+    opacity: 0.6;
+    z-index: 0;
+    transition: width 0.1s linear, opacity 0.3s;
+}
+
+/* 统计数据网格 */
+.bm-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 8px;
+}
+
+.bm-stat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.bm-stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--bm-text-secondary);
+    font-weight: 600;
+}
+
+.bm-stat-value {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--bm-text-main);
+}
+
+/* ================================================================================================
+   6. Error View
+   ================================================================================================ */
+
+.bm-error-container {
+    background: rgba(239, 68, 68, 0.05);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-radius: var(--bm-radius-md);
+    padding: 12px;
+}
+
+.bm-error-message {
+    color: var(--bm-danger);
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+/* ================================================================================================
+   7. Keyframe Animations (High Performance)
+   ================================================================================================ */
+
+@keyframes dialog-enter {
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+@keyframes dialog-exit {
+    to {
+        opacity: 0;
+        transform: scale(0.95) translateY(10px);
+    }
+}
+
+@keyframes backdrop-enter {
     to { opacity: 1; }
 }
 
-/* 卡片容器 */
-.install-modal {
-    width: 500px;
-    box-sizing: border-box;
-    max-width: calc(100% - 40px);
-    background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,250,250,0.98));
-    border-radius: 14px;
-    padding: 18px;
-    transform: translateY(8px) scale(0.98);
-    opacity: 0;
-    transition: transform 240ms cubic-bezier(.2,.9,.25,1), opacity 200ms ease;
-    will-change: transform, opacity;
-    overflow: hidden;
-    border: 1px solid rgba(18,20,22,0.06);
-    animation: modalEntrance 260ms cubic-bezier(.2,.9,.25,1) forwards;
+@keyframes backdrop-exit {
+    to { opacity: 0; }
 }
 
-@keyframes modalEntrance {
-    from { transform: translateY(12px) scale(0.98); opacity: 0; }
-    to   { transform: translateY(0) scale(1); opacity: 1; }
+@keyframes view-fade-in {
+    from {
+        opacity: 0;
+        transform: translateY(5px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
-.install-modal.modal-error {
-    /* 更明显的边框颜色用于错误态 */
-    border: 1px solid rgba(220,53,69,0.12);
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
 }
-
-/* header */
-.modal-header {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    margin-bottom: 12px;
-}
-
-.modal-title {
-    font-size: 1.05rem;
-    font-weight: 600;
-    color: #111;
-}
-
-.modal-subtitle {
-    font-size: 0.85rem;
-    color: #666;
-}
-
-/* body */
-.download-progress-body {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-/* --- Progress bar row --- */
-.progress-row {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-}
-
-/* 百分比大数字 */
-.progress-percentage {
-    min-width: 56px;
-    text-align: left;
-    font-weight: 700;
-    font-size: 1.1rem;
-    color: var(--theme-color);
-}
-
-/* 自定义进度条外壳 */
-.progress-bar-outer {
-    position: relative;
-    flex: 1;
-    height: 12px;
-    background: #eef3ff;
-    border-radius: 999px;
-    overflow: hidden;
-    box-shadow: inset 0 -1px 0 rgba(255,255,255,0.5);
-}
-
-/* 内部进度条（纯色，更平滑）*/
-.progress-bar-inner {
-    height: 100%;
-    width: 0%;
-    border-radius: 999px;
-    background-color: var(--theme-color);
-    transition: width 420ms cubic-bezier(.2,.9,.25,1); /* 更平滑的过渡 */
-    box-shadow: 0 2px 10px rgba(11,92,255,0.12);
-}
-
-/* 信息网格 */
-.progress-info-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    align-items: center;
-}
-
-.info-block {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.info-label {
-    font-size: 0.78rem;
-    color: #7b7f87;
-}
-
-.info-value {
-    font-size: 0.95rem;
-    color: #222;
-    font-weight: 600;
-}
-
-/* 操作区 */
-.actions-row {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-}
-
-/* --- 错误样式（自动换行+可滚动）--- */
-.error-message {
-    font-size: 0.95rem;
-    color: #721c24;
-    background-color: #fff0f1;
-    padding: 12px;
-    border-radius: 8px;
-    border: 1px solid #f5c6cb;
-    max-height: 180px; /* 控制高度，超过则滚动 */
-    overflow-y: auto;
-    overflow-x: hidden;
-    word-break: break-word;
-}
-
-/* 保证多行文本换行且保留换行符 */
-.error-message .error-text {
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", monospace;
-    font-size: 0.9rem;
-    color: #6a1d2a;
-}
-
-/* 居中 error actions */
-.error-actions {
-    display: flex;
-    justify-content: center;
-    gap: 10px;
-}
-
-/* 重试按钮（没有悬浮效果） */
-.retry-button {
-    background-color: var(--theme-color);
-    color: #fff;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-}
-
-/* 让重试按钮在禁用时视觉变浅 */
-.retry-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-/* 确认面板的文件名输入样式 */
-.filename-label {
-    font-size: 0.85rem;
-    color: #444;
-    margin-bottom: 6px;
-    display: block;
-}
-
-.filename-input {
-    padding: 10px 12px;
-    border-radius: 8px;
-    border: 1px solid rgba(18,20,22,0.08);
-    background: #fff;
-    font-size: 0.95rem;
-    margin-bottom: 12px;
-    box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);
-}
-
-/* 确认面板的按钮组：取消 + 开始 */
-.confirm-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-}
-
-
-.cancel-button {
-    background-color: #dc3545;
-    color: #fff;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    pointer-events: auto !important;
-}
-
-.cancel-button:disabled {
-    background-color: #e0aeb5;
-    cursor: not-allowed;
-    pointer-events: auto !important;
-}
-

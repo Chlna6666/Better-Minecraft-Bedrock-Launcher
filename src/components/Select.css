@@ -1,147 +1,215 @@
-/* Select.css （替换或追加到你的文件） */
+/* Select.css */
+
+:root {
+    /* --- 核心变量：默认浅色模式 --- */
+    --sel-bg: #ffffff;
+    --sel-text: #1f2937;
+    --sel-placeholder: #9ca3af;
+    --sel-border: #e5e7eb;
+    --sel-hover-bg: #f3f4f6;
+    --sel-active-bg: #e5e7eb;
+    --sel-selected-bg: #eff6ff;
+    --sel-selected-text: #2563eb;
+    --sel-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --sel-dropdown-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+
+    /* 尺寸与动效 */
+    --sel-radius: 10px;
+    --sel-transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* --- 深色模式适配 --- */
+[data-theme='dark'] {
+    --sel-bg: #2d2d2d;
+    --sel-text: #e5e7eb;
+    --sel-placeholder: #6b7280;
+    --sel-border: #404040;
+    --sel-hover-bg: #3f3f46;
+    --sel-active-bg: #52525b;
+    --sel-selected-bg: rgba(37, 99, 235, 0.2);
+    --sel-selected-text: #60a5fa;
+    --sel-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    --sel-dropdown-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+}
+
+/* --- 根容器 --- */
 .select-root {
     position: relative;
     display: inline-block;
-    min-width: 20%;
-    right: auto;
-    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-    "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", Arial, sans-serif;
-
-    /* 使用变量，方便在 props/外部覆盖 */
+    width: 100%; /* 默认占满父容器分配的宽度 */
+    font-family: inherit;
     font-size: var(--select-font-size, 14px);
-    line-height: 1.4;
+
+    /* 解决旧版可能存在的文字模糊问题 */
     -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    --select-padding: 8px 12px;
-    --select-item-padding: 8px 10px;
-    --select-border-radius: 8px;
-    --select-max-height: 240px;
-    --select-arrow-size: 15px;
 }
 
-/* 按钮 */
+/* --- 触发按钮 --- */
 .select-btn {
     width: 100%;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: var(--select-padding);
-    border-radius: var(--select-border-radius);
-    border: 1px solid rgba(0,0,0,0.12);
-    background: white;
+    padding: var(--select-padding, 8px 12px);
+    background: var(--sel-bg);
+    color: var(--sel-text);
+    border: 1px solid var(--sel-border);
+    border-radius: var(--sel-radius);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     cursor: pointer;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    font-size: inherit;
-    line-height: inherit;
+    transition: all var(--sel-transition);
     user-select: none;
-    transition: border-color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
+    outline: none;
+    gap: 8px;
 }
 
+/* 按钮悬停与激活状态 */
+.select-btn:hover:not(:disabled) {
+    border-color: #d1d5db; /* 稍微加深 */
+    background: var(--sel-hover-bg);
+}
+[data-theme='dark'] .select-btn:hover:not(:disabled) {
+    border-color: #52525b;
+}
 
-/* 让显示文本也作为 flex 居中，避免基线差异 */
+.select-btn[aria-expanded="true"] {
+    border-color: var(--sel-selected-text);
+    box-shadow: 0 0 0 2px var(--sel-selected-bg);
+}
+
+/* 禁用状态 */
+.select-root.is-disabled .select-btn {
+    opacity: 0.6;
+    cursor: not-allowed;
+    background: var(--sel-hover-bg);
+}
+
+/* 文本截断 */
 .select-value,
 .select-placeholder {
-    display: inline-flex;
-    align-items: center;
-    height: 100%;
-    line-height: normal; /* 重置行高 */
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+    flex: 1;
 }
 
+.select-placeholder {
+    color: var(--sel-placeholder);
+}
+
+/* 箭头图标 */
 .select-arrow {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     justify-content: center;
-    width: var(--select-arrow-size);
-    height: var(--select-arrow-size);
-    box-sizing: content-box;
-    line-height: 1;            /* 防止字体基线影响 */
-    font-size: calc(var(--select-arrow-size)); /* 使字符 ▾ 填满容器 */
-    transition: transform 180ms ease, color 120ms ease;
-    transform-origin: center;
+    width: 16px;
+    height: 16px;
+    color: var(--sel-placeholder);
+    transition: transform var(--sel-transition);
+    flex-shrink: 0;
 }
 
-/* 当箭头有 open 类时旋转 */
-.select-arrow.open {
+.select-btn[aria-expanded="true"] .select-arrow {
     transform: rotate(180deg);
+    color: var(--sel-selected-text);
 }
 
-/* 或者使用按钮的 is-open 状态（另一种选择） */
-.select-btn.is-open .select-arrow {
-    transform: rotate(180deg);
-}
-
-
-/* 列表容器 */
+/* --- 下拉菜单容器 --- */
 .select-list-wrapper {
     position: absolute;
     left: 0;
-    right: auto;
+    top: 100%; /* 紧贴按钮下方 */
     margin-top: 6px;
-    transform-origin: top center;
-    z-index: 50;
-    pointer-events: none;
-    will-change: opacity, transform, width, left, right;
-}
+    min-width: 100%; /* 至少与按钮等宽 */
+    width: max-content; /* 允许内容撑开，但 JS 会限制最大宽度 */
+    z-index: 999; /* 确保层级足够高 */
 
-
-/* 列表 actual */
-.select-list-wrapper .select-list {
-    margin: 0;
-    padding: 4px;
-    list-style: none;
-    border-radius: calc(var(--select-border-radius));
-    box-shadow: 0 6px 20px rgba(16,24,40,0.12);
-    background: linear-gradient(180deg, rgba(255,255,255,1), rgba(250,250,255,1));
-    max-height: var(--select-max-height, 240px);
-    overflow: auto;
-    transform-origin: top center;
+    /* 动画初始状态 */
     opacity: 0;
-    transform: translateY(-6px) scale(0.98);
-    transition: opacity 180ms cubic-bezier(.2,.9,.3,1), transform 180ms cubic-bezier(.2,.9,.3,1), width 160ms ease;
-    pointer-events: none;
-    font-size: inherit;
-    line-height: inherit;
+    transform: scale(0.95) translateY(-5px);
+    transform-origin: top left;
+    pointer-events: none; /* 关闭时不可点击 */
+    visibility: hidden; /* 防止无障碍聚焦 */
+
+    transition:
+            opacity var(--sel-transition),
+            transform var(--sel-transition),
+            visibility 0s linear 0.2s; /* 延迟隐藏 visibility 以等待 opacity 动画 */
 }
 
-/* 打开 */
-.select-list-wrapper.open .select-list {
+/* 展开状态 */
+.select-list-wrapper.open {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: scale(1) translateY(0);
     pointer-events: auto;
+    visibility: visible;
+    transition-delay: 0s;
 }
 
-/* 项目 */
+/* --- 下拉列表实际内容 --- */
+.select-list {
+    margin: 0;
+    padding: 6px;
+    list-style: none;
+    background: var(--sel-bg);
+    border: 1px solid var(--sel-border);
+    border-radius: var(--sel-radius);
+    box-shadow: var(--sel-dropdown-shadow);
+    max-height: var(--select-max-height, 260px);
+    overflow-y: auto;
+
+    /* 现代滚动条行为 */
+    overscroll-behavior: contain;
+}
+
+/* --- 列表项 --- */
 .select-item {
     display: flex;
     align-items: center;
-    padding: var(--select-item-padding);
-    border-radius: 6px;
+    padding: var(--select-item-padding, 8px 12px);
+    margin-bottom: 2px;
+    border-radius: calc(var(--sel-radius) - 4px);
+    color: var(--sel-text);
     cursor: pointer;
-    user-select: none;
-    color: #000;
-    font-size: inherit;
-    line-height: inherit;
-    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+    font-size: 0.95em;
 }
 
-/* hover/highlight */
+.select-item:last-child {
+    margin-bottom: 0;
+}
+
+/* 列表项交互 */
 .select-item:hover,
 .select-item.is-highlighted {
-    background: rgba(140, 140, 140, 0.13);
+    background-color: var(--sel-hover-bg);
 }
 
-/* selected */
 .select-item.is-selected {
-    background: rgba(100, 150, 255, 0.10);
+    background-color: var(--sel-selected-bg);
+    color: var(--sel-selected-text);
+    font-weight: 500;
 }
 
-/* disabled */
 .select-item.is-disabled {
-    color: #9aa4b2;
+    opacity: 0.5;
     cursor: not-allowed;
 }
 
-/* scrollbar */
-.select-list::-webkit-scrollbar { height: 8px; width: 8px; }
-.select-list::-webkit-scrollbar-thumb { border-radius: 8px; background: rgba(0,0,0,0.08); }
+/* --- 滚动条美化 --- */
+.select-list::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.select-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+.select-list::-webkit-scrollbar-thumb {
+    background: rgba(156, 163, 175, 0.5);
+    border-radius: 3px;
+}
+.select-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(156, 163, 175, 0.8);
+}

@@ -1,12 +1,16 @@
-use windows::core::{HSTRING};
-use windows::Win32::System::Com::{CoInitializeEx, CoCreateInstance, COINIT_APARTMENTTHREADED, CLSCTX_ALL};
-use windows::Win32::UI::Shell::{ApplicationActivationManager, IApplicationActivationManager, ACTIVATEOPTIONS};
+use windows::core::HSTRING;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Shell::{
+    ApplicationActivationManager, IApplicationActivationManager, ACTIVATEOPTIONS,
+};
 
-use std::ptr;
 use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::ptr;
 use tracing::info;
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -16,9 +20,8 @@ fn launch_uwp_winapi(app_user_model_id: &str) -> Result<u32, windows::core::Erro
         return Err(hr.into());
     }
 
-    let activator: IApplicationActivationManager = unsafe {
-        CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)?
-    };
+    let activator: IApplicationActivationManager =
+        unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)? };
 
     let result = unsafe {
         activator.ActivateApplication(
@@ -41,8 +44,12 @@ pub fn launch_uwp(edition: &str) -> io::Result<Option<u32>> {
     let app_user_model_id = match edition {
         "Microsoft.MinecraftUWP" => "Microsoft.MinecraftUWP_8wekyb3d8bbwe!App",
         "Microsoft.MinecraftWindowsBeta" => "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe!App",
-        "Microsoft.MinecraftEducationEdition" => "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition",
-        "Microsoft.MinecraftEducationPreview" => "Microsoft.MinecraftEducationPreview_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition",
+        "Microsoft.MinecraftEducationEdition" => {
+            "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition"
+        }
+        "Microsoft.MinecraftEducationPreview" => {
+            "Microsoft.MinecraftEducationPreview_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition"
+        }
         _ => return Ok(None),
     };
 
@@ -81,7 +88,10 @@ pub fn launch_win32(package_folder: &str) -> io::Result<Option<u32>> {
                     if let Some(fname) = p.file_name().and_then(|f| f.to_str()) {
                         let fname_l = fname.to_lowercase();
                         // 高优先级匹配
-                        if fname_l.contains("minecraft") || fname_l.contains("bedrock") || fname_l.contains("launcher") {
+                        if fname_l.contains("minecraft")
+                            || fname_l.contains("bedrock")
+                            || fname_l.contains("launcher")
+                        {
                             // 立刻尝试启动优先 exe
                             match Command::new(&p).spawn() {
                                 Ok(child) => return Ok(Some(child.id())),

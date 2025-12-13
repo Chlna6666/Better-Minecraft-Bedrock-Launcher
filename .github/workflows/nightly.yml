@@ -314,6 +314,8 @@ jobs:
         shell: pwsh
         env:
           CI: false
+          GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
+          GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
 
       - name: 验证 exe 是否存在并设置输出
         id: find_exe

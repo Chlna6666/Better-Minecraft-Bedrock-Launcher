@@ -1,163 +1,195 @@
-.toast-bottom-right { right: 20px; bottom: 20px; align-items: flex-end; }
-.toast-top-right    { right: 20px; top: 20px; align-items: flex-end; }
-.toast-bottom-left  { left: 20px; bottom: 20px; align-items: flex-start; }
-.toast-top-left     { left: 20px; top: 20px; align-items: flex-start; }
+:root {
+    /* --- Toast Configuration --- */
+    --toast-width: 320px;
+    --toast-bg-info: #2563eb;       /* Blue 600 */
+    --toast-bg-success: #16a34a;    /* Green 600 */
+    --toast-bg-error: #dc2626;      /* Red 600 */
+    --toast-text-color: #ffffff;
+    --toast-radius: 8px;
+    --toast-padding: 12px 16px;
+    --toast-spacing: 12px;          /* Gap between toasts */
+    --toast-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
 
+    /* --- Animation Config --- */
+    --toast-anim-duration: 400ms;
+    /* 弹性效果：让进入动画有点 Q 弹 */
+    --toast-ease-in: cubic-bezier(0.2, 0.9, 0.3, 1.2);
+    /* 退出效果：干脆利落 */
+    --toast-ease-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* --- Container --- */
 .toast-container {
     position: fixed;
-    z-index: 99999;
-    pointer-events: none;
+    z-index: 9999;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 12px;
-}
-.toast-container .toast-item {
-    transition: transform 300ms ease, opacity 300ms ease, margin 300ms ease;
+    gap: var(--toast-spacing);
+    pointer-events: none; /* 让点击穿透空白区域 */
+    padding: 20px;
+    max-width: 100vw;
 }
 
-.toast-bottom-right { right: 20px; bottom: 20px; align-items: flex-end; }
-.toast-top-right { right: 20px; top: 20px; align-items: flex-end; }
-.toast-bottom-left { left: 20px; bottom: 20px; align-items: flex-start; }
-.toast-top-left { left: 20px; top: 20px; align-items: flex-start; }
+/* Positioning */
+.toast-container.position-top-right    { top: 0; right: 0; align-items: flex-end; }
+.toast-container.position-bottom-right { bottom: 0; right: 0; align-items: flex-end; }
+.toast-container.position-top-left     { top: 0; left: 0; align-items: flex-start; }
+.toast-container.position-bottom-left  { bottom: 0; left: 0; align-items: flex-start; }
 
-/* item */
+/* 如果在底部，通常希望新的 toast 看起来是“堆”上去的，
+   但 flex-direction: column 默认是从上往下。
+   对于底部定位，如果你希望新消息出现在最下方，不需要改动。
+   如果你希望新消息出现在最上方（靠近内容区），可以使用 column-reverse，
+   但 JS 数组顺序也要配合。这里保持标准 column 堆叠。 */
+
+/* --- Toast Item Base --- */
 .toast-item {
-    pointer-events: auto;
+    position: relative;
+    width: auto;
+    min-width: 240px;
+    max-width: var(--toast-width);
+    background: #333; /* Fallback */
+    color: var(--toast-text-color);
+    padding: var(--toast-padding);
+    border-radius: var(--toast-radius);
+    box-shadow: var(--toast-shadow);
+
     display: flex;
     align-items: center;
-    min-width: 220px;
-    max-width: 420px;
-    padding: 5px 8px;
-    border-radius: 6px;
-    color: #fff;
-    box-shadow: 0 12px 30px rgba(8,15,36,0.18);
-    transform-origin: right bottom;
+    gap: 12px;
+
+    pointer-events: auto; /* 恢复点击 */
     cursor: pointer;
     overflow: hidden;
-    position: relative;
-    border: 1px solid rgba(255,255,255,0.06);
-}
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
 
-/* content */
-.toast-content { flex: 1; display:flex; align-items:center; gap:12px; }
-.toast-text { font-size: 14px; line-height: 1.2; color: #fff; }
-
-
-/* pure-flat colors (solid, tasteful) */
-.toast-item.info    { background: #0ea5e9; }
-.toast-item.success { background: rgba(47, 177, 101, 0.9); }
-.toast-item.error   { background: #ef4444; }
-
-.toast-container {
-    display: flex;
-    flex-direction: column;
-}
-
-/* 添加弹簧/缓动效果 */
-.toast-container .toast-item {
-    transition: transform 500ms cubic-bezier(0.22, 1.28, 0.36, 1),
-    opacity 400ms ease,
-    margin 400ms ease;
-}
-
-/* 进入时弹簧效果 */
-.toast-item.toast-enter {
-    transform: translateY(0);
-    opacity: 1;
-    transition: transform 500ms cubic-bezier(0.22, 1.28, 0.36, 1), opacity 400ms ease;
-}
-
-/* 退出时柔和下坠 */
-.toast-item.toast-exit {
+    /* 默认隐藏，等待动画触发 */
     opacity: 0;
-    transform: translateY(12px) scale(0.98);
-    transition: transform 400ms cubic-bezier(0.4, 0.0, 0.6, 1), opacity 300ms ease;
 }
 
-/* dark variant for right-aligned (optional contrast) */
-.toast-bottom-right .toast-item,
-.toast-top-right .toast-item {
-    /* keep same colors but slightly darker border for depth */
-    border-color: rgba(0,0,0,0.06);
-}
+/* --- Colors --- */
+.toast-item.type-info { background-color: var(--toast-bg-info); }
+.toast-item.type-success { background-color: var(--toast-bg-success); }
+.toast-item.type-error { background-color: var(--toast-bg-error); }
 
-/* close button */
-.toast-close {
-    border: none;
-    background: rgba(255,255,255,0);
-    color: #fff;
-    width: 28px;
-    height: 28px;
-    display: inline-flex;
+/* --- Icons --- */
+.toast-icon {
+    display: flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
-    margin-left: 12px;
-    font-size: 14px;
-    transition: transform 140ms ease, background 140ms ease;
+    width: 20px;
+    height: 20px;
+    background: rgba(255, 255, 255, 0.2);
     border-radius: 50%;
-    outline: none;
+    flex-shrink: 0;
 }
 
-.toast-close:focus {
-    outline: none;
+.toast-icon svg {
+    color: currentColor;
 }
 
-
-.toast-bottom-right .toast-item,
-.toast-top-right .toast-item {
-    transform-origin: right center;
-    animation: toast-slide-in-right 280ms cubic-bezier(.2,.9,.3,1) both;
-}
-.toast-bottom-right .toast-item.toast-exit,
-.toast-top-right .toast-item.toast-exit {
-    animation: toast-slide-out-right 240ms cubic-bezier(.2,.9,.3,1) both;
+.toast-content {
+    flex: 1;
 }
 
-.toast-item.toast-enter { transform: translateY(0); opacity: 1; transition: opacity 300ms, transform 300ms; }
-.toast-item.toast-exit  { opacity: 0; transform: translateY(8px); transition: opacity 300ms, transform 300ms; }
-
-/* LEFT-side: slide horizontally from left -> in */
-.toast-bottom-left .toast-item,
-.toast-top-left .toast-item {
-    transform-origin: left center;
-    animation: toast-slide-in-left 280ms cubic-bezier(.2,.9,.3,1) both;
+/* --- Close Button --- */
+.toast-close-btn {
+    background: transparent;
+    border: none;
+    color: rgba(255,255,255,0.7);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    transition: color 0.2s;
 }
-.toast-bottom-left .toast-item.toast-exit,
-.toast-top-left .toast-item.toast-exit {
-    animation: toast-slide-out-left 240ms cubic-bezier(.2,.9,.3,1) both;
-}
-
-/* keyframes: right */
-@keyframes toast-slide-in-right {
-    from { transform: translateX(16px) scale(.98); opacity: 0; }
-    to   { transform: translateX(0)     scale(1);   opacity: 1; }
-}
-@keyframes toast-slide-out-right {
-    from { transform: translateX(0)     scale(1);   opacity: 1; }
-    to   { transform: translateX(16px)  scale(.98); opacity: 0; }
+.toast-close-btn:hover {
+    color: #fff;
 }
 
-/* keyframes: left (左出效果) */
-@keyframes toast-slide-in-left {
-    from { transform: translateX(-16px) scale(.98); opacity: 0; }
-    to   { transform: translateX(0)     scale(1);   opacity: 1; }
-}
-@keyframes toast-slide-out-left {
-    from { transform: translateX(0)     scale(1);   opacity: 1; }
-    to   { transform: translateX(-16px) scale(.98); opacity: 0; }
+/* --- Animations: Right Side (Slide Left) --- */
+.position-top-right .toast-item.entering,
+.position-bottom-right .toast-item.entering {
+    animation: toastSlideInRight var(--toast-anim-duration) var(--toast-ease-in) forwards;
 }
 
-/* small tweak when toast has icon (optional) */
-.toast-item .toast-icon {
-    width: 28px;
-    height: 28px;
-    flex: 0 0 28px;
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    border-radius: 6px;
-    margin-right: 8px;
+.position-top-right .toast-item.exiting,
+.position-bottom-right .toast-item.exiting {
+    animation: toastFadeOutRight var(--toast-anim-duration) var(--toast-ease-out) forwards;
 }
 
+/* --- Animations: Left Side (Slide Right) --- */
+.position-top-left .toast-item.entering,
+.position-bottom-left .toast-item.entering {
+    animation: toastSlideInLeft var(--toast-anim-duration) var(--toast-ease-in) forwards;
+}
+
+.position-top-left .toast-item.exiting,
+.position-bottom-left .toast-item.exiting {
+    animation: toastFadeOutLeft var(--toast-anim-duration) var(--toast-ease-out) forwards;
+}
+
+/* --- Keyframes Definition --- */
+
+/* 右侧进入：从右侧偏移入场 */
+@keyframes toastSlideInRight {
+    0% {
+        opacity: 0;
+        transform: translateX(110%) scale(0.9);
+    }
+    100% {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+    }
+}
+
+/* 右侧退出：向右侧偏移消失 */
+@keyframes toastFadeOutRight {
+    0% {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+        max-height: 100px; /* 假设高度不超过100 */
+        margin-bottom: var(--toast-spacing);
+    }
+    100% {
+        opacity: 0;
+        transform: translateX(20%) scale(0.9);
+        /* 收缩高度和边距，使剩余列表平滑移动 */
+        max-height: 0;
+        margin-bottom: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+    }
+}
+
+/* 左侧进入：从左侧偏移入场 */
+@keyframes toastSlideInLeft {
+    0% {
+        opacity: 0;
+        transform: translateX(-110%) scale(0.9);
+    }
+    100% {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+    }
+}
+
+/* 左侧退出：向左侧偏移消失 */
+@keyframes toastFadeOutLeft {
+    0% {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+        max-height: 100px;
+        margin-bottom: var(--toast-spacing);
+    }
+    100% {
+        opacity: 0;
+        transform: translateX(-20%) scale(0.9);
+        max-height: 0;
+        margin-bottom: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+    }
+}

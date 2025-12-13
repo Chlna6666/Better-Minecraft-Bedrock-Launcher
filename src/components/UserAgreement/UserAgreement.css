@@ -1,0 +1,163 @@
+/* UserAgreement.css */
+
+/* 定义变量以方便维护，建议放在全局 CSS 中，这里局部定义 */
+:root {
+    --theme-color: #4f46e5;
+    --theme-color-rgb: 79, 70, 229;
+    --modal-bg: rgba(255, 255, 255, 0.85);
+    --text-main: #1e293b;
+    --text-sub: #475569;
+    --border-color: rgba(255, 255, 255, 0.6);
+}
+
+[data-theme='dark'] {
+    --modal-bg: rgba(30, 41, 59, 0.85);
+    --text-main: #f1f5f9;
+    --text-sub: #94a3b8;
+    --border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* 遮罩层 */
+.user-agreement-overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    background-color: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(8px); /* 整体背景模糊 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+
+/* 弹窗主体 - 玻璃拟态升级 */
+.user-agreement-modal {
+    width: 90%;
+    max-width: 500px;
+    height: 80vh; /* 增加高度，显得更修长现代 */
+    max-height: 600px;
+
+    background: var(--modal-bg);
+    border-radius: 24px;
+    border: 1px solid var(--border-color);
+    box-shadow:
+            0 20px 50px -12px rgba(0, 0, 0, 0.25), /* 主阴影 */
+            0 0 0 1px rgba(255, 255, 255, 0.1) inset; /* 内部高光 */
+
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+}
+
+/* --- Header --- */
+.modal-header {
+    padding: 24px 24px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+}
+
+.icon-wrapper {
+    width: 40px; height: 40px;
+    background: rgba(var(--theme-color-rgb), 0.1);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--theme-color);
+}
+
+.modal-title {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+/* --- Scrollable Content --- */
+.user-agreement-scrollable {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+    background: linear-gradient(to bottom,
+    rgba(0,0,0,0.02) 0%,
+    rgba(0,0,0,0) 20px
+    ); /* 顶部微阴影暗示内部 */
+}
+
+/* Markdown Typography */
+.markdown-body {
+    color: var(--text-sub);
+    font-size: 0.95rem;
+    line-height: 1.7;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.markdown-body h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-main);
+    margin: 1.5rem 0 0.75rem 0;
+    display: flex; align-items: center;
+}
+.markdown-body h3:first-child { margin-top: 0; }
+
+.markdown-body ul { padding-left: 1.25rem; margin-bottom: 1rem; }
+.markdown-body li { margin-bottom: 0.4rem; position: relative; }
+
+/* 重点强调样式 */
+.markdown-body strong {
+    color: var(--theme-color);
+    font-weight: 600;
+    background: rgba(var(--theme-color-rgb), 0.08);
+    padding: 0 4px;
+    border-radius: 4px;
+}
+
+.markdown-body blockquote {
+    margin: 1.5rem 0;
+    padding: 1rem;
+    background: rgba(var(--theme-color-rgb), 0.05);
+    border-left: 3px solid var(--theme-color);
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+    font-size: 0.9rem;
+}
+
+/* --- Footer --- */
+.modal-footer {
+    padding: 20px 24px 24px;
+    /* 向上渐变遮罩，让文字看起来像滑入底部 */
+    background: linear-gradient(to top, var(--modal-bg) 60%, transparent);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 10;
+}
+
+.accept-button {
+    width: 100%;
+    height: 50px;
+    border: none;
+    border-radius: 14px;
+    background: var(--theme-color);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(var(--theme-color-rgb), 0.25);
+    transition: filter 0.2s;
+}
+
+/* 滚动条美化 */
+.custom-scrollbar::-webkit-scrollbar { width: 5px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgba(128, 128, 128, 0.2);
+    border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(128, 128, 128, 0.4);
+}

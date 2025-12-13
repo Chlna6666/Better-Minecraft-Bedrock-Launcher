@@ -1,0 +1,268 @@
+{
+  "common": {
+    "release": "Release",
+    "beta": "Beta",
+    "preview": "Preview",
+    "education": "Education",
+    "education_preview": "Edu Preview",
+    "gdk": "GDK",
+    "uwp": "UWP",
+    "all_versions": "All Versions",
+    "launch_count": "Play Count",
+    "search_placeholder": "Search version or name",
+    "refresh": "Refresh",
+    "manage": "Manage",
+    "delete": "Delete",
+    "processing": "Processing...",
+    "confirm_title": "Confirm Delete",
+    "cancel": "Cancel",
+    "confirm": "Confirm Delete",
+    "delete_success": "Deleted successfully",
+    "delete_failed": "Delete failed",
+    "no_result": "No results found",
+    "confirm_delete": "Are you sure you want to delete?",
+    "confirm_delete_text": "Are you sure you want to delete '{{folder}}'? This action cannot be undone.",
+    "close": "Close",
+    "load_failed": "Failed to load",
+    "no_path": "Path not found",
+    "open_failed": "Failed to open",
+    "save_success": "Saved successfully",
+    "saved": "Saved",
+    "save_failed": "Save failed",
+    "loading": "Loading..."
+  },
+  "manage": {
+    "title": "Version Manager",
+    "open_folder": "Open Folder",
+    "save_all": "Save All",
+    "mods": "Mods List",
+    "no_mods": "No mods detected",
+    "mod_id": "ID",
+    "enabled": "Enabled",
+    "delay_ms": "Delay (ms)",
+    "save": "Save",
+    "confirm_delete_version": "Are you sure you want to delete version {{folder}}?",
+    "confirm_delete_selected": "Are you sure you want to delete the selected {{count}} Mod(s)?",
+    "import_mods": "Import Mod(s)",
+    "open_mods_folder": "Open Mod Folder",
+    "refresh": "Refresh",
+    "search_placeholder": "Search name / id...",
+    "selected": "Selected",
+    "enable_selected": "Enable Selected",
+    "disable_selected": "Disable Selected",
+    "delete_selected": "Delete Selected",
+    "import_success": "Import completed",
+    "import_failed": "Import failed",
+    "enable_selected_success": "Enabled successfully",
+    "enable_selected_failed": "Enable failed",
+    "disable_selected_success": "Disabled successfully",
+    "disable_selected_failed": "Disable failed",
+    "delete_selected_success": "Deleted successfully",
+    "delete_selected_failed": "Delete failed"
+  },
+  "version_manager": {
+    "unknown_name": "Unknown Version",
+    "type_unknown": "Unknown Type"
+  },
+  "MusicPlayer": {
+    "now_playing": "Now Playing:"
+  },
+  "Sidebar": {
+    "launch": "Launch",
+    "download": "Download",
+    "versions": "Versions",
+    "tools": "Tools",
+    "settings": "Settings"
+  },
+  "Launch": {
+    "start_game": "Start Game",
+    "not_installed": "Game Not Installed"
+  },
+  "Download": {
+    "minecraft": "Game",
+    "mod":       "Mods",
+    "map":       "Maps",
+    "mcpack":    "Resource Packs"
+  },
+  "DownloadMinecraft": {
+    "search_placeholder": "Search version number...",
+    "no_data": "No Data",
+    "info": "Loading version info...",
+    "info_error": "Error fetching info: {{error}}",
+    "archival_status": {
+      "3": "Archived (Available)",
+      "2": "Archived (Unknown/Unavailable)",
+      "1": "Existed but unreleased/unproven",
+      "0": "Released but lost",
+      "unknown": "Unknown"
+    },
+    "cache_used_on_init": "Loaded data from cache",
+    "using_cache_when_api_not_newer": "Using cached data (API not updated)",
+    "fetch_success": "Successfully fetched info",
+    "using_cache_fallback": "Network error, using cached data",
+    "fetch_failed": "Failed to load versions: {{message}}",
+    "gdk_not_supported": "GDK builds are not yet supported",
+    "no_metadata": "Missing download metadata",
+    "archival_unknown": "Archival status unknown, proceed with caution.",
+    "archival_not_available": "Version unavailable (Lost or Unreleased).",
+    "archival_maybe_unavailable": "Archival status 2: May be unavailable, proceed with caution.",
+    "import_unsupported": "Unsupported file type",
+    "downloading": "Downloading",
+    "download": "Download"
+  },
+  "GameManager": {
+    "game": "Game",
+    "mcpack": "Resources",
+    "map": "Maps"
+  },
+  "McPackManager": {
+    "search": "Search",
+    "resourcePacks": "Resource Packs",
+    "behaviorPacks": "Behavior Packs",
+    "loading": "Loading",
+    "refresh": "Refresh",
+    "empty": "None",
+    "collapse": "Collapse",
+    "details": "Details",
+    "manifest": "Manifest"
+  },
+  "InstallProgressBar": {
+    "confirm_title": "Confirm Download",
+    "confirm_sub": "Custom Game Version Name",
+    "filename_label": "Filename",
+    "parsing_url": "Parsing URL",
+    "start_download": "Start Download",
+    "stage_extracting": "Extracting",
+    "stage_downloading": "Downloading",
+    "extracting_sub": "Extracting files to destination, please wait...",
+    "downloading_sub": "Downloading from server, do not close the app.",
+    "cancelling": "Cancelling...",
+    "cancel": "Cancel",
+    "close": "Close",
+    "retry": "Retry",
+    "processed_label": "Downloaded",
+    "extracted_label": "Extracted",
+    "imported_label": "Imported",
+    "speed_label": "Speed / ETA",
+    "cancel_download": "Cancel Download",
+    "import_title": "Import",
+    "import_sub": "Custom Import Version Name",
+    "start_import": "Start Import",
+    "stage_importing": "Importing...",
+    "importing_sub": "Importing package..."
+  },
+  "Settings": {
+    "tabs": {
+      "game": "Game",
+      "customization": "Customization",
+      "launcher": "Launcher",
+      "about": "About"
+    }
+  },
+  "LauncherSettings": {
+    "debug": "Debug Mode",
+    "language": "Language",
+    "lang_options": {
+      "auto": "Auto",
+      "en": "English",
+      "zh": "Chinese"
+    },
+    "update_channel": "Update Channel",
+    "update_channel.stable": "Stable",
+    "update_channel.nightly": "Nightly",
+    "update_channel.placeholder": "Select Update Channel",
+    "auto_check_updates": "Auto Check Updates",
+    "download": {
+      "multi_thread": "Multi-threaded Download",
+      "auto_thread_count": "Auto Thread Count",
+      "max_threads": "Max Threads",
+      "proxy": {
+        "mode": "Proxy Mode",
+        "none": "No Proxy",
+        "system": "System Proxy",
+        "http": "HTTP",
+        "socks5": "SOCKS",
+        "http_proxy_url": "HTTP Proxy URL",
+        "socks_proxy_url": "SOCKS5 Proxy URL"
+      }
+    }
+  },
+  "AboutSection": {
+    "dev": {
+      "description": "???",
+      "sponsor": "Sponsor"
+    },
+    "app": {
+      "name": "Better Minecraft: Bedrock Launcher",
+      "version": "App: {{appVersion}} │ Tauri: {{tauriVersion}} │ WebView2: {{webview2Version}}",
+      "official": "Website"
+    },
+    "thanks": {
+      "title": "Credits",
+      "tauri": "Provided the development framework",
+      "MCAPPX": "Provided game version library JSON source",
+      "mcmrarm": "Provided mc-w10-versiondb library",
+      "fufuha": "Provided background images",
+      "ustiniana1641": "Provided logo",
+      "contributors": "All Contributors",
+      "community": "Thanks to the Open Source Community",
+      "sponsors": "Sponsors",
+      "support": "Thanks for supporting BMCBL",
+      "users": "BMCBL Users",
+      "user_support": "Support for this project"
+    },
+    "legal": {
+      "title": "Legal",
+      "copyright": {
+        "title": "Copyright",
+        "content": "Copyright © Chlna6666"
+      },
+      "agreement": {
+        "title": "User Agreement",
+        "content": "Click to view"
+      },
+      "license": {
+        "title": "Open Source License"
+      }
+    },
+    "common": {
+      "view": "View"
+    }
+  },
+  "GameSettings": {
+    "inject_dll": "Inject DLL on Launch",
+    "inject_delay": "Injection Delay (ms):",
+    "lock_mouse": "Lock Mouse on Launch",
+    "reduce_pixels": "Trim Window Edge Pixels (px):",
+    "unlock_hotkey": "Unlock Hotkey:",
+    "launcher_visibility": "Launcher Visibility:",
+    "visibility": {
+      "minimize": "Minimize after launch",
+      "close": "Close after launch",
+      "keep": "Keep visible"
+    },
+    "keep_appx_after_install": "Keep APPX after install",
+    "modify_appx_manifest": "Modify AppxManifest",
+    "uwp_minimize_fix": "Fix UWP Minimize Freeze"
+  },
+  "CustomizationSettings": {
+    "launch_animation": "Show Launch Animation",
+    "theme_color": "Theme Color:",
+    "custom_background": "Custom Background:",
+    "h": "Enter local image path",
+    "background_options": {
+      "default": "Default",
+      "local": "Local Image",
+      "network": "Network Image"
+    },
+    "local_image": "Select Local Image:",
+    "no_file": "No file selected",
+    "select_file": "Select File",
+    "network_image": "Network Image URL:",
+    "network_placeholder": "Enter image URL"
+  },
+  "UserAgreement": {
+    "title": "User Agreement & Privacy Policy",
+    "accept_button": "I have read and agree"
+  }
+}

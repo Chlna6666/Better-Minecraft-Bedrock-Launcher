@@ -1,6 +1,6 @@
 {
   "productName": "better_minecraft_bedrock_launcher",
-  "version": "0.0.8",
+  "version": "0.0.10",
   "identifier": "com.bmcbl",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -16,10 +16,10 @@
         "fullscreen": false,
         "resizable": true,
         "title": "better_minecraft_bedrock_launcher",
-        "width": 800,
-        "height": 494.4,
-        "minWidth": 800,
-        "minHeight": 494.4,
+        "width": 971,
+        "height": 600,
+        "minWidth": 971,
+        "minHeight": 600,
         "center": true,
         "decorations": false,
         "transparent": true,

@@ -1,9 +1,11 @@
 pub mod appx;
-pub mod launcher;
-pub mod mouse_lock;
-pub mod uwp_minimize_fix;
-pub mod resource_packs;
-pub mod map;
-pub mod nbt;
+pub mod assets;
 pub mod dll_mods;
 pub mod key_patcher;
+pub mod launcher;
+pub mod map;
+pub mod mouse_lock;
+pub mod nbt;
+pub mod resource_packs;
+pub mod uwp_minimize_fix;
+pub mod gdk;

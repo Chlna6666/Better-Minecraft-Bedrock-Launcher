@@ -1,20 +1,17 @@
-use fluent_bundle::{FluentResource, FluentArgs};
 use fluent_bundle::concurrent::FluentBundle;
-use unic_langid::LanguageIdentifier;
+use fluent_bundle::{FluentArgs, FluentResource};
 use once_cell::sync::OnceCell;
-use std::sync::RwLock;
 use std::path::PathBuf;
+use std::sync::RwLock;
 use tracing::debug;
+use unic_langid::LanguageIdentifier;
 
 // 嵌入 FTL 文件内容为静态常量
 const EN_US_FTL: &str = include_str!("locales/en-US.ftl");
 const ZH_CN_FTL: &str = include_str!("locales/zh-CN.ftl");
 
 // 支持的语言及其对应的 FTL 内容
-const LOCALES: &[(&str, &str)] = &[
-    ("en-US", EN_US_FTL),
-    ("zh-CN", ZH_CN_FTL),
-];
+const LOCALES: &[(&str, &str)] = &[("en-US", EN_US_FTL), ("zh-CN", ZH_CN_FTL)];
 
 /// 全局 i18n 管理器
 pub struct I18n {
@@ -45,7 +42,6 @@ impl I18n {
         I18n::reload();
     }
 
-
     /// 切换语言并 reload 资源
     pub fn set_locale(locale: &str) {
         debug!("I18n set_locale: switching to {}", locale);
@@ -68,19 +64,25 @@ impl I18n {
 
         debug!("I18n reload: current_lang = {}", lang);
 
-        let source = LOCALES.iter()
+        let source = LOCALES
+            .iter()
             .find(|(code, _)| *code == lang)
             .map(|(_, content)| *content)
             .or_else(|| {
                 debug!("Fallback to en-US");
-                LOCALES.iter().find(|(code, _)| *code == "en-US").map(|(_, content)| *content)
+                LOCALES
+                    .iter()
+                    .find(|(code, _)| *code == "en-US")
+                    .map(|(_, content)| *content)
             })
             .unwrap_or_else(|| panic!("Missing i18n data for {} and fallback en-US", lang));
 
         let res = FluentResource::try_new(source.to_string()).expect("Failed to parse FTL content");
 
         let mut bundle = i18n.bundle.write().unwrap();
-        bundle.add_resource(res).expect("Failed to add Fluent resource");
+        bundle
+            .add_resource(res)
+            .expect("Failed to add Fluent resource");
 
         debug!("I18n reload: loaded resources for {}", lang);
     }
@@ -91,14 +93,14 @@ impl I18n {
         let i18n = I18N.get().expect("I18n not initialized");
         let bundle = i18n.bundle.read().unwrap();
 
-        let m = bundle
-            .get_message(key)
-            .and_then(|msg| msg.value());
+        let m = bundle.get_message(key).and_then(|msg| msg.value());
 
         match m {
             Some(message) => {
                 let mut errors = vec![];
-                let value = bundle.format_pattern(message, args, &mut errors).to_string();
+                let value = bundle
+                    .format_pattern(message, args, &mut errors)
+                    .to_string();
                 if !errors.is_empty() {
                     debug!("  formatting errors = {:?}", errors);
                 }

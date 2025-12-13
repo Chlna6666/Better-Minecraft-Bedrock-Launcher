@@ -13,7 +13,7 @@ import { getConfig } from "../../utils/config.jsx";
 import {Input, Select} from "../../components/index.js";
 import "../Manage/VersionManager.css";
 import {invoke} from "@tauri-apps/api/core";
-import { useToast } from "../../components/Toast"; // 如有路径差异请调整
+import { useToast } from "../../components/Toast.tsx"; // 如有路径差异请调整
 // 比较两个版本号，返回 -1, 0, 1
 function compareVersion(v1, v2) {
     const parts1 = String(v1).split(".").map(Number);

@@ -6,37 +6,29 @@ import "./VersionManager.css";
 import unknownIcon from "../../assets/feather/box.svg";
 import { invoke } from "@tauri-apps/api/core";
 import VersionManagePage from "./VersionManagePage.jsx";
-import { useToast } from "../../components/Toast.jsx";
+import { useToast } from "../../components/Toast.tsx";
 import Select from "../../components/Select.jsx";
 import { Input } from "../../components/index.js";
 
 /**
- * VersionManager
- * - 过滤基于 versionTypeLabel（本地化文本）
- * - 搜索防抖（debounce）
- * - useMemo/useCallback 优化性能
+ * VersionManager - Updated to pass kind to VersionManagePage.
  */
-
 function VersionManager() {
     const { t } = useTranslation();
     const { versions, counts, reload } = useVersions();
 
     const [filter, setFilter] = useState("");
-    // 原始输入（立刻更新），用于防抖
     const [rawSearch, setRawSearch] = useState("");
-    // 实际用于过滤的搜索值（防抖结果）
     const [search, setSearch] = useState("");
     const [deleting, setDeleting] = useState({});
-
     const [manageOpen, setManageOpen] = useState(false);
     const [manageVersion, setManageVersion] = useState(null);
-
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [confirmTarget, setConfirmTarget] = useState(null);
 
     const toast = useToast();
-
     const debounceRef = useRef(null);
+
     useEffect(() => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef.current = setTimeout(() => {
@@ -45,11 +37,8 @@ function VersionManager() {
         return () => clearTimeout(debounceRef.current);
     }, [rawSearch]);
 
-
     const uniqueLabels = useMemo(() => {
-        // versions可能为空或尚未加载，防守检查
         if (!versions || versions.length === 0) return [];
-
         const seen = new Set();
         const labels = [];
         for (const v of versions) {
@@ -63,19 +52,16 @@ function VersionManager() {
         return labels;
     }, [versions]);
 
-    // 构造 filterOptions：先放 All，然后把 uniqueLabels 放入（保持本地化文本为 value）
     const filterOptions = useMemo(() => {
         const base = [
             { value: '', label: t('common.all_versions') || 'All' },
         ];
-        // 保留 uniqueLabels 的排序，并去重已由 uniqueLabels 保证
         uniqueLabels.forEach(lbl => base.push({ value: lbl, label: lbl }));
         return base;
     }, [uniqueLabels, t]);
 
     const filteredVersions = useMemo(() => {
         if (!versions || versions.length === 0) return [];
-
         const normalized = versions.map(v => ({
             ...v,
             __searchName: (v.name || "").toLowerCase(),
@@ -83,15 +69,11 @@ function VersionManager() {
             __searchFolder: (v.folder || "").toLowerCase(),
             __labelLower: (v.versionTypeLabel || "").toLowerCase(),
         }));
-
         const wantLabel = (filter || "").toLowerCase();
-
         return normalized.filter(v => {
-            // 1) 类型过滤（'' 表示全部）
             if (wantLabel && wantLabel !== '') {
                 if (v.__labelLower !== wantLabel) return false;
             }
-            // 2) 搜索匹配（若 search 为空则通过）
             if (!search) return true;
             const s = search;
             return v.__searchName.includes(s) || v.__searchVersion.includes(s) || v.__searchFolder.includes(s);
@@ -156,6 +138,16 @@ function VersionManager() {
         if (typeof reload === 'function') reload();
     }, [reload]);
 
+    const computeEditionFor = (mv) => {
+        if (!mv) return 'release'; // 默认正式版
+        // 优先使用明确的 versionType 字段（例如 'preview'），其次使用 versionTypeLabel 文本判定
+        const vt = String(mv.versionType || '').toLowerCase();
+        if (vt === 'preview' || vt === 'beta' || vt.includes('preview')) return 'preview';
+        const vtl = String(mv.versionTypeLabel || '').toLowerCase();
+        if (vtl.includes('预览') || vtl.includes('preview')) return 'preview';
+        return 'release';
+    };
+
     return (
         <div className="vlist-wrapper">
             <div className="vtoolbar">
@@ -202,7 +194,7 @@ function VersionManager() {
                             <div className="vactions">
                                 <button
                                     className="vbtn-manage"
-                                    onClick={() => handleManage({ folder, path, name, version })}
+                                    onClick={() => handleManage({ folder, path, name, version, kind })}
                                     disabled={isDeleting}
                                 >
                                     {t('common.manage')}
@@ -231,6 +223,14 @@ function VersionManager() {
                         <VersionManagePage
                             folder={manageVersion?.folder}
                             path={manageVersion?.path}
+                            kind={manageVersion?.kind}
+                            edition={computeEditionFor(manageVersion)}
+                            version={manageVersion?.version}
+                            versionType={manageVersion?.versionType}
+                            versionTypeLabel={manageVersion?.versionTypeLabel}
+                            kindLabel={manageVersion?.kindLabel}
+                            name={manageVersion?.name}
+                            icon={manageVersion?.icon}
                             onDone={handleManageDone}
                             onClose={() => setManageOpen(false)}
                         />

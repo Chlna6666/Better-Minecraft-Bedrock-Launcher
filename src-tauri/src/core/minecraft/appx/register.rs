@@ -1,6 +1,6 @@
 use std::io;
-use tracing::{info, error};
-use windows::core::{HSTRING, Result as WinResult, HRESULT, Error as WinError};
+use tracing::{error, info};
+use windows::core::{Error as WinError, Result as WinResult, HRESULT, HSTRING};
 use windows::Foundation::Uri;
 use windows::Management::Deployment::{DeploymentOptions, DeploymentResult, PackageManager};
 
@@ -31,7 +31,8 @@ pub async fn register_appx_package_async(package_folder: &str) -> WinResult<Depl
     let uri = Uri::CreateUri(&HSTRING::from(uri_str))?;
 
     // 启动异步注册并 await 完成
-    let async_op = package_manager.RegisterPackageAsync(&uri, None, DeploymentOptions::DevelopmentMode)?;
+    let async_op =
+        package_manager.RegisterPackageAsync(&uri, None, DeploymentOptions::DevelopmentMode)?;
     let result: DeploymentResult = async_op.await?; // ← 关键：使用 await 而不是 get()
 
     // 检查结果信息

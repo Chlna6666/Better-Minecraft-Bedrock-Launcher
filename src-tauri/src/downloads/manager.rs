@@ -1,13 +1,13 @@
 // src/downloads/manager.rs
-use reqwest::Client;
-use std::path::PathBuf;
-use tracing::debug;
+use crate::config::config::read_config;
 use crate::downloads::multi::download_multi;
 use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
-use crate::config::config::{read_config};
+use crate::tasks::task_manager::{create_task, finish_task, update_progress};
 use num_cpus;
-use crate::tasks::task_manager::{create_task, update_progress, finish_task};
+use reqwest::Client;
+use std::path::PathBuf;
+use tracing::debug;
 
 pub struct DownloaderManager {
     client: Client,
@@ -26,8 +26,7 @@ impl DownloaderManager {
         dest: PathBuf,
         md5_expected: Option<&str>,
     ) -> Result<CoreResult, CoreError> {
-        let config = read_config()
-            .map_err(|e| CoreError::Config(e.to_string()))?;
+        let config = read_config().map_err(|e| CoreError::Config(e.to_string()))?;
 
         let threads = if config.launcher.download.auto_thread_count {
             num_cpus::get()
@@ -37,12 +36,14 @@ impl DownloaderManager {
             1
         };
 
-
         update_progress(task_id, 0, None, Some("downloading"));
 
         let mut retry = 0usize;
         loop {
-            debug!("DownloaderManager start download loop retry={} threads={}", retry, threads);
+            debug!(
+                "DownloaderManager start download loop retry={} threads={}",
+                retry, threads
+            );
             let res = if threads > 1 {
                 download_multi(
                     self.client.clone(),
@@ -52,16 +53,9 @@ impl DownloaderManager {
                     threads,
                     md5_expected,
                 )
-                    .await
+                .await
             } else {
-                download_file(
-                    self.client.clone(),
-                    task_id,
-                    &url,
-                    &dest,
-                    md5_expected,
-                )
-                    .await
+                download_file(self.client.clone(), task_id, &url, &dest, md5_expected).await
             };
 
             match &res {
@@ -83,7 +77,7 @@ impl DownloaderManager {
         dest: PathBuf,
         md5_expected: Option<String>,
     ) -> String {
-        let task_id = create_task("ready", None);
+        let task_id = create_task(None, "ready", None);
         let client = self.client.clone();
 
         // clones for task
@@ -111,7 +105,11 @@ impl DownloaderManager {
                     finish_task(&task_id_clone, "completed", None);
                 }
                 Ok(CoreResult::Cancelled) => {
-                    finish_task(&task_id_clone, "cancelled", Some("download cancelled".into()));
+                    finish_task(
+                        &task_id_clone,
+                        "cancelled",
+                        Some("download cancelled".into()),
+                    );
                     let _ = tokio::fs::remove_file(&dest_clone).await;
                 }
                 Ok(CoreResult::Error(err)) => {

@@ -1,11 +1,11 @@
 // src/http/commands.rs
-use reqwest::{Url};
+use crate::config::config::read_config;
+use crate::http::proxy::get_client_for_proxy;
+use crate::http::request::{send_request_with_options, RequestOptions, GLOBAL_CLIENT};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::debug;
-use crate::config::config::{read_config};
-use crate::http::proxy::{get_client_for_proxy};
-use crate::http::request::{send_request_with_options, RequestOptions, GLOBAL_CLIENT};
 
 #[derive(Deserialize)]
 pub struct FetchOptions {
@@ -24,9 +24,12 @@ pub struct FetchResponse {
 }
 
 #[tauri::command]
-pub async fn fetch_remote(url: String, options: Option<FetchOptions>) -> Result<FetchResponse, String> {
+pub async fn fetch_remote(
+    url: String,
+    options: Option<FetchOptions>,
+) -> Result<FetchResponse, String> {
     let parsed = Url::parse(&url).map_err(|e| format!("invalid url: {}", e))?;
-    
+
     if let Some(opts) = &options {
         if let Some(allow) = &opts.allowed_hosts {
             let host = parsed.host_str().unwrap_or("");
@@ -37,8 +40,12 @@ pub async fn fetch_remote(url: String, options: Option<FetchOptions>) -> Result<
             };
 
             let allowed = allow.iter().any(|a| {
-                if a == &host_port { return true; }
-                if a == host { return true; }
+                if a == &host_port {
+                    return true;
+                }
+                if a == host {
+                    return true;
+                }
                 false
             });
 
@@ -47,14 +54,12 @@ pub async fn fetch_remote(url: String, options: Option<FetchOptions>) -> Result<
             }
         }
     }
-    
+
     let client = match read_config() {
-        Ok(cfg) => {
-            get_client_for_proxy().unwrap_or_else(|e| {
-                debug!("构建代理 client 失败，回退到全局 client: {:?}", e);
-                GLOBAL_CLIENT.clone()
-            })
-        }
+        Ok(cfg) => get_client_for_proxy().unwrap_or_else(|e| {
+            debug!("构建代理 client 失败，回退到全局 client: {:?}", e);
+            GLOBAL_CLIENT.clone()
+        }),
         Err(_) => GLOBAL_CLIENT.clone(),
     };
 
@@ -82,5 +87,9 @@ pub async fn fetch_remote(url: String, options: Option<FetchOptions>) -> Result<
         }
     }
     let text = resp.text().await.map_err(|e| e.to_string())?;
-    Ok(FetchResponse { status, headers: headers_out, body: text })
+    Ok(FetchResponse {
+        status,
+        headers: headers_out,
+        body: text,
+    })
 }

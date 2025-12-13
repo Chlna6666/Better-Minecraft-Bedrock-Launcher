@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use tauri::command;
 use tokio::{fs, io::AsyncWriteExt};
 use tracing::{debug, error};
@@ -46,7 +49,10 @@ async fn read_inject_config(mods_dir: &Path) -> Result<InjectConfig, String> {
                 // backup corrupted
                 let bak = mods_dir.join("inject_config.json.bak");
                 let _ = fs::rename(&cfg_path, &bak).await;
-                error!("inject_config.json parse failed, backed up to {:?}: {:?}", bak, e);
+                error!(
+                    "inject_config.json parse failed, backed up to {:?}: {:?}",
+                    bak, e
+                );
                 Ok(InjectConfig::default())
             }
         },
@@ -60,15 +66,21 @@ async fn read_inject_config(mods_dir: &Path) -> Result<InjectConfig, String> {
 async fn write_inject_config(mods_dir: &Path, cfg: &InjectConfig) -> Result<(), String> {
     let cfg_path = mods_dir.join("inject_config.json");
     let tmp_path = mods_dir.join("inject_config.json.tmp");
-    let content = serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config failed: {}", e))?;
+    let content =
+        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config failed: {}", e))?;
     // write tmp
-    let mut f = fs::File::create(&tmp_path).await.map_err(|e| format!("create tmp failed: {}", e))?;
-    f.write_all(content.as_bytes()).await.map_err(|e| format!("write tmp failed: {}", e))?;
+    let mut f = fs::File::create(&tmp_path)
+        .await
+        .map_err(|e| format!("create tmp failed: {}", e))?;
+    f.write_all(content.as_bytes())
+        .await
+        .map_err(|e| format!("write tmp failed: {}", e))?;
     // rename
-    fs::rename(&tmp_path, &cfg_path).await.map_err(|e| format!("rename tmp failed: {}", e))?;
+    fs::rename(&tmp_path, &cfg_path)
+        .await
+        .map_err(|e| format!("rename tmp failed: {}", e))?;
     Ok(())
 }
-
 
 #[command]
 pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, String> {
@@ -100,7 +112,11 @@ pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, Stri
                     .and_then(|ext| ext.to_str())
                     .map_or(false, |ext| ext.eq_ignore_ascii_case("dll"))
                 {
-                    if let Some(name) = p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) {
+                    if let Some(name) = p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                    {
                         dll_names.push(name);
                     }
                 }
@@ -125,7 +141,13 @@ pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, Stri
                         let mut changed = false;
                         for dll in dll_names.iter() {
                             if !c.files.contains_key(dll) {
-                                c.files.insert(dll.clone(), DllConfig { enabled: true, delay: 0 });
+                                c.files.insert(
+                                    dll.clone(),
+                                    DllConfig {
+                                        enabled: true,
+                                        delay: 0,
+                                    },
+                                );
                                 changed = true;
                             }
                         }
@@ -139,12 +161,20 @@ pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, Stri
                         // 解析失败，备份并继续使用默认（后面会用 dll_names 构造默认）
                         let bak = mods_dir.join("inject_config.json.bak");
                         let _ = fs::rename(&cfg_path, &bak).await;
-                        debug!("inject_config.json 解析失败，已备份到 {}: {:?}", bak.display(), e);
+                        debug!(
+                            "inject_config.json 解析失败，已备份到 {}: {:?}",
+                            bak.display(),
+                            e
+                        );
                     }
                 }
             }
             Err(e) => {
-                debug!("读取 inject_config.json 失败 {}: {:?}", cfg_path.display(), e);
+                debug!(
+                    "读取 inject_config.json 失败 {}: {:?}",
+                    cfg_path.display(),
+                    e
+                );
             }
         }
     }
@@ -152,7 +182,13 @@ pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, Stri
     // 如果配置为空（或没有任何条目），则使用 dll_names 构造默认配置并写入文件
     if config.files.is_empty() {
         for dll in dll_names.iter() {
-            config.files.insert(dll.clone(), DllConfig { enabled: true, delay: 0 });
+            config.files.insert(
+                dll.clone(),
+                DllConfig {
+                    enabled: true,
+                    delay: 0,
+                },
+            );
         }
         let _ = write_inject_config(&mods_dir, &config).await;
     }
@@ -161,7 +197,10 @@ pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, Stri
     let mut result: Vec<ModItem> = Vec::new();
     for dll in dll_names.into_iter() {
         // 获取配置中对应的状态（如果配置没有则使用默认）
-        let cfg = config.files.get(&dll).cloned().unwrap_or(DllConfig { enabled: true, delay: 0 });
+        let cfg = config.files.get(&dll).cloned().unwrap_or(DllConfig {
+            enabled: true,
+            delay: 0,
+        });
 
         let candidate = mods_dir.join(&dll);
         match fs::canonicalize(&candidate).await {
@@ -192,10 +231,14 @@ pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, Stri
     }
 }
 
-
 /// unified set_mod: 设置 mod 的 enabled + delay 并持久化到 inject_config.json
 #[command]
-pub async fn set_mod(folder_name: String, mod_id: String, enabled: bool, delay: u64) -> Result<String, String> {
+pub async fn set_mod(
+    folder_name: String,
+    mod_id: String,
+    enabled: bool,
+    delay: u64,
+) -> Result<String, String> {
     let mods_dir = mods_dir_for(&folder_name);
     if fs::metadata(&mods_dir).await.is_err() {
         return Err(format!("mods 目录不存在: {}", mods_dir.display()));
@@ -204,7 +247,9 @@ pub async fn set_mod(folder_name: String, mod_id: String, enabled: bool, delay: 
     let mut cfg = read_inject_config(&mods_dir).await.unwrap_or_default();
 
     // ensure entry exists
-    cfg.files.entry(mod_id.clone()).or_insert(DllConfig { enabled, delay });
+    cfg.files
+        .entry(mod_id.clone())
+        .or_insert(DllConfig { enabled, delay });
 
     // set fields
     if let Some(entry) = cfg.files.get_mut(&mod_id) {
@@ -212,14 +257,19 @@ pub async fn set_mod(folder_name: String, mod_id: String, enabled: bool, delay: 
         entry.delay = delay;
     }
 
-    write_inject_config(&mods_dir, &cfg).await.map_err(|e| format!("写入配置失败: {}", e))?;
+    write_inject_config(&mods_dir, &cfg)
+        .await
+        .map_err(|e| format!("写入配置失败: {}", e))?;
 
     Ok(format!("set_mod {} ok", mod_id))
 }
 
 /// import_mods: copy files into mods dir, add to config
 #[command]
-pub async fn import_mods(folder_name: String, paths: Vec<String>) -> Result<serde_json::Value, String> {
+pub async fn import_mods(
+    folder_name: String,
+    paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
     let mods_dir = mods_dir_for(&folder_name);
     if let Err(e) = fs::create_dir_all(&mods_dir).await {
         return Err(format!("无法创建 mods 目录 {}: {}", mods_dir.display(), e));
@@ -249,10 +299,18 @@ pub async fn import_mods(folder_name: String, paths: Vec<String>) -> Result<serd
         match fs::copy(&src, &dest).await {
             Ok(_) => {
                 imported.push(filename.clone());
-                cfg.files.entry(filename.clone()).or_insert(DllConfig { enabled: true, delay: 0 });
+                cfg.files.entry(filename.clone()).or_insert(DllConfig {
+                    enabled: true,
+                    delay: 0,
+                });
             }
             Err(e) => {
-                errors.push(format!("复制 {} 到 {} 失败: {}", src.display(), dest.display(), e));
+                errors.push(format!(
+                    "复制 {} 到 {} 失败: {}",
+                    src.display(),
+                    dest.display(),
+                    e
+                ));
             }
         }
     }

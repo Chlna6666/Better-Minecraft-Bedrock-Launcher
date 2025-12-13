@@ -1,24 +1,31 @@
 // src/downloads/single.rs
-use std::path::Path;
+use crate::downloads::md5::verify_md5;
+use crate::result::{CoreError, CoreResult};
+use crate::tasks::task_manager::{finish_task, is_cancelled, set_total, update_progress};
 use futures_util::StreamExt;
+use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{sleep, Duration};
 use tracing::debug;
-use crate::downloads::md5::verify_md5;
-use crate::result::{CoreError, CoreResult};
-use crate::tasks::task_manager::{finish_task, is_cancelled, update_progress,set_total};
 
 pub async fn download_file(
     client: reqwest::Client,
-    task_id:  &str,
+    task_id: &str,
     url: &str,
     dest: impl AsRef<Path>,
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
     let mut retry = 0u8;
     loop {
-        debug!("开始下载：task={} url={}，目标={:?}，重试={}，md5={:?}", task_id, url, dest.as_ref(), retry, md5_expected);
+        debug!(
+            "开始下载：task={} url={}，目标={:?}，重试={}，md5={:?}",
+            task_id,
+            url,
+            dest.as_ref(),
+            retry,
+            md5_expected
+        );
         let resp = client.get(url).send().await;
         match resp {
             Ok(resp) => {
@@ -46,7 +53,7 @@ pub async fn download_file(
                     // 更新任务进度：传增量，total 可选
                     update_progress(&task_id, c.len() as u64, total, Some("downloading"));
 
-                    if  is_cancelled(&task_id) {
+                    if is_cancelled(&task_id) {
                         debug!("检测到取消：停止下载（task={}, url={}）", task_id, url);
                         // 这里可以选择删除临时文件或保留
                         // 标记任务状态

@@ -8,14 +8,13 @@
 //!
 //! https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/uwp/launch-resume/multi-instance-uwp.md
 
+use futures_util::TryFutureExt;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
-use futures_util::TryFutureExt;
-use xmltree::{AttributeMap, Element, XMLNode, EmitterConfig, Namespace};
-use tracing::{debug};
-
+use tracing::debug;
+use xmltree::{AttributeMap, Element, EmitterConfig, Namespace, XMLNode};
 
 const SCCD_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <CustomCapabilityDescriptor xmlns="http://schemas.microsoft.com/appx/2018/sccd" xmlns:s="http://schemas.microsoft.com/appx/2018/sccd">
@@ -58,8 +57,8 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
     let xml_str = strip_bom(&xml_str);
 
     // 2. 解析为 XML 树，根元素即 <Package>
-    let mut pkg = Element::parse(xml_str.as_bytes())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut pkg =
+        Element::parse(xml_str.as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     // 3. 在 pkg.namespaces 中补全 xmlns 前缀，避免重复
     let ns = pkg.namespaces.get_or_insert_with(Namespace::empty);
@@ -115,10 +114,15 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
         }) {
             if child.name == "Application" {
                 // 添加脱离沙盒的 TrustLevel
-                child.attributes.entry("uap10:TrustLevel".into())
+                child
+                    .attributes
+                    .entry("uap10:TrustLevel".into())
                     .or_insert_with(|| "mediumIL".into());
                 // 添加多开支持
-                child.attributes.insert("desktop4:SupportsMultipleInstances".to_string(), "true".to_string());
+                child.attributes.insert(
+                    "desktop4:SupportsMultipleInstances".to_string(),
+                    "true".to_string(),
+                );
             }
         }
     }
@@ -156,7 +160,9 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
         // 3) 确保 runFullTrust 和 uap4 自定义存在
         let ensure = |grp: &mut Vec<XMLNode>, tag: &str, name: &str| {
             if !grp.iter().any(|n| match n {
-                XMLNode::Element(e) => e.name == tag && e.attributes.get("Name") == Some(&name.to_string()),
+                XMLNode::Element(e) => {
+                    e.name == tag && e.attributes.get("Name") == Some(&name.to_string())
+                }
                 _ => false,
             }) {
                 let mut e = Element::new(tag);
@@ -165,7 +171,11 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
             }
         };
         ensure(&mut group3, "rescap:Capability", "runFullTrust");
-        ensure(&mut group4, "uap4:CustomCapability", "Microsoft.coreAppActivation_8wekyb3d8bbwe");
+        ensure(
+            &mut group4,
+            "uap4:CustomCapability",
+            "Microsoft.coreAppActivation_8wekyb3d8bbwe",
+        );
 
         // 4) 清空并按新顺序拼回
         caps.children.clear();
@@ -185,7 +195,10 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
         // group4: uap4 自定义
         caps.children.push(XMLNode::Element({
             let mut e = Element::new("uap4:CustomCapability");
-            e.attributes.insert("Name".into(), "Microsoft.coreAppActivation_8wekyb3d8bbwe".into());
+            e.attributes.insert(
+                "Name".into(),
+                "Microsoft.coreAppActivation_8wekyb3d8bbwe".into(),
+            );
             e
         }));
         pkg.children.push(XMLNode::Element(caps));
@@ -194,7 +207,10 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
     // 6. 清理自闭合节点
     for node in pkg.children.iter_mut() {
         if let XMLNode::Element(ref mut elem) = node {
-            if matches!(elem.name.as_str(), "Identity" | "PhoneIdentity" | "TargetDeviceFamily" | "PackageDependency") {
+            if matches!(
+                elem.name.as_str(),
+                "Identity" | "PhoneIdentity" | "TargetDeviceFamily" | "PackageDependency"
+            ) {
                 elem.children.clear();
             }
         }
@@ -217,34 +233,49 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
 }
 
 /// 获取包信息
-pub fn get_package_info(app_user_model_id: &str) -> windows::core::Result<Option<(String, String, String)>> {
+pub fn get_package_info(
+    app_user_model_id: &str,
+) -> windows::core::Result<Option<(String, String, String)>> {
     match windows::ApplicationModel::AppInfo::GetFromAppUserModelId(&app_user_model_id.into()) {
-        Ok(app_info) => {
-            match app_info.Package() {
-                Ok(package) => {
-                    let version = if let Ok(version) = package.Id().and_then(|id| id.Version()) {
-                        Some(format!("{}.{}.{}.{}", version.Major, version.Minor, version.Build, version.Revision))
-                    } else {
-                        None
-                    };
+        Ok(app_info) => match app_info.Package() {
+            Ok(package) => {
+                let version = if let Ok(version) = package.Id().and_then(|id| id.Version()) {
+                    Some(format!(
+                        "{}.{}.{}.{}",
+                        version.Major, version.Minor, version.Build, version.Revision
+                    ))
+                } else {
+                    None
+                };
 
-                    let package_family_name = if let Ok(package_family_name) = package.Id().and_then(|id| id.FamilyName()) {
+                let package_family_name =
+                    if let Ok(package_family_name) = package.Id().and_then(|id| id.FamilyName()) {
                         Some(package_family_name)
                     } else {
-                        return Err(windows::core::Error::from(io::Error::new(io::ErrorKind::Other, "无法获取包家族名称")));
+                        return Err(windows::core::Error::from(io::Error::new(
+                            io::ErrorKind::Other,
+                            "无法获取包家族名称",
+                        )));
                     };
 
-                    let package_full_name = if let Ok(package_full_name) = package.Id().and_then(|id| id.FullName()) {
+                let package_full_name =
+                    if let Ok(package_full_name) = package.Id().and_then(|id| id.FullName()) {
                         Some(package_full_name.to_string())
                     } else {
-                        return Err(windows::core::Error::from(io::Error::new(io::ErrorKind::Other, "无法获取包全名")));
+                        return Err(windows::core::Error::from(io::Error::new(
+                            io::ErrorKind::Other,
+                            "无法获取包全名",
+                        )));
                     };
 
-                    Ok(Some((version.unwrap(), package_family_name.unwrap().to_string(), package_full_name.unwrap())))
-                }
-                Err(err) => Err(err.into()),
+                Ok(Some((
+                    version.unwrap(),
+                    package_family_name.unwrap().to_string(),
+                    package_full_name.unwrap(),
+                )))
             }
-        }
+            Err(err) => Err(err.into()),
+        },
         Err(err) => Err(err.into()),
     }
 }
@@ -256,7 +287,8 @@ pub async fn get_manifest_identity(appx_path: &str) -> Result<(String, String), 
 
     // 异步读取（确保使用 tokio::fs）
     let xml = tokio::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("无法打开/读取文件 {}: {}", manifest_path.display(), e)).await?;
+        .map_err(|e| format!("无法打开/读取文件 {}: {}", manifest_path.display(), e))
+        .await?;
 
     // 找到第一个 <Identity ...> 或 <Identity/...>
     let start_idx = match xml.find("<Identity") {
@@ -291,7 +323,11 @@ pub async fn get_manifest_identity(appx_path: &str) -> Result<(String, String), 
                 .chars()
                 .take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/')
                 .collect();
-            if val.is_empty() { None } else { Some(val) }
+            if val.is_empty() {
+                None
+            } else {
+                Some(val)
+            }
         }
     }
 

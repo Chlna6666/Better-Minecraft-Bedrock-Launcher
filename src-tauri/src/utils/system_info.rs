@@ -1,7 +1,9 @@
-use windows::Win32::Globalization::{GetACP, GetUserDefaultUILanguage, GetLocaleInfoW, LOCALE_SNAME};
+use windows::Win32::Globalization::{
+    GetACP, GetLocaleInfoW, GetUserDefaultUILanguage, LOCALE_SNAME,
+};
 use windows::Win32::System::SystemInformation::{
-    GetSystemInfo, PROCESSOR_ARCHITECTURE_AMD64,
-    PROCESSOR_ARCHITECTURE_ARM, PROCESSOR_ARCHITECTURE_INTEL, SYSTEM_INFO,
+    GetSystemInfo, PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_ARCHITECTURE_ARM,
+    PROCESSOR_ARCHITECTURE_INTEL, SYSTEM_INFO,
 };
 
 /// 返回当前系统活动代码页（ANSI Code Page）
@@ -32,8 +34,8 @@ pub fn get_cpu_architecture() -> String {
         match info.Anonymous.Anonymous.wProcessorArchitecture {
             PROCESSOR_ARCHITECTURE_INTEL => "x86".into(),
             PROCESSOR_ARCHITECTURE_AMD64 => "x64".into(),
-            PROCESSOR_ARCHITECTURE_ARM   => "ARM".into(),
-            _                            => "Unknown".into(),
+            PROCESSOR_ARCHITECTURE_ARM => "ARM".into(),
+            _ => "Unknown".into(),
         }
     }
 }

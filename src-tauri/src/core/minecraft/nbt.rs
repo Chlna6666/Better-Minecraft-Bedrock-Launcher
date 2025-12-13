@@ -1,9 +1,9 @@
 use anyhow::{bail, Context, Result};
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
-use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
 
 // NBT标签类型码（基于您的描述和文献）
 const TAG_END: u8 = 0x00;
@@ -122,7 +122,9 @@ fn parse_tag_payload(reader: &mut impl Read, tag_type: u8) -> Result<NbtTag> {
         TAG_BYTE_ARRAY => {
             let len = read_le_i32(reader)? as usize;
             let mut buf = vec![0i8; len];
-            reader.read_exact(unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, len) })?;
+            reader.read_exact(unsafe {
+                std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, len)
+            })?;
             Ok(NbtTag::ByteArray(buf))
         }
         TAG_STRING => Ok(NbtTag::String(read_string(reader)?)),
@@ -195,7 +197,6 @@ pub fn parse_root_nbt(data: &[u8]) -> Result<NbtTag> {
         Ok(NbtTag::Compound(root))
     }
 }
-
 
 // 序列化NBT到字节（little-endian）
 fn write_le_u16(writer: &mut impl Write, val: u16) -> Result<()> {
@@ -339,7 +340,6 @@ fn serialize_tag_payload(writer: &mut impl Write, tag: &NbtTag) -> Result<()> {
     }
 }
 
-
 // 序列化根NBT（无名Compound）
 pub fn serialize_root_nbt(tag: &NbtTag) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -356,18 +356,17 @@ pub fn parse_root_nbt_with_header(data: &[u8]) -> Result<NbtTag> {
         bail!("数据不足，无法读取头部");
     }
 
-
     // 读取 version 和 declared_len
     let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
     let declared_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
     let remaining = data.len().saturating_sub(8);
 
-
     tracing::debug!(
-"parse_root_nbt_with_header: version={} declared_len={} remaining={}",
-version, declared_len, remaining
-);
-
+        "parse_root_nbt_with_header: version={} declared_len={} remaining={}",
+        version,
+        declared_len,
+        remaining
+    );
 
     // 截取 NBT 数据部分
     let nbt_data = if declared_len <= remaining {
@@ -375,7 +374,6 @@ version, declared_len, remaining
     } else {
         &data[8..]
     };
-
 
     // 调用原始解析
     parse_root_nbt(nbt_data)
@@ -409,14 +407,18 @@ mod tests {
 
     // 辅助：把字节切片打印成可读的十六进制字符串
     fn to_hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{:02X}", x)).collect::<Vec<_>>().join(" ")
+        b.iter()
+            .map(|x| format!("{:02X}", x))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[test]
     fn test_parse_simple_compound() {
         // 示例数据：无名Compound，包含一个StringTag "BiomeOverride" = ""
         let data = vec![
-            0x08, 0x0D, 0x00, b'B', b'i', b'o', b'm', b'e', b'O', b'v', b'e', b'r', b'r', b'i', b'd', b'e', 0x00, 0x00, // StringTag, name len 13, name, value len 0
+            0x08, 0x0D, 0x00, b'B', b'i', b'o', b'm', b'e', b'O', b'v', b'e', b'r', b'r', b'i',
+            b'd', b'e', 0x00, 0x00, // StringTag, name len 13, name, value len 0
             0x00, // End
         ];
 
@@ -424,7 +426,10 @@ mod tests {
         let tag = parse_root_nbt(&data).unwrap();
         eprintln!("parsed tag: {:#?}", tag); // 失败时会展示，若想总是看到，请用 --nocapture
         if let NbtTag::Compound(map) = tag {
-            assert_eq!(map.get("BiomeOverride").unwrap(), &NbtTag::String("".to_string()));
+            assert_eq!(
+                map.get("BiomeOverride").unwrap(),
+                &NbtTag::String("".to_string())
+            );
         } else {
             panic!("Not compound");
         }
@@ -433,11 +438,7 @@ mod tests {
     #[test]
     fn test_serialize_list() {
         // 示例：ListTag [1,2,3] 类型Int
-        let list = NbtTag::List(vec![
-            NbtTag::Int(1),
-            NbtTag::Int(2),
-            NbtTag::Int(3),
-        ]);
+        let list = NbtTag::List(vec![NbtTag::Int(1), NbtTag::Int(2), NbtTag::Int(3)]);
         let mut buf = Vec::new();
         serialize_named_tag(&mut buf, "test", &list).unwrap();
 

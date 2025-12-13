@@ -2,7 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 #[tauri::command]
 pub fn read_music_directory(directory: &str) -> Result<Vec<String>, String> {
-    let path = PathBuf::from(directory).canonicalize().map_err(|e| e.to_string())?;
+    let path = PathBuf::from(directory)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
     let mut files = Vec::new();
 
     if path.exists() && path.is_dir() {
@@ -35,4 +37,3 @@ pub fn read_music_directory(directory: &str) -> Result<Vec<String>, String> {
 
     Ok(files)
 }
-

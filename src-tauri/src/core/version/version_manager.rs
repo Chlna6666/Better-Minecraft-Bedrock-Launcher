@@ -1,18 +1,18 @@
-use serde::Serialize;
-use std::{collections::HashMap, time::Instant, path::{Path, PathBuf}};
+use crate::core::minecraft::appx::utils::get_manifest_identity;
 use futures::StreamExt;
+use serde::Serialize;
+use std::{collections::HashMap, path::PathBuf, time::Instant};
 use tokio::fs;
 use tokio::fs::read_dir;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::debug;
-use crate::core::minecraft::appx::utils::get_manifest_identity; // 若同文件有实现请去重
 
 #[derive(Serialize, Clone)]
 struct AppxVersion {
     name: String,
     version: String,
-    path: String,   // 完整绝对路径
-    kind: String,   // "UWP" 或 "GDK"
+    path: String, // 完整绝对路径
+    kind: String, // "UWP" 或 "GDK"
 }
 
 /// 简单解析：把版本段尽量保留为整数（不要把长段再拆）
@@ -46,25 +46,19 @@ fn is_win32_version(version: &str) -> bool {
     // 先把版本拆为数字向量
     let v = parse_version_to_vec_simple(version);
 
-    // 特殊规则：对于 1.21 系列，如果第三段 >= 12201，则视为 GDK（按你观测）
+    // 特殊规则：对于 1.21 系列，如果第三段 >= 12201，则视为 GDK
     if v.len() >= 3 {
         if v[0] == 1 && v[1] == 21 && v[2] >= 12201 {
             return true;
         }
     }
 
-    // 否则按常规阈值比较（可以调整阈值）
-    const THRESHOLD: &str = "1.21.12000.21";
+    const THRESHOLD: &str = "1.21.12000.20";
     compare_versions(version, THRESHOLD) != std::cmp::Ordering::Less
 }
 
 /// 根据版本字符串返回 "GDK" 或 "UWP"
 fn determine_kind_from_version(version: &str) -> String {
-    // 特例：1.21.12020.0 明确是唯一一个 UWP（按你的备注）
-    if version == "1.21.12020.0" {
-        return "UWP".to_string();
-    }
-
     if is_win32_version(version) {
         "GDK".to_string()
     } else {
@@ -92,19 +86,17 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
     let versions: Vec<(String, AppxVersion)> = dir_stream
         .filter_map(|res| async {
             match res {
-                Ok(entry) => {
-                    match entry.file_type().await {
-                        Ok(ft) if ft.is_dir() => Some(entry),
-                        Ok(_) => {
-                            debug!("跳过非目录: {:?}", entry.path());
-                            None
-                        }
-                        Err(e) => {
-                            debug!("获取文件类型失败: {}", e);
-                            None
-                        }
+                Ok(entry) => match entry.file_type().await {
+                    Ok(ft) if ft.is_dir() => Some(entry),
+                    Ok(_) => {
+                        debug!("跳过非目录: {:?}", entry.path());
+                        None
                     }
-                }
+                    Err(e) => {
+                        debug!("获取文件类型失败: {}", e);
+                        None
+                    }
+                },
                 Err(e) => {
                     debug!("遍历目录项出错: {}", e);
                     None
@@ -121,7 +113,8 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
                     }
                 };
 
-                let folder_name = path_buf.file_name()
+                let folder_name = path_buf
+                    .file_name()
                     .and_then(|f| f.to_str())
                     .map(str::to_string);
 
@@ -144,7 +137,7 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
                                 kind,
                             },
                         ))
-                    },
+                    }
                     Err(e) => {
                         debug!("解析失败 {}: {}", path_buf.display(), e);
                         None

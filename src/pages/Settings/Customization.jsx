@@ -8,7 +8,7 @@ import Select from "../../components/Select.jsx";
 import Input from "../../components/Input.jsx";
 import { useTranslation } from 'react-i18next';
 import { SketchPicker } from 'react-color';
-import { useToast } from "../../components/Toast.jsx";
+import { useToast } from "../../components/Toast.tsx";
 import {Button} from "../../components/index.js"; // optional, used for feedback
 
 // Helpers

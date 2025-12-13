@@ -16,8 +16,7 @@ pub async fn download_appx(
     file_name: String,
     md5: Option<String>,
 ) -> Result<String, String> {
-    let client = get_client_for_proxy()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let parts: Vec<&str> = package_id.split('_').collect();
     if parts.len() != 2 {
@@ -30,7 +29,7 @@ pub async fn download_appx(
     let dest = downloads_dir.join(&file_name);
 
     // 命令层创建 task_id（因为需要在解析 URL 阶段也能被前端取消/轮询）
-    let task_id = create_task("ready", None);
+    let task_id = create_task(None, "ready", None);
 
     // 获取下载 URL（WuClient 使用 task_id 检查取消/上报阶段）
     let wu_client = WuClient::with_client(client.clone());
@@ -84,7 +83,11 @@ pub async fn download_appx(
                 finish_task(&task_id_clone, "completed", Some(dest_str));
             }
             Ok(CoreResult::Cancelled) => {
-                finish_task(&task_id_clone, "cancelled", Some("download cancelled".into()));
+                finish_task(
+                    &task_id_clone,
+                    "cancelled",
+                    Some("download cancelled".into()),
+                );
                 let _ = tokio::fs::remove_file(&dest_clone).await;
             }
             Ok(CoreResult::Error(err)) => {
@@ -109,8 +112,7 @@ pub async fn download_resource(
     file_name: String,
     md5: Option<String>,
 ) -> Result<String, String> {
-    let client = get_client_for_proxy()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
     let downloads_dir = PathBuf::from("./BMCBL/downloads");
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
@@ -119,11 +121,7 @@ pub async fn download_resource(
     let manager = DownloaderManager::with_client(client);
 
     // start_download 会创建 task_id 并 spawn 后台任务
-    let task_id = manager.start_download(
-        url,
-        dest,
-        md5.clone(),
-    );
+    let task_id = manager.start_download(url, dest, md5.clone());
 
     Ok(task_id)
 }

@@ -9,7 +9,6 @@ pub fn minimize_launcher_window(app: &AppHandle) {
     }
 }
 
-
 pub fn close_launcher_window(app: &AppHandle) {
     if let Some(window) = app.get_window("main") {
         if let Err(e) = window.close() {

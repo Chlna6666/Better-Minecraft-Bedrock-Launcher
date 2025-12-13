@@ -4,7 +4,7 @@ import { getConfig } from "../../utils/config.jsx";
 import Switch from "../../components/Switch.jsx";
 import Select from "../../components/Select.jsx"; // <- 自定义 Select
 import {useTranslation} from "react-i18next";
-import {SUPPORTED_LANGUAGES} from "../../i18n/i18n.js";
+import {SUPPORTED_LANGUAGES} from "../../locales/i18n.ts";
 import {Input} from "../../components/index.js";
 
 function Launcher() {

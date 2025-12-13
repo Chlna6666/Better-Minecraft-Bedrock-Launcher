@@ -1,8 +1,7 @@
 pub mod manager;
-mod single;
 mod multi;
+mod single;
 
-pub mod wu_client;
-mod md5;
 pub mod commands;
-
+mod md5;
+pub mod wu_client;

@@ -1,38 +1,42 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-pub mod i18n;
-pub mod utils;
-pub mod core;
+pub mod archive;
 pub mod commands;
 pub mod config;
-pub mod plugins;
+pub mod core;
 pub mod downloads;
-pub mod result;
 pub mod http;
+pub mod i18n;
+pub mod plugins;
+pub mod result;
 pub mod tasks;
-pub mod archive;
+pub mod utils;
 
+use ::core::task;
+use crate::archive::commands::{extract_zip_appx, import_appx};
+use crate::commands::*;
+use crate::config::config::Config;
+use crate::core::minecraft::assets::delete_game_asset;
+use crate::core::minecraft::map::list_minecraft_worlds_for_user;
+use crate::core::version::gdk_users::get_gdk_users;
+use crate::downloads::commands::{download_appx, download_resource};
+use crate::http::commands::fetch_remote;
+use crate::tasks::commands::{cancel_task, get_task_status};
+use crate::utils::app_handle::set_global_app;
+use crate::utils::app_info;
+use crate::utils::logger::log;
+use crate::utils::system_info::get_system_language;
+use crate::utils::updater::{check_updates, download_and_apply_update, quit_app};
+use crate::utils::utils::to_wstr;
+use anyhow::{anyhow, Result};
 use std::env;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_fs::FsExt;
 use tracing::{error, info};
-use anyhow::{anyhow, Result};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-use windows::core::PCWSTR;
-use crate::archive::commands::{extract_zip_appx, import_appx};
-use crate::utils::logger::{log};
-use crate::config::config::{ Config};
-use crate::commands::*;
-use crate::downloads::commands::{download_appx, download_resource};
-use crate::http::commands::fetch_remote;
-use crate::tasks::commands::{cancel_task, get_task_status};
-use crate::utils::system_info::{get_system_language};
-use crate::utils::app_info;
-use crate::utils::app_handle::set_global_app;
-use crate::utils::updater::{ check_updates, download_and_apply_update,quit_app};
-use crate::utils::utils::to_wstr;
 
 #[derive(Clone)]
 pub struct PreInit {
@@ -56,7 +60,6 @@ pub fn show_windows_error(title: &str, msg: &str) {
         );
     }
 }
-
 
 fn show_window(app: &AppHandle) {
     let windows = app.webview_windows();
@@ -130,14 +133,18 @@ pub async fn run(preinit: Arc<PreInit>) -> Result<()> {
             get_all_resource_packs,
             get_all_behavior_packs,
             list_minecraft_worlds_cmd,
+            list_minecraft_worlds_for_user,
             get_mod_list,
             set_mod,
             import_mods,
             delete_mods,
+            delete_game_asset,
             open_path,
+            get_gdk_users
         ])
         .setup(move |app| {
-            // 这里使用 pre_clone（Arc<PreInit>）引用数据
+            let handle = app.handle().clone();
+            tasks::task_manager::init_task_manager(handle);
             let config_ref: &Config = &pre_clone.config;
             let locale = pre_clone.locale.clone();
             let webview2_ver = pre_clone.webview2_ver.clone();

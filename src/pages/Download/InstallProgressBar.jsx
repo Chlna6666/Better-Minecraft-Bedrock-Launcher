@@ -22,6 +22,7 @@ const InstallProgressBar = ({
                                 isImport = false,
                                 sourcePath = null,
                                 children,
+                                isGDK = false,
                             }) => {
     const { t } = useTranslation();
 
@@ -362,14 +363,26 @@ const InstallProgressBar = ({
                 if (!taskId) throw new Error("no task id returned from import_appx");
                 startPolling(taskId);
             } else {
-                const revision = "1";
-                const fullId = `${packageId}_${revision}`;
-                const taskId = await invoke("download_appx", {
-                    packageId: fullId,
-                    fileName: safe,
-                    md5: md5,
-                });
-                if (!taskId) throw new Error("no task id returned from download_appx");
+                let taskId;
+                if (isGDK) {
+                    // GDK builds use direct download
+                    taskId = await invoke("download_resource", {
+                        url: packageId, // Assuming packageId is the direct URL for GDK
+                        fileName: safe, // 修正为 fileName
+                        md5: md5,
+                    });
+                    if (!taskId) throw new Error("no task id returned from download_resource");
+                } else {
+                    // UWP builds use the old method (URL parsing on backend)
+                    const revision = "1";
+                    const fullId = `${packageId}_${revision}`;
+                    taskId = await invoke("download_appx", {
+                        packageId: fullId,
+                        fileName: safe,
+                        md5: md5,
+                    });
+                    if (!taskId) throw new Error("no task id returned from download_appx");
+                }
                 startPolling(taskId);
             }
         } catch (e) {

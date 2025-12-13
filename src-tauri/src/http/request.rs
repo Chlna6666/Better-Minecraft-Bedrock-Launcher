@@ -1,8 +1,11 @@
 // src/http/request.rs
-use reqwest::{Client, Method, header::{HeaderMap, HeaderName, HeaderValue}, Url};
+use once_cell::sync::Lazy;
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue},
+    Client, Method, Url,
+};
 use std::collections::HashMap;
 use std::time::Duration;
-use once_cell::sync::Lazy;
 use tracing::debug;
 
 pub(crate) static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
@@ -15,7 +18,6 @@ pub(crate) static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
         .build()
         .expect("reqwest client")
 });
-
 
 /// 构造并发送请求的选项（与 UI 兼容）
 pub struct RequestOptions<'a> {
@@ -61,7 +63,9 @@ pub async fn send_request_with_options(
 
         // 如果 timeout_ms 提供，我们可以在请求上设置，但部分 reqwest 版本对 client.timeout 与 request.timeout 行为不同，
         // 这里优先在 request 上设置 timeout（下面会设置 request.timeout）
-        let temp_client = builder.build().map_err(|e| format!("构建临时 client 失败: {}", e))?;
+        let temp_client = builder
+            .build()
+            .map_err(|e| format!("构建临时 client 失败: {}", e))?;
 
         let mut rb = temp_client.request(method, url.clone());
         let header_map = build_header_map(opts.headers);

@@ -1,11 +1,11 @@
-use reqwest::{Client, header};
+use reqwest::{header, Client};
 use tracing::debug;
 
+use crate::downloads::wu_client::protocol::WuProtocol;
 use crate::result::{CoreError, CoreResult};
+use crate::tasks::task_manager::{finish_task, is_cancelled, update_progress};
 use std::time::Duration;
 use tokio::time::sleep;
-use crate::downloads::wu_client::protocol::WuProtocol;
-use crate::tasks::task_manager::{finish_task, is_cancelled, update_progress};
 
 /// 现在通过 task_manager 管理取消与阶段信息
 pub struct WuClient {
@@ -40,7 +40,7 @@ impl WuClient {
         &self,
         update_id: &str,
         revision: &str,
-        task_id: &str
+        task_id: &str,
     ) -> Result<CoreResult<String>, CoreError> {
         let request_xml = self.protocol.build_download_request(update_id, revision);
 
@@ -67,13 +67,13 @@ impl WuClient {
 
             // 在请求发送阶段也支持取消（通过 task_manager）
             let send_result = tokio::select! {
-            _ = Self::wait_cancelled(task_id.to_string()) => {
-                debug!("task={} 下载已取消（发送阶段）", task_id);
-                finish_task(task_id, "cancelled", Some("user cancelled".into()));
-                return Ok(CoreResult::Cancelled);
-            }
-            r = send_fut => r
-        };
+                _ = Self::wait_cancelled(task_id.to_string()) => {
+                    debug!("task={} 下载已取消（发送阶段）", task_id);
+                    finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                    return Ok(CoreResult::Cancelled);
+                }
+                r = send_fut => r
+            };
 
             match send_result {
                 Ok(resp) => {
@@ -85,13 +85,13 @@ impl WuClient {
 
                             // 在读取 body 阶段也支持取消
                             let text_result = tokio::select! {
-                            _ = Self::wait_cancelled(task_id.to_string()) => {
-                                debug!("task={} 已取消（读取 body 阶段）", task_id);
-                                finish_task(task_id, "cancelled", Some("user cancelled".into()));
-                                return Ok(CoreResult::Cancelled);
-                            }
-                            txt = valid_resp.text() => txt
-                        };
+                                _ = Self::wait_cancelled(task_id.to_string()) => {
+                                    debug!("task={} 已取消（读取 body 阶段）", task_id);
+                                    finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                                    return Ok(CoreResult::Cancelled);
+                                }
+                                txt = valid_resp.text() => txt
+                            };
 
                             let xml = text_result?;
                             debug!("task={} 响应 XML: {}", task_id, xml);
@@ -105,7 +105,11 @@ impl WuClient {
                                 Err(e) => {
                                     debug!("task={} 解析 XML 失败: {:?}", task_id, e);
                                     // 解析失败通常是致命的，标 error 并返回 Err
-                                    finish_task(task_id, "error", Some("parse response failed".into()));
+                                    finish_task(
+                                        task_id,
+                                        "error",
+                                        Some("parse response failed".into()),
+                                    );
                                     return Err(e);
                                 }
                             };
@@ -124,7 +128,10 @@ impl WuClient {
                                     finish_task(task_id, "error", Some("no matching url".into()));
                                     return Err(CoreError::BadUpdateIdentity);
                                 } else {
-                                    debug!("task={} 没有匹配 url，准备重试（attempt={})", task_id, attempt);
+                                    debug!(
+                                        "task={} 没有匹配 url，准备重试（attempt={})",
+                                        task_id, attempt
+                                    );
                                     // 继续重试（不要 finish_task）
                                 }
                             }
@@ -168,13 +175,13 @@ impl WuClient {
             // 在等待 backoff 期间也支持取消
             let task_id_wait = task_id.to_string();
             tokio::select! {
-            _ = Self::wait_cancelled(task_id_wait.clone()) => {
-                debug!("task={} 在 backoff 期间检测到取消", task_id);
-                finish_task(task_id, "cancelled", Some("user cancelled".into()));
-                return Ok(CoreResult::Cancelled);
+                _ = Self::wait_cancelled(task_id_wait.clone()) => {
+                    debug!("task={} 在 backoff 期间检测到取消", task_id);
+                    finish_task(task_id, "cancelled", Some("user cancelled".into()));
+                    return Ok(CoreResult::Cancelled);
+                }
+                _ = sleep(Duration::from_millis(backoff as u64)) => {}
             }
-            _ = sleep(Duration::from_millis(backoff as u64)) => {}
-        }
         }
 
         // 理论上不应到达这里

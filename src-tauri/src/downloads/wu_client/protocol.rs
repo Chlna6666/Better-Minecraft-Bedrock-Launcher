@@ -3,10 +3,10 @@
 //! 本实现参考了GPLv3许可的C#项目 mc-w10-version-launcher (https://github.com/MCMrARM/mc-w10-version-launcher)
 //!
 //! 原始C#项目采用GPLv3许可，本项目使用 Rust实现，采用GPLv3许可
-use xmltree::{Element, XMLNode};
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
 use crate::result::CoreError;
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+use xmltree::{Element, XMLNode};
 
 #[derive(Clone)]
 pub struct WuProtocol {
@@ -17,7 +17,7 @@ impl WuProtocol {
     pub fn new() -> Self {
         Self { msa_token: None }
     }
-    
+
     pub fn build_download_request(&self, update_id: &str, revision: &str) -> String {
         let now: DateTime<Utc> = Utc::now();
         let created = now.to_rfc3339();

@@ -5,8 +5,14 @@ use tracing::{info, warn};
 use windows::core::BOOL;
 use windows::Win32::Foundation::{CloseHandle, FALSE, HWND, LPARAM, RECT, TRUE};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
-use windows::Win32::UI::WindowsAndMessaging::{ClipCursor, EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GA_ROOTOWNER};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    ClipCursor, EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    GA_ROOTOWNER,
+};
 
 fn get_class_name(hwnd: HWND) -> Option<String> {
     let mut class_name = [0u16; 256];
@@ -21,11 +27,16 @@ fn get_class_name(hwnd: HWND) -> Option<String> {
 /// 找到 UWP 应用的“宿主”或“CoreWindow”
 /// 如果找到 CoreWindow，就返回它；否则返回宿主
 fn find_uwp_frame(title_substring: &str) -> Option<HWND> {
-    struct D<'a> { title: &'a str, hwnd: HWND }
+    struct D<'a> {
+        title: &'a str,
+        hwnd: HWND,
+    }
 
     unsafe extern "system" fn enum_host(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let data = &mut *(lparam.0 as *mut D);
-        if !IsWindowVisible(hwnd).as_bool() { return TRUE; }
+        if !IsWindowVisible(hwnd).as_bool() {
+            return TRUE;
+        }
 
         if let Some(class_name) = get_class_name(hwnd) {
             if class_name != "ApplicationFrameWindow" {
@@ -50,11 +61,19 @@ fn find_uwp_frame(title_substring: &str) -> Option<HWND> {
         TRUE
     }
 
-    let mut data = D { title: title_substring, hwnd: HWND(std::ptr::null_mut()) };
-    unsafe { let _ = EnumWindows(Some(enum_host), LPARAM(&mut data as *mut _ as isize)); }
-    if data.hwnd.0 != std::ptr::null_mut() { Some(data.hwnd) } else { None }
+    let mut data = D {
+        title: title_substring,
+        hwnd: HWND(std::ptr::null_mut()),
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_host), LPARAM(&mut data as *mut _ as isize));
+    }
+    if data.hwnd.0 != std::ptr::null_mut() {
+        Some(data.hwnd)
+    } else {
+        None
+    }
 }
-
 
 /// 每次都实时获取窗口外框并裁剪鼠标区域，减少指定像素
 fn confine_to_window(hwnd: HWND, reduce_pixels: i32) {
@@ -75,9 +94,10 @@ fn confine_to_window(hwnd: HWND, reduce_pixels: i32) {
 
 /// 释放鼠标限制
 fn release_cursor() {
-    unsafe { let _ = ClipCursor(None); }
+    unsafe {
+        let _ = ClipCursor(None);
+    }
 }
-
 
 /// 判断前台窗口是否属于 target（或它的顶层拥有者）
 /// 避免子窗口、CoreWindow、宿主都能算作“在内部”
@@ -92,11 +112,11 @@ fn foreground_is_target(target: HWND) -> bool {
 fn build_unlock_key_map() -> HashMap<&'static str, i32> {
     let mut m = HashMap::new();
     // VK_MENU.0 是 u16，需要显式转为 i32
-    m.insert("ALT",    VK_MENU.0 as i32);
-    m.insert("CTRL",   VK_CONTROL.0 as i32);
-    m.insert("SHIFT",  VK_SHIFT.0 as i32);
-    m.insert("LWIN",   VK_LWIN.0 as i32);
-    m.insert("RWIN",   VK_RWIN.0 as i32);
+    m.insert("ALT", VK_MENU.0 as i32);
+    m.insert("CTRL", VK_CONTROL.0 as i32);
+    m.insert("SHIFT", VK_SHIFT.0 as i32);
+    m.insert("LWIN", VK_LWIN.0 as i32);
+    m.insert("RWIN", VK_RWIN.0 as i32);
     m
 }
 /// 检测指定按键是否被按下
@@ -115,7 +135,10 @@ pub fn start_window_monitor(title_substring: &str, unlock_key_name: &str, reduce
     let key = title_substring.to_owned();
     let unlock_name = unlock_key_name.to_owned();
     let map = build_unlock_key_map();
-    let vk_unlock = map.get(unlock_name.as_str()).copied().unwrap_or(VK_MENU.0 as i32);
+    let vk_unlock = map
+        .get(unlock_name.as_str())
+        .copied()
+        .unwrap_or(VK_MENU.0 as i32);
 
     thread::spawn(move || {
         let mut confined = false;
@@ -153,11 +176,11 @@ pub fn start_window_monitor(title_substring: &str, unlock_key_name: &str, reduce
                     }
                 } else if foreground_is_target(host) {
                     if !confined {
-                        confine_to_window(host,reduce_pixels);
+                        confine_to_window(host, reduce_pixels);
                         info!("已锁定鼠标到 UWP 窗口《{}》", key);
                         confined = true;
                     } else {
-                        confine_to_window(host,reduce_pixels);
+                        confine_to_window(host, reduce_pixels);
                     }
                 } else if confined {
                     release_cursor();
@@ -189,7 +212,7 @@ fn process_exists(pid: u32) -> bool {
             Ok(handle) => {
                 let _ = CloseHandle(handle);
                 true
-            },
+            }
             Err(_) => false,
         }
     }

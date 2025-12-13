@@ -1,16 +1,16 @@
-use std::ptr::{ null_mut};
 use std::process::Command;
+use std::ptr::null_mut;
 use tracing::debug;
 
+use crate::i18n::I18n;
+use crate::utils::utils::to_wstr;
 use windows::core::PCWSTR;
 use windows::Win32::System::Registry::{
-    RegOpenKeyExW, RegQueryValueExW, RegCloseKey, HKEY_LOCAL_MACHINE, KEY_READ,
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE, KEY_READ,
 };
 use windows::Win32::UI::Controls::{
     TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION,
 };
-use crate::i18n::I18n;
-use crate::utils::utils::to_wstr;
 
 /// 检查“开发者模式”是否启用：
 /// 从注册表读取：
@@ -69,13 +69,13 @@ fn show_developer_mode_dialog() -> bool {
         // 定义两个按钮 ID，1001 表示“打开开发者设置”，2 表示“取消”（等同 IDCANCEL）
         const ID_BTN_OPEN_SETTINGS: i32 = 1001;
         const ID_BTN_CANCEL: i32 = 2;
-        
-        let title_w        = to_wstr(&I18n::t("developer-mode-title", None));
-        let main_inst_w    = to_wstr(&I18n::t("developer-mode-main", None));
-        let content_w      = to_wstr(&I18n::t("developer-mode-content", None));
-        let open_txt_w     = to_wstr(&I18n::t("developer-mode-open", None));
-        let cancel_txt_w   = to_wstr(&I18n::t("developer-mode-cancel", None));
-  
+
+        let title_w = to_wstr(&I18n::t("developer-mode-title", None));
+        let main_inst_w = to_wstr(&I18n::t("developer-mode-main", None));
+        let content_w = to_wstr(&I18n::t("developer-mode-content", None));
+        let open_txt_w = to_wstr(&I18n::t("developer-mode-open", None));
+        let cancel_txt_w = to_wstr(&I18n::t("developer-mode-cancel", None));
+
         let buttons: [TASKDIALOG_BUTTON; 2] = [
             TASKDIALOG_BUTTON {
                 nButtonID: ID_BTN_OPEN_SETTINGS,
@@ -87,16 +87,15 @@ fn show_developer_mode_dialog() -> bool {
             },
         ];
 
-      
         let mut config: TASKDIALOGCONFIG = std::mem::zeroed();
         config.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
         config.hwndParent = windows::Win32::Foundation::HWND(null_mut()); // 无父窗口
-        config.hInstance =  windows::Win32::Foundation::HINSTANCE(null_mut());  // 默认
+        config.hInstance = windows::Win32::Foundation::HINSTANCE(null_mut()); // 默认
 
         // 以下字段都要传宽字符串
-        config.pszWindowTitle     = PCWSTR(title_w.as_ptr());
+        config.pszWindowTitle = PCWSTR(title_w.as_ptr());
         config.pszMainInstruction = PCWSTR(main_inst_w.as_ptr());
-        config.pszContent         = PCWSTR(content_w.as_ptr());
+        config.pszContent = PCWSTR(content_w.as_ptr());
 
         // 不使用系统自带的 OK/Yes/No 按钮
         config.dwCommonButtons = windows::Win32::UI::Controls::TASKDIALOG_COMMON_BUTTON_FLAGS(0);
@@ -109,15 +108,10 @@ fn show_developer_mode_dialog() -> bool {
 
         // 允许按 Esc 或 点击“X”关闭窗口（等价于取消）
         config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
-        
+
         // 用于接收用户实际点击的按钮 ID
         let mut clicked: i32 = 0;
-        let hr = TaskDialogIndirect(
-            &config,
-            Some(&mut clicked),
-            None,
-            None,
-        );
+        let hr = TaskDialogIndirect(&config, Some(&mut clicked), None, None);
         if hr.is_err() {
             // 如果调用失败，就当作用户取消
             return false;

@@ -1,19 +1,19 @@
 // src-tauri/src/updater.rs
-use anyhow::{Result};
+use crate::config::config::read_config;
+use crate::downloads::manager::DownloaderManager;
+use crate::http::proxy::get_client_for_proxy;
+use crate::result::{CoreError, CoreResult};
+use crate::tasks::task_manager::{create_task, finish_task};
+use anyhow::Result;
+use regex::Regex;
 use semver::Version;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command};
+use std::process::Command;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tracing::{debug, error, info};
-use regex::Regex;
-use crate::downloads::manager::DownloaderManager;
-use crate::http::proxy::{get_client_for_proxy};
-use crate::result::{CoreError, CoreResult};
-use crate::tasks::task_manager::{create_task, finish_task};
-use crate::config::config::{read_config};
 
 #[derive(Deserialize, Debug)]
 pub struct ApplyUpdateArgs {
@@ -36,6 +36,7 @@ pub struct DownloadAndApplyArgs {
     pub timeout_secs: Option<u64>,
     #[serde(alias = "auto_quit", alias = "autoQuit")]
     pub auto_quit: Option<bool>,
+    pub task_id: Option<String>, // 新增
 }
 #[derive(Deserialize, Debug)]
 struct GitHubAsset {
@@ -83,7 +84,8 @@ fn extract_semver_substring(tag: &str) -> Option<String> {
 
     // 匹配 semver-like 子串（例如 1.2.3, 1.2.3-beta.1, 1.2.3+build）
     let re = Regex::new(r"(?i)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)").unwrap();
-    re.captures(&s).and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+    re.captures(&s)
+        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
 }
 
 /// 可选：从 GitHub Releases 获取（api_base 可指向镜像）
@@ -94,9 +96,8 @@ pub async fn check_updates(
     repo: String,
     api_base: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let config = read_config()
-        .map_err(|e| format!("读取配置失败: {}", e))?;
-    
+    let config = read_config().map_err(|e| format!("读取配置失败: {}", e))?;
+
     let update_channel = config.launcher.update_channel;
     let channel = match update_channel {
         // 使用全限定路径以防命名空间问题（根据你的项目路径调整）
@@ -105,11 +106,18 @@ pub async fn check_updates(
     };
     let channel = channel.to_lowercase();
 
-    info!("检查更新：{}/{} (api_base={:?}, channel={:?})", owner, repo, api_base, update_channel);
+    info!(
+        "检查更新：{}/{} (api_base={:?}, channel={:?})",
+        owner, repo, api_base, update_channel
+    );
     let base = api_base.unwrap_or_else(|| "https://api.github.com".to_string());
-    let url = format!("{}/repos/{}/{}/releases", base.trim_end_matches('/'), owner, repo);
-    let client = get_client_for_proxy()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let url = format!(
+        "{}/repos/{}/{}/releases",
+        base.trim_end_matches('/'),
+        owner,
+        repo
+    );
+    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
     let resp = client
         .get(&url)
         .header("User-Agent", "BMCBL-Updater")
@@ -121,7 +129,10 @@ pub async fn check_updates(
         return Err(format!("GitHub API 返回状态: {}", resp.status()));
     }
 
-    let releases: Vec<GitHubRelease> = resp.json().await.map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    let releases: Vec<GitHubRelease> = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析 JSON 失败: {}", e))?;
     let current = env!("CARGO_PKG_VERSION");
     let current_ver = Version::parse(current).unwrap_or_else(|_| Version::new(0, 0, 0));
 
@@ -151,7 +162,11 @@ pub async fn check_updates(
         let mut chosen_asset: Option<(String, String, u64)> = None; // (name, url, size)
         for a in &r.assets {
             let name_l = a.name.to_lowercase();
-            if name_l.ends_with(".exe") || name_l.ends_with(".msi") || name_l.ends_with(".zip") || name_l.ends_with(".7z") {
+            if name_l.ends_with(".exe")
+                || name_l.ends_with(".msi")
+                || name_l.ends_with(".zip")
+                || name_l.ends_with(".7z")
+            {
                 let size = a.size;
                 chosen_asset = Some((a.name.clone(), a.browser_download_url.clone(), size));
                 break;
@@ -265,24 +280,40 @@ pub async fn check_updates(
     }))
 }
 
-
-
 #[tauri::command]
 pub async fn download_and_apply_update(
     args: DownloadAndApplyArgs,
 ) -> Result<serde_json::Value, String> {
     let url = args.url;
     let filename_hint = args.filename_hint;
+
+    // 如果没有指定目标路径，留空稍后处理
     let target_exe_path = args.target_exe_path.unwrap_or_else(|| "".to_string());
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
-    info!("开始下载并应用：url={}", url);
+
+    // 1. 确定 Task ID 并注册
+    // 关键点：这里必须调用 create_task 把 ID 注册到 HashMap 中
+    let task_id = if let Some(input_id) = args.task_id {
+        // 如果前端传了 ID，传给 create_task 进行注册
+        create_task(Some(input_id), "ready", None)
+    } else {
+        // 如果前端没传，传 None 让 create_task 自动生成
+        create_task(None, "ready", None)
+    };
+
+    info!("开始下载并应用：url={} task_id={}", url, task_id);
+
+    info!("开始下载并应用：url={} task_id={}", url, task_id);
+
+    // 2. 准备下载目录
     let downloads_dir = Path::new("./BMCBL/downloads");
     if let Err(e) = fs::create_dir_all(downloads_dir) {
         error!("创建下载目录失败: {}", e);
         return Err(format!("创建下载目录失败: {}", e));
     }
-    // 决定文件名
+
+    // 3. 决定文件名
     let fname = filename_hint.unwrap_or_else(|| {
         url.split('/')
             .last()
@@ -291,18 +322,22 @@ pub async fn download_and_apply_update(
     });
     let target = downloads_dir.join(&fname);
     info!("保存为: {}", target.display());
-    let client = get_client_for_proxy()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+
+    // 4. 初始化下载器
+    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+
     let manager = DownloaderManager::with_client(client);
-    let task_id = create_task("ready", None);
+
     let res = manager
         .download_with_options(
             &task_id,
-            url,
+            url.clone(),
             target.clone(),
-            None,
+            None, // header options
         )
         .await;
+
+    // 6. 处理下载结果
     let bytes_len = match res {
         Ok(CoreResult::Success(_)) => {
             finish_task(&task_id, "completed", None);
@@ -310,10 +345,14 @@ pub async fn download_and_apply_update(
                 .map_err(|e| format!("获取文件大小失败: {}", e))?
                 .len()
         }
+        // 处理取消情况
         Ok(CoreResult::Cancelled) => {
+            info!("下载任务已取消: {}", task_id);
             finish_task(&task_id, "cancelled", Some("download cancelled".into()));
+            // 清理未完成的文件
             let _ = fs::remove_file(&target);
-            return Err("下载已取消".to_string());
+            // 返回特定的错误文本，方便前端识别（虽然前端通常会在点击取消时就停止等待）
+            return Err("Download cancelled".to_string());
         }
         Ok(CoreResult::Error(err)) => {
             finish_task(&task_id, "error", Some(format!("{:?}", err)));
@@ -326,23 +365,47 @@ pub async fn download_and_apply_update(
             return Err(format!("下载错误: {:?}", e));
         }
     };
+
     info!("下载完成: {} bytes", bytes_len);
-    // 现在应用更新（复用 apply_update 逻辑）
-    let src = normalize_file_arg(&target.to_string_lossy()).map_err(|e| format!("处理下载路径失败: {}", e))?;
+
+    let src = normalize_file_arg(&target.to_string_lossy())
+        .map_err(|e| format!("处理下载路径失败: {}", e))?;
+
     let dst = if target_exe_path.trim().is_empty() {
         std::env::current_exe().map_err(|e| format!("获取当前 exe 失败: {}", e))?
     } else {
         normalize_file_arg(&target_exe_path).map_err(|e| format!("处理目标路径失败: {}", e))?
     };
+
     let exe = std::env::current_exe().map_err(|e| format!("获取 current_exe 失败: {}", e))?;
     let exe_str = exe.to_string_lossy().to_string();
-    info!("[rust] download_and_apply called: exe='{}' src='{}' dst='{}' timeout={} auto_quit={}",
-          exe_str, src.display(), dst.display(), timeout_secs, auto_quit);
+
+    info!(
+        "[rust] download_and_apply called: exe='{}' src='{}' dst='{}' timeout={} auto_quit={}",
+        exe_str,
+        src.display(),
+        dst.display(),
+        timeout_secs,
+        auto_quit
+    );
+
+    // 创建更新器副本 (updater_runner)
     let updater_filename = format!("updater_runner_{}.exe", std::process::id());
     let updater_path = downloads_dir.join(&updater_filename);
+
+    // 删除旧的副本（如果存在）
     let _ = std::fs::remove_file(&updater_path);
-    std::fs::copy(&exe, &updater_path)
-        .map_err(|e| format!("复制 updater 可执行失败: {} -> {} : {}", exe.display(), updater_path.display(), e))?;
+
+    std::fs::copy(&exe, &updater_path).map_err(|e| {
+        format!(
+            "复制 updater 可执行失败: {} -> {} : {}",
+            exe.display(),
+            updater_path.display(),
+            e
+        )
+    })?;
+
+    // 启动子进程进行文件替换
     let child = Command::new(updater_path.clone())
         .arg("--run-updater")
         .arg(&src.to_string_lossy().to_string())
@@ -350,16 +413,27 @@ pub async fn download_and_apply_update(
         .arg(timeout_secs.to_string())
         .spawn()
         .map_err(|e| format!("启动更新子进程失败: {}", e))?;
-    info!("已启动更新子进程 pid={} (updater bin: {})", child.id(), updater_path.display());
-    info!("已启动更新子进程 pid={}", child.id());
+
+    info!(
+        "已启动更新子进程 pid={} (updater bin: {})",
+        child.id(),
+        updater_path.display()
+    );
+
+    // 自动退出主程序
     if auto_quit {
         let delay_ms = 300u64;
-        info!("scheduling process exit in {} ms (pid {})", delay_ms, std::process::id());
+        info!(
+            "scheduling process exit in {} ms (pid {})",
+            delay_ms,
+            std::process::id()
+        );
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(delay_ms));
             std::process::exit(0);
         });
     }
+
     Ok(serde_json::json!({
         "launched": true,
         "pid": child.id(),
@@ -367,7 +441,6 @@ pub async fn download_and_apply_update(
         "bytes": bytes_len,
         "src": src.to_string_lossy(),
         "dst": dst.to_string_lossy(),
-        "log": "tracing",
         "task_id": task_id
     }))
 }
@@ -394,8 +467,12 @@ fn normalize_file_arg(s: &str) -> Result<PathBuf> {
 
 /// 这个函数用于子进程模式：当程序以 `--run-updater <src> <dst> <timeout>` 启动时，调用该函数执行替换。
 pub fn run_updater_child(src: &Path, dst: &Path, timeout: Duration) -> Result<()> {
-    info!("run_updater_child start src='{}' dst='{}' timeout={}s",
-          src.display(), dst.display(), timeout.as_secs());
+    info!(
+        "run_updater_child start src='{}' dst='{}' timeout={}s",
+        src.display(),
+        dst.display(),
+        timeout.as_secs()
+    );
 
     if !src.exists() {
         error!("源文件不存在: {}", src.display());
@@ -410,7 +487,11 @@ pub fn run_updater_child(src: &Path, dst: &Path, timeout: Duration) -> Result<()
                 if e.kind() == std::io::ErrorKind::NotFound {
                     info!("目标文件不存在，准备替换");
                 } else {
-                    error!("无法删除目标（可能正在运行）: {} ; err={}", dst.display(), e);
+                    error!(
+                        "无法删除目标（可能正在运行）: {} ; err={}",
+                        dst.display(),
+                        e
+                    );
                     if start.elapsed() > timeout {
                         error!("超时退出（删除目标失败）");
                         return Err(anyhow::anyhow!("等待目标释放超时: {}", e));
@@ -472,11 +553,17 @@ pub fn clean_old_versions() {
         if let Ok(entry) = entry_res {
             let path = entry.path();
             if path.is_file() {
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
 
                 // 跳过当前进程的 updater_runner_<pid>.exe
                 if file_name.starts_with("updater_runner_") && file_name.ends_with(".exe") {
-                    if let Some(pid_str) = file_name.strip_prefix("updater_runner_").and_then(|s| s.strip_suffix(".exe")) {
+                    if let Some(pid_str) = file_name
+                        .strip_prefix("updater_runner_")
+                        .and_then(|s| s.strip_suffix(".exe"))
+                    {
                         if pid_str == pid.to_string() {
                             continue;
                         }
@@ -484,7 +571,11 @@ pub fn clean_old_versions() {
                 }
 
                 // 只删除指定后缀文件
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
                 if !["exe", "msi", "zip", "7z", "bin"].contains(&ext.as_str()) {
                     continue;
                 }

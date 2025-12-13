@@ -1,16 +1,16 @@
-use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result};
+use num_cpus;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs as tokio_fs;
 use std::time::Instant;
+use tokio::fs as tokio_fs;
 use tracing::debug;
 use walkdir::WalkDir; // for any future use (kept)
-use num_cpus;
 
 /// ---------- 结构化 manifest 类型（按你的示例与常见字段建模） ----------
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -71,11 +71,11 @@ pub struct Manifest {
 pub struct McPackInfo {
     pub folder_name: String,
     pub folder_path: String,
-    pub manifest: Value,                   // 解析后的 Value（原始 JSON，可能被语言替换）
-    pub manifest_raw: String,              // 原始 json 文本
+    pub manifest: Value,      // 解析后的 Value（原始 JSON，可能被语言替换）
+    pub manifest_raw: String, // 原始 json 文本
     pub manifest_parsed: Option<Manifest>, // 尝试解析成结构化 Manifest
-    pub icon_path: Option<String>,         // 如果存在 pack_icon.png
-    pub icon_rel: Option<String>,          // 相对 base 的路径
+    pub icon_path: Option<String>, // 如果存在 pack_icon.png
+    pub icon_rel: Option<String>, // 相对 base 的路径
     pub short_description: Option<String>,
 
     // 来源信息（新增）
@@ -99,7 +99,12 @@ fn default_pack_sources_for(kind: &str) -> Vec<(PathBuf, String, String, String)
             .join("LocalState");
         let uwp_base = uwp_root.join("games").join("com.mojang").join(kind);
         if uwp_base.exists() && uwp_base.is_dir() {
-            res.push((uwp_base.clone(), "UWP".to_string(), "正式版".to_string(), uwp_root.to_string_lossy().into_owned()));
+            res.push((
+                uwp_base.clone(),
+                "UWP".to_string(),
+                "正式版".to_string(),
+                uwp_root.to_string_lossy().into_owned(),
+            ));
         }
 
         // UWP Preview
@@ -109,13 +114,21 @@ fn default_pack_sources_for(kind: &str) -> Vec<(PathBuf, String, String, String)
             .join("LocalState");
         let uwp_preview_base = uwp_preview_root.join("games").join("com.mojang").join(kind);
         if uwp_preview_base.exists() && uwp_preview_base.is_dir() {
-            res.push((uwp_preview_base.clone(), "UWP".to_string(), "预览版".to_string(), uwp_preview_root.to_string_lossy().into_owned()));
+            res.push((
+                uwp_preview_base.clone(),
+                "UWP".to_string(),
+                "预览版".to_string(),
+                uwp_preview_root.to_string_lossy().into_owned(),
+            ));
         }
     }
 
     // 2) Roaming (GDK) 下的 Minecraft Bedrock / Minecraft Bedrock Preview -> Users\<user>\games\com.mojang\<kind>
     if let Ok(roaming) = std::env::var("APPDATA") {
-        for (candidate, edition_label) in &[("Minecraft Bedrock", "正式版"), ("Minecraft Bedrock Preview", "预览版")] {
+        for (candidate, edition_label) in &[
+            ("Minecraft Bedrock", "正式版"),
+            ("Minecraft Bedrock Preview", "预览版"),
+        ] {
             let users_dir = PathBuf::from(&roaming).join(candidate).join("Users");
             if users_dir.exists() && users_dir.is_dir() {
                 if let Ok(entries) = std::fs::read_dir(&users_dir) {
@@ -126,7 +139,12 @@ fn default_pack_sources_for(kind: &str) -> Vec<(PathBuf, String, String, String)
                         }
                         let p = user_folder.join("games").join("com.mojang").join(kind);
                         if p.exists() && p.is_dir() {
-                            res.push((p.clone(), "GDK".to_string(), edition_label.to_string(), user_folder.to_string_lossy().into_owned()));
+                            res.push((
+                                p.clone(),
+                                "GDK".to_string(),
+                                edition_label.to_string(),
+                                user_folder.to_string_lossy().into_owned(),
+                            ));
                         }
                     }
                 }
@@ -160,30 +178,43 @@ fn load_lang_map_for_pack(folder: &PathBuf, lang: &str) -> Option<HashMap<String
             let mut map = HashMap::new();
             for line in content.lines() {
                 let line = line.trim();
-                if line.is_empty() { continue; }
-                if line.starts_with('#') || line.starts_with("//") { continue; }
+                if line.is_empty() {
+                    continue;
+                }
+                if line.starts_with('#') || line.starts_with("//") {
+                    continue;
+                }
                 if let Some((k, val)) = line.split_once('=') {
                     map.insert(k.trim().to_string(), val.trim().to_string());
                 } else if let Some((k, val)) = line.split_once(':') {
                     map.insert(k.trim().to_string(), val.trim().to_string());
                 }
             }
-            if map.is_empty() { None } else { Some(map) }
-        } else { None }
+            if map.is_empty() {
+                None
+            } else {
+                Some(map)
+            }
+        } else {
+            None
+        }
     }
 
     // 收集所有 .lang 文件 (path, stem)
     let mut lang_files: Vec<(PathBuf, String)> = Vec::new();
     for dir in &candidates_dirs {
         let base = folder.join(dir);
-        if !base.exists() || !base.is_dir() { continue; }
+        if !base.exists() || !base.is_dir() {
+            continue;
+        }
         if let Ok(entries) = fs::read_dir(&base) {
             for e in entries.flatten() {
                 let p = e.path();
                 if p.is_file() {
                     if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
                         if ext.eq_ignore_ascii_case("lang") {
-                            let stem = p.file_stem()
+                            let stem = p
+                                .file_stem()
                                 .map(|s| s.to_string_lossy().to_string())
                                 .unwrap_or_default();
                             lang_files.push((p, stem));
@@ -301,7 +332,13 @@ fn collect_pack_folders(kind: &str) -> Result<Vec<(PathBuf, PathBuf, String, Str
             for e in entries.flatten() {
                 let p = e.path();
                 if p.is_dir() {
-                    items.push((p.clone(), base.clone(), source.clone(), edition.clone(), source_root.clone()));
+                    items.push((
+                        p.clone(),
+                        base.clone(),
+                        source.clone(),
+                        edition.clone(),
+                        source_root.clone(),
+                    ));
                 }
             }
         }
@@ -361,10 +398,11 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 replace_header_with_lang(&mut manifest_value, &lang_map);
             }
 
-            let manifest_parsed: Option<Manifest> = match serde_json::from_value(manifest_value.clone()) {
-                Ok(m) => Some(m),
-                Err(_) => None,
-            };
+            let manifest_parsed: Option<Manifest> =
+                match serde_json::from_value(manifest_value.clone()) {
+                    Ok(m) => Some(m),
+                    Err(_) => None,
+                };
 
             let short_description = manifest_parsed
                 .as_ref()
@@ -388,20 +426,24 @@ pub async fn read_all_resource_packs(lang: &str) -> Result<Vec<McPackInfo>> {
             };
 
             // icon relative to base_path if possible
-            let icon_rel = icon_abs.as_ref().and_then(|_| {
-                match folder_path.strip_prefix(&base_path) {
-                    Ok(rel) => {
-                        let mut rp = rel.to_path_buf();
-                        rp.push("pack_icon.png");
-                        Some(rp.to_string_lossy().to_string())
-                    }
-                    Err(_) => None,
-                }
-            });
+            let icon_rel =
+                icon_abs
+                    .as_ref()
+                    .and_then(|_| match folder_path.strip_prefix(&base_path) {
+                        Ok(rel) => {
+                            let mut rp = rel.to_path_buf();
+                            rp.push("pack_icon.png");
+                            Some(rp.to_string_lossy().to_string())
+                        }
+                        Err(_) => None,
+                    });
 
             // derive gdk_user if source == "GDK"
             let gdk_user = if source == "GDK" {
-                PathBuf::from(&source_root).file_name().and_then(|s| s.to_str()).map(|s| s.to_string())
+                PathBuf::from(&source_root)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
             } else {
                 None
             };
@@ -463,10 +505,11 @@ pub async fn read_all_behavior_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 replace_header_with_lang(&mut manifest_value, &lang_map);
             }
 
-            let manifest_parsed: Option<Manifest> = match serde_json::from_value(manifest_value.clone()) {
-                Ok(m) => Some(m),
-                Err(_) => None,
-            };
+            let manifest_parsed: Option<Manifest> =
+                match serde_json::from_value(manifest_value.clone()) {
+                    Ok(m) => Some(m),
+                    Err(_) => None,
+                };
 
             let short_description = manifest_parsed
                 .as_ref()
@@ -488,19 +531,23 @@ pub async fn read_all_behavior_packs(lang: &str) -> Result<Vec<McPackInfo>> {
                 }
             };
 
-            let icon_rel = icon_abs.as_ref().and_then(|_| {
-                match folder_path.strip_prefix(&base_path) {
-                    Ok(rel) => {
-                        let mut rp = rel.to_path_buf();
-                        rp.push("pack_icon.png");
-                        Some(rp.to_string_lossy().to_string())
-                    }
-                    Err(_) => None,
-                }
-            });
+            let icon_rel =
+                icon_abs
+                    .as_ref()
+                    .and_then(|_| match folder_path.strip_prefix(&base_path) {
+                        Ok(rel) => {
+                            let mut rp = rel.to_path_buf();
+                            rp.push("pack_icon.png");
+                            Some(rp.to_string_lossy().to_string())
+                        }
+                        Err(_) => None,
+                    });
 
             let gdk_user = if source == "GDK" {
-                PathBuf::from(&source_root).file_name().and_then(|s| s.to_str()).map(|s| s.to_string())
+                PathBuf::from(&source_root)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
             } else {
                 None
             };

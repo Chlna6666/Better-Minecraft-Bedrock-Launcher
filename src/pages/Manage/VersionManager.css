@@ -245,7 +245,6 @@
 .version-manage-modal-overlay {
     background: rgba(2,6,23,0.45); /* 深色半透明 */
     backdrop-filter: blur(2px);
-    padding: 20px;
     animation: vm-overlay-in 180ms ease-out;
 }
 
