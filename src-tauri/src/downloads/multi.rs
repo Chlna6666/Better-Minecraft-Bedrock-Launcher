@@ -606,6 +606,7 @@ pub async fn download_multi(
     }
 
     debug!("所有工作线程完成，下载成功");
-    finish_task(task_id, "completed", None);
+    let path_str = dest.as_ref().to_string_lossy().to_string();
+    finish_task(&task_id, "completed", Some(path_str));
     Ok(CoreResult::Success(()))
 }

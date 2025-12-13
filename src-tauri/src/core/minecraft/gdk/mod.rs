@@ -16,6 +16,5 @@ pub mod header;
 pub mod key;
 pub mod stream;
 pub mod structs;
+pub mod commands;
 
-// 从 stream 模块中公开 unpack_gdk 函数，使其可以直接通过 `gdk::unpack_gdk` 调用。
-pub use stream::unpack_gdk;

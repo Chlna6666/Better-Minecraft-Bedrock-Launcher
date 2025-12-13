@@ -93,7 +93,8 @@ pub async fn download_file(
                     }
                 }
 
-                finish_task(&task_id, "completed", None);
+                let path_str = dest.as_ref().to_string_lossy().to_string();
+                finish_task(&task_id, "completed", Some(path_str));
                 return Ok(CoreResult::Success(()));
             }
             Err(e) if retry < 3 => {

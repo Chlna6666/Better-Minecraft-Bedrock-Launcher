@@ -12,7 +12,6 @@ pub mod result;
 pub mod tasks;
 pub mod utils;
 
-use ::core::task;
 use crate::archive::commands::{extract_zip_appx, import_appx};
 use crate::commands::*;
 use crate::config::config::Config;
@@ -37,6 +36,7 @@ use tracing::{error, info};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+use crate::core::minecraft::gdk::commands::unpack_gdk;
 
 #[derive(Clone)]
 pub struct PreInit {
@@ -140,7 +140,8 @@ pub async fn run(preinit: Arc<PreInit>) -> Result<()> {
             delete_mods,
             delete_game_asset,
             open_path,
-            get_gdk_users
+            get_gdk_users,
+            unpack_gdk
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

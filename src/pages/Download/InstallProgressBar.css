@@ -139,10 +139,9 @@
     height: 24px;
 }
 
-/* 所有的数字都使用等宽，防止跳动 */
+
 .tabular-nums {
     font-variant-numeric: tabular-nums;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     letter-spacing: -0.5px;
 }
 

@@ -140,15 +140,14 @@ function reducer(state: State, action: Action): State {
 }
 
 // ================================================================================================
-// 4. Hook: 优化的动画逻辑 (解决回正过慢问题)
+// 4. Hook: 动画逻辑
 // ================================================================================================
 
 const useAnimatedPercent = (targetPercent: number) => {
     const [displayPercent, setDisplayPercent] = useState(0);
     const rafRef = useRef<number | null>(null);
-    const currentRef = useRef<number>(0); // 实时值
+    const currentRef = useRef<number>(0);
 
-    // cancel helper
     const cancel = () => {
         if (rafRef.current !== null) {
             cancelAnimationFrame(rafRef.current);
@@ -157,59 +156,45 @@ const useAnimatedPercent = (targetPercent: number) => {
     };
 
     useEffect(() => {
-        // 立即归零或 NaN 时直接归零（不动画）
         if (targetPercent === 0 || isNaN(targetPercent)) {
             cancel();
             currentRef.current = 0;
             setDisplayPercent(0);
             return;
         }
-
-        // 目标 >= 100 立即置 100（不动画）
         if (targetPercent >= 100) {
             cancel();
             currentRef.current = 100;
             setDisplayPercent(100);
             return;
         }
-
-        // 如果目标比当前小 -> 立即 Snap（避免缓慢回退）
         if (targetPercent < currentRef.current - 1e-6) {
             cancel();
             currentRef.current = targetPercent;
             setDisplayPercent(targetPercent);
             return;
         }
-
-        // 正常缓动（仅当 target > current）
         const easingFactor = 0.28;
         const step = () => {
             const cur = currentRef.current;
             const diff = targetPercent - cur;
-
             if (Math.abs(diff) < 0.1) {
-                // 吸附
                 currentRef.current = targetPercent;
                 setDisplayPercent(targetPercent);
                 rafRef.current = null;
                 return;
             }
-
             const next = cur + diff * easingFactor;
             currentRef.current = next;
             setDisplayPercent(next);
             rafRef.current = requestAnimationFrame(step);
         };
-
         rafRef.current = requestAnimationFrame(step);
-
         return () => cancel();
     }, [targetPercent]);
 
     return displayPercent;
 };
-
-
 
 // ================================================================================================
 // 5. Views
@@ -268,18 +253,22 @@ const ProgressView: React.FC<{
 }> = React.memo(({ progress, displayPercent, onCancel }) => {
     const { t } = useTranslation();
     let title = t("InstallProgressBar.stage_downloading");
+
     const knownStages: { [key: string]: string } = {
         "extracting": t("InstallProgressBar.stage_extracting"),
         "importing": t("InstallProgressBar.stage_importing"),
         "downloading": t("InstallProgressBar.stage_downloading"),
         "verifying_file": t("InstallProgressBar.stage_verifying", "Verifying..."),
+        "initializing": t("InstallProgressBar.stage_initializing", "Initializing..."),
         "ready": t("InstallProgressBar.stage_ready", "Preparing..."),
     };
     if (knownStages[progress.stage]) title = knownStages[progress.stage];
     else if (progress.stage) title = progress.stage;
 
     const detail = progress.message || "";
-    const processedLabel = progress.stage === 'extracting' ? t("InstallProgressBar.extracted_label") : t("InstallProgressBar.processed_label");
+    const processedLabel = (progress.stage === 'extracting' || progress.stage === 'importing')
+        ? t("InstallProgressBar.extracted_label")
+        : t("InstallProgressBar.processed_label");
 
     return (
         <>
@@ -375,6 +364,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     const unlistenRef = useRef<Promise<UnlistenFn> | null>(null);
     const animatedPercent = useAnimatedPercent(state.progress.percent);
 
+    // 初始化文件名
     useEffect(() => {
         const initFileName = async () => {
             let name = version || "";
@@ -390,6 +380,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         initFileName();
     }, [version, isImport, sourcePath]);
 
+    // Dialog 控制
     useEffect(() => {
         const dialog = dialogRef.current;
         if (!dialog) return;
@@ -398,12 +389,14 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         }
     }, [state.status]);
 
+    // 状态回调
     useEffect(() => {
         onStatusChange(['starting', 'progress'].includes(state.status));
         if (state.status === 'completed') onCompleted(packageId);
         if (state.status === 'cancelled') onCancel(packageId);
     }, [state.status, onStatusChange, onCompleted, onCancel, packageId]);
 
+    // 清理
     useEffect(() => {
         return () => {
             if (unlistenRef.current) {
@@ -414,75 +407,85 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     }, []);
 
     // --------------------------------------------------------------------------------------------
-    // [核心] 监听与任务流转
+    // [逻辑核心] 处理任务更新和完成逻辑
     // --------------------------------------------------------------------------------------------
+    const handleTaskUpdate = (snap: TaskSnapshot) => {
+        // 如果我们已经在解压了，就忽略之前下载任务可能的重复完成信号
+        if (snap.status === "completed" && isExtractingRef.current && snap.stage !== "extracting") {
+            return;
+        }
 
-    // 1. 监听函数：处理下载和解压的事件
+        dispatch({type: 'UPDATE_PROGRESS', payload: mapSnapshotToProgress(snap)});
+
+        if (snap.status === "completed") {
+            // 如果是下载任务完成（非导入模式，且还没开始解压）
+            if (!isImport && !isExtractingRef.current) {
+                // 关键检查：必须要有 message (路径) 才能解压
+                if (snap.message) {
+                    console.log("[InstallProgressBar] 下载完成，获取到文件路径，准备切换:", snap.message);
+                    handleSwitchToExtract(snap.message);
+                } else {
+                    console.error("[InstallProgressBar] 错误: 下载显示完成，但没有返回文件路径(message为空)。请检查 Rust 后端 finish_task 调用。");
+                    dispatch({ type: 'SET_ERROR', payload: "Download finished but no file path returned. (Backend Error)" });
+                }
+            } else {
+                // 解压/解包任务完成，或导入任务完成
+                console.log("[InstallProgressBar] 流程彻底完成");
+                handleClose();
+            }
+        } else if (snap.status === "error") {
+            dispatch({type: 'SET_ERROR', payload: snap.message || "Task failed"});
+        } else if (snap.status === "cancelled") {
+            handleClose(true);
+        }
+    };
+
+    // --------------------------------------------------------------------------------------------
+    // 启动监听
+    // --------------------------------------------------------------------------------------------
     const startListening = async (taskId: string) => {
         const eventName = `task-update::${taskId}`;
         console.log(`[InstallProgressBar] 准备监听: ${eventName}`);
 
         if (unlistenRef.current) {
             const oldUnlistenPromise = unlistenRef.current;
-            unlistenRef.current = null; // 立即置空，防止竞争
+            unlistenRef.current = null;
             try { (await oldUnlistenPromise)(); } catch(e) {}
         }
 
+        // 1. 设置事件监听
         const unlistenPromise = listen<TaskSnapshot>(eventName, (event) => {
-            const snap = event.payload;
-
-            // 如果已经进入了解压阶段，就不要再处理旧任务的 completed 事件了 (双重保险)
-            if (snap.status === "completed" && isExtractingRef.current && snap.stage !== "extracting") {
-                return;
-            }
-
-            // 更新 UI
-            dispatch({type: 'UPDATE_PROGRESS', payload: mapSnapshotToProgress(snap)});
-
-            if (snap.status === "completed") {
-                // [关键判断]：如果是下载任务完成 (有message路径，非导入模式，且还没开始解压)
-                if (!isImport && snap.message && !isExtractingRef.current) {
-                    console.log("[InstallProgressBar] 下载完成，准备切换到解压:", snap.message);
-                    handleSwitchToExtract(snap.message);
-                } else {
-                    // 真正的结束（解压完成，或导入完成）
-                    console.log("[InstallProgressBar] 任务流彻底完成");
-                    handleClose();
-                }
-            } else if (snap.status === "error") {
-                dispatch({type: 'SET_ERROR', payload: snap.message || "Task failed"});
-            } else if (snap.status === "cancelled") {
-                handleClose(true);
-            }
+            handleTaskUpdate(event.payload);
         });
-
         unlistenRef.current = unlistenPromise;
 
-        // Gap Filling: 拉取初始状态
+        // 2. [修复 Gap] 拉取一次初始状态，处理“监听前已完成”的情况
         try {
             const initialSnap = await invoke<TaskSnapshot>("get_task_status", { taskId });
             if (initialSnap) {
-                dispatch({ type: 'UPDATE_PROGRESS', payload: mapSnapshotToProgress(initialSnap) });
+                console.log("[InstallProgressBar] 初始状态:", initialSnap.status, initialSnap.message);
+                handleTaskUpdate(initialSnap);
             }
         } catch (e) { /* ignore */ }
     };
 
-    // 2. [核心] 切换到解压任务
+    // --------------------------------------------------------------------------------------------
+    // 切换到解压/解包任务
+    // --------------------------------------------------------------------------------------------
     const handleSwitchToExtract = async (filePath: string) => {
         isExtractingRef.current = true;
 
-        // 1. 立即清理下载任务监听器
+        // 停止监听旧任务
         if (unlistenRef.current) {
             const oldUnlisten = unlistenRef.current;
             unlistenRef.current = null;
             (await oldUnlisten)();
         }
 
-        // 额外：暂时禁用 CSS transition（在 dialog 顶层或进度容器上）
+        // 暂时禁用动画以重置进度条
         const dialog = dialogRef.current;
         if (dialog) dialog.classList.add('no-transition');
 
-        // 2. 立即更新 UI 状态，显式设置 percent:0
         dispatch({
             type: 'UPDATE_PROGRESS',
             payload: {
@@ -490,25 +493,42 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                 percent: 0,
                 speed: '--',
                 eta: '--',
-                message: 'Preparing extraction...'
+                message: isGDK ? 'Initializing GDK Unpack...' : 'Preparing extraction...'
             }
         });
 
-        // 在下一个帧恢复过渡（确保 DOM 已渲染 width:0）
+        // 下一帧恢复动画
         requestAnimationFrame(() => {
-            // 小延时再移除 class，确保浏览器已把 width 置为 0
             setTimeout(() => {
                 if (dialog) dialog.classList.remove('no-transition');
             }, 16);
         });
 
         try {
-            const extractTaskId: string = await invoke("extract_zip_appx", {
-                fileName: state.fileName,
-                destination: filePath,
-                forceReplace: true,
-                deleteSignature: true,
-            });
+            let extractTaskId: string;
+
+            if (isGDK) {
+                // --- GDK 分支 ---
+                const folderName = state.fileName
+                    .replace(/\.msixvc$/i, "")
+                    .replace(/\.appx$/i, "")
+                    .replace(/\.zip$/i, "");
+
+                console.log("[InstallProgressBar] GDK 分支: 调用 unpack_gdk", { inputPath: filePath, folderName });
+                extractTaskId = await invoke("unpack_gdk", {
+                    inputPath: filePath,
+                    folderName: folderName,
+                });
+            } else {
+                // --- UWP 分支 ---
+                console.log("[InstallProgressBar] UWP 分支: 调用 extract_zip_appx");
+                extractTaskId = await invoke("extract_zip_appx", {
+                    fileName: state.fileName,
+                    destination: filePath,
+                    forceReplace: true,
+                    deleteSignature: true,
+                });
+            }
 
             if (extractTaskId) {
                 taskIdRef.current = extractTaskId;
@@ -520,28 +540,63 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
             console.error("解压启动失败:", e);
             dispatch({ type: 'SET_ERROR', payload: e.message || String(e) });
             isExtractingRef.current = false;
-            // 确保移除 no-transition（避免卡住）
             if (dialog) dialog.classList.remove('no-transition');
         }
     };
 
-
-    // 3. 初始任务启动
+    // --------------------------------------------------------------------------------------------
+    // 初始启动逻辑
+    // --------------------------------------------------------------------------------------------
     useEffect(() => {
         if (state.status === 'starting') {
             const run = async () => {
                 try {
-                    isExtractingRef.current = false; // 重置解压标记
-                    const sanitized = (state.fileName.trim().replace(/[\\/:*?"<>|]+/g, "_") || version) + (isImport ? (sourcePath?.match(/\.zip$/) ? '.zip' : '.appx') : '.appx');
+                    isExtractingRef.current = false;
+
+                    const ext = isGDK ? '.msixvc' : '.appx';
+                    let safeName = state.fileName.trim().replace(/[\\/:*?"<>|]+/g, "_") || version;
+
+                    // 处理后缀
+                    if (isImport && sourcePath?.toLowerCase().endsWith(".zip")) {
+                        safeName += ".zip";
+                    } else if (!safeName.toLowerCase().endsWith(ext)) {
+                        safeName += ext;
+                    }
+
                     let taskId: string;
 
-                    if (isImport) {
-                        taskId = await invoke("import_appx", { sourcePath, fileName: sanitized });
+                    if (isImport && sourcePath) {
+                        // 导入逻辑
+                        const isSourceGdk = sourcePath.toLowerCase().endsWith(".msixvc");
+                        if (isSourceGdk) {
+                            isExtractingRef.current = true;
+                            const folderName = safeName.replace(/\.msixvc$/i, "");
+                            console.log("[InstallProgressBar] 导入 GDK: 直接解包", sourcePath);
+                            taskId = await invoke("unpack_gdk", {
+                                inputPath: sourcePath,
+                                folderName: folderName
+                            });
+                        } else {
+                            console.log("[InstallProgressBar] 导入 UWP/Zip");
+                            taskId = await invoke("import_appx", { sourcePath, fileName: safeName });
+                        }
                     } else if (isGDK) {
-                        taskId = await invoke("download_resource", { url: packageId, fileName: sanitized, md5 });
+                        // 下载 GDK
+                        console.log("[InstallProgressBar] 下载 GDK");
+                        taskId = await invoke("download_resource", {
+                            url: packageId,
+                            fileName: safeName,
+                            md5
+                        });
                     } else {
+                        // 下载 UWP
                         const fullId = `${packageId}_1`;
-                        taskId = await invoke("download_appx", { packageId: fullId, fileName: sanitized, md5 });
+                        console.log("[InstallProgressBar] 下载 UWP APPX");
+                        taskId = await invoke("download_appx", {
+                            packageId: fullId,
+                            fileName: safeName,
+                            md5
+                        });
                     }
 
                     if (!taskId) throw new Error("Failed to get Task ID");

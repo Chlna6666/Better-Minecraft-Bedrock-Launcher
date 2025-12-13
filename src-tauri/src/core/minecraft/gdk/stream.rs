@@ -6,11 +6,14 @@ use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
 use rayon::prelude::*;
 use uuid::Uuid;
+use tokio::runtime::Handle; // [新增] 引入 Tokio Handle
 
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
+
+use crate::tasks::task_manager::{is_cancelled, update_progress, set_total};
 
 use super::decoder::MsiXVDDecoder;
 use super::header::{MsiXVDHeader, MsiXVDVolumeAttributes, MsiXVDKind};
@@ -24,15 +27,11 @@ const PRE_RELEASE_GUID_STR: &str = "1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9";
 
 // [新增] 获取 Release 密钥的辅助函数
 fn get_release_key_bytes() -> Option<Vec<u8>> {
-    // 优先级 1: 编译时环境变量 (用于 GitHub Actions Release 构建)
-    // 变量需要在编译时通过 `GDK_RELEASE_KEY` 提供 (Hex 字符串格式)
     if let Some(hex_str) = option_env!("GDK_RELEASE_KEY") {
         if let Ok(bytes) = hex::decode(hex_str) {
             return Some(bytes);
         }
     }
-    // 优先级 2: 本地文件 (用于本地开发)
-    // 路径相对于运行目录
     let path = Path::new("src/core/minecraft/gdk/Cik/bdb9e791-c97c-3734-e1a8-bc602552df06.cik");
     if path.exists() {
         if let Ok(bytes) = std::fs::read(path) {
@@ -158,15 +157,12 @@ impl MsiXVDStream {
         Ok(stream)
     }
 
-    // [修改 2] 升级后的 select_cik 函数，支持动态获取
     fn select_cik(&self) -> Result<CikKey, String> {
-        // 构建查找表：(获取密钥字节的函数, GUID 字符串, 名称)
         let mut candidates: Vec<(Option<Vec<u8>>, &str, &str)> = Vec::new();
 
         candidates.push((get_release_key_bytes(), RELEASE_GUID_STR, "Release"));
         candidates.push((get_pre_release_key_bytes(), PRE_RELEASE_GUID_STR, "Preview"));
 
-        // 尝试匹配文件头中的 Key ID
         for file_key_id in &self.encryption_key_ids {
             for (key_bytes_opt, guid_str, name) in candidates.iter() {
                 if let Ok(expected_guid) = Uuid::parse_str(guid_str) {
@@ -183,8 +179,6 @@ impl MsiXVDStream {
         }
 
         warn!("未能在已知库中找到匹配的 KeyID，尝试回退...");
-
-        // 回退逻辑：根据版本号猜测使用哪个密钥
         let (fallback_key_opt, fallback_guid) = if self.header.package_version2 == 0 {
             (get_pre_release_key_bytes(), PRE_RELEASE_GUID_STR)
         } else {
@@ -194,13 +188,17 @@ impl MsiXVDStream {
         if let Some(key_bytes) = fallback_key_opt {
             CikKey::find_and_create(&key_bytes, fallback_guid).map_err(|e| e.to_string())
         } else {
-            Err("未找到任何可用的 CIK 密钥 (请检查本地文件 gdk/Cik/ 是否存在，或设置环境变量)".to_string())
+            Err("未找到任何可用的 CIK 密钥".to_string())
         }
     }
 
-    pub fn extract_to(&mut self, output_dir: &Path) -> Result<(), String> {
+    // [修改] 增加 task_id 参数，支持进度和取消
+    pub fn extract_to(&mut self, output_dir: &Path, task_id: String) -> Result<(), String> {
         info!("开始提取文件到: {:?}", output_dir);
         fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
+
+        // [关键修改 1] 获取当前的 Tokio Runtime Handle
+        let rt_handle = Handle::current();
 
         let cik = self.select_cik()?;
         let decoder = MsiXVDDecoder::new(&cik);
@@ -255,6 +253,15 @@ impl MsiXVDStream {
             }
         }
 
+        // 计算总大小并更新 task_manager
+        let total_size: u64 = jobs.iter().map(|j| j.file_size).sum();
+        set_total(&task_id, Some(total_size));
+
+        // 如果一开始就取消了
+        if is_cancelled(&task_id) {
+            return Err("cancelled".to_string());
+        }
+
         let total_jobs = jobs.len();
         let finished_counter = AtomicUsize::new(0);
 
@@ -271,23 +278,52 @@ impl MsiXVDStream {
 
         const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4MB Buffer
 
-        jobs.par_iter().for_each_init(
+        let task_id_ref = &task_id;
+
+        // [关键修改 2] 将 rt_handle 传入并行迭代器
+        jobs.par_iter().try_for_each_init(
             || (vec![0u8; CHUNK_SIZE], vec![0u8; CHUNK_SIZE], vec![0u8; 0x1000]),
-            |(buffer, decrypt_buffer, hash_page_cache), job| {
-                if let Err(e) = Self::process_job(file_ref, job, &decoder, &hash_tree_params, buffer, decrypt_buffer, hash_page_cache) {
-                    error!("提取失败 {:?}: {}", job.output_path, e);
+            |(buffer, decrypt_buffer, hash_page_cache), job| -> Result<(), String> {
+                // 在开始任务前检查取消
+                if is_cancelled(task_id_ref) {
+                    return Err("cancelled".to_string());
                 }
+
+                // 传入 &rt_handle
+                if let Err(e) = Self::process_job(file_ref, job, &decoder, &hash_tree_params, buffer, decrypt_buffer, hash_page_cache, task_id_ref, &rt_handle) {
+                    // 如果是 IO 错误但包含 Cancelled，或者显式 cancelled
+                    if e.to_string().contains("cancelled") || is_cancelled(task_id_ref) {
+                        return Err("cancelled".to_string());
+                    }
+                    error!("提取失败 {:?}: {}", job.output_path, e);
+                    return Err(e.to_string());
+                }
+
                 let finished = finished_counter.fetch_add(1, Ordering::Relaxed) + 1;
                 if finished % 100 == 0 { info!("进度: {} / {}", finished, total_jobs); }
+                Ok(())
             }
-        );
+        )?;
+
+        // 最终检查
+        if is_cancelled(&task_id) {
+            return Err("cancelled".to_string());
+        }
+
         Ok(())
     }
 
+    // [修改] 增加 task_id 和 rt_handle 参数
     fn process_job(
         file: &File, job: &ExtractJob, decoder: &MsiXVDDecoder, hash_params: &HashTreeParams,
         buffer: &mut Vec<u8>, decrypt_buffer: &mut Vec<u8>, hash_page_cache: &mut Vec<u8>,
+        task_id: &str,
+        rt: &Handle // [新增参数]
     ) -> std::io::Result<()> {
+        // [关键修改 3] 在函数入口处进入 Tokio 上下文
+        // 这样当前 Rayon 线程在执行 update_progress 里的 tokio::spawn 时就能找到 Runtime 了
+        let _guard = rt.enter();
+
         let output_file = File::create(&job.output_path)?;
 
         if job.file_size == 0 {
@@ -299,11 +335,16 @@ impl MsiXVDStream {
         let input_aligned_size = ((job.file_size + 0xFFF) / 0x1000) * 0x1000;
         let mut remaining = input_aligned_size;
         let mut file_offset = job.input_offset;
-        let mut bytes_written = 0;
+        let mut bytes_written_total = 0;
         let mut current_block_index = job.start_block_index;
         let mut cached_hash_page_idx = u64::MAX;
 
         while remaining > 0 {
+            // 循环内检查取消
+            if is_cancelled(task_id) {
+                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+            }
+
             let chunk_size = buffer.len().min(remaining as usize);
             let current_buf = &mut buffer[..chunk_size];
 
@@ -344,17 +385,20 @@ impl MsiXVDStream {
                 current_buf
             };
 
-            let write_len = if bytes_written + (chunk_size as u64) > job.file_size {
-                (job.file_size - bytes_written) as usize
+            let write_len = if bytes_written_total + (chunk_size as u64) > job.file_size {
+                (job.file_size - bytes_written_total) as usize
             } else {
                 chunk_size
             };
 
             writer.write_all(&data_to_write[..write_len])?;
 
+            // 上报进度 (现在有了 _guard，这里的 tokio::spawn 不会 panic 了)
+            update_progress(task_id, write_len as u64, None, None);
+
             remaining -= chunk_size as u64;
             file_offset += chunk_size as u64;
-            bytes_written += chunk_size as u64;
+            bytes_written_total += chunk_size as u64;
             current_block_index += (chunk_size / 0x1000) as u64;
         }
         writer.flush()?;
@@ -466,14 +510,6 @@ impl MsiXVDStream {
     }
 }
 
-pub fn unpack_gdk(input_path: PathBuf, output_dir: PathBuf) {
-    info!("--- 开始 GDK 解包 ---");
-    match MsiXVDStream::new(&input_path) {
-        Ok(mut s) => { let _ = s.extract_to(&output_dir); },
-        Err(e) => error!("错误: {}", e),
-    }
-    info!("--- 结束 ---");
-}
 
 struct HashTreeParams {
     kind: MsiXVDKind, levels: u64, total_hashed_pages: u64, resiliency: bool,

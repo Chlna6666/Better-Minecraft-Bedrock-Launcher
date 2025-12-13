@@ -334,7 +334,7 @@ const DownloadPage = () => {
     const handleImport = async () => {
         if (isDownloading) return;
         try {
-            const selected = await open({ filters: [{ name: 'Packages', extensions: ['appx', 'zip'] }], multiple: false });
+            const selected = await open({ filters: [{ name: 'Packages', extensions: ['appx', 'zip','msixvc'] }], multiple: false });
             if (selected) { setSourcePath(selected); setIsImporting(true); setActiveDownloadId('import'); setIsDownloading(true); }
         } catch(e) {}
     };
