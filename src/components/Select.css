@@ -1,15 +1,21 @@
-/* Select.css */
+/* src/components/Select/Select.css */
 
+/* ==========================================================================
+   1. 变量定义 (支持深浅色模式)
+   ========================================================================== */
 :root {
     /* --- 核心变量：默认浅色模式 --- */
     --sel-bg: #ffffff;
     --sel-text: #1f2937;
     --sel-placeholder: #9ca3af;
     --sel-border: #e5e7eb;
+
     --sel-hover-bg: #f3f4f6;
     --sel-active-bg: #e5e7eb;
+
     --sel-selected-bg: #eff6ff;
     --sel-selected-text: #2563eb;
+
     --sel-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
     --sel-dropdown-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
 
@@ -24,23 +30,26 @@
     --sel-text: #e5e7eb;
     --sel-placeholder: #6b7280;
     --sel-border: #404040;
+
     --sel-hover-bg: #3f3f46;
     --sel-active-bg: #52525b;
+
     --sel-selected-bg: rgba(37, 99, 235, 0.2);
     --sel-selected-text: #60a5fa;
+
     --sel-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
     --sel-dropdown-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
 }
 
-/* --- 根容器 --- */
+/* ==========================================================================
+   2. 根容器与触发按钮
+   ========================================================================== */
 .select-root {
     position: relative;
     display: inline-block;
-    width: 100%; /* 默认占满父容器分配的宽度 */
+    width: 100%; /* 占满父容器 (即 sub-control-wrapper 给的 140px) */
     font-family: inherit;
     font-size: var(--select-font-size, 14px);
-
-    /* 解决旧版可能存在的文字模糊问题 */
     -webkit-font-smoothing: antialiased;
 }
 
@@ -65,7 +74,7 @@
 
 /* 按钮悬停与激活状态 */
 .select-btn:hover:not(:disabled) {
-    border-color: #d1d5db; /* 稍微加深 */
+    border-color: #d1d5db;
     background: var(--sel-hover-bg);
 }
 [data-theme='dark'] .select-btn:hover:not(:disabled) {
@@ -116,39 +125,42 @@
     color: var(--sel-selected-text);
 }
 
-/* --- 下拉菜单容器 --- */
+/* ==========================================================================
+   3. 下拉菜单容器 (Portal 挂载点)
+   ========================================================================== */
 .select-list-wrapper {
-    position: absolute;
-    left: 0;
-    top: 100%; /* 紧贴按钮下方 */
-    margin-top: 6px;
-    min-width: 100%; /* 至少与按钮等宽 */
-    width: max-content; /* 允许内容撑开，但 JS 会限制最大宽度 */
-    z-index: 999; /* 确保层级足够高 */
+    /* 注意：
+       1. position, top, left, width, z-index 现在由 JS 内联样式控制 (Fixed定位)。
+       2. 这里只负责视觉样式和过渡动画。
+    */
+
+    margin: 0; /* 移除 margin，因为是精准坐标定位 */
 
     /* 动画初始状态 */
     opacity: 0;
     transform: scale(0.95) translateY(-5px);
-    transform-origin: top left;
-    pointer-events: none; /* 关闭时不可点击 */
-    visibility: hidden; /* 防止无障碍聚焦 */
+    transform-origin: top center;
 
-    transition:
-            opacity var(--sel-transition),
-            transform var(--sel-transition),
-            visibility 0s linear 0.2s; /* 延迟隐藏 visibility 以等待 opacity 动画 */
+    /* 关键：Portal 挂在 body 下，必须重新继承字体 */
+    font-family: inherit;
+    font-size: var(--select-font-size, 14px);
+
+    /* 过渡效果 */
+    transition: opacity 0.15s ease, transform 0.15s ease;
+
+    /* 确保菜单不被其他高层级元素遮挡 (虽然 JS 也设置了 zIndex) */
+    z-index: 99999;
 }
 
-/* 展开状态 */
+/* 展开状态 (由 JS 添加 class) */
 .select-list-wrapper.open {
     opacity: 1;
     transform: scale(1) translateY(0);
-    pointer-events: auto;
-    visibility: visible;
-    transition-delay: 0s;
 }
 
-/* --- 下拉列表实际内容 --- */
+/* ==========================================================================
+   4. 下拉列表内容
+   ========================================================================== */
 .select-list {
     margin: 0;
     padding: 6px;
@@ -157,11 +169,11 @@
     border: 1px solid var(--sel-border);
     border-radius: var(--sel-radius);
     box-shadow: var(--sel-dropdown-shadow);
+
+    /* 高度控制 */
     max-height: var(--select-max-height, 260px);
     overflow-y: auto;
-
-    /* 现代滚动条行为 */
-    overscroll-behavior: contain;
+    overscroll-behavior: contain; /* 防止滚动传导到背景 */
 }
 
 /* --- 列表项 --- */
@@ -175,6 +187,7 @@
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
     font-size: 0.95em;
+    text-align: left;
 }
 
 .select-item:last-child {

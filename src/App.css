@@ -1,6 +1,5 @@
 /* @import "tailwindcss"; */
 
-
 body {
   user-select: none;
   background-image: url('./assets/background.webp'); /* 确保路径正确 */
@@ -9,7 +8,6 @@ body {
   background-repeat: no-repeat;
   flex-direction: row;
 }
-
 
 ::-webkit-scrollbar {
   display: none; /* Chrome Safari */
@@ -36,4 +34,12 @@ html, body, #root {
   user-drag: none;
 }
 
-
+/* ==========================================================================
+   [新增] 深浅色模式切换的全局过渡动画
+   注意：不包含 transform 和 opacity，以免干扰 Framer Motion 的路由动画
+   ========================================================================== */
+*, *::before, *::after {
+  transition-property: background-color, background, color, border-color, box-shadow, fill, stroke, backdrop-filter;
+  transition-duration: 0.3s;
+  transition-timing-function: ease-in-out;
+}

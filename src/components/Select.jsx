@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import './Select.css';
-import { ChevronDown } from 'lucide-react';
 
 export default function Select({
                                    value,
@@ -9,21 +9,25 @@ export default function Select({
                                    placeholder = 'Select...',
                                    disabled = false,
                                    className = '',
-                                   optionKey = 'value',
-                                   size = 'md',                   // 'sm' | 'md' | 'lg' | number(px)
-                                   fullWidth = false,             // 废弃：现在默认宽度100%，由父容器控制
-                                   dropdownMatchButton = true,    // 下拉是否与按钮等宽
-                                   maxHeight = 240,               // 下拉最大高度
-                                   style = {},                    // 额外样式
+                                   size = 'md',
+                                   dropdownMatchButton = true, // 即使设为 true，现在也会取 max(按钮宽, 内容宽)
+                                   maxHeight = 240,
+                                   style = {},
                                }) {
     const [open, setOpen] = useState(false);
     const [highlight, setHighlight] = useState(-1);
     const rootRef = useRef(null);
-    const listWrapperRef = useRef(null);
     const listRef = useRef(null);
+    const measureRef = useRef(null); // [新增] 用于隐形测量宽度的 ref
 
-    const [listWidth, setListWidth] = useState(null);
-    const [listAlign, setListAlign] = useState('left');
+    // 存储计算后的位置和尺寸
+    const [layout, setLayout] = useState({
+        top: 0,
+        left: 0,
+        width: 0,
+        transformOrigin: 'top center',
+        direction: 'down' // 'down' | 'up'
+    });
 
     // 数据标准化
     const normalized = useMemo(() => {
@@ -33,7 +37,7 @@ export default function Select({
                 return { value: s, label: s, __orig: opt, disabled: false, _idx: idx };
             }
             const raw = opt.value ?? '';
-            return { value: String(raw), label: opt.label ?? String(raw), __orig: raw, disabled: !!opt.disabled, _idx: idx, _obj: opt };
+            return { value: String(raw), label: opt.label ?? String(raw), __orig: raw, disabled: !!opt.disabled, _idx: idx };
         });
     }, [options]);
 
@@ -61,93 +65,76 @@ export default function Select({
         };
     }, [size]);
 
-    // ---------- 智能定位逻辑 (保留核心，去除冗余) ----------
-    const computingRef = useRef(false);
+    // [核心逻辑] 计算位置、方向和宽度
+    const updatePosition = () => {
+        if (!open || !rootRef.current) return;
 
-    // 寻找最近的裁剪容器
-    function findClippingAncestor(el) {
-        if (!el) return null;
-        let node = el.parentElement;
-        while (node && node !== document.documentElement) {
-            const style = getComputedStyle(node);
-            if (style.overflow !== 'visible' || style.overflowX !== 'visible' || style.overflowY !== 'visible') {
-                return node;
-            }
-            node = node.parentElement;
+        const rect = rootRef.current.getBoundingClientRect();
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+        const gap = 6;
+
+        // 1. 测量内容宽度 (如果 measureRef 存在)
+        let contentWidth = rect.width;
+        if (measureRef.current) {
+            contentWidth = measureRef.current.offsetWidth;
         }
-        return document.documentElement; // 默认为视口
-    }
+        // 最终宽度：至少是按钮宽度，如果内容更宽则撑开 (且不超过视口宽)
+        const finalWidth = Math.min(Math.max(rect.width, contentWidth), viewportWidth - 20);
 
+        // 2. 智能判断方向 (向上还是向下)
+        // 估算菜单高度 (每个选项约 36px + padding)
+        const estimatedMenuHeight = Math.min(normalized.length * 36 + 12, maxHeight);
+
+        const spaceBelow = viewportHeight - rect.bottom;
+        const spaceAbove = rect.top;
+
+        let direction = 'down';
+        let top = rect.bottom + gap;
+        let transformOrigin = 'top center';
+
+        // 如果下方空间不够，且上方空间比下方大，则向上展开
+        if (spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow) {
+            direction = 'up';
+            top = rect.top - gap; // 这里的 top 是菜单的底部基准线，稍后在 CSS 或 style 里处理
+            transformOrigin = 'bottom center';
+        }
+
+        // 3. 处理水平溢出 (防止右边超出屏幕)
+        let left = rect.left;
+        if (left + finalWidth > viewportWidth) {
+            left = viewportWidth - finalWidth - 10;
+        }
+
+        setLayout({
+            top,
+            left,
+            width: finalWidth,
+            direction,
+            transformOrigin
+        });
+    };
+
+    // 每次打开或窗口变化时重新计算
     useLayoutEffect(() => {
-        if (!open) return;
-
-        function compute() {
-            if (computingRef.current || !rootRef.current || !listWrapperRef.current) return;
-            computingRef.current = true;
-
-            requestAnimationFrame(() => {
-                const rootRect = rootRef.current.getBoundingClientRect();
-                const clipNode = findClippingAncestor(rootRef.current);
-                const clipRect = clipNode === document.documentElement
-                    ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight, width: window.innerWidth }
-                    : clipNode.getBoundingClientRect();
-
-                const paddingGap = 8;
-                const btnW = rootRect.width;
-
-                // 1. 确定宽度
-                let finalW = btnW;
-                if (!dropdownMatchButton) {
-                    // 如果不强制等宽，测量内容自然宽度
-                    // 暂时取消宽度限制以测量
-                    const prevW = listWrapperRef.current.style.width;
-                    listWrapperRef.current.style.width = 'max-content';
-                    const contentW = listWrapperRef.current.offsetWidth;
-                    listWrapperRef.current.style.width = prevW; // 恢复
-                    finalW = contentW;
-                }
-
-                // 确保不小于按钮宽度 (可选，看设计需求，这里设定为最小也是按钮宽)
-                finalW = Math.max(finalW, btnW);
-
-                // 2. 确定对齐方式 (左对齐还是右对齐)
-                // 检查左侧空间
-                const spaceRight = clipRect.right - rootRect.left - paddingGap; // 按钮左边到右边界的距离
-                const spaceLeft = rootRect.right - clipRect.left - paddingGap;  // 按钮右边到左边界的距离
-
-                let align = 'left';
-                let renderedWidth = finalW;
-
-                if (finalW <= spaceRight) {
-                    align = 'left';
-                } else if (finalW <= spaceLeft) {
-                    align = 'right';
-                } else {
-                    // 两边都放不下，取空间大的一边，并限制宽度
-                    if (spaceRight >= spaceLeft) {
-                        align = 'left';
-                        renderedWidth = Math.max(btnW, spaceRight);
-                    } else {
-                        align = 'right';
-                        renderedWidth = Math.max(btnW, spaceLeft);
-                    }
-                }
-
-                setListWidth(renderedWidth);
-                setListAlign(align);
-                computingRef.current = false;
-            });
+        if (open) {
+            updatePosition();
+            window.addEventListener('scroll', updatePosition, true);
+            window.addEventListener('resize', updatePosition);
         }
+        return () => {
+            window.removeEventListener('scroll', updatePosition, true);
+            window.removeEventListener('resize', updatePosition);
+        };
+    }, [open, normalized.length]); // 依赖选项长度，因为这影响高度
 
-        compute();
-        window.addEventListener('resize', compute);
-        return () => window.removeEventListener('resize', compute);
-    }, [open, dropdownMatchButton]);
-
-    // ---------- 事件监听 ----------
+    // 点击外部关闭
     useEffect(() => {
         const handleClickOutside = (e) => {
-            if (rootRef.current && !rootRef.current.contains(e.target)) {
+            if (
+                rootRef.current && !rootRef.current.contains(e.target) &&
+                listRef.current && !listRef.current.contains(e.target)
+            ) {
                 setOpen(false);
             }
         };
@@ -161,119 +148,111 @@ export default function Select({
         setOpen(false);
     };
 
-    // 键盘支持
     const handleKeyDown = (e) => {
         if (disabled) return;
         if (e.key === 'Enter' || e.key === ' ') {
-            if (!open) {
-                e.preventDefault();
-                setOpen(true);
-            } else if (highlight >= 0) {
-                e.preventDefault();
-                handleSelect(normalized[highlight]);
-            }
+            if (!open) { e.preventDefault(); setOpen(true); }
+            else if (highlight >= 0) { e.preventDefault(); handleSelect(normalized[highlight]); }
         } else if (e.key === 'Escape') {
             setOpen(false);
-        } else if (e.key === 'ArrowDown') {
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
             if (!open) setOpen(true);
+            const delta = e.key === 'ArrowDown' ? 1 : -1;
             setHighlight(prev => {
-                let next = prev + 1;
+                let next = prev + delta;
                 if (next >= normalized.length) next = 0;
-                while (normalized[next].disabled && next !== prev) {
-                    next = (next + 1) % normalized.length;
-                }
-                scrollOptionIntoView(next);
-                return next;
-            });
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            if (!open) setOpen(true);
-            setHighlight(prev => {
-                let next = prev - 1;
                 if (next < 0) next = normalized.length - 1;
-                while (normalized[next].disabled && next !== prev) {
-                    next = (next - 1 + normalized.length) % normalized.length;
-                }
-                scrollOptionIntoView(next);
                 return next;
             });
         }
     };
 
-    const scrollOptionIntoView = (index) => {
-        const item = listRef.current?.children[index];
-        item?.scrollIntoView({ block: 'nearest' });
-    };
+    // [新增] 隐形测量层：用于获取最长选项的自然宽度
+    const measureLayer = open ? (
+        <div
+            ref={measureRef}
+            className="select-measure-layer"
+            style={{ ...sizeVars, opacity: 0, position: 'fixed', top: -9999, left: -9999, pointerEvents: 'none' }}
+        >
+            <ul className="select-list" style={{ width: 'max-content', display: 'inline-block' }}>
+                {normalized.map((opt, idx) => (
+                    <li key={idx} className="select-item">{opt.label}</li>
+                ))}
+            </ul>
+        </div>
+    ) : null;
 
-    // 动态样式
-    const wrapperStyle = {
-        width: listWidth ? `${listWidth}px` : '100%',
-        [listAlign]: 0,
-        right: listAlign === 'left' ? 'auto' : 0, // 重置另一边
-        left: listAlign === 'right' ? 'auto' : 0,
-    };
+    // Portal 内容
+    const dropdownMenu = (
+        <div
+            className={`select-list-wrapper ${open ? 'open' : ''}`}
+            ref={listRef}
+            style={{
+                position: 'fixed',
+                left: layout.left,
+                // 如果是向下，top 就是 top；如果是向上，bottom 就是视口高 - top
+                top: layout.direction === 'down' ? layout.top : 'auto',
+                bottom: layout.direction === 'up' ? (window.innerHeight - layout.top) : 'auto',
+                width: layout.width,
+                transformOrigin: layout.transformOrigin,
+                zIndex: 99999,
+                ...sizeVars
+            }}
+        >
+            <ul
+                className="select-list"
+                role="listbox"
+                style={{ '--select-max-height': typeof maxHeight === 'number' ? `${maxHeight}px` : maxHeight }}
+            >
+                {normalized.map((opt, idx) => {
+                    const isSelected = selected && String(opt.value) === String(selected.value);
+                    return (
+                        <li
+                            key={opt._idx}
+                            role="option"
+                            className={`select-item ${isSelected ? 'is-selected' : ''} ${highlight === idx ? 'is-highlighted' : ''} ${opt.disabled ? 'is-disabled' : ''}`}
+                            onClick={() => handleSelect(opt)}
+                            onMouseEnter={() => setHighlight(idx)}
+                        >
+                            {opt.label}
+                        </li>
+                    );
+                })}
+            </ul>
+        </div>
+    );
 
     return (
-        <div
-            className={`select-root ${disabled ? 'is-disabled' : ''} ${className}`}
-            ref={rootRef}
-            style={{ ...sizeVars, ...style }}
-        >
-            <button
-                type="button"
-                className="select-btn"
-                aria-haspopup="listbox"
-                aria-expanded={open}
-                disabled={disabled}
-                onClick={() => !disabled && setOpen(!open)}
-                onKeyDown={handleKeyDown}
-            >
-                <span className={selected ? 'select-value' : 'select-placeholder'}>
-                    {displayLabel}
-                </span>
-
-                {/* 箭头：使用 CSS 绘制或 SVG */}
-                <span className="select-arrow">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="m6 9 6 6 6-6"/>
-                    </svg>
-                </span>
-            </button>
-
+        <>
             <div
-                className={`select-list-wrapper ${open ? 'open' : ''}`}
-                ref={listWrapperRef}
-                style={wrapperStyle}
+                className={`select-root ${disabled ? 'is-disabled' : ''} ${className}`}
+                ref={rootRef}
+                style={{ ...sizeVars, ...style }}
             >
-                <ul
-                    className="select-list"
-                    role="listbox"
-                    ref={listRef}
-                    style={{ '--select-max-height': typeof maxHeight === 'number' ? `${maxHeight}px` : maxHeight }}
+                <button
+                    type="button"
+                    className="select-btn"
+                    disabled={disabled}
+                    onClick={() => !disabled && setOpen(!open)}
+                    onKeyDown={handleKeyDown}
                 >
-                    {normalized.map((opt, idx) => {
-                        const isSelected = selected && String(opt.value) === String(selected.value);
-                        return (
-                            <li
-                                key={opt._idx}
-                                role="option"
-                                aria-selected={isSelected}
-                                className={`select-item ${isSelected ? 'is-selected' : ''} ${highlight === idx ? 'is-highlighted' : ''} ${opt.disabled ? 'is-disabled' : ''}`}
-                                onClick={() => handleSelect(opt)}
-                                onMouseEnter={() => setHighlight(idx)}
-                            >
-                                {opt.label}
-                            </li>
-                        );
-                    })}
-                    {normalized.length === 0 && (
-                        <li className="select-item is-disabled" style={{justifyContent: 'center', opacity: 0.5}}>
-                            No options
-                        </li>
-                    )}
-                </ul>
+                    <span className={selected ? 'select-value' : 'select-placeholder'}>
+                        {displayLabel}
+                    </span>
+                    <span className="select-arrow">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="m6 9 6 6 6-6"/>
+                        </svg>
+                    </span>
+                </button>
             </div>
-        </div>
+
+            {/* 测量层 (挂在 body 上) */}
+            {open && createPortal(measureLayer, document.body)}
+
+            {/* 实际菜单 (挂在 body 上) */}
+            {open && createPortal(dropdownMenu, document.body)}
+        </>
     );
 }

@@ -34,23 +34,35 @@ export const useAppConfig = () => {
         };
 
         const setBg = (url: string) => {
-            document.body.style.backgroundImage = `url(${url})`;
+            // [修复] 必须加引号 "${url}"，防止路径中有空格导致 CSS 失效
+            document.body.style.backgroundImage = `url("${url}")`;
             Object.assign(document.body.style, baseStyle);
         };
 
+        const clearBg = () => {
+            document.body.style.backgroundImage = "";
+            // 如果是默认，可能需要重置为默认背景色，这里视情况而定
+        };
+
         try {
+            console.log("Applying background:", style.background_option); // [调试]
+
             if (style.background_option === "local" && style.local_image_path) {
+                // Tauri 2.0 资源协议转换
                 const fileUrl = convertFileSrc(style.local_image_path);
+                console.log("Local URL:", fileUrl); // [调试]
                 setBg(fileUrl);
             } else if (style.background_option === "network" && style.network_image_url) {
+                // 网络图片预加载，防止闪烁
                 const img = new Image();
                 img.src = style.network_image_url;
                 img.onload = () => setBg(style.network_image_url);
             } else {
-                document.body.style.backgroundImage = "";
+                clearBg();
             }
         } catch (e) {
             console.warn("Background apply failed:", e);
+            clearBg();
         }
     }, []);
 
@@ -60,17 +72,22 @@ export const useAppConfig = () => {
 
         const init = async () => {
             try {
-                const fullConfig = await getConfig().catch(() => ({}));
-                const style = { ...defaultConfig, ...fullConfig.custom_style };
+                const fullConfig: any = await getConfig().catch(() => ({}));
+                // 确保这里读取的结构和你保存的结构一致
+                // 如果 config.json 里直接是平铺的，就用 fullConfig，如果是嵌套在 custom_style 里，就用 fullConfig.custom_style
+                const savedStyle = fullConfig.custom_style || fullConfig.game || {};
+                const style = { ...defaultConfig, ...savedStyle };
 
                 setConfig(style);
 
                 // 设置主题色
                 if (style.theme_color) {
                     document.documentElement.style.setProperty("--accent-color", style.theme_color);
+                    // 如果用了我们之前的 CSS 变量，可能还需要设置这个：
+                    document.documentElement.style.setProperty("--theme-color", style.theme_color);
                 }
 
-                // 设置背景 (使用 startTransition 降低优先级，避免阻塞 UI)
+                // 设置背景
                 startTransition(() => {
                     applyBackground(style);
                 });
@@ -78,7 +95,8 @@ export const useAppConfig = () => {
                 // 处理 Splashscreen
                 await new Promise((r) => setTimeout(r, 50));
                 if (style.show_launch_animation) {
-                    await invoke("show_splashscreen").catch(() => {});
+                    // 只有在确定显示动画时才调用 show (有些时候 main process 已经 show 了)
+                    // await invoke("show_splashscreen").catch(() => {});
                     timeoutId = setTimeout(() => {
                         invoke("close_splashscreen").catch(() => {});
                     }, 3000);
@@ -93,7 +111,6 @@ export const useAppConfig = () => {
 
         init();
 
-        // 禁用右键
         const preventCtx = (e: Event) => e.preventDefault();
         document.addEventListener("contextmenu", preventCtx);
 

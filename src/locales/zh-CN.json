@@ -232,6 +232,7 @@
       "tauri": "提供了开发框架",
       "MCAPPX": "提供游戏版本库 JSON 数据源",
       "mcmrarm": "提供 mc-w10-versiondb 版本库。",
+      "bl_core": "参考BedrockLauncher.Core 部分代码实现解包GDK等功能",
       "fufuha": "提供背景图。",
       "ustiniana1641": "提供logo",
       "contributors": "所有贡献者",

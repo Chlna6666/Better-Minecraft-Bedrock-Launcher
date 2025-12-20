@@ -1,195 +1,222 @@
-/* 容器样式 */
-.customization-section {
-    padding: 25px;
-    background-color: #fff;
-    border-radius: 12px;
-    box-shadow: 0px 8px 24px rgba(0, 0, 0, 0.1);
-    max-width: 450px;
-    margin: 30px auto;
-    font-family: 'Arial', sans-serif;
-    color: #333;
+/* src/pages/Settings/Settings.css */
+
+/* ==========================================================================
+   0. 全局变量定义
+   ========================================================================== */
+:root {
+    /* 默认浅色模式变量 */
+    --c-bg-overlay: rgba(255, 255, 255, 0.75);
+    --c-bg-panel: rgba(255, 255, 255, 0.6);
+    --c-bg-item: rgba(255, 255, 255, 0.5);
+    --c-bg-item-hover: rgba(255, 255, 255, 0.85);
+    --c-border: rgba(255, 255, 255, 0.6);
+    --c-border-hover: #fff;
+    --c-text-primary: #1e293b;
+    --c-text-secondary: #64748b;
+    --c-accent: var(--theme-color, #22c55e);
+    --c-shadow: rgba(0, 0, 0, 0.06);
+    --c-scrollbar: rgba(0, 0, 0, 0.1);
 }
 
-.section-title {
-    margin-bottom: 25px;
-    font-size: 22px;
-    font-weight: 600;
-    color: #333;
-    text-align: center;
+/* [修复] 使用 data-theme 属性选择器，而非系统媒体查询 */
+[data-theme='dark'] {
+    --c-bg-overlay: rgba(30, 41, 59, 0.85);
+    --c-bg-panel: rgba(15, 23, 42, 0.6);
+    --c-bg-item: rgba(30, 41, 59, 0.6);
+    --c-bg-item-hover: rgba(51, 65, 85, 0.8);
+    --c-border: rgba(255, 255, 255, 0.08);
+    --c-border-hover: rgba(255, 255, 255, 0.15);
+    --c-text-primary: #f1f5f9;
+    --c-text-secondary: #94a3b8;
+    --c-shadow: rgba(0, 0, 0, 0.3);
+    --c-scrollbar: rgba(255, 255, 255, 0.1);
 }
 
-/* 设置项容器：标签和控件分布在同一行 */
-.setting-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 15px;
-    width: 100%;
-}
-
-/* 标签样式：固定宽度，保持控件对齐 */
-.setting-item label {
-    font-weight: 500;
-    color: #555;
-    width: 40%;
-    text-align: left;
-}
-
-/* 控件样式：颜色选择器 */
-.color-input {
-    border: 1px solid #bbb;
-    border-radius: 6px;
-    padding: 5px;
-    font-size: 16px;
-    width: 60px;
-    height: 36px;
-    background-color: #f9f9f9;
-    cursor: pointer;
-    transition: border-color 0.3s ease;
-    text-align: center;
-}
-
-/* 控件样式：文本输入框 */
-.text-input {
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    padding: 10px;
-    font-size: 14px;
-    width: 60%;
-    background-color: #fff;
-    transition: border-color 0.3s ease;
-    box-sizing: border-box;
-}
-
-/* 控件样式：下拉选择框 */
-.select-input {
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    padding: 10px;
-    font-size: 14px;
-    width: 60%;
-    background-color: #fff;
-    cursor: pointer;
-    transition: border-color 0.3s ease;
-    appearance: none;
+/* ==========================================================================
+   1. 容器布局
+   ========================================================================== */
+.settings-page-container {
     position: relative;
-}
-
-.select-input::after {
-    content: '▼';
-    position: absolute;
-    right: 10px;
-    top: 50%;
-    transform: translateY(-50%);
-    pointer-events: none;
-    color: #777;
-}
-/* Hex 颜色输入框样式 */
-.hex-input {
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    padding: 10px;
-    font-size: 14px;
-    width: 100px;
-    background-color: #fff;
-    transition: border-color 0.3s ease;
-    box-sizing: border-box;
-    margin-left: 140px;
-}
-
-/* 颜色输入框和 Hex 输入框容器 */
-.color-hex-container {
-    display: flex;
-    align-items: center;
     width: 100%;
-}
-
-
-/* 文件选择按钮样式 */
-.file-button {
-    padding: 8px 15px;
-    background-color: var(--theme-color);
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background-color 0.3s ease, transform 0.3s ease;
-    font-size: 14px;
-    white-space: nowrap;
-}
-
-.file-button:hover {
-    background-color: darken(var(--theme-color), 10%);
-    transform: scale(1.05);
-}
-
-/* 文件选择容器 */
-.file-input-container {
+    height: 100vh;
     display: flex;
+    justify-content: center;
     align-items: center;
-    gap: 10px;
-    width: 60%;
+    overflow: hidden;
+    transform: translateZ(0);
 }
 
-/* 隐藏原始文件输入按钮 */
-.file-input-container input[type="file"] {
+.settings-content-scroll {
+    height: 100%;
+    overflow-y: auto;
+    padding: 0;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.settings-content-scroll::-webkit-scrollbar {
     display: none;
 }
 
-
-
-/* 增强互动反馈效果 */
-.color-input:hover, .text-input:hover, .select-input:hover {
-    border-color: var(--theme-color);
+.settings-inner-container {
+    padding: 12px 32px 40px 32px;
+    width: 100%;
+    max-width: 1000px;
+    margin: 0 auto;
+    box-sizing: border-box;
 }
 
+/* ==========================================================================
+   2. 标题样式
+   ========================================================================== */
+.settings-group-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    margin-top: 4px;
+    color: var(--c-text-primary);
+}
+
+.settings-sub-title {
+    font-size: 13px;
+    font-weight: 700;
+    margin-top: 24px;
+    margin-bottom: 10px;
+    color: var(--c-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--c-border);
+    padding-bottom: 6px;
+}
+
+/* ==========================================================================
+   3. 普通设置项卡片
+   ========================================================================== */
+.setting-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: center;
+    margin-bottom: 10px;
+    padding: 12px 20px;
+    background: var(--c-bg-item);
+    border: 1px solid var(--c-border);
+    border-radius: 14px;
+    width: 100%;
+    box-sizing: border-box;
+    transform: translate3d(0, 0, 0);
+    backface-visibility: hidden;
+}
+
+.setting-item:hover {
+    background: var(--c-bg-item-hover);
+    border-color: var(--c-border-hover);
+    box-shadow: 0 4px 12px var(--c-shadow);
+}
+
+.setting-item label {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--c-text-primary);
+    line-height: 1.4;
+    text-align: left;
+    margin: 0;
+}
+
+.setting-item > :last-child {
+    justify-self: end;
+}
+
+/* ==========================================================================
+   4. 分组式设置项 (Grouped)
+   ========================================================================== */
+.setting-item.grouped {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    gap: 0;
+    align-items: stretch;
+    will-change: height;
+}
+
+.setting-header {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: center;
+    padding: 12px 20px;
+    width: 100%;
+    min-height: 54px;
+    box-sizing: border-box;
+}
+
+.setting-sub-group {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0 20px 16px 20px;
+    width: 100%;
+    box-sizing: border-box;
+    background-color: rgba(0, 0, 0, 0.02);
+    border-top: 1px solid var(--c-border);
+    border-bottom-left-radius: 14px;
+    border-bottom-right-radius: 14px;
+}
+
+/* [修复] 子分组深色模式适配 */
+[data-theme='dark'] .setting-sub-group {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-top-color: rgba(255, 255, 255, 0.05);
+}
+
+/* 子设置行 */
+.sub-setting-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 32px;
+    width: 100%;
+}
+
+.sub-setting-row label {
+    font-size: 14px;
+    color: var(--c-text-secondary);
+    font-weight: 500;
+    flex-shrink: 0;
+    margin-right: 16px;
+}
+
+/* 控件包裹层 */
+.sub-control-wrapper {
+    width: 140px;      /* 强制宽度 */
+    max-width: 140px;
+    display: flex;
+    justify-content: flex-end; /* 内部内容靠右 */
+    align-items: center;
+    flex-shrink: 0;    /* 防止被压缩 */
+}
+
+/* 动画垫片 */
+.sub-group-spacer {
+    height: 12px;
+    width: 100%;
+}
+
+/* ==========================================================================
+   5. 通用输入组件限制
+   ========================================================================== */
+.setting-item input[type="text"],
+.setting-item input[type="number"],
+.setting-item select {
+    min-width: 100px;
+}
+
+/* Slider */
 .slider-container {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 16px;
+    padding: 4px;
 }
-
-/* 这里用 --slider-percent 动态传入当前填充比例 */
 .range-input {
-    /* 保留已有样式 */
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    appearance: none;
-    width: 200px;
-    height: 6px;
-    border-radius: 3px;
-    background: linear-gradient(
-            to right,
-            var(--theme-color) 0%,
-            var(--theme-color) var(--slider-percent),
-            #ccc var(--slider-percent),
-            #ccc 100%
-    );
-    outline: none;
-    margin: 0;
-    padding: 0;
-    position: relative;
-}
-.range-input::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--theme-color);
-}
-
-.slider-value {
-    width: 3rem;
-    text-align: right;
-    font-size: 0.9rem;
-    padding: 0.1rem;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-}
-
-.game-settings,
-.custom-settings,
-.launch-settings,
-.about-settings {
-    padding: 12px 16px;
+    width: 160px;
 }

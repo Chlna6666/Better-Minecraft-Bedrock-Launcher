@@ -1,0 +1,324 @@
+:root {
+    --upl-navbar-height: 70px;
+    --upl-glass-bg: rgba(255, 255, 255, 0.75);
+    --upl-glass-border: rgba(255, 255, 255, 0.5);
+    --upl-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.05);
+    --upl-primary-color: #4CAF50;
+    --upl-primary-gradient: linear-gradient(135deg, #66BB6A 0%, #43A047 100%);
+    --upl-text-main: #2c3e50;
+    --upl-text-sub: #546e7a;
+    --upl-panel-radius: 24px;
+    --upl-card-bg: #ffffff;
+}
+
+[data-theme='dark'] {
+    --upl-glass-bg: rgba(30, 30, 30, 0.85);
+    --upl-glass-border: rgba(255, 255, 255, 0.08);
+    --upl-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    --upl-text-main: #eceff1;
+    --upl-text-sub: #b0bec5;
+    --upl-card-bg: #263238;
+}
+
+/* --- 容器布局 --- */
+.upl-container {
+    position: relative;
+    height: 100vh;
+    width: 100%;
+    padding-top: calc(var(--upl-navbar-height) + 36px);
+    padding-left: 24px;
+    padding-right: 24px;
+    padding-bottom: 24px;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+/* --- 核心玻璃面板 (Flex Column) --- */
+.upl-glass-panel {
+    width: 100%;
+    height: 100%;
+    background: var(--upl-glass-bg);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--upl-glass-border);
+    box-shadow: var(--upl-glass-shadow);
+    border-radius: var(--upl-panel-radius);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 5;
+    position: relative;
+}
+
+/* --- 头部 --- */
+.upl-header {
+    padding: 11px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--upl-glass-border);
+    flex-shrink: 0;
+    background: rgba(255,255,255,0.05);
+}
+
+/* --- 内容区 (自动伸缩 + 滚动) --- */
+.upl-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0;
+    scroll-behavior: auto; /* 关键：禁用平滑滚动，由 JS 控制瞬间复位，避免动画冲突 */
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    scrollbar-gutter: stable;
+
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0,0,0,0.2) transparent;
+}
+
+/* [新增] 隐藏滚动条工具类 */
+.upl-content.upl-no-scrollbar {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE 10+ */
+}
+
+/* [新增] 针对 Webkit 隐藏滚动条 */
+.upl-content.upl-no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
+/* 默认滚动条样式 (只有在没有 upl-no-scrollbar 类时生效) */
+.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar { width: 6px; }
+.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-track { background: transparent; margin: 4px; }
+.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-thumb {
+    background-color: rgba(0,0,0,0.2);
+    border-radius: 20px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-thumb:hover { background-color: rgba(0,0,0,0.3); }
+[data-theme='dark'] .upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.2); }
+
+/* 内部容器 */
+.upl-inner-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    padding: 8px 0 20px 0;
+}
+
+/* --- 底部 (分页器) --- */
+.upl-footer {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 0px;
+    margin-top: auto;
+    border-top: 1px solid var(--upl-glass-border);
+    background: rgba(255,255,255,0.02);
+    flex-shrink: 0;
+    user-select: none;
+    overflow: hidden;      /* 强制隐藏滚动条 */
+    white-space: nowrap;   /* 防止换行 */
+}
+
+/* --- 组件样式 --- */
+
+/* Tab 切换器 */
+.upl-tab-switcher { display: flex; background: rgba(0, 0, 0, 0.05); padding: 4px; border-radius: 12px; gap: 4px; }
+[data-theme='dark'] .upl-tab-switcher { background: rgba(255, 255, 255, 0.05); }
+
+.upl-tab-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--upl-text-sub);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    font-size: 0.85rem;
+}
+.upl-tab-btn.active {
+    background: var(--upl-card-bg);
+    color: var(--upl-primary-color);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+[data-theme='dark'] .upl-tab-btn.active { background: rgba(255,255,255,0.1); color: #fff; }
+
+/* 头部操作区 (右侧) */
+.upl-header-actions { display: flex; gap: 12px; align-items: center; }
+
+/* 1. 搜索框容器 */
+.upl-search-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin-right: 4px;
+}
+
+/* 搜索输入框 */
+.upl-search-input {
+    background: rgba(0, 0, 0, 0.05);
+    border: 1px solid transparent;
+    padding: 8px 12px 8px 34px; /* 34px 为图标留空 */
+    border-radius: 10px;
+    outline: none;
+    color: var(--upl-text-main);
+    transition: all 0.2s ease;
+    width: 160px;
+    font-size: 0.9rem;
+}
+
+.upl-search-input:focus {
+    background: var(--upl-card-bg);
+    box-shadow: 0 0 0 2px var(--upl-primary-color);
+    width: 200px; /* 聚焦变长 */
+}
+
+[data-theme='dark'] .upl-search-input { background: rgba(255, 255, 255, 0.1); }
+
+/* 搜索图标 */
+.upl-search-icon {
+    position: absolute;
+    left: 10px;
+    opacity: 0.5;
+    width: 16px;
+    height: 16px;
+    pointer-events: none;
+    color: var(--upl-text-main);
+}
+
+/* 2. 通用 Header 图标按钮 (用于 Refresh 或 headerActions 里的按钮) */
+.upl-action-icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--upl-text-sub);
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 8px;
+    transition: background 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.upl-action-icon-btn:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--upl-text-main);
+}
+
+[data-theme='dark'] .upl-action-icon-btn:hover { background: rgba(255, 255, 255, 0.1); }
+
+/* 旋转动画 (给 Refresh 用) */
+.upl-spin { animation: upl-spin-anim 1s linear infinite; }
+@keyframes upl-spin-anim { 100% { transform: rotate(360deg); } }
+
+/* 3. 回到顶部按钮 */
+.upl-scroll-top-btn {
+    position: absolute;
+    bottom: 30px; /* 距离 content 底部 30px，因为它在 content 内部，不会被 footer 遮挡 */
+    right: 32px;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--upl-glass-bg);
+    backdrop-filter: blur(10px);
+    color: var(--upl-text-main);
+    border: 1px solid var(--upl-glass-border);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 50;
+    transition: all 0.2s;
+}
+.upl-scroll-top-btn:hover {
+    background: var(--upl-primary-color);
+    color: white;
+    border-color: transparent;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px rgba(76, 175, 80, 0.3);
+}
+
+/* --- 分页按钮 --- */
+.upl-page-btn {
+    min-width: 36px;
+    height: 36px;
+    padding: 0 6px;
+    border-radius: 10px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--upl-text-sub);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.upl-page-btn:hover:not(:disabled) {
+    background: rgba(0,0,0,0.05);
+    color: var(--upl-text-main);
+}
+[data-theme='dark'] .upl-page-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); }
+
+.upl-page-btn.active {
+    background: var(--upl-primary-gradient);
+    color: white;
+    box-shadow: 0 4px 10px rgba(76, 175, 80, 0.3);
+}
+
+.upl-page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.upl-pagination-jumper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 16px;
+    padding-left: 16px;
+    border-left: 1px solid var(--upl-glass-border);
+    color: var(--upl-text-sub);
+    font-size: 0.85rem;
+}
+
+.upl-page-input {
+    width: 44px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid var(--upl-glass-border);
+    background: rgba(255,255,255,0.3);
+    text-align: center;
+    font-weight: 600;
+    color: var(--upl-text-main);
+    outline: none;
+    transition: all 0.2s;
+    -moz-appearance: textfield;
+}
+.upl-page-input:focus {
+    background: var(--upl-card-bg);
+    border-color: var(--upl-primary-color);
+    box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+}
+[data-theme='dark'] .upl-page-input { background: rgba(0,0,0,0.2); }
+
+/* --- 背景动画 --- */
+.upl-bg-shape {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    z-index: 0;
+    opacity: 0.5;
+    pointer-events: none;
+}
+.upl-shape-1 { width: 400px; height: 400px; background: #ff7043; top: 10%; left: -100px; animation: float 20s infinite alternate; }
+.upl-shape-2 { width: 300px; height: 300px; background: #ffd54f; bottom: 10%; right: -50px; animation: float 15s infinite alternate-reverse; }
+
+@keyframes float { from { transform: translate(0, 0); } to { transform: translate(40px, 40px); } }

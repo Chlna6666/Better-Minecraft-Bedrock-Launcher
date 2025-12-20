@@ -6,7 +6,6 @@ import { AnimatePresence } from 'framer-motion';
 import { Navbar } from './components/Navbar';
 import { useUpdaterWithModal } from "./hooks/useUpdaterWithModal.ts";
 import { useAppConfig } from './hooks/useAppConfig';
-// 引入刚刚重构的更新弹窗组件 (假设放在 components 目录下)
 import UpdateModal from './components/UpdateModal';
 import UserAgreement from "./components/UserAgreement/UserAgreement";
 
@@ -16,12 +15,10 @@ import "./App.css";
 import { LaunchPage } from './pages/LaunchPage';
 import { PageContainer } from './components/PageContainer';
 import DownloadPage from "./pages/DownloadPage.tsx";
-
-
+import SettingsPage from "./pages/Settings/SettingsPage.tsx";
 
 const ListPage = () => <PageContainer title="账号列表"><p>账号管理界面...</p></PageContainer>;
 const ToolsPage = () => <PageContainer title="实用工具"><p>工具箱界面...</p></PageContainer>;
-const SettingsPage = () => <PageContainer title="设置"><p>设置界面...</p></PageContainer>;
 
 function App() {
     const location = useLocation();
@@ -41,19 +38,16 @@ function App() {
     // 2. 初始化核心配置
     useAppConfig();
 
-    // 3. 更新检查逻辑 (修改此处)
-    // 我们需要解构 Hook 返回的数据，以便传给 UpdateModal
-    // 注意：请确保你的 useUpdaterWithModal 返回了这些字段
-    // 我们需要解构 Hook 返回的数据，以便传给 UpdateModal
-    // 注意：请确保你的 useUpdaterWithModal 返回了这些字段
+    // 3. 更新检查逻辑
     const {
-        modalOpen,      // 控制弹窗显示
-        closeModal,     // 关闭弹窗函数
-        newRelease,     // 新版本数据对象
-        downloading,    // 是否正在下载
-        progressSnapshot,       // 下载进度 (0-100)
-        startDownload,  // 开始下载函数
-        cancelDownload  // 取消下载函数 (可选)
+        modalOpen,
+        setModalOpen, // [新增] 解构出 setModalOpen
+        closeModal,
+        newRelease,
+        downloading,
+        progressSnapshot,
+        startDownload,
+        cancelDownload
     } = useUpdaterWithModal({
         owner: "Chlna6666",
         repo: "Better-Minecraft-Bedrock-Launcher",
@@ -78,6 +72,7 @@ function App() {
         <>
             {/* 全局协议弹窗 */}
             <UserAgreement onAccept={undefined} />
+
             <UpdateModal
                 open={modalOpen}
                 onClose={closeModal}
@@ -88,8 +83,13 @@ function App() {
                 onCancel={cancelDownload}
             />
 
-            {/* 导航栏 */}
-            <Navbar toggleTheme={toggleTheme} isDark={theme === 'dark'} />
+            {/* 导航栏 - 传入更新状态和打开函数 */}
+            <Navbar
+                toggleTheme={toggleTheme}
+                isDark={theme === 'dark'}
+                hasNewVersion={!!newRelease} // [新增] 只有当 newRelease 存在时为 true
+                onOpenUpdate={() => setModalOpen(true)} // [新增] 打开更新弹窗
+            />
 
             {/* 路由容器 */}
             <AnimatePresence mode="wait">

@@ -1,84 +1,174 @@
+/* Input.css */
+
+/* ==========================================================================
+   0. 变量定义 (支持深浅色模式)
+   ========================================================================== */
+:root {
+    /* 默认浅色模式 */
+    --ui-input-bg: #ffffff;
+    --ui-input-border-color: #e5e7eb;
+    --ui-input-text: #1f2937;
+    --ui-input-placeholder: #9ca3af;
+    --ui-input-border-radius: 8px;
+    --ui-input-focus-border: #2563eb;
+    --ui-input-prefix-color: #6b7280;
+}
+
+[data-theme='dark'] {
+    /* 深色模式适配 */
+    --ui-input-bg: #2d2d2d;
+    --ui-input-border-color: #404040;
+    --ui-input-text: #e5e7eb;
+    --ui-input-placeholder: #6b7280;
+    --ui-input-focus-border: #60a5fa;
+    --ui-input-prefix-color: #9ca3af;
+}
+
+/* ==========================================================================
+   1. Wrapper 样式
+   ========================================================================== */
 .ui-input-wrapper {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    border: 1px solid var(--ui-input-border-color, #e6e6e6);
+
+    border: 1px solid var(--ui-input-border-color);
     padding: var(--ui-input-padding, 0px 8px);
-    border-radius: var(--ui-input-border-radius, 6px);
-    background: var(--ui-input-bg, #fff);
+    border-radius: var(--ui-input-border-radius);
+    background: var(--ui-input-bg);
+
     box-sizing: border-box;
     width: var(--ui-input-width, auto);
     max-width: 100%;
+
+    /* 确保容器本身有足够的最小高度来容纳内容，或者跟随外部高度 */
+    min-height: 28px;
+
+    transition: border-color 0.2s ease, background-color 0.2s ease;
+
+    /* 防止溢出 */
+    overflow: hidden;
 }
 
-/* make it easy to set a fixed width using existing class name like .text-input */
-.text-input { width: 60%; }
-.text-input .ui-input { width: 100%; }
+/* 聚焦状态：只改变边框色，[取消] box-shadow 高光 */
+.ui-input-wrapper:focus-within {
+    border-color: var(--ui-input-focus-border);
+    box-shadow: none;
+}
 
-/* full width helper */
-.ui-input-full { width: 100%; }
-
-/* inner input */
+/* ==========================================================================
+   2. 内部 Input 样式
+   ========================================================================== */
 .ui-input {
     border: none;
     outline: none;
     font-size: var(--ui-input-font-size, 14px);
-    padding: var(--ui-input-inner-padding, 8px 0px);
-    min-width: 0; /* important for flex items to shrink properly */
-    flex: 1;      /* take remaining space */
+
+    /* [修复关键] 减小默认的垂直 Padding，防止在小高度容器内溢出 */
+    padding: var(--ui-input-inner-padding, 4px 0px);
+
+    min-width: 10px; /* 给一个很小的最小宽度 */
+    width: 100%;     /* 确保占满 flex 剩余空间 */
+    flex: 1;
+
     background: transparent;
     box-sizing: border-box;
-    height: var(--ui-input-height, auto);
-    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+
+    /* 如果外部不指定高度，默认为 auto；如果指定，则继承 */
+    height: 100%;
+
+    color: var(--ui-input-text);
+    font-family: inherit;
+
+    /* 确保文字垂直居中 */
+    line-height: 1.5;
 }
 
-/* focus state: highlight wrapper border */
-.ui-input:focus {
-    outline: none;
+/* Placeholder 颜色适配 */
+.ui-input::placeholder {
+    color: var(--ui-input-placeholder);
+    opacity: 1;
 }
-/* remove both glow and border-color change */
-.ui-input-wrapper:focus-within {
-    border-color: var(--ui-input-border-color, #e6e6e6);
-    box-shadow: none;
+
+/* --- [新增] 取消数字输入框的滚动箭头 (Spinners) --- */
+/* Chrome, Safari, Edge, Opera */
+.ui-input::-webkit-outer-spin-button,
+.ui-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
-/* prefix / suffix */
+/* Firefox */
+.ui-input[type=number] {
+    -moz-appearance: textfield;
+}
+
+/* ==========================================================================
+   3. 前缀 / 后缀
+   ========================================================================== */
 .ui-input-prefix, .ui-input-suffix {
     font-size: var(--ui-input-font-size, 14px);
     display: inline-flex;
     align-items: center;
     padding: 0 4px;
+    color: var(--ui-input-prefix-color);
+    user-select: none;
+    white-space: nowrap; /* 防止前缀换行挤压 input */
 }
 
-/* sizes */
-.ui-input-size-sm { --ui-input-inner-padding: 6px 0px; --ui-input-font-size: 13px; }
-.ui-input-size-md { --ui-input-inner-padding: 8px 0px; --ui-input-font-size: 14px; }
-.ui-input-size-lg { --ui-input-inner-padding: 10px 0px; --ui-input-font-size: 15px; }
+/* ==========================================================================
+   4. 辅助样式与尺寸
+   ========================================================================== */
 
-/* disabled */
+/* 尺寸定义 - 这里的 padding 已经大幅减小，依靠 flex 居中 */
+.ui-input-size-sm {
+    --ui-input-inner-padding: 2px 0px; /* 极小的内边距 */
+    --ui-input-font-size: 13px;
+}
+.ui-input-size-md {
+    --ui-input-inner-padding: 4px 0px;
+    --ui-input-font-size: 14px;
+}
+.ui-input-size-lg {
+    --ui-input-inner-padding: 6px 0px;
+    --ui-input-font-size: 15px;
+}
+
+/* 禁用状态 */
 .ui-input[disabled], .ui-input-wrapper.disabled {
     opacity: 0.6;
     pointer-events: none;
+    background-color: rgba(0,0,0,0.03);
+}
+[data-theme='dark'] .ui-input[disabled],
+[data-theme='dark'] .ui-input-wrapper.disabled {
+    background-color: rgba(255,255,255,0.05);
 }
 
-/* 让 wrapper 支持绝对定位 */
+/* Helper Class */
+.text-input { width: 60%; }
+.text-input .ui-input { width: 100%; }
+.ui-input-full { width: 100%; }
+
+/* ==========================================================================
+   5. 特殊模式：Input with Swatch (右侧按钮模式)
+   ========================================================================== */
 .ui-input-wrapper.input-with-swatch {
     position: relative;
-    padding-right: 8px; /* 保留一点内边距给按钮的外壳（可调） */
+    padding-right: 8px;
 }
 
-/* 把 suffix 放到右侧 */
 .ui-input-wrapper.input-with-swatch .ui-input-suffix {
     position: absolute;
-    right: 6px;          /* 距右边的距离，可微调 */
+    right: 6px;
     top: 50%;
     transform: translateY(-50%);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0;
+    z-index: 2;
 }
 
-/* 给输入留出内空间，避免文本被按钮覆盖（应 >= 按钮宽度 + 小间隔）*/
 .ui-input-wrapper.input-with-swatch .ui-input {
-    padding-right: 40px; /* 如果按钮宽 28px，这里设置 40px 比较安全 */
+    padding-right: 40px;
 }
