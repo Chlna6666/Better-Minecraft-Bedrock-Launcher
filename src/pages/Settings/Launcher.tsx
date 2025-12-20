@@ -338,7 +338,6 @@ export default function Launcher() {
                                                 onChange={(e: any) => setHttpProxyUrl(e.target.value)}
                                                 placeholder="http(s)://host:port"
                                                 style={{ width: '100%' }}
-                                                inputStyle={{ textAlign: 'right' }}
                                             />
                                         </div>
                                     </div>
@@ -354,7 +353,6 @@ export default function Launcher() {
                                                 onChange={(e: any) => setSocksProxyUrl(e.target.value)}
                                                 placeholder="socks5://host:port"
                                                 style={{ width: '100%' }}
-                                                inputStyle={{ textAlign: 'right' }}
                                             />
                                         </div>
                                     </div>
