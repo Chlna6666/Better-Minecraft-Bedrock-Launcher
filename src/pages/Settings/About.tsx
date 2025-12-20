@@ -223,7 +223,7 @@ export default function About() {
                             img: BedrockLauncherCore,
                             title: "BedrockLauncher.Core",
                             desc: t("AboutSection.thanks.bl_core"),
-                            link: 'https://github.com/BedrockLauncher/BedrockLauncher.Core',
+                            link: 'https://github.com/Round-Studio/BedrockLauncher.Core',
                             isSquare: true
                         },
                         { img: "https://avatars.githubusercontent.com/u/5191659?v=4", title: "MCMrARM", desc: t("AboutSection.thanks.mcmrarm"), link: 'https://github.com/MCMrARM/mc-w10-versiondb' },
