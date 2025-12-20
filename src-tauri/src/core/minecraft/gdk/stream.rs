@@ -25,38 +25,36 @@ const XVD_HEADER_INCL_SIGNATURE_SIZE: u64 = 0x3000;
 const RELEASE_GUID_STR: &str = "bdb9e791-c97c-3734-e1a8-bc602552df06";
 const PRE_RELEASE_GUID_STR: &str = "1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9";
 
-// [新增] 获取 Release 密钥的辅助函数
+// [修改方案] 使用 include_bytes! 宏将密钥硬编码进二进制文件
 fn get_release_key_bytes() -> Option<Vec<u8>> {
-    if let Some(hex_str) = option_env!("GDK_RELEASE_KEY") {
+    // 1. 优先尝试运行时读取环境变量（方便调试或覆盖）
+    if let Ok(hex_str) = std::env::var("GDK_RELEASE_KEY") {
         if let Ok(bytes) = hex::decode(hex_str) {
             return Some(bytes);
         }
     }
-    let path = Path::new("src/core/minecraft/gdk/Cik/bdb9e791-c97c-3734-e1a8-bc602552df06.cik");
-    if path.exists() {
-        if let Ok(bytes) = std::fs::read(path) {
-            return Some(bytes);
-        }
-    }
-    None
+
+    // 2. 编译时直接嵌入文件内容 (最稳健)
+    // 注意：路径是相对于当前 .rs 源文件的，或者项目根目录（取决于宏的实现，include_bytes 通常基于 Cargo.toml 所在目录）
+    // 假设你的目录结构是标准的，这里尝试硬编码嵌入
+    const RELEASE_KEY: &[u8] = include_bytes!("../../../core/minecraft/gdk/Cik/bdb9e791-c97c-3734-e1a8-bc602552df06.cik");
+
+    // 如果上面的相对路径报错，请根据此文件相对于 .cik 文件的位置调整路径
+    // 比如如果当前文件在 src/utils/xxx.rs，你需要用 ../ 回退到 src 目录
+
+    Some(RELEASE_KEY.to_vec())
 }
 
-// [新增] 获取 Preview 密钥的辅助函数
 fn get_pre_release_key_bytes() -> Option<Vec<u8>> {
-    if let Some(hex_str) = option_env!("GDK_PREVIEW_KEY") {
+    if let Ok(hex_str) = std::env::var("GDK_PREVIEW_KEY") {
         if let Ok(bytes) = hex::decode(hex_str) {
             return Some(bytes);
         }
     }
-    let path = Path::new("src/core/minecraft/gdk/Cik/1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9.cik");
-    if path.exists() {
-        if let Ok(bytes) = std::fs::read(path) {
-            return Some(bytes);
-        }
-    }
-    None
-}
 
+    const PREVIEW_KEY: &[u8] = include_bytes!("../../../core/minecraft/gdk/Cik/1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9.cik");
+    Some(PREVIEW_KEY.to_vec())
+}
 // --- 基础 IO 封装 ---
 
 #[cfg(windows)]
