@@ -384,10 +384,13 @@ pub fn ensure_uwp_dependencies_or_prompt() {
     let deps: &[(&str, Option<&str>)] = &[
         ("Microsoft.VCLibs.140.00", Some("14.0.33519.0")),
         ("Microsoft.NET.Native.Runtime.1.4", None),
+        ("Microsoft.NET.Native.Runtime.2.2", Some("2.2.28604.0")),
         ("Microsoft.VCLibs.140.00.UWPDesktop", None),
         ("Microsoft.Services.Store.Engagement", None),
         ("Microsoft.NET.Native.Framework.1.3", None),
+        ("Microsoft.NET.Native.Framework.2.2", Some("2.2.29512.0")),
         // ("Microsoft.Services.Store.Engagement",None),
+        ("Microsoft.GamingServices",Some("33.108.12001.0")),
     ];
 
     let missing: Vec<(&str, Option<&str>)> = deps
