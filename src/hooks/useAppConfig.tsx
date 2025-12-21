@@ -95,8 +95,7 @@ export const useAppConfig = () => {
                 // 处理 Splashscreen
                 await new Promise((r) => setTimeout(r, 50));
                 if (style.show_launch_animation) {
-                    // 只有在确定显示动画时才调用 show (有些时候 main process 已经 show 了)
-                    // await invoke("show_splashscreen").catch(() => {});
+                    await invoke("show_splashscreen").catch(() => {});
                     timeoutId = setTimeout(() => {
                         invoke("close_splashscreen").catch(() => {});
                     }, 3000);
