@@ -1,7 +1,7 @@
 import React, {useCallback, useEffect, useReducer, useRef, useState} from "react";
 import ReactDOM from "react-dom";
 import {invoke} from "@tauri-apps/api/core";
-import {basename, extname} from "@tauri-apps/api/path";
+import {basename} from "@tauri-apps/api/path";
 import {useTranslation} from "react-i18next";
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
 import "./InstallProgressBar.css";
@@ -364,15 +364,18 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     const unlistenRef = useRef<Promise<UnlistenFn> | null>(null);
     const animatedPercent = useAnimatedPercent(state.progress.percent);
 
-    // 初始化文件名
+    // --------------------------------------------------------------------------------------------
+    // 修复 1: 初始化文件名 (移除后缀时处理得更干净)
+    // --------------------------------------------------------------------------------------------
     useEffect(() => {
         const initFileName = async () => {
             let name = version || "";
             if (isImport && sourcePath) {
                 try {
                     const fullBase = await basename(sourcePath);
-                    const ext = await extname(sourcePath);
-                    name = ext ? fullBase.slice(0, -ext.length) : fullBase;
+                    // 使用正则替换掉最后一个点及其后面的内容，避免留下末尾的 "."
+                    // 例如: "26.0.26.msixvc" -> "26.0.26"
+                    name = fullBase.replace(/\.[^/.]+$/, "");
                 } catch { /* fallback */ }
             }
             dispatch({ type: 'SET_FILENAME', payload: name });
@@ -509,6 +512,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
 
             if (isGDK) {
                 // --- GDK 分支 ---
+                // 注意：这里需要移除后缀来作为文件夹名
                 const folderName = state.fileName
                     .replace(/\.msixvc$/i, "")
                     .replace(/\.appx$/i, "")
@@ -545,7 +549,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     };
 
     // --------------------------------------------------------------------------------------------
-    // 初始启动逻辑
+    // 修复 2: 初始启动逻辑 (修复双重扩展名和双点问题)
     // --------------------------------------------------------------------------------------------
     useEffect(() => {
         if (state.status === 'starting') {
@@ -553,14 +557,30 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                 try {
                     isExtractingRef.current = false;
 
-                    const ext = isGDK ? '.msixvc' : '.appx';
-                    let safeName = state.fileName.trim().replace(/[\\/:*?"<>|]+/g, "_") || version;
+                    // 1. 获取用户输入的文件名并清理
+                    let safeName = state.fileName.trim();
 
-                    // 处理后缀
-                    if (isImport && sourcePath?.toLowerCase().endsWith(".zip")) {
-                        safeName += ".zip";
-                    } else if (!safeName.toLowerCase().endsWith(ext)) {
-                        safeName += ext;
+                    // 关键修复：如果用户输入的文件名末尾有点，移除它，防止 "26.0.26..appx"
+                    while (safeName.endsWith('.')) {
+                        safeName = safeName.slice(0, -1);
+                    }
+
+                    safeName = safeName.replace(/[\\/:*?"<>|]+/g, "_") || version;
+
+                    // 2. 动态决定目标后缀名
+                    let targetExt = isGDK ? '.msixvc' : '.appx';
+
+                    // 如果是导入模式，根据源文件后缀动态调整
+                    if (isImport && sourcePath) {
+                        const lowerSource = sourcePath.toLowerCase();
+                        if (lowerSource.endsWith(".msixvc")) targetExt = ".msixvc";
+                        else if (lowerSource.endsWith(".zip")) targetExt = ".zip";
+                        else targetExt = ".appx"; // 默认回退
+                    }
+
+                    // 3. 追加后缀（只有当文件名不以该后缀结尾时）
+                    if (!safeName.toLowerCase().endsWith(targetExt)) {
+                        safeName += targetExt;
                     }
 
                     let taskId: string;
@@ -570,8 +590,9 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                         const isSourceGdk = sourcePath.toLowerCase().endsWith(".msixvc");
                         if (isSourceGdk) {
                             isExtractingRef.current = true;
+                            // 对于 GDK 解包，文件夹名不应包含后缀
                             const folderName = safeName.replace(/\.msixvc$/i, "");
-                            console.log("[InstallProgressBar] 导入 GDK: 直接解包", sourcePath);
+                            console.log("[InstallProgressBar] 导入 GDK: 直接解包", sourcePath, folderName);
                             taskId = await invoke("unpack_gdk", {
                                 inputPath: sourcePath,
                                 folderName: folderName
