@@ -4,18 +4,20 @@ import { useTranslation } from 'react-i18next';
 import './UserAgreement.css';
 
 function UserAgreement({ onAccept }) {
-    const { t, i18n } = useTranslation();
-    const [visible, setVisible] = useState(true);
+    const { t } = useTranslation();
+
+    const [visible, setVisible] = useState(false);
 
     useEffect(() => {
         const checkAgreement = async () => {
             try {
                 const config = await invoke('get_config');
-                if (config?.agreement_accepted === true) {
-                    setVisible(false);
+                if (config?.agreement_accepted !== true) {
+                    setVisible(true);
                 }
             } catch (error) {
                 console.error('Failed to get agreement status:', error);
+                setVisible(true);
             }
         };
         checkAgreement();
