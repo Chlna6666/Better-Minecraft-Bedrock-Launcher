@@ -61,9 +61,10 @@ const ProgressBar = ({ snapshot }: { snapshot: TaskSnapshot | null }) => {
     // 解析数据
     const percent = snapshot?.percent ?? 0;
     const isIndeterminate = snapshot?.total === null || snapshot?.total === 0;
+    // @ts-ignore // 如果类型定义还没改，先忽略报错以验证修复
+    const rawSpeed = snapshot?.speedBytesPerSec || snapshot?.speed_bytes_per_sec || 0;
+    const speed = formatBytes(rawSpeed) + "/s";
 
-    // 格式化数据
-    const speed = formatBytes(snapshot?.speed_bytes_per_sec || 0) + "/s";
     const downloaded = formatBytes(snapshot?.done || 0);
     const total = snapshot?.total ? formatBytes(snapshot.total) : "未知";
     const eta = snapshot?.eta === "unknown" ? "--:--" : snapshot?.eta;
