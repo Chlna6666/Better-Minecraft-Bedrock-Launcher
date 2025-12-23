@@ -69,31 +69,19 @@ export function useUpdaterWithModal({
     }, [actions]);
 
     return {
-        // --- 弹窗控制 ---
         modalOpen,
-        setModalOpen, // [关键] 暴露给 Navbar 手动点击打开
+        setModalOpen,
         closeModal,
-
-        // --- 数据状态 ---
-        // 只有当确实有更新时才返回 newRelease，避免 Navbar 错误显示红点
         newRelease: state.updateAvailable ? state.chosenRelease : null,
-
         downloading: state.downloading,
-
-        // 映射进度：优先使用事件监听到的数字进度 (0-100)，如果没有则尝试从快照获取
-        progressSnapshot: state.progress ?? (state.progressSnapshot?.processed_bytes && state.progressSnapshot?.total_bytes
-            ? Math.round((state.progressSnapshot.processed_bytes / state.progressSnapshot.total_bytes) * 100)
+        progressPercent: state.progress ?? (state.progressSnapshot?.done && state.progressSnapshot?.total
+            ? Math.round((state.progressSnapshot.done / state.progressSnapshot.total) * 100)
             : 0),
-
-        // 详细任务状态 (如果 UI 需要显示 "解压中..." 等状态)
+        progressSnapshot: state.progressSnapshot,
         taskStatus: state.progressSnapshot?.status || null,
-
-        // --- 操作 ---
         startDownload,
         cancelDownload,
-        checkForUpdates: actions.checkForUpdates,
-
-        // --- 调试信息 ---
+        checkForUdates: actions.checkForUpdates,
         checking: state.checking,
         error: state.error
     };

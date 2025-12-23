@@ -1,15 +1,17 @@
-// src/hooks/useUpdater.ts
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-// @ts-ignore
-import {ReleaseData, TaskSnapshot, UpdaterState} from "../types/updater";
 
-interface UseUpdaterOptions {
-    owner?: string;
-    repo?: string;
-    autoCheck?: boolean;
-    autoCheckIntervalMs?: number;
+export interface TaskSnapshot {
+    id: string;
+    stage: string;
+    total: number | null;
+    done: number;
+    speedBytesPerSec: number;
+    eta: string;
+    percent: number | null;
+    status: string; // 'ready' | 'starting' | 'progress' | 'completed' | 'error' | 'cancelled'
+    message: string | null;
 }
 
 export interface ReleaseData {
@@ -23,6 +25,13 @@ export interface ReleaseData {
     asset_size?: number;
 }
 
+interface UseUpdaterOptions {
+    owner?: string;
+    repo?: string;
+    autoCheck?: boolean;
+    autoCheckIntervalMs?: number;
+}
+
 export interface UpdaterState {
     checking: boolean;
     error: string | null;
@@ -34,9 +43,9 @@ export interface UpdaterState {
     chosenRelease: ReleaseData | null;
     downloading: boolean;
     updateAvailable: boolean;
-    progress: number | null;
-    progressSnapshot: null, // 初始化为 null
-    taskId: string | null; // 新增：保存当前下载任务的ID
+    progress: number | null;       // 简易进度 (0-100)
+    progressSnapshot: TaskSnapshot | null; // 详细快照 (包含速度、ETA等)
+    taskId: string | null;
 }
 
 export function useUpdater({
@@ -45,8 +54,6 @@ export function useUpdater({
                                autoCheck = true,
                                autoCheckIntervalMs = 0
                            }: UseUpdaterOptions = {}) {
-    // 状态整合
-    // @ts-ignore
     const [state, setState] = useState<UpdaterState>({
         checking: false,
         error: null,
@@ -58,8 +65,9 @@ export function useUpdater({
         chosenRelease: null,
         downloading: false,
         updateAvailable: false,
-        progressSnapshot: null, // 初始化为 null
-        taskId: null, // 初始化为空
+        progress: null,
+        progressSnapshot: null,
+        taskId: null,
     });
 
     const mounted = useRef(true);
@@ -68,48 +76,63 @@ export function useUpdater({
         return () => { mounted.current = false; };
     }, []);
 
+
     useEffect(() => {
-        let intervalId: any = null;
+        let unlistenFn: UnlistenFn | null = null;
 
-        if (state.downloading && state.taskId) {
-            // 定义轮询函数
-            const fetchStatus = async () => {
-                try {
-                    const snapshot = await invoke<TaskSnapshot>("get_task_status", {
-                        taskId: state.taskId
-                    });
-
-                    if (mounted.current) {
-                        setState(prev => ({ ...prev, progressSnapshot: snapshot }));
-
-                        // 如果状态变成非运行中，可以在这里自动停止下载状态 (可选，取决于你的业务逻辑)
-                        if (["completed", "error", "cancelled"].includes(snapshot.status)) {
-                            // 通常 downloadAndApply 会处理完成状态，这里主要是为了 UI 同步
-                        }
-                    }
-                } catch (e) {
-                    console.warn("Failed to fetch task status:", e);
+        const startListening = async () => {
+            // 只有当正在下载且有 Task ID 时才开始监听
+            if (!state.downloading || !state.taskId) {
+                // 如果之前有监听器，清理掉
+                if (unlistenFn) {
+                    unlistenFn();
+                    unlistenFn = null;
                 }
-            };
+                return;
+            }
 
-            // 立即执行一次
-            fetchStatus();
-            // 每 1000ms 执行一次
-            intervalId = setInterval(fetchStatus, 1000);
-        } else {
-            // 如果不在下载，清空快照
-            setState(prev => {
-                if (prev.progressSnapshot) return { ...prev, progressSnapshot: null };
-                return prev;
+            const currentTaskId = state.taskId;
+            const eventName = `task-update::${currentTaskId}`;
+            console.log(`[useUpdater] 开始监听更新进度: ${eventName}`);
+
+            // 1. 设置事件监听器
+            unlistenFn = await listen<TaskSnapshot>(eventName, (event) => {
+                if (!mounted.current) return;
+                const snap = event.payload;
+
+                setState(prev => {
+                    // 只有当 ID 匹配时才更新 (防止竞态)
+                    if (prev.taskId !== currentTaskId) return prev;
+                    return {
+                        ...prev,
+                        progressSnapshot: snap,
+                        progress: snap.percent ?? 0
+                    };
+                });
             });
-        }
+
+            // 2. 初始状态拉取 (防止监听建立前的 GAP)
+            try {
+                const initialSnap = await invoke<TaskSnapshot>("get_task_status", { taskId: currentTaskId });
+                if (mounted.current && initialSnap && state.taskId === currentTaskId) {
+                    setState(prev => ({
+                        ...prev,
+                        progressSnapshot: initialSnap,
+                        progress: initialSnap.percent ?? 0
+                    }));
+                }
+            } catch (e) {
+                console.warn("[useUpdater] 获取初始任务状态失败 (可能任务刚开始):", e);
+            }
+        };
+
+        startListening();
 
         return () => {
-            if (intervalId) clearInterval(intervalId);
+            if (unlistenFn) unlistenFn();
         };
     }, [state.downloading, state.taskId]);
 
-    // 辅助函数：解析语义化版本
     const parseSemverSimple = (s: string | null | undefined) => {
         if (!s || typeof s !== "string") return null;
         const m = s.match(/(\d+)\.(\d+)\.(\d+)/);
@@ -124,27 +147,6 @@ export function useUpdater({
         }
         return false;
     };
-
-    // 监听进度
-    useEffect(() => {
-        let unlisten: UnlistenFn | null = null;
-
-        const setupListener = async () => {
-            unlisten = await listen<any>('update-download-progress', (event) => {
-                if (!mounted.current) return;
-                const p = event.payload?.progress || event.payload || 0;
-                setState(prev => ({ ...prev, progress: typeof p === 'number' ? p : null }));
-            });
-        };
-
-        if (state.downloading) {
-            setupListener();
-        }
-
-        return () => {
-            if (unlisten) unlisten();
-        };
-    }, [state.downloading]);
 
     const checkForUpdates = useCallback(async () => {
         setState(prev => ({ ...prev, checking: true, error: null }));
@@ -214,14 +216,13 @@ export function useUpdater({
         }
     }, [autoCheck, autoCheckIntervalMs, checkForUpdates]);
 
-    // 核心修改：生成 ID 并传递给后端
     const downloadAndApply = useCallback(async (releaseSummary?: ReleaseData) => {
         const rs = releaseSummary || state.chosenRelease;
         if (!rs || !rs.asset_url) {
             throw new Error("releaseSummary or asset_url missing");
         }
 
-        // 1. 前端生成唯一的 task ID
+        // 1. 生成 Task ID
         const taskId = `update-task-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
         setState(prev => ({
@@ -229,11 +230,13 @@ export function useUpdater({
             downloading: true,
             error: null,
             progressSnapshot: null,
-            taskId: taskId // 保存 ID
+            progress: 0,
+            taskId: taskId
         }));
 
         try {
-            // 2. 将 task_id 传给 Rust
+            // 2. 调用 Rust 命令 (注意: 这个命令是阻塞的，直到下载完成或出错)
+            // 但我们的 useEffect 会在后台并发处理事件监听
             await invoke("download_and_apply_update", {
                 args: {
                     url: rs.asset_url,
@@ -241,10 +244,11 @@ export function useUpdater({
                     target_exe_path: "",
                     timeout_secs: 120,
                     auto_quit: true,
-                    task_id: taskId // 传递 ID
+                    task_id: taskId
                 }
             });
 
+            // 下载成功，尝试退出
             try {
                 await invoke("quit_app");
             } catch (qerr) {
@@ -255,12 +259,10 @@ export function useUpdater({
                 setState(prev => ({ ...prev, downloading: false, progress: 100, taskId: null }));
             }
         } catch (e: any) {
-            // 如果是因为取消导致的报错，我们已经在 cancelDownload 处理了 UI，这里可以忽略或记录
             const errStr = String(e);
             console.error("download_and_apply_update error:", errStr);
 
             if (mounted.current) {
-                // 如果错误包含 "cancelled"，说明是用户手动取消，不是真正错误
                 if (errStr.toLowerCase().includes("cancelled") || errStr.toLowerCase().includes("取消")) {
                     setState(prev => ({ ...prev, downloading: false, taskId: null, progress: null }));
                 } else {
@@ -270,22 +272,16 @@ export function useUpdater({
         }
     }, [state.chosenRelease]);
 
-    // 核心修改：使用保存的 ID 取消任务
     const cancelDownload = useCallback(async () => {
         const currentTaskId = state.taskId;
-
         if (!currentTaskId) {
             console.warn("No active task to cancel");
             return;
         }
 
         console.log("Cancelling task:", currentTaskId);
-
         try {
-            // 调用 Rust 取消命令
             await invoke("cancel_task", { taskId: currentTaskId });
-
-            // 更新 UI 状态
             if (mounted.current) {
                 setState(prev => ({
                     ...prev,
