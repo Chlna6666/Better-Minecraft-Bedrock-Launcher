@@ -5,6 +5,7 @@ use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{create_task, finish_task, update_progress};
 use num_cpus;
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use std::path::PathBuf;
 use tracing::debug;
@@ -24,6 +25,7 @@ impl DownloaderManager {
         task_id: &str,
         url: String,
         dest: PathBuf,
+        headers: Option<HeaderMap>, // [新增]
         md5_expected: Option<&str>,
     ) -> Result<CoreResult, CoreError> {
         let config = read_config().map_err(|e| CoreError::Config(e.to_string()))?;
@@ -51,11 +53,20 @@ impl DownloaderManager {
                     &url,
                     &dest,
                     threads,
+                    headers.clone(),
                     md5_expected,
                 )
-                .await
+                    .await
             } else {
-                download_file(self.client.clone(), task_id, &url, &dest, md5_expected).await
+                download_file(
+                    self.client.clone(),
+                    task_id,
+                    &url,
+                    &dest,
+                    headers.clone(),
+                    md5_expected,
+                )
+                    .await
             };
 
             match &res {
@@ -96,6 +107,7 @@ impl DownloaderManager {
                     &task_id_clone,
                     url_clone,
                     dest_clone.clone(),
+                    None, // 默认不传 header
                     md5_clone.as_deref(),
                 )
                 .await;

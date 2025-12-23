@@ -1,5 +1,6 @@
+// src/downloads/multi.rs
 use futures_util::StreamExt;
-use reqwest::header;
+use reqwest::header::{self, HeaderMap};
 use std::cmp::Ordering as CmpOrdering;
 use std::io::SeekFrom;
 use std::path::Path;
@@ -142,7 +143,7 @@ impl AdaptiveTaskManager {
                     is_active: AtomicBool::new(true), // 直接标记为被我（当前线程）占有
                     is_done: AtomicBool::new(false),
                 });
-                
+
                 debug!(
                     "Worker {} 窃取任务: 原始#{}(剩{}) -> 切分点 {} -> 新任务#{}",
                     worker_id,
@@ -181,18 +182,25 @@ pub async fn download_multi(
     url: &str,
     dest: impl AsRef<Path>,
     threads: usize,
+    headers: Option<HeaderMap>, // [新增]
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
     let task_id_owned = task_id.to_string();
     debug!("开始自适应多线程下载: task={} 线程数={}", task_id, threads);
 
-    // 1. 获取文件信息
-    let head_resp = client
+    // 1. 获取文件信息 (HEAD 请求)
+    let mut head_req = client
         .head(url)
-        .header(header::ACCEPT_ENCODING, "identity")
-        .send()
-        .await?;
-    let mut total_len = head_resp
+        .header(header::ACCEPT_ENCODING, "identity");
+
+    // 应用 headers
+    if let Some(h) = &headers {
+        head_req = head_req.headers(h.clone());
+    }
+
+    let head_resp = head_req.send().await?;
+
+    let total_len = head_resp
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -200,7 +208,7 @@ pub async fn download_multi(
 
     let total = match total_len {
         Some(len) if len > 0 => len,
-        _ => return download_file(client, task_id, url, dest, md5_expected).await,
+        _ => return download_file(client, task_id, url, dest, headers, md5_expected).await,
     };
     set_total(task_id, Some(total));
 
@@ -250,6 +258,8 @@ pub async fn download_multi(
         let task_id = task_id.to_string();
         let error_occurred = error_occurred.clone();
         let error_store = error_store.clone();
+        // 克隆 headers 供每个 worker 使用
+        let worker_headers = headers.clone();
 
         handles.push(tokio::spawn(async move {
             let mut file = match OpenOptions::new().write(true).open(&dest_path).await {
@@ -313,10 +323,16 @@ pub async fn download_multi(
                         sleep(Duration::from_millis(500 * attempts as u64)).await;
                     }
 
-                    let req = client
+                    // 构建分片请求
+                    let mut req = client
                         .get(url.as_str())
                         .header(header::RANGE, format!("bytes={}-{}", start_pos, end_pos))
                         .header(header::ACCEPT_ENCODING, "identity");
+
+                    // 应用 headers
+                    if let Some(h) = &worker_headers {
+                        req = req.headers(h.clone());
+                    }
 
                     match req.send().await {
                         Ok(resp) => {

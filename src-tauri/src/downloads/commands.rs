@@ -79,6 +79,7 @@ pub async fn download_appx(
                 &task_id_clone,
                 url_clone,
                 dest_clone.clone(),
+                None, // headers
                 md5_clone.as_deref(),
             )
             .await;
@@ -119,7 +120,7 @@ pub async fn download_resource(
     let downloads_dir = PathBuf::from("./BMCBL/downloads");
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
     let dest = downloads_dir.join(&file_name);
-    
+
     let task_id = create_task(None, "ready", None);
 
     let manager = DownloaderManager::with_client(client);
@@ -142,6 +143,7 @@ pub async fn download_resource(
             &task_id_clone,
             url,
             dest_clone.clone(),
+            None, // headers
             md5_clone.as_deref()
         ).await;
 

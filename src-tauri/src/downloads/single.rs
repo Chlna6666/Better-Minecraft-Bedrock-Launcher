@@ -3,6 +3,7 @@ use crate::downloads::md5::verify_md5;
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{finish_task, is_cancelled, set_total, update_progress};
 use futures_util::StreamExt;
+use reqwest::header::HeaderMap;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -14,6 +15,7 @@ pub async fn download_file(
     task_id: &str,
     url: &str,
     dest: impl AsRef<Path>,
+    headers: Option<HeaderMap>, // [新增]
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
     let mut retry = 0u8;
@@ -26,7 +28,15 @@ pub async fn download_file(
             retry,
             md5_expected
         );
-        let resp = client.get(url).send().await;
+
+        // 构建请求并附加 Headers
+        let mut req_builder = client.get(url);
+        if let Some(h) = &headers {
+            req_builder = req_builder.headers(h.clone());
+        }
+
+        let resp = req_builder.send().await;
+
         match resp {
             Ok(resp) => {
                 let resp = resp.error_for_status()?;
