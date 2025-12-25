@@ -81,7 +81,7 @@ export function useUpdaterWithModal({
         taskStatus: state.progressSnapshot?.status || null,
         startDownload,
         cancelDownload,
-        checkForUdates: actions.checkForUpdates,
+        checkForUpdates: actions.checkForUpdates,
         checking: state.checking,
         error: state.error
     };
