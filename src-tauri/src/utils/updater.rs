@@ -1,19 +1,20 @@
-// src-tauri/src/updater.rs
 use crate::config::config::read_config;
 use crate::downloads::manager::DownloaderManager;
 use crate::http::proxy::get_client_for_proxy;
-use crate::result::{CoreError, CoreResult};
+use crate::result::{CoreResult};
 use crate::tasks::task_manager::{create_task, finish_task};
 use anyhow::Result;
 use regex::Regex;
 use semver::Version;
 use serde::Deserialize;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
-use tracing::{debug, error, info};
+use tokio::task::JoinSet;
+use tracing::{debug, error, info, warn};
 
 #[derive(Deserialize, Debug)]
 pub struct ApplyUpdateArgs {
@@ -26,6 +27,7 @@ pub struct ApplyUpdateArgs {
     #[serde(alias = "auto_quit", alias = "autoQuit")]
     pub auto_quit: Option<bool>,
 }
+
 #[derive(Deserialize, Debug)]
 pub struct DownloadAndApplyArgs {
     pub url: String,
@@ -36,14 +38,16 @@ pub struct DownloadAndApplyArgs {
     pub timeout_secs: Option<u64>,
     #[serde(alias = "auto_quit", alias = "autoQuit")]
     pub auto_quit: Option<bool>,
-    pub task_id: Option<String>, // 新增
+    pub task_id: Option<String>,
 }
+
 #[derive(Deserialize, Debug)]
 struct GitHubAsset {
     browser_download_url: String,
     name: String,
     size: u64,
 }
+
 #[derive(Deserialize, Debug)]
 struct GitHubRelease {
     tag_name: String,
@@ -53,6 +57,7 @@ struct GitHubRelease {
     assets: Vec<GitHubAsset>,
     body: Option<String>,
 }
+
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct ReleaseSummary {
     pub tag: String,
@@ -77,18 +82,126 @@ fn extract_semver_substring(tag: &str) -> Option<String> {
     if t.is_empty() {
         return None;
     }
-    // 去掉常见前缀
     let mut s = t.trim_start_matches("refs/tags/").trim().to_string();
-    // 去掉单个前导 v/V
     s = s.trim_start_matches(|c| c == 'v' || c == 'V').to_string();
 
-    // 匹配 semver-like 子串（例如 1.2.3, 1.2.3-beta.1, 1.2.3+build）
     let re = Regex::new(r"(?i)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)").unwrap();
     re.captures(&s)
         .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
 }
 
-/// 可选：从 GitHub Releases 获取（api_base 可指向镜像）
+async fn get_optimized_ip() -> Option<SocketAddr> {
+    let domain = "cloudflare.182682.xyz:443";
+    info!("正在解析优选域名: {}", domain);
+
+    // 1. 异步解析域名
+    let addrs = match tokio::net::lookup_host(domain).await {
+        Ok(iter) => iter,
+        Err(e) => {
+            warn!("解析优选域名失败: {}", e);
+            return None;
+        }
+    };
+
+    let ips: Vec<SocketAddr> = addrs.filter(|ip| ip.is_ipv4()).collect();
+    if ips.is_empty() {
+        warn!("优选域名未解析到有效的 IPv4 地址");
+        return None;
+    }
+    info!("解析到 {} 个候选 IP", ips.len());
+
+    let mut set = JoinSet::new();
+
+    for (i, ip) in ips.iter().cloned().enumerate() {
+        set.spawn(async move {
+            let start = Instant::now();
+            // 尝试 TCP 连接，2秒超时
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                Duration::from_secs(2),
+                tokio::net::TcpStream::connect(ip)
+            ).await {
+                let elapsed = start.elapsed();
+                debug!("[Race #{}] ✅ 连接成功! IP: {}, 耗时: {:.2?}", i, ip, elapsed);
+                return Some(ip);
+            }
+            None
+        });
+    }
+
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Some(ip)) => {
+                info!("🏁 竞速冠军诞生: {}。正在终止其他 {} 个测速任务...", ip, set.len());
+                set.abort_all();
+                return Some(ip);
+            }
+            _ => continue,
+        }
+    }
+
+    warn!("所有优选 IP 测速均失败或超时，回退默认解析");
+    None
+}
+
+async fn check_github_is_fast(max_latency_ms: u64) -> bool {
+    let url = "https://api.github.com";
+    let client_res = get_client_for_proxy();
+
+    if let Ok(client) = client_res {
+        let result = tokio::time::timeout(
+            Duration::from_millis(max_latency_ms),
+            client.head(url).header("User-Agent", "BMCBL-Latency-Check").send()
+        ).await;
+
+        match result {
+            Ok(Ok(resp)) => {
+                if resp.status().is_success() {
+                    debug!("GitHub 延迟检测通过: 响应极快 (<= {}ms)", max_latency_ms);
+                    true
+                } else {
+                    warn!("GitHub 延迟检测失败: 状态码 {}", resp.status());
+                    false
+                }
+            }
+            Ok(Err(e)) => {
+                warn!("GitHub 延迟检测网络错误: {}", e);
+                false
+            }
+            Err(_) => {
+                debug!("GitHub 延迟检测超时 (> {}ms)，已强制取消连接", max_latency_ms);
+                false
+            }
+        }
+    } else {
+        warn!("无法构建 HTTP 客户端用于网络检测");
+        false
+    }
+}
+
+async fn should_use_acceleration() -> bool {
+    info!("正在检测 GitHub 连接质量...");
+    let is_fast = check_github_is_fast(180).await;
+    if is_fast {
+        info!("GitHub 连接良好 (<180ms)，使用直连。");
+        false
+    } else {
+        warn!("GitHub 连接缓慢 (>180ms) 或不可达，自动切换至加速通道。");
+        true
+    }
+}
+
+fn accelerate_download_url(url: &str, use_acceleration: bool) -> String {
+    if !use_acceleration {
+        return url.to_string();
+    }
+    let proxy_prefix = "https://dl-proxy.bmcbl.com/";
+
+    if url.starts_with("https://github.com") || url.starts_with("https://objects.githubusercontent.com") {
+        format!("{}{}", proxy_prefix, url)
+    } else {
+        url.to_string()
+    }
+}
 
 #[tauri::command]
 pub async fn check_updates(
@@ -96,43 +209,85 @@ pub async fn check_updates(
     repo: String,
     api_base: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let config = read_config().map_err(|e| format!("读取配置失败: {}", e))?;
 
+    let use_acceleration = should_use_acceleration().await;
+
+    let final_api_base = if let Some(base) = api_base {
+        base
+    } else if use_acceleration {
+        "https://updater.bmcbl.com".to_string()
+    } else {
+        "https://api.github.com".to_string()
+    };
+
+    let config = read_config().map_err(|e| format!("读取配置失败: {}", e))?;
     let update_channel = config.launcher.update_channel;
     let channel = match update_channel {
-        // 使用全限定路径以防命名空间问题（根据你的项目路径调整）
         crate::config::config::UpdateChannel::Nightly => "nightly".to_string(),
         _ => "stable".to_string(),
     };
     let channel = channel.to_lowercase();
 
     info!(
-        "检查更新：{}/{} (api_base={:?}, channel={:?})",
-        owner, repo, api_base, update_channel
+        "检查更新：{}/{} (api_base={}, channel={:?}, accelerated={})",
+        owner, repo, final_api_base, update_channel, use_acceleration
     );
-    let base = api_base.unwrap_or_else(|| "https://api.github.com".to_string());
+
     let url = format!(
         "{}/repos/{}/{}/releases",
-        base.trim_end_matches('/'),
+        final_api_base.trim_end_matches('/'),
         owner,
         repo
     );
-    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    let start_time = std::time::Instant::now();
+
+    let client = if use_acceleration && final_api_base.contains("updater.bmcbl.com") {
+        let optimized_ip = get_optimized_ip().await;
+
+        if let Some(ip) = optimized_ip {
+            info!("使用优选 IP {} 连接更新 API", ip);
+            reqwest::Client::builder()
+                .resolve("updater.bmcbl.com", ip)
+                .user_agent("BMCBL-Updater")
+                .timeout(Duration::from_secs(15))
+                .build()
+                .map_err(|e| format!("构建优选 HTTP 客户端失败: {}", e))?
+        } else {
+            get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?
+        }
+    } else {
+        get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?
+    };
+
     let resp = client
         .get(&url)
         .header("User-Agent", "BMCBL-Updater")
         .header("Accept", "application/vnd.github.v3+json")
         .send()
         .await
-        .map_err(|e| format!("HTTP 请求失败: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API 返回状态: {}", resp.status()));
+        .map_err(|e| format!("HTTP 请求失败 (url={}): {}", url, e))?;
+    let duration = start_time.elapsed();
+
+    let status = resp.status();
+    debug!("GitHub API 请求 URL: {}", url);
+    debug!("GitHub API 响应状态码: {}", status);
+    debug!("GitHub API 请求耗时: {:.2?}", duration);
+
+    if !status.is_success() {
+        let err_body = resp.text().await.unwrap_or_else(|_| "无法读取响应体".to_string());
+        error!("GitHub API 请求异常详情: Status={}, BodyPreview={:.500}", status, err_body);
+        return Err(format!("GitHub API 返回错误状态: {}", status));
     }
 
-    let releases: Vec<GitHubRelease> = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析 JSON 失败: {}", e))?;
+    let raw_body = resp.text().await.map_err(|e| format!("读取响应内容失败: {}", e))?;
+    debug!("GitHub API 响应内容预览: {:.500}...", raw_body);
+
+    let releases: Vec<GitHubRelease> = serde_json::from_str(&raw_body)
+        .map_err(|e| {
+            error!("JSON 解析失败，收到的完整内容: {}", raw_body);
+            format!("解析 JSON 失败: {}", e)
+        })?;
+
     let current = env!("CARGO_PKG_VERSION");
     let current_ver = Version::parse(current).unwrap_or_else(|_| Version::new(0, 0, 0));
 
@@ -142,7 +297,6 @@ pub async fn check_updates(
     let mut latest_prerelease_ver: Option<Version> = None;
 
     for r in releases {
-        // 尝试从 tag 提取 semver 子串
         let semver_str = match extract_semver_substring(&r.tag_name) {
             Some(s) => s,
             None => {
@@ -158,8 +312,7 @@ pub async fn check_updates(
             }
         };
 
-        // 选 asset（保持原来的策略），同时记录 asset_size（字节）
-        let mut chosen_asset: Option<(String, String, u64)> = None; // (name, url, size)
+        let mut chosen_asset: Option<(String, String, u64)> = None;
         for a in &r.assets {
             let name_l = a.name.to_lowercase();
             if name_l.ends_with(".exe")
@@ -168,7 +321,8 @@ pub async fn check_updates(
                 || name_l.ends_with(".7z")
             {
                 let size = a.size;
-                chosen_asset = Some((a.name.clone(), a.browser_download_url.clone(), size));
+                let final_url = accelerate_download_url(&a.browser_download_url, use_acceleration);
+                chosen_asset = Some((a.name.clone(), final_url, size));
                 break;
             }
         }
@@ -185,7 +339,6 @@ pub async fn check_updates(
         };
 
         if r.prerelease {
-            // 选择最新的 prerelease（按 semver 比较 prerelease 内部顺序）
             let take = match &latest_prerelease_ver {
                 Some(prev_v) => parsed_ver > *prev_v,
                 None => true,
@@ -195,7 +348,6 @@ pub async fn check_updates(
                 latest_prerelease_ver = Some(parsed_ver);
             }
         } else {
-            // 选择最新的 stable
             let take = match &latest_stable_ver {
                 Some(prev_v) => parsed_ver > *prev_v,
                 None => true,
@@ -207,18 +359,13 @@ pub async fn check_updates(
         }
     }
 
-    // 根据选择的 channel 决定是否有更新
     let mut update_available = false;
     let mut selected_release: Option<ReleaseSummary> = None;
     if channel == "nightly" {
-        // 优先使用 prerelease（nightly）作为候选
         if let Some(ref npv) = latest_prerelease_ver {
-            // semver 规则：pre-release 通常比同号正式版优先级低，
-            // 但我们希望 nightly（例如 0.0.7-nightly.20251115）在 same major.minor.patch 下也能被视为“更新”。
             let newer = if npv > &current_ver {
                 true
             } else {
-                // 如果 major.minor.patch 相同，且 nightly 有 pre-release，而当前为正式版（no pre），则认为 nightly 可作为更新
                 let same_core = npv.major == current_ver.major
                     && npv.minor == current_ver.minor
                     && npv.patch == current_ver.patch;
@@ -231,7 +378,6 @@ pub async fn check_updates(
             }
             selected_release = latest_prerelease.clone();
         } else {
-            // 没有 prerelease 时回退到 stable
             if let Some(ref ls) = latest_stable_ver {
                 if ls > &current_ver {
                     update_available = true;
@@ -240,19 +386,15 @@ pub async fn check_updates(
             }
         }
     } else {
-        // stable channel
         if let Some(ref ls) = latest_stable_ver {
             if ls > &current_ver {
                 update_available = true;
             }
             selected_release = latest_stable.clone();
         } else {
-            // 没有 stable 时回退到 prerelease
             if let Some(ref npv) = latest_prerelease_ver {
                 if npv > &current_ver {
                     update_available = true;
-                } else {
-                    // same-core nightly fallback logic for stable channel not required normally
                 }
                 selected_release = latest_prerelease.clone();
             }
@@ -263,8 +405,6 @@ pub async fn check_updates(
     let latest_prerelease_changelog = latest_prerelease.as_ref().and_then(|s| s.body.clone());
 
     debug!("当前版本：{}", current);
-    debug!("最新稳定版本：{:?}", latest_stable_ver);
-    debug!("最新 prerelease：{:?}", latest_prerelease_ver);
     debug!("是否有更新: {} (channel={})", update_available, channel);
 
     Ok(serde_json::json!({
@@ -276,7 +416,8 @@ pub async fn check_updates(
         "latest_prerelease": latest_prerelease,
         "latest_stable_changelog": latest_stable_changelog,
         "latest_prerelease_changelog": latest_prerelease_changelog,
-        "update_available": update_available
+        "update_available": update_available,
+        "is_accelerated": use_acceleration
     }))
 }
 
@@ -287,33 +428,24 @@ pub async fn download_and_apply_update(
     let url = args.url;
     let filename_hint = args.filename_hint;
 
-    // 如果没有指定目标路径，留空稍后处理
     let target_exe_path = args.target_exe_path.unwrap_or_else(|| "".to_string());
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
 
-    // 1. 确定 Task ID 并注册
-    // 关键点：这里必须调用 create_task 把 ID 注册到 HashMap 中
     let task_id = if let Some(input_id) = args.task_id {
-        // 如果前端传了 ID，传给 create_task 进行注册
         create_task(Some(input_id), "ready", None)
     } else {
-        // 如果前端没传，传 None 让 create_task 自动生成
         create_task(None, "ready", None)
     };
 
     info!("开始下载并应用：url={} task_id={}", url, task_id);
 
-    info!("开始下载并应用：url={} task_id={}", url, task_id);
-
-    // 2. 准备下载目录
     let downloads_dir = Path::new("./BMCBL/downloads");
     if let Err(e) = fs::create_dir_all(downloads_dir) {
         error!("创建下载目录失败: {}", e);
         return Err(format!("创建下载目录失败: {}", e));
     }
 
-    // 3. 决定文件名
     let fname = filename_hint.unwrap_or_else(|| {
         url.split('/')
             .last()
@@ -323,21 +455,42 @@ pub async fn download_and_apply_update(
     let target = downloads_dir.join(&fname);
     info!("保存为: {}", target.display());
 
-    // 4. 初始化下载器
-    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+    // ================== [Client 构建逻辑] ==================
+    let use_acceleration = should_use_acceleration().await;
+
+    let client = if use_acceleration && url.contains("dl-proxy.bmcbl.com") {
+        let optimized_ip = get_optimized_ip().await;
+        if let Some(ip) = optimized_ip {
+            info!("使用优选 IP {} 进行下载", ip);
+            reqwest::Client::builder()
+                .resolve("dl-proxy.bmcbl.com", ip)
+                .resolve("updater.bmcbl.com", ip)
+                .user_agent("BMCBL-Updater")
+                .build()
+                .map_err(|e| format!("构建优选下载客户端失败: {}", e))?
+        } else {
+            get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?
+        }
+    } else {
+        get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?
+    };
+    // ========================================================
 
     let manager = DownloaderManager::with_client(client);
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", "BMCBL-Updater".parse().unwrap());
 
     let res = manager
         .download_with_options(
             &task_id,
             url.clone(),
             target.clone(),
-            None, // header options
+            Some(headers),
+            None,
         )
         .await;
 
-    // 6. 处理下载结果
     let bytes_len = match res {
         Ok(CoreResult::Success(_)) => {
             finish_task(&task_id, "completed", None);
@@ -345,13 +498,10 @@ pub async fn download_and_apply_update(
                 .map_err(|e| format!("获取文件大小失败: {}", e))?
                 .len()
         }
-        // 处理取消情况
         Ok(CoreResult::Cancelled) => {
             info!("下载任务已取消: {}", task_id);
             finish_task(&task_id, "cancelled", Some("download cancelled".into()));
-            // 清理未完成的文件
             let _ = fs::remove_file(&target);
-            // 返回特定的错误文本，方便前端识别（虽然前端通常会在点击取消时就停止等待）
             return Err("Download cancelled".to_string());
         }
         Ok(CoreResult::Error(err)) => {
@@ -389,11 +539,9 @@ pub async fn download_and_apply_update(
         auto_quit
     );
 
-    // 创建更新器副本 (updater_runner)
     let updater_filename = format!("updater_runner_{}.exe", std::process::id());
     let updater_path = downloads_dir.join(&updater_filename);
 
-    // 删除旧的副本（如果存在）
     let _ = std::fs::remove_file(&updater_path);
 
     std::fs::copy(&exe, &updater_path).map_err(|e| {
@@ -405,7 +553,6 @@ pub async fn download_and_apply_update(
         )
     })?;
 
-    // 启动子进程进行文件替换
     let child = Command::new(updater_path.clone())
         .arg("--run-updater")
         .arg(&src.to_string_lossy().to_string())
@@ -420,7 +567,6 @@ pub async fn download_and_apply_update(
         updater_path.display()
     );
 
-    // 自动退出主程序
     if auto_quit {
         let delay_ms = 300u64;
         info!(
@@ -450,14 +596,12 @@ fn normalize_file_arg(s: &str) -> Result<PathBuf> {
     let mut t = s.trim().to_string();
     if t.starts_with("file://") {
         t = t.trim_start_matches("file://").to_string();
-        // windows style file:///C:/...
         if cfg!(windows) && t.starts_with('/') {
             if t.chars().nth(2) == Some(':') {
                 t = t.trim_start_matches('/').to_string();
             }
         }
     }
-    // 尝试 canonicalize；如果失败就退化为原始 PathBuf（避免类型推断问题）
     let p = match Path::new(&t).canonicalize() {
         Ok(pathbuf) => pathbuf,
         Err(_) => PathBuf::from(t),
@@ -465,7 +609,6 @@ fn normalize_file_arg(s: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
-/// 这个函数用于子进程模式：当程序以 `--run-updater <src> <dst> <timeout>` 启动时，调用该函数执行替换。
 pub fn run_updater_child(src: &Path, dst: &Path, timeout: Duration) -> Result<()> {
     info!(
         "run_updater_child start src='{}' dst='{}' timeout={}s",
@@ -558,7 +701,6 @@ pub fn clean_old_versions() {
                     .and_then(|n| n.to_str())
                     .unwrap_or_default();
 
-                // 跳过当前进程的 updater_runner_<pid>.exe
                 if file_name.starts_with("updater_runner_") && file_name.ends_with(".exe") {
                     if let Some(pid_str) = file_name
                         .strip_prefix("updater_runner_")
@@ -570,7 +712,6 @@ pub fn clean_old_versions() {
                     }
                 }
 
-                // 只删除指定后缀文件
                 let ext = path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -580,7 +721,6 @@ pub fn clean_old_versions() {
                     continue;
                 }
 
-                // 直接删除，不判断时间
                 match fs::remove_file(&path) {
                     Ok(_) => info!("清理旧版本文件: {}", path.display()),
                     Err(e) => info!("删除旧版本文件失败: {} ; err={}", path.display(), e),
