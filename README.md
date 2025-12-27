@@ -115,6 +115,21 @@
 - 参考实现修复最小化 UWP 导致停滞的相关代码，  
   致谢 [Aetopia/AppLifecycleOptOut](https://github.com/Aetopia/AppLifecycleOptOut)
 
+- **部分解包 GDK 等实现**  
+  吸收和致谢 [BedrockLauncher.Core](https://github.com/Round-Studio/BedrockLauncher.Core) 部分代码实现解包 GDK 等相关功能。
+
+---
+
+## 特别说明
+
+本项目使用了大量 AI 辅助编写，代码结构与实现方式仅供功能演示，不适合作为代码规范或最佳实践的参考。
+
+---
+
+## 免责声明
+
+本项目包含大量通过 AI 生成的代码，仅用于功能实现展示 **不建议将本项目用作代码学习、风格或工程结构的参考**。如有需求请查阅更专业的代码实现范例及官方文档。
+
 ---
 
 ## 版权声明
