@@ -13,6 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 chrono = "0.4.42"
+hex = "0.4.3"
 tauri-build = { version = "2.5.3", features = [] }
 
 [target.'cfg(windows)'.dependencies]
