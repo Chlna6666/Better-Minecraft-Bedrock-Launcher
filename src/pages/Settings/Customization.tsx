@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from '@tauri-apps/plugin-dialog';
 import { getConfig } from "../../utils/config";
@@ -13,7 +13,7 @@ import { useToast } from "../../components/Toast";
 import { Button } from "../../components";
 
 // ==========================================
-// 辅助函数 (保持不变)
+// 辅助函数
 // ==========================================
 function componentToHex(c: number) { const hex = c.toString(16); return hex.length === 1 ? '0' + hex : hex; }
 function rgbaToHex8({ r, g, b, a }: any) { const alpha = Math.round((a ?? 1) * 255); return `#${componentToHex(r)}${componentToHex(g)}${componentToHex(b)}${componentToHex(alpha)}`.toLowerCase(); }
@@ -90,6 +90,8 @@ export default function Customization() {
                 setLocalImagePath(config.local_image_path || '');
                 setNetworkImageUrl(config.network_image_url || '');
                 setShowLaunchAnimation(config.show_launch_animation !== undefined ? config.show_launch_animation : true);
+
+                // 初始化应用背景
                 await applyBackgroundStyle(config.background_option || 'default', config.local_image_path || '', config.network_image_url || '');
                 document.documentElement.style.setProperty('--theme-color', rgbaToCssString(parsed));
             } catch (error) {
@@ -143,31 +145,50 @@ export default function Customization() {
     }, [pickerOpen]);
 
     // ==========================================
-    // Logic Functions
+    // Logic Functions (优化核心)
     // ==========================================
     const applyBackgroundStyle = async (option: string, local_image_path: string, networkUrl: string) => {
-        let backgroundImage = '';
+        let urlToSet = '';
+
+        // 1. 确定要使用的 URL
         if (option === 'local' && local_image_path) {
             try {
-                const fileDataUrl = convertFileSrc(local_image_path);
-                backgroundImage = `url(${fileDataUrl})`;
+                // Tauri 资源协议转换
+                urlToSet = convertFileSrc(local_image_path);
             } catch (err) {
                 if (local_image_path.startsWith('file://')) {
-                    backgroundImage = `url(${local_image_path})`;
+                    urlToSet = local_image_path;
                 } else {
-                    throw new Error('无法预览本地文件');
+                    console.warn('Invalid local path:', local_image_path);
                 }
             }
         } else if (option === 'network' && networkUrl) {
-            backgroundImage = `url(${networkUrl})`;
-        } else {
-            backgroundImage = '';
+            urlToSet = networkUrl;
         }
 
-        document.body.style.backgroundImage = backgroundImage;
-        document.body.style.backgroundSize = backgroundImage ? 'cover' : '';
-        document.body.style.backgroundPosition = backgroundImage ? 'center' : '';
-        document.body.style.backgroundRepeat = backgroundImage ? 'no-repeat' : '';
+        // 2. 清除背景
+        if (!urlToSet) {
+            document.body.style.backgroundImage = '';
+            return;
+        }
+
+        // 3. 【关键优化】异步预加载并解码图片
+        // 这将强制浏览器在后台线程解码图片，避免大图阻塞主线程导致的界面卡顿
+        try {
+            const img = new Image();
+            img.src = urlToSet;
+            // decode() 返回一个 Promise，当图片解码完成可以安全渲染时 resolve
+            await img.decode();
+        } catch (e) {
+            console.warn("Background image decode failed, skipping pre-decode.", e);
+            // 即使解码失败（例如格式不支持或 404），我们仍然尝试设置它，让浏览器处理错误显示
+        }
+
+        // 4. 应用样式
+        document.body.style.backgroundImage = `url("${urlToSet}")`;
+        document.body.style.backgroundSize = 'cover';
+        document.body.style.backgroundPosition = 'center';
+        document.body.style.backgroundRepeat = 'no-repeat';
     };
 
     async function saveConfig(customStyle: any) {
@@ -250,7 +271,7 @@ export default function Customization() {
     const handleLocalImageChange = async () => {
         try {
             const selected = await open({
-                filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }],
+                filters: [{ name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] }],
                 multiple: false,
             });
             if (!selected) return;
@@ -264,9 +285,16 @@ export default function Customization() {
                 network_image_url: networkImageUrl,
                 show_launch_animation: showLaunchAnimation
             };
+
+            // 先保存配置
             await saveConfig(updated);
-            await applyBackgroundStyle('local', path, networkImageUrl);
+
+            // 切换到本地模式
             setBackgroundOption('local');
+
+            // 应用背景 (包含异步解码)
+            await applyBackgroundStyle('local', path, networkImageUrl);
+
             toast?.success(t('common.save_success') || '已保存');
         } catch (error: any) {
             toast?.error((t('common.save_failed') || '保存失败') + ': ' + (error?.message || error));
@@ -285,8 +313,8 @@ export default function Customization() {
                 show_launch_animation: showLaunchAnimation
             };
             await saveConfig(updated);
-            await applyBackgroundStyle('local', trimmed, networkImageUrl);
             setBackgroundOption('local');
+            await applyBackgroundStyle('local', trimmed, networkImageUrl);
             toast?.success(t('common.save_success') || '已保存');
         } catch (err: any) {
             toast?.error((t('common.save_failed') || '保存失败') + ': ' + (err?.message || err));
@@ -379,7 +407,6 @@ export default function Customization() {
                         {backgroundOption === 'local' && (
                             <div className="sub-setting-row">
                                 <label>{t("CustomizationSettings.local_image")}</label>
-                                {/* 这里不使用 .sub-control-wrapper 因为需要更宽的空间 */}
                                 <div style={{ display: 'flex', gap: 8, flex: 1, justifyContent: 'flex-end', alignItems: 'center' }}>
                                     <Input
                                         type="text"
