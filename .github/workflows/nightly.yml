@@ -395,33 +395,6 @@ jobs:
           Write-Host "VC_LTL set to: $vcPath"
           Write-Host "YY_THUNKS set to: $yyPath"
 
-      - name: Install Npcap SDK (Packet.lib for pnet on Windows)
-        if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $sdkRoot = Join-Path $env:RUNNER_TEMP "npcap-sdk"
-          $zipPath = Join-Path $env:RUNNER_TEMP "npcap-sdk.zip"
-          $url = "https://npcap.com/dist/npcap-sdk-1.13.zip"
-
-          if (-not (Test-Path $sdkRoot)) { New-Item -ItemType Directory -Path $sdkRoot | Out-Null }
-          if (-not (Test-Path $zipPath)) {
-            Write-Host "Downloading Npcap SDK: $url"
-            curl.exe -L -o $zipPath $url
-          } else {
-            Write-Host "Npcap SDK zip already exists: $zipPath"
-          }
-
-          Write-Host "Extracting Npcap SDK..."
-          & 7z x -aoa $zipPath ("-o{0}" -f $sdkRoot) | Out-Null
-
-          $libDir = Join-Path $sdkRoot "Lib\\x64"
-          if (-not (Test-Path (Join-Path $libDir "Packet.lib"))) { throw "Packet.lib not found under $libDir" }
-          if (-not (Test-Path (Join-Path $libDir "wpcap.lib"))) { throw "wpcap.lib not found under $libDir" }
-
-          "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Added to LIB: $libDir"
-
       - name: 缓存 cargo
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         uses: actions/cache@v4
