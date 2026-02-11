@@ -337,6 +337,64 @@ jobs:
           Write-Host "Added 7z to PATH: $dir"
           & 7z -h | Out-Null
 
+      - name: Cache VC-LTL / YY-Thunks (for thunk-rs)
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\thunk-cache\VC-LTL-5.2.2
+            ${{ runner.temp }}\thunk-cache\YY-Thunks-1.1.7
+          key: ${{ runner.os }}-thunk-cache-vc-ltl-5.2.2-yy-thunks-1.1.7-v1
+
+      - name: Prepare VC-LTL / YY-Thunks and export env (skip thunk-rs downloads)
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $cacheRoot = Join-Path $env:RUNNER_TEMP "thunk-cache"
+          $vcRoot = Join-Path $cacheRoot "VC-LTL-5.2.2"
+          $yyRoot = Join-Path $cacheRoot "YY-Thunks-1.1.7"
+          New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+
+          $vcUrl = "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.2.2/VC-LTL-Binary.7z"
+          $vcArchive = Join-Path $cacheRoot "VC-LTL-Binary.7z"
+          if (-not (Test-Path (Join-Path $vcRoot "TargetPlatform"))) {
+            Write-Host "Downloading VC-LTL..."
+            curl.exe -L --retry 8 --retry-all-errors --retry-delay 2 -o $vcArchive $vcUrl
+            & 7z x -aoa $vcArchive "-o$vcRoot" | Out-Null
+          }
+          $vcPath = $vcRoot
+          if (-not (Test-Path (Join-Path $vcPath "TargetPlatform"))) {
+            $child = Get-ChildItem -Directory $vcRoot -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($child -and (Test-Path (Join-Path $child.FullName "TargetPlatform"))) {
+              $vcPath = $child.FullName
+            }
+          }
+
+          $yyUrl = "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.1.7/YY-Thunks-Objs.zip"
+          $yyArchive = Join-Path $cacheRoot "YY-Thunks-Objs.zip"
+          if (-not (Test-Path (Join-Path $yyRoot "objs"))) {
+            Write-Host "Downloading YY-Thunks..."
+            curl.exe -L --retry 8 --retry-all-errors --retry-delay 2 -o $yyArchive $yyUrl
+            & 7z x -aoa $yyArchive "-o$yyRoot" | Out-Null
+          }
+          $yyPath = $yyRoot
+          if (-not (Test-Path (Join-Path $yyPath "objs"))) {
+            $child = Get-ChildItem -Directory $yyRoot -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($child -and (Test-Path (Join-Path $child.FullName "objs"))) {
+              $yyPath = $child.FullName
+            }
+          }
+
+          if (-not (Test-Path (Join-Path $vcPath "TargetPlatform"))) { throw "VC_LTL path invalid: $vcPath" }
+          if (-not (Test-Path (Join-Path $yyPath "objs"))) { throw "YY_THUNKS path invalid: $yyPath" }
+
+          "VC_LTL=$vcPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "YY_THUNKS=$yyPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "VC_LTL set to: $vcPath"
+          Write-Host "YY_THUNKS set to: $yyPath"
+
       - name: Install Npcap SDK (Packet.lib for pnet on Windows)
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         shell: pwsh
