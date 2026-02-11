@@ -1,0 +1,117 @@
+/* File: src/pages/Manage/components/ConfirmModal.css */
+
+/* 遮罩层 - 确保 z-index 足够高 */
+.confirm-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5); /* 半透明遮罩 */
+    backdrop-filter: blur(4px);      /* 毛玻璃效果 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 99999; /* Portal 后相对于 body，层级设高 */
+    animation: cm-fade-in 0.2s ease-out;
+}
+
+/* 弹窗主体 */
+.confirm-modal {
+    background: #ffffff;
+    /* 移除边框，用阴影代替 */
+    border: none;
+    border-radius: 12px;
+    width: 420px;
+    max-width: 90vw;
+    padding: 0; /* 清零 padding，由内部元素控制 */
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: cm-scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Dark Mode */
+[data-theme='dark'] .confirm-modal {
+    background: #1f2937;
+    border: 1px solid rgba(255,255,255,0.08);
+}
+
+/* 头部 */
+.confirm-modal-header {
+    padding: 24px 24px 12px;
+}
+
+.confirm-modal-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: #111827;
+}
+[data-theme='dark'] .confirm-modal-title { color: #f3f4f6; }
+
+/* 内容区 */
+.confirm-modal-body {
+    padding: 0 24px 24px;
+    font-size: 14px;
+    color: #6b7280;
+    line-height: 1.6;
+}
+[data-theme='dark'] .confirm-modal-body { color: #9ca3af; }
+
+/* 底部按钮区 - [已修复：去除背景色和边框] */
+.confirm-modal-footer {
+    padding: 0 24px 24px;
+    background: transparent; /* 透明背景 */
+    border-top: none;        /* 无上边框 */
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+/* 按钮样式 */
+.btn-modal-cancel {
+    background: #f3f4f6;
+    border: 1px solid transparent;
+    color: #374151;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.btn-modal-cancel:hover:not(:disabled) { background: #e5e7eb; }
+[data-theme='dark'] .btn-modal-cancel { background: rgba(255,255,255,0.1); color: #e5e7eb; }
+
+.btn-modal-danger {
+    background: #ef4444;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    transition: all 0.2s;
+}
+.btn-modal-danger:hover:not(:disabled) { background: #dc2626; }
+
+.btn-modal-primary {
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    transition: all 0.2s;
+}
+.btn-modal-primary:hover:not(:disabled) { background: #1d4ed8; }
+
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* 动画 */
+@keyframes cm-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cm-scale-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }

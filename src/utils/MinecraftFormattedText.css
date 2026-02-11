@@ -4,6 +4,7 @@
     line-height: 1.2;
     /* 提供一个可调的 css 变量（可在外部覆盖，例如 small/large 字体）*/
     --mc-glyph-size: 1em; /* 语义上希望 glyph 与字体一样高 */
+    word-break: break-word; /* 允许长单词换行 */
 }
 
 /* glyph 以 inline-flex 方式居中内容（即使我们只用背景图，也利于 future icon children） */

@@ -104,6 +104,7 @@ const useVersions = () => {
                         name,
                         version,
                         path: info.path || "",
+                        config: info.config || {},
                         kind,           // 原始 kind 字段（方便逻辑判断）
                         kindLabel: kindLbl, // 本地化显示（可能为 null）
                         versionType: vType, // "release" | "preview" | "education" | "education_preview"

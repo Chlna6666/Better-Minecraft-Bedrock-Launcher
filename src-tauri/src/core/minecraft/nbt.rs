@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
+use tracing::debug;
 
-// NBT标签类型码（基于您的描述和文献）
 const TAG_END: u8 = 0x00;
 const TAG_BYTE: u8 = 0x01;
 const TAG_SHORT: u8 = 0x02;
@@ -19,7 +19,7 @@ const TAG_LIST: u8 = 0x09;
 const TAG_COMPOUND: u8 = 0x0A;
 const TAG_INT_ARRAY: u8 = 0x0B;
 const TAG_LONG_ARRAY: u8 = 0x0C;
-const TAG_SHORT_ARRAY: u8 = 0x64; // 基于文献，可能特定于基岩版或扩展
+const TAG_SHORT_ARRAY: u8 = 0x64;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum NbtTag {
@@ -340,11 +340,12 @@ fn serialize_tag_payload(writer: &mut impl Write, tag: &NbtTag) -> Result<()> {
     }
 }
 
-// 序列化根NBT（无名Compound）
+// 修复版本：使用 serialize_named_tag 写入完整的根标签（Type + Name + Payload）
 pub fn serialize_root_nbt(tag: &NbtTag) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     if let NbtTag::Compound(_) = tag {
-        serialize_tag_payload(&mut buf, tag)?;
+        // 根 NBT 必须是一个名为 "" (空字符串) 的 Compound
+        serialize_named_tag(&mut buf, "", tag)?;
     } else {
         bail!("Root NBT must be Compound");
     }
@@ -361,7 +362,7 @@ pub fn parse_root_nbt_with_header(data: &[u8]) -> Result<NbtTag> {
     let declared_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
     let remaining = data.len().saturating_sub(8);
 
-    tracing::debug!(
+    debug!(
         "parse_root_nbt_with_header: version={} declared_len={} remaining={}",
         version,
         declared_len,

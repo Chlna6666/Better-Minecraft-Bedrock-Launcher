@@ -7,6 +7,6 @@ pub async fn get_locale() -> String {
     match config.launcher.language.as_str() {
         "auto" => get_system_language(),
         "" => "en-US".to_string(),
-        other => other.to_string(),
+        other => other.replace('_', "-"),
     }
 }

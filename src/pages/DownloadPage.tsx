@@ -1,5 +1,4 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -9,8 +8,12 @@ import { useToast } from "../components/Toast";
 
 // Components
 import Select from "../components/Select";
-import InstallProgressBar from "./Download/InstallProgressBar.tsx";
+import InstallProgressBar from "./Download/InstallProgressBar";
 import UnifiedPageLayout from '../components/UnifiedPageLayout/UnifiedPageLayout';
+
+const CurseForgeBrowser = React.lazy(() =>
+    import('./Download/CurseForge/CurseForgeBrowser').then((m: any) => ({ default: m.CurseForgeBrowser }))
+);
 
 // Icons & Styles
 import { Download, Upload, Box, Layers, Package, Cpu } from 'lucide-react';
@@ -19,176 +22,127 @@ import './DownloadPage.css';
 // Assets
 import releaseIcon from "../assets/img/minecraft/Release.png";
 import previewIcon from "../assets/img/minecraft/Preview.png";
+import {useLocation} from "react-router-dom";
 
 // ============================================================================
-// 1. 版本行组件 (VersionRow) - 保持不变
+// 1. 版本行组件 (保持不变)
 // ============================================================================
-const itemVariants = {
-    hidden: { opacity: 0, y: 10 },
-    visible: { opacity: 1, y: 0 }
-};
-
-const VersionRow = React.memo(({
-                                   ver, activeDownloadId, isDownloading, onDownload,
-                                   onStatusChange, onComplete, onCancel, t
-                               }: any) => {
+const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownload, onStatusChange, onComplete, onCancel, t }: any) => {
     const isCurrentDownloading = activeDownloadId === ver.packageId;
     const isRelease = ver.type === 0;
     const isBeta = ver.type === 1;
-    const typeClass = isRelease ? 'badge-release' : isBeta ? 'badge-beta' : 'badge-preview';
+    const typeClass = isRelease ? 'badge-release' : 'badge-preview';
     const displayIcon = (isRelease || isBeta) ? releaseIcon : previewIcon;
-
-    const typeLabel = (() => {
-        switch (ver.type) {
-            case 0: return t('common.release');
-            case 1: return t('common.beta');
-            case 2: return t('common.preview');
-            default: return ver.typeStr;
-        }
-    })();
-
-    let disabledReason = "";
-    if (!ver.metaPresent) disabledReason = t('DownloadPage.no_metadata');
-    else if (ver.archivalStatus === 1 || ver.archivalStatus === 0) disabledReason = t('DownloadPage.archival_not_available');
-
+    const typeLabel = ver.type === 0 ? t('common.release') : ver.type === 1 ? t('common.beta') : t('common.preview');
     const isDisabled = isDownloading || !ver.metaPresent || (ver.archivalStatus === 1 || ver.archivalStatus === 0);
 
     return (
-        <motion.div variants={itemVariants} className="version-row">
+        <div className="version-row">
             <div className="col-icon">
                 <img src={displayIcon} alt="icon" className="version-icon-img" loading="lazy" />
             </div>
-
             <div className="col-main">
                 <div className="row-header">
                     <span className="row-version-number">{ver.version}</span>
                     <span className={`mini-badge ${typeClass}`}>{typeLabel}</span>
                 </div>
                 <div className="row-sub-info">
-                    {ver.isGDK ? (
-                        <span className="meta-tag tag-gdk">{t('DownloadPage.gdk_build')}</span>
-                    ) : (
-                        <span className="meta-tag tag-uwp">{t('DownloadPage.uwp_build')}</span>
-                    )}
-                    <div className="meta-tag" title={t('DownloadPage.architecture')}>
-                        <Cpu size={12} /> x64
-                    </div>
-                    {(ver.archivalStatus === 2) && (
-                        <span className="meta-tag" style={{ color: '#f59e0b', background: 'rgba(245, 158, 11, 0.1)' }}>
-                            {t('DownloadPage.may_unavailable')}
-                        </span>
-                    )}
+                    {ver.isGDK && <span className="meta-tag tag-gdk">{t('common.gdk')}</span>}
+                    <div className="meta-tag tag-cpu"><Cpu size={11} style={{ marginRight: 3 }}/> x64</div>
+                    {!ver.isGDK && <span className="meta-tag tag-uwp">{t('common.uwp')}</span>}
                 </div>
             </div>
-
             <div className="col-action">
                 {isCurrentDownloading ? (
-                    <InstallProgressBar
-                        version={ver.version}
-                        packageId={ver.packageId}
-                        versionType={ver.type}
-                        md5={ver.md5}
-                        isGDK={ver.isGDK}
-                        onStatusChange={onStatusChange}
-                        onCompleted={onComplete}
-                        onCancel={onCancel}
-                    >
-                        <button className="download-btn-sm" disabled style={{ width: 110, justifyContent: 'center' }}>
-                            {t('common.downloading')}
-                        </button>
+                    <InstallProgressBar version={ver.version} packageId={ver.packageId} versionType={ver.type} md5={ver.md5} isGDK={ver.isGDK} onStatusChange={onStatusChange} onCompleted={onComplete} onCancel={onCancel}>
+                        <button className="download-btn-sm" disabled style={{ width: 110, justifyContent: 'center' }}>{t('common.downloading')}</button>
                     </InstallProgressBar>
                 ) : (
-                    <button
-                        className="download-btn-sm"
-                        onClick={() => onDownload(ver)}
-                        disabled={isDisabled}
-                        title={isDisabled ? disabledReason : t('common.download')}
-                    >
-                        <Download size={15} />
+                    <button className="download-btn-sm" onClick={() => onDownload(ver)} disabled={isDisabled}>
+                        <Download size={16} strokeWidth={2.5} />
                         {t('common.download')}
                     </button>
                 )}
             </div>
-        </motion.div>
+        </div>
     );
 });
 
 // ============================================================================
-// 2. 主页面组件 (DownloadPage)
+// 主页面组件
 // ============================================================================
-const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-        opacity: 1,
-        transition: { staggerChildren: 0.03, delayChildren: 0.05 }
-    },
-    exit: { opacity: 0 }
-};
-
 const DownloadPage = () => {
     const { t } = useTranslation();
     const toast = useToast();
 
+    const location = useLocation(); // 获取路由状态
+
     // Data Hooks
-    const { versions: rawVersions, loading, error, reload } = useMinecraftVersions();
+    const { versions: rawVersions, loading: gameLoading, reload: reloadGame } = useMinecraftVersions();
 
     // UI States
-    const [activeTab, setActiveTab] = useState('game');
-    const [searchTerm, setSearchTerm] = useState("");
-    const [filterType, setFilterType] = useState('all');
-    const [currentPage, setCurrentPage] = useState(1);
-    const PAGE_SIZE = 12;
+    const [activeTab, setActiveTab] = useState(() => {
+        return (location.state as any)?.initialTab || 'game';
+    });
+    const [searchTerm, setSearchTerm] = useState(() => {
+        return (location.state as any)?.searchTerm || "";
+    });
 
-    // Download / Import States
+    // Game Tab States
+    const [filterType, setFilterType] = useState('release');
+    const [currentPage, setCurrentPage] = useState(1);
+    const PAGE_SIZE = 8;
+    const [gameRefreshNonce, setGameRefreshNonce] = useState(0);
+    const [gameRefreshing, setGameRefreshing] = useState(false);
+
+    // Resource Tab States
+    const [cfRefreshNonce, setCfRefreshNonce] = useState(0);
+    const [cfLoading, setCfLoading] = useState(false);
+
+    // Download States
     const [isDownloading, setIsDownloading] = useState(false);
     const [activeDownloadId, setActiveDownloadId] = useState<string | null>(null);
     const [isImporting, setIsImporting] = useState(false);
     const [sourcePath, setSourcePath] = useState<string | null>(null);
 
-    // --- 数据处理逻辑 ---
+    // Filter Logic for Game Tab
     const filteredVersions = useMemo(() => {
         if (!rawVersions) return [];
         return rawVersions.map((v: any) => ({
-            version: v[0],
-            packageId: v[1],
-            type: v[2],
-            typeStr: v[3],
-            buildType: v[4],
-            archivalStatus: v[5],
-            metaPresent: v[6],
-            md5: v[7],
-            isGDK: v[4] === "GDK"
+            version: v[0], packageId: v[1], type: v[2], typeStr: v[3], buildType: v[4],
+            archivalStatus: v[5], metaPresent: v[6], md5: v[7], isGDK: v[4] === "GDK"
         })).filter((item: any) => {
             if (filterType !== 'all') {
                 if (filterType === 'release' && item.type !== 0) return false;
                 if (filterType === 'beta' && item.type !== 1) return false;
                 if (filterType === 'preview' && item.type !== 2) return false;
             }
-            if (searchTerm) {
+            if (searchTerm && activeTab === 'game') {
                 const s = searchTerm.toLowerCase();
-                const vStr = String(item.version || "").toLowerCase();
-                const idStr = String(item.packageId || "").toLowerCase();
-                if (!vStr.includes(s) && !idStr.includes(s)) return false;
+                if (!String(item.version).toLowerCase().includes(s) && !String(item.packageId).toLowerCase().includes(s)) return false;
             }
             return true;
         });
-    }, [rawVersions, filterType, searchTerm]);
+    }, [rawVersions, filterType, searchTerm, activeTab]);
 
-    const totalPages = Math.ceil(filteredVersions.length / PAGE_SIZE);
-
-    useEffect(() => { setCurrentPage(1); }, [filterType, searchTerm, activeTab]);
-
+    const gameTotalPages = Math.ceil(filteredVersions.length / PAGE_SIZE);
     const paginatedVersions = useMemo(() => {
         const start = (currentPage - 1) * PAGE_SIZE;
         return filteredVersions.slice(start, start + PAGE_SIZE);
     }, [filteredVersions, currentPage]);
 
-    const handlePageChange = useCallback((newPage: number) => {
-        setCurrentPage(newPage);
-        // Layout组件会自动处理滚动回顶部，这里只需要更新页码
-    }, []);
+    useEffect(() => {
+        if (activeTab === 'game') setCurrentPage(1);
+        setSearchTerm("");
+    }, [activeTab]);
 
-    const handleDownload = useCallback((ver: any) => {
+    useEffect(() => { setCurrentPage(1); }, [filterType, searchTerm]);
+
+    useEffect(() => {
+        if (!gameLoading) setGameRefreshing(false);
+    }, [gameLoading]);
+
+    const handleGameDownload = useCallback((ver: any) => {
         if (isDownloading) return;
         if (!ver.metaPresent) return toast.error(t('DownloadPage.no_metadata'));
         setActiveDownloadId(ver.packageId);
@@ -205,13 +159,24 @@ const DownloadPage = () => {
         } catch (e) { }
     };
 
-    // --- 配置 UnifiedPageLayout Props ---
+    const handleRefresh = useCallback(() => {
+        if (activeTab === 'game') {
+            setGameRefreshNonce((v) => v + 1);
+            setGameRefreshing(true);
+            reloadGame();
+            return;
+        }
+        if (activeTab === 'resource') {
+            setCfRefreshNonce((v) => v + 1);
+        }
+    }, [activeTab, reloadGame]);
 
-    const tabs = [
-        { id: 'game', label: t('DownloadPage.tab_game'), icon: <Box size={16} /> },
-        { id: 'mods', label: t('DownloadPage.tab_mods'), icon: <Layers size={16} /> },
-        { id: 'resource', label: t('DownloadPage.tab_resource'), icon: <Package size={16} /> },
-    ];
+    // [优化] 使用 useMemo 缓存配置对象
+    const tabs = useMemo(() => [
+        { id: 'game', label: t('DownloadPage.tab_game'), icon: <Box size={18} /> },
+        { id: 'resource', label: t('DownloadPage.tab_resource'), icon: <Package size={18} /> },
+        { id: 'mods', label: t('DownloadPage.tab_mods'), icon: <Layers size={18} /> },
+    ], [t]);
 
     const filterOptions = useMemo(() => [
         { value: 'all', label: t('common.all_versions') },
@@ -220,133 +185,134 @@ const DownloadPage = () => {
         { value: 'preview', label: t('common.preview') },
     ], [t]);
 
-    const searchPlaceholder = useMemo(() => {
-        switch (activeTab) {
-            case 'game': return t('DownloadPage.search_game');
-            case 'mods': return t('DownloadPage.search_mods');
-            case 'resource': return t('DownloadPage.search_resource');
-            default: return t('DownloadPage.search_default');
+    // [布局关键] 顶部操作区配置
+    const getHeaderActions = () => {
+        if (activeTab === 'game') {
+            return (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <div style={{ width: 120 }}>
+                        <Select
+                            value={filterType}
+                            onChange={setFilterType}
+                            options={filterOptions}
+                            size="md"
+                            className="glass-select"
+                            dropdownMatchButton={true}
+                        />
+                    </div>
+                    <button className="upl-action-icon-btn" onClick={handleImport} title={t('DownloadPage.import_tooltip')}>
+                        <Upload size={18} />
+                    </button>
+                </div>
+            );
+        } else if (activeTab === 'resource') {
+            return (
+                <div style={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                    <div style={{
+                        width: 1,
+                        height: 24,
+                        background: 'var(--text-sub)',
+                        opacity: 0.2,
+                        marginRight: 16
+                    }}></div>
+                    <div id="cf-header-slot" style={{ display: 'flex', gap: 12, alignItems: 'center' }}></div>
+                </div>
+            );
         }
-    }, [activeTab, t]);
-
-    // 1. 搜索配置
-    const searchConfig = {
-        value: searchTerm,
-        onChange: (v: string) => setSearchTerm(v),
-        placeholder: searchPlaceholder
+        return null;
     };
 
-    // 2. 刷新配置
-    const refreshConfig = {
-        onRefresh: reload,
-        loading: loading,
-        title: t('DownloadPage.refresh_tooltip')
+    const getPaginationConfig = () => {
+        if (activeTab === 'game' && filteredVersions.length > 0) {
+            return { currentPage, totalPages: gameTotalPages, onPageChange: setCurrentPage, t };
+        }
+        return undefined;
     };
-
-    // 3. 额外的 Header 动作 (筛选 + 导入)
-    const headerActions = (
-        <>
-            <div style={{ width: 130 }}>
-                <Select
-                    value={filterType} onChange={setFilterType} options={filterOptions}
-                    size="md" className="glass-select" dropdownMatchButton={true}
-                />
-            </div>
-            <button className="upl-action-icon-btn" onClick={handleImport} title={t('DownloadPage.import_tooltip')}>
-                <Upload size={18} />
-            </button>
-        </>
-    );
-
-    // 4. 分页配置
-    const paginationConfig = (activeTab === 'game' && filteredVersions.length > 0) ? {
-        currentPage,
-        totalPages,
-        onPageChange: handlePageChange,
-        t
-    } : undefined;
 
     return (
         <>
-            {/* 导入进度条 (独立于布局) */}
             {isImporting && activeDownloadId === 'import' && (
-                <InstallProgressBar
-                    version="Local Import" packageId={null} versionType={-1} isImport={true}
-                    sourcePath={sourcePath} onStatusChange={setIsDownloading}
-                    onCompleted={handleComplete} onCancel={handleComplete}
-                >
-                    <></>
-                </InstallProgressBar>
+                <InstallProgressBar version={t('DownloadPage.local_import')} packageId={null} versionType={-1} isImport={true} sourcePath={sourcePath} onStatusChange={setIsDownloading} onCompleted={handleComplete} onCancel={handleComplete}><></></InstallProgressBar>
             )}
 
             <UnifiedPageLayout
                 activeTab={activeTab}
                 onTabChange={setActiveTab}
                 tabs={tabs}
-                // 传入新配置
-                searchConfig={searchConfig}
-                refreshConfig={refreshConfig}
-                enableScrollTop={true} // 启用回到顶部
-                headerActions={headerActions}
-                useInnerContainer={false} // 我们自己控制列表容器
-                pagination={paginationConfig}
+                searchConfig={{
+                    value: searchTerm,
+                    onChange: setSearchTerm,
+                    placeholder: activeTab === 'resource' ? t('DownloadPage.search_curseforge') : t('DownloadPage.search_game')
+                }}
+                refreshConfig={{
+                    onRefresh: handleRefresh,
+                    loading: activeTab === 'game' ? gameLoading : activeTab === 'resource' ? cfLoading : false,
+                    title: t('DownloadPage.refresh_tooltip')
+                }}
+                enableScrollTop={true}
+                headerActions={getHeaderActions()}
+                useInnerContainer={false}
+                pagination={getPaginationConfig()}
+                hideScrollbar={activeTab === 'resource'}
             >
-                <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-                    <AnimatePresence mode="wait">
-                        {activeTab === 'game' ? (
-                            loading && (!rawVersions || rawVersions.length === 0) ? (
-                                // Loading Skeleton
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+                    {/* Game Tab */}
+                    {activeTab === 'game' && (
+                        <div key={`game-tab-${gameRefreshNonce}`} style={{ flex: 1, overflowY: 'auto', paddingBottom: 20 }} className="custom-scrollbar bm-anim-page-in">
+                            {gameLoading && (gameRefreshing || !rawVersions || rawVersions.length === 0) ? (
                                 <div className="version-list-container" style={{ padding: 20 }}>
-                                    {[...Array(8)].map((_, i) => (
-                                        <div key={i} className="skeleton-row" style={{
-                                            display: 'flex', alignItems: 'center', height: 76,
-                                            borderBottom: '1px solid rgba(0,0,0,0.05)', padding: '0 24px'
-                                        }}>
-                                            <div style={{ width: 42, height: 42, background: 'rgba(0,0,0,0.05)', borderRadius: 10, marginRight: 24 }} />
-                                            <div style={{ flex: 1 }}>
-                                                <div style={{ width: 120, height: 20, background: 'rgba(0,0,0,0.05)', borderRadius: 4, marginBottom: 8 }} />
-                                                <div style={{ width: 80, height: 14, background: 'rgba(0,0,0,0.05)', borderRadius: 4 }} />
+                                    {[...Array(PAGE_SIZE)].map((_, i) => (
+                                        <div key={i} className="version-row skeleton-row">
+                                            <div className="col-icon">
+                                                <div className="skeleton sk-icon" />
+                                            </div>
+                                            <div className="col-main">
+                                                <div className="row-header">
+                                                    <div className="skeleton sk-ver" />
+                                                    <div className="skeleton sk-badge" />
+                                                </div>
+                                                <div className="row-sub-info">
+                                                    <div className="skeleton sk-tag sk-tag-lg" />
+                                                    <div className="skeleton sk-tag" />
+                                                    <div className="skeleton sk-tag" />
+                                                </div>
+                                            </div>
+                                            <div className="col-action">
+                                                <div className="skeleton sk-btn" />
                                             </div>
                                         </div>
                                     ))}
                                 </div>
                             ) : (
-                                // Data List
-                                <motion.div
-                                    key={currentPage}
-                                    variants={containerVariants}
-                                    initial="hidden" animate="visible" exit="exit"
-                                    className="version-list-container"
-                                    style={{ paddingBottom: 20 }}
-                                >
+                                <div className="version-list-container">
                                     {paginatedVersions.map((ver: any, idx: number) => (
-                                        <VersionRow
-                                            key={`${ver.version}-${ver.packageId}-${idx}`}
-                                            ver={ver}
-                                            activeDownloadId={activeDownloadId}
-                                            isDownloading={isDownloading}
-                                            onDownload={handleDownload}
-                                            onStatusChange={setIsDownloading}
-                                            onComplete={handleComplete}
-                                            onCancel={handleComplete}
-                                            t={t}
-                                        />
+                                        <VersionRow key={`${ver.version}-${idx}`} ver={ver} activeDownloadId={activeDownloadId} isDownloading={isDownloading} onDownload={handleGameDownload} onStatusChange={setIsDownloading} onComplete={handleComplete} onCancel={handleComplete} t={t} />
                                     ))}
-                                    {filteredVersions.length === 0 && !loading && (
-                                        <div style={{ padding: 60, textAlign: 'center', opacity: 0.6 }}>
-                                            {error ? t('DownloadPage.load_error', { error }) : t('DownloadPage.no_data')}
-                                        </div>
-                                    )}
-                                </motion.div>
-                            )
-                        ) : (
-                            // Other Tabs
-                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--upl-text-sub)', paddingTop: 100 }}>
-                                <Package size={64} style={{ opacity: 0.3, marginBottom: 16 }} />
-                                <p>{t('DownloadPage.developing')}</p>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Resource Tab */}
+                    {activeTab === 'resource' && (
+                        <div key="resource-tab" style={{ flex: 1, height: '100%' }} className="bm-anim-page-in">
+                            <React.Suspense fallback={<div style={{ height: '100%' }} />}>
+                                <CurseForgeBrowser
+                                    searchQuery={searchTerm}
+                                    refreshNonce={cfRefreshNonce}
+                                    onLoadingChange={setCfLoading}
+                                />
+                            </React.Suspense>
+                        </div>
+                    )}
+
+                    {/* Mods Tab */}
+                    {activeTab === 'mods' && (
+                        <div key="mods-tab" style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-sub)' }} className="bm-anim-page-in">
+                            <Package size={64} style={{ opacity: 0.2, marginBottom: 16 }} />
+                            <p style={{ opacity: 0.6 }}>{t('DownloadPage.developing')}</p>
+                        </div>
+                    )}
                 </div>
             </UnifiedPageLayout>
         </>

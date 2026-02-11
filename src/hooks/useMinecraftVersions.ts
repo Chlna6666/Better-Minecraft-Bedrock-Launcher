@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../utils/config";
 import { useToast } from "../components/Toast.tsx";
+import { useTranslation } from "react-i18next";
 
 const CACHE_KEY = "appx_api_cache";
 const CACHE_TTL = 1000 * 60 * 60 * 12; // 12小时
@@ -38,6 +39,7 @@ const loadCacheFromStorage = () => {
 };
 
 export function useMinecraftVersions() {
+    const { t } = useTranslation();
     // 1. 懒初始化 State：直接从缓存取值，避免 Mount 后的第一次 Re-render
     const [versions, setVersions] = useState<any[]>(() => {
         const cache = loadCacheFromStorage();
@@ -85,7 +87,7 @@ export function useMinecraftVersions() {
 
         try {
             const config = await getConfig().catch(() => ({}));
-            const api = config?.launcher?.custom_appx_api || "https://data.mcappx.com/v2/bedrock.json";
+            const api = config?.launcher?.custom_appx_api || "https://api.chlna6666.com/mcappx";
             const defaultUA = config?.launcher?.user_agent || "BMCBL";
 
             let allowedHosts: string[] = [];
@@ -167,7 +169,7 @@ export function useMinecraftVersions() {
             saveCache(backendRes.body, parsed, apiCreationTime);
 
             if (forceRefresh) {
-                toast?.success("列表已刷新");
+                toast?.success(t("MinecraftVersions.list_refreshed"));
             }
 
         } catch (e: any) {
@@ -176,17 +178,17 @@ export function useMinecraftVersions() {
             if (versions.length === 0 && localCache?.parsed) {
                 setVersions(localCache.parsed);
                 cachedVersions.current = localCache.parsed;
-                toast?.info("网络请求失败，已加载本地缓存");
+                toast?.info(t("MinecraftVersions.fallback_cache"));
             } else if (forceRefresh) {
                 // 只有手动刷新失败才弹窗报错，避免自动刷新失败打扰用户
-                toast?.error(`刷新失败: ${e.message}`);
+                toast?.error(t("MinecraftVersions.refresh_failed", { message: e.message }));
                 setError(e.message);
             }
         } finally {
             setLoading(false);
             fetchLockRef.current = false;
         }
-    }, [saveCache, toast, versions.length]); // 依赖项
+    }, [saveCache, toast, versions.length, t]); // 依赖项
 
     // 5. Mount 时尝试获取（如果缓存为空或过期）
     useEffect(() => {

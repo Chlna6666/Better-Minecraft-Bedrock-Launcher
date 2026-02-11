@@ -19,7 +19,7 @@ pub fn get_system_language() -> String {
         let mut buf = [0u16; 16];
         let len = GetLocaleInfoW(lang_id as u32, LOCALE_SNAME, Some(&mut buf));
         if len > 0 {
-            String::from_utf16_lossy(&buf[..(len as usize - 1)])
+            String::from_utf16_lossy(&buf[..(len as usize - 1)]).replace('_', "-")
         } else {
             "en-US".to_string()
         }

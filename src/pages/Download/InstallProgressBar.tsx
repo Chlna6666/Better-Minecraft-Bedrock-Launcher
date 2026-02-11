@@ -1,3 +1,4 @@
+/* src/pages/Download/InstallProgressBar.tsx */
 import React, {useCallback, useEffect, useReducer, useRef, useState} from "react";
 import ReactDOM from "react-dom";
 import {invoke} from "@tauri-apps/api/core";
@@ -35,6 +36,18 @@ interface InstallProgressBarProps {
     children: React.ReactNode;
     isGDK?: boolean;
 }
+
+type CdnProbeResult = {
+    base: string;
+    url: string;
+    latency_ms: number | null;
+    error: string | null;
+};
+
+type CdnProbeResponse = {
+    recommended_base: string | null;
+    results: CdnProbeResult[];
+};
 
 interface ProgressData {
     processed: number;
@@ -140,74 +153,147 @@ function reducer(state: State, action: Action): State {
 }
 
 // ================================================================================================
-// 4. Hook: 动画逻辑
+// 4. [新] 独立动画组件：SmoothProgressBar
+//    核心优化：完全脱离 React Render 周期，使用 rAF 直接操作 DOM 样式。
 // ================================================================================================
 
-const useAnimatedPercent = (targetPercent: number) => {
-    const [displayPercent, setDisplayPercent] = useState(0);
+const SmoothProgressBar = React.memo(({ targetPercent }: { targetPercent: number }) => {
+    const barRef = useRef<HTMLDivElement>(null);
+    const glowRef = useRef<HTMLDivElement>(null);
+    const textRef = useRef<HTMLSpanElement>(null);
+    const currentPercentRef = useRef(0);
     const rafRef = useRef<number | null>(null);
-    const currentRef = useRef<number>(0);
-
-    const cancel = () => {
-        if (rafRef.current !== null) {
-            cancelAnimationFrame(rafRef.current);
-            rafRef.current = null;
-        }
-    };
 
     useEffect(() => {
-        if (targetPercent === 0 || isNaN(targetPercent)) {
-            cancel();
-            currentRef.current = 0;
-            setDisplayPercent(0);
-            return;
-        }
-        if (targetPercent >= 100) {
-            cancel();
-            currentRef.current = 100;
-            setDisplayPercent(100);
-            return;
-        }
-        if (targetPercent < currentRef.current - 1e-6) {
-            cancel();
-            currentRef.current = targetPercent;
-            setDisplayPercent(targetPercent);
-            return;
-        }
-        const easingFactor = 0.28;
-        const step = () => {
-            const cur = currentRef.current;
-            const diff = targetPercent - cur;
+        // 当目标改变时，启动动画循环
+        const animate = () => {
+            if (!barRef.current) return;
+
+            const target = targetPercent;
+            const current = currentPercentRef.current;
+            const diff = target - current;
+
+            // 缓动逻辑：每次移动差距的 20%
+            let next = current + diff * 0.2;
+
+            // 如果非常接近，直接到位并停止
             if (Math.abs(diff) < 0.1) {
-                currentRef.current = targetPercent;
-                setDisplayPercent(targetPercent);
-                rafRef.current = null;
-                return;
+                next = target;
+                rafRef.current = null; // 标记停止
             }
-            const next = cur + diff * easingFactor;
-            currentRef.current = next;
-            setDisplayPercent(next);
-            rafRef.current = requestAnimationFrame(step);
+
+            currentPercentRef.current = next;
+
+            // 1. 更新进度条宽度 (Layout/Paint 优化: 只修改 transform 或 width，width 触发 layout 但在这里是必要的)
+            barRef.current.style.width = `${next}%`;
+
+            // 2. 更新辉光
+            if (glowRef.current) {
+                glowRef.current.style.width = `${next}%`;
+                glowRef.current.style.opacity = next > 0 ? '1' : '0';
+            }
+
+            // 3. 更新大号数字 (Text Content)，完全绕过 React Diff
+            if (textRef.current) {
+                textRef.current.textContent = `${next.toFixed(1)}%`;
+            }
+
+            if (rafRef.current !== null) {
+                rafRef.current = requestAnimationFrame(animate);
+            }
         };
-        rafRef.current = requestAnimationFrame(step);
-        return () => cancel();
+
+        // 如果没有正在运行的动画，启动它
+        if (rafRef.current === null) {
+            rafRef.current = requestAnimationFrame(animate);
+        }
+
+        return () => {
+            if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current);
+                rafRef.current = null;
+            }
+        };
     }, [targetPercent]);
 
-    return displayPercent;
-};
+    return (
+        <>
+            {/* 将大号数字移到这里，由本组件直接管理 DOM */}
+            <div className="bm-install-header left-align" style={{marginBottom: 0}}>
+                {/* 占位，保持布局结构 */}
+                <div style={{display:'none'}}></div>
+                <span ref={textRef} className="bm-percent-large tabular-nums" style={{ marginLeft: 'auto' }}>
+                    0.0%
+                </span>
+            </div>
+
+            <div className="bm-progress-track-wrapper">
+                <div className="bm-progress-bar-track">
+                    <div ref={barRef} className="bm-progress-bar-fill" style={{ width: '0%' }} />
+                    <div ref={glowRef} className="bm-progress-bar-glow" style={{ width: '0%', opacity: 0 }} />
+                </div>
+            </div>
+        </>
+    );
+});
 
 // ================================================================================================
 // 5. Views
 // ================================================================================================
 
 const ConfirmView: React.FC<{
+    downloadVersion: string;
+    versionType: number;
     fileName: string;
     isImport: boolean;
+    isGdk: boolean;
+    cdnLoading: boolean;
+    cdnError: string | null;
+    cdnResults: CdnProbeResult[];
+    selectedCdnBase: string;
+    onSelectCdnBase: (base: string) => void;
+    onRefreshCdn: () => void;
     onFileNameChange: (name: string) => void;
     onConfirm: () => void;
     onCancel: () => void;
-}> = React.memo(({ fileName, isImport, onFileNameChange, onConfirm, onCancel }) => {
+}> = React.memo(({
+    downloadVersion,
+    versionType,
+    fileName,
+    isImport,
+    isGdk,
+    cdnLoading,
+    cdnError,
+    cdnResults,
+    selectedCdnBase,
+    onSelectCdnBase,
+    onRefreshCdn,
+    onFileNameChange,
+    onConfirm,
+    onCancel,
+}) => {
     const { t } = useTranslation();
+
+    const getTypeLabel = () => {
+        if (versionType === 0) return t('common.release');
+        if (versionType === 1) return t('common.beta');
+        if (versionType === 2) return t('common.preview');
+        return '';
+    };
+
+    const getLatencyLevel = (latencyMs: number | null): 'fast' | 'ok' | 'slow' | 'bad' | 'fail' => {
+        if (latencyMs == null) return 'fail';
+        if (latencyMs <= 50) return 'fast';
+        if (latencyMs <= 150) return 'ok';
+        if (latencyMs <= 300) return 'slow';
+        return 'bad';
+    };
+
+    const renderLatencyText = (latencyMs: number | null) => {
+        if (latencyMs == null) return t("InstallProgressBar.gdk_cdn_failed");
+        return `${latencyMs} ms`;
+    };
+
     return (
         <>
             <div className="bm-install-header">
@@ -218,9 +304,18 @@ const ConfirmView: React.FC<{
                         <line x1="12" y1="15" x2="12" y2="3" />
                     </svg>
                 </div>
-                <div>
-                    <h2 className="bm-install-title">{isImport ? t("InstallProgressBar.import_title") : t("InstallProgressBar.confirm_title")}</h2>
-                    <p className="bm-install-subtitle">{isImport ? t("InstallProgressBar.import_sub") : t("InstallProgressBar.confirm_sub")}</p>
+                <div className="bm-install-header-main">
+                    <div className="bm-install-header-text">
+                        <h2 className="bm-install-title">{isImport ? t("InstallProgressBar.import_title") : t("InstallProgressBar.confirm_title")}</h2>
+                        <p className="bm-install-subtitle">{isImport ? t("InstallProgressBar.import_sub") : t("InstallProgressBar.confirm_sub")}</p>
+                    </div>
+                    {!isImport && (
+                        <div className="bm-meta-row">
+                            <span className="bm-chip version tabular-nums">{downloadVersion}</span>
+                            {getTypeLabel() && <span className="bm-chip type">{getTypeLabel()}</span>}
+                            <span className={`bm-chip platform ${isGdk ? 'gdk' : 'uwp'}`}>{isGdk ? 'GDK' : 'UWP'}</span>
+                        </div>
+                    )}
                 </div>
             </div>
             <div className="bm-install-body">
@@ -235,6 +330,66 @@ const ConfirmView: React.FC<{
                         autoFocus
                     />
                 </div>
+
+                {isGdk && !isImport && (
+                    <div className="bm-input-group bm-cdn-group">
+                        <div className="bm-cdn-header">
+                            <label className="bm-input-label" style={{ marginBottom: 0 }}>
+                                {t("InstallProgressBar.gdk_cdn_label")}
+                            </label>
+                            <button
+                                type="button"
+                                className="bm-btn secondary bm-cdn-retest"
+                                onClick={onRefreshCdn}
+                                disabled={cdnLoading}
+                            >
+                                {cdnLoading ? t("InstallProgressBar.gdk_cdn_testing") : t("InstallProgressBar.gdk_cdn_retest")}
+                            </button>
+                        </div>
+
+                        <div className="bm-cdn-list" role="radiogroup" aria-label={t("InstallProgressBar.gdk_cdn_label")}>
+                            {(cdnResults.length ? cdnResults : [{ base: selectedCdnBase || t("InstallProgressBar.gdk_cdn_unknown"), url: "", latency_ms: null, error: null }]).map((r) => {
+                                const isSelected = r.base === selectedCdnBase;
+                                const level = getLatencyLevel(r.latency_ms);
+                                return (
+                                    <button
+                                        key={r.base}
+                                        type="button"
+                                        className={`bm-cdn-item ${isSelected ? 'selected' : ''}`}
+                                        onClick={() => onSelectCdnBase(r.base)}
+                                        disabled={cdnLoading || !r.base}
+                                        role="radio"
+                                        aria-checked={isSelected}
+                                    >
+                                        <div className="bm-cdn-left">
+                                            <div className="bm-cdn-base tabular-nums" title={r.base}>
+                                                {r.base}
+                                            </div>
+                                            {r.error && (
+                                                <div className="bm-cdn-error" title={r.error}>
+                                                    {r.error}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className={`bm-cdn-badge ${level}`}>
+                                            {renderLatencyText(r.latency_ms)}
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        {cdnError && (
+                            <div className="bm-cdn-error-global">
+                                {cdnError}
+                            </div>
+                        )}
+
+                        <div className="bm-cdn-hint">
+                            {t("InstallProgressBar.gdk_cdn_hint")}
+                        </div>
+                    </div>
+                )}
             </div>
             <div className="bm-install-footer">
                 <button className="bm-btn secondary" onClick={onCancel}>{t("InstallProgressBar.cancel")}</button>
@@ -248,9 +403,8 @@ const ConfirmView: React.FC<{
 
 const ProgressView: React.FC<{
     progress: ProgressData;
-    displayPercent: number;
     onCancel: () => void;
-}> = React.memo(({ progress, displayPercent, onCancel }) => {
+}> = React.memo(({ progress, onCancel }) => {
     const { t } = useTranslation();
     let title = t("InstallProgressBar.stage_downloading");
 
@@ -272,7 +426,7 @@ const ProgressView: React.FC<{
 
     return (
         <>
-            <div className="bm-install-header left-align">
+            <div className="bm-install-header left-align" style={{marginBottom: 0}}>
                 <div>
                     <h2 className="bm-install-title">{title}</h2>
                     {detail && (
@@ -281,15 +435,13 @@ const ProgressView: React.FC<{
                         </p>
                     )}
                 </div>
-                <span className="bm-percent-large tabular-nums">{displayPercent.toFixed(1)}%</span>
+                {/* 这里的数字由 SmoothProgressBar 接管，此处占位为空 */}
             </div>
+
             <div className="bm-install-body">
-                <div className="bm-progress-track-wrapper">
-                    <div className="bm-progress-bar-track">
-                        <div className="bm-progress-bar-fill" style={{ width: `${displayPercent}%` }} />
-                        <div className="bm-progress-bar-glow" style={{ width: `${displayPercent}%`, opacity: displayPercent > 0 ? 1 : 0 }} />
-                    </div>
-                </div>
+                {/* 独立的动画组件 */}
+                <SmoothProgressBar targetPercent={progress.percent} />
+
                 <div className="bm-stats-grid">
                     <div className="bm-stat-item">
                         <span className="bm-stat-label">{processedLabel}</span>
@@ -357,24 +509,22 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     const [isClosing, setIsClosing] = useState(false);
     const dialogRef = useRef<HTMLDialogElement>(null);
     const taskIdRef = useRef<string | null>(null);
-
-    // 关键：防止重复进入解压阶段的 Flag
     const isExtractingRef = useRef(false);
-
     const unlistenRef = useRef<Promise<UnlistenFn> | null>(null);
-    const animatedPercent = useAnimatedPercent(state.progress.percent);
 
-    // --------------------------------------------------------------------------------------------
-    // 修复 1: 初始化文件名 (移除后缀时处理得更干净)
-    // --------------------------------------------------------------------------------------------
+    const [gdkCdnLoading, setGdkCdnLoading] = useState(false);
+    const [gdkCdnError, setGdkCdnError] = useState<string | null>(null);
+    const [gdkCdnResults, setGdkCdnResults] = useState<CdnProbeResult[]>([]);
+    const [gdkSelectedCdnBase, setGdkSelectedCdnBase] = useState<string>("");
+    const gdkSelectedCdnBaseRef = useRef<string>("");
+
+    // 修复文件名
     useEffect(() => {
         const initFileName = async () => {
             let name = version || "";
             if (isImport && sourcePath) {
                 try {
                     const fullBase = await basename(sourcePath);
-                    // 使用正则替换掉最后一个点及其后面的内容，避免留下末尾的 "."
-                    // 例如: "26.0.26.msixvc" -> "26.0.26"
                     name = fullBase.replace(/\.[^/.]+$/, "");
                 } catch { /* fallback */ }
             }
@@ -382,6 +532,74 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         };
         initFileName();
     }, [version, isImport, sourcePath]);
+
+    const gdkCdnBases = useRef<string[]>([
+        "http://assets1.xboxlive.cn",
+        "http://assets2.xboxlive.cn",
+        "http://assets1.xboxlive.com",
+        "http://assets2.xboxlive.com",
+    ]);
+
+    const getBaseFromUrl = (url: string): string => {
+        try {
+            const u = new URL(url);
+            return `${u.protocol}//${u.host}`;
+        } catch {
+            return "";
+        }
+    };
+
+    const applyCdnBase = (originalUrl: string, base: string): string => {
+        const orig = new URL(originalUrl);
+        const b = new URL(base);
+        b.pathname = orig.pathname;
+        b.search = orig.search;
+        b.hash = "";
+        return b.toString();
+    };
+
+    const refreshGdkCdn = useCallback(async () => {
+        if (!isGDK || isImport || !packageId) return;
+        setGdkCdnLoading(true);
+        setGdkCdnError(null);
+        try {
+            const resp = await invoke<CdnProbeResponse>("probe_gdk_asset_cdns", {
+                originalUrl: packageId,
+                bases: gdkCdnBases.current,
+            });
+            const results = resp?.results || [];
+            setGdkCdnResults(results);
+
+            const recommended = resp?.recommended_base || "";
+            const fallback = getBaseFromUrl(packageId);
+            const picked = recommended || (results.find(r => r.latency_ms != null)?.base) || fallback || gdkCdnBases.current[0];
+            setGdkSelectedCdnBase(picked);
+            gdkSelectedCdnBaseRef.current = picked;
+        } catch (e: any) {
+            const fallback = getBaseFromUrl(packageId) || gdkCdnBases.current[0];
+            setGdkSelectedCdnBase(fallback);
+            gdkSelectedCdnBaseRef.current = fallback;
+            setGdkCdnError(e?.message ? String(e.message) : String(e));
+        } finally {
+            setGdkCdnLoading(false);
+        }
+    }, [isGDK, isImport, packageId]);
+
+    useEffect(() => {
+        gdkSelectedCdnBaseRef.current = gdkSelectedCdnBase;
+    }, [gdkSelectedCdnBase]);
+
+    useEffect(() => {
+        if (state.status !== 'confirming') return;
+        if (!isGDK || isImport || !packageId) return;
+
+        const base = getBaseFromUrl(packageId) || gdkCdnBases.current[0];
+        setGdkSelectedCdnBase(base);
+        gdkSelectedCdnBaseRef.current = base;
+        setGdkCdnResults([]);
+        setGdkCdnError(null);
+        refreshGdkCdn();
+    }, [state.status, isGDK, isImport, packageId, refreshGdkCdn]);
 
     // Dialog 控制
     useEffect(() => {
@@ -409,11 +627,8 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         };
     }, []);
 
-    // --------------------------------------------------------------------------------------------
-    // [逻辑核心] 处理任务更新和完成逻辑
-    // --------------------------------------------------------------------------------------------
+    // 任务更新处理
     const handleTaskUpdate = (snap: TaskSnapshot) => {
-        // 如果我们已经在解压了，就忽略之前下载任务可能的重复完成信号
         if (snap.status === "completed" && isExtractingRef.current && snap.stage !== "extracting") {
             return;
         }
@@ -421,19 +636,13 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         dispatch({type: 'UPDATE_PROGRESS', payload: mapSnapshotToProgress(snap)});
 
         if (snap.status === "completed") {
-            // 如果是下载任务完成（非导入模式，且还没开始解压）
             if (!isImport && !isExtractingRef.current) {
-                // 关键检查：必须要有 message (路径) 才能解压
                 if (snap.message) {
-                    console.log("[InstallProgressBar] 下载完成，获取到文件路径，准备切换:", snap.message);
                     handleSwitchToExtract(snap.message);
                 } else {
-                    console.error("[InstallProgressBar] 错误: 下载显示完成，但没有返回文件路径(message为空)。请检查 Rust 后端 finish_task 调用。");
-                    dispatch({ type: 'SET_ERROR', payload: "Download finished but no file path returned. (Backend Error)" });
+                    dispatch({ type: 'SET_ERROR', payload: "Download finished but no file path returned." });
                 }
             } else {
-                // 解压/解包任务完成，或导入任务完成
-                console.log("[InstallProgressBar] 流程彻底完成");
                 handleClose();
             }
         } else if (snap.status === "error") {
@@ -443,95 +652,49 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         }
     };
 
-    // --------------------------------------------------------------------------------------------
     // 启动监听
-    // --------------------------------------------------------------------------------------------
     const startListening = async (taskId: string) => {
         const eventName = `task-update::${taskId}`;
-        console.log(`[InstallProgressBar] 准备监听: ${eventName}`);
-
         if (unlistenRef.current) {
             const oldUnlistenPromise = unlistenRef.current;
             unlistenRef.current = null;
             try { (await oldUnlistenPromise)(); } catch(e) {}
         }
-
-        // 1. 设置事件监听
         const unlistenPromise = listen<TaskSnapshot>(eventName, (event) => {
             handleTaskUpdate(event.payload);
         });
         unlistenRef.current = unlistenPromise;
 
-        // 2. [修复 Gap] 拉取一次初始状态，处理“监听前已完成”的情况
         try {
             const initialSnap = await invoke<TaskSnapshot>("get_task_status", { taskId });
-            if (initialSnap) {
-                console.log("[InstallProgressBar] 初始状态:", initialSnap.status, initialSnap.message);
-                handleTaskUpdate(initialSnap);
-            }
+            if (initialSnap) handleTaskUpdate(initialSnap);
         } catch (e) { /* ignore */ }
     };
 
-    // --------------------------------------------------------------------------------------------
-    // 切换到解压/解包任务
-    // --------------------------------------------------------------------------------------------
+    // 切换到解压
     const handleSwitchToExtract = async (filePath: string) => {
         isExtractingRef.current = true;
-
-        // 停止监听旧任务
         if (unlistenRef.current) {
             const oldUnlisten = unlistenRef.current;
             unlistenRef.current = null;
             (await oldUnlisten)();
         }
 
-        // 暂时禁用动画以重置进度条
-        const dialog = dialogRef.current;
-        if (dialog) dialog.classList.add('no-transition');
-
         dispatch({
             type: 'UPDATE_PROGRESS',
-            payload: {
-                stage: 'extracting',
-                percent: 0,
-                speed: '--',
-                eta: '--',
-                message: isGDK ? 'Initializing GDK Unpack...' : 'Preparing extraction...'
-            }
-        });
-
-        // 下一帧恢复动画
-        requestAnimationFrame(() => {
-            setTimeout(() => {
-                if (dialog) dialog.classList.remove('no-transition');
-            }, 16);
+            payload: { stage: 'extracting', percent: 0, speed: '--', eta: '--', message: isGDK ? 'GDK Unpack...' : 'Extraction...' }
         });
 
         try {
             let extractTaskId: string;
-
             if (isGDK) {
-                // --- GDK 分支 ---
-                // 注意：这里需要移除后缀来作为文件夹名
                 const folderName = state.fileName
                     .replace(/\.msixvc$/i, "")
                     .replace(/\.appx$/i, "")
                     .replace(/\.zip$/i, "");
-
-                console.log("[InstallProgressBar] GDK 分支: 调用 unpack_gdk", { inputPath: filePath, folderName });
-                extractTaskId = await invoke("unpack_gdk", {
-                    inputPath: filePath,
-                    folderName: folderName,
-                });
+                extractTaskId = await invoke("unpack_gdk", { inputPath: filePath, folderName: folderName });
             } else {
-                // --- UWP 分支 ---
-                console.log("[InstallProgressBar] UWP 分支: 调用 extract_zip_appx");
-                extractTaskId = await invoke("extract_zip_appx", {
-                    fileName: state.fileName,
-                    destination: filePath,
-                    forceReplace: true,
-                    deleteSignature: true,
-                });
+                extractTaskId = await invoke("extract_zip_appx", { fileName: state.fileName, destination: filePath, forceReplace: true, deleteSignature: true });
             }
 
             if (extractTaskId) {
@@ -541,83 +704,47 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                 throw new Error("Failed to start extraction task");
             }
         } catch (e: any) {
-            console.error("解压启动失败:", e);
             dispatch({ type: 'SET_ERROR', payload: e.message || String(e) });
             isExtractingRef.current = false;
-            if (dialog) dialog.classList.remove('no-transition');
         }
     };
 
-    // --------------------------------------------------------------------------------------------
-    // 修复 2: 初始启动逻辑 (修复双重扩展名和双点问题)
-    // --------------------------------------------------------------------------------------------
+    // 初始启动逻辑
     useEffect(() => {
         if (state.status === 'starting') {
             const run = async () => {
                 try {
                     isExtractingRef.current = false;
-
-                    // 1. 获取用户输入的文件名并清理
                     let safeName = state.fileName.trim();
-
-                    // 关键修复：如果用户输入的文件名末尾有点，移除它，防止 "26.0.26..appx"
-                    while (safeName.endsWith('.')) {
-                        safeName = safeName.slice(0, -1);
-                    }
-
+                    while (safeName.endsWith('.')) safeName = safeName.slice(0, -1);
                     safeName = safeName.replace(/[\\/:*?"<>|]+/g, "_") || version;
 
-                    // 2. 动态决定目标后缀名
                     let targetExt = isGDK ? '.msixvc' : '.appx';
-
-                    // 如果是导入模式，根据源文件后缀动态调整
                     if (isImport && sourcePath) {
                         const lowerSource = sourcePath.toLowerCase();
                         if (lowerSource.endsWith(".msixvc")) targetExt = ".msixvc";
                         else if (lowerSource.endsWith(".zip")) targetExt = ".zip";
-                        else targetExt = ".appx"; // 默认回退
+                        else targetExt = ".appx";
                     }
-
-                    // 3. 追加后缀（只有当文件名不以该后缀结尾时）
-                    if (!safeName.toLowerCase().endsWith(targetExt)) {
-                        safeName += targetExt;
-                    }
+                    if (!safeName.toLowerCase().endsWith(targetExt)) safeName += targetExt;
 
                     let taskId: string;
-
                     if (isImport && sourcePath) {
-                        // 导入逻辑
                         const isSourceGdk = sourcePath.toLowerCase().endsWith(".msixvc");
                         if (isSourceGdk) {
                             isExtractingRef.current = true;
-                            // 对于 GDK 解包，文件夹名不应包含后缀
                             const folderName = safeName.replace(/\.msixvc$/i, "");
-                            console.log("[InstallProgressBar] 导入 GDK: 直接解包", sourcePath, folderName);
-                            taskId = await invoke("unpack_gdk", {
-                                inputPath: sourcePath,
-                                folderName: folderName
-                            });
+                            taskId = await invoke("unpack_gdk", { inputPath: sourcePath, folderName: folderName });
                         } else {
-                            console.log("[InstallProgressBar] 导入 UWP/Zip");
                             taskId = await invoke("import_appx", { sourcePath, fileName: safeName });
                         }
                     } else if (isGDK) {
-                        // 下载 GDK
-                        console.log("[InstallProgressBar] 下载 GDK");
-                        taskId = await invoke("download_resource", {
-                            url: packageId,
-                            fileName: safeName,
-                            md5
-                        });
+                        const base = gdkSelectedCdnBaseRef.current || getBaseFromUrl(packageId || "") || gdkCdnBases.current[0];
+                        const url = applyCdnBase(String(packageId), base);
+                        taskId = await invoke("download_resource", { url, fileName: safeName, md5 });
                     } else {
-                        // 下载 UWP
                         const fullId = `${packageId}_1`;
-                        console.log("[InstallProgressBar] 下载 UWP APPX");
-                        taskId = await invoke("download_appx", {
-                            packageId: fullId,
-                            fileName: safeName,
-                            md5
-                        });
+                        taskId = await invoke("download_appx", { packageId: fullId, fileName: safeName, md5 });
                     }
 
                     if (!taskId) throw new Error("Failed to get Task ID");
@@ -666,8 +793,17 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
             <div className="bm-view-wrapper">
                 {state.status === 'confirming' && (
                     <ConfirmView
+                        downloadVersion={version}
+                        versionType={props.versionType}
                         fileName={state.fileName}
                         isImport={isImport}
+                        isGdk={isGDK}
+                        cdnLoading={gdkCdnLoading}
+                        cdnError={gdkCdnError}
+                        cdnResults={gdkCdnResults}
+                        selectedCdnBase={gdkSelectedCdnBase}
+                        onSelectCdnBase={(base) => setGdkSelectedCdnBase(base)}
+                        onRefreshCdn={refreshGdkCdn}
                         onFileNameChange={(name) => dispatch({ type: 'SET_FILENAME', payload: name })}
                         onConfirm={() => dispatch({ type: 'START_DOWNLOAD' })}
                         onCancel={() => handleClose(true)}
@@ -676,7 +812,6 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                 {(state.status === 'starting' || state.status === 'progress') && (
                     <ProgressView
                         progress={state.progress}
-                        displayPercent={animatedPercent}
                         onCancel={handleCancelRequest}
                     />
                 )}
@@ -697,7 +832,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
             {ReactDOM.createPortal(
                 <dialog
                     ref={dialogRef}
-                    className={`bm-install-dialog ${isClosing ? 'is-closing' : ''}`}
+                    className={`bm-install-dialog ${isClosing ? 'is-closing' : ''} ${isImport ? 'platform-import' : (isGDK ? 'platform-gdk' : 'platform-uwp')}`}
                     onCancel={(e) => { e.preventDefault(); handleCancelRequest(); }}
                 >
                     {renderContent()}

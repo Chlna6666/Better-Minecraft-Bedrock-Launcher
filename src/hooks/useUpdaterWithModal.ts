@@ -5,12 +5,14 @@ interface UseUpdaterWithModalOptions {
     owner: string;
     repo: string;
     autoCheck?: boolean;
+    autoOpen?: boolean;
 }
 
 export function useUpdaterWithModal({
                                         owner,
                                         repo,
                                         autoCheck = true,
+                                        autoOpen = false,
                                     }: UseUpdaterWithModalOptions) {
 
     // 1. 使用核心 Hook 获取状态和操作
@@ -27,6 +29,7 @@ export function useUpdaterWithModal({
 
     // 3. [自动弹窗逻辑] 监听 updateAvailable 变化
     useEffect(() => {
+        if (!autoOpen) return;
         const release = state.chosenRelease;
 
         // 只有当明确有更新，且存在版本信息时才处理
@@ -44,7 +47,7 @@ export function useUpdaterWithModal({
                 setModalOpen(true);
             }
         }
-    }, [state.updateAvailable, state.chosenRelease, state.downloading, lastSeenVersion]);
+    }, [autoOpen, state.updateAvailable, state.chosenRelease, state.downloading, lastSeenVersion]);
 
     // 4. 封装关闭逻辑
     const closeModal = useCallback(() => {

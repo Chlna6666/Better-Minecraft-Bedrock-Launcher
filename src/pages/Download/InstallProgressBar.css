@@ -53,6 +53,8 @@
    ================================================================================================ */
 
 .bm-install-dialog {
+    display: flex;
+    flex-direction: column;
     padding: 0;
     border: none;
     border-radius: var(--bm-radius-lg);
@@ -60,7 +62,8 @@
     color: var(--bm-text-main);
     box-shadow: var(--bm-shadow-dialog);
     width: 90%;
-    max-width: 480px;
+    max-width: 520px;
+    max-height: 80vh;
     overflow: hidden;
 
     /* 初始状态用于动画 */
@@ -69,6 +72,10 @@
 
     /* 出现动画 */
     animation: dialog-enter 0.4s var(--bm-ease-spring) forwards;
+}
+
+.bm-install-dialog.platform-gdk {
+    max-width: 680px;
 }
 
 .bm-install-dialog::backdrop {
@@ -88,11 +95,77 @@
 
 /* 内容包装器，用于视图切换动画 */
 .bm-view-wrapper {
-    padding: 32px;
+    padding: 28px;
     display: flex;
     flex-direction: column;
     gap: 24px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
     animation: view-fade-in 0.3s var(--bm-ease-smooth);
+}
+
+.bm-install-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.bm-install-header-main {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+    min-width: 0;
+}
+
+.bm-install-header-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.bm-install-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+
+.bm-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 2px;
+    justify-content: flex-end;
+}
+
+.bm-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--bm-border-color);
+    background: var(--bm-bg-subtle);
+    color: var(--bm-text-main);
+}
+
+.bm-chip.platform.gdk {
+    border-color: rgba(34, 197, 94, 0.35);
+    background: rgba(34, 197, 94, 0.12);
+    color: #166534;
+}
+
+.bm-chip.platform.uwp {
+    border-color: rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.12);
+    color: #1d4ed8;
 }
 
 /* ================================================================================================
@@ -121,7 +194,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 16px;
+    margin-bottom: 0;
+    flex: 0 0 48px;
 }
 
 .bm-icon-circle.confirm {
@@ -155,6 +229,158 @@
     gap: 8px;
 }
 
+/* ================================================================================================
+   4.1 GDK CDN Picker
+   ================================================================================================ */
+
+.bm-cdn-group {
+    margin-top: 10px;
+}
+
+.bm-cdn-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.bm-cdn-retest {
+    padding: 6px 10px;
+    height: 32px;
+}
+
+.bm-cdn-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.bm-cdn-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 10px;
+    border-radius: var(--bm-radius-md);
+    border: 1px solid var(--bm-border-color);
+    background: var(--bm-bg-subtle);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s var(--bm-ease-smooth);
+}
+
+@media (max-width: 520px) {
+    .bm-cdn-list {
+        grid-template-columns: 1fr;
+    }
+    .bm-install-header-main {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    .bm-meta-row {
+        justify-content: flex-start;
+        margin-top: 0;
+    }
+}
+
+.bm-cdn-item:hover {
+    border-color: color-mix(in srgb, var(--bm-border-color), var(--bm-text-secondary) 25%);
+    transform: translateY(-1px);
+}
+
+.bm-cdn-item.selected {
+    border-color: var(--bm-primary);
+    box-shadow: inset 0 0 0 2px var(--bm-primary);
+    background: color-mix(in srgb, var(--bm-bg-subtle), var(--bm-primary) 5%);
+}
+
+.bm-cdn-item:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.bm-cdn-left {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.bm-cdn-base {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--bm-text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.bm-cdn-error {
+    font-size: 11px;
+    color: var(--bm-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0.9;
+}
+
+.bm-cdn-error-global {
+    margin-top: 6px;
+    font-size: 12px;
+    opacity: 0.85;
+    color: var(--bm-text-secondary);
+}
+
+.bm-cdn-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    opacity: 0.75;
+    color: var(--bm-text-secondary);
+}
+
+.bm-cdn-badge {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 6px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+
+.bm-cdn-badge.fast {
+    color: #166534;
+    background: rgba(34, 197, 94, 0.16);
+    border-color: rgba(34, 197, 94, 0.35);
+}
+
+.bm-cdn-badge.ok {
+    color: #0f766e;
+    background: rgba(20, 184, 166, 0.14);
+    border-color: rgba(20, 184, 166, 0.35);
+}
+
+.bm-cdn-badge.slow {
+    color: #92400e;
+    background: rgba(245, 158, 11, 0.16);
+    border-color: rgba(245, 158, 11, 0.35);
+}
+
+.bm-cdn-badge.bad {
+    color: #991b1b;
+    background: rgba(239, 68, 68, 0.14);
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
+.bm-cdn-badge.fail {
+    color: var(--bm-text-secondary);
+    background: rgba(148, 163, 184, 0.12);
+    border-color: rgba(148, 163, 184, 0.25);
+}
+
 .bm-input-label {
     font-size: 13px;
     font-weight: 600;
@@ -177,7 +403,7 @@
 .bm-modern-input:focus {
     background: var(--bm-bg-surface);
     border-color: var(--bm-primary);
-    box-shadow: 0 0 0 4px var(--bm-primary-glow);
+    box-shadow: inset 0 0 0 2px var(--bm-primary);
 }
 
 .bm-install-footer {
@@ -185,6 +411,9 @@
     justify-content: flex-end;
     gap: 12px;
     margin-top: 8px;
+    padding-top: 14px;
+    border-top: 1px solid var(--bm-border-color);
+    background: var(--bm-bg-surface);
 }
 
 .bm-btn {

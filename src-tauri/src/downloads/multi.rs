@@ -1,16 +1,18 @@
 // src/downloads/multi.rs
+use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::header::{self, HeaderMap};
 use std::cmp::Ordering as CmpOrdering;
-use std::io::SeekFrom;
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::{Mutex, Notify};
+use std::thread;
+use std::time::Instant;
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::downloads::md5 as md5_utils;
 use crate::downloads::single::download_file;
@@ -18,35 +20,58 @@ use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{finish_task, is_cancelled, set_total, update_progress};
 
 // =========================================================================
-// 1. 动态任务控制结构
+// 性能配置常量 (针对 2.5G+ 宽带优化)
 // =========================================================================
 
-/// 单个分片的动态状态
-#[derive(Debug)]
-struct ChunkSlot {
-    id: usize,             // 唯一标识
-    start: u64,            // 起始位置
-    end: AtomicU64,        // 结束位置 (可能会被其他线程缩小!)
-    current: AtomicU64,    // 当前下载进度
-    is_active: AtomicBool, // 是否有线程正在处理
-    is_done: AtomicBool,   // 是否已完成
+// 写入通道容量：控制在 64 个，防止内存积压过多
+// 内存占用估算：64 * 1MB = 64MB + Worker Buffers
+const WRITE_CHANNEL_SIZE: usize = 64;
+
+// [核心优化] Worker 内部聚合阈值提升至 1MB
+// 减少 Channel 锁竞争和 CPU 上下文切换，大幅降低高带宽下的 CPU 占用
+const WORKER_BATCH_SIZE: usize = 1024 * 1024;
+
+// 磁盘写缓冲：8MB，确保大块连续写入，减少磁盘磁头寻道
+const DISK_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+
+// 最小分片 10MB，避免碎片化
+const MIN_CHUNK_SIZE: u64 = 10 * 1024 * 1024;
+// 最小窃取大小
+const MIN_STEAL_SIZE: u64 = 2 * 1024 * 1024;
+
+// =========================================================================
+// 消息定义
+// =========================================================================
+
+enum WriterMsg {
+    /// (文件偏移量, 数据块)
+    Write(u64, Vec<Bytes>),
+    Close,
 }
 
-/// 全局任务管理器：管理所有分片和窃取逻辑
+// =========================================================================
+// 任务管理结构
+// =========================================================================
+
+#[derive(Debug)]
+struct ChunkSlot {
+    id: usize,
+    start: u64,
+    end: AtomicU64,
+    current: AtomicU64,
+    is_active: AtomicBool,
+    is_done: AtomicBool,
+}
+
 struct AdaptiveTaskManager {
-    slots: Mutex<Vec<Arc<ChunkSlot>>>, // 所有的任务槽
-    notify: Notify,                    // 用于唤醒空闲线程
+    slots: Mutex<Vec<Arc<ChunkSlot>>>,
 }
 
 impl AdaptiveTaskManager {
     fn new() -> Self {
-        Self {
-            slots: Mutex::new(Vec::new()),
-            notify: Notify::new(),
-        }
+        Self { slots: Mutex::new(Vec::new()) }
     }
 
-    /// 添加初始任务
     async fn add_tasks(&self, chunks: Vec<(u64, u64)>) {
         let mut guard = self.slots.lock().await;
         for (i, (s, e)) in chunks.into_iter().enumerate() {
@@ -61,174 +86,156 @@ impl AdaptiveTaskManager {
         }
     }
 
-    /// 获取下一个任务：
-    /// 1. 优先找没人做的任务
-    /// 2. 如果都做完了，返回 None
-    /// 3. 如果都在做但有慢的，尝试“窃取”
     async fn get_next_task(&self, worker_id: usize) -> Option<Arc<ChunkSlot>> {
-        let min_steal_size = 2 * 1024 * 1024; // 剩余小于 2MB 就不抢了，避免碎片化
-
-        // --- 阶段 1: 查找常规空闲任务 ---
+        // 1. 领取常规任务
         {
             let guard = self.slots.lock().await;
             for slot in guard.iter() {
-                // 如果没人做 且 没做完
                 if !slot.is_active.load(Ordering::Relaxed) && !slot.is_done.load(Ordering::Relaxed) {
                     slot.is_active.store(true, Ordering::Relaxed);
-                    debug!("Worker {} 领取常规任务 #{}", worker_id, slot.id);
                     return Some(slot.clone());
                 }
             }
         }
+        // 2. 窃取任务
+        self.steal_task(worker_id).await
+    }
 
-        // --- 阶段 2: 尝试窃取 (Work Stealing) ---
-        // 既然没有空闲任务，我们看看有没有"长尾"任务可以切分
-        let stolen_task = {
-            let mut guard = self.slots.lock().await;
+    async fn steal_task(&self, worker_id: usize) -> Option<Arc<ChunkSlot>> {
+        let mut guard = self.slots.lock().await;
+        if guard.iter().all(|s| s.is_done.load(Ordering::Relaxed)) {
+            return None;
+        }
 
-            // 检查是否全部完成
-            let all_done = guard.iter().all(|s| s.is_done.load(Ordering::Relaxed));
-            if all_done {
-                return None;
-            }
+        let mut best_victim = None;
+        let mut max_rem = 0;
 
-            // 寻找剩余字节数最多的那个正在运行的任务 (Victim)
-            let mut best_victim_idx = None;
-            let mut max_remaining = 0;
-
-            for (idx, slot) in guard.iter().enumerate() {
-                if slot.is_active.load(Ordering::Relaxed) && !slot.is_done.load(Ordering::Relaxed) {
-                    let curr = slot.current.load(Ordering::Relaxed);
-                    let end = slot.end.load(Ordering::Relaxed);
-                    if end > curr {
-                        let remaining = end - curr;
-                        if remaining > max_remaining {
-                            max_remaining = remaining;
-                            best_victim_idx = Some(idx);
-                        }
+        for (idx, slot) in guard.iter().enumerate() {
+            if slot.is_active.load(Ordering::Relaxed) && !slot.is_done.load(Ordering::Relaxed) {
+                let curr = slot.current.load(Ordering::Relaxed);
+                let end = slot.end.load(Ordering::Relaxed);
+                if end > curr {
+                    let rem = end - curr;
+                    if rem > max_rem {
+                        max_rem = rem;
+                        best_victim = Some(idx);
                     }
                 }
             }
+        }
 
-            // 如果最大的剩余量还不够切，或者没找到
-            if max_remaining < min_steal_size || best_victim_idx.is_none() {
-                return None; // 暂时没活干，等会儿再来
-            }
+        if max_rem < MIN_STEAL_SIZE || best_victim.is_none() {
+            return None;
+        }
 
-            // --- 执行切割操作 ---
-            let victim_idx = best_victim_idx.unwrap();
-            let victim = guard[victim_idx].clone();
+        let victim = guard[best_victim.unwrap()].clone();
+        let v_curr = victim.current.load(Ordering::Relaxed);
+        let v_end = victim.end.load(Ordering::Relaxed);
+        let remaining = v_end.saturating_sub(v_curr);
 
-            // 再次确认数据（避免竞态）
-            let v_curr = victim.current.load(Ordering::Relaxed);
-            let v_end = victim.end.load(Ordering::Relaxed);
-            let remaining = v_end.saturating_sub(v_curr);
+        if remaining < MIN_STEAL_SIZE {
+            return None;
+        }
 
-            if remaining < min_steal_size {
-                None
-            } else {
-                // 计算切分点：取中点
-                let split_point = v_curr + remaining / 2;
+        let mid = v_curr + remaining / 2;
+        victim.end.store(mid, Ordering::Relaxed);
 
-                // 1. 修改受害者的结束点 (Victim will stop early)
-                victim.end.store(split_point, Ordering::Relaxed);
+        let new_slot = Arc::new(ChunkSlot {
+            id: guard.len(),
+            start: mid + 1,
+            end: AtomicU64::new(v_end),
+            current: AtomicU64::new(mid + 1),
+            is_active: AtomicBool::new(true),
+            is_done: AtomicBool::new(false),
+        });
 
-                // 2. 创建新任务 (Stealed part)
-                let new_id = guard.len();
-                let new_slot = Arc::new(ChunkSlot {
-                    id: new_id,
-                    start: split_point + 1, // 从切分点后一个字节开始
-                    end: AtomicU64::new(v_end),
-                    current: AtomicU64::new(split_point + 1),
-                    is_active: AtomicBool::new(true), // 直接标记为被我（当前线程）占有
-                    is_done: AtomicBool::new(false),
-                });
-
-                debug!(
-                    "Worker {} 窃取任务: 原始#{}(剩{}) -> 切分点 {} -> 新任务#{}",
-                    worker_id,
-                    victim.id,
-                    format_size(remaining),
-                    split_point,
-                    new_id
-                );
-
-                guard.push(new_slot.clone());
-                Some(new_slot)
-            }
-        };
-
-        stolen_task
+        debug!("Worker {} 窃取任务 #{} -> 新任务 #{}", worker_id, victim.id, new_slot.id);
+        guard.push(new_slot.clone());
+        Some(new_slot)
     }
 }
 
-// 辅助函数：格式化字节大小（用于Debug日志）
-fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
+// =========================================================================
+// 主逻辑
+// =========================================================================
 
-/// 智能动态多线程分片下载（带工作窃取，无监控刷屏，含窃取日志）
 pub async fn download_multi(
     client: reqwest::Client,
     task_id: &str,
     url: &str,
     dest: impl AsRef<Path>,
     threads: usize,
-    headers: Option<HeaderMap>, // [新增]
+    headers: Option<HeaderMap>,
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
     let task_id_owned = task_id.to_string();
-    debug!("开始自适应多线程下载: task={} 线程数={}", task_id, threads);
+    debug!("启动极致性能多线程下载: task={} threads={}", task_id, threads);
 
-    // 1. 获取文件信息 (HEAD 请求)
-    let mut head_req = client
-        .head(url)
-        .header(header::ACCEPT_ENCODING, "identity");
+    // 1. 获取文件大小 + 解析最终 URL（必须！某些 CDN 对带 Range 的请求不返回 302，而是直接 404）
+    //    例如 edge.forgecdn.net 在带 Range 时可能直接 404，但正常请求会 302 到 mediafilez.forgecdn.net。
+    let mut effective_url: String = url.to_string();
+    let mut head_req = client.head(url).header(header::ACCEPT_ENCODING, "identity");
+    if let Some(h) = &headers { head_req = head_req.headers(h.clone()); }
 
-    // 应用 headers
-    if let Some(h) = &headers {
-        head_req = head_req.headers(h.clone());
-    }
-
-    let head_resp = head_req.send().await?;
-
-    let total_len = head_resp
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok());
-
-    let total = match total_len {
-        Some(len) if len > 0 => len,
-        _ => return download_file(client, task_id, url, dest, headers, md5_expected).await,
+    let total = match head_req.send().await {
+        Ok(resp) => {
+            effective_url = resp.url().to_string();
+            resp.headers().get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0)
+        },
+        Err(_) => 0,
     };
+
+    if total == 0 {
+        return download_file(client, task_id, url, dest, headers, md5_expected).await;
+    }
     set_total(task_id, Some(total));
 
-    // 2. 预分配磁盘
-    {
-        let dest_path = dest.as_ref();
-        if let Some(parent) = dest_path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+    // 2. 启动独立 Writer 线程
+    let dest_buf = dest.as_ref().to_path_buf();
+    let (tx, mut rx) = mpsc::channel::<WriterMsg>(WRITE_CHANNEL_SIZE);
+
+    let writer_thread = thread::spawn(move || -> Result<(), std::io::Error> {
+        if let Some(parent) = dest_buf.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
         let file = OpenOptions::new()
             .create(true)
             .write(true)
-            .open(dest_path)
-            .await
-            .map_err(|e| CoreError::Io(e))?;
-        file.set_len(total).await.map_err(|e| CoreError::Io(e))?;
-    }
+            .open(&dest_buf)?;
 
-    // 3. 生成初始分片 & 初始化管理器
-    let initial_chunk_size = (total / threads as u64).max(5 * 1024 * 1024);
+        // [核心优化] 文件预分配
+        if let Err(e) = file.set_len(total) {
+            warn!("文件预分配失败（可能是磁盘空间不足或文件系统不支持）: {}", e);
+        }
+
+        // 8MB 缓冲区，配合 Smart Seek
+        let mut writer = BufWriter::with_capacity(DISK_BUFFER_SIZE, file);
+        let mut current_pos = 0u64; // 虚拟游标
+
+        while let Some(msg) = rx.blocking_recv() {
+            match msg {
+                WriterMsg::Write(offset, batch) => {
+                    if current_pos != offset {
+                        writer.seek(SeekFrom::Start(offset))?;
+                        current_pos = offset;
+                    }
+                    for chunk in batch {
+                        writer.write_all(&chunk)?;
+                        current_pos += chunk.len() as u64;
+                    }
+                }
+                WriterMsg::Close => break,
+            }
+        }
+        writer.flush()?;
+        Ok(())
+    });
+
+    // 3. 任务分配
+    let initial_chunk_size = (total / threads as u64).max(MIN_CHUNK_SIZE);
     let mut chunks = Vec::new();
     let mut offset = 0;
     while offset < total {
@@ -238,101 +245,70 @@ pub async fn download_multi(
     }
 
     let manager = Arc::new(AdaptiveTaskManager::new());
-    manager.add_tasks(chunks).await;
+    manager.add_tasks(chunks.clone()).await;
 
-    // 共享资源
-    let downloaded_bytes = Arc::new(AtomicU64::new(0));
+    let active_threads = threads.min(chunks.len()).max(1);
+
+    let downloaded_global = Arc::new(AtomicU64::new(0));
     let client = Arc::new(client);
     let url = Arc::new(url.to_string());
     let error_occurred = Arc::new(Notify::new());
     let error_store = Arc::new(Mutex::new(None));
 
-    // 5. 启动 Worker
-    let mut handles = Vec::with_capacity(threads);
-    for worker_id in 0..threads {
+    // 4. 启动 Workers
+    let mut handles = Vec::with_capacity(active_threads);
+
+    for worker_id in 0..active_threads {
         let manager = manager.clone();
         let client = client.clone();
-        let url = url.clone();
-        let dest_path = dest.as_ref().to_path_buf();
-        let downloaded_bytes = downloaded_bytes.clone();
+        let url = effective_url.clone();
+        let downloaded_global = downloaded_global.clone();
         let task_id = task_id.to_string();
         let error_occurred = error_occurred.clone();
         let error_store = error_store.clone();
-        // 克隆 headers 供每个 worker 使用
-        let worker_headers = headers.clone();
+        let headers = headers.clone();
+        let tx = tx.clone();
 
         handles.push(tokio::spawn(async move {
-            let mut file = match OpenOptions::new().write(true).open(&dest_path).await {
-                Ok(f) => f,
-                Err(e) => {
-                    *error_store.lock().await = Some(CoreError::Io(e));
-                    error_occurred.notify_waiters();
-                    return;
-                }
-            };
+            let mut pending_progress = 0u64;
+            let mut last_update_time = Instant::now();
 
             loop {
-                if is_cancelled(&task_id) || error_store.lock().await.is_some() {
-                    return;
-                }
+                if is_cancelled(&task_id) || error_store.lock().await.is_some() { return; }
 
-                // >>> 获取任务（这里包含窃取逻辑） <<<
                 let slot = match manager.get_next_task(worker_id).await {
                     Some(s) => s,
                     None => {
-                        // 真的没有任务了，也没有可以窃取的目标了
-                        // 再次检查是否全部完成
-                        let finished_count = {
-                            let guard = manager.slots.lock().await;
-                            guard
-                                .iter()
-                                .filter(|s| s.is_done.load(Ordering::Relaxed))
-                                .count()
-                                == guard.len()
-                        };
-                        if finished_count {
-                            break;
-                        }
-
-                        // 还有任务在跑，暂时抢不到，睡一会再试
+                        let all_done = manager.slots.lock().await.iter().all(|s| s.is_done.load(Ordering::Relaxed));
+                        if all_done { break; }
                         sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                 };
 
                 let mut attempts = 0;
-                let max_retries = 10;
                 let mut success = false;
 
-                'retry: while attempts < max_retries {
-                    if is_cancelled(&task_id) {
-                        return;
-                    }
+                'retry: while attempts < 10 {
+                    if is_cancelled(&task_id) { return; }
 
-                    // 获取当前的范围
-                    let start_pos = slot.current.load(Ordering::Relaxed);
-                    let end_pos = slot.end.load(Ordering::Relaxed);
+                    let mut batch_buffer: Vec<Bytes> = Vec::with_capacity(16);
+                    let mut batch_size = 0;
 
-                    // 如果被抢光了（start > end），直接标记完成
-                    if start_pos > end_pos {
+                    let start = slot.current.load(Ordering::Relaxed);
+                    let end = slot.end.load(Ordering::Relaxed);
+
+                    if start > end {
                         success = true;
                         break 'retry;
                     }
 
-                    if attempts > 0 {
-                        sleep(Duration::from_millis(500 * attempts as u64)).await;
-                    }
+                    if attempts > 0 { sleep(Duration::from_millis(500 * attempts as u64)).await; }
 
-                    // 构建分片请求
-                    let mut req = client
-                        .get(url.as_str())
-                        .header(header::RANGE, format!("bytes={}-{}", start_pos, end_pos))
+                    let mut req = client.get(url.as_str())
+                        .header(header::RANGE, format!("bytes={}-{}", start, end))
                         .header(header::ACCEPT_ENCODING, "identity");
-
-                    // 应用 headers
-                    if let Some(h) = &worker_headers {
-                        req = req.headers(h.clone());
-                    }
+                    if let Some(h) = &headers { req = req.headers(h.clone()); }
 
                     match req.send().await {
                         Ok(resp) => {
@@ -341,77 +317,84 @@ pub async fn download_multi(
                                 continue;
                             }
 
-                            // Seek 到正确位置
-                            if let Err(e) = file.seek(SeekFrom::Start(start_pos)).await {
-                                *error_store.lock().await = Some(CoreError::Io(e));
-                                error_occurred.notify_waiters();
-                                return;
-                            }
-
                             let mut stream = resp.bytes_stream();
-                            let mut local_offset = start_pos;
-                            let mut stream_failed = false;
+                            let mut local_curr = start;
+                            let mut batch_start_offset = local_curr;
+
+                            let mut stream_err = false;
 
                             while let Some(item) = stream.next().await {
-                                // 1. 检查取消
-                                if is_cancelled(&task_id) {
-                                    return;
-                                }
+                                if is_cancelled(&task_id) { return; }
 
-                                // 2. >>> 关键：检查是否被截断 (Chunk Stealing Check) <<<
-                                let current_target_end = slot.end.load(Ordering::Relaxed);
-                                if local_offset > current_target_end {
-                                    // 后面的部分被抢走了，停止
-                                    break;
-                                }
+                                let dynamic_end = slot.end.load(Ordering::Relaxed);
+                                if local_curr > dynamic_end { break; }
 
                                 match item {
                                     Ok(chunk) => {
-                                        // 再次防御性检查
-                                        let chunk_len = chunk.len() as u64;
-                                        let write_len = if local_offset + chunk_len - 1
-                                            > current_target_end
-                                        {
-                                            (current_target_end - local_offset + 1) as usize
+                                        let len = chunk.len() as u64;
+                                        let write_len = if local_curr + len - 1 > dynamic_end {
+                                            (dynamic_end - local_curr + 1) as usize
                                         } else {
-                                            chunk_len as usize
+                                            len as usize
+                                        };
+                                        if write_len == 0 { break; }
+
+                                        let data_to_send = if write_len < chunk.len() {
+                                            chunk.slice(0..write_len)
+                                        } else {
+                                            chunk
                                         };
 
-                                        if write_len == 0 {
-                                            break;
+                                        batch_buffer.push(data_to_send);
+                                        batch_size += write_len;
+                                        local_curr += write_len as u64;
+
+                                        downloaded_global.fetch_add(write_len as u64, Ordering::Relaxed);
+                                        pending_progress += write_len as u64;
+
+                                        if batch_size >= WORKER_BATCH_SIZE {
+                                            let msg = WriterMsg::Write(batch_start_offset, batch_buffer);
+
+                                            if tx.send(msg).await.is_err() {
+                                                stream_err = true;
+                                                // [修复 E0382]
+                                                // 必须重新初始化，因为 batch_buffer 已经移入 msg。
+                                                // 即使 break，之后的代码路径（!batch_buffer.is_empty()）也需要该变量有效。
+                                                batch_buffer = Vec::new();
+                                                break;
+                                            }
+
+                                            slot.current.store(batch_start_offset + batch_size as u64, Ordering::Relaxed);
+
+                                            // 重置
+                                            batch_buffer = Vec::with_capacity(16);
+                                            batch_start_offset += batch_size as u64;
+                                            batch_size = 0;
                                         }
 
-                                        if let Err(e) = file.write_all(&chunk[..write_len]).await {
-                                            stream_failed = true;
-                                            break;
+                                        if pending_progress > 0 && (last_update_time.elapsed().as_millis() > 200 || pending_progress > 1024 * 1024) {
+                                            update_progress(&task_id, pending_progress, Some(total), Some("downloading"));
+                                            pending_progress = 0;
+                                            last_update_time = Instant::now();
                                         }
-
-                                        local_offset += write_len as u64;
-
-                                        // 更新全局进度
-                                        downloaded_bytes
-                                            .fetch_add(write_len as u64, Ordering::Relaxed);
-                                        update_progress(
-                                            &task_id,
-                                            write_len as u64,
-                                            Some(total),
-                                            Some("downloading"),
-                                        );
-
-                                        // 更新当前任务进度，供窃取者计算
-                                        slot.current.store(local_offset, Ordering::Relaxed);
-                                    }
-                                    Err(_) => {
-                                        stream_failed = true;
-                                        break;
-                                    }
+                                    },
+                                    Err(_) => { stream_err = true; break; }
                                 }
                             }
 
-                            if !stream_failed {
-                                // 检查是否达到了当前的 end
+                            // 循环结束后检查剩余数据
+                            if !batch_buffer.is_empty() {
+                                let msg = WriterMsg::Write(batch_start_offset, batch_buffer);
+                                if tx.send(msg).await.is_err() {
+                                    stream_err = true;
+                                } else {
+                                    slot.current.store(batch_start_offset + batch_size as u64, Ordering::Relaxed);
+                                }
+                            }
+
+                            if !stream_err {
                                 let final_end = slot.end.load(Ordering::Relaxed);
-                                if local_offset >= final_end + 1 {
+                                if local_curr >= final_end + 1 {
                                     success = true;
                                     break 'retry;
                                 }
@@ -422,15 +405,16 @@ pub async fn download_multi(
                     attempts += 1;
                 }
 
+                if pending_progress > 0 {
+                    update_progress(&task_id, pending_progress, Some(total), Some("downloading"));
+                    pending_progress = 0;
+                }
+
                 if success {
                     slot.is_done.store(true, Ordering::Relaxed);
                     slot.is_active.store(false, Ordering::Relaxed);
-                    // debug!("Worker {} 完成任务 #{}", worker_id, slot.id); // 可选：任务完成日志
                 } else {
-                    *error_store.lock().await = Some(CoreError::Other(format!(
-                        "Chunk #{} failed",
-                        slot.id
-                    )));
+                    *error_store.lock().await = Some(CoreError::Other(format!("Task #{} failed", slot.id)));
                     error_occurred.notify_waiters();
                     return;
                 }
@@ -438,17 +422,19 @@ pub async fn download_multi(
         }));
     }
 
-    // 6. 等待结果
-    let mut all_tasks_future = futures_util::future::join_all(handles);
+    drop(tx);
+
+    let mut tasks_fut = futures_util::future::join_all(handles);
+
     tokio::select! {
-        _ = &mut all_tasks_future => {}
-        _ = error_occurred.notified() => { debug!("内部错误触发"); }
+        _ = &mut tasks_fut => {},
+        _ = error_occurred.notified() => {},
         _ = async {
             loop {
                 if is_cancelled(&task_id_owned) { return; }
                 sleep(Duration::from_millis(100)).await;
             }
-        } => { debug!("用户取消触发"); }
+        } => {}
     }
 
     if is_cancelled(task_id) {
@@ -460,25 +446,26 @@ pub async fn download_multi(
         return Err(e);
     }
 
-    // 最终校验
-    let final_bytes = downloaded_bytes.load(Ordering::Relaxed);
+    match writer_thread.join() {
+        Ok(Ok(())) => {},
+        Ok(Err(e)) => return Err(CoreError::Io(e)),
+        Err(_) => return Err(CoreError::Other("Writer panic".into())),
+    }
+
+    let final_bytes = downloaded_global.load(Ordering::Relaxed);
     if final_bytes < total {
-        return Err(CoreError::Other("Incomplete download".into()));
+        return Err(CoreError::Other("Download incomplete".into()));
     }
 
     if let Some(expected) = md5_expected {
         update_progress(task_id, 0, Some(total), Some("verifying"));
         match md5_utils::verify_md5(dest.as_ref(), expected).await {
-            Ok(true) => debug!("MD5 OK"),
-            Ok(false) => return Err(CoreError::ChecksumMismatch("MD5 fail".into())),
+            Ok(true) => {},
+            Ok(false) => return Err(CoreError::ChecksumMismatch("MD5 mismatch".into())),
             Err(e) => return Err(CoreError::Io(e)),
         }
     }
 
-    finish_task(
-        task_id,
-        "completed",
-        Some(dest.as_ref().to_string_lossy().to_string()),
-    );
+    finish_task(task_id, "completed", Some(dest.as_ref().to_string_lossy().to_string()));
     Ok(CoreResult::Success(()))
 }

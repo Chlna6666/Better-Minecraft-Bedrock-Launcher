@@ -1,324 +1,220 @@
+/* UnifiedPageLayout.css */
+
 :root {
     --upl-navbar-height: 70px;
-    --upl-glass-bg: rgba(255, 255, 255, 0.75);
-    --upl-glass-border: rgba(255, 255, 255, 0.5);
-    --upl-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.05);
-    --upl-primary-color: #4CAF50;
-    --upl-primary-gradient: linear-gradient(135deg, #66BB6A 0%, #43A047 100%);
-    --upl-text-main: #2c3e50;
-    --upl-text-sub: #546e7a;
-    --upl-panel-radius: 24px;
+    --upl-glass-bg: rgba(255, 255, 255, 0.65);
+    --upl-glass-border: rgba(255, 255, 255, 0.4);
+    --upl-glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+    --upl-primary-color: var(--theme-color, #4CAF50);
+    --upl-text-main: #1d1d1f;
+    --upl-text-sub: #86868b;
+    --upl-panel-radius: 20px;
     --upl-card-bg: #ffffff;
 }
 
 [data-theme='dark'] {
-    --upl-glass-bg: rgba(30, 30, 30, 0.85);
-    --upl-glass-border: rgba(255, 255, 255, 0.08);
-    --upl-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-    --upl-text-main: #eceff1;
-    --upl-text-sub: #b0bec5;
+    --upl-glass-bg: rgba(30, 30, 30, 0.60);
+    --upl-glass-border: rgba(255, 255, 255, 0.1);
+    --upl-glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    --upl-text-main: #f5f5f7;
+    --upl-text-sub: #86868b;
     --upl-card-bg: #263238;
 }
 
-/* --- 容器布局 --- */
+/* --- 容器 & 背景 --- */
 .upl-container {
     position: relative;
     height: 100vh;
     width: 100%;
-    padding-top: calc(var(--upl-navbar-height) + 36px);
-    padding-left: 24px;
-    padding-right: 24px;
-    padding-bottom: 24px;
+    padding: calc(var(--upl-navbar-height) + 24px) 32px 32px;
     box-sizing: border-box;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    z-index: 0;
 }
 
-/* --- 核心玻璃面板 (Flex Column) --- */
+.upl-container::before,
+.upl-container::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(90px);
+    z-index: -1;
+    opacity: 0.4;
+    pointer-events: none;
+}
+.upl-container::before { width: 400px; height: 400px; background: #ff7043; top: 10%; left: -100px; animation: float 20s infinite alternate; }
+.upl-container::after { width: 300px; height: 300px; background: #ffd54f; bottom: 10%; right: -50px; animation: float 15s infinite alternate-reverse; }
+@keyframes float { from { transform: translate(0, 0); } to { transform: translate(40px, 40px); } }
+
+/* --- 主面板 --- */
 .upl-glass-panel {
+    flex: 1;
     width: 100%;
-    height: 100%;
     background: var(--upl-glass-bg);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
     border: 1px solid var(--upl-glass-border);
     box-shadow: var(--upl-glass-shadow);
     border-radius: var(--upl-panel-radius);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    z-index: 5;
-    position: relative;
+    z-index: 1;
+    transition: all 0.3s ease;
 }
 
-/* --- 头部 --- */
+/* --- 头部布局 (Left - Middle - Right) --- */
 .upl-header {
-    padding: 11px 14px;
+    padding: 16px 24px;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid var(--upl-glass-border);
+    gap: 16px;
+    border-bottom: 1px solid rgba(0,0,0,0.03);
     flex-shrink: 0;
-    background: rgba(255,255,255,0.05);
+    height: 72px; /* 固定高度，防止子元素撑开 */
+    box-sizing: border-box;
+}
+[data-theme='dark'] .upl-header { border-bottom-color: rgba(255,255,255,0.03); }
+
+/* Left: Tabs */
+.upl-header-left {
+    flex-shrink: 0;
 }
 
-/* --- 内容区 (自动伸缩 + 滚动) --- */
-.upl-content {
+/* Middle: Search (占据剩余空间) */
+.upl-header-middle {
     flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 0;
-    scroll-behavior: auto; /* 关键：禁用平滑滚动，由 JS 控制瞬间复位，避免动画冲突 */
     display: flex;
-    flex-direction: column;
-    position: relative;
-    scrollbar-gutter: stable;
-
-    scrollbar-width: thin;
-    scrollbar-color: rgba(0,0,0,0.2) transparent;
+    justify-content: flex-start;
+    padding-left: 12px;
+    min-width: 0; /* 关键：防止 Flex 子项溢出 */
 }
 
-/* [新增] 隐藏滚动条工具类 */
-.upl-content.upl-no-scrollbar {
-    scrollbar-width: none; /* Firefox */
-    -ms-overflow-style: none; /* IE 10+ */
-}
-
-/* [新增] 针对 Webkit 隐藏滚动条 */
-.upl-content.upl-no-scrollbar::-webkit-scrollbar {
-    display: none;
-}
-
-/* 默认滚动条样式 (只有在没有 upl-no-scrollbar 类时生效) */
-.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar { width: 6px; }
-.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-track { background: transparent; margin: 4px; }
-.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-thumb {
-    background-color: rgba(0,0,0,0.2);
-    border-radius: 20px;
-    border: 2px solid transparent;
-    background-clip: content-box;
-}
-.upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-thumb:hover { background-color: rgba(0,0,0,0.3); }
-[data-theme='dark'] .upl-content:not(.upl-no-scrollbar)::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.2); }
-
-/* 内部容器 */
-.upl-inner-container {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    padding: 8px 0 20px 0;
-}
-
-/* --- 底部 (分页器) --- */
-.upl-footer {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 8px;
-    padding: 11px 0px;
-    margin-top: auto;
-    border-top: 1px solid var(--upl-glass-border);
-    background: rgba(255,255,255,0.02);
+/* Right: Actions */
+.upl-header-right {
     flex-shrink: 0;
-    user-select: none;
-    overflow: hidden;      /* 强制隐藏滚动条 */
-    white-space: nowrap;   /* 防止换行 */
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
-/* --- 组件样式 --- */
-
-/* Tab 切换器 */
-.upl-tab-switcher { display: flex; background: rgba(0, 0, 0, 0.05); padding: 4px; border-radius: 12px; gap: 4px; }
-[data-theme='dark'] .upl-tab-switcher { background: rgba(255, 255, 255, 0.05); }
+/* --- Tab 样式 --- */
+.upl-tab-switcher {
+    display: flex;
+    background: rgba(118, 118, 128, 0.12);
+    padding: 3px;
+    border-radius: 10px;
+}
+[data-theme='dark'] .upl-tab-switcher { background: rgba(118, 118, 128, 0.24); }
 
 .upl-tab-btn {
-    padding: 8px 16px;
-    border-radius: 8px;
+    position: relative;
+    padding: 6px 20px;
+    border-radius: 7px;
     border: none;
     background: transparent;
-    color: var(--upl-text-sub);
-    font-weight: 600;
+    color: var(--upl-text-main);
+    font-weight: 500;
+    font-size: 0.9rem;
     cursor: pointer;
-    transition: all 0.2s;
     display: flex;
     align-items: center;
-    font-size: 0.85rem;
+    justify-content: center;
+    gap: 6px;
+    z-index: 1;
+    outline: none;
+    white-space: nowrap;
 }
-.upl-tab-btn.active {
-    background: var(--upl-card-bg);
-    color: var(--upl-primary-color);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+.upl-tab-btn:hover:not(.active) { opacity: 0.7; }
+.upl-tab-btn.active { font-weight: 600; }
+.upl-active-pill {
+    position: absolute; inset: 0; background: #ffffff; border-radius: 7px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.12); z-index: -1;
 }
-[data-theme='dark'] .upl-tab-btn.active { background: rgba(255,255,255,0.1); color: #fff; }
+[data-theme='dark'] .upl-active-pill { background: #636366; }
+.upl-tab-icon, .upl-tab-text { position: relative; z-index: 2; display: flex; }
 
-/* 头部操作区 (右侧) */
-.upl-header-actions { display: flex; gap: 12px; align-items: center; }
-
-/* 1. 搜索框容器 */
+/* --- 搜索框 (模仿截图红色半透明风格) --- */
 .upl-search-wrapper {
     position: relative;
     display: flex;
     align-items: center;
-    margin-right: 4px;
+    width: 100%;
+    max-width: 360px; /* 限制最大宽度 */
 }
 
-/* 搜索输入框 */
 .upl-search-input {
-    background: rgba(0, 0, 0, 0.05);
-    border: 1px solid transparent;
-    padding: 8px 12px 8px 34px; /* 34px 为图标留空 */
-    border-radius: 10px;
+    background: rgba(255, 82, 82, 0.06); /* 淡淡的红色背景 */
+    border: 1px solid rgba(255, 82, 82, 0.08);
+    padding: 10px 12px 10px 38px;
+    border-radius: 12px;
     outline: none;
     color: var(--upl-text-main);
-    transition: all 0.2s ease;
-    width: 160px;
-    font-size: 0.9rem;
+    width: 100%;
+    font-size: 0.95rem;
+    transition: all 0.2s;
 }
 
 .upl-search-input:focus {
-    background: var(--upl-card-bg);
-    box-shadow: 0 0 0 2px var(--upl-primary-color);
-    width: 200px; /* 聚焦变长 */
+    background: rgba(255, 82, 82, 0.1);
+    border-color: rgba(255, 82, 82, 0.25);
+    box-shadow: 0 0 0 3px rgba(255, 82, 82, 0.08);
 }
 
-[data-theme='dark'] .upl-search-input { background: rgba(255, 255, 255, 0.1); }
+[data-theme='dark'] .upl-search-input {
+    background: rgba(255, 82, 82, 0.15);
+    border-color: rgba(255, 82, 82, 0.1);
+    color: #ffdada;
+}
 
-/* 搜索图标 */
 .upl-search-icon {
-    position: absolute;
-    left: 10px;
-    opacity: 0.5;
-    width: 16px;
-    height: 16px;
-    pointer-events: none;
-    color: var(--upl-text-main);
+    position: absolute; left: 12px; opacity: 0.6; width: 18px; height: 18px; pointer-events: none; color: var(--upl-text-main);
 }
 
-/* 2. 通用 Header 图标按钮 (用于 Refresh 或 headerActions 里的按钮) */
+/* --- 按钮 --- */
 .upl-action-icon-btn {
-    background: transparent;
+    background: rgba(0, 0, 0, 0.05);
     border: none;
     color: var(--upl-text-sub);
     cursor: pointer;
     padding: 8px;
     border-radius: 8px;
-    transition: background 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    display: flex; align-items: center; justify-content: center;
 }
-
-.upl-action-icon-btn:hover {
-    background: rgba(0, 0, 0, 0.05);
-    color: var(--upl-text-main);
-}
-
-[data-theme='dark'] .upl-action-icon-btn:hover { background: rgba(255, 255, 255, 0.1); }
-
-/* 旋转动画 (给 Refresh 用) */
+.upl-action-icon-btn:hover { background: rgba(0, 0, 0, 0.1); color: var(--upl-text-main); }
+[data-theme='dark'] .upl-action-icon-btn { background: rgba(255, 255, 255, 0.08); }
 .upl-spin { animation: upl-spin-anim 1s linear infinite; }
 @keyframes upl-spin-anim { 100% { transform: rotate(360deg); } }
 
-/* 3. 回到顶部按钮 */
-.upl-scroll-top-btn {
-    position: absolute;
-    bottom: 30px; /* 距离 content 底部 30px，因为它在 content 内部，不会被 footer 遮挡 */
-    right: 32px;
-    width: 44px;
-    height: 44px;
-    border-radius: 12px;
-    background: var(--upl-glass-bg);
-    backdrop-filter: blur(10px);
-    color: var(--upl-text-main);
-    border: 1px solid var(--upl-glass-border);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    z-index: 50;
-    transition: all 0.2s;
-}
-.upl-scroll-top-btn:hover {
-    background: var(--upl-primary-color);
-    color: white;
-    border-color: transparent;
-    transform: translateY(-2px);
-    box-shadow: 0 8px 16px rgba(76, 175, 80, 0.3);
-}
-
-/* --- 分页按钮 --- */
-.upl-page-btn {
-    min-width: 36px;
-    height: 36px;
-    padding: 0 6px;
-    border-radius: 10px;
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--upl-text-sub);
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 0.9rem;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.upl-page-btn:hover:not(:disabled) {
-    background: rgba(0,0,0,0.05);
-    color: var(--upl-text-main);
-}
-[data-theme='dark'] .upl-page-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); }
-
-.upl-page-btn.active {
-    background: var(--upl-primary-gradient);
-    color: white;
-    box-shadow: 0 4px 10px rgba(76, 175, 80, 0.3);
-}
-
+/* --- 其余部分保持默认 --- */
+.upl-content { flex: 1; overflow-y: auto; overflow-x: hidden; position: relative; display: flex; flex-direction: column; }
+.upl-content-wrapper { height: 100%; display: flex; flex-direction: column; flex: 1; }
+.upl-inner-container { padding: 24px; max-width: 1400px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+.upl-content.upl-no-scrollbar { scrollbar-width: none; }
+.upl-content.upl-no-scrollbar::-webkit-scrollbar { display: none; }
+/* ... Scrollbars ... */
+.upl-footer { padding: 12px 0; border-top: 1px solid rgba(0,0,0,0.04); background: rgba(255,255,255,0.3); display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 10px; }
+[data-theme='dark'] .upl-footer { border-color: rgba(255,255,255,0.04); background: rgba(0,0,0,0.2); }
+.upl-page-btn { min-width: 32px; height: 32px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--upl-text-sub); cursor: pointer; font-weight: 500; display: flex; align-items: center; justify-content: center; }
+.upl-page-btn:hover:not(:disabled) { background: rgba(0,0,0,0.05); color: var(--upl-text-main); }
+.upl-page-btn.active { background: var(--upl-primary-color); color: white; }
 .upl-page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-
-.upl-pagination-jumper {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-left: 16px;
-    padding-left: 16px;
-    border-left: 1px solid var(--upl-glass-border);
-    color: var(--upl-text-sub);
-    font-size: 0.85rem;
-}
-
-.upl-page-input {
-    width: 44px;
-    height: 30px;
-    border-radius: 8px;
-    border: 1px solid var(--upl-glass-border);
-    background: rgba(255,255,255,0.3);
-    text-align: center;
-    font-weight: 600;
-    color: var(--upl-text-main);
-    outline: none;
-    transition: all 0.2s;
-    -moz-appearance: textfield;
-}
-.upl-page-input:focus {
-    background: var(--upl-card-bg);
-    border-color: var(--upl-primary-color);
-    box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
-}
-[data-theme='dark'] .upl-page-input { background: rgba(0,0,0,0.2); }
-
-/* --- 背景动画 --- */
-.upl-bg-shape {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(80px);
-    z-index: 0;
-    opacity: 0.5;
-    pointer-events: none;
-}
-.upl-shape-1 { width: 400px; height: 400px; background: #ff7043; top: 10%; left: -100px; animation: float 20s infinite alternate; }
-.upl-shape-2 { width: 300px; height: 300px; background: #ffd54f; bottom: 10%; right: -50px; animation: float 15s infinite alternate-reverse; }
-
-@keyframes float { from { transform: translate(0, 0); } to { transform: translate(40px, 40px); } }
+.upl-dots { padding: 0 8px; opacity: 0.5; font-size: 12px; }
+.upl-page-jump { display: flex; align-items: center; gap: 8px; margin-left: 8px; padding-left: 10px; border-left: 1px solid rgba(0,0,0,0.08); }
+[data-theme='dark'] .upl-page-jump { border-left-color: rgba(255,255,255,0.08); }
+.upl-page-jump-label { font-size: 12px; color: var(--upl-text-sub); font-weight: 600; }
+.upl-page-jump-input { width: 72px; height: 32px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.08); background: rgba(255,255,255,0.55); color: var(--upl-text-main); padding: 0 10px; outline: none; }
+[data-theme='dark'] .upl-page-jump-input { border-color: rgba(255,255,255,0.10); background: rgba(0,0,0,0.25); color: var(--upl-text-main); }
+.upl-page-jump-input:focus { border-color: rgba(255, 82, 82, 0.25); box-shadow: 0 0 0 3px rgba(255, 82, 82, 0.08); }
+.upl-page-jump-input::-webkit-outer-spin-button,
+.upl-page-jump-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.upl-page-jump-input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.upl-page-jump-go { height: 32px; padding: 0 10px; border-radius: 10px; border: 1px solid transparent; background: rgba(0,0,0,0.05); color: var(--upl-text-sub); cursor: pointer; font-weight: 700; }
+.upl-page-jump-go:hover:not(:disabled) { background: rgba(0,0,0,0.1); color: var(--upl-text-main); }
+[data-theme='dark'] .upl-page-jump-go { background: rgba(255,255,255,0.08); }
+.upl-page-jump-go:disabled { opacity: 0.3; cursor: not-allowed; }
+.upl-scroll-top-btn { position: absolute; bottom: 80px; right: 32px; width: 44px; height: 44px; border-radius: 50%; background: var(--upl-glass-bg); backdrop-filter: blur(10px); color: var(--upl-text-main); border: 1px solid var(--upl-glass-border); box-shadow: 0 8px 24px rgba(0,0,0,0.15); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 50; opacity: 0; transform: translateY(12px) scale(0.9); pointer-events: none; transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1), transform 180ms cubic-bezier(0.2, 0, 0, 1); }
+.upl-scroll-top-btn.is-visible { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+.upl-scroll-top-btn:hover { background: var(--upl-primary-color); color: white; transform: translateY(-2px); }

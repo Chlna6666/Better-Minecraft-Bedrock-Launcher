@@ -27,5 +27,8 @@ dist-ssr
 src-tauri/BMCBL/
 src-tauri/target/
 src-tauri/gen/schemas
+src-tauri/vendor/
+src-tauri/vendor/git/
 pull.bat
 /src-tauri/src/core/minecraft/gdk/Cik/
+/.aiassistant/

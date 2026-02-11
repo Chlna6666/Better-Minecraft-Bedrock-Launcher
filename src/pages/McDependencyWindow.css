@@ -1,0 +1,125 @@
+.mcdeps-root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+.mcdeps-titlebar {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: var(--nav-bg);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  user-select: none;
+}
+
+.mcdeps-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mcdeps-titlebar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mcdeps-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.mcdeps-main {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.mcdeps-content {
+  font-size: 13px;
+  opacity: 0.9;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.mcdeps-missing {
+  background: var(--card-bg);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.mcdeps-warning {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #b45309;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+[data-theme='dark'] .mcdeps-warning {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+
+.mcdeps-missing ul {
+  margin: 8px 0 0 16px;
+}
+
+.mcdeps-progress {
+  height: 10px;
+  background: rgba(150, 150, 150, 0.25);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.mcdeps-progress > div {
+  height: 100%;
+  background: linear-gradient(90deg, #6ee7ff, #7c3aed);
+  width: 0%;
+  transition: width 150ms ease;
+}
+
+.mcdeps-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.mcdeps-logs {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  font-size: 12px;
+  background: var(--card-bg);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 12px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.mcdeps-done-ok {
+  color: #34d399;
+}
+
+.mcdeps-done-fail {
+  color: #fb7185;
+}
+.mcdeps-body {
+  background: var(--bg-color) !important;
+}
+
+.mcdeps-body #root {
+  background: var(--bg-color) !important;
+}

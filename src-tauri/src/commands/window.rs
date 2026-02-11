@@ -1,5 +1,8 @@
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use tracing::error;
+use crate::StartupImportState;
+
 
 pub fn minimize_launcher_window(app: &AppHandle) {
     if let Some(window) = app.get_window("main") {
@@ -17,4 +20,11 @@ pub fn close_launcher_window(app: &AppHandle) {
     } else {
         error!("未找到名为 'main' 的窗口");
     }
+}
+
+
+#[tauri::command]
+pub fn get_startup_import_file(state: tauri::State<StartupImportState>) -> Option<String> {
+    let mut lock = state.0.lock().unwrap();
+    lock.take()
 }

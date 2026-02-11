@@ -2,120 +2,178 @@
 use crate::downloads::md5::verify_md5;
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{finish_task, is_cancelled, set_total, update_progress};
+use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
-use std::path::Path;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
-use tokio::time::{sleep, Duration};
-use tracing::debug;
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Instant;
+use tokio::sync::mpsc;
+use tracing::{debug, error, warn};
+
+// 单线程模式下，通道可以小一点
+const CHANNEL_CAPACITY: usize = 50;
+const BATCH_SIZE_THRESHOLD: usize = 512 * 1024;
+const DISK_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 pub async fn download_file(
     client: reqwest::Client,
     task_id: &str,
     url: &str,
     dest: impl AsRef<Path>,
-    headers: Option<HeaderMap>, // [新增]
+    headers: Option<HeaderMap>,
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
+    let dest_buf = dest.as_ref().to_path_buf();
     let mut retry = 0u8;
+
     loop {
         debug!(
-            "开始下载：task={} url={}，目标={:?}，重试={}，md5={:?}",
-            task_id,
-            url,
-            dest.as_ref(),
-            retry,
-            md5_expected
+            "开始单线程下载 (I/O Offload): task={} url={}，重试={}",
+            task_id, url, retry
         );
 
-        // 构建请求并附加 Headers
         let mut req_builder = client.get(url);
         if let Some(h) = &headers {
             req_builder = req_builder.headers(h.clone());
         }
 
-        let resp = req_builder.send().await;
-
-        match resp {
+        match req_builder.send().await {
             Ok(resp) => {
                 let resp = resp.error_for_status()?;
                 let total = resp.content_length();
-                // inform task manager total if known
-                if let Some(t) = total {
-                    set_total(&task_id, Some(t));
-                } else {
-                    set_total(&task_id, None);
-                }
+                set_total(&task_id, total);
 
-                // 把文件 I/O 错误映射为 CoreError::Io
-                let mut file = File::create(dest.as_ref())
-                    .await
-                    .map_err(|e| CoreError::Io(e))?;
+                // =========================================================
+                // 1. 启动独立的磁盘写入线程
+                // =========================================================
+                let (tx, mut rx) = mpsc::channel::<Vec<Bytes>>(CHANNEL_CAPACITY);
+                let write_dest = dest_buf.clone();
+                let task_id_clone = task_id.to_string();
+
+                let writer_handle = thread::spawn(move || -> Result<(), std::io::Error> {
+                    let file = OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(&write_dest)?;
+
+                    // [核心优化] 预分配空间
+                    if let Some(len) = total {
+                        if let Err(e) = file.set_len(len) {
+                            warn!("预分配磁盘空间失败: {}", e);
+                        }
+                    }
+
+                    // 4MB 缓冲区
+                    let mut writer = BufWriter::with_capacity(DISK_BUFFER_SIZE, file);
+
+                    while let Some(batch) = rx.blocking_recv() {
+                        for chunk in batch {
+                            writer.write_all(&chunk)?;
+                        }
+                    }
+                    writer.flush()?;
+                    Ok(())
+                });
+
+                // =========================================================
+                // 2. 网络下载与批处理
+                // =========================================================
                 let mut stream = resp.bytes_stream();
+                let mut pending_bytes = 0u64;
+                let mut last_update = Instant::now();
 
-                // track overall bytes
-                while let Some(chunk) = stream.next().await {
-                    let c = chunk.map_err(|e| CoreError::Request(e))?;
-                    // 写入错误同样映射为 CoreError::Io
-                    file.write_all(&c).await.map_err(|e| CoreError::Io(e))?;
+                let mut current_batch: Vec<Bytes> = Vec::with_capacity(16);
+                let mut current_batch_size = 0;
 
-                    // 更新任务进度：传增量，total 可选
-                    update_progress(&task_id, c.len() as u64, total, Some("downloading"));
+                while let Some(item) = stream.next().await {
+                    let chunk = match item {
+                        Ok(c) => c,
+                        Err(e) => {
+                            return Err(CoreError::Request(e));
+                        }
+                    };
+
+                    let len = chunk.len();
+                    current_batch.push(chunk);
+                    current_batch_size += len;
+                    pending_bytes += len as u64;
+
+                    if current_batch_size >= BATCH_SIZE_THRESHOLD {
+                        if tx.send(current_batch).await.is_err() {
+                            return Err(CoreError::Io(std::io::Error::new(
+                                std::io::ErrorKind::BrokenPipe,
+                                "Disk writer thread died"
+                            )));
+                        }
+                        current_batch = Vec::with_capacity(16);
+                        current_batch_size = 0;
+                    }
+
+                    if last_update.elapsed().as_millis() > 200 {
+                        update_progress(&task_id, pending_bytes, total, Some("downloading"));
+                        pending_bytes = 0;
+                        last_update = Instant::now();
+                    }
 
                     if is_cancelled(&task_id) {
-                        debug!("检测到取消：停止下载（task={}, url={}）", task_id, url);
-                        // 这里可以选择删除临时文件或保留
-                        // 标记任务状态
-                        finish_task(&task_id, "cancelled", Some("user cancelled".to_string()));
+                        finish_task(&task_id, "cancelled", Some("user cancelled".into()));
                         return Ok(CoreResult::Cancelled);
                     }
                 }
 
-                file.flush().await.map_err(|e| CoreError::Io(e))?;
-
-                // 最后一条进度：把 done 设置为 total（如果 known）
-                if let Some(t) = total {
-                    set_total(&task_id, Some(t));
+                if !current_batch.is_empty() {
+                    let _ = tx.send(current_batch).await;
                 }
 
-                // md5 校验（如果提供）
+                drop(tx);
+
+                if pending_bytes > 0 {
+                    update_progress(&task_id, pending_bytes, total, Some("downloading"));
+                }
+
+                // =========================================================
+                // 3. 等待结果
+                // =========================================================
+                match writer_handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        finish_task(&task_id, "error", Some(format!("Disk write error: {}", e)));
+                        return Err(CoreError::Io(e));
+                    }
+                    Err(_) => {
+                        finish_task(&task_id, "error", Some("Writer thread panic".into()));
+                        return Err(CoreError::Other("Writer thread panic".into()));
+                    }
+                }
+
                 if let Some(expected) = md5_expected {
-                    debug!("开始 MD5 校验：文件={:?}，期望={}", dest.as_ref(), expected);
-                    match verify_md5(dest.as_ref(), expected).await {
-                        Ok(true) => {
-                            debug!("MD5 校验通过：{:?}", dest.as_ref());
-                        }
+                    update_progress(&task_id, 0, total, Some("verifying"));
+                    match verify_md5(&dest_buf, expected).await {
+                        Ok(true) => debug!("MD5 OK"),
                         Ok(false) => {
-                            debug!("MD5 不匹配：文件={:?}，期望={}", dest.as_ref(), expected);
-                            finish_task(&task_id, "error", Some("md5 mismatch".to_string()));
-                            return Err(CoreError::ChecksumMismatch(format!(
-                                "md5 mismatch for {:?}, expected {}",
-                                dest.as_ref(),
-                                expected
-                            )));
+                            finish_task(&task_id, "error", Some("md5 mismatch".into()));
+                            return Err(CoreError::ChecksumMismatch(format!("expected {}", expected)));
                         }
                         Err(e) => {
-                            debug!("计算 MD5 失败：文件={:?}，错误={}", dest.as_ref(), e);
-                            finish_task(&task_id, "error", Some("md5 compute failed".to_string()));
+                            finish_task(&task_id, "error", Some("md5 error".into()));
                             return Err(CoreError::Io(e));
                         }
                     }
                 }
 
-                let path_str = dest.as_ref().to_string_lossy().to_string();
-                finish_task(&task_id, "completed", Some(path_str));
+                finish_task(&task_id, "completed", Some(dest_buf.to_string_lossy().to_string()));
                 return Ok(CoreResult::Success(()));
             }
             Err(e) if retry < 3 => {
                 retry += 1;
-                debug!("下载出错，准备重试（第 {} 次）：{}", retry, e);
-                // 标记错误信息（但不结束任务）
-                finish_task(&task_id, "error", Some(format!("download error: {}", e)));
-                sleep(Duration::from_secs(1)).await;
+                debug!("下载重试 {}/3: {}", retry, e);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
             Err(e) => {
-                debug!("下载最终失败：{}", e);
                 finish_task(&task_id, "error", Some(format!("{}", e)));
                 return Err(CoreError::Request(e));
             }

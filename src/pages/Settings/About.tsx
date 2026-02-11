@@ -6,7 +6,6 @@ import { useTranslation } from 'react-i18next';
 import { ExternalLink, RefreshCw } from 'lucide-react';
 import { motion } from "framer-motion";
 
-// 引入图片资源 (保持不变)
 import Chlan6666 from "../../assets/img/about/Chlna6666.jpg";
 import github from "../../assets/img/about/github.png";
 import MCAPPX from "../../assets/img/about/MCAPPX.webp";
@@ -15,6 +14,7 @@ import BedrockLauncherCore from "../../assets/img/about/BedrockLauncher.Core.web
 import Fufuha from "../../assets/img/about/Fufuha.jpg";
 import Ustiniana1641 from "../../assets/img/about/Ustiniana1641.jpg";
 import afdian from "../../assets/img/about/afdian.png";
+import MCIM from "../../assets/img/about/MCIM.png";
 import logo from "../../assets/logo.png";
 
 // 引入组件 (保持不变)
@@ -128,7 +128,8 @@ export default function About() {
     } = useUpdaterWithModal({
         owner: "Chlna6666",
         repo: "Better-Minecraft-Bedrock-Launcher",
-        autoCheck: false
+        autoCheck: false,
+        autoOpen: true
     });
 
     useEffect(() => {
@@ -191,7 +192,7 @@ export default function About() {
                 <motion.div variants={itemVariants} className="about-card app-card">
                     <img src={logo} alt="App Icon" className="card-icon square" />
                     <div className="card-content">
-                        <h4>{t("AboutSection.app.name")}</h4>
+                        <h4>Better-Minecraft-Bedrock-Launcher</h4>
                         <p className="version-info">
                             <span>v{appVersion}</span>
                             <span className="divider">|</span>
@@ -219,6 +220,7 @@ export default function About() {
                     {[
                         { img: Tauri, title: "Tauri", desc: t("AboutSection.thanks.tauri"), link: 'https://v2.tauri.app/', isSquare: true },
                         { img: MCAPPX, title: "MCAPPX", desc: t("AboutSection.thanks.MCAPPX"), link: 'https://www.mcappx.com/', isSquare: true },
+                        { img: MCIM, title: "MCIM", desc: t("AboutSection.thanks.mcim"), link: null, isSquare: true },
                         {
                             img: BedrockLauncherCore,
                             title: "BedrockLauncher.Core",

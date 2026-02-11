@@ -76,6 +76,20 @@ pub fn quit_app(app_handle: AppHandle) {
     app_handle.exit(0);
 }
 
+#[tauri::command]
+pub fn restart_app(app_handle: AppHandle) {
+    info!("restart_app 被调用，准备重启应用。");
+    match std::env::current_exe() {
+        Ok(exe) => {
+            let _ = Command::new(exe).spawn();
+        }
+        Err(e) => {
+            warn!("无法获取当前 exe 路径，改为直接退出: {:?}", e);
+        }
+    }
+    app_handle.exit(0);
+}
+
 /// 从 tag 中提取第一个可解析的 semver 子串
 fn extract_semver_substring(tag: &str) -> Option<String> {
     let t = tag.trim();

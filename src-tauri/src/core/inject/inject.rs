@@ -1,192 +1,235 @@
-use anyhow::{anyhow, Result};
-use std::path::PathBuf;
-use std::{mem, os::windows::ffi::OsStrExt, path::Path};
+use anyhow::{anyhow, Context, Result};
+use std::ffi::OsStr;
+use std::mem;
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
 use windows::core::{PCSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::Security::Authorization::{
-    ConvertStringSidToSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
-    EXPLICIT_ACCESS_W, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
+use windows::Win32::System::Diagnostics::Debug::{
+    GetThreadContext, SetThreadContext, WriteProcessMemory, CONTEXT, CONTEXT_FLAGS,
 };
-use windows::Win32::Security::{ACE_FLAGS, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
-use windows::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
-use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-};
-use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Memory::{
-    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
+    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
 };
 use windows::Win32::System::Threading::{
-    CreateRemoteThread, GetExitCodeThread, OpenProcess, WaitForSingleObject, INFINITE,
-    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_WRITE,
+    CreateProcessW, CreateRemoteThread, ResumeThread, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_NEW_CONSOLE, // [核心] 确保引入此标志
+    INFINITE, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
-struct RemoteHandle(HANDLE);
-impl Drop for RemoteHandle {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.0);
-        }
-    }
-}
+pub type InjectProgressCb = Arc<dyn Fn(String) + Send + Sync>;
 
-struct RemoteMemory<'a> {
-    process: &'a RemoteHandle,
-    address: *mut std::ffi::c_void,
-}
-impl<'a> Drop for RemoteMemory<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = VirtualFreeEx(self.process.0, self.address, 0, MEM_RELEASE);
-        }
-    }
-}
+// 在你的启动器代码中修改
+pub fn grant_all_application_packages_access(path: &Path) -> anyhow::Result<()> {
+    // S-1-15-2-1: All Application Packages (所有应用程序包)
+    // S-1-5-32-545: Users (普通用户组)
 
-pub fn find_pid(exe_name: &str) -> Result<u32> {
-    unsafe {
-        let raw_snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?;
-        if raw_snap.is_invalid() {
-            return Err(anyhow!(
-                "CreateToolhelp32Snapshot 返回 INVALID_HANDLE_VALUE"
-            ));
-        }
-        let snapshot = RemoteHandle(raw_snap);
-        let mut entry = PROCESSENTRY32W::default();
-        entry.dwSize = mem::size_of::<PROCESSENTRY32W>() as u32;
-        Process32FirstW(snapshot.0, &mut entry)?;
-        loop {
-            let name = String::from_utf16_lossy(&entry.szExeFile)
-                .trim_end_matches('\0')
-                .to_string();
-            if name.eq_ignore_ascii_case(exe_name) {
-                return Ok(entry.th32ProcessID);
-            }
-            if Process32NextW(snapshot.0, &mut entry).is_err() {
-                break;
-            }
-        }
-    }
-    Err(anyhow!("未找到名为 `{}` 的进程", exe_name))
-}
+    let output = Command::new("icacls")
+        .arg(path)
+        .arg("/grant")
+        .arg("*S-1-15-2-1:(OI)(CI)M") // [安全修复] 降级为 Modify (M)，游戏只需读写，不需要完全控制
+        .arg("/grant")
+        .arg("*S-1-5-32-545:(OI)(CI)F") // [Bug修复] 给予用户组 Full (F) 权限，确保用户可以手动删除文件
+        .arg("/T") // 递归应用到子文件
+        .arg("/Q") // 静默模式
+        .output()
+        .map_err(|e| anyhow::Error::msg(format!("Failed to execute icacls: {}", e)))?;
 
-fn add_acl_for_sid(path: &Path, sid_str: &str) -> Result<()> {
-    unsafe {
-        let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let sid_utf16: Vec<u16> = sid_str.encode_utf16().chain(Some(0)).collect();
-        let mut sid_ptr: PSID = PSID(std::ptr::null_mut());
-        ConvertStringSidToSidW(PWSTR(sid_utf16.as_ptr() as *mut _), &mut sid_ptr)?;
-
-        let mut ea = EXPLICIT_ACCESS_W::default();
-        ea.grfAccessPermissions = (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE).0;
-        ea.grfAccessMode = SET_ACCESS;
-        ea.grfInheritance = ACE_FLAGS(0);
-        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-        ea.Trustee.ptstrName = PWSTR(sid_ptr.0 as *mut u16);
-
-        let mut p_old_dacl: *mut windows::Win32::Security::ACL = std::ptr::null_mut();
-        let mut p_sec_desc: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
-        let _ = GetNamedSecurityInfoW(
-            PWSTR(wide_path.as_ptr() as *mut _),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            None,
-            None,
-            Some(&mut p_old_dacl),
-            None,
-            &mut p_sec_desc,
-        );
-
-        let mut p_new_dacl: *mut windows::Win32::Security::ACL = std::ptr::null_mut();
-        let _ = SetEntriesInAclW(Some(&[ea]), Some(p_old_dacl), &mut p_new_dacl);
-        let _ = SetNamedSecurityInfoW(
-            PWSTR(wide_path.as_ptr() as *mut _),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            None,
-            None,
-            Some(p_new_dacl),
-            None,
-        );
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        // 记录警告但不中断流程
+        eprintln!("Warning: icacls warning for {:?}: {}", path, err);
     }
     Ok(())
 }
 
-pub async fn fast_inject(pid: u32, _dll_path: PathBuf, wide: Vec<u16>) -> Result<()> {
-    // 所有阻塞 WinAPI 操作放到 spawn_blocking
+pub async fn launch_win32_with_injection(
+    exe_path: &str,
+    args: Option<&str>,
+    dll_paths: Vec<String>,
+    enable_console: bool,
+    on_progress: Option<InjectProgressCb>,
+) -> Result<u32> {
+    let exe_path_owned = exe_path.to_string();
+    let args_owned = args.map(|s| s.to_string());
+    let cb = on_progress.clone();
+
+    tokio::task::spawn_blocking(move || -> Result<u32> {
+        unsafe {
+            let log = |msg: &str| { if let Some(c) = &cb { c(msg.to_string()); } };
+
+            let mut si = STARTUPINFOW::default();
+            si.cb = mem::size_of::<STARTUPINFOW>() as u32;
+            let mut pi = PROCESS_INFORMATION::default();
+
+            // [核心修正]
+            // 1. 基础标志：挂起进程 (为了注入)
+            let mut creation_flags = CREATE_SUSPENDED;
+
+            // 2. 控制台标志：如果启用，则强制请求新窗口
+            // 只要加上这个标志，Windows 就会负责弹出默认的终端应用 (Terminal 或 CMD)
+            if enable_console {
+                creation_flags |= CREATE_NEW_CONSOLE;
+                log("启动标志: CREATE_NEW_CONSOLE (请求独立终端窗口)");
+            }
+
+            let mut cmd_line_str = format!("\"{}\"", exe_path_owned);
+            if let Some(a) = &args_owned {
+                cmd_line_str.push_str(" ");
+                cmd_line_str.push_str(a);
+            }
+            let wide_cmd: Vec<u16> = OsStr::new(&cmd_line_str).encode_wide().chain(Some(0)).collect();
+
+            CreateProcessW(
+                None,
+                Option::from(PWSTR(wide_cmd.as_ptr() as *mut _)),
+                None,
+                None,
+                false, // [关键] 设为 false，彻底切断与启动器终端的继承关系，保证窗口独立
+                creation_flags,
+                None,
+                None,
+                &si,
+                &mut pi,
+            ).map_err(|e| anyhow!("CreateProcessW failed: {:?}", e))?;
+
+            let h_proc = pi.hProcess;
+            let h_thread = pi.hThread;
+            let pid = pi.dwProcessId;
+            log(&format!("进程已挂起启动 PID: {}", pid));
+
+            if !dll_paths.is_empty() {
+                let h_kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
+                let load_lib_addr = GetProcAddress(h_kernel, PCSTR(b"LoadLibraryW\0".as_ptr()))
+                    .ok_or_else(|| anyhow!("LoadLibraryW not found"))? as u64;
+
+                // [说明] 移除了 AllocConsole 的注入逻辑
+                // 因为我们已经使用了 CREATE_NEW_CONSOLE，系统会在进程启动时自动分配控制台
+
+                let mut path_addrs = Vec::new();
+                for path in &dll_paths {
+                    let wpath: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
+                    let len = wpath.len() * 2;
+                    let mem = VirtualAllocEx(h_proc, None, len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                    if !mem.is_null() {
+                        WriteProcessMemory(h_proc, mem, wpath.as_ptr() as _, len, None)?;
+                        path_addrs.push(mem as u64);
+                        log(&format!("注入准备: {}", path));
+                    }
+                }
+
+                let mut ctx: CONTEXT = mem::zeroed();
+                ctx.ContextFlags = CONTEXT_FLAGS(0x100001);
+                GetThreadContext(h_thread, &mut ctx)?;
+
+                let mut shellcode = Vec::new();
+                shellcode.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28, 0x50, 0x53, 0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53]);
+
+                for path_addr in path_addrs {
+                    shellcode.extend_from_slice(&[0x48, 0xB9]);
+                    shellcode.extend_from_slice(&path_addr.to_le_bytes());
+                    shellcode.extend_from_slice(&[0x48, 0xB8]);
+                    shellcode.extend_from_slice(&load_lib_addr.to_le_bytes());
+                    shellcode.extend_from_slice(&[0xFF, 0xD0]);
+                }
+
+                shellcode.extend_from_slice(&[0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5A, 0x59, 0x5B, 0x58, 0x48, 0x83, 0xC4, 0x28]);
+                shellcode.extend_from_slice(&[0x48, 0xB8]);
+                shellcode.extend_from_slice(&ctx.Rip.to_le_bytes());
+                shellcode.extend_from_slice(&[0xFF, 0xE0]);
+
+                let shellcode_mem = VirtualAllocEx(h_proc, None, shellcode.len(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                WriteProcessMemory(h_proc, shellcode_mem, shellcode.as_ptr() as _, shellcode.len(), None)?;
+
+                ctx.Rip = shellcode_mem as u64;
+                SetThreadContext(h_thread, &ctx)?;
+            }
+
+            ResumeThread(h_thread);
+            let _ = CloseHandle(h_proc);
+            let _ = CloseHandle(h_thread);
+            Ok(pid)
+        }
+    }).await?
+}
+
+// inject_existing_process 代码保持原样，因为它是针对已存在进程的
+pub async fn inject_existing_process(
+    pid: u32,
+    dll_path: String,
+    on_progress: Option<InjectProgressCb>,
+    skip_acl: bool,
+    enable_console: bool,
+) -> Result<()> {
+    let cb = on_progress.clone();
+
     tokio::task::spawn_blocking(move || -> Result<()> {
         unsafe {
-            // 打开目标进程
-            let h_proc = OpenProcess(
-                PROCESS_QUERY_INFORMATION
-                    | PROCESS_VM_WRITE
-                    | PROCESS_VM_OPERATION
-                    | PROCESS_CREATE_THREAD,
+            let log = |msg: &str| { if let Some(c) = &cb { c(msg.to_string()); } };
+
+            if !skip_acl {
+                let path_obj = Path::new(&dll_path);
+                let _ = grant_all_application_packages_access(path_obj);
+            }
+
+            let h_proc = windows::Win32::System::Threading::OpenProcess(
+                windows::Win32::System::Threading::PROCESS_ALL_ACCESS,
                 false,
                 pid,
-            )
-            .map_err(|e| anyhow!("OpenProcess failed: {:?}", e))?;
+            ).map_err(|e| anyhow!("OpenProcess failed: {:?}", e))?;
 
-            // 计算写入字节数（u16 * 2）
-            let size_in_bytes = wide.len() * std::mem::size_of::<u16>();
+            // 对现有进程，只能尝试 RemoteThread 调用 AllocConsole/FreeConsole
+            if enable_console {
+                let h_kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
 
-            // 分配远程内存
-            let remote_addr = VirtualAllocEx(
-                h_proc,
-                None,
-                size_in_bytes,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_READWRITE,
-            );
-            if remote_addr.is_null() {
+                if let Some(free_console_addr) = GetProcAddress(h_kernel, PCSTR(b"FreeConsole\0".as_ptr())) {
+                    let h_free = CreateRemoteThread(
+                        h_proc, None, 0, Some(mem::transmute(free_console_addr)), None, 0, None
+                    );
+                    if let Ok(h) = h_free { WaitForSingleObject(h, 1000); CloseHandle(h); }
+                }
+
+                if let Some(alloc_console_addr) = GetProcAddress(h_kernel, PCSTR(b"AllocConsole\0".as_ptr())) {
+                    let h_console_thread = CreateRemoteThread(
+                        h_proc, None, 0, Some(mem::transmute(alloc_console_addr)), None, 0, None
+                    );
+
+                    if let Ok(h) = h_console_thread {
+                        WaitForSingleObject(h, INFINITE);
+                        let _ = CloseHandle(h);
+                    }
+                }
+            }
+
+            let wide_path: Vec<u16> = OsStr::new(&dll_path).encode_wide().chain(Some(0)).collect();
+            let len = wide_path.len() * 2;
+            let remote_mem = VirtualAllocEx(h_proc, None, len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+
+            if remote_mem.is_null() {
+                let _ = CloseHandle(h_proc);
                 return Err(anyhow!("VirtualAllocEx failed"));
             }
+            WriteProcessMemory(h_proc, remote_mem, wide_path.as_ptr() as _, len, None)?;
 
-            // 写入远程内存（注意：WriteProcessMemory 在你的环境中返回 Result，因此用 map_err ? 来处理）
-            WriteProcessMemory(h_proc, remote_addr, wide.as_ptr() as _, size_in_bytes, None)
-                .map_err(|e| anyhow!("WriteProcessMemory failed: {:?}", e))?;
-
-            // 获取 LoadLibraryW 地址
-            let h_kernel = GetModuleHandleA(PCSTR(b"kernel32.dll\0".as_ptr()))
-                .map_err(|e| anyhow!("GetModuleHandleA failed: {:?}", e))?;
-            let proc_addr = GetProcAddress(h_kernel, PCSTR(b"LoadLibraryW\0".as_ptr()))
+            let h_kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
+            let load_lib = GetProcAddress(h_kernel, PCSTR(b"LoadLibraryW\0".as_ptr()))
                 .ok_or_else(|| anyhow!("LoadLibraryW not found"))?;
 
-            // 创建远程线程
             let h_thread = CreateRemoteThread(
-                h_proc,
-                None,
-                0,
-                Some(std::mem::transmute(proc_addr)),
-                Some(remote_addr),
-                0,
-                None,
-            )
-            .map_err(|e| anyhow!("CreateRemoteThread failed: {:?}", e))?;
+                h_proc, None, 0, Some(mem::transmute(load_lib)), Some(remote_mem), 0, None
+            ).map_err(|e| anyhow!("CreateRemoteThread failed: {:?}", e))?;
 
-            // 等待线程结束
             WaitForSingleObject(h_thread, INFINITE);
 
-            // 获取线程返回值（LoadLibrary 返回模块句柄，0 表示失败）
-            let mut exit_code: u32 = 0;
-            GetExitCodeThread(h_thread, &mut exit_code)
-                .map_err(|e| anyhow!("GetExitCodeThread failed: {:?}", e))?;
-            if exit_code == 0 {
-                // 清理远程内存（可选）
-                let _ = VirtualFreeEx(h_proc, remote_addr, 0, MEM_RELEASE);
-                return Err(anyhow!("DLL injection LoadLibraryW returned 0"));
-            }
+            let _ = VirtualFreeEx(h_proc, remote_mem, 0, MEM_RELEASE);
+            let _ = CloseHandle(h_thread);
+            let _ = CloseHandle(h_proc);
 
-            // 可选清理：释放远程内存、关闭句柄等（视需要）
-            // let _ = VirtualFreeEx(h_proc, remote_addr, 0, MEM_RELEASE);
-            // CloseHandle(h_thread);
-            // CloseHandle(h_proc);
+            log(&format!("注入完成: {}", dll_path));
+            Ok(())
         }
-
-        Ok(())
-    })
-    .await??;
-
-    Ok(())
+    }).await?
 }

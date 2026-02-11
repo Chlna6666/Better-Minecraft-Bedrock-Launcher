@@ -1,5 +1,4 @@
 import React, { ReactNode, useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, ChevronRight, Search, RefreshCw, ArrowUp } from 'lucide-react';
 import './UnifiedPageLayout.css';
 
@@ -14,7 +13,7 @@ interface PaginationConfig {
     currentPage: number;
     totalPages: number;
     onPageChange: (page: number) => void;
-    t: (key: string) => string;
+    t?: (key: string) => string;
 }
 
 interface SearchConfig {
@@ -45,31 +44,18 @@ interface UnifiedPageLayoutProps {
     hideScrollbar?: boolean;
 }
 
-// --- Internal Pagination Component ---
+// --- Sub-Component: Pagination ---
 const Pagination = React.memo(({ config }: { config: PaginationConfig }) => {
     const { currentPage, totalPages, onPageChange, t } = config;
-    const [jumpInput, setJumpInput] = useState("");
-
-    useEffect(() => { setJumpInput(""); }, [currentPage]);
-
-    const handleJump = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter') {
-            const page = parseInt(jumpInput, 10);
-            if (!isNaN(page) && page >= 1 && page <= totalPages) {
-                onPageChange(page);
-            }
-        }
-    };
+    const [jumpInput, setJumpInput] = useState<string>("");
 
     const paginationRange = useMemo(() => {
         const range = [];
         const delta = 1;
-        const rangeLeft = currentPage - delta;
-        const rangeRight = currentPage + delta;
         for (let i = 1; i <= totalPages; i++) {
-            if (i === 1 || i === totalPages || (i >= rangeLeft && i <= rangeRight)) {
+            if (i === 1 || i === totalPages || (i >= currentPage - delta && i <= currentPage + delta)) {
                 range.push(i);
-            } else if (i === rangeLeft - 1 || i === rangeRight + 1) {
+            } else if (i === currentPage - delta - 1 || i === currentPage + delta + 1) {
                 range.push("...");
             }
         }
@@ -78,66 +64,172 @@ const Pagination = React.memo(({ config }: { config: PaginationConfig }) => {
 
     if (totalPages <= 1) return null;
 
+    const clampPage = (page: number) => Math.min(totalPages, Math.max(1, page));
+
+    const jumpTo = () => {
+        const parsed = Number(jumpInput);
+        if (!Number.isFinite(parsed)) return;
+        const target = clampPage(Math.trunc(parsed));
+        onPageChange(target);
+        setJumpInput("");
+    };
+
     return (
         <div className="upl-footer">
-            <button className="upl-page-btn" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1} title={t('DownloadPage.pagination_prev') || "Prev"}>
-                <ChevronLeft size={18} />
+            <button className="upl-page-btn" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1}>
+                <ChevronLeft size={16} />
             </button>
-            {paginationRange.map((page, index) => {
-                if (page === "...") return <span key={`dots-${index}`} style={{ padding: '0 8px', opacity: 0.5 }}>...</span>;
-                return (
-                    <button key={`pg-btn-${page}`} className={`upl-page-btn ${currentPage === page ? 'active' : ''}`} onClick={() => onPageChange(page as number)}>
-                        {page}
-                    </button>
-                );
-            })}
-            <button className="upl-page-btn" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} title={t('DownloadPage.pagination_next') || "Next"}>
-                <ChevronRight size={18} />
+            {paginationRange.map((page, i) => (
+                <React.Fragment key={i}>
+                    {page === "..." ? (
+                        <span className="upl-dots">...</span>
+                    ) : (
+                        <button
+                            className={`upl-page-btn ${currentPage === page ? 'active' : ''}`}
+                            onClick={() => onPageChange(page as number)}
+                        >
+                            {page}
+                        </button>
+                    )}
+                </React.Fragment>
+            ))}
+            <button className="upl-page-btn" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages}>
+                <ChevronRight size={16} />
             </button>
-            <div className="upl-pagination-jumper">
-                {t('DownloadPage.pagination_goto') || "Go to"}
-                <input type="number" className="upl-page-input" value={jumpInput} onChange={(e) => setJumpInput(e.target.value)} onKeyDown={handleJump} placeholder={String(currentPage)} min={1} max={totalPages} />
+
+            <div className="upl-page-jump" aria-label="page-jump">
+                <span className="upl-page-jump-label">{t ? t('DownloadPage.pagination_goto') : 'Go to'}</span>
+                <input
+                    className="upl-page-jump-input"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={totalPages}
+                    value={jumpInput}
+                    onChange={(e) => setJumpInput(e.target.value)}
+                    onWheel={(e) => {
+                        (e.currentTarget as HTMLInputElement).blur();
+                    }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') jumpTo();
+                    }}
+                    placeholder={`${currentPage}/${totalPages}`}
+                />
+                <button
+                    className="upl-page-jump-go"
+                    type="button"
+                    onClick={jumpTo}
+                    disabled={!jumpInput.trim()}
+                >
+                    {t ? t('DownloadPage.pagination_go') : 'Go'}
+                </button>
             </div>
         </div>
     );
 });
 
-// --- Main Layout Component ---
+// --- Sub-Component: Header (Optimized) ---
+const LayoutHeader = React.memo(({
+                                     tabs, activeTab, onTabChange, searchConfig, refreshConfig, headerActions
+                                 }: Pick<UnifiedPageLayoutProps, 'tabs' | 'activeTab' | 'onTabChange' | 'searchConfig' | 'refreshConfig' | 'headerActions'>) => {
+
+    // [优化] 使用 Ref 和 Style 实现高性能滑块，避免 Framer Motion 的 layoutId 计算
+    const [pillStyle, setPillStyle] = useState<{ left: number; width: number; opacity: number }>({ left: 0, width: 0, opacity: 0 });
+    const tabsRef = useRef<{ [key: string]: HTMLButtonElement | null }>({});
+
+    useLayoutEffect(() => {
+        const currentTabEl = tabsRef.current[activeTab];
+        if (currentTabEl) {
+            setPillStyle({
+                left: currentTabEl.offsetLeft,
+                width: currentTabEl.offsetWidth,
+                opacity: 1
+            });
+        }
+    }, [activeTab, tabs]); // tabs 依赖确保初始化时能正确获取
+
+    return (
+        <div className="upl-header">
+            {/* 左侧：Tab 切换 */}
+            <div className="upl-header-left">
+                {/* 必须添加 position: relative 以便滑块定位。虽然 CSS 中可能有，但内联样式更保险 */}
+                <div className="upl-tab-switcher" style={{ position: 'relative' }}>
+
+                    {/* [核心修改] 独立的滑块层，兄弟节点，不再嵌套在 Button 内部 */}
+                    <div
+                        className="upl-active-pill"
+                        style={{
+                            position: 'absolute',
+                            left: pillStyle.left,
+                            width: pillStyle.width,
+                            opacity: pillStyle.opacity,
+                            height: 'calc(100% - 6px)', // 减去 padding (3px top + 3px bottom)
+                            top: '3px',
+                            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)', // 顺滑的 CSS 过渡
+                            pointerEvents: 'none', // 防止遮挡点击
+                            inset: 'auto' // 覆盖 CSS 中的 inset: 0
+                        }}
+                    />
+
+                    {tabs.map((tab) => {
+                        const isActive = activeTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                ref={(el) => (tabsRef.current[tab.id] = el)}
+                                className={`upl-tab-btn ${isActive ? 'active' : ''}`}
+                                onClick={() => onTabChange(tab.id)}
+                            >
+                                {/* 移除了内部的 motion.div */}
+                                {tab.icon && <span className="upl-tab-icon">{tab.icon}</span>}
+                                <span className="upl-tab-text">{tab.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* 中间：搜索框 (Flex 1) */}
+            <div className="upl-header-middle">
+                {searchConfig && (
+                    <div className="upl-search-wrapper">
+                        <Search className="upl-search-icon" />
+                        <input
+                            type="text"
+                            className="upl-search-input"
+                            placeholder={searchConfig.placeholder || "Search..."}
+                            value={searchConfig.value}
+                            onChange={(e) => searchConfig.onChange(e.target.value)}
+                        />
+                    </div>
+                )}
+            </div>
+
+            {/* 右侧：自定义操作 + 刷新 */}
+            <div className="upl-header-right">
+                {headerActions}
+
+                {refreshConfig && (
+                    <button className="upl-action-icon-btn" onClick={refreshConfig.onRefresh} title={refreshConfig.title || "Refresh"}>
+                        <RefreshCw size={18} className={refreshConfig.loading ? "upl-spin" : ""} />
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+});
+
+// --- Main Component ---
 export default function UnifiedPageLayout({
-                                              activeTab,
-                                              onTabChange,
-                                              tabs,
-                                              headerActions,
-                                              children,
-                                              className = "",
-                                              useInnerContainer = true,
-                                              pagination,
-                                              contentRef,
-                                              searchConfig,
-                                              refreshConfig,
-                                              enableScrollTop = false,
-                                              hideScrollbar = false
+                                              activeTab, onTabChange, tabs, headerActions, children,
+                                              className = "", useInnerContainer = true, pagination,
+                                              contentRef, searchConfig, refreshConfig,
+                                              enableScrollTop = false, hideScrollbar = false
                                           }: UnifiedPageLayoutProps) {
 
     const internalRef = useRef<HTMLDivElement>(null);
     const finalRef = contentRef || internalRef;
-
     const [showScrollTop, setShowScrollTop] = useState(false);
-
-    // [修复逻辑] 切换 Tab 时重置滚动条
-    useLayoutEffect(() => {
-        const el = finalRef.current;
-        if (el) {
-            // 只有当实际上有滚动或者不在顶部时才强制重置，减少不必要的绘制
-            if (el.scrollTop !== 0) {
-                el.scrollTo({
-                    top: 0,
-                    left: 0,
-                    behavior: 'instant' as ScrollBehavior // 强制瞬间归位
-                });
-            }
-        }
-    }, [activeTab, finalRef]);
 
     useEffect(() => {
         if (!enableScrollTop) return;
@@ -154,7 +246,6 @@ export default function UnifiedPageLayout({
                 ticking = true;
             }
         };
-
         el.addEventListener('scroll', handleScroll, { passive: true });
         return () => el.removeEventListener('scroll', handleScroll);
     }, [enableScrollTop, finalRef]);
@@ -165,95 +256,33 @@ export default function UnifiedPageLayout({
 
     return (
         <div className={`upl-container ${className}`}>
-            <div className="upl-bg-shape upl-shape-1" />
-            <div className="upl-bg-shape upl-shape-2" />
-
             <div className="upl-glass-panel">
-                {/* 1. Header */}
-                <div className="upl-header">
-                    <div className="upl-tab-switcher">
-                        {tabs.map((tab) => (
-                            <button key={tab.id} className={`upl-tab-btn ${activeTab === tab.id ? 'active' : ''}`} onClick={() => onTabChange(tab.id)}>
-                                {tab.icon && <span style={{ marginRight: 6, display: 'flex' }}>{tab.icon}</span>}
-                                {tab.label}
-                            </button>
-                        ))}
+                <LayoutHeader
+                    tabs={tabs}
+                    activeTab={activeTab}
+                    onTabChange={onTabChange}
+                    searchConfig={searchConfig}
+                    headerActions={headerActions}
+                    refreshConfig={refreshConfig}
+                />
+
+                <div className={`upl-content ${hideScrollbar ? 'upl-no-scrollbar' : ''}`} ref={finalRef}>
+                    <div className={`upl-content-wrapper ${useInnerContainer ? 'upl-inner-container' : ''}`}>
+                        {children}
                     </div>
 
-                    <div className="upl-header-actions">
-                        {searchConfig && (
-                            <div className="upl-search-wrapper">
-                                <Search className="upl-search-icon" />
-                                <input
-                                    type="text"
-                                    className="upl-search-input"
-                                    placeholder={searchConfig.placeholder || "Search..."}
-                                    value={searchConfig.value}
-                                    onChange={(e) => searchConfig.onChange(e.target.value)}
-                                />
-                            </div>
-                        )}
-                        {headerActions}
-                        {refreshConfig && (
-                            <button
-                                className="upl-action-icon-btn"
-                                onClick={refreshConfig.onRefresh}
-                                title={refreshConfig.title || "Refresh"}
-                            >
-                                <RefreshCw size={18} className={refreshConfig.loading ? "upl-spin" : ""} />
-                            </button>
-                        )}
-                    </div>
+                    {enableScrollTop && (
+                        <button
+                            className={`upl-scroll-top-btn ${showScrollTop ? 'is-visible' : ''}`}
+                            onClick={scrollToTop}
+                            aria-hidden={!showScrollTop}
+                            tabIndex={showScrollTop ? 0 : -1}
+                        >
+                            <ArrowUp size={20} />
+                        </button>
+                    )}
                 </div>
 
-                {/* 2. Content */}
-                <div
-                    className={`upl-content ${hideScrollbar ? 'upl-no-scrollbar' : ''}`}
-                    ref={finalRef}
-                >
-                    <AnimatePresence mode="wait">
-                        {useInnerContainer ? (
-                            <motion.div
-                                className="upl-inner-container"
-                                // [微调] 减少 y 轴位移距离，使过渡更自然，减少视觉跳动感
-                                initial={{ opacity: 0, y: 3 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -3 }}
-                                transition={{ duration: 0.15, ease: "easeOut" }}
-                                key={activeTab}
-                            >
-                                {children}
-                            </motion.div>
-                        ) : (
-                            <motion.div
-                                key={activeTab}
-                                initial={{ opacity: 0, y: 3 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -3 }}
-                                transition={{ duration: 0.15, ease: "easeOut" }}
-                                style={{ height: '100%' }}
-                            >
-                                {children}
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-
-                    <AnimatePresence>
-                        {enableScrollTop && showScrollTop && (
-                            <motion.button
-                                initial={{ opacity: 0, scale: 0.5, y: 20 }}
-                                animate={{ opacity: 1, scale: 1, y: 0 }}
-                                exit={{ opacity: 0, scale: 0.5, y: 20 }}
-                                className="upl-scroll-top-btn"
-                                onClick={scrollToTop}
-                            >
-                                <ArrowUp size={22} />
-                            </motion.button>
-                        )}
-                    </AnimatePresence>
-                </div>
-
-                {/* 3. Footer */}
                 {pagination && <Pagination config={pagination} />}
             </div>
         </div>

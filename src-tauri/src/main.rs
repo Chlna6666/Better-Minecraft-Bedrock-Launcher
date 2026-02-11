@@ -13,12 +13,19 @@ use app_lib::config::config::{read_config, Config};
 use app_lib::utils::logger::init_logging;
 use app_lib::utils::system_info::{detect_system_encoding, get_cpu_architecture, get_system_language};
 use app_lib::utils::{updater, webview2_manager};
-use app_lib::utils::appx_dependency::ensure_uwp_dependencies_or_prompt;
 use app_lib::utils::developer_mode::ensure_developer_mode_enabled;
 use app_lib::utils::updater::clean_old_versions;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
+    // [Bug 2 修复] 强制将工作目录设置为 EXE 所在目录
+    // 解决双击文件启动时，相对路径 "./BMCBL" 指向错误位置的问题
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let _ = env::set_current_dir(exe_dir);
+        }
+    }
+
     init_logging();
 
     // 创建初始目录（同步）
@@ -27,7 +34,6 @@ async fn main() {
     // 处理 --run-updater 子进程逻辑（保持原样）
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("--run-updater") {
-        // 取参数（安全地从 Vec 中读取）
         let src = args.get(2).cloned().unwrap_or_default();
         let dst = args.get(3).cloned().unwrap_or_default();
         let timeout_secs = args
@@ -35,13 +41,9 @@ async fn main() {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(60);
 
-        // 结构化日志：记录启动信息（会输出到你配置的日志目标）
         info!(src = %src, dst = %dst, timeout_secs, "updater-child start");
         debug!(args = ?args, "full arg list for updater-child");
 
-        eprintln!("[updater-child] start: src='{}' dst='{}' timeout={}", src, dst, timeout_secs);
-
-        // 计时开始
         let start = std::time::Instant::now();
 
         match updater::run_updater_child(
@@ -52,14 +54,10 @@ async fn main() {
             Ok(_) => {
                 let elapsed = start.elapsed();
                 info!(src = %src, dst = %dst, elapsed_ms = %elapsed.as_millis(), "updater-child success");
-                eprintln!("[updater-child] success (elapsed: {:?})", elapsed);
                 process::exit(0);
             }
             Err(err) => {
                 error!(src = %src, dst = %dst, error = ?err, "updater-child failed");
-                debug!(error_display = %format!("{:?}", err), "detailed error display");
-
-                eprintln!("[updater-child] failed: {:?}", err);
                 process::exit(2);
             }
         }
@@ -67,7 +65,9 @@ async fn main() {
 
     clean_old_versions();
 
-    // 读取配置文件（如果失败，提示并退出）
+    utils::registry::register_file_associations();
+
+    // 读取配置文件
     let config: Config = match read_config() {
         Ok(c) => c,
         Err(e) => {
@@ -78,17 +78,31 @@ async fn main() {
         }
     };
 
-    // 处理语言选择（提前决定 locale）
+    // WebView2 GPU 加速开关：通过 Additional Browser Arguments 控制
+    // 注意：该设置需要重启应用才能生效（WebView2 环境只在启动时创建）
+    #[cfg(target_os = "windows")]
+    if !config.launcher.gpu_acceleration {
+        const DISABLE_GPU_ARGS: &str = "--disable-gpu --disable-software-rasterizer";
+        let existing = env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        let new_val = if existing.trim().is_empty() {
+            DISABLE_GPU_ARGS.to_string()
+        } else if existing.contains("--disable-gpu") {
+            existing
+        } else {
+            format!("{} {}", existing.trim_end(), DISABLE_GPU_ARGS)
+        };
+        env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", new_val);
+        info!("WebView2 GPU acceleration disabled by config.");
+    }
+
     let locale = match config.launcher.language.as_str() {
         "auto" => get_system_language(),
         "" => "en-US".to_string(),
-        other => other.to_string(),
+        other => other.replace('_', "-"),
     };
 
-    // 初始化 i18n
     I18n::init(&locale);
 
-    // 检查 WebView2（提前检测，失败则提示）
     let webview2_ver = match webview2_manager::ensure_webview2_or_fallback() {
         Ok(v) => v,
         Err(e) => {
@@ -100,9 +114,7 @@ async fn main() {
     };
 
     let _ = ensure_developer_mode_enabled();
-    let _ = ensure_uwp_dependencies_or_prompt();
 
-    // 获取并记录系统信息
     let mut sys = sysinfo::System::new_all();
     sys.refresh_all();
     let sys_name = sysinfo::System::name().unwrap_or_else(|| "未知系统".to_string());
@@ -123,22 +135,18 @@ async fn main() {
         get_system_language()
     );
 
-    // 组装预初始化数据并传入 run
-    // 注意：不要自己再定义一个同名 PreInit 类型 —— 使用库中导出的 app_lib::PreInit
     let preinit = Arc::new(app_lib::PreInit {
         config,
         locale,
         webview2_ver,
     });
 
-    // 运行主事件循环（Tauri），并捕获错误
     match run(preinit).await {
         Ok(_) => {
             info!("Program exited normally.");
             process::exit(0);
         }
         Err(e) => {
-            // 记录详细错误并使用 Windows UI 提示（仅在 Windows 上弹窗）
             let err_msg = format!("程序运行失败: {:?}", e);
             error!("{}", err_msg);
             show_windows_error("程序运行失败", &err_msg);

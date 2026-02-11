@@ -198,14 +198,22 @@ const Segment = React.memo(function Segment({ seg, idx }) {
     const className = (seg.classes || []).join(" ");
     const content = seg.obfText != null ? seg.obfText : seg.text;
 
-    // 构造 runs：{type: 'text', text} 或 {type: 'glyph', codePoint}
+    // 构造 runs：{type: 'text', text} 或 {type: 'glyph', codePoint} 或 {type: 'newline'}
     const runs = [];
     let buf = "";
     // 遍历字符串时使用 codePoint 以兼容代理对
     for (let i = 0; i < content.length; ) {
         const cp = content.codePointAt(i);
         const char = String.fromCodePoint(cp);
-        if (isGlyphCode(cp)) {
+        
+        if (char === '\n') {
+            if (buf) {
+                runs.push({ type: "text", text: buf });
+                buf = "";
+            }
+            runs.push({ type: "newline" });
+            i += 1;
+        } else if (isGlyphCode(cp)) {
             if (buf) {
                 runs.push({ type: "text", text: buf });
                 buf = "";
@@ -221,20 +229,24 @@ const Segment = React.memo(function Segment({ seg, idx }) {
 
     return (
         <span key={idx} className={className} style={segStyle}>
-            {runs.map((r, i) =>
-                r.type === "text" ? (
+            {runs.map((r, i) => {
+                if (r.type === "newline") {
+                    return <br key={`${idx}-br-${i}`} />;
+                } else if (r.type === "text") {
                     // 连续普通文本一次性输出为字符串节点（React 会优化文本节点）
-                    <React.Fragment key={`${idx}-t-${i}`}>{r.text}</React.Fragment>
-                ) : (
+                    return <React.Fragment key={`${idx}-t-${i}`}>{r.text}</React.Fragment>;
+                } else {
                     // glyph 单独渲染为带背景图的 span
-                    <span
-                        key={`${idx}-g-${i}`}
-                        className="mc-glyph"
-                        style={getCachedGlyphStyle(r.codePoint)}
-                        aria-hidden="true"
-                    />
-                )
-            )}
+                    return (
+                        <span
+                            key={`${idx}-g-${i}`}
+                            className="mc-glyph"
+                            style={getCachedGlyphStyle(r.codePoint)}
+                            aria-hidden="true"
+                        />
+                    );
+                }
+            })}
         </span>
     );
 });

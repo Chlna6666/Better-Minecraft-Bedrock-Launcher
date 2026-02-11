@@ -31,6 +31,81 @@ jobs:
       - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure LLVM (libclang) is available (for bindgen / kcp-sys)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "libclang.dll")) -and -not (Test-Path (Join-Path $llvmBin "clang.dll"))) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              Write-Host "Installing LLVM via Chocolatey..."
+              choco install llvm -y --no-progress
+            } else {
+              Write-Host "Chocolatey not found; trying winget..."
+              winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements
+            }
+          }
+
+          if (-not (Test-Path (Join-Path $llvmBin "libclang.dll")) -and -not (Test-Path (Join-Path $llvmBin "clang.dll"))) {
+            throw "LLVM installed but libclang.dll/clang.dll not found under $llvmBin"
+          }
+
+          Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "LIBCLANG_PATH set to: $llvmBin"
+
+      - name: Ensure 7-Zip is available (for thunk-rs)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Get-Command 7z -ErrorAction SilentlyContinue) {
+            Write-Host "7z already available: $((Get-Command 7z).Source)"
+            & 7z -h | Out-Null
+            exit 0
+          }
+
+          $defaultExe = Join-Path $env:ProgramFiles "7-Zip\\7z.exe"
+          if (Test-Path $defaultExe) {
+            $dir = Split-Path $defaultExe -Parent
+            Add-Content -Path $env:GITHUB_PATH -Value $dir
+            Write-Host "Added 7z to PATH: $dir"
+            & 7z -h | Out-Null
+            exit 0
+          }
+
+          Write-Host "7z not found, installing 7zip via Chocolatey..."
+          choco install 7zip -y --no-progress
+          $dir = Join-Path $env:ProgramFiles "7-Zip"
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+          Write-Host "Added 7z to PATH: $dir"
+          & 7z -h | Out-Null
+
+      - name: Install Npcap SDK (Packet.lib for pnet on Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdkRoot = Join-Path $env:RUNNER_TEMP "npcap-sdk"
+          $zipPath = Join-Path $env:RUNNER_TEMP "npcap-sdk.zip"
+          $url = "https://npcap.com/dist/npcap-sdk-1.13.zip"
+
+          if (-not (Test-Path $sdkRoot)) { New-Item -ItemType Directory -Path $sdkRoot | Out-Null }
+          if (-not (Test-Path $zipPath)) {
+            Write-Host "Downloading Npcap SDK: $url"
+            curl.exe -L -o $zipPath $url
+          } else {
+            Write-Host "Npcap SDK zip already exists: $zipPath"
+          }
+
+          Write-Host "Extracting Npcap SDK..."
+          & 7z x -aoa $zipPath ("-o{0}" -f $sdkRoot) | Out-Null
+
+          $libDir = Join-Path $sdkRoot "Lib\\x64"
+          if (-not (Test-Path (Join-Path $libDir "Packet.lib"))) { throw "Packet.lib not found under $libDir" }
+          if (-not (Test-Path (Join-Path $libDir "wpcap.lib"))) { throw "wpcap.lib not found under $libDir" }
+
+          "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Added to LIB: $libDir"
+
       - name: Cache cargo (optional)
         uses: actions/cache@v4
         with:

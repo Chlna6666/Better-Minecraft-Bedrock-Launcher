@@ -8,9 +8,8 @@
     --text-secondary: #64748b;
     --bg-glass: rgba(255, 255, 255, 0.85);
 
-    /* 动画曲线 */
+    /* 动画曲线 (保留用于页面进入动画) */
     --elastic-out: cubic-bezier(0.34, 1.56, 0.64, 1);
-    --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 [data-theme='dark'] {
@@ -35,7 +34,9 @@
 
 .launch-floater-wrapper {
     position: absolute; bottom: 40px; right: 40px; width: 320px;
-    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    display: flex; flex-direction: column; align-items: flex-end;
+    /* gap 由 motion 的 marginBottom 控制，这里可以移除 gap 或设为 0 */
+    gap: 0;
     pointer-events: auto;
     perspective: 1000px;
 }
@@ -45,57 +46,74 @@
     animation-delay: 0.1s;
 }
 
-/* --- 1. 版本列表 --- */
+/* --- 1. 版本列表 (样式部分保留，动画部分移除) --- */
 .version-list-card {
     width: 100%;
-    height: 0; opacity: 0; transform: translateY(20px) scale(0.95);
+    /* CSS 原生过渡（替代 motion） */
     background: var(--bg-glass);
     backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
     border-radius: 20px;
     box-shadow: 0 20px 40px -5px rgba(0,0,0,0.1), 0 0 0 1px rgba(255,255,255,0.1);
     overflow: hidden;
+    transform-origin: bottom center; /* 确保缩放从底部开始 */
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.98);
+    pointer-events: none;
+    margin-bottom: 0;
     transition:
-            height 0.4s var(--elastic-out),
-            opacity 0.3s ease,
-            transform 0.4s var(--elastic-out);
-    transform-origin: bottom center;
+            opacity 160ms ease,
+            transform 220ms cubic-bezier(0.2, 0, 0, 1),
+            margin-bottom 220ms cubic-bezier(0.2, 0, 0, 1);
+    will-change: opacity, transform, margin-bottom;
 }
 
-.version-list-card.active {
-    height: auto;
-    max-height: 360px;
+.version-list-card.is-open{
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
+    pointer-events: auto;
+    margin-bottom: 10px;
+}
+
+.version-list-collapse{
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 220ms cubic-bezier(0.2, 0, 0, 1);
+    will-change: grid-template-rows;
+}
+
+.version-list-card.is-open .version-list-collapse{
+    grid-template-rows: 1fr;
 }
 
 .list-scroll-area {
+    min-height: 0;
     padding: 10px;
     overflow-y: auto;
-    max-height: 360px;
+    max-height: 360px; /* 限制最大高度，内容过多时滚动 */
 }
 .list-scroll-area::-webkit-scrollbar { width: 4px; }
 .list-scroll-area::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 4px; }
 
-@keyframes slideInRaw {
-    from { opacity: 0; transform: translateY(15px) scale(0.95); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-}
+/* 移除 @keyframes slideInRaw */
 
 .version-item {
     display: flex; align-items: center; gap: 12px;
     padding: 10px 12px; border-radius: 12px; cursor: pointer;
     background: transparent;
-    transition: background 0.2s;
+    transition: background 140ms ease, transform 140ms cubic-bezier(0.2, 0, 0, 1);
     position: relative;
-    opacity: 0; animation: none;
 }
 
-.version-list-card.active .version-item {
-    animation: slideInRaw 0.5s var(--elastic-out) forwards;
-    animation-delay: calc(var(--i) * 0.04s);
+.version-item:hover{
+    background: rgba(128,128,128,0.12);
+    transform: translate3d(0, -1px, 0) scale(1.01);
 }
 
-.version-item:hover { background: rgba(128,128,128,0.08); }
+.version-item:active{
+    transform: translate3d(0, 0, 0) scale(0.99);
+}
+
+/* .version-item:hover 也可以保留，或者完全交给 motion */
 .version-item.selected {
     background: rgba(var(--accent-color-rgb), 0.1);
     background: color-mix(in srgb, var(--accent-color), transparent 90%);
@@ -128,6 +146,24 @@
 .ver-tag.preview { background: rgba(234, 179, 8, 0.15); color: #ca8a04; }
 
 .check-icon { color: var(--accent-color); margin-left: auto; }
+
+.launch-chevron{
+    display: inline-flex;
+    transform: rotate(0deg);
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.launch-chevron.is-open{
+    transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce){
+    .version-list-card,
+    .version-item,
+    .launch-chevron{
+        transition: none !important;
+    }
+}
 
 /* --- 2. 主按钮 --- */
 .main-launch-btn {
@@ -163,141 +199,3 @@
 }
 .btn-right:hover { background: rgba(255,255,255,0.15); }
 
-.arrow { transition: transform 0.4s var(--elastic-out); }
-.arrow.open { transform: rotate(180deg); }
-
-/* --- 3. 启动弹窗 --- */
-.launch-overlay-fixed {
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    z-index: 9999; display: flex; align-items: center; justify-content: center;
-    pointer-events: auto;
-}
-.overlay-backdrop {
-    position: absolute; inset: 0;
-    background: rgba(0,0,0,0.3); backdrop-filter: blur(8px); z-index: 1;
-}
-
-.launch-modal-fixed {
-    position: relative; z-index: 2;
-    width: 500px; height: 320px;
-    background: var(--bg-glass);
-    border-radius: 28px;
-    box-shadow: 0 50px 100px -20px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.2);
-    display: grid;
-    grid-template-rows: auto 1fr auto;
-    overflow: hidden;
-}
-.launch-modal-fixed.error-mode {
-    box-shadow: 0 50px 100px -20px rgba(239, 68, 68, 0.25), 0 0 0 1px rgba(239, 68, 68, 0.3);
-}
-
-.close-icon-btn {
-    position: absolute; top: 16px; right: 16px;
-    width: 32px; height: 32px; border-radius: 50%; border: none;
-    background: transparent; color: var(--text-secondary);
-    display: flex; align-items: center; justify-content: center;
-    cursor: pointer; transition: background 0.2s;
-}
-.close-icon-btn:hover { background: rgba(0,0,0,0.05); }
-
-.modal-header {
-    padding: 16px 32px 10px 32px;
-    display: flex; align-items: center; gap: 20px;
-}
-.status-icon-ring {
-    width: 64px; height: 64px; border-radius: 20px;
-    display: flex; align-items: center; justify-content: center;
-    background: #fff;
-    box-shadow: 0 10px 20px -5px rgba(0,0,0,0.1);
-}
-.status-icon-ring.loading { color: var(--accent-color); }
-.status-icon-ring.error { color: var(--error-color); background: #fef2f2; }
-.spin { animation: spin 1s linear infinite; }
-
-.header-text { display: flex; flex-direction: column; gap: 4px; }
-.header-text h3 { margin: 0; font-size: 1.5rem; font-weight: 800; color: var(--text-primary); }
-.sub-status { font-size: 0.9rem; color: var(--text-secondary); font-family: ui-monospace, SFMono-Regular, monospace; }
-
-.modal-body {
-    padding: 10px 32px;
-    overflow: hidden;
-    display: flex; align-items: center;
-}
-
-/* 修复：日志框改为多行模式 */
-.log-output-box {
-    width: 100%; height: 60px;
-    background: rgba(128,128,128,0.06);
-    border-radius: 12px;
-    padding: 12px;
-    /* 改为垂直排列，允许滚动 */
-    display: flex; flex-direction: column; align-items: flex-start;
-    overflow-y: auto;
-    gap: 4px;
-}
-
-/* 修复：日志行允许换行 */
-.log-line {
-    font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.8rem;
-    color: var(--text-secondary); opacity: 0.8;
-    white-space: pre-wrap; /* 允许文本自动换行 */
-    word-break: break-all; /* 防止长单词溢出 */
-    line-height: 1.4;
-    text-align: left;
-    width: 100%;
-}
-
-.error-detail-box {
-    width: 100%; height: 100%;
-    background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.1);
-    border-radius: 12px; padding: 12px;
-    overflow-y: auto;
-}
-.error-detail-box p {
-    margin: 0; font-size: 0.85rem; color: var(--error-color);
-    line-height: 1.5; white-space: pre-wrap; word-break: break-word;
-}
-.error-detail-box::-webkit-scrollbar { width: 4px; }
-.error-detail-box::-webkit-scrollbar-thumb { background: rgba(239, 68, 68, 0.2); border-radius: 4px; }
-
-/* --- Footer --- */
-.modal-footer {
-    padding: 9px 32px 9px 32px;
-    display: flex; justify-content: space-between;
-    align-items: center;
-}
-
-.footer-tools { display: flex; gap: 12px; }
-.tool-link {
-    background: none; border: none; cursor: pointer;
-    font-size: 0.8rem; color: var(--text-secondary);
-    display: flex; align-items: center; gap: 6px; padding: 0;
-    transition: color 0.2s;
-}
-.tool-link:hover { color: var(--text-primary); text-decoration: underline; }
-
-.action-btn {
-    height: 44px; padding: 0 24px; border-radius: 12px; border: none;
-    font-weight: 600; cursor: pointer;
-    display: flex; align-items: center; gap: 8px;
-    transition: transform 0.1s, background 0.2s;
-}
-.action-btn:active { transform: scale(0.96); }
-
-/* 修复：重试按钮颜色改为统一强调色，不分日夜 */
-.action-btn.primary {
-    background: var(--accent-color);
-    color: #ffffff;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
-.action-btn.primary:hover {
-    background: var(--accent-hover);
-}
-
-.action-btn.ghost {
-    background: rgba(128,128,128,0.1); color: var(--text-primary);
-    margin-left: auto;
-}
-.action-btn.ghost:hover { background: rgba(128,128,128,0.15); }
-
-@keyframes spin { 100% { transform: rotate(360deg); } }

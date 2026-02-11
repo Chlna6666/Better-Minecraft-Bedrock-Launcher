@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { ViteImageOptimizer } from 'vite-plugin-image-optimizer';
+import { resolve } from 'path'; // [修复] 这一行是必须的！
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -54,6 +55,13 @@ export default defineConfig(async () => ({
     }),
   ],
 
+  resolve: {
+    alias: {
+      // [Perf] 用极轻量 shim 替代 framer-motion（动画改为 CSS 原生实现）
+      'framer-motion': resolve(__dirname, 'src/shims/framer-motion.tsx'),
+    },
+  },
+
   build: {
     // 调大警告阈值 (4MB)
     chunkSizeWarningLimit: 4000,
@@ -77,6 +85,14 @@ export default defineConfig(async () => ({
           return;
         }
         warn(warning);
+      },
+      input: {
+        // 主程序入口
+        main: resolve(__dirname, 'index.html'),
+        // [新增] 导入窗口独立入口
+        import: resolve(__dirname, 'import.html'), 
+        // [新增] 游戏依赖安装窗口入口
+        mc_dependency: resolve(__dirname, 'mc_dependency.html'),
       },
     },
   },

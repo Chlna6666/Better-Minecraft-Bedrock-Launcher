@@ -1,12 +1,15 @@
 // src/http/request.rs
 use once_cell::sync::Lazy;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue},
+    header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT},
     Client, Method, Url,
 };
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::debug;
+
+pub(crate) static DEFAULT_USER_AGENT: Lazy<String> =
+    Lazy::new(|| format!("BMCBL/{}", crate::utils::app_info::get_version()));
 
 pub(crate) static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
@@ -15,6 +18,7 @@ pub(crate) static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
         .deflate(true)
         .connect_timeout(Duration::from_secs(10))
         .pool_max_idle_per_host(8)
+        .user_agent(DEFAULT_USER_AGENT.as_str())
         .build()
         .expect("reqwest client")
 });
@@ -39,6 +43,12 @@ fn build_header_map(hs: Option<&HashMap<String, String>>) -> HeaderMap {
             }
         }
     }
+    header_map.insert(
+        USER_AGENT,
+        HeaderValue::from_str(DEFAULT_USER_AGENT.as_str()).unwrap_or_else(|_| {
+            HeaderValue::from_static("BMCBL/unknown")
+        }),
+    );
     header_map
 }
 
@@ -59,7 +69,9 @@ pub async fn send_request_with_options(
     let allow_redirects = opts.allow_redirects.unwrap_or(true);
     if !allow_redirects {
         debug!("创建临时 client 禁止重定向");
-        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(DEFAULT_USER_AGENT.as_str());
 
         // 如果 timeout_ms 提供，我们可以在请求上设置，但部分 reqwest 版本对 client.timeout 与 request.timeout 行为不同，
         // 这里优先在 request 上设置 timeout（下面会设置 request.timeout）

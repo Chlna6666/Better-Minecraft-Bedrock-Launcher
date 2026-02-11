@@ -1,30 +1,34 @@
+// src/commands/mc_dll_mods.rs
+
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 use tauri::command;
 use tokio::{fs, io::AsyncWriteExt};
-use tracing::{debug, error};
+use tracing::{warn, info}; // 引入 info 用于常规日志
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct DllConfig {
-    enabled: bool,
-    delay: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-struct InjectConfig {
-    files: HashMap<String, DllConfig>,
+// 与 preloader.dll 保持一致的 Manifest 结构
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ModManifest {
+    name: String,
+    entry: String,
+    #[serde(rename = "type")]
+    mod_type: String,
+    /// Only meaningful for `type = "hot-inject"`; handled by `BLoader.dll`.
+    #[serde(default)]
+    inject_delay_ms: Option<u64>,
 }
 
 #[derive(Serialize, Debug)]
 struct ModItem {
-    id: String,
-    name: String,
+    id: String,       // 文件夹名称
+    name: String,     // Mod 名称 (来自 manifest)
     enabled: bool,
-    delay: u64,
     path: String,
+    mod_type: String,
+    inject_delay_ms: u64,
+    description: Option<String>,
 }
 
 // ---------------- Helper functions ----------------
@@ -37,234 +41,251 @@ fn mods_dir_for(folder_name: &str) -> PathBuf {
     versions_base().join(folder_name).join("mods")
 }
 
-async fn read_inject_config(mods_dir: &Path) -> Result<InjectConfig, String> {
-    let cfg_path = mods_dir.join("inject_config.json");
-    if fs::metadata(&cfg_path).await.is_err() {
-        return Ok(InjectConfig::default());
-    }
-    match fs::read_to_string(&cfg_path).await {
-        Ok(raw) => match serde_json::from_str::<InjectConfig>(&raw) {
-            Ok(cfg) => Ok(cfg),
-            Err(e) => {
-                // backup corrupted
-                let bak = mods_dir.join("inject_config.json.bak");
-                let _ = fs::rename(&cfg_path, &bak).await;
-                error!(
-                    "inject_config.json parse failed, backed up to {:?}: {:?}",
-                    bak, e
-                );
-                Ok(InjectConfig::default())
-            }
-        },
-        Err(e) => {
-            error!("read inject_config.json failed: {:?}", e);
-            Ok(InjectConfig::default())
-        }
-    }
-}
-
-async fn write_inject_config(mods_dir: &Path, cfg: &InjectConfig) -> Result<(), String> {
-    let cfg_path = mods_dir.join("inject_config.json");
-    let tmp_path = mods_dir.join("inject_config.json.tmp");
-    let content =
-        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config failed: {}", e))?;
-    // write tmp
-    let mut f = fs::File::create(&tmp_path)
-        .await
-        .map_err(|e| format!("create tmp failed: {}", e))?;
-    f.write_all(content.as_bytes())
-        .await
-        .map_err(|e| format!("write tmp failed: {}", e))?;
-    // rename
-    fs::rename(&tmp_path, &cfg_path)
-        .await
-        .map_err(|e| format!("rename tmp failed: {}", e))?;
-    Ok(())
-}
+// ---------------- Commands ----------------
 
 #[command]
 pub async fn get_mod_list(folder_name: String) -> Result<serde_json::Value, String> {
-    let base = PathBuf::from("./BMCBL/versions");
-    let version_dir = base.join(&folder_name);
-    let mods_dir = version_dir.join("mods");
+    let mods_dir = mods_dir_for(&folder_name);
 
-    // 如果版本目录不存在，返回空数组
-    if !version_dir.exists() {
-        debug!("版本目录不存在: {}", version_dir.display());
+    if !mods_dir.exists() {
+        // 如果目录不存在，尝试创建
+        if let Err(e) = fs::create_dir_all(&mods_dir).await {
+            return Err(format!("无法创建 mods 目录: {}", e));
+        }
         return Ok(serde_json::json!([]));
     }
 
-    // 确保 mods 目录存在（如果不存在就创建）
-    if !mods_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&mods_dir).await {
-            return Err(format!("无法创建 mods 目录 {}: {}", mods_dir.display(), e));
-        }
-        debug!("已创建 mods 目录: {}", mods_dir.display());
-    }
-
-    // 收集 mods 目录下的所有 dll 文件名（不包含路径）
-    let mut dll_names: Vec<String> = Vec::new();
-    match fs::read_dir(&mods_dir).await {
-        Ok(mut rd) => {
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let p = entry.path();
-                if p.extension()
-                    .and_then(|ext| ext.to_str())
-                    .map_or(false, |ext| ext.eq_ignore_ascii_case("dll"))
-                {
-                    if let Some(name) = p
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.to_string())
-                    {
-                        dll_names.push(name);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            return Err(format!("读取 mods 目录失败 {}: {}", mods_dir.display(), e));
-        }
-    }
-
-    // inject_config.json 路径
-    let cfg_path = mods_dir.join("inject_config.json");
-
-    // 读取已有配置（或使用默认），并补全缺失项
-    let mut config = InjectConfig::default();
-    if fs::metadata(&cfg_path).await.is_ok() {
-        match fs::read_to_string(&cfg_path).await {
-            Ok(raw) => {
-                match serde_json::from_str::<InjectConfig>(&raw) {
-                    Ok(mut c) => {
-                        // 补全丢失的 dll 条目（默认 enabled=true, delay=0）
-                        let mut changed = false;
-                        for dll in dll_names.iter() {
-                            if !c.files.contains_key(dll) {
-                                c.files.insert(
-                                    dll.clone(),
-                                    DllConfig {
-                                        enabled: true,
-                                        delay: 0,
-                                    },
-                                );
-                                changed = true;
-                            }
-                        }
-                        // 如果配置中存在已删除的文件，也不强制删除配置项（保持历史），但后面只返回存在的文件
-                        if changed {
-                            let _ = write_inject_config(&mods_dir, &c).await;
-                        }
-                        config = c;
-                    }
-                    Err(e) => {
-                        // 解析失败，备份并继续使用默认（后面会用 dll_names 构造默认）
-                        let bak = mods_dir.join("inject_config.json.bak");
-                        let _ = fs::rename(&cfg_path, &bak).await;
-                        debug!(
-                            "inject_config.json 解析失败，已备份到 {}: {:?}",
-                            bak.display(),
-                            e
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                debug!(
-                    "读取 inject_config.json 失败 {}: {:?}",
-                    cfg_path.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    // 如果配置为空（或没有任何条目），则使用 dll_names 构造默认配置并写入文件
-    if config.files.is_empty() {
-        for dll in dll_names.iter() {
-            config.files.insert(
-                dll.clone(),
-                DllConfig {
-                    enabled: true,
-                    delay: 0,
-                },
-            );
-        }
-        let _ = write_inject_config(&mods_dir, &config).await;
-    }
-
-    // 构建结果：对 mods 目录中实际存在的 dll 返回条目（包含 enabled + delay）
     let mut result: Vec<ModItem> = Vec::new();
-    for dll in dll_names.into_iter() {
-        // 获取配置中对应的状态（如果配置没有则使用默认）
-        let cfg = config.files.get(&dll).cloned().unwrap_or(DllConfig {
-            enabled: true,
-            delay: 0,
-        });
+    let mut entries = fs::read_dir(&mods_dir).await.map_err(|e| e.to_string())?;
 
-        let candidate = mods_dir.join(&dll);
-        match fs::canonicalize(&candidate).await {
-            Ok(abs) => {
-                if abs.exists() {
-                    let path_str = abs.to_string_lossy().to_string();
-                    result.push(ModItem {
-                        id: dll.clone(),
-                        name: dll.clone(),
-                        enabled: cfg.enabled,
-                        delay: cfg.delay,
-                        path: path_str,
-                    });
-                } else {
-                    debug!("文件不存在，跳过: {}", candidate.display());
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        // 彻底放弃旧版本 DLL 方式，只处理文件夹
+        if !path.is_dir() {
+            continue;
+        }
+
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+
+        // 检查 Manifest
+        let enabled_manifest = path.join("manifest.json");
+        let disabled_manifest = path.join(".manifest.json");
+
+        let (is_enabled, manifest_path) = if enabled_manifest.exists() {
+            (true, enabled_manifest)
+        } else if disabled_manifest.exists() {
+            (false, disabled_manifest)
+        } else {
+            // 没有 manifest，可能是空文件夹或损坏，跳过
+            continue;
+        };
+
+        // 读取 Manifest 内容
+        match fs::read_to_string(&manifest_path).await {
+            Ok(content) => {
+                match serde_json::from_str::<ModManifest>(&content) {
+                    Ok(manifest) => {
+                        result.push(ModItem {
+                            id: dir_name, // ID 使用文件夹名
+                            name: manifest.name,
+                            enabled: is_enabled,
+                            path: path.join(&manifest.entry).to_string_lossy().to_string(),
+                            mod_type: manifest.mod_type,
+                            inject_delay_ms: manifest.inject_delay_ms.unwrap_or(0),
+                            description: None,
+                        });
+                    },
+                    Err(e) => {
+                        warn!("Manifest 解析失败 {}: {}", manifest_path.display(), e);
+                    }
                 }
-            }
+            },
             Err(e) => {
-                debug!("canonicalize 失败，跳过 {}: {:?}", candidate.display(), e);
+                warn!("读取 Manifest 失败 {}: {}", manifest_path.display(), e);
             }
         }
     }
 
-    // 返回 JSON 数组
-    match serde_json::to_value(&result) {
-        Ok(v) => Ok(v),
-        Err(e) => Err(format!("序列化失败: {}", e)),
-    }
+    Ok(serde_json::json!(result))
 }
 
-/// unified set_mod: 设置 mod 的 enabled + delay 并持久化到 inject_config.json
 #[command]
 pub async fn set_mod(
     folder_name: String,
-    mod_id: String,
+    mod_id: String, // 文件夹名
     enabled: bool,
-    delay: u64,
+    _delay: u64,    // Delay 弃用
 ) -> Result<String, String> {
     let mods_dir = mods_dir_for(&folder_name);
-    if fs::metadata(&mods_dir).await.is_err() {
-        return Err(format!("mods 目录不存在: {}", mods_dir.display()));
+    let mod_dir = mods_dir.join(&mod_id);
+
+    if !mod_dir.exists() {
+        return Err(format!("Mod 目录不存在: {}", mod_id));
     }
 
-    let mut cfg = read_inject_config(&mods_dir).await.unwrap_or_default();
+    let enabled_path = mod_dir.join("manifest.json");
+    let disabled_path = mod_dir.join(".manifest.json");
 
-    // ensure entry exists
-    cfg.files
-        .entry(mod_id.clone())
-        .or_insert(DllConfig { enabled, delay });
+    if enabled {
+        // --- 启用操作 ---
+        if enabled_path.exists() {
+            return Ok(format!("Mod {} 已经是启用状态", mod_id));
+        }
 
-    // set fields
-    if let Some(entry) = cfg.files.get_mut(&mod_id) {
-        entry.enabled = enabled;
-        entry.delay = delay;
+        if disabled_path.exists() {
+            // 重命名 .manifest.json -> manifest.json
+            fs::rename(&disabled_path, &enabled_path).await
+                .map_err(|e| format!("启用失败 (重命名出错): {}", e))?;
+        } else {
+            return Err("未找到 .manifest.json，无法启用".to_string());
+        }
+    } else {
+        // --- 禁用操作 ---
+        if disabled_path.exists() {
+            // 如果 .manifest.json 已经存在，检查 manifest.json 是否也存在 (异常状态)
+            if enabled_path.exists() {
+                warn!("Mod {} 存在重复的 manifest 文件，正在清理 enabled 文件以强制禁用...", mod_id);
+                // 删除 manifest.json，保留 .manifest.json
+                fs::remove_file(&enabled_path).await
+                    .map_err(|e| format!("强制禁用失败 (清理冲突文件出错): {}", e))?;
+            }
+            return Ok(format!("Mod {} 已经是禁用状态", mod_id));
+        }
+
+        if enabled_path.exists() {
+            // 重命名 manifest.json -> .manifest.json
+            fs::rename(&enabled_path, &disabled_path).await
+                .map_err(|e| format!("禁用失败 (重命名出错): {}", e))?;
+        } else {
+            return Err("未找到 manifest.json，无法禁用".to_string());
+        }
     }
 
-    write_inject_config(&mods_dir, &cfg)
-        .await
-        .map_err(|e| format!("写入配置失败: {}", e))?;
-
-    Ok(format!("set_mod {} ok", mod_id))
+    info!("Mod {} 状态更新: enabled={}", mod_id, enabled);
+    Ok(format!("Mod {} 状态已更新", mod_id))
 }
 
-/// import_mods: copy files into mods dir, add to config
+#[command]
+pub async fn set_mod_inject_delay(
+    folder_name: String,
+    mod_id: String, // 文件夹名
+    inject_delay_ms: u64,
+) -> Result<String, String> {
+    let mods_dir = mods_dir_for(&folder_name);
+    let mod_dir = mods_dir.join(&mod_id);
+
+    if !mod_dir.exists() {
+        return Err(format!("Mod 目录不存在: {}", mod_id));
+    }
+
+    let enabled_path = mod_dir.join("manifest.json");
+    let disabled_path = mod_dir.join(".manifest.json");
+    let manifest_path = if enabled_path.exists() {
+        enabled_path
+    } else if disabled_path.exists() {
+        disabled_path
+    } else {
+        return Err("未找到 manifest.json 或 .manifest.json，无法修改延迟".to_string());
+    };
+
+    let content = fs::read_to_string(&manifest_path)
+        .await
+        .map_err(|e| format!("读取 Manifest 失败 {}: {}", manifest_path.display(), e))?;
+
+    let mut value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Manifest 解析失败: {}", e))?;
+
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| "Manifest 内容不是 JSON 对象".to_string())?;
+
+    obj.insert(
+        "inject_delay_ms".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(inject_delay_ms)),
+    );
+
+    let new_content =
+        serde_json::to_string_pretty(&value).map_err(|e| format!("序列化 Manifest 失败: {}", e))?;
+
+    let mut f = fs::File::create(&manifest_path)
+        .await
+        .map_err(|e| format!("写入 Manifest 失败 {}: {}", manifest_path.display(), e))?;
+    f.write_all(new_content.as_bytes())
+        .await
+        .map_err(|e| format!("写入 Manifest 失败 {}: {}", manifest_path.display(), e))?;
+
+    info!(
+        "Mod {} 延迟更新: inject_delay_ms={} (file={})",
+        mod_id,
+        inject_delay_ms,
+        manifest_path.display()
+    );
+    Ok(format!("Mod {} inject_delay_ms 已更新", mod_id))
+}
+
+#[command]
+pub async fn set_mod_type(
+    folder_name: String,
+    mod_id: String, // 文件夹名
+    mod_type: String,
+) -> Result<String, String> {
+    let mods_dir = mods_dir_for(&folder_name);
+    let mod_dir = mods_dir.join(&mod_id);
+
+    if !mod_dir.exists() {
+        return Err(format!("Mod 目录不存在: {}", mod_id));
+    }
+
+    let mod_type = mod_type.trim().to_string();
+    if mod_type.is_empty() {
+        return Err("Mod 类型不能为空".to_string());
+    }
+
+    let enabled_path = mod_dir.join("manifest.json");
+    let disabled_path = mod_dir.join(".manifest.json");
+    let manifest_path = if enabled_path.exists() {
+        enabled_path
+    } else if disabled_path.exists() {
+        disabled_path
+    } else {
+        return Err("未找到 manifest.json 或 .manifest.json，无法修改类型".to_string());
+    };
+
+    let content = fs::read_to_string(&manifest_path)
+        .await
+        .map_err(|e| format!("读取 Manifest 失败 {}: {}", manifest_path.display(), e))?;
+
+    let mut value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Manifest 解析失败: {}", e))?;
+
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| "Manifest 内容不是 JSON 对象".to_string())?;
+
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String(mod_type.clone()),
+    );
+
+    let new_content =
+        serde_json::to_string_pretty(&value).map_err(|e| format!("序列化 Manifest 失败: {}", e))?;
+
+    let mut f = fs::File::create(&manifest_path)
+        .await
+        .map_err(|e| format!("写入 Manifest 失败 {}: {}", manifest_path.display(), e))?;
+    f.write_all(new_content.as_bytes())
+        .await
+        .map_err(|e| format!("写入 Manifest 失败 {}: {}", manifest_path.display(), e))?;
+
+    info!(
+        "Mod {} 类型更新: type={} (file={})",
+        mod_id,
+        mod_type,
+        manifest_path.display()
+    );
+    Ok(format!("Mod {} type 已更新", mod_id))
+}
+
 #[command]
 pub async fn import_mods(
     folder_name: String,
@@ -272,89 +293,94 @@ pub async fn import_mods(
 ) -> Result<serde_json::Value, String> {
     let mods_dir = mods_dir_for(&folder_name);
     if let Err(e) = fs::create_dir_all(&mods_dir).await {
-        return Err(format!("无法创建 mods 目录 {}: {}", mods_dir.display(), e));
+        return Err(format!("无法创建 mods 目录: {}", e));
     }
-
-    let mut cfg = read_inject_config(&mods_dir).await.unwrap_or_default();
 
     let mut imported: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
-    for p in paths.into_iter() {
-        let src = PathBuf::from(&p);
-        if !src.exists() {
-            errors.push(format!("源文件不存在: {}", p));
+    for p in paths {
+        let src_path = PathBuf::from(&p);
+        if !src_path.exists() {
+            errors.push(format!("文件不存在: {}", p));
             continue;
         }
-        let filename = match src.file_name().and_then(|n| n.to_str()) {
+
+        let file_name = match src_path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
-            None => {
-                errors.push(format!("无法识别文件名: {}", p));
+            None => { errors.push(format!("无效路径: {}", p)); continue; }
+        };
+        let file_stem = src_path.file_stem().and_then(|n| n.to_str()).unwrap_or("UnknownMod").to_string();
+
+        // 1. 创建 Mod 文件夹
+        let target_dir = mods_dir.join(&file_stem);
+        if !target_dir.exists() {
+            if let Err(e) = fs::create_dir_all(&target_dir).await {
+                errors.push(format!("创建目录失败 {}: {}", file_stem, e));
                 continue;
             }
-        };
-        let dest = mods_dir.join(&filename);
-
-        // copy (overwrite) - change strategy here if you want rename instead
-        match fs::copy(&src, &dest).await {
-            Ok(_) => {
-                imported.push(filename.clone());
-                cfg.files.entry(filename.clone()).or_insert(DllConfig {
-                    enabled: true,
-                    delay: 0,
-                });
-            }
-            Err(e) => {
-                errors.push(format!(
-                    "复制 {} 到 {} 失败: {}",
-                    src.display(),
-                    dest.display(),
-                    e
-                ));
-            }
         }
-    }
 
-    if let Err(e) = write_inject_config(&mods_dir, &cfg).await {
-        return Err(format!("写入配置失败: {}", e));
+        // 2. 复制 DLL
+        let target_dll = target_dir.join(&file_name);
+        if let Err(e) = fs::copy(&src_path, &target_dll).await {
+            errors.push(format!("复制文件失败 {}: {}", file_name, e));
+            continue;
+        }
+
+        // 3. 创建 manifest.json (默认启用)
+        let manifest = ModManifest {
+            name: file_stem.clone(),
+            entry: file_name.clone(),
+            mod_type: "preload-native".to_string(),
+            inject_delay_ms: None,
+        };
+
+        let manifest_path = target_dir.join("manifest.json");
+        // 关键逻辑：如果已禁用 (.manifest.json 存在)，则不覆盖创建，保持禁用状态
+        if !target_dir.join(".manifest.json").exists() {
+            match serde_json::to_string_pretty(&manifest) {
+                Ok(json) => {
+                    // 如果 manifest.json 已存在，将被覆盖
+                    if let Err(e) = fs::write(&manifest_path, json).await {
+                        errors.push(format!("写入配置失败 {}: {}", file_stem, e));
+                    } else {
+                        imported.push(file_stem);
+                    }
+                },
+                Err(e) => errors.push(format!("序列化配置失败: {}", e)),
+            }
+        } else {
+            imported.push(format!("{} (保持禁用)", file_stem));
+        }
     }
 
     Ok(serde_json::json!({ "imported": imported, "errors": errors }))
 }
 
-/// delete_mods: delete files and remove from config
 #[command]
 pub async fn delete_mods(folder_name: String, mod_ids: Vec<String>) -> Result<String, String> {
     let mods_dir = mods_dir_for(&folder_name);
-    if fs::metadata(&mods_dir).await.is_err() {
-        return Err(format!("mods 目录不存在: {}", mods_dir.display()));
-    }
+    let mut deleted_count = 0;
+    let mut errors = Vec::new();
 
-    let mut cfg = read_inject_config(&mods_dir).await.unwrap_or_default();
-    let mut errors: Vec<String> = Vec::new();
-
-    for id in &mod_ids {
-        let candidate = mods_dir.join(id);
-        match fs::remove_file(&candidate).await {
-            Ok(_) => debug!("deleted mod file: {:?}", candidate),
-            Err(e) => {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    errors.push(format!("删除文件 {} 失败: {}", candidate.display(), e));
-                } else {
-                    debug!("file not found, skip: {:?}", candidate);
-                }
+    for id in mod_ids {
+        let target_dir = mods_dir.join(&id);
+        if target_dir.exists() && target_dir.is_dir() {
+            if let Err(e) = fs::remove_dir_all(&target_dir).await {
+                errors.push(format!("删除 {} 失败: {}", id, e));
+            } else {
+                deleted_count += 1;
             }
+        } else {
+            // 已移除对旧版本 DLL 文件的删除支持
+            errors.push(format!("未找到 Mod 目录: {}", id));
         }
-        cfg.files.remove(id);
-    }
-
-    if let Err(e) = write_inject_config(&mods_dir, &cfg).await {
-        errors.push(format!("写入配置失败: {}", e));
     }
 
     if !errors.is_empty() {
         Err(errors.join("; "))
     } else {
-        Ok(format!("deleted {} mods", mod_ids.len()))
+        Ok(format!("成功删除 {} 个 Mod", deleted_count))
     }
 }

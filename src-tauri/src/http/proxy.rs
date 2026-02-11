@@ -1,6 +1,6 @@
 // src/http/proxy.rs
 use crate::config::config::{read_config, ProxyConfig, ProxyType};
-use crate::http::request::GLOBAL_CLIENT;
+use crate::http::request::{DEFAULT_USER_AGENT, GLOBAL_CLIENT};
 use crate::result::CoreError;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Proxy};
@@ -20,6 +20,7 @@ static CLIENT_CACHE: Lazy<Mutex<HashMap<String, Client>>> = Lazy::new(|| {
         .deflate(true)
         .connect_timeout(Duration::from_secs(10))
         .pool_max_idle_per_host(8)
+        .user_agent(DEFAULT_USER_AGENT.as_str())
         .no_proxy()
         .build()
         .unwrap_or_else(|e| {
@@ -109,6 +110,7 @@ pub fn clear_client_cache() {
             .deflate(true)
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(8)
+            .user_agent(DEFAULT_USER_AGENT.as_str())
             .no_proxy()
             .build()
             .unwrap_or_else(|e| {
@@ -130,6 +132,7 @@ pub fn rebuild_no_proxy_client_in_cache() {
         .deflate(true)
         .connect_timeout(Duration::from_secs(10))
         .pool_max_idle_per_host(8)
+        .user_agent(DEFAULT_USER_AGENT.as_str())
         .no_proxy()
         .build()
         .unwrap_or_else(|e| {
@@ -173,7 +176,8 @@ pub fn get_client_for_proxy() -> Result<Client, CoreError> {
         .brotli(true)
         .deflate(true)
         .connect_timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(8);
+        .pool_max_idle_per_host(8)
+        .user_agent(DEFAULT_USER_AGENT.as_str());
 
     builder = match cfg.proxy_type {
         ProxyType::None => {

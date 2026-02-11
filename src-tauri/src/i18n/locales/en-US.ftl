@@ -15,7 +15,7 @@ developer-mode-content =
 developer-mode-open = Open Developer Settings
 developer-mode-cancel = Cancel
 
-appx-deps-title = Missing UWP Dependencies
+appx-deps-title = Game Dependencies
 appx-deps-main = The following dependencies are not installed:
 
 appx-deps-content = {$missing}
@@ -23,3 +23,12 @@ appx-deps-choices =
     Please choose an action:
 appx-deps-button-install = Download and Install Automatically
 appx-deps-button-exit = Exit
+
+mc-deps-title = Game Dependencies
+mc-deps-main = Missing dependencies detected:
+mc-deps-content =
+    Click “Download and Install Automatically” first.
+    If it fails, try Microsoft Store or the third-party download link.
+mc-deps-choices = {appx-deps-choices}
+mc-deps-button-install = {appx-deps-button-install}
+mc-deps-button-exit = {appx-deps-button-exit}

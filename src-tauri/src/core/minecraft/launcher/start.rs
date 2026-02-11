@@ -1,136 +1,279 @@
-use windows::core::HSTRING;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::os::windows::process::CommandExt; // [新增] 引入 CommandExt 以支持 creation_flags
+use std::ptr;
+use std::time::{Duration, Instant};
+use tracing::{info, warn, debug, error};
+use windows::core::{HSTRING, Result as WindowsResult, HRESULT, PCWSTR};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WIN32_ERROR};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, CREATE_NO_WINDOW
 };
 use windows::Win32::UI::Shell::{
     ApplicationActivationManager, IApplicationActivationManager, ACTIVATEOPTIONS,
 };
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
+use windows::Foundation::Uri;
+use windows::System::{Launcher, LauncherOptions};
+use windows::core::PWSTR;
 
-use std::io;
-use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::ptr;
-use tracing::info;
-use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+// 检查 PID 是否属于目标包
+pub fn is_process_in_package(pid: u32, target_family_name: &str) -> bool {
+    unsafe {
+        let Ok(h_proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false; };
+        if h_proc.is_invalid() { return false; }
 
-fn launch_uwp_winapi(app_user_model_id: &str) -> Result<u32, windows::core::Error> {
-    let hr = unsafe { CoInitializeEx(Some(ptr::null()), COINIT_APARTMENTTHREADED) };
-    if !hr.is_ok() {
-        return Err(hr.into());
+        let mut len: u32 = 0;
+        let _ = GetPackageFamilyName(h_proc, &mut len, None);
+        if len == 0 { let _ = CloseHandle(h_proc); return false; }
+
+        let mut buffer = vec![0u16; len as usize];
+        let res = GetPackageFamilyName(h_proc, &mut len, Some(PWSTR(buffer.as_mut_ptr())));
+        let _ = CloseHandle(h_proc);
+
+        if res == WIN32_ERROR(0) {
+            let family = String::from_utf16_lossy(&buffer).trim_matches('\0').to_string();
+            return family.eq_ignore_ascii_case(target_family_name);
+        }
     }
+    false
+}
+
+// 获取系统当前所有匹配名称的 PID
+pub fn get_pids_by_name(exe_name: &str) -> Vec<u32> {
+    let mut pids = Vec::new();
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return pids; };
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(&entry.szExeFile).trim_matches('\0').to_string();
+                if name.eq_ignore_ascii_case(exe_name) { pids.push(entry.th32ProcessID); }
+                if Process32NextW(snapshot, &mut entry).is_err() { break; }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    pids
+}
+
+// [修复] 纯启动命令，现在正确处理 launch_args
+pub async fn launch_uwp_command_only(app_user_model_id: &str, launch_args: Option<&str>) -> WindowsResult<bool> {
+    debug!("Executing launch_uwp_command_only: AUMID={}, Args={:?}", app_user_model_id, launch_args);
+    unsafe { let _ = CoInitializeEx(Some(ptr::null()), COINIT_APARTMENTTHREADED); };
+
+    if let Some(args) = launch_args {
+        // 协议启动 (minecraft://)
+        if args.contains("://") {
+            info!("Launch strategy: Protocol Handler");
+            let uri = Uri::CreateUri(&HSTRING::from(args))?;
+            let pfn = app_user_model_id.split('!').next().unwrap_or(app_user_model_id);
+            let options = LauncherOptions::new()?;
+            options.SetTargetApplicationPackageFamilyName(&HSTRING::from(pfn))?;
+            return Launcher::LaunchUriWithOptionsAsync(&uri, &options)?.await;
+        }
+    }
+
+    // IApplicationActivationManager 启动
+    info!("Launch strategy: IApplicationActivationManager");
+    let activator: IApplicationActivationManager = unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)? };
+
+    // [关键修复] 将 launch_args 转换为 HSTRING 传入，而不是传入空字符串
+    let args_hstring = if let Some(a) = launch_args { HSTRING::from(a) } else { HSTRING::new() };
+
+    unsafe {
+        activator.ActivateApplication(
+            &HSTRING::from(app_user_model_id),
+            &args_hstring,
+            ACTIVATEOPTIONS(0)
+        )
+    }?;
+    Ok(true)
+}
+
+// =================================================================================
+// UWP 启动逻辑 (保留原有逻辑并修复参数)
+// =================================================================================
+
+async fn launch_uwp_with_uri(app_user_model_id: &str, uri_str: &str) -> WindowsResult<bool> {
+    unsafe {
+        let _ = CoInitializeEx(Some(ptr::null()), COINIT_APARTMENTTHREADED);
+    };
+    let uri = Uri::CreateUri(&HSTRING::from(uri_str))?;
+    let pfn = app_user_model_id.split('!').next().unwrap_or(app_user_model_id);
+
+    let options = LauncherOptions::new()?;
+    options.SetTargetApplicationPackageFamilyName(&HSTRING::from(pfn))?;
+
+    Launcher::LaunchUriWithOptionsAsync(&uri, &options)?.await
+}
+
+fn launch_uwp_winapi(app_user_model_id: &str, args: Option<&str>) -> Result<u32, windows::core::Error> {
+    let hr = unsafe { CoInitializeEx(Some(ptr::null()), COINIT_APARTMENTTHREADED) };
+    if !hr.is_ok() && hr != HRESULT(0x80010106u32 as i32) {}
 
     let activator: IApplicationActivationManager =
         unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)? };
 
+    let args_h = if let Some(a) = args { HSTRING::from(a) } else { HSTRING::new() };
+
     let result = unsafe {
         activator.ActivateApplication(
             &HSTRING::from(app_user_model_id),
-            &HSTRING::new(),
+            &args_h,
             ACTIVATEOPTIONS(0),
         )
     };
-
-    match result {
-        Ok(pid) => {
-            info!("通过 IApplicationActivationManager 启动成功，PID: {}", pid);
-            Ok(pid)
-        }
-        Err(e) => Err(e),
-    }
+    result
 }
 
-pub fn launch_uwp(edition: &str) -> io::Result<Option<u32>> {
+// 智能启动 UWP 并返回 PID (完整流程)
+pub async fn launch_uwp(edition: &str, launch_args: Option<&str>) -> io::Result<Option<u32>> {
     let app_user_model_id = match edition {
         "Microsoft.MinecraftUWP" => "Microsoft.MinecraftUWP_8wekyb3d8bbwe!App",
         "Microsoft.MinecraftWindowsBeta" => "Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe!App",
-        "Microsoft.MinecraftEducationEdition" => {
-            "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition"
-        }
-        "Microsoft.MinecraftEducationPreview" => {
-            "Microsoft.MinecraftEducationPreview_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition"
-        }
+        "Microsoft.MinecraftEducationEdition" => "Microsoft.MinecraftEducationEdition_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition",
+        "Microsoft.MinecraftEducationPreview" => "Microsoft.MinecraftEducationPreview_8wekyb3d8bbwe!Microsoft.MinecraftEducationEdition",
         _ => return Ok(None),
     };
 
-    match launch_uwp_winapi(app_user_model_id) {
-        Ok(pid) => Ok(Some(pid)),
-        Err(e) => {
-            info!("WinAPI 启动失败，尝试 cmd: {}", e);
-            let status = Command::new("cmd")
-                .arg("/C")
-                .arg("start")
-                .arg(format!("shell:appsFolder\\{}", app_user_model_id))
-                .creation_flags(CREATE_NO_WINDOW.0)
-                .status()?;
-            info!("cmd 启动状态: {:?}", status);
-            Ok(None)
+    let package_family_name = app_user_model_id.split('!').next().unwrap_or("");
+    let target_exe_name = if edition.contains("Education") { "Minecraft.Education.exe" } else { "Minecraft.Windows.exe" };
+
+    let pids_before = get_pids_by_name(target_exe_name);
+    debug!("PIDs before launch: {:?}", pids_before);
+
+    let mut launched_via_uri = false;
+
+    if let Some(args) = launch_args {
+        if args.contains("://") {
+            info!("Launching via URI: {}", args);
+            match launch_uwp_with_uri(app_user_model_id, args).await {
+                Ok(true) => {
+                    info!("URI launch successful");
+                    launched_via_uri = true;
+                },
+                Ok(false) => warn!("URI launch returned false"),
+                Err(e) => warn!("URI launch failed: {:?}", e),
+            }
         }
     }
+
+    if !launched_via_uri {
+        info!("Launching via WinAPI ActivateApplication");
+        // [修复] 传入参数
+        match launch_uwp_winapi(app_user_model_id, launch_args) {
+            Ok(pid) => {
+                info!("WinAPI returned PID: {}", pid);
+                return Ok(Some(pid));
+            },
+            Err(e) => {
+                warn!("WinAPI launch failed: {:?}, fallback to Explorer", e);
+                let _ = Command::new("explorer.exe")
+                    .arg(format!("shell:appsFolder\\{}", app_user_model_id))
+                    .spawn();
+                launched_via_uri = true;
+            }
+        }
+    }
+
+    // 智能 PID 查找逻辑
+    let start_time = Instant::now();
+    let timeout = Duration::from_secs(8);
+    info!("Waiting for process {}...", target_exe_name);
+
+    while start_time.elapsed() < timeout {
+        let pids_now = get_pids_by_name(target_exe_name);
+
+        // 1. 检查新增进程
+        let new_pids: Vec<u32> = pids_now.iter()
+            .filter(|pid| !pids_before.contains(pid))
+            .cloned()
+            .collect();
+
+        for pid in new_pids {
+            if is_process_in_package(pid, package_family_name) {
+                info!("Found new process: PID {}", pid);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                return Ok(Some(pid));
+            }
+        }
+
+        // 2. 检查现有进程被激活 (UWP 单实例特性)
+        if start_time.elapsed() > Duration::from_millis(1500) {
+            for pid in pids_now {
+                if is_process_in_package(pid, package_family_name) {
+                    info!("Existing process activated: PID {}", pid);
+                    return Ok(Some(pid));
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    warn!("Launch timeout, PID not found");
+    Ok(None)
 }
 
-pub fn launch_win32(package_folder: &str) -> io::Result<Option<u32>> {
+/// 启动 Win32/GDK 版本
+/// [修改] 添加 enable_console 参数
+pub fn launch_win32(package_folder: &str, launch_args: Option<&str>, enable_console: bool) -> io::Result<Option<u32>> {
     let folder = Path::new(package_folder);
     if !folder.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("package folder not found: {}", package_folder),
+            format!("Package folder not found: {}", package_folder),
         ));
     }
 
-    // 先扫描当前目录下的 exe，优先匹配常见名字
-    let mut candidate_exes: Vec<PathBuf> = Vec::new();
+    let try_spawn = |path: &PathBuf| -> io::Result<u32> {
+        let mut cmd = Command::new(path);
+        if let Some(parent) = path.parent() {
+            cmd.current_dir(parent);
+        } else {
+            cmd.current_dir(folder);
+        }
+
+        if let Some(arg) = launch_args {
+            cmd.arg(arg);
+        }
+
+        // [新增] 如果启用控制台，设置 CREATE_NEW_CONSOLE (0x10)
+        if enable_console {
+            cmd.creation_flags(0x00000010);
+            debug!("Setting creation flags: CREATE_NEW_CONSOLE for Win32 launch");
+        }
+
+        info!("Spawning Win32 process: {:?}", cmd);
+        let child = cmd.spawn()?;
+        Ok(child.id())
+    };
+    let main_exe = folder.join("Minecraft.Windows.exe");
+    if main_exe.exists() {
+        match try_spawn(&main_exe) {
+            Ok(pid) => return Ok(Some(pid)),
+            Err(e) => error!("Failed to launch Minecraft.Windows.exe: {:?}", e),
+        }
+    }
+
+    // 扫描其他 EXE
     if let Ok(rd) = std::fs::read_dir(folder) {
         for entry in rd.flatten() {
             let p = entry.path();
+            if p == main_exe { continue; }
             if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                 if ext.eq_ignore_ascii_case("exe") {
-                    if let Some(fname) = p.file_name().and_then(|f| f.to_str()) {
-                        let fname_l = fname.to_lowercase();
-                        // 高优先级匹配
-                        if fname_l.contains("minecraft")
-                            || fname_l.contains("bedrock")
-                            || fname_l.contains("launcher")
-                        {
-                            // 立刻尝试启动优先 exe
-                            match Command::new(&p).spawn() {
-                                Ok(child) => return Ok(Some(child.id())),
-                                Err(err) => {
-                                    // 记录为候选，继续尝试其他 exe
-                                    candidate_exes.push(p.clone());
-                                    eprintln!("尝试启动 {} 失败: {:?}", p.display(), err);
-                                    continue;
-                                }
-                            }
-                        } else {
-                            // 低优先级候选，稍后尝试
-                            candidate_exes.push(p.clone());
-                        }
+                    if let Ok(pid) = try_spawn(&p) {
+                        return Ok(Some(pid));
                     }
-                }
-            }
-        }
-    }
-
-    // 回退：尝试候选 exe（按发现顺序）
-    for p in candidate_exes.into_iter() {
-        match Command::new(&p).spawn() {
-            Ok(child) => return Ok(Some(child.id())),
-            Err(e) => {
-                eprintln!("回退启动 {} 失败: {:?}", p.display(), e);
-                continue;
-            }
-        }
-    }
-
-    let try_names = ["Minecraft.Windows.exe"];
-    for name in &try_names {
-        let p = folder.join(name);
-        if p.exists() {
-            match Command::new(&p).spawn() {
-                Ok(child) => return Ok(Some(child.id())),
-                Err(e) => {
-                    eprintln!("尝试启动 {} 失败: {:?}", p.display(), e);
                 }
             }
         }

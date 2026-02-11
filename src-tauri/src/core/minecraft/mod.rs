@@ -9,3 +9,7 @@ pub mod nbt;
 pub mod resource_packs;
 pub mod uwp_minimize_fix;
 pub mod gdk;
+pub mod commands;
+pub mod mod_manager;
+mod paths;
+mod import;

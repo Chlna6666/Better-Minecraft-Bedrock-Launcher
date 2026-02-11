@@ -1,6 +1,7 @@
 use crate::core::minecraft::appx::utils::get_manifest_identity;
 use futures::StreamExt;
 use serde::Serialize;
+use serde_json::Value;
 use std::{collections::HashMap, path::PathBuf, time::Instant};
 use tokio::fs;
 use tokio::fs::read_dir;
@@ -13,6 +14,7 @@ struct AppxVersion {
     version: String,
     path: String, // 完整绝对路径
     kind: String, // "UWP" 或 "GDK"
+    config: Value,
 }
 
 /// 简单解析：把版本段尽量保留为整数（不要把长段再拆）
@@ -123,6 +125,11 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
                     None => return None,
                 };
 
+                let config = match fs::read_to_string(path_buf.join("config.json")).await {
+                    Ok(raw) => serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({})),
+                    Err(_) => serde_json::json!({}),
+                };
+
                 // 使用你已有的 get_manifest_identity 获取 name/version
                 match get_manifest_identity(&path_buf.to_string_lossy()).await {
                     Ok((name, version)) => {
@@ -135,6 +142,7 @@ pub async fn get_appx_version_list(folder: &str) -> serde_json::Value {
                                 version,
                                 path: path_buf.to_string_lossy().to_string(),
                                 kind,
+                                config,
                             },
                         ))
                     }

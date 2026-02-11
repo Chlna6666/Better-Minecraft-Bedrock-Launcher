@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { getConfig } from "../../utils/config";
 import Switch from "../../components/Switch";
 import Select from "../../components/Select";
-import Slider from "../../components/Slider/Slider"; // [新增] 引入 Slider
+import Slider from "../../components/Slider/Slider";
 import { useTranslation } from "react-i18next";
 import { SUPPORTED_LANGUAGES } from "../../locales/i18n";
 import { Input } from "../../components";
+import { ChevronRight } from "lucide-react"; // [新增] 引入箭头图标
+import ConnectivityModal from "../../components/ConnectivityModal"; // [新增] 引入弹窗组件
 
 // ... (Variants 保持不变)
 const containerVariants = {
@@ -28,9 +31,13 @@ export default function Launcher() {
     const { t, i18n } = useTranslation();
     const [loaded, setLoaded] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
+    const [gpuAcceleration, setGpuAcceleration] = useState(true);
     const [language, setLanguage] = useState("auto");
     const [userLanguage, setUserLanguage] = useState("auto");
-    const [customAppxApi, setCustomAppxApi] = useState("");
+    // const [customAppxApi, setCustomAppxApi] = useState(""); // 未使用的变量可以注释或删除
+
+    // [新增] 控制连通性测试弹窗的状态
+    const [showConnectivity, setShowConnectivity] = useState(false);
 
     // Download settings
     const [multiThread, setMultiThread] = useState(false);
@@ -45,11 +52,10 @@ export default function Launcher() {
     const [proxyType, setProxyType] = useState("system");
     const [httpProxyUrl, setHttpProxyUrl] = useState("");
     const [socksProxyUrl, setSocksProxyUrl] = useState("");
+    const [curseforgeApiSource, setCurseforgeApiSource] = useState("mirror");
+    const [curseforgeApiBase, setCurseforgeApiBase] = useState("https://mod.mcimirror.top/curseforge");
 
-    // ... (useEffect fetchConfig, autoSave, language 逻辑保持不变，直接复用你之前的即可)
-    // 为了节省篇幅，这里假设 fetchConfig 等逻辑已存在
     useEffect(() => {
-        // 模拟数据加载 (请保留你原有的真实加载逻辑)
         async function fetchConfig() {
             try {
                 const fullConfig: any = await getConfig();
@@ -58,8 +64,16 @@ export default function Launcher() {
                 const proxy = download.proxy || {};
 
                 setDebugMode(launcher.debug || false);
-                setLanguage(launcher.language || "auto");
-                setUserLanguage(launcher.language || "auto");
+                setGpuAcceleration(launcher.hasOwnProperty('gpu_acceleration') ? !!launcher.gpu_acceleration : true);
+                const storedLang = launcher.language || "auto";
+                const normalizedLang = storedLang === "auto"
+                    ? "auto"
+                    : (SUPPORTED_LANGUAGES[storedLang] ? storedLang : storedLang.replace('_', '-'));
+                const finalLang = normalizedLang === "auto"
+                    ? "auto"
+                    : (SUPPORTED_LANGUAGES[normalizedLang] ? normalizedLang : "en-US");
+                setLanguage(finalLang);
+                setUserLanguage(finalLang);
 
                 setMultiThread(download.multi_thread || false);
                 setAutoThreadCount(download.hasOwnProperty('auto_thread_count') ? download.auto_thread_count : true);
@@ -69,6 +83,9 @@ export default function Launcher() {
                 setProxyType(["none", "system", "http", "socks5"].includes(pt) ? pt : "system");
                 setHttpProxyUrl(proxy.http_proxy_url || "");
                 setSocksProxyUrl(proxy.socks_proxy_url || "");
+                const source = (download.curseforge_api_source || "mirror").toLowerCase();
+                setCurseforgeApiSource(["official", "mirror", "custom"].includes(source) ? source : "mirror");
+                setCurseforgeApiBase(download.curseforge_api_base || "https://mod.mcimirror.top/curseforge");
 
                 setUpdateChannel(launcher.update_channel || "stable");
                 setAutoCheckUpdates(launcher.hasOwnProperty('auto_check_updates') ? launcher.auto_check_updates : true);
@@ -79,16 +96,15 @@ export default function Launcher() {
         fetchConfig();
     }, []);
 
-    // 自动保存逻辑 (请保留你原有的)
     useEffect(() => {
         if (!loaded) return;
         const save = async () => {
-            // ... 保存逻辑 ...
             try {
                 const full: any = await invoke("get_config");
                 const launcher = full.launcher || {};
-                // 更新各个字段
+
                 launcher.debug = debugMode;
+                launcher.gpu_acceleration = gpuAcceleration;
                 launcher.language = language;
                 launcher.update_channel = updateChannel;
                 launcher.auto_check_updates = autoCheckUpdates;
@@ -100,12 +116,15 @@ export default function Launcher() {
                 launcher.download.proxy.proxy_type = proxyType;
                 launcher.download.proxy.http_proxy_url = httpProxyUrl;
                 launcher.download.proxy.socks_proxy_url = socksProxyUrl;
+                launcher.download.curseforge_api_source = curseforgeApiSource;
+                launcher.download.curseforge_api_base = curseforgeApiBase;
+
                 await invoke("set_config", { key: "launcher", value: launcher });
+                emit("refresh-config").catch(() => {});
             } catch (e) {}
         };
         save();
-    }, [loaded, debugMode, language, multiThread, autoThreadCount, maxThreads, proxyType, httpProxyUrl, socksProxyUrl, autoCheckUpdates, updateChannel]);
-
+    }, [loaded, debugMode, gpuAcceleration, language, multiThread, autoThreadCount, maxThreads, proxyType, httpProxyUrl, socksProxyUrl, autoCheckUpdates, updateChannel, curseforgeApiSource, curseforgeApiBase]);
 
     // Debounce Save Helper
     const saveRef = useRef<NodeJS.Timeout | null>(null);
@@ -133,7 +152,12 @@ export default function Launcher() {
         setUserLanguage(newLang);
         setLanguage(newLang);
         const target = newLang === "auto" ? await invoke("get_system_language") : newLang;
-        await i18n.changeLanguage(target as string);
+        const localeStr = String(target);
+        const normalizedLocale = SUPPORTED_LANGUAGES[localeStr]
+            ? localeStr
+            : localeStr.replace('_', '-');
+        const finalLocale = SUPPORTED_LANGUAGES[normalizedLocale] ? normalizedLocale : "en-US";
+        await i18n.changeLanguage(finalLocale);
     };
 
     const proxyOptions = [
@@ -168,6 +192,11 @@ export default function Launcher() {
             </motion.div>
 
             <motion.div variants={itemVariants} className="setting-item">
+                <label>{t("LauncherSettings.gpu_acceleration")}</label>
+                <Switch checked={gpuAcceleration} onChange={() => setGpuAcceleration(!gpuAcceleration)} />
+            </motion.div>
+
+            <motion.div variants={itemVariants} className="setting-item">
                 <label>{t("LauncherSettings.language")}</label>
                 <div style={fixedControlStyle}>
                     <Select
@@ -180,6 +209,23 @@ export default function Launcher() {
                         placeholder={t("LauncherSettings.lang_placeholder")}
                         size={13}
                     />
+                </div>
+            </motion.div>
+
+            {/* [新增] 服务连通性测试入口 */}
+            <motion.div
+                variants={itemVariants}
+                className="setting-item"
+                style={{ cursor: 'pointer' }} // 鼠标悬停显示手型
+                onClick={() => setShowConnectivity(true)} // 点击触发弹窗
+                // 添加 hover 效果增强交互感 (可选，因为 css 中 .setting-item:hover 已经有了)
+            >
+                <label style={{ cursor: 'pointer' }}>
+                    {t("LauncherSettings.connectivity_test") || "服务连通性测试"}
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', color: 'var(--c-text-secondary)' }}>
+                    {/* 使用箭头图标作为“按钮” */}
+                    <ChevronRight size={20} />
                 </div>
             </motion.div>
 
@@ -227,7 +273,7 @@ export default function Launcher() {
                 {getDownloadTitle()}
             </motion.h4>
 
-            {/* --- 多线程下载 (修复后的布局) --- */}
+            {/* --- 多线程下载 --- */}
             <motion.div variants={itemVariants} className="setting-item grouped">
                 <div className="setting-header">
                     <label>{t("LauncherSettings.download.multi_thread")}</label>
@@ -254,10 +300,7 @@ export default function Launcher() {
                                 <div className="sub-group-spacer" />
                                 <div className="sub-setting-row">
                                     <label>{t("LauncherSettings.download.max_threads")}</label>
-
-                                    {/* 右侧布局容器 */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                                        {/* Slider: 占据固定宽度或自适应 */}
                                         <div style={{ width: '140px' }}>
                                             <Slider
                                                 min={1}
@@ -266,8 +309,6 @@ export default function Launcher() {
                                                 onChange={handleSliderChange}
                                             />
                                         </div>
-
-                                        {/* Input: 修复文字溢出 */}
                                         <div className="sub-control-wrapper" style={{ width: '56px' }}>
                                             <Input
                                                 type="number"
@@ -301,7 +342,65 @@ export default function Launcher() {
                 />
             </motion.div>
 
-            {/* 代理设置 (Grouped) */}
+            <motion.div variants={itemVariants} className="setting-item grouped">
+                <div className="setting-header">
+                    <label>{t("LauncherSettings.download.curseforge_api_source") || "CurseForge API Source"}</label>
+                    <div style={fixedControlStyle}>
+                        <Select
+                            value={curseforgeApiSource}
+                            onChange={(val: any) => {
+                                const next = String(val);
+                                setCurseforgeApiSource(next);
+                                if (next !== "custom") {
+                                    setCurseforgeApiBase(
+                                        next === "official"
+                                            ? "https://api.curseforge.com"
+                                            : "https://mod.mcimirror.top/curseforge"
+                                    );
+                                } else if (!curseforgeApiBase) {
+                                    setCurseforgeApiBase("https://mod.mcimirror.top/curseforge");
+                                }
+                            }}
+                            options={[
+                                { value: "official", label: t("LauncherSettings.download.curseforge_api_source.official") || "Official" },
+                                { value: "mirror", label: t("LauncherSettings.download.curseforge_api_source.mirror") || "Mirror" },
+                                { value: "custom", label: t("LauncherSettings.download.curseforge_api_source.custom") || "Custom" },
+                            ]}
+                            placeholder={t("LauncherSettings.download.curseforge_api_source.placeholder") || "Select"}
+                            size={13}
+                        />
+                    </div>
+                </div>
+                <AnimatePresence initial={false}>
+                    {curseforgeApiSource === "custom" && (
+                        <motion.div
+                            variants={expandVariants}
+                            initial="collapsed"
+                            animate="expanded"
+                            exit="collapsed"
+                            style={{ overflow: 'hidden' }}
+                        >
+                            <div className="setting-sub-group">
+                                <div className="sub-group-spacer" />
+                                <div className="sub-setting-row">
+                                    <label>{t("LauncherSettings.download.curseforge_api_base") || "CurseForge API Base"}</label>
+                                    <div className="sub-control-wrapper" style={{ width: '280px', maxWidth: '280px' }}>
+                                        <Input
+                                            type="text"
+                                            value={curseforgeApiBase}
+                                            onChange={(e: any) => setCurseforgeApiBase(e.target.value)}
+                                            placeholder="https://mod.mcimirror.top/curseforge"
+                                            style={{ width: '100%' }}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+            </motion.div>
+
+            {/* 代理设置 */}
             <motion.div variants={itemVariants} className="setting-item grouped">
                 <div className="setting-header">
                     <label>{t("LauncherSettings.download.proxy.mode") || "Proxy Mode"}</label>
@@ -362,6 +461,13 @@ export default function Launcher() {
                     )}
                 </AnimatePresence>
             </motion.div>
+
+            {/* [新增] 渲染弹窗组件 */}
+            {/* 把它放在最下面，使用 React Portal (组件内部已处理) */}
+            <ConnectivityModal
+                isOpen={showConnectivity}
+                onClose={() => setShowConnectivity(false)}
+            />
 
         </motion.div>
     );

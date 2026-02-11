@@ -130,6 +130,14 @@
       "icons/logo.png",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["mcpack", "mcworld", "mcaddon", "mctemplate"],
+        "name": "Minecraft Bedrock Asset",
+        "description": "Minecraft Bedrock 资源文件",
+        "role": "Viewer"
+      }
+    ],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",

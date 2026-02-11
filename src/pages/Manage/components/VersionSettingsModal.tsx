@@ -1,0 +1,165 @@
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { invoke } from '@tauri-apps/api/core';
+import { X, Save, Loader2, AlertTriangle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { useToast } from '../../../components/Toast';
+import './VersionSettingsModal.css';
+
+interface VersionSettingsModalProps {
+    isOpen: boolean;
+    onClose: () => void;
+    version: any; // 版本对象
+    onSaved?: () => void; // [新增] 保存成功后的回调
+}
+
+// 辅助函数：版本比较 (v1 >= v2 返回 true)
+const isVersionAtLeast = (v1: string, v2: string) => {
+    if (!v1) return false;
+    const p1 = v1.split('.').map(Number);
+    const p2 = v2.split('.').map(Number);
+    const len = Math.max(p1.length, p2.length);
+    for (let i = 0; i < len; i++) {
+        const n1 = p1[i] || 0;
+        const n2 = p2[i] || 0;
+        if (n1 > n2) return true;
+        if (n1 < n2) return false;
+    }
+    return true;
+};
+
+export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOpen, onClose, version, onSaved }) => {
+    const [config, setConfig] = useState({
+        enable_debug_console: false,
+        enable_redirection: false,
+        editor_mode: false,
+    });
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const toast = useToast();
+    const { t } = useTranslation();
+
+    // 1.19.80.20 是编辑器模式的最低版本要求
+    const canUseEditor = version?.version && isVersionAtLeast(version.version, "1.19.80.20");
+
+    useEffect(() => {
+        if (isOpen && version) {
+            setLoading(true);
+            invoke('get_version_config', { folderName: version.folder })
+                .then((res: any) => {
+                    // 确保拿到的是对象
+                    setConfig(res || {
+                        enable_debug_console: false,
+                        enable_redirection: false,
+                        editor_mode: false,
+                    });
+                })
+                .catch((err) => {
+                    toast.error(t("VersionSettingsModal.load_failed", { error: err }));
+                })
+                .finally(() => setLoading(false));
+        }
+    }, [isOpen, version, t]);
+
+    const handleSave = async () => {
+        setSaving(true);
+        try {
+            const payload = {
+                ...config,
+                enable_redirection: config.enable_redirection,
+                editor_mode: canUseEditor ? config.editor_mode : false
+            };
+            await invoke('save_version_config', { folderName: version.folder, config: payload });
+            toast.success(t("VersionSettingsModal.save_success"));
+
+            // [新增] 触发刷新回调
+            if (onSaved) {
+                onSaved();
+            }
+            onClose();
+        } catch (err: any) {
+            toast.error(t("VersionSettingsModal.save_failed", { error: err }));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const toggle = (key: keyof typeof config) => {
+        setConfig(prev => ({ ...prev, [key]: !prev[key] }));
+    };
+
+    if (!isOpen) return null;
+
+    return createPortal(
+        <div className="vs-modal-overlay" onClick={onClose}>
+            <div className="vs-modal" onClick={e => e.stopPropagation()}>
+                <div className="vs-header">
+                    <h3 className="vs-title">{t("VersionSettingsModal.title")}</h3>
+                    <button className="icon-btn-ghost" onClick={onClose}><X size={20} /></button>
+                </div>
+
+                <div className="vs-body">
+                    {loading ? (
+                        <div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}>
+                            <Loader2 className="loader-spin" size={24} />
+                        </div>
+                    ) : (
+                        <>
+                            {/* 1. 调试控制台 */}
+                            <div className="vs-option-item">
+                                <div className="vs-option-info">
+                                    <span className="vs-option-label">{t("VersionSettingsModal.debug_console_label")}</span>
+                                    <span className="vs-option-desc">{t("VersionSettingsModal.debug_console_desc")}</span>
+                                </div>
+                                <div className={`vs-switch ${config.enable_debug_console ? 'checked' : ''}`} onClick={() => toggle('enable_debug_console')}>
+                                    <div className="vs-switch-thumb" />
+                                </div>
+                            </div>
+
+                            {/* 2. 目录重定向 */}
+                            <div className="vs-option-item">
+                                <div className="vs-option-info">
+                                    <span className="vs-option-label">{t("VersionSettingsModal.redirection_label")}</span>
+                                    <span className="vs-option-desc">
+                                        {t("VersionSettingsModal.redirection_desc")}
+                                    </span>
+                                </div>
+                                <div className={`vs-switch ${config.enable_redirection ? 'checked' : ''}`} onClick={() => toggle('enable_redirection')}>
+                                    <div className="vs-switch-thumb" />
+                                </div>
+                            </div>
+
+                            {/* 3. 编辑器模式 */}
+                            {canUseEditor ? (
+                                <div className="vs-option-item">
+                                    <div className="vs-option-info">
+                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_label")}</span>
+                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_desc")}</span>
+                                    </div>
+                                    <div className={`vs-switch ${config.editor_mode ? 'checked' : ''}`} onClick={() => toggle('editor_mode')}>
+                                        <div className="vs-switch-thumb" />
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="vs-option-item disabled" style={{opacity: 0.5}}>
+                                    <div className="vs-option-info">
+                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_unavailable_label")}</span>
+                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_unavailable_desc")}</span>
+                                    </div>
+                                </div>
+                            )}
+                        </>
+                    )}
+                </div>
+
+                <div className="vs-footer">
+                    <button className="btn-modal-cancel" onClick={onClose}>{t("common.cancel")}</button>
+                    <button className="btn-modal-primary" onClick={handleSave} disabled={loading || saving}>
+                        {saving ? t("common.saving") : t("VersionSettingsModal.save_changes")}
+                    </button>
+                </div>
+            </div>
+        </div>,
+        document.body
+    );
+};

@@ -1,0 +1,115 @@
+/* src/pages/Manage/components/AssetContextMenu.css */
+
+/* 定义局部变量 - 方便维护颜色 */
+:root {
+    --ctx-bg: #ffffff;
+    --ctx-border: #e5e7eb;
+    --ctx-text: #374151;
+    --ctx-text-muted: #9ca3af;
+    --ctx-hover-bg: #f3f4f6;
+    --ctx-danger-text: #ef4444;
+    --ctx-danger-hover-bg: rgba(239, 68, 68, 0.08);
+    --ctx-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0,0,0,0.05);
+}
+
+/* 暗色模式覆盖 */
+[data-theme='dark'] {
+    --ctx-bg: #1f2937; /* Gray 800 */
+    --ctx-border: rgba(255, 255, 255, 0.08);
+    --ctx-text: #e5e7eb; /* Gray 200 */
+    --ctx-text-muted: #9ca3af;
+    --ctx-hover-bg: rgba(255, 255, 255, 0.08);
+    --ctx-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255,255,255,0.1);
+}
+
+/* 菜单容器 */
+.asset-context-menu {
+    position: fixed;
+    z-index: 9999;
+    background: var(--ctx-bg);
+    border: 1px solid var(--ctx-border);
+    border-radius: 8px;
+    padding: 4px;
+    min-width: 160px;
+    max-width: 240px;
+    box-shadow: var(--ctx-shadow);
+
+    /* 动画效果 */
+    transform-origin: top left;
+    animation: ctx-scale-in 0.1s cubic-bezier(0.2, 0.8, 0.2, 1);
+    backdrop-filter: blur(8px); /* 毛玻璃效果 (可选) */
+}
+
+/* 菜单项 */
+.ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    margin-bottom: 1px;
+    border-radius: 4px;
+
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ctx-text);
+
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s ease;
+}
+
+/* 悬停状态 */
+.ctx-item:hover {
+    background: var(--ctx-hover-bg);
+}
+
+/* 危险操作 (如删除) */
+.ctx-item.danger {
+    color: var(--ctx-danger-text);
+}
+
+.ctx-item.danger:hover {
+    background: var(--ctx-danger-hover-bg);
+}
+
+/* 禁用状态 */
+.ctx-item.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+    filter: grayscale(1);
+}
+
+/* 图标 */
+.ctx-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    opacity: 0.8;
+}
+
+.ctx-item:hover .ctx-icon {
+    opacity: 1;
+}
+
+/* 分割线 */
+.ctx-divider {
+    height: 1px;
+    background: var(--ctx-border);
+    margin: 4px 6px;
+    opacity: 0.6;
+}
+
+/* 动画定义 */
+@keyframes ctx-scale-in {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}

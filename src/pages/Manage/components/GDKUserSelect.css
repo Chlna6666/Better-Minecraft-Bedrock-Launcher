@@ -1,0 +1,111 @@
+/* src/pages/Manage/components/GDKUserSelect.css */
+
+.gdk-user-select-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 50;
+    /* 关键：防止 flex 容器被撑开 */
+    min-width: 0;
+    flex-shrink: 1;
+}
+
+/* 触发器 */
+.gdk-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.05);
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--text-color, #333);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+
+    /* [修改] 限制宽度，防止溢出 */
+    width: 100%;
+    min-width: 120px;
+    max-width: 200px;
+
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+/* ... (Hover 样式保持不变) ... */
+.gdk-select-trigger:hover {
+    background: rgba(0, 0, 0, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+.gdk-select-trigger.is-open {
+    background: var(--card-bg, #fff);
+    box-shadow: 0 0 0 2px var(--accent-color, #2563eb);
+    border-color: transparent;
+}
+
+/* 当前选中值文字 */
+.gdk-current-value {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    /* [修改] 确保文字截断生效 */
+    flex: 1;
+    min-width: 0;
+}
+
+.gdk-current-value span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 500;
+}
+
+.gdk-user-icon { opacity: 0.6; flex-shrink: 0; }
+.gdk-chevron { opacity: 0.4; transition: transform 0.2s; flex-shrink: 0; }
+.gdk-select-trigger.is-open .gdk-chevron { transform: rotate(180deg); opacity: 0.8; }
+
+/* 下拉菜单 */
+.gdk-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; /* 改为左对齐，通常更自然 */
+    width: 260px; /* 稍微宽一点显示完整ID */
+    max-height: 300px;
+    overflow-y: auto;
+    background: var(--card-bg, #fff);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+[data-theme='dark'] .gdk-dropdown-menu {
+    background: #2a2a2a;
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* 下拉项样式保持不变... */
+.gdk-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.1s;
+    color: var(--text-color, #333);
+}
+.gdk-option:hover { background: rgba(0,0,0,0.05); }
+[data-theme='dark'] .gdk-option:hover { background: rgba(255,255,255,0.08); }
+.gdk-option.selected { background: rgba(37, 99, 235, 0.1); color: var(--accent-color, #2563eb); }
+
+.gdk-option-info { display: flex; flex-direction: column; overflow: hidden; flex: 1; min-width: 0; }
+.gdk-option-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gdk-option-id { font-size: 11px; opacity: 0.5; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gdk-check-icon { color: var(--accent-color, #2563eb); flex-shrink: 0; margin-left: 8px; }

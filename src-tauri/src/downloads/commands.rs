@@ -10,6 +10,19 @@ use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{create_task, finish_task, is_cancelled, update_progress};
 
+fn sanitize_filename(name: &str) -> String {
+    let trimmed = name.trim();
+    let mut s = trimmed.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_");
+    while s.ends_with('.') {
+        s.pop();
+    }
+    if s.is_empty() {
+        "download.bin".to_string()
+    } else {
+        s
+    }
+}
+
 #[tauri::command]
 pub async fn download_appx(
     package_id: String,
@@ -153,6 +166,69 @@ pub async fn download_resource(
                 // [修复核心] 必须在这里显式传入路径，前端才能收到 message 并触发解压
                 let dest_str = dest_clone.to_string_lossy().to_string();
                 debug!("GDK/Resource 下载完成，发送路径: {}", dest_str);
+                finish_task(&task_id_clone, "completed", Some(dest_str));
+            }
+            Ok(CoreResult::Cancelled) => {
+                finish_task(&task_id_clone, "cancelled", Some("user cancelled".into()));
+                let _ = tokio::fs::remove_file(&dest_clone).await;
+            }
+            Ok(CoreResult::Error(e)) => {
+                finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                let _ = tokio::fs::remove_file(&dest_clone).await;
+            }
+            Err(e) => {
+                finish_task(&task_id_clone, "error", Some(format!("{:?}", e)));
+                let _ = tokio::fs::remove_file(&dest_clone).await;
+            }
+        }
+    });
+
+    Ok(task_id)
+}
+
+/// 通用资源下载到系统缓存目录（CurseForge 下载默认走这里）
+#[tauri::command]
+pub async fn download_resource_to_cache(
+    url: String,
+    file_name: String,
+    md5: Option<String>,
+) -> Result<String, String> {
+    let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+
+    let cache_dir = std::env::temp_dir().join("BMCBL").join("cache_downloads");
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    let safe_name = sanitize_filename(&file_name);
+    let dest = cache_dir.join(&safe_name);
+
+    let task_id = create_task(None, "ready", None);
+
+    let manager = DownloaderManager::with_client(client);
+    let dest_clone = dest.clone();
+    let task_id_clone = task_id.clone();
+    let md5_clone = md5.clone();
+
+    tokio::spawn(async move {
+        if is_cancelled(&task_id_clone) {
+            finish_task(&task_id_clone, "cancelled", Some("cancelled before start".into()));
+            return;
+        }
+
+        update_progress(&task_id_clone, 0, None, Some("starting"));
+
+        let res = manager
+            .download_with_options(
+                &task_id_clone,
+                url,
+                dest_clone.clone(),
+                None,
+                md5_clone.as_deref(),
+            )
+            .await;
+
+        match res {
+            Ok(CoreResult::Success(_)) => {
+                let dest_str = dest_clone.to_string_lossy().to_string();
+                debug!("Resource 下载完成(缓存)，发送路径: {}", dest_str);
                 finish_task(&task_id_clone, "completed", Some(dest_str));
             }
             Ok(CoreResult::Cancelled) => {

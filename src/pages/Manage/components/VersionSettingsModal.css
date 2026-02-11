@@ -1,0 +1,116 @@
+/* src/pages/Manage/components/VersionSettingsModal.css */
+
+.vs-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 99999;
+    animation: vs-fade-in 0.2s ease-out;
+}
+
+.vs-modal {
+    background: #ffffff;
+    width: 420px;
+    max-width: 90vw;
+    border-radius: 12px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: vs-scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme='dark'] .vs-modal {
+    background: #1f2937;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.vs-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid #f3f4f6;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+[data-theme='dark'] .vs-header { border-color: rgba(255, 255, 255, 0.08); }
+
+.vs-title { margin: 0; font-size: 18px; font-weight: 600; color: #111827; }
+[data-theme='dark'] .vs-title { color: #f3f4f6; }
+
+.vs-body {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* 开关项样式 */
+.vs-option-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px;
+    border-radius: 8px;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    transition: all 0.2s;
+}
+[data-theme='dark'] .vs-option-item {
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.08);
+}
+
+.vs-option-info { display: flex; flex-direction: column; gap: 2px; }
+.vs-option-label { font-size: 14px; font-weight: 500; color: #374151; }
+[data-theme='dark'] .vs-option-label { color: #e5e7eb; }
+.vs-option-desc { font-size: 12px; color: #9ca3af; }
+
+/* 禁用状态 */
+.vs-option-item.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+    background: rgba(0,0,0,0.02);
+}
+
+/* Switch 开关 */
+.vs-switch {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    background: #e5e7eb;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+[data-theme='dark'] .vs-switch { background: #4b5563; }
+
+.vs-switch.checked { background: var(--accent-color, #2563eb); }
+
+.vs-switch-thumb {
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 20px; height: 20px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+.vs-switch.checked .vs-switch-thumb { transform: translateX(20px); }
+
+.vs-footer {
+    padding: 16px 24px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    border-top: 1px solid #f3f4f6;
+}
+[data-theme='dark'] .vs-footer { border-color: rgba(255, 255, 255, 0.08); }
+
+@keyframes vs-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vs-scale-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }

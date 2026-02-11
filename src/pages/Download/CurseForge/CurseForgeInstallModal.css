@@ -1,0 +1,354 @@
+.cf-install-backdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  backdrop-filter: blur(10px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.cf-install-modal{
+  width: min(720px, 96vw);
+  max-height: 85vh;
+  background: var(--upl-card-bg, #fff);
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.35);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.25);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-theme='dark'] .cf-install-modal{
+  border-color: rgba(255,255,255,0.08);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.45);
+}
+
+.cf-install-head{
+  padding: 18px 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+[data-theme='dark'] .cf-install-head{ border-bottom-color: rgba(255,255,255,0.06); }
+
+.cf-install-title{
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.cf-install-title img{
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex: 0 0 44px;
+}
+
+.cf-install-logo-fallback{
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--upl-text-sub, #666);
+  flex: 0 0 44px;
+}
+[data-theme='dark'] .cf-install-logo-fallback{ background: rgba(255,255,255,0.08); }
+
+.cf-install-title-text{
+  min-width: 0;
+}
+
+.cf-install-kicker{
+  font-size: 12px;
+  color: var(--upl-text-sub, #666);
+  font-weight: 700;
+}
+
+.cf-install-name{
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--upl-text-main, #111);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 520px;
+}
+
+.cf-install-sub{
+  font-size: 12px;
+  color: var(--upl-text-sub, #666);
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 520px;
+}
+
+.cf-install-body{
+  padding: 16px 18px 18px;
+  overflow: auto;
+  flex: 1;
+}
+
+.cf-install-section{
+  background: rgba(0,0,0,0.03);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+[data-theme='dark'] .cf-install-section{
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.08);
+}
+
+.cf-install-row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cf-install-label{
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--upl-text-sub, #666);
+}
+
+.cf-install-control{
+  width: 360px;
+  max-width: 60%;
+}
+
+.cf-install-state{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.cf-install-state.success{
+  color: #16a34a;
+  font-weight: 800;
+  flex-direction: row;
+  align-items: center;
+}
+
+.cf-install-state.error{
+  color: #ef4444;
+}
+
+.cf-install-primary{
+  border: none;
+  background: var(--upl-primary-color, #4CAF50);
+  color: #fff;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 800;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cf-install-secondary{
+  border: 1px solid rgba(0,0,0,0.08);
+  background: transparent;
+  color: var(--upl-text-main, #111);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+[data-theme='dark'] .cf-install-secondary{ border-color: rgba(255,255,255,0.12); }
+
+.cf-install-hint{
+  font-size: 12px;
+  color: var(--upl-text-sub, #666);
+}
+
+.cf-install-progress-title{
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--upl-text-main, #111);
+}
+
+.cf-install-progress-bar{
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.08);
+  overflow: hidden;
+}
+[data-theme='dark'] .cf-install-progress-bar{ background: rgba(255,255,255,0.12); }
+
+.cf-install-progress-fill{
+  height: 100%;
+  background: var(--upl-primary-color, #4CAF50);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+.cf-install-progress-meta{
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--upl-text-sub, #666);
+}
+
+.cf-install-ready{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cf-install-preview{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.cf-install-preview-icon img{
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.cf-install-preview-text{
+  min-width: 0;
+}
+.cf-install-preview-name{
+  font-weight: 900;
+  font-size: 13px;
+  color: var(--upl-text-main, #111);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 360px;
+}
+.cf-install-preview-sub{
+  font-size: 12px;
+  color: var(--upl-text-sub, #666);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 360px;
+}
+
+.cf-install-mini-preview{
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(0,0,0,0.06);
+  background: rgba(0,0,0,0.03);
+  box-sizing: border-box;
+}
+[data-theme='dark'] .cf-install-mini-preview{
+  border-color: rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.06);
+}
+
+.cf-install-mini-icon{
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex: 0 0 34px;
+  background: rgba(0,0,0,0.06);
+  color: var(--upl-text-sub, #666);
+}
+[data-theme='dark'] .cf-install-mini-icon{ background: rgba(255,255,255,0.08); }
+
+.cf-install-mini-icon img{
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cf-install-mini-text{
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cf-install-mini-name{
+  font-weight: 900;
+  font-size: 13px;
+  color: var(--upl-text-main, #111);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cf-install-mini-sub{
+  font-size: 12px;
+  color: var(--upl-text-sub, #666);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cf-install-error-text{
+  font-size: 12px;
+  color: var(--upl-text-sub, #666);
+  white-space: pre-wrap;
+}
+.cf-install-error-actions{
+  display: flex;
+  gap: 10px;
+}
+
+.cf-install-conflict{
+  margin: 14px 18px 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(239,68,68,0.25);
+  background: rgba(239,68,68,0.08);
+  padding: 12px 14px;
+}
+.cf-install-conflict-title{
+  font-weight: 900;
+  margin-bottom: 6px;
+}
+.cf-install-conflict-text{
+  font-size: 12px;
+  opacity: 0.9;
+  margin-bottom: 12px;
+}
+.cf-install-conflict-actions{
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@media (max-width: 640px){
+  .cf-install-control{ width: 100%; max-width: 100%; }
+  .cf-install-row{ flex-direction: column; align-items: flex-start; }
+  .cf-install-ready{ flex-direction: column; align-items: stretch; }
+  .cf-install-primary, .cf-install-secondary{ width: 100%; justify-content: center; }
+}

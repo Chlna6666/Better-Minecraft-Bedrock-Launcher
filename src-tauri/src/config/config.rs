@@ -6,6 +6,10 @@ use std::str::FromStr;
 use std::{fs, io};
 use tracing::{debug, error};
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CustomStyle {
     pub theme_color: String,
@@ -75,11 +79,17 @@ pub struct DownloadConfig {
     pub max_threads: u32,
     pub auto_thread_count: bool,
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub curseforge_api_source: String,
+    #[serde(default)]
+    pub curseforge_api_base: String,
 }
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Launcher {
     pub debug: bool,
     pub language: String, // "auto", "en-US", "zh-CN" 等
+    #[serde(default = "default_true")]
+    pub gpu_acceleration: bool, // WebView2 GPU 加速 (默认开启)
     pub custom_appx_api: String,
     pub download: DownloadConfig,
     #[serde(default)]
@@ -133,6 +143,7 @@ pub fn get_default_config() -> Config {
         launcher: Launcher {
             debug: false,
             language: "auto".to_string(),
+            gpu_acceleration: true,
             custom_appx_api: "https://data.mcappx.com/v2/bedrock.json".to_string(),
             download: DownloadConfig {
                 multi_thread: false,
@@ -143,6 +154,8 @@ pub fn get_default_config() -> Config {
                     http_proxy_url: "".to_string(),
                     socks_proxy_url: "".to_string(),
                 },
+                curseforge_api_source: "mirror".to_string(),
+                curseforge_api_base: "https://mod.mcimirror.top/curseforge".to_string(),
             },
             update_channel: UpdateChannel::Stable,
             auto_check_updates: true,
@@ -199,8 +212,28 @@ pub fn read_config() -> io::Result<Config> {
         }
     };
 
+    let mut config = config;
+    let mut migrated = false;
+    let normalized_lang = normalize_language_code(&config.launcher.language);
+    if normalized_lang != config.launcher.language {
+        config.launcher.language = normalized_lang;
+        migrated = true;
+    }
+    if migrated {
+        let _ = write_config(&config);
+        debug!("Migrated config language to normalized format");
+    }
+
     debug!("Read and updated config: {:?}", config);
     Ok(config)
+}
+
+fn normalize_language_code(lang: &str) -> String {
+    let trimmed = lang.trim();
+    if trimmed.eq_ignore_ascii_case("auto") || trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    trimmed.replace('_', "-")
 }
 
 fn merge_tables(

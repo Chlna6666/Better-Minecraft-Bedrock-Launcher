@@ -1,30 +1,43 @@
 // src-tauri/src/commands/assets.rs
-use serde::Deserialize;
+use serde::{Deserialize};
 use serde_json::json;
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
 use tauri::command;
+use crate::core::minecraft::paths::{GamePathOptions, BuildType, Edition, resolve_target_parent};
+use crate::core::minecraft::import::{import_files_batch, inspect_archive, check_import_file, PackagePreview, ImportCheckResult}; // 引入新模块
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteAssetPayload {
-    pub version_type: String,    // "gdk" or "uwp"
-    pub user_id: Option<String>, // gdk 时可传 user_id 或 user_folder（视前端）
-    pub folder: Option<String>,  // 版本文件夹名（若适用）
-    pub edition: Option<String>, // "release" 或 "preview"（可选）
-    pub delete_type: String,     // maps|mapTemplates|resourcePacks|behaviorPacks|skins|mods
-    pub name: String,            // 要删除的文件/文件夹名（禁止路径穿越）
+    pub build_type: BuildType,
+    pub edition: Edition,
+    pub version_name: String,
+    pub enable_isolation: bool,
+    pub user_id: Option<String>,
+    pub delete_type: String,
+    pub name: String,
 }
 
-fn sanitize_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("empty name".into());
-    }
-    // 基本拒绝路径穿越或包含绝对/相对路径分隔符
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
-        return Err("invalid name (path traversal detected)".into());
-    }
-    Ok(())
+#[derive(Debug, Deserialize)]
+pub struct ImportAssetPayload {
+    pub build_type: BuildType,
+    pub edition: Edition,
+    pub version_name: String,
+    pub enable_isolation: bool,
+    pub user_id: Option<String>,
+    pub file_paths: Vec<String>,
+    pub overwrite: bool, // [新增] 覆盖选项
+    pub allow_shared_fallback: bool, // [新增] 允许回退到 Shared
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckImportPayload {
+    pub build_type: BuildType,
+    pub edition: Edition,
+    pub version_name: String,
+    pub enable_isolation: bool,
+    pub user_id: Option<String>,
+    pub file_path: String,
+    pub allow_shared_fallback: bool, // [新增] 允许回退到 Shared
 }
 
 fn map_delete_type_to_dir(delete_type: &str) -> Option<&'static str> {
@@ -34,157 +47,108 @@ fn map_delete_type_to_dir(delete_type: &str) -> Option<&'static str> {
         "skins" => Some("skin_packs"),
         "behaviorPacks" => Some("behavior_packs"),
         "resourcePacks" => Some("resource_packs"),
-        "mods" => None, // mods handled specially / optional
         _ => None,
     }
 }
 
 #[command]
 pub fn delete_game_asset(payload: DeleteAssetPayload) -> Result<serde_json::Value, String> {
-    // sanitize name first
-    sanitize_name(&payload.name)?;
-
-    let delete_type = payload.delete_type.as_str();
-
-    // mods deletion not implemented for now (per your note)
-    if delete_type == "mods" {
-        return Ok(json!({
-            "success": false,
-            "message": "mods deletion not implemented"
-        }));
+    if payload.name.is_empty() || payload.name.contains("..") || payload.name.contains('/') || payload.name.contains('\\') {
+        return Err("Invalid name".into());
     }
 
-    let dir_name =
-        map_delete_type_to_dir(delete_type).ok_or_else(|| "unsupported delete_type".to_string())?;
+    let dir_name = map_delete_type_to_dir(&payload.delete_type)
+        .ok_or_else(|| "unsupported delete_type".to_string())?;
 
-    let version_type = payload.version_type.to_lowercase();
-    let edition = payload.edition.as_deref().unwrap_or("release");
-    let edition_folder_name = match edition {
-        "preview" => "Minecraft Bedrock Preview",
-        _ => "Minecraft Bedrock",
+    let options = GamePathOptions {
+        build_type: payload.build_type,
+        edition: payload.edition,
+        version_name: payload.version_name,
+        enable_isolation: payload.enable_isolation,
+        user_id: payload.user_id,
+        allow_shared_fallback: false,
     };
 
-    // function to delete a directory if exists and is inside parent
-    let try_delete = |target: PathBuf| -> Result<serde_json::Value, String> {
-        if !target.exists() {
-            return Ok(
-                json!({ "success": false, "message": format!("not found: {}", target.display()) }),
-            );
-        }
-        if !target.is_dir() {
-            return Ok(
-                json!({ "success": false, "message": format!("not a directory: {}", target.display()) }),
-            );
-        }
-        fs::remove_dir_all(&target).map_err(|e| format!("remove_dir_all failed: {}", e))?;
-        Ok(json!({ "success": true }))
-    };
+    let is_shared_preferred = payload.delete_type == "resourcePacks"
+        || payload.delete_type == "behaviorPacks";
 
-    if version_type == "gdk" {
-        // Prefer versions_root if present
-        if let Some(folder) = payload.folder.clone() {
-            let versions_root = Path::new("./BMCBL/versions").join(&folder);
-            if versions_root.exists() {
-                // versions_root + folder + edition_folder_name + \Users\ + user_id_or_folder + \games\com.mojang\<dir_name>\<name>
-                let user_id_val = payload.user_id.clone().unwrap_or_default();
-                if user_id_val.is_empty() {
-                    // fallback to APPDATA
-                } else {
-                    let candidate = versions_root
-                        .join(edition_folder_name)
-                        .join("Users")
-                        .join(&user_id_val)
-                        .join("games")
-                        .join("com.mojang")
-                        .join(dir_name)
-                        .join(&payload.name);
+    let parent_dir = resolve_target_parent(&options, dir_name, is_shared_preferred)
+        .ok_or_else(|| "Could not resolve target directory".to_string())?;
 
-                    if candidate.exists() {
-                        return try_delete(candidate);
-                    }
-                }
-                // If not found under versions_root with user folder, also check Shared (for packs)
-                let shared_candidate = versions_root
-                    .join(edition_folder_name)
-                    .join("Users")
-                    .join("Shared")
-                    .join("games")
-                    .join("com.mojang")
-                    .join(dir_name)
-                    .join(&payload.name);
-                if shared_candidate.exists() {
-                    return try_delete(shared_candidate);
-                }
-            }
-        }
+    let target_path = parent_dir.join(&payload.name);
 
-        // fallback: use APPDATA path like normal installations
-        let appdata = env::var("APPDATA").map_err(|e| format!("APPDATA missing: {}", e))?;
-        let base = PathBuf::from(appdata);
-        // for GDK fallback assume edition_folder_name under base
-        // try per-user location first
-        if let Some(user_id_val) = payload.user_id.clone() {
-            if !user_id_val.is_empty() {
-                let candidate = base
-                    .join("..") // not necessary, but keep base rooted to roaming; we'll prefer Local/ Roaming typical structure
-                    .join("Roaming") // some environments; but safest is to try known path
-                    .join(edition_folder_name) // NOTE: this may not exist; we'll construct typical path below
-                    .join("Users")
-                    .join(&user_id_val)
-                    .join("games")
-                    .join("com.mojang")
-                    .join(dir_name)
-                    .join(&payload.name);
-
-                // Candidate may not exist; don't fail here — fall through to more generic path
-                if candidate.exists() {
-                    return try_delete(candidate);
-                }
-            }
-        }
-
-        // Generic attempt: APPDATA/games/com.mojang/<dir_name>/<name> (common for some installs)
-        let generic = base
-            .join("games")
-            .join("com.mojang")
-            .join(dir_name)
-            .join(&payload.name);
-        if generic.exists() {
-            return try_delete(generic);
-        }
-
-        // If reached here, not found
-        return Ok(json!({ "success": false, "message": "target not found (gdk fallback)" }));
-    } else if version_type == "uwp" {
-        // UWP path example:
-        // LocalAppData/Packages/Microsoft.MinecraftUWP_8wekyb3d8bbwe/LocalState/games/com.mojang
-        let local_appdata =
-            env::var("LOCALAPPDATA").map_err(|e| format!("LOCALAPPDATA missing: {}", e))?;
-        let mut base = PathBuf::from(&local_appdata)
-            .join("Packages")
-            .join("Microsoft.MinecraftUWP_8wekyb3d8bbwe")
-            .join("LocalState");
-        // if preview edition, use preview package id
-        if edition == "preview" {
-            base = PathBuf::from(&local_appdata)
-                .join("Packages")
-                .join("Microsoft.MinecraftWindowsBeta_8wekyb3d8bbwe")
-                .join("LocalState");
-        }
-
-        let candidate = base
-            .join("games")
-            .join("com.mojang")
-            .join(dir_name)
-            .join(&payload.name);
-        if candidate.exists() {
-            return try_delete(candidate);
-        } else {
-            return Ok(
-                json!({ "success": false, "message": format!("not found: {}", candidate.display()) }),
-            );
-        }
-    } else {
-        return Err("unsupported version_type (must be 'gdk' or 'uwp')".into());
+    if !target_path.exists() {
+        return Ok(json!({ "success": false, "message": format!("Path not found: {}", target_path.display()) }));
     }
+
+    fs::remove_dir_all(&target_path).map_err(|e| format!("Delete failed: {}", e))?;
+
+    Ok(json!({ "success": true }))
+}
+
+// [新增] 导入资源命令
+#[command]
+pub async fn import_assets(payload: ImportAssetPayload) -> Result<serde_json::Value, String> {
+    let options = GamePathOptions {
+        build_type: payload.build_type,
+        edition: payload.edition,
+        version_name: payload.version_name,
+        enable_isolation: payload.enable_isolation,
+        user_id: payload.user_id,
+        allow_shared_fallback: payload.allow_shared_fallback,
+    };
+
+    // 在 Blocking Thread 中执行解压和 IO 操作
+    let result = tokio::task::spawn_blocking(move || {
+        import_files_batch(payload.file_paths, &options, payload.overwrite)
+    })
+        .await
+        .map_err(|e| format!("Task failed: {:?}", e))?
+        .map_err(|e| format!("Import failed: {:?}", e))?;
+
+    let (success, fail) = result;
+    Ok(json!({
+        "success": true,
+        "imported_count": success,
+        "failed_count": fail
+    }))
+}
+
+#[command]
+pub async fn inspect_import_file(file_path: String, lang: Option<String>) -> Result<PackagePreview, String> {
+    let path = std::path::PathBuf::from(file_path);
+    if !path.exists() {
+        return Err("文件不存在".to_string());
+    }
+
+    // 在 blocking thread 中执行，因为涉及 ZIP 解压读取
+    tokio::task::spawn_blocking(move || {
+        inspect_archive(&path, lang.as_deref()).map_err(|e| e.to_string())
+    })
+        .await
+        .map_err(|e| format!("Task failed: {:?}", e))?
+}
+
+// [新增] 检查导入冲突命令
+#[command]
+pub async fn check_import_conflict(payload: CheckImportPayload) -> Result<ImportCheckResult, String> {
+    let options = GamePathOptions {
+        build_type: payload.build_type,
+        edition: payload.edition,
+        version_name: payload.version_name,
+        enable_isolation: payload.enable_isolation,
+        user_id: payload.user_id,
+        allow_shared_fallback: payload.allow_shared_fallback,
+    };
+
+    let path = std::path::PathBuf::from(payload.file_path);
+    if !path.exists() {
+        return Err("文件不存在".to_string());
+    }
+
+    tokio::task::spawn_blocking(move || {
+        check_import_file(&path, &options).map_err(|e| e.to_string())
+    })
+        .await
+        .map_err(|e| format!("Task failed: {:?}", e))?
 }

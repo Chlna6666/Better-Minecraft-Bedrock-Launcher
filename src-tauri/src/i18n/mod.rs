@@ -22,10 +22,19 @@ pub struct I18n {
 
 pub static I18N: OnceCell<I18n> = OnceCell::new();
 
+fn normalize_locale_for_lookup(locale: &str) -> String {
+    locale.trim().replace('_', "-")
+}
+
+fn normalize_locale_for_langid(locale: &str) -> String {
+    locale.trim().replace('_', "-")
+}
+
 impl I18n {
     /// 初始化，加载默认语言
     pub fn init(default: &str) {
-        let langid: LanguageIdentifier = default.parse().expect("Invalid locale");
+        let langid_str = normalize_locale_for_langid(default);
+        let langid: LanguageIdentifier = langid_str.parse().expect("Invalid locale");
         debug!("I18n init: default locale = {}", langid);
 
         let bundle = FluentBundle::new_concurrent(vec![langid.clone()]);
@@ -45,7 +54,8 @@ impl I18n {
     /// 切换语言并 reload 资源
     pub fn set_locale(locale: &str) {
         debug!("I18n set_locale: switching to {}", locale);
-        let langid: LanguageIdentifier = locale.parse().expect("Invalid locale");
+        let langid_str = normalize_locale_for_langid(locale);
+        let langid: LanguageIdentifier = langid_str.parse().expect("Invalid locale");
         let i18n = I18N.get().expect("I18n not initialized");
         *i18n.current_lang.write().unwrap() = langid.clone();
 
@@ -61,12 +71,13 @@ impl I18n {
     pub fn reload() {
         let i18n = I18N.get().expect("I18n not initialized");
         let lang = i18n.current_lang.read().unwrap().to_string();
+        let lang_lookup = normalize_locale_for_lookup(&lang);
 
         debug!("I18n reload: current_lang = {}", lang);
 
         let source = LOCALES
             .iter()
-            .find(|(code, _)| *code == lang)
+            .find(|(code, _)| *code == lang_lookup)
             .map(|(_, content)| *content)
             .or_else(|| {
                 debug!("Fallback to en-US");

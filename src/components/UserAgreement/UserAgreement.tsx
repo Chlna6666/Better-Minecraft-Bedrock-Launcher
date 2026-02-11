@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
-import { motion, AnimatePresence } from 'framer-motion'; // 引入动画库
 import { ShieldCheck } from 'lucide-react'; // 引入图标
 import './UserAgreement.css';
 
@@ -51,43 +50,10 @@ function UserAgreement({ onAccept }: { onAccept?: () => void }) {
         }
     };
 
-    // 动画变体配置
-    const overlayVariants = {
-        hidden: { opacity: 0 },
-        visible: { opacity: 1 },
-        exit: { opacity: 0, transition: { duration: 0.2 } }
-    };
-
-    const modalVariants = {
-        hidden: { opacity: 0, scale: 0.9, y: 20 },
-        visible: {
-            opacity: 1,
-            scale: 1,
-            y: 0,
-            transition: { type: "spring", damping: 25, stiffness: 300 }
-        },
-        exit: {
-            opacity: 0,
-            scale: 0.95,
-            y: -10,
-            transition: { duration: 0.2 }
-        }
-    };
-
     return (
-        <AnimatePresence>
-            {visible && (
-                <motion.div
-                    className="user-agreement-overlay"
-                    variants={overlayVariants}
-                    initial="hidden"
-                    animate="visible"
-                    exit="exit"
-                >
-                    <motion.div
-                        className="user-agreement-modal glass-panel"
-                        variants={modalVariants}
-                    >
+        visible ? (
+            <div className="user-agreement-overlay ua-anim-backdrop">
+                <div className="user-agreement-modal glass-panel ua-anim-modal">
                         {/* 顶部标题区 */}
                         <div className="modal-header">
                             <div className="icon-wrapper">
@@ -105,19 +71,16 @@ function UserAgreement({ onAccept }: { onAccept?: () => void }) {
 
                         {/* 底部按钮区 (带渐变遮罩) */}
                         <div className="modal-footer">
-                            <motion.button
+                            <button
                                 className="accept-button"
                                 onClick={handleAccept}
-                                whileHover={{ scale: 1.02, boxShadow: "0 4px 15px rgba(var(--theme-color-rgb), 0.3)" }}
-                                whileTap={{ scale: 0.98 }}
                             >
                                 {t('UserAgreement.accept_button')}
-                            </motion.button>
+                            </button>
                         </div>
-                    </motion.div>
-                </motion.div>
-            )}
-        </AnimatePresence>
+                </div>
+            </div>
+        ) : null
     );
 }
 

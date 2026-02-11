@@ -3,6 +3,9 @@ import { initReactI18next } from 'react-i18next';
 
 import enUS from './en-US.json';
 import zhCN from './zh-CN.json';
+import zhTW from './zh-TW.json';
+import jaJP from './ja-JP.json';
+import koKR from './ko-KR.json';
 
 export const SUPPORTED_LANGUAGES = {
     'en-US': {
@@ -12,7 +15,19 @@ export const SUPPORTED_LANGUAGES = {
     'zh-CN': {
         translation: zhCN,
         label: '简体中文'
-    }
+    },
+    'zh-TW': {
+        translation: zhTW,
+        label: '繁體中文'
+    },
+    'ja-JP': {
+        translation: jaJP,
+        label: '日本語'
+    },
+    'ko-KR': {
+        translation: koKR,
+        label: '한국어'
+    },
 };
 
 i18n

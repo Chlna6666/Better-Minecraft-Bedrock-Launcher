@@ -8,6 +8,17 @@
   --accent-color: #3b82f6; /* 蓝色主色调 */
   --card-bg: rgba(255, 255, 255, 0.5);
 }
+html, body {
+  background: transparent; /* 背景透明 */
+  overflow: hidden; /* 防止溢出 */
+}
+#app {
+  background: #ffffff; /* 实际背景色 */
+  border-radius: 12px; /* 手动模拟圆角 */
+  height: 100vh;
+  width: 100vw;
+  /* 如果需要，自己加 CSS box-shadow */
+}
 
 [data-theme='dark'] {
   /* 深色模式变量 */
@@ -35,6 +46,43 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+/* =========================================================================================
+   Motion: Prefer CSS-native animations (perf-first)
+   ========================================================================================= */
+
+:root{
+  --bm-anim-fast: 160ms;
+  --bm-anim-med: 240ms;
+  --bm-ease-out: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes bmFadeUpIn{
+  from{ opacity: 0; transform: translate3d(0, 10px, 0) scale(0.99); }
+  to{ opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes bmPopIn{
+  from{ opacity: 0; transform: translate3d(0, 12px, 0) scale(0.96); }
+  to{ opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+.bm-anim-page-in{
+  animation: bmFadeUpIn var(--bm-anim-med) var(--bm-ease-out) both;
+  will-change: transform, opacity;
+}
+
+.bm-anim-pop-in{
+  animation: bmPopIn var(--bm-anim-med) var(--bm-ease-out) both;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce){
+  .bm-anim-page-in,
+  .bm-anim-pop-in{
+    animation: none !important;
+  }
 }
 
 /* 玻璃拟态通用类 */
