@@ -21,6 +21,8 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::utils::npcap::ensure_npcap_runtime;
+
 const MAX_PACKET_SIZE: usize = 64 * 1024;
 const DEFAULT_PAPERCONNECT_VIP: &str = "10.144.144.1";
 const DEFAULT_BOOTSTRAP_PEERS: [&str; 2] = [
@@ -328,6 +330,9 @@ pub async fn easytier_start(
     hostname: Option<String>,
     options: Option<EasyTierStartOptions>,
 ) -> Result<(), String> {
+    // EasyTier on Windows requires Npcap runtime DLLs (Packet.dll / wpcap.dll).
+    ensure_npcap_runtime()?;
+
     let peers = if peers.iter().any(|p| !p.trim().is_empty()) {
         peers
     } else {
@@ -397,6 +402,8 @@ pub async fn easytier_restart_with_port_forwards(
     state: State<'_, OnlineState>,
     forwards: Vec<EasyTierPortForwardArgs>,
 ) -> Result<(), String> {
+    ensure_npcap_runtime()?;
+
     let Some(last) = state.easytier_last_start.lock().unwrap().clone() else {
         return Err("EasyTier not started yet".to_string());
     };
