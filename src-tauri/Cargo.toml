@@ -75,7 +75,7 @@ fs_extra="1"
 
 # Enable `socks5` (implies `smoltcp`) so `no_tun` mode can still proxy/port-forward traffic
 # to EasyTier overlay IPs, matching PaperConnect's typical usage.
-easytier = { git = "https://github.com/EasyTier/EasyTier.git", rev = "88a45d115670631dfe6a05ba192387d615ddb95b", default-features = false, features = ["tun", "wireguard", "socks5"] }
+easytier = { git = "https://github.com/EasyTier/EasyTier.git", tag = "v2.5.0", default-features = false, features = ["tun", "wireguard", "socks5"] }
 
 [profile.release]
 opt-level = "s"        # 优化代码体积 ("s" = 小体积, "z" = 最小体积)

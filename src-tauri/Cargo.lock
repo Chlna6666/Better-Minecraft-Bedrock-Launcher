@@ -1579,7 +1579,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "easytier"
 version = "2.5.0"
-source = "git+https://github.com/EasyTier/EasyTier.git?rev=88a45d115670631dfe6a05ba192387d615ddb95b#88a45d115670631dfe6a05ba192387d615ddb95b"
+source = "git+https://github.com/EasyTier/EasyTier.git?tag=v2.5.0#88a45d115670631dfe6a05ba192387d615ddb95b"
 dependencies = [
  "anyhow",
  "arc-swap",
