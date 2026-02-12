@@ -10,4 +10,3 @@ pub mod webview2_manager;
 pub mod network;
 pub mod registry;
 pub mod mc_dependency;
-pub mod npcap;

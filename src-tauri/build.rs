@@ -1,7 +1,76 @@
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
+
+#[cfg(windows)]
+fn add_easytier_third_party_link_search() {
+    let target = env::var("TARGET").unwrap_or_default();
+    let arch_dir = if target.contains("x86_64") {
+        "x86_64"
+    } else if target.contains("i686") {
+        "i686"
+    } else if target.contains("aarch64") {
+        "arm64"
+    } else {
+        return;
+    };
+
+    // EasyTier's build script prints `-L native=easytier/third_party/<arch>/` as a relative path,
+    // which works inside the EasyTier repo but breaks when EasyTier is used as a git dependency.
+    // Work around it by adding an absolute `-L` to the dependency checkout's third_party dir.
+    let cargo_home = env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(".cargo")));
+    let Some(cargo_home) = cargo_home else {
+        return;
+    };
+
+    let checkouts_dir = cargo_home.join("git").join("checkouts");
+    let Ok(repos) = fs::read_dir(&checkouts_dir) else {
+        return;
+    };
+
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+
+    for repo in repos.flatten() {
+        let name = repo.file_name().to_string_lossy().to_string();
+        if !name.starts_with("easytier-") {
+            continue;
+        }
+
+        let Ok(revs) = fs::read_dir(repo.path()) else {
+            continue;
+        };
+
+        for rev in revs.flatten() {
+            let third_party = rev
+                .path()
+                .join("easytier")
+                .join("third_party")
+                .join(arch_dir);
+            if !third_party.join("Packet.lib").exists() {
+                continue;
+            }
+
+            // Prefer the most recently modified checkout (helps if multiple EasyTier versions exist).
+            let modified = third_party
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+            match &best {
+                Some((best_time, _)) if *best_time >= modified => {}
+                _ => best = Some((modified, third_party)),
+            }
+        }
+    }
+
+    if let Some((_, third_party)) = best {
+        println!("cargo:rustc-link-search=native={}", third_party.display());
+    }
+}
 
 fn main() {
     // 1. Tauri 构建配置
@@ -33,6 +102,9 @@ fn main() {
     );
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
         .expect("failed to run build script");
+
+    #[cfg(windows)]
+    add_easytier_third_party_link_search();
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("secrets.rs");
