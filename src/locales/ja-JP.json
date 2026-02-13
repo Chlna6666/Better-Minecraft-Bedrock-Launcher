@@ -37,7 +37,8 @@
     "saving": "保存中…",
     "unknown_asset": "不明なリソース",
     "downloading": "DL中",
-    "download": "ダウンロード"
+    "download": "ダウンロード",
+    "go_download": "ダウンロード"
   },
   "manage": {
     "title": "Version Manager",

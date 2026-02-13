@@ -37,7 +37,8 @@
     "save": "保存",
     "saving": "保存中…",
     "unknown_asset": "未知资源",
-    "downloading": "下载中"
+    "downloading": "下载中",
+    "go_download": "下载"
   },
   "DownloadPage": {
     "tab_game": "游戏",

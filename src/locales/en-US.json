@@ -37,7 +37,8 @@
     "saving": "Saving...",
     "unknown_asset": "Unknown Asset",
     "downloading": "Downloading",
-    "download": "Download"
+    "download": "Download",
+    "go_download": "Download"
   },
   "manage": {
     "title": "Version Manager",

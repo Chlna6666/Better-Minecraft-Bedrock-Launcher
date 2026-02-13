@@ -37,7 +37,8 @@
     "saving": "저장 중…",
     "unknown_asset": "알 수 없는 리소스",
     "downloading": "다운로드 중",
-    "download": "다운로드"
+    "download": "다운로드",
+    "go_download": "다운로드"
   },
   "manage": {
     "title": "Version Manager",
