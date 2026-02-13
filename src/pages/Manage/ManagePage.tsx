@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import useVersions from '../../hooks/useVersions';
 import { AssetManager } from './components/AssetManager';
 import { ConfirmModal } from './components/ConfirmModal';
@@ -8,7 +9,7 @@ import "../Download/InstallProgressBar.css";
 import InstallProgressBar from "../Download/InstallProgressBar";
 import {
     Layers, Map, Package, Search, Box, Loader2,
-    FolderOpen, Play, RefreshCw, Trash2, Plus, Settings, ShieldCheck
+    FolderOpen, Play, RefreshCw, Trash2, Plus, Settings, ShieldCheck, DownloadCloud
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -26,6 +27,7 @@ const ManagePage = () => {
     const isDataLoading = versions === undefined || versions === null;
     const toast = useToast();
     const { t } = useTranslation();
+    const navigate = useNavigate();
 
     // 2. 状态管理
     const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -101,6 +103,10 @@ const ManagePage = () => {
         }
     };
 
+    const handleGoDownload = () => {
+        navigate('/download');
+    };
+
     const handleImportVersion = async () => {
         if (isImporting) return;
         try {
@@ -160,7 +166,19 @@ const ManagePage = () => {
             return (
                 <div className="list-empty anim-content-entry">
                     {(!versions || versions.length === 0) ? (
-                        <> <p>{t("ManagePage.no_versions")}</p> <button className="refresh-link" onClick={handleListRefresh}>{t("common.refresh")}</button> </>
+                        <>
+                            <p>{t("ManagePage.no_versions")}</p>
+                            <div className="list-empty-actions">
+                                <button className="list-empty-btn primary" type="button" onClick={handleGoDownload}>
+                                    <DownloadCloud size={14} />
+                                    {t("common.go_download")}
+                                </button>
+                                <button className="list-empty-btn" type="button" onClick={handleListRefresh} disabled={isListRefreshing}>
+                                    <RefreshCw size={14} className={isListRefreshing ? 'spin' : ''} />
+                                    {t("common.refresh")}
+                                </button>
+                            </div>
+                        </>
                     ) : ( <p>{t("common.no_result")}</p> )}
                 </div>
             );

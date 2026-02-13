@@ -417,6 +417,54 @@
     opacity: 0.6;
     font-size: 12px;
     gap: 8px;
+    padding: 6px 8px;
+    text-align: center;
+}
+
+.list-empty-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    opacity: 1;
+}
+
+.list-empty-btn {
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-color);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+
+.list-empty-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.22);
+}
+
+.list-empty-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.list-empty-btn.primary {
+    background: color-mix(in srgb, var(--accent-color), transparent 78%);
+    border-color: color-mix(in srgb, var(--accent-color), transparent 55%);
+}
+
+.list-empty-btn.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-color), transparent 70%);
+    border-color: color-mix(in srgb, var(--accent-color), transparent 45%);
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
