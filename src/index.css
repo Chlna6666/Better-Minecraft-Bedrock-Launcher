@@ -87,10 +87,10 @@ body {
 
 /* 玻璃拟态通用类 */
 .glass {
-  background: var(--glass-bg);
+  background: var(--glass-bg, rgba(255, 255, 255, 0.6));
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.8));
   box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
 }
 

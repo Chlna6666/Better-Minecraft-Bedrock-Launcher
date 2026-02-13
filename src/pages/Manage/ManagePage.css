@@ -38,8 +38,8 @@
    ========================================= */
 .manage-sidebar {
     width: 240px;
-    background: var(--glass-bg);
-    border: 1px solid var(--glass-border);
+    background: var(--glass-bg, rgba(255, 255, 255, 0.6));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.8));
     border-radius: 12px;
     padding: 10px;
     display: flex;
@@ -404,8 +404,8 @@
     height: 100%;
     opacity: 0.7;
     gap: 16px;
-    background: var(--glass-bg);
-    border: 1px solid var(--glass-border);
+    background: var(--glass-bg, rgba(255, 255, 255, 0.6));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.8));
     border-radius: 12px;
 }
 .list-empty {

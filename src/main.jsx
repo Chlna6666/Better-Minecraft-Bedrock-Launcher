@@ -1,4 +1,5 @@
 import React from "react";
+import "./index.css";
 import App from "./App";
 import { createRoot } from 'react-dom/client';
 import i18n, { SUPPORTED_LANGUAGES } from "./locales/i18n.ts";
