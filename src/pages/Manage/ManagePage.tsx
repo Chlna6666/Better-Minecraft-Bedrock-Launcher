@@ -171,7 +171,7 @@ const ManagePage = () => {
                             <div className="list-empty-actions">
                                 <button className="list-empty-btn primary" type="button" onClick={handleGoDownload}>
                                     <DownloadCloud size={14} />
-                                    {t("common.go_download")}
+                                    {t("go_download")}
                                 </button>
                                 <button className="list-empty-btn" type="button" onClick={handleListRefresh} disabled={isListRefreshing}>
                                     <RefreshCw size={14} className={isListRefreshing ? 'spin' : ''} />
