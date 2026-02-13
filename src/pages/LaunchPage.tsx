@@ -184,31 +184,30 @@ export const LaunchPage = () => {
             <div className="launch-floater-wrapper fade-in-up" ref={dropdownRef}>
                 {!isEmpty && (
                     <div
-                        className={`version-list-card glass bm-anim-pop-in ${isDropdownOpen ? 'is-open' : ''}`}
+                        className={`version-list-card glass ${isDropdownOpen ? 'is-open' : ''}`}
                         aria-hidden={!isDropdownOpen}
                     >
-                        <div className="version-list-collapse">
-                            <div className="list-scroll-area">
-                                {sortedVersions.map((v: VersionData) => (
-                                    <div
-                                        key={v.folder}
-                                        className={`version-item ${selectedFolder === v.folder ? 'selected' : ''}`}
-                                        onClick={() => { setSelectedFolder(v.folder); setIsDropdownOpen(false); }}
-                                    >
-                                        <div className="item-icon">
-                                            {v.icon ? <img src={v.icon} alt="icon" /> : <Box size={20} />}
-                                        </div>
-                                        <div className="item-info">
-                                            <div className="item-title">{v.folder}</div>
-                                            <div className="item-meta">
-                                                <span className="ver-num">{v.version}</span>
-                                                <span className={`ver-tag kind ${v.kind?.toLowerCase() || ''}`}>{v.kindLabel}</span>
-                                            </div>
-                                        </div>
-                                        {selectedFolder === v.folder && <CheckCircle2 size={18} className="check-icon" />}
+                        <div className="list-scroll-area">
+                            {sortedVersions.map((v: VersionData, index: number) => (
+                                <div
+                                    key={v.folder}
+                                    className={`version-item ${selectedFolder === v.folder ? 'selected' : ''}`}
+                                    style={{ ["--bm-item-i" as any]: index }}
+                                    onClick={() => { setSelectedFolder(v.folder); setIsDropdownOpen(false); }}
+                                >
+                                    <div className="item-icon">
+                                        {v.icon ? <img src={v.icon} alt="icon" /> : <Box size={20} />}
                                     </div>
-                                ))}
-                            </div>
+                                    <div className="item-info">
+                                        <div className="item-title">{v.folder}</div>
+                                        <div className="item-meta">
+                                            <span className="ver-num">{v.version}</span>
+                                            <span className={`ver-tag kind ${v.kind?.toLowerCase() || ''}`}>{v.kindLabel}</span>
+                                        </div>
+                                    </div>
+                                    {selectedFolder === v.folder && <CheckCircle2 size={18} className="check-icon" />}
+                                </div>
+                            ))}
                         </div>
                     </div>
                 )}

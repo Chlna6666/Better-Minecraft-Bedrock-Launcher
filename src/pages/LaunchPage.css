@@ -59,30 +59,34 @@
     opacity: 0;
     transform: translate3d(0, 8px, 0) scale(0.98);
     pointer-events: none;
+    visibility: hidden;
+    max-height: 0;
     margin-bottom: 0;
     transition:
             opacity 160ms ease,
             transform 220ms cubic-bezier(0.2, 0, 0, 1),
-            margin-bottom 220ms cubic-bezier(0.2, 0, 0, 1);
-    will-change: opacity, transform, margin-bottom;
+            margin-bottom 220ms cubic-bezier(0.2, 0, 0, 1),
+            max-height 220ms cubic-bezier(0.2, 0, 0, 1),
+            visibility 0s linear 220ms;
+    content-visibility: hidden;
+    contain: layout paint style;
 }
 
 .version-list-card.is-open{
     opacity: 1;
     transform: translate3d(0, 0, 0) scale(1);
     pointer-events: auto;
+    visibility: visible;
+    max-height: 420px;
     margin-bottom: 10px;
-}
-
-.version-list-collapse{
-    display: grid;
-    grid-template-rows: 0fr;
-    transition: grid-template-rows 220ms cubic-bezier(0.2, 0, 0, 1);
-    will-change: grid-template-rows;
-}
-
-.version-list-card.is-open .version-list-collapse{
-    grid-template-rows: 1fr;
+    transition:
+            opacity 160ms ease,
+            transform 220ms cubic-bezier(0.2, 0, 0, 1),
+            margin-bottom 220ms cubic-bezier(0.2, 0, 0, 1),
+            max-height 220ms cubic-bezier(0.2, 0, 0, 1),
+            visibility 0s linear 0s;
+    content-visibility: visible;
+    will-change: opacity, transform, margin-bottom, max-height;
 }
 
 .list-scroll-area {
@@ -96,21 +100,26 @@
 
 /* 移除 @keyframes slideInRaw */
 
+@keyframes bmListItemIn {
+    from { opacity: 0; transform: translate3d(0, 6px, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+.version-list-card.is-open .version-item {
+    animation: bmListItemIn 220ms cubic-bezier(0.2, 0, 0, 1) both;
+    animation-delay: calc(var(--bm-item-i, 0) * 18ms);
+}
+
 .version-item {
     display: flex; align-items: center; gap: 12px;
     padding: 10px 12px; border-radius: 12px; cursor: pointer;
     background: transparent;
-    transition: background 140ms ease, transform 140ms cubic-bezier(0.2, 0, 0, 1);
+    transition: background 140ms ease;
     position: relative;
 }
 
 .version-item:hover{
     background: rgba(128,128,128,0.12);
-    transform: translate3d(0, -1px, 0) scale(1.01);
-}
-
-.version-item:active{
-    transform: translate3d(0, 0, 0) scale(0.99);
 }
 
 /* .version-item:hover 也可以保留，或者完全交给 motion */
@@ -163,6 +172,9 @@
     .launch-chevron{
         transition: none !important;
     }
+    .version-list-card.is-open .version-item{
+        animation: none !important;
+    }
 }
 
 /* --- 2. 主按钮 --- */
@@ -171,17 +183,14 @@
     background: var(--accent-color); color: #fff; border-radius: 24px;
     box-shadow: 0 10px 30px -8px var(--accent-color), 0 4px 12px -2px rgba(0,0,0,0.1);
     display: flex; align-items: stretch; cursor: pointer;
-    overflow: hidden; transition: transform 0.2s var(--elastic-out), box-shadow 0.2s;
+    overflow: hidden;
 }
-.main-launch-btn:hover { transform: translateY(-2px) scale(1.01); box-shadow: 0 15px 35px -5px var(--accent-color); }
-.main-launch-btn:active { transform: translateY(1px) scale(0.98); }
 .main-launch-btn.empty-state { background: #64748b; box-shadow: 0 10px 30px -8px #64748b; }
 
 .btn-left {
     flex: 1; position: relative; display: flex; align-items: center; padding-left: 24px;
-    transition: background 0.2s;
 }
-.btn-left:hover { background: rgba(255,255,255,0.1); }
+.btn-left:hover { background: rgba(255,255,255,0.08); }
 .btn-content { z-index: 2; display: flex; flex-direction: column; }
 .btn-label { font-size: 1.15rem; font-weight: 800; letter-spacing: 0.5px; line-height: 1.2; }
 .btn-sub { font-size: 0.8rem; opacity: 0.85; font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace; }
@@ -195,7 +204,6 @@
 .btn-right {
     width: 60px; display: flex; align-items: center; justify-content: center;
     border-left: 1px solid rgba(255,255,255,0.15);
-    transition: background 0.2s;
 }
-.btn-right:hover { background: rgba(255,255,255,0.15); }
+.btn-right:hover { background: rgba(255,255,255,0.12); }
 
