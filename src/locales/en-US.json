@@ -418,6 +418,7 @@
       "tauri": "Thanks to Tauri for the lightweight, powerful cross-platform framework.",
       "MCAPPX": "Thanks to MCAPPX for reliable version indexing and metadata.",
       "mcim": "Provides a full CurseForge mirror and download acceleration.",
+      "easytier": "Thanks to EasyTier for providing the online multiplayer module.",
       "mcmrarm": "Thanks to MCMrARM for maintaining the Windows 10 version DB and tools.",
       "bl_core": "Thanks to BedrockLauncher.Core for open-source references that inspired parts of our implementation.",
       "fufuha": "Thanks for the beautiful background artwork.",

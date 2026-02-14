@@ -15,6 +15,7 @@ import Fufuha from "../../assets/img/about/Fufuha.jpg";
 import Ustiniana1641 from "../../assets/img/about/Ustiniana1641.jpg";
 import afdian from "../../assets/img/about/afdian.png";
 import MCIM from "../../assets/img/about/MCIM.png";
+import EasyTier from "../../assets/img/about/easytier.png";
 import logo from "../../assets/logo.png";
 
 // 引入组件 (保持不变)
@@ -221,6 +222,7 @@ export default function About() {
                         { img: Tauri, title: "Tauri", desc: t("AboutSection.thanks.tauri"), link: 'https://v2.tauri.app/', isSquare: true },
                         { img: MCAPPX, title: "MCAPPX", desc: t("AboutSection.thanks.MCAPPX"), link: 'https://www.mcappx.com/', isSquare: true },
                         { img: MCIM, title: "MCIM", desc: t("AboutSection.thanks.mcim"), link: null, isSquare: true },
+                        { img: EasyTier, title: "EasyTier", desc: t("AboutSection.thanks.easytier"), link: 'https://github.com/EasyTier/EasyTier', isSquare: true },
                         {
                             img: BedrockLauncherCore,
                             title: "BedrockLauncher.Core",
