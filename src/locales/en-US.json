@@ -386,7 +386,7 @@
       "curseforge_api_base": "CurseForge API Base",
       "curseforge_api_source": "CurseForge API Source",
       "curseforge_api_source.official": "Official",
-      "curseforge_api_source.mirror": "Mirror",
+      "curseforge_api_source.mirror": "Mirror (MCIM)",
       "curseforge_api_source.custom": "Custom",
       "curseforge_api_source.placeholder": "Select",
       "proxy": {

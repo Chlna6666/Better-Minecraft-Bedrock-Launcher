@@ -386,7 +386,7 @@
       "curseforge_api_base": "CurseForge API 基址",
       "curseforge_api_source": "CurseForge API 來源",
       "curseforge_api_source.official": "官方",
-      "curseforge_api_source.mirror": "鏡像",
+      "curseforge_api_source.mirror": "鏡像(MCIM 源)",
       "curseforge_api_source.custom": "自訂",
       "curseforge_api_source.placeholder": "選擇",
       "proxy": {

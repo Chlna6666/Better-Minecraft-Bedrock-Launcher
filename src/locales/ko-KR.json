@@ -386,7 +386,7 @@
       "curseforge_api_base": "CurseForge API 기준",
       "curseforge_api_source": "CurseForge API 소스",
       "curseforge_api_source.official": "공식",
-      "curseforge_api_source.mirror": "미러",
+      "curseforge_api_source.mirror": "미러 (MCIM)",
       "curseforge_api_source.custom": "사용자 정의",
       "curseforge_api_source.placeholder": "선택",
       "proxy": {

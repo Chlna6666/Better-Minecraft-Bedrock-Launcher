@@ -386,7 +386,7 @@
       "curseforge_api_base": "CurseForge API ベース",
       "curseforge_api_source": "CurseForge API ソース",
       "curseforge_api_source.official": "公式",
-      "curseforge_api_source.mirror": "ミラー",
+      "curseforge_api_source.mirror": "ミラー (MCIM)",
       "curseforge_api_source.custom": "カスタム",
       "curseforge_api_source.placeholder": "選択",
       "proxy": {
