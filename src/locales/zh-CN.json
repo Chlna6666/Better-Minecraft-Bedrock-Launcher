@@ -450,7 +450,18 @@
     "app": {
       "name": "基岩版启动器",
       "version": "版本: {{appVersion}} │ Tauri: {{tauriVersion}} │ WebView2: {{webview2Version}}",
-      "official": "官网"
+      "official": "官网",
+      "checking": "检查中…"
+    },
+    "update": {
+      "no_update": "当前已是最新版本。"
+    },
+    "sponsors": {
+      "title": "赞助者",
+      "loading": "正在加载赞助列表…",
+      "error": "加载赞助列表失败。",
+      "empty": "暂无赞助者。",
+      "support_link": "前往爱发电赞助"
     },
     "thanks": {
       "title": "鸣谢",

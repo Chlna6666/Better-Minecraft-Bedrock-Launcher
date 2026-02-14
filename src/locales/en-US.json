@@ -411,7 +411,18 @@
     "app": {
       "name": "Better Minecraft: Bedrock Launcher",
       "version": "App: {{appVersion}} │ Tauri: {{tauriVersion}} │ WebView2: {{webview2Version}}",
-      "official": "Website"
+      "official": "Website",
+      "checking": "Checking..."
+    },
+    "update": {
+      "no_update": "You're up to date."
+    },
+    "sponsors": {
+      "title": "Sponsors",
+      "loading": "Loading sponsors...",
+      "error": "Failed to load sponsors.",
+      "empty": "No sponsors yet.",
+      "support_link": "Support on Afdian"
     },
     "thanks": {
       "title": "Credits",

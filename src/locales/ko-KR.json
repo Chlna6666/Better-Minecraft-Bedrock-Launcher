@@ -411,7 +411,18 @@
     "app": {
       "name": "베드락 런처",
       "version": "버전: {{appVersion}} │ Tauri: {{tauriVersion}} │ WebView2: {{webview2Version}}",
-      "official": "웹사이트"
+      "official": "웹사이트",
+      "checking": "확인 중…"
+    },
+    "update": {
+      "no_update": "이미 최신 버전입니다."
+    },
+    "sponsors": {
+      "title": "후원자",
+      "loading": "후원자 목록 불러오는 중…",
+      "error": "후원자 목록을 불러오지 못했습니다.",
+      "empty": "아직 후원자가 없습니다.",
+      "support_link": "Afdian에서 후원"
     },
     "thanks": {
       "title": "크레딧",

@@ -411,7 +411,18 @@
     "app": {
       "name": "Bedrock ランチャー",
       "version": "バージョン: {{appVersion}} │ Tauri: {{tauriVersion}} │ WebView2: {{webview2Version}}",
-      "official": "公式"
+      "official": "公式",
+      "checking": "確認中…"
+    },
+    "update": {
+      "no_update": "すでに最新です。"
+    },
+    "sponsors": {
+      "title": "スポンサー",
+      "loading": "スポンサーを読み込み中…",
+      "error": "スポンサーの読み込みに失敗しました。",
+      "empty": "スポンサーがまだいません。",
+      "support_link": "Afdian で支援"
     },
     "thanks": {
       "title": "クレジット",

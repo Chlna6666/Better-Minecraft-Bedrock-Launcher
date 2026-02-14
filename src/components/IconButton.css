@@ -45,3 +45,11 @@
     pointer-events: none;
     display: block;
 }
+
+/* Allow non-svg loaders/icons to size consistently inside the button */
+.ui-icon-btn > .sci-fi-loader-svg {
+    width: 60%;
+    height: 60%;
+    pointer-events: none;
+    display: block;
+}

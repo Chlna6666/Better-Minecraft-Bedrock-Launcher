@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as shell from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, RefreshCw } from 'lucide-react';
 import { motion } from "framer-motion";
+import { useToast } from "../../components/Toast";
 
 import Chlan6666 from "../../assets/img/about/Chlna6666.jpg";
 import github from "../../assets/img/about/github.png";
@@ -52,67 +53,62 @@ const itemVariants = {
 // 之前的版本在 path 上旋转容易导致中心点偏移(wobble)。
 // 现在的方案：旋转外层容器，内部只做缩放/透明度动画。
 const SciFiLoader = () => (
-    <div className="sci-fi-loader">
-        <motion.svg
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-            // 核心修复：直接旋转 SVG 整体，确保绝对居中
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1.5, ease: "linear", repeat: Infinity }}
-            style={{ display: 'block' }}
-        >
-            {/* 外层能量环 - 呼吸式缩放 */}
-            <motion.path
-                d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeDasharray="4 4" // 增加虚线效果，旋转时更好看
-                initial={{ scale: 0.9, opacity: 0.8 }}
-                animate={{
-                    scale: [0.9, 1.05, 0.9],
-                    opacity: [0.8, 1, 0.8]
-                }}
-                transition={{
-                    duration: 1.5, ease: "easeInOut", repeat: Infinity
-                }}
-                style={{ originX: 0.5, originY: 0.5 }} // 使用相对坐标 0.5 确保居中
-            />
-
-            {/* 内层反应环 - 静态或反向缩放 */}
-            <motion.path
-                d="M12 18C8.68629 18 6 15.3137 6 12C6 8.68629 8.68629 6 12 6"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                style={{ originX: 0.5, originY: 0.5, opacity: 0.6 }}
-            />
-
-            {/* 核心能量点 - 剧烈闪烁 */}
-            <motion.circle
-                cx="12"
-                cy="12"
-                r="3"
-                fill="currentColor"
-                animate={{
-                    opacity: [0.3, 1, 0.3],
-                    scale: [0.8, 1.2, 0.8]
-                }}
-                transition={{ duration: 0.8, repeat: Infinity, ease: "easeInOut" }}
-            />
-        </motion.svg>
-    </div>
+    <motion.svg
+        className="sci-fi-loader-svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        animate={{ rotate: 360 }}
+        transition={{ duration: 1.5, ease: "linear", repeat: Infinity }}
+    >
+        <motion.path
+            d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeDasharray="4 4"
+            initial={{ scale: 0.9, opacity: 0.8 }}
+            animate={{ scale: [0.9, 1.05, 0.9], opacity: [0.8, 1, 0.8] }}
+            transition={{ duration: 1.5, ease: "easeInOut", repeat: Infinity }}
+            style={{ originX: 0.5, originY: 0.5 }}
+        />
+        <motion.path
+            d="M12 18C8.68629 18 6 15.3137 6 12C6 8.68629 8.68629 6 12 6"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            style={{ originX: 0.5, originY: 0.5, opacity: 0.6 }}
+        />
+        <motion.circle
+            cx="12"
+            cy="12"
+            r="3"
+            fill="currentColor"
+            animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.2, 0.8] }}
+            transition={{ duration: 0.8, repeat: Infinity, ease: "easeInOut" }}
+        />
+    </motion.svg>
 );
+
+type SponsorItem = {
+    all_sum_amount: string;
+    user: { avatar: string; name: string; user_id: string };
+};
 
 export default function About() {
     const { t } = useTranslation();
+    const toast = useToast();
     const [appVersion, setAppVersion] = useState("");
     const [appLicense, setAppLicense] = useState("");
     const [tauriVersion, setTauriVersion] = useState("");
     const [webview2Version, setWebview2Version] = useState("");
+
+    const [sponsorsOpen, setSponsorsOpen] = useState(false);
+    const [sponsorsLoading, setSponsorsLoading] = useState(false);
+    const [sponsorsError, setSponsorsError] = useState<string | null>(null);
+    const [sponsors, setSponsors] = useState<SponsorItem[]>([]);
+    const [sponsorsVisible, setSponsorsVisible] = useState(24);
+    const sponsorsSentinelRef = useRef<HTMLDivElement | null>(null);
 
     // --- 集成更新 Hook ---
     const {
@@ -156,11 +152,75 @@ export default function About() {
         }
 
         try {
-            await checkForUpdates();
+            const resp: any = await checkForUpdates();
+            const available =
+                typeof resp?.update_available === 'boolean'
+                    ? resp.update_available
+                    : !!newRelease;
+
+            if (!available) {
+                toast.info(t("AboutSection.update.no_update"));
+            }
         } catch (e) {
             console.error("Manual check failed", e);
         }
     };
+
+    const openSponsors = () => setSponsorsOpen(true);
+    const closeSponsors = () => setSponsorsOpen(false);
+
+    useEffect(() => {
+        if (!sponsorsOpen) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') closeSponsors();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        return () => document.removeEventListener('keydown', onKeyDown);
+    }, [sponsorsOpen]);
+
+    useEffect(() => {
+        if (!sponsorsOpen) return;
+        if (sponsorsLoading) return;
+        if (sponsors.length > 0) return;
+
+        setSponsorsLoading(true);
+        setSponsorsError(null);
+        fetch("https://api.chlna6666.com/sponsors")
+            .then((r) => r.json())
+            .then((json) => {
+                const list: SponsorItem[] = Array.isArray(json?.data) ? json.data : [];
+                list.sort((a, b) => (parseFloat(b?.all_sum_amount || '0') - parseFloat(a?.all_sum_amount || '0')));
+                setSponsors(list);
+            })
+            .catch((e) => {
+                setSponsorsError(String(e?.message || e));
+            })
+            .finally(() => {
+                setSponsorsLoading(false);
+            });
+    }, [sponsorsOpen, sponsorsLoading, sponsors.length]);
+
+    useEffect(() => {
+        if (!sponsorsOpen) return;
+        setSponsorsVisible(24);
+    }, [sponsorsOpen]);
+
+    useEffect(() => {
+        if (!sponsorsOpen) return;
+        const el = sponsorsSentinelRef.current;
+        if (!el) return;
+
+        const obs = new IntersectionObserver((entries) => {
+            const e = entries[0];
+            if (!e?.isIntersecting) return;
+            setSponsorsVisible((v) => Math.min(v + 24, sponsors.length || v + 24));
+        }, { root: el.closest('.about-modal-body') as Element | null, threshold: 0.1 });
+
+        obs.observe(el);
+        return () => obs.disconnect();
+    }, [sponsorsOpen, sponsors.length]);
+
+    const visibleSponsors = useMemo(() => sponsors.slice(0, sponsorsVisible), [sponsors, sponsorsVisible]);
 
     return (
         <>
@@ -205,7 +265,7 @@ export default function About() {
                     <div className="card-actions">
                         <IconButton
                             onClick={handleCheckUpdate}
-                            title={checking ? "Checking..." : t("AboutSection.app.official")}
+                            title={checking ? t("AboutSection.app.checking") : t("AboutSection.app.official")}
                             // 使用 key 强制 icon 在切换时重新渲染，避免动画卡住
                             icon={checking ? <SciFiLoader key="loader" /> : <RefreshCw key="icon" size={16} />}
                             disabled={checking}
@@ -234,7 +294,7 @@ export default function About() {
                         { img: Fufuha, title: "Fufuha", desc: t("AboutSection.thanks.fufuha"), link: 'https://space.bilibili.com/1798893653/' },
                         { img: Ustiniana1641, title: "Ustiniana1641", desc: t("AboutSection.thanks.ustiniana1641"), link: '#' },
                         { img: github, title: t("AboutSection.thanks.contributors"), desc: t("AboutSection.thanks.community"), link: 'https://github.com/BMCBL/Better-Minecraft-Bedrock-Launcher/graphs/contributors', isSquare: true },
-                        { img: afdian, title: t("AboutSection.thanks.sponsors"), desc: t("AboutSection.thanks.support"), link: 'https://bmcbl.com/#sponsors', isSquare: true },
+                        { img: afdian, title: t("AboutSection.thanks.sponsors"), desc: t("AboutSection.thanks.support"), action: openSponsors, isSquare: true },
                         { img: logo, title: t("AboutSection.thanks.users"), desc: t("AboutSection.thanks.user_support"), link: null, isSquare: true, isSmall: true }
                     ].map((item, idx) => (
                         <motion.div
@@ -251,10 +311,10 @@ export default function About() {
                                 <h4>{item.title}</h4>
                                 <p>{item.desc}</p>
                             </div>
-                            {item.link && (
+                            {(item.link || (item as any).action) && (
                                 <div className="card-actions">
                                     <IconButton
-                                        onClick={() => openInBrowser(item.link!)}
+                                        onClick={() => ((item as any).action ? (item as any).action() : openInBrowser(item.link!))}
                                         title={t("AboutSection.common.view")}
                                         icon={<LinkIcon />}
                                     />
@@ -302,6 +362,68 @@ export default function About() {
                     snapshot={progressSnapshot}
                     onCancel={cancelDownload}
                 />,
+                document.body
+            )}
+
+            {sponsorsOpen && createPortal(
+                <div
+                    className="about-modal-overlay"
+                    role="dialog"
+                    aria-modal="true"
+                    onMouseDown={(e) => {
+                        if (e.target === e.currentTarget) closeSponsors();
+                    }}
+                >
+                    <div className="about-modal">
+                        <div className="about-modal-header">
+                            <div className="about-modal-title">{t("AboutSection.sponsors.title")}</div>
+                            <div className="about-modal-actions">
+                                <IconButton
+                                    onClick={() => openInBrowser('https://afdian.com/a/Chlna6666')}
+                                    title={t("AboutSection.sponsors.support_link")}
+                                    icon={<LinkIcon />}
+                                />
+                                <IconButton
+                                    onClick={closeSponsors}
+                                    title={t("common.close")}
+                                    icon={<span style={{ fontSize: 18, lineHeight: 1 }}>×</span>}
+                                />
+                            </div>
+                        </div>
+                        <div className="about-modal-body">
+                            {sponsorsLoading ? (
+                                <div className="about-modal-empty">
+                                    <SciFiLoader />
+                                    <div>{t("AboutSection.sponsors.loading")}</div>
+                                </div>
+                            ) : sponsorsError ? (
+                                <div className="about-modal-empty">
+                                    <div>{t("AboutSection.sponsors.error")}</div>
+                                    <div style={{ opacity: 0.75, fontSize: 12 }}>{sponsorsError}</div>
+                                </div>
+                            ) : visibleSponsors.length === 0 ? (
+                                <div className="about-modal-empty">
+                                    <div>{t("AboutSection.sponsors.empty")}</div>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="sponsor-grid">
+                                        {visibleSponsors.map((s) => (
+                                            <div className="sponsor-item" key={s.user.user_id}>
+                                                <img className="sponsor-avatar" src={s.user.avatar} alt={s.user.name} loading="lazy" referrerPolicy="no-referrer" />
+                                                <div className="sponsor-meta">
+                                                    <div className="sponsor-name" title={s.user.name}>{s.user.name}</div>
+                                                    <div className="sponsor-amount">¥{s.all_sum_amount}</div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div ref={sponsorsSentinelRef} style={{ height: 1 }} />
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>,
                 document.body
             )}
         </>

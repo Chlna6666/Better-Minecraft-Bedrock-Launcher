@@ -411,7 +411,18 @@
     "app": {
       "name": "基岩版啟動器",
       "version": "版本: {{appVersion}} │ Tauri: {{tauriVersion}} │ WebView2: {{webview2Version}}",
-      "official": "官網"
+      "official": "官網",
+      "checking": "檢查中…"
+    },
+    "update": {
+      "no_update": "目前已是最新版本。"
+    },
+    "sponsors": {
+      "title": "贊助者",
+      "loading": "正在載入贊助名單…",
+      "error": "載入贊助名單失敗。",
+      "empty": "暫無贊助者。",
+      "support_link": "前往 Afdian 贊助"
     },
     "thanks": {
       "title": "鳴謝",

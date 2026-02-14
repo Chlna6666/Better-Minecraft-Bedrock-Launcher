@@ -11,19 +11,6 @@
     --about-icon-bg: #f0f0f0;
 }
 
-/* 深色模式 */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --about-bg: #1e1e1e;
-        --about-border: #333333;
-        --about-text-title: #e0e0e0;
-        --about-text-desc: #a0a0a0;
-        --about-shadow: rgba(0, 0, 0, 0.2);
-        --about-shadow-hover: rgba(0, 0, 0, 0.4);
-        --about-icon-bg: #2a2a2a;
-    }
-}
-
 .dark, [data-theme='dark'] {
     --about-bg: #1e1e1e;
     --about-border: #333333;
@@ -216,18 +203,120 @@
 }
 
 /* Loader */
-.sci-fi-loader {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    color: #40a9ff;
-}
+.sci-fi-loader-svg { display: block; color: #40a9ff; }
 
 .is-checking {
     cursor: default !important;
     opacity: 0.8;
+}
+
+/* Sponsors modal */
+.about-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    padding: 18px;
+}
+
+.about-modal {
+    width: min(760px, 100%);
+    max-height: min(72vh, 720px);
+    background: var(--about-bg);
+    border: 1px solid var(--about-border);
+    border-radius: 18px;
+    box-shadow: 0 18px 55px rgba(0,0,0,0.28);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.about-modal-header {
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid var(--about-border);
+}
+
+.about-modal-title {
+    font-weight: 800;
+    color: var(--about-text-title);
+    letter-spacing: 0.2px;
+}
+
+.about-modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.about-modal-body {
+    padding: 14px 16px 16px;
+    overflow: auto;
+}
+
+.sponsor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.sponsor-item {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid var(--about-border);
+    background: color-mix(in srgb, var(--about-bg), transparent 0%);
+}
+
+.sponsor-avatar {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--about-icon-bg);
+    flex-shrink: 0;
+}
+
+.sponsor-meta {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.sponsor-name {
+    font-weight: 800;
+    font-size: 13px;
+    color: var(--about-text-title);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sponsor-amount {
+    font-size: 12px;
+    color: var(--about-text-desc);
+    opacity: 0.9;
+}
+
+.about-modal-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 10px;
+    gap: 10px;
+    color: var(--about-text-desc);
 }
 
 /* 法律信息 */
