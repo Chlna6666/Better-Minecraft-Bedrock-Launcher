@@ -680,6 +680,7 @@ fn build_embedded_easytier_config_with_port_forwards(
         let uri = url::Url::parse(&p).with_context(|| format!("invalid peer url: {p}"))?;
         peer_cfgs.push(PeerConfig {
             uri,
+            peer_public_key: None,
         });
     }
     cfg.set_peers(peer_cfgs);

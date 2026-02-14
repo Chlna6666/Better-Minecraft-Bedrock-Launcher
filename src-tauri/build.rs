@@ -5,31 +5,73 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[cfg(windows)]
-fn add_easytier_third_party_link_search() {
+fn cargo_target_profile_dir() -> Option<PathBuf> {
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR")?);
+    let profile = env::var("PROFILE").ok()?;
+
+    // OUT_DIR: target/<profile>/build/<crate>/out
+    // We want: target/<profile>
+    let mut cursor: &Path = out_dir.as_path();
+    while let Some(parent) = cursor.parent() {
+        if parent.ends_with(&profile) {
+            return Some(parent.to_path_buf());
+        }
+        cursor = parent;
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn find_easytier_third_party_dir() -> Option<PathBuf> {
     let target = env::var("TARGET").unwrap_or_default();
     let arch_dir = if target.contains("x86_64") {
         "x86_64"
-    } else if target.contains("i686") {
-        "i686"
     } else if target.contains("aarch64") {
         "arm64"
     } else {
-        return;
+        return None;
     };
 
-    // EasyTier's build script prints `-L native=easytier/third_party/<arch>/` as a relative path,
-    // which works inside the EasyTier repo but breaks when EasyTier is used as a git dependency.
-    // Work around it by adding an absolute `-L` to the dependency checkout's third_party dir.
+    fn has_runtime_assets(dir: &Path) -> bool {
+        dir.join("wintun.dll").exists() || dir.join("WinDivert64.sys").exists()
+    }
+
+    // If EasyTier is vendored into this repo at `src-tauri/easytier/`, prefer it.
+    if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
+        let manifest_dir = PathBuf::from(manifest_dir);
+
+        for vendor_dir in ["EasyTier-BMCBL", "EasyTier-bmcb-nopacket", "EasyTier-v2.5.0"] {
+            // Vendoring layout: `src-tauri/easytier/<vendor>/easytier/third_party/<arch>`
+            let local_vendored = manifest_dir
+                .join("easytier")
+                .join(vendor_dir)
+                .join("easytier")
+                .join("third_party")
+                .join(arch_dir);
+            if has_runtime_assets(&local_vendored) {
+                return Some(local_vendored);
+            }
+        }
+
+        // Back-compat: `src-tauri/easytier/third_party/<arch>`
+        let local_flat = manifest_dir.join("easytier").join("third_party").join(arch_dir);
+        if has_runtime_assets(&local_flat) {
+            return Some(local_flat);
+        }
+    }
+
+    // Fallback for non-vendored setups: locate a cargo git checkout.
     let cargo_home = env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(".cargo")));
     let Some(cargo_home) = cargo_home else {
-        return;
+        return None;
     };
 
     let checkouts_dir = cargo_home.join("git").join("checkouts");
     let Ok(repos) = fs::read_dir(&checkouts_dir) else {
-        return;
+        return None;
     };
 
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
@@ -50,7 +92,7 @@ fn add_easytier_third_party_link_search() {
                 .join("easytier")
                 .join("third_party")
                 .join(arch_dir);
-            if !third_party.join("Packet.lib").exists() {
+            if !has_runtime_assets(&third_party) {
                 continue;
             }
 
@@ -67,8 +109,34 @@ fn add_easytier_third_party_link_search() {
         }
     }
 
-    if let Some((_, third_party)) = best {
-        println!("cargo:rustc-link-search=native={}", third_party.display());
+    best.map(|(_, p)| p)
+}
+
+#[cfg(windows)]
+fn add_easytier_third_party_link_search_and_copy_runtime() {
+    let Some(third_party) = find_easytier_third_party_dir() else {
+        println!(
+            "cargo:warning=EasyTier third_party not found; wintun/windivert runtime files will not be copied. If EasyTier is vendored, ensure src-tauri/easytier/**/easytier/third_party/<arch> exists."
+        );
+        return;
+    };
+
+    // Ensure runtime DLLs are next to the final exe. Otherwise running the built binary can fail
+    // with STATUS_DLL_NOT_FOUND (0xc0000135), even though linking succeeded.
+    let Some(target_profile_dir) = cargo_target_profile_dir() else {
+        return;
+    };
+
+    let files_to_copy = ["wintun.dll", "WinDivert64.sys"];
+    for name in files_to_copy {
+        let src = third_party.join(name);
+        if !src.exists() {
+            continue;
+        }
+
+        let dst = target_profile_dir.join(name);
+        // Best-effort copy; don't hard fail if the file is locked by a running process.
+        let _ = fs::copy(&src, &dst);
     }
 }
 
@@ -104,7 +172,7 @@ fn main() {
         .expect("failed to run build script");
 
     #[cfg(windows)]
-    add_easytier_third_party_link_search();
+    add_easytier_third_party_link_search_and_copy_runtime();
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("secrets.rs");

@@ -1,6 +1,6 @@
 [package]
 name = "better_minecraft_bedrock_launcher"
-version = "0.1.0"
+version = "0.1.1"
 license = "GPL-3.0-only"
 description = "一个minecraft bedrock启动器"
 authors = ["Chlna6666"]
@@ -33,7 +33,7 @@ tauri-plugin-fs = "2.4.5"
 serde = { version = "1.0.219", features = ["derive"] }
 cidr = "0.3.1"
 sysinfo = "0.38.0"
-toml = "0.9.8"
+toml = "1.0.1+spec-1.1.0"
 once_cell = "1.21.3"
 chrono = "0.4.42"
 lazy_static = "1.5.0"
@@ -75,7 +75,7 @@ fs_extra="1"
 
 # Enable `socks5` (implies `smoltcp`) so `no_tun` mode can still proxy/port-forward traffic
 # to EasyTier overlay IPs, matching PaperConnect's typical usage.
-easytier = { git = "https://github.com/EasyTier/EasyTier.git", tag = "v2.5.0", default-features = false, features = ["tun", "wireguard", "socks5", "smoltcp", "quic"] }
+easytier = { git = "https://github.com/Chlna6666/EasyTier", branch = "main", default-features = false, features = ["tun", "wireguard", "socks5"] }
 
 [profile.release]
 opt-level = "s"        # 优化代码体积 ("s" = 小体积, "z" = 最小体积)
