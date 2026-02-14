@@ -613,6 +613,7 @@
     "updated_at": "最後更新時間",
     "click_clear_version": "點擊清除版本篩選",
     "click_reset_sort": "點擊重置排序",
+    "click_clear_search": "點擊清除搜尋",
     "tags": {
       "addons": "附加元件",
       "maps": "地圖",

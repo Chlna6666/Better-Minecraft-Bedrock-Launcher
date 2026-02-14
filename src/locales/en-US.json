@@ -613,6 +613,7 @@
     "updated_at": "Last updated",
     "click_clear_version": "Click to clear version filter",
     "click_reset_sort": "Click to reset sort",
+    "click_clear_search": "Click to clear search",
     "tags": {
       "addons": "Addons",
       "maps": "Maps",

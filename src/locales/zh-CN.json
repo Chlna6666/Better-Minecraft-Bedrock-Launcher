@@ -652,6 +652,7 @@
     "updated_at": "最后更新时间",
     "click_clear_version": "点击清除版本筛选",
     "click_reset_sort": "点击重置排序",
+    "click_clear_search": "点击清除搜索",
     "tags": {
       "addons": "附加组件",
       "maps": "地图",

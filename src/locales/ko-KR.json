@@ -613,6 +613,7 @@
     "updated_at": "마지막 업데이트",
     "click_clear_version": "클릭하여 버전 필터 해제",
     "click_reset_sort": "클릭하여 정렬 초기화",
+    "click_clear_search": "클릭하여 검색 지우기",
     "tags": {
       "addons": "애드온",
       "maps": "맵",

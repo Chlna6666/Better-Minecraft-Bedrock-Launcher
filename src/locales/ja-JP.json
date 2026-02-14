@@ -613,6 +613,7 @@
     "updated_at": "最終更新",
     "click_clear_version": "クリックしてバージョン絞り込みを解除",
     "click_reset_sort": "クリックして並び替えをリセット",
+    "click_clear_search": "クリックして検索をクリア",
     "tags": {
       "addons": "アドオン",
       "maps": "マップ",

@@ -71,6 +71,7 @@ interface Props {
     searchQuery: string;
     refreshNonce?: number;
     onLoadingChange?: (loading: boolean) => void;
+    onClearSearch?: () => void;
 }
 
 const PAGE_SIZE = 20;
@@ -78,7 +79,7 @@ const CACHE_TTL = 1000 * 60 * 60 * 24; // 1 day 缓存
 const MOD_FILE_CACHE_TTL = 1000 * 60 * 30;
 const SKELETON_DELAY_MS = 120;
 
-export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, onLoadingChange }) => {
+export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, onLoadingChange, onClearSearch }) => {
     const { t } = useTranslation();
     const location = useLocation();
     const initialCfState = (location.state as any)?.cfState;
@@ -702,7 +703,28 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                             >
                                 {currentSortLabel}
                             </span>
-                            {deferredSearch && <span className="cf-chip">“{deferredSearch}”</span>}
+                            {deferredSearch && (
+                                <button
+                                    type="button"
+                                    className={`cf-chip cf-search-chip ${onClearSearch ? 'clickable' : ''}`}
+                                    onClick={() => {
+                                        if (!onClearSearch) return;
+                                        onClearSearch();
+                                        resultsRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            if (!onClearSearch) return;
+                                            onClearSearch();
+                                            resultsRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                                        }
+                                    }}
+                                    title={onClearSearch ? t("CurseForge.click_clear_search") : undefined}
+                                >
+                                    <span className="cf-search-chip-text">“{deferredSearch}”</span>
+                                    {onClearSearch && <X size={14} />}
+                                </button>
+                            )}
                         </div>
                         <div className="cf-topbar-right">
                             {fetching ? (
@@ -726,7 +748,7 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                         </div>
                         <div key={progressSeq} className={`cf-refresh-bar ${fetching ? 'active' : ''}`} />
                     </div>
-                    <div className={listAnimOn ? "bm-anim-page-in" : ""}>
+                    <div className={`cf-results-body ${listAnimOn ? "bm-anim-page-in" : ""}`}>
                         {isLoadingState ? (
                             <ModsSkeleton viewMode={viewMode} />
                         ) : canShowEmptyState ? (

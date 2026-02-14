@@ -299,6 +299,7 @@ const DownloadPage = () => {
                             <React.Suspense fallback={<div style={{ height: '100%' }} />}>
                                 <CurseForgeBrowser
                                     searchQuery={searchTerm}
+                                    onClearSearch={() => setSearchTerm("")}
                                     refreshNonce={cfRefreshNonce}
                                     onLoadingChange={setCfLoading}
                                 />
