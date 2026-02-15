@@ -69,6 +69,26 @@ type FetchRemoteResponse = {
     body: string;
 };
 
+const uuidV1ToUnixMs = (uuid: string): number | null => {
+    const clean = (uuid || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+    if (clean.length !== 32) return null;
+
+    const timeLow = BigInt(`0x${clean.slice(0, 8)}`);
+    const timeMid = BigInt(`0x${clean.slice(8, 12)}`);
+    const timeHiAndVersion = BigInt(`0x${clean.slice(12, 16)}`);
+    const version = Number((timeHiAndVersion >> 12n) & 0xfn);
+    if (version !== 1) return null;
+
+    const timeHi = timeHiAndVersion & 0x0fffn;
+    const timestamp100ns = (timeHi << 48n) | (timeMid << 32n) | timeLow;
+
+    // UUID v1 epoch (1582-10-15) -> Unix epoch (1970-01-01) offset, in 100ns units.
+    const GREGORIAN_TO_UNIX_100NS = 0x01B21DD213814000n;
+    const unix100ns = timestamp100ns - GREGORIAN_TO_UNIX_100NS;
+    if (unix100ns <= 0n) return null;
+    return Number(unix100ns / 10000n);
+};
+
 export default function About() {
     const { t } = useTranslation();
     const toast = useToast();
@@ -179,7 +199,16 @@ export default function About() {
 
             const json = JSON.parse(resp.body);
             const list: SponsorItem[] = Array.isArray(json?.data) ? json.data : [];
-            list.sort((a, b) => (parseFloat(b?.all_sum_amount || '0') - parseFloat(a?.all_sum_amount || '0')));
+            // Prefer time order (newest first). API doesn't return explicit time,
+            // but Afdian user_id is typically a UUIDv1, which encodes a timestamp.
+            list.sort((a, b) => {
+                const ta = uuidV1ToUnixMs(a?.user?.user_id || '');
+                const tb = uuidV1ToUnixMs(b?.user?.user_id || '');
+                if (ta != null && tb != null) return tb - ta;
+                if (tb != null) return 1;
+                if (ta != null) return -1;
+                return parseFloat(b?.all_sum_amount || '0') - parseFloat(a?.all_sum_amount || '0');
+            });
             setSponsors(list);
         } catch (e: any) {
             if (reqId !== sponsorsReqIdRef.current) return;
