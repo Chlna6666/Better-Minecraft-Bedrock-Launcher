@@ -744,13 +744,22 @@ fn build_embedded_easytier_config_with_port_forwards(
     }
 
     if flags.no_tun {
-        if tcp_whitelist.is_none() {
-            if let Some(p) = host_port_from_hostname {
-                tcp_whitelist = Some(vec![p.to_string()]);
+        // For PaperConnect, prefer "open all ports" by default. Users frequently run Bedrock on
+        // non-default ports, and a restrictive whitelist can make connectivity checks look like
+        // intermittent disconnects. Port-forwards (when used) still control what is exposed on
+        // the local loopback side.
+        if is_paperconnect_net {
+            tcp_whitelist = None;
+            udp_whitelist = None;
+        } else {
+            if tcp_whitelist.is_none() {
+                if let Some(p) = host_port_from_hostname {
+                    tcp_whitelist = Some(vec![p.to_string()]);
+                }
             }
-        }
-        if udp_whitelist.is_none() && host_port_from_hostname.is_some() {
-            udp_whitelist = Some(vec![DEFAULT_BEDROCK_PORT.to_string()]);
+            if udp_whitelist.is_none() && host_port_from_hostname.is_some() {
+                udp_whitelist = Some(vec![DEFAULT_BEDROCK_PORT.to_string()]);
+            }
         }
     }
 
