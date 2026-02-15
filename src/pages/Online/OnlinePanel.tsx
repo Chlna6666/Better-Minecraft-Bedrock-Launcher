@@ -20,6 +20,7 @@ const HOST_ROOM_STORAGE_KEY = "bmcbL.online.hostRoom";
 const ACTIVE_ROOM_STORAGE_KEY = "bmcbL.online.activeRoom";
 const BASE34_ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const DEFAULT_GAME_PORTS = "7551";
+const DEFAULT_JOIN_UDP_PORT_FALLBACK = 19132;
 
 function normalizePlayerName(name: string): string {
   return String(name || "")
@@ -591,7 +592,7 @@ export default function OnlinePage() {
   }, [appendStatus, t, toast]);
 
   const pingCenter = useCallback(
-    async (c: PaperConnectCenter) => {
+    async (c: PaperConnectCenter): Promise<number> => {
       const host = String(c?.ipv4 || "").trim();
       if (!host) throw new Error(t("Online.err_center_no_ipv4"));
       const body = { time: Date.now() };
@@ -607,6 +608,7 @@ export default function OnlinePage() {
       if (!nextPort) throw new Error(t("Online.err_bad_ping_resp"));
       setGameEndpoint({ ip: host, port: nextPort });
       appendStatus(`${t("Online.game_endpoint")}: ${host}:${nextPort}`);
+      return nextPort;
     },
     [appendStatus, t]
   );
@@ -695,19 +697,23 @@ export default function OnlinePage() {
 
       if (useNoTun) {
         appendStatus("Setting up port forward...");
+        let udpPorts = [primaryGamePort, DEFAULT_JOIN_UDP_PORT_FALLBACK]
+          .filter((p) => Number.isFinite(p) && p > 0 && p <= 65535);
+        udpPorts = Array.from(new Set(udpPorts));
         await invoke("easytier_restart_with_port_forwards", {
           forwards: [
             { proto: "tcp", bindPort: c.port, dstIp: c.ipv4, dstPort: c.port },
-            ...gamePorts.map((p) => ({ proto: "udp", bindPort: p, dstIp: c.ipv4, dstPort: p })),
+            ...udpPorts.map((p) => ({ proto: "udp", bindPort: p, dstIp: c.ipv4, dstPort: p })),
           ],
         });
       }
 
       appendStatus(t("Online.pinging_center"));
       const pingDeadline = Date.now() + 30_000;
+      let gamePortFromPing = 0;
       while (true) {
         try {
-          await pingCenter(cForRequest);
+          gamePortFromPing = await pingCenter(cForRequest);
           break;
         } catch (e: any) {
           const msg = String(e || "");
@@ -715,6 +721,17 @@ export default function OnlinePage() {
           if (msg) appendStatus(`${t("Online.ping_retry")}: ${msg}`);
           await new Promise((r) => window.setTimeout(r, 1200));
         }
+      }
+
+      if (useNoTun && gamePortFromPing > 0 && gamePortFromPing !== primaryGamePort && gamePortFromPing !== DEFAULT_JOIN_UDP_PORT_FALLBACK) {
+        appendStatus(`Updating port forward for game port ${gamePortFromPing}...`);
+        const udpPorts = Array.from(new Set([primaryGamePort, DEFAULT_JOIN_UDP_PORT_FALLBACK, gamePortFromPing]));
+        await invoke("easytier_restart_with_port_forwards", {
+          forwards: [
+            { proto: "tcp", bindPort: c.port, dstIp: c.ipv4, dstPort: c.port },
+            ...udpPorts.map((p) => ({ proto: "udp", bindPort: p, dstIp: c.ipv4, dstPort: p })),
+          ],
+        });
       }
 
       appendStatus(t("Online.join_ready"));
@@ -741,7 +758,7 @@ export default function OnlinePage() {
       toast.error(String(e));
       await stopAll();
     }
-  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, disableP2P, gamePorts, joinRoomCode, noTun, parsePeers, pingCenter, playerHeartbeatOnce, refreshPeers, stopAll, t, toast]);
+  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, disableP2P, joinRoomCode, noTun, parsePeers, pingCenter, playerHeartbeatOnce, primaryGamePort, refreshPeers, stopAll, t, toast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -879,21 +896,6 @@ export default function OnlinePage() {
             <details className="online-details" style={{ marginTop: 12 }}>
               <summary className="online-details-summary">{t("Online.advanced")}</summary>
               <div className="online-details-body">
-                <div className="online-field" style={{ marginTop: 12 }}>
-                  <div className="online-label">{t("Online.open_ports")}</div>
-                  <div className="online-control">
-                    <input
-                      className="online-input online-mono"
-                      value={gamePortsText}
-                      onChange={(e) => setGamePortsText(e.target.value)}
-                      onBlur={() => setGamePortsText((v) => normalizePortListText(v, DEFAULT_GAME_PORTS))}
-                      placeholder={t("Online.open_ports_placeholder")}
-                      disabled={running}
-                    />
-                    <div className="online-inline-hint">{t("Online.open_ports_hint")}</div>
-                  </div>
-                </div>
-
                 <div className="online-field" style={{ marginTop: 12 }}>
                   <div className="online-label">{t("Online.player_name")}</div>
                   <div className="online-control">
