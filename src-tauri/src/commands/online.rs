@@ -54,6 +54,8 @@ struct EasyTierLastStart {
     network_secret: String,
     peers: Vec<String>,
     hostname: Option<String>,
+    resolved_hostname: Option<String>,
+    resolved_ipv4: Option<String>,
     options: Option<EasyTierStartOptions>,
 }
 
@@ -356,15 +358,24 @@ pub async fn easytier_start(
         if id.is_some() {
             return Err("EasyTier already running".to_string());
         }
+        let (cfg, resolved_hostname, resolved_ipv4) = build_embedded_easytier_config_with_port_forwards(
+            network_name.clone(),
+            network_secret.clone(),
+            peers.clone(),
+            hostname.clone(),
+            options.clone(),
+            Vec::new(),
+        )
+        .map_err(|e| e.to_string())?;
         *state.easytier_last_start.lock().unwrap() = Some(EasyTierLastStart {
             network_name: network_name.clone(),
             network_secret: network_secret.clone(),
             peers: peers.clone(),
             hostname: hostname.clone(),
+            resolved_hostname,
+            resolved_ipv4,
             options: options.clone(),
         });
-        let cfg = build_embedded_easytier_config(network_name, network_secret, peers, hostname, options)
-            .map_err(|e| e.to_string())?;
         let instance_id = state
             .easytier_manager
             .run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)
@@ -482,7 +493,7 @@ pub async fn easytier_restart_with_port_forwards(
         });
     }
 
-    let cfg = build_embedded_easytier_config_with_port_forwards(
+    let (cfg, resolved_hostname, resolved_ipv4) = build_embedded_easytier_config_with_port_forwards(
         network_name.clone(),
         network_secret.clone(),
         peers.clone(),
@@ -520,6 +531,15 @@ pub async fn easytier_restart_with_port_forwards(
     };
 
     *state.easytier_instance_id.lock().unwrap() = Some(instance_id);
+    *state.easytier_last_start.lock().unwrap() = Some(EasyTierLastStart {
+        network_name,
+        network_secret,
+        peers,
+        hostname,
+        resolved_hostname,
+        resolved_ipv4,
+        options,
+    });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -630,14 +650,15 @@ fn build_embedded_easytier_config(
     hostname: Option<String>,
     options: Option<EasyTierStartOptions>,
 ) -> anyhow::Result<TomlConfigLoader> {
-    build_embedded_easytier_config_with_port_forwards(
+    let (cfg, _, _) = build_embedded_easytier_config_with_port_forwards(
         network_name,
         network_secret,
         peers,
         hostname,
         options,
         Vec::new(),
-    )
+    )?;
+    Ok(cfg)
 }
 
 fn build_embedded_easytier_config_with_port_forwards(
@@ -647,7 +668,7 @@ fn build_embedded_easytier_config_with_port_forwards(
     hostname: Option<String>,
     options: Option<EasyTierStartOptions>,
     port_forwards: Vec<PortForwardConfig>,
-) -> anyhow::Result<TomlConfigLoader> {
+) -> anyhow::Result<(TomlConfigLoader, Option<String>, Option<String>)> {
     const DEFAULT_BEDROCK_PORT: u16 = 19132;
     let net_name_for_policy = network_name.clone();
 
@@ -768,6 +789,11 @@ fn build_embedded_easytier_config_with_port_forwards(
     }
     cfg.set_flags(flags);
 
+    let resolved_ipv4 = ipv4.as_ref().map(|inet| {
+        let s = inet.to_string();
+        s.split_once('/').map(|v| v.0.to_string()).unwrap_or(s)
+    });
+
     cfg.set_dhcp(dhcp);
     cfg.set_ipv4(ipv4);
     if let Some(wl) = tcp_whitelist {
@@ -786,7 +812,15 @@ fn build_embedded_easytier_config_with_port_forwards(
         });
     }
     cfg.set_peers(peer_cfgs);
-    Ok(cfg)
+
+    let resolved_hostname = cfg.get_hostname().trim().to_string();
+    let resolved_hostname = if resolved_hostname.is_empty() {
+        None
+    } else {
+        Some(resolved_hostname)
+    };
+
+    Ok((cfg, resolved_hostname, resolved_ipv4))
 }
 
 #[tauri::command]
@@ -830,12 +864,16 @@ pub async fn easytier_embedded_status(
     if hostname.trim().is_empty() || ipv4.as_deref().unwrap_or_default().trim().is_empty() {
         if let Some(last) = state.easytier_last_start.lock().unwrap().clone() {
             if hostname.trim().is_empty() {
-                if let Some(hn) = last.hostname {
+                if let Some(hn) = last.resolved_hostname.or(last.hostname) {
                     hostname = hn;
                 }
             }
             if ipv4.as_deref().unwrap_or_default().trim().is_empty() {
-                if let Some(opts) = last.options {
+                if let Some(v) = last.resolved_ipv4 {
+                    if !v.trim().is_empty() {
+                        ipv4 = Some(v);
+                    }
+                } else if let Some(opts) = last.options {
                     if let Some(v) = opts.ipv4 {
                         let raw = v.trim();
                         if !raw.is_empty() {
