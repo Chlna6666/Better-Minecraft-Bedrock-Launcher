@@ -5,6 +5,7 @@ pub mod mc_dll_mods;
 pub mod minecraft;
 pub mod music;
 pub mod online;
+pub mod online_acl;
 pub mod splashscreen;
 pub mod system;
 pub mod utils;

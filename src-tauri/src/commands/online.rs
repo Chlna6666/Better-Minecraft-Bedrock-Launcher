@@ -22,6 +22,8 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use super::online_acl::build_paperconnect_acl;
+
 
 const MAX_PACKET_SIZE: usize = 64 * 1024;
 const DEFAULT_PAPERCONNECT_VIP: &str = "10.144.144.1";
@@ -778,15 +780,16 @@ fn build_embedded_easytier_config_with_port_forwards(
     let no_tun_enabled = flags.no_tun;
     cfg.set_flags(flags);
 
-    // Security hardening: when running as the PaperConnect host over a real TUN interface,
-    // restrict inbound UDP to a small allowlist:
-    // - 7551: LAN discovery / broadcast probe port
-    // - 60000-60005: game UDP port range (as requested)
-    //
-    // Note: applying a strict destination-port whitelist to joiners breaks normal Bedrock client
-    // behavior because the client receives replies on an ephemeral local UDP port.
-    if is_paperconnect_host && !no_tun_enabled {
-        udp_whitelist = Some(vec!["7551".to_string(), "60000-60005".to_string()]);
+    // PaperConnect security policy (TUN only): use a custom inbound ACL instead of destination-port
+    // whitelists. This allows UDP-based transports (RakNet / NetherNet / WebRTC) on any port while
+    // still blocking member-to-member traffic (joiner <-> joiner).
+    if is_paperconnect_net && !no_tun_enabled {
+        // Avoid mixing whitelist rules and ACL policy.
+        tcp_whitelist = None;
+        udp_whitelist = None;
+
+        let acl = build_paperconnect_acl(is_paperconnect_host, DEFAULT_PAPERCONNECT_VIP, host_port_from_hostname);
+        cfg.set_acl(Some(acl));
     }
 
     let resolved_ipv4 = ipv4.as_ref().map(|inet| {
