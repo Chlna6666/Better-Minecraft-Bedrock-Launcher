@@ -50,49 +50,23 @@ const itemVariants = {
 };
 
 // --- 修复：更稳定的科幻加载组件 ---
-// 之前的版本在 path 上旋转容易导致中心点偏移(wobble)。
-// 现在的方案：旋转外层容器，内部只做缩放/透明度动画。
+// About 页面用一个更克制的 spinner：纯 SVG + CSS 动画，避免 framer-motion 造成的“抖动感”。
 const SciFiLoader = () => (
-    <motion.svg
-        className="sci-fi-loader-svg"
-        viewBox="0 0 24 24"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        animate={{ rotate: 360 }}
-        transition={{ duration: 1.5, ease: "linear", repeat: Infinity }}
-    >
-        <motion.path
-            d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeDasharray="4 4"
-            initial={{ scale: 0.9, opacity: 0.8 }}
-            animate={{ scale: [0.9, 1.05, 0.9], opacity: [0.8, 1, 0.8] }}
-            transition={{ duration: 1.5, ease: "easeInOut", repeat: Infinity }}
-            style={{ originX: 0.5, originY: 0.5 }}
-        />
-        <motion.path
-            d="M12 18C8.68629 18 6 15.3137 6 12C6 8.68629 8.68629 6 12 6"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            style={{ originX: 0.5, originY: 0.5, opacity: 0.6 }}
-        />
-        <motion.circle
-            cx="12"
-            cy="12"
-            r="3"
-            fill="currentColor"
-            animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.2, 0.8] }}
-            transition={{ duration: 0.8, repeat: Infinity, ease: "easeInOut" }}
-        />
-    </motion.svg>
+    <svg className="sci-fi-loader-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <circle className="sci-fi-loader-track" cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+        <circle className="sci-fi-loader-head" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
 );
 
 type SponsorItem = {
     all_sum_amount: string;
     user: { avatar: string; name: string; user_id: string };
+};
+
+type FetchRemoteResponse = {
+    status: number;
+    headers: Record<string, string>;
+    body: string;
 };
 
 export default function About() {
@@ -109,6 +83,7 @@ export default function About() {
     const [sponsors, setSponsors] = useState<SponsorItem[]>([]);
     const [sponsorsVisible, setSponsorsVisible] = useState(24);
     const sponsorsSentinelRef = useRef<HTMLDivElement | null>(null);
+    const sponsorsReqIdRef = useRef(0);
 
     // --- 集成更新 Hook ---
     const {
@@ -167,7 +142,10 @@ export default function About() {
     };
 
     const openSponsors = () => setSponsorsOpen(true);
-    const closeSponsors = () => setSponsorsOpen(false);
+    const closeSponsors = () => {
+        sponsorsReqIdRef.current += 1;
+        setSponsorsOpen(false);
+    };
 
     useEffect(() => {
         if (!sponsorsOpen) return;
@@ -178,27 +156,47 @@ export default function About() {
         return () => document.removeEventListener('keydown', onKeyDown);
     }, [sponsorsOpen]);
 
+    const loadSponsors = async () => {
+        const reqId = (sponsorsReqIdRef.current += 1);
+        setSponsorsLoading(true);
+        setSponsorsError(null);
+
+        try {
+            const resp = await invoke<FetchRemoteResponse>("fetch_remote", {
+                url: "https://api.chlna6666.com/sponsors",
+                options: {
+                    timeout_ms: 15000,
+                    allow_redirects: true,
+                    allowed_hosts: ["api.chlna6666.com"]
+                }
+            });
+
+            if (reqId !== sponsorsReqIdRef.current) return;
+
+            if (!resp || resp.status < 200 || resp.status >= 300) {
+                throw new Error(`HTTP ${resp?.status ?? "?"}`);
+            }
+
+            const json = JSON.parse(resp.body);
+            const list: SponsorItem[] = Array.isArray(json?.data) ? json.data : [];
+            list.sort((a, b) => (parseFloat(b?.all_sum_amount || '0') - parseFloat(a?.all_sum_amount || '0')));
+            setSponsors(list);
+        } catch (e: any) {
+            if (reqId !== sponsorsReqIdRef.current) return;
+            setSponsorsError(String(e?.message || e));
+        } finally {
+            if (reqId !== sponsorsReqIdRef.current) return;
+            setSponsorsLoading(false);
+        }
+    };
+
     useEffect(() => {
         if (!sponsorsOpen) return;
         if (sponsorsLoading) return;
         if (sponsors.length > 0) return;
-
-        setSponsorsLoading(true);
-        setSponsorsError(null);
-        fetch("https://api.chlna6666.com/sponsors")
-            .then((r) => r.json())
-            .then((json) => {
-                const list: SponsorItem[] = Array.isArray(json?.data) ? json.data : [];
-                list.sort((a, b) => (parseFloat(b?.all_sum_amount || '0') - parseFloat(a?.all_sum_amount || '0')));
-                setSponsors(list);
-            })
-            .catch((e) => {
-                setSponsorsError(String(e?.message || e));
-            })
-            .finally(() => {
-                setSponsorsLoading(false);
-            });
-    }, [sponsorsOpen, sponsorsLoading, sponsors.length]);
+        void loadSponsors();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sponsorsOpen]);
 
     useEffect(() => {
         if (!sponsorsOpen) return;
@@ -400,6 +398,9 @@ export default function About() {
                                 <div className="about-modal-empty">
                                     <div>{t("AboutSection.sponsors.error")}</div>
                                     <div style={{ opacity: 0.75, fontSize: 12 }}>{sponsorsError}</div>
+                                    <button className="about-modal-retry" onClick={() => void loadSponsors()}>
+                                        {t("retry")}
+                                    </button>
                                 </div>
                             ) : visibleSponsors.length === 0 ? (
                                 <div className="about-modal-empty">

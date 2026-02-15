@@ -326,6 +326,17 @@
     background: rgba(255,255,255,0.06);
     color: rgba(226,232,240,0.75);
 }
+[data-theme='dark'] .cf-share-title { color: rgba(248,250,252,0.95); }
+[data-theme='dark'] .cf-share-hint { color: rgba(226,232,240,0.72); }
+[data-theme='dark'] .cf-share-btn {
+    border-color: rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: rgba(248,250,252,0.95);
+}
+[data-theme='dark'] .cf-share-btn:hover {
+    border-color: rgba(96,165,250,0.35);
+    background: rgba(255,255,255,0.10);
+}
 .cf-status.fetching { color: var(--primary-color, #4CAF50); border-color: rgba(76,175,80,0.25); background: rgba(76,175,80,0.10); }
 
 .cf-refresh-bar {

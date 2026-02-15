@@ -203,7 +203,25 @@
 }
 
 /* Loader */
-.sci-fi-loader-svg { display: block; color: #40a9ff; }
+.sci-fi-loader-svg {
+    display: block;
+    color: #40a9ff;
+    animation: sci-fi-spin 1s linear infinite;
+}
+.sci-fi-loader-head {
+    stroke-dasharray: 18 40;
+    stroke-dashoffset: 0;
+    transform-origin: 50% 50%;
+    animation: sci-fi-dash 1.2s ease-in-out infinite;
+}
+@keyframes sci-fi-spin {
+    to { transform: rotate(360deg); }
+}
+@keyframes sci-fi-dash {
+    0% { stroke-dasharray: 1 60; stroke-dashoffset: 0; opacity: 0.9; }
+    50% { stroke-dasharray: 26 60; stroke-dashoffset: -12; opacity: 1; }
+    100% { stroke-dasharray: 1 60; stroke-dashoffset: -60; opacity: 0.9; }
+}
 
 .is-checking {
     cursor: default !important;
@@ -260,6 +278,24 @@
     padding: 14px 16px 16px;
     overflow: auto;
 }
+.about-modal-retry {
+    margin-top: 12px;
+    height: 34px;
+    padding: 0 14px;
+    border-radius: 10px;
+    border: 1px solid var(--about-border);
+    background: color-mix(in srgb, var(--about-bg) 85%, #40a9ff 15%);
+    color: var(--about-text-title);
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+.about-modal-retry:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 24px var(--about-shadow-hover);
+    background: color-mix(in srgb, var(--about-bg) 75%, #40a9ff 25%);
+}
+.about-modal-retry:active { transform: translateY(0); }
 
 .sponsor-grid {
     display: grid;
