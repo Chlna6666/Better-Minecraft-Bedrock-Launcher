@@ -723,6 +723,19 @@ h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--text-main); line
 [data-theme='dark'] .cf-tag-pill { background: rgba(255,255,255,0.08); color: #cbd5e1; }
 [data-theme='dark'] .cf-pagination { background: #252525; border-color: rgba(255,255,255,0.05); }
 [data-theme='dark'] .cf-page-btn { background: #333; border-color: rgba(255,255,255,0.1); color: #eee; }
+[data-theme='dark'] .cf-page-info, [data-theme='dark'] .jump-label { color: rgba(226,232,240,0.72); }
+[data-theme='dark'] .cf-page-input {
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.12);
+    color: rgba(248,250,252,0.95);
+}
+[data-theme='dark'] .cf-page-input::placeholder { color: rgba(226,232,240,0.45); }
+[data-theme='dark'] .cf-page-go {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.12);
+    color: rgba(248,250,252,0.92);
+}
+[data-theme='dark'] .cf-page-go:hover { background: rgba(255,255,255,0.12); }
 [data-theme='dark'] .cf-skeleton.list, [data-theme='dark'] .cf-skeleton.grid { background: linear-gradient(90deg, rgba(255,255,255,0.05), rgba(255,255,255,0.03)); border-color: rgba(255,255,255,0.05); }
 [data-theme='dark'] .sk-thumb { background: #3a3a3a; }
 [data-theme='dark'] .sk-line { background: linear-gradient(90deg, #3a3a3a, #454545, #3a3a3a); }
