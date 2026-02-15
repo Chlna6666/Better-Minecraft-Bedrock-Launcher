@@ -8,26 +8,46 @@ import "./OnlinePage.css";
 
 const LEGACY_DEFAULT_BOOTSTRAP_PEER = "tcp://public.easytier.top:11010";
 const DEFAULT_BOOTSTRAP_PEER = "tcp://39.108.52.138:11010\ntcp://8.148.29.206:11010";
-const FALLBACK_CLIENT_ID = "BMCBL";
 const PLAYER_NAME_STORAGE_KEY = "bmcbL.online.playerName";
-const CLIENT_ID_STORAGE_KEY = "bmcbL.online.clientId";
 const LEGACY_PLAYER_NAME_STORAGE_KEY = "bmcbk.online.playerName";
-const LEGACY_CLIENT_ID_STORAGE_KEY = "bmcbk.online.clientId";
 const BOOTSTRAP_PEER_STORAGE_KEY = "bmcbL.online.bootstrapPeer";
 const DISABLE_P2P_STORAGE_KEY = "bmcbL.online.disableP2p";
 const NO_TUN_STORAGE_KEY = "bmcbL.online.noTun";
 const PC_PORT_STORAGE_KEY = "bmcbL.online.pcPort";
 const GAME_PORT_STORAGE_KEY = "bmcbL.online.gamePort";
+const GAME_PORTS_STORAGE_KEY = "bmcbL.online.gamePorts";
 const JOIN_ROOM_CODE_STORAGE_KEY = "bmcbL.online.joinRoomCode";
 const HOST_ROOM_STORAGE_KEY = "bmcbL.online.hostRoom";
 const ACTIVE_ROOM_STORAGE_KEY = "bmcbL.online.activeRoom";
 const BASE34_ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const DEFAULT_GAME_PORTS = "7551";
 
 function normalizePlayerName(name: string): string {
   return String(name || "")
     .trim()
     .replace(/\s+/g, " ")
     .slice(0, 32);
+}
+
+function parsePortList(input: string): number[] {
+  const text = String(input || "");
+  const parts = text.split(/[\s,]+/g).map((s) => s.trim()).filter(Boolean);
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const p of parts) {
+    const n = Number.parseInt(p, 10);
+    if (!Number.isFinite(n) || n <= 0 || n > 65535) continue;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
+function normalizePortListText(input: string, fallbackText: string): string {
+  const ports = parsePortList(input);
+  if (ports.length === 0) return fallbackText;
+  return ports.join(", ");
 }
 
 function migrateLegacyAutoName(name: string): string {
@@ -170,14 +190,22 @@ export default function OnlinePage() {
       return 33768;
     }
   });
-  const [gamePort, setGamePort] = useState<number>(() => {
+  const [gamePortsText, setGamePortsText] = useState<string>(() => {
     try {
-      const stored = Number(localStorage.getItem(GAME_PORT_STORAGE_KEY) || 0);
-      return stored > 0 ? stored : 19132;
+      const storedList = String(localStorage.getItem(GAME_PORTS_STORAGE_KEY) || "").trim();
+      if (storedList) return storedList;
+      const storedLegacy = Number(localStorage.getItem(GAME_PORT_STORAGE_KEY) || 0);
+      if (storedLegacy > 0) return String(storedLegacy);
+      return DEFAULT_GAME_PORTS;
     } catch {
-      return 19132;
+      return DEFAULT_GAME_PORTS;
     }
   });
+  const gamePorts = useMemo(() => {
+    const ports = parsePortList(gamePortsText);
+    return ports.length > 0 ? ports : parsePortList(DEFAULT_GAME_PORTS);
+  }, [gamePortsText]);
+  const primaryGamePort = useMemo(() => gamePorts[0] ?? 7551, [gamePorts]);
 
   const [playerName, setPlayerName] = useState<string>(() => {
     try {
@@ -200,20 +228,7 @@ export default function OnlinePage() {
     }
     return generated;
   });
-  const [clientId, setClientId] = useState<string>(() => {
-    try {
-      const stored =
-        String(localStorage.getItem(CLIENT_ID_STORAGE_KEY) || "").trim() ||
-        String(localStorage.getItem(LEGACY_CLIENT_ID_STORAGE_KEY) || "").trim();
-      if (stored) {
-        localStorage.setItem(CLIENT_ID_STORAGE_KEY, stored);
-        return stored;
-      }
-    } catch {
-      // ignore
-    }
-    return "";
-  });
+  const [clientId, setClientId] = useState<string>("");
 
   const [center, setCenter] = useState<PaperConnectCenter | null>(null);
   const [players, setPlayers] = useState<PlayerEntry[]>([]);
@@ -234,14 +249,17 @@ export default function OnlinePage() {
       .then((v) => {
         const next = String(v || "").trim();
         if (!next) return;
-        setClientId((prev) => {
-          const prevTrim = String(prev || "").trim();
-          if (prevTrim && prevTrim !== FALLBACK_CLIENT_ID) return prev;
-          return next;
-        });
+        setClientId(next);
       })
-      .catch(() => {
-        setClientId((prev) => (String(prev || "").trim() ? prev : FALLBACK_CLIENT_ID));
+      .catch(async () => {
+        // Fallback to backend-reported app version (from Cargo.toml) if possible.
+        try {
+          const ver = String(await invoke("get_app_version")).trim();
+          if (ver) setClientId(`BMCBL v${ver}`);
+          else setClientId("BMCBL");
+        } catch {
+          setClientId("BMCBL");
+        }
       });
   }, []);
 
@@ -254,16 +272,6 @@ export default function OnlinePage() {
       // ignore
     }
   }, [playerName]);
-
-  useEffect(() => {
-    try {
-      const next = String(clientId || "").trim();
-      if (!next) return;
-      localStorage.setItem(CLIENT_ID_STORAGE_KEY, next);
-    } catch {
-      // ignore
-    }
-  }, [clientId]);
 
   useEffect(() => {
     try {
@@ -300,12 +308,13 @@ export default function OnlinePage() {
 
   useEffect(() => {
     try {
-      const next = Number(gamePort || 0);
-      if (next > 0) localStorage.setItem(GAME_PORT_STORAGE_KEY, String(next));
+      const normalized = normalizePortListText(gamePortsText, DEFAULT_GAME_PORTS);
+      localStorage.setItem(GAME_PORTS_STORAGE_KEY, normalized);
+      localStorage.setItem(GAME_PORT_STORAGE_KEY, String(primaryGamePort));
     } catch {
       // ignore
     }
-  }, [gamePort]);
+  }, [gamePortsText, primaryGamePort]);
 
   useEffect(() => {
     try {
@@ -509,7 +518,7 @@ export default function OnlinePage() {
 
   const hostHeartbeatOnce = useCallback(async () => {
     const hostPlayerName = playerName.trim() ? playerName.trim() : "host";
-    const hostClientId = clientId.trim() ? clientId.trim() : FALLBACK_CLIENT_ID;
+    const hostClientId = clientId.trim() ? clientId.trim() : "BMCBL";
     await invoke("paperconnect_tcp_request", {
       host: "127.0.0.1",
       port: pcPort,
@@ -529,7 +538,7 @@ export default function OnlinePage() {
       setRunningRole("host");
 
       const hostPlayerName = playerName.trim() ? playerName.trim() : "host";
-      const hostClientId = clientId.trim() ? clientId.trim() : FALLBACK_CLIENT_ID;
+      const hostClientId = clientId.trim() ? clientId.trim() : "BMCBL";
       appendStatus(t("Online.starting_easytier"));
       await invoke("easytier_start", {
         networkName: nextRoom.networkName,
@@ -540,7 +549,7 @@ export default function OnlinePage() {
           disableP2p: disableP2P,
           noTun,
           tcpWhitelist: [pcPort],
-          udpWhitelist: [gamePort],
+          udpWhitelist: gamePorts,
           ipv4: noTun ? "10.144.144.1" : null,
         },
       });
@@ -551,7 +560,7 @@ export default function OnlinePage() {
       await invoke("paperconnect_server_start", {
         args: {
           listenPort: pcPort,
-          gamePort,
+          gamePort: primaryGamePort,
           gameType: "MinecraftBedrock",
           gameProtocolType: "UDP",
           roomHostPlayerName: hostPlayerName,
@@ -578,7 +587,7 @@ export default function OnlinePage() {
       setHostRoom(null);
       await stopAll();
     }
-  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, clientId, disableP2P, gamePort, hostHeartbeatOnce, hostnameForHost, noTun, parsePeers, pcPort, playerName, refreshPeers, stopAll, t, toast]);
+  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, clientId, disableP2P, gamePorts, hostHeartbeatOnce, hostnameForHost, noTun, parsePeers, pcPort, playerName, primaryGamePort, refreshPeers, stopAll, t, toast]);
 
   const discoverCenter = useCallback(async (): Promise<PaperConnectCenter | null> => {
     try {
@@ -618,7 +627,7 @@ export default function OnlinePage() {
     async (c: PaperConnectCenter) => {
       const host = String(c?.ipv4 || "").trim();
       if (!host) throw new Error(t("Online.err_center_no_ipv4"));
-      const effectiveClientId = String(clientId || "").trim() || FALLBACK_CLIENT_ID;
+      const effectiveClientId = String(clientId || "").trim() || "BMCBL";
       let effectivePlayerName = normalizePlayerName(playerName);
       if (!effectivePlayerName) {
         effectivePlayerName = generateDefaultPlayerName();
@@ -701,7 +710,7 @@ export default function OnlinePage() {
         await invoke("easytier_restart_with_port_forwards", {
           forwards: [
             { proto: "tcp", bindPort: c.port, dstIp: c.ipv4, dstPort: c.port },
-            { proto: "udp", bindPort: gamePort, dstIp: c.ipv4, dstPort: gamePort },
+            ...gamePorts.map((p) => ({ proto: "udp", bindPort: p, dstIp: c.ipv4, dstPort: p })),
           ],
         });
       }
@@ -744,7 +753,7 @@ export default function OnlinePage() {
       toast.error(String(e));
       await stopAll();
     }
-  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, disableP2P, gamePort, joinRoomCode, noTun, parsePeers, pingCenter, playerHeartbeatOnce, refreshPeers, stopAll, t, toast]);
+  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, disableP2P, gamePorts, joinRoomCode, noTun, parsePeers, pingCenter, playerHeartbeatOnce, refreshPeers, stopAll, t, toast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -881,14 +890,17 @@ export default function OnlinePage() {
               <summary className="online-details-summary">{t("Online.advanced")}</summary>
               <div className="online-details-body">
                 <div className="online-field" style={{ marginTop: 12 }}>
-                  <div className="online-label">{t("Online.game_port")}</div>
+                  <div className="online-label">{t("Online.open_ports")}</div>
                   <div className="online-control">
                     <input
                       className="online-input online-mono"
-                      value={String(gamePort)}
-                      onChange={(e) => setGamePort(Number(e.target.value || 0))}
+                      value={gamePortsText}
+                      onChange={(e) => setGamePortsText(e.target.value)}
+                      onBlur={() => setGamePortsText((v) => normalizePortListText(v, DEFAULT_GAME_PORTS))}
+                      placeholder={t("Online.open_ports_placeholder")}
                       disabled={running}
                     />
+                    <div className="online-inline-hint">{t("Online.open_ports_hint")}</div>
                   </div>
                 </div>
 
@@ -911,8 +923,8 @@ export default function OnlinePage() {
                     <input
                       className="online-input online-mono"
                       value={clientId}
-                      onChange={(e) => setClientId(e.target.value)}
-                      disabled={running}
+                      readOnly
+                      disabled
                     />
                   </div>
                 </div>
@@ -947,14 +959,17 @@ export default function OnlinePage() {
               <summary className="online-details-summary">{t("Online.advanced")}</summary>
               <div className="online-details-body">
                 <div className="online-field" style={{ marginTop: 12 }}>
-                  <div className="online-label">{t("Online.game_port")}</div>
+                  <div className="online-label">{t("Online.open_ports")}</div>
                   <div className="online-control">
                     <input
                       className="online-input online-mono"
-                      value={String(gamePort)}
-                      onChange={(e) => setGamePort(Number(e.target.value || 0))}
+                      value={gamePortsText}
+                      onChange={(e) => setGamePortsText(e.target.value)}
+                      onBlur={() => setGamePortsText((v) => normalizePortListText(v, DEFAULT_GAME_PORTS))}
+                      placeholder={t("Online.open_ports_placeholder")}
                       disabled={running}
                     />
+                    <div className="online-inline-hint">{t("Online.open_ports_hint")}</div>
                   </div>
                 </div>
 
@@ -977,8 +992,8 @@ export default function OnlinePage() {
                     <input
                       className="online-input online-mono"
                       value={clientId}
-                      onChange={(e) => setClientId(e.target.value)}
-                      disabled={running}
+                      readOnly
+                      disabled
                     />
                   </div>
                 </div>
