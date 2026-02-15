@@ -234,6 +234,7 @@ export default function OnlinePage() {
 
   const heartbeatTimerRef = useRef<number | null>(null);
   const peersTimerRef = useRef<number | null>(null);
+  const hostIdentityRef = useRef<{ playerName: string; clientId: string } | null>(null);
 
   const hostnameForHost = useMemo(() => (pcPort > 0 ? `paper-connect-server-${pcPort}` : ""), [pcPort]);
 
@@ -426,6 +427,7 @@ export default function OnlinePage() {
     } finally {
       setRunning(false);
       setRunningRole(null);
+      hostIdentityRef.current = null;
       setLatencyMs(null);
       setCenter(null);
       setPlayers([]);
@@ -501,8 +503,9 @@ export default function OnlinePage() {
   );
 
   const hostHeartbeatOnce = useCallback(async () => {
-    const hostPlayerName = playerName.trim() ? playerName.trim() : "host";
-    const hostClientId = clientId.trim() ? clientId.trim() : "BMCBL";
+    const frozen = hostIdentityRef.current;
+    const hostPlayerName = frozen?.playerName || (playerName.trim() ? playerName.trim() : "host");
+    const hostClientId = frozen?.clientId || (clientId.trim() ? clientId.trim() : "BMCBL");
     await invoke("paperconnect_tcp_request", {
       host: "127.0.0.1",
       port: pcPort,
@@ -528,6 +531,7 @@ export default function OnlinePage() {
 
       const hostPlayerName = playerName.trim() ? playerName.trim() : "host";
       const hostClientId = clientId.trim() ? clientId.trim() : "BMCBL";
+      hostIdentityRef.current = { playerName: hostPlayerName, clientId: hostClientId };
       appendStatus(t("Online.starting_easytier"));
       await invoke("easytier_start", {
         networkName: nextRoom.networkName,

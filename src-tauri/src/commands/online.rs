@@ -1346,6 +1346,7 @@ struct PaperConnectServerState {
     game_type: String,
     game_protocol_type: String,
     game_port: u16,
+    created_ms: i64,
     players: HashMap<PlayerKey, PaperConnectPlayer>, // (playerName, clientId) -> player
     room_host_key: PlayerKey,
 }
@@ -1378,6 +1379,7 @@ impl PaperConnectServerState {
             game_type,
             game_protocol_type,
             game_port,
+            created_ms: now,
             players,
             room_host_key: host_key,
         }
@@ -1385,7 +1387,10 @@ impl PaperConnectServerState {
 
     fn cleanup(&mut self, now: i64) {
         let timeout_ms = 10_000i64;
-        self.players.retain(|_, p| now - p.last_seen_ms <= timeout_ms);
+        // Never evict the room host entry; otherwise a brief heartbeat gap can reset the host's
+        // `first_seen_ms` and make the UI look like the host is "disconnecting" repeatedly.
+        self.players
+            .retain(|k, p| k == &self.room_host_key || now - p.last_seen_ms <= timeout_ms);
 
         // Keep a stable room host identity for PaperConnect compatibility.
         if !self.players.contains_key(&self.room_host_key) {
@@ -1395,7 +1400,9 @@ impl PaperConnectServerState {
                 PaperConnectPlayer {
                     player_name: host_key.player_name.clone(),
                     client_id: host_key.client_id.clone(),
-                    first_seen_ms: now,
+                    // If the host entry had to be recreated for any reason, treat the host as
+                    // online since room creation time to keep session duration stable.
+                    first_seen_ms: self.created_ms,
                     last_seen_ms: now,
                 },
             );
