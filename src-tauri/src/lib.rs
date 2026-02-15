@@ -288,6 +288,7 @@ pub async fn run(preinit: Arc<PreInit>) -> Result<()> {
             paperconnect_find_center,
             paperconnect_tcp_request,
             paperconnect_default_client_id,
+            paperconnect_pick_listen_port,
             paperconnect_server_start,
             paperconnect_server_stop,
             paperconnect_server_state,

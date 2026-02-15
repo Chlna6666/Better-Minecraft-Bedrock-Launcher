@@ -13,7 +13,6 @@ const LEGACY_PLAYER_NAME_STORAGE_KEY = "bmcbk.online.playerName";
 const BOOTSTRAP_PEER_STORAGE_KEY = "bmcbL.online.bootstrapPeer";
 const DISABLE_P2P_STORAGE_KEY = "bmcbL.online.disableP2p";
 const NO_TUN_STORAGE_KEY = "bmcbL.online.noTun";
-const PC_PORT_STORAGE_KEY = "bmcbL.online.pcPort";
 const GAME_PORT_STORAGE_KEY = "bmcbL.online.gamePort";
 const GAME_PORTS_STORAGE_KEY = "bmcbL.online.gamePorts";
 const JOIN_ROOM_CODE_STORAGE_KEY = "bmcbL.online.joinRoomCode";
@@ -182,14 +181,7 @@ export default function OnlinePage() {
     }
   });
 
-  const [pcPort, setPcPort] = useState<number>(() => {
-    try {
-      const stored = Number(localStorage.getItem(PC_PORT_STORAGE_KEY) || 0);
-      return stored > 0 ? stored : 33768;
-    } catch {
-      return 33768;
-    }
-  });
+  const [pcPort, setPcPort] = useState<number>(0);
   const [gamePortsText, setGamePortsText] = useState<string>(() => {
     try {
       const storedList = String(localStorage.getItem(GAME_PORTS_STORAGE_KEY) || "").trim();
@@ -242,7 +234,7 @@ export default function OnlinePage() {
   const heartbeatTimerRef = useRef<number | null>(null);
   const peersTimerRef = useRef<number | null>(null);
 
-  const hostnameForHost = useMemo(() => `paper-connect-server-${pcPort}`, [pcPort]);
+  const hostnameForHost = useMemo(() => (pcPort > 0 ? `paper-connect-server-${pcPort}` : ""), [pcPort]);
 
   useEffect(() => {
     invoke("paperconnect_default_client_id")
@@ -296,15 +288,6 @@ export default function OnlinePage() {
       // ignore
     }
   }, [noTun]);
-
-  useEffect(() => {
-    try {
-      const next = Number(pcPort || 0);
-      if (next > 0) localStorage.setItem(PC_PORT_STORAGE_KEY, String(next));
-    } catch {
-      // ignore
-    }
-  }, [pcPort]);
 
   useEffect(() => {
     try {
@@ -531,6 +514,11 @@ export default function OnlinePage() {
   const startHost = useCallback(async () => {
     setStatusText("");
     try {
+      const pickedPort = Number(await invoke("paperconnect_pick_listen_port"));
+      if (!pickedPort) throw new Error("failed to pick listen port");
+      setPcPort(pickedPort);
+      const hostname = `paper-connect-server-${pickedPort}`;
+
       const nextRoom = (await invoke("paperconnect_generate_room")) as PaperConnectRoom;
       setHostRoom(nextRoom);
       setActiveRoom(nextRoom);
@@ -544,11 +532,11 @@ export default function OnlinePage() {
         networkName: nextRoom.networkName,
         networkSecret: nextRoom.networkSecret,
         peers: parsePeers(bootstrapPeer),
-        hostname: hostnameForHost,
+        hostname,
         options: {
           disableP2p: disableP2P,
           noTun,
-          tcpWhitelist: [pcPort],
+          tcpWhitelist: [pickedPort],
           udpWhitelist: gamePorts,
           ipv4: noTun ? "10.144.144.1" : null,
         },
@@ -559,7 +547,7 @@ export default function OnlinePage() {
       appendStatus(t("Online.starting_paperconnect_server"));
       await invoke("paperconnect_server_start", {
         args: {
-          listenPort: pcPort,
+          listenPort: pickedPort,
           gamePort: primaryGamePort,
           gameType: "MinecraftBedrock",
           gameProtocolType: "UDP",
@@ -587,7 +575,7 @@ export default function OnlinePage() {
       setHostRoom(null);
       await stopAll();
     }
-  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, clientId, disableP2P, gamePorts, hostHeartbeatOnce, hostnameForHost, noTun, parsePeers, pcPort, playerName, primaryGamePort, refreshPeers, stopAll, t, toast]);
+  }, [appendStatus, bootstrapPeer, checkVirtualIpHintOnce, clientId, disableP2P, gamePorts, hostHeartbeatOnce, noTun, parsePeers, playerName, primaryGamePort, refreshPeers, stopAll, t, toast]);
 
   const discoverCenter = useCallback(async (): Promise<PaperConnectCenter | null> => {
     try {
@@ -780,6 +768,8 @@ export default function OnlinePage() {
 
       if (hostSnap) {
         setRunningRole("host");
+        const lp = Number(hostSnap?.listenPort || hostSnap?.listen_port || 0);
+        if (lp > 0) setPcPort(lp);
         await refreshHostPlayers();
         await refreshPeers();
 
@@ -945,12 +935,14 @@ export default function OnlinePage() {
               <div className="online-control online-control--row">
                 <input
                   className="online-input online-mono"
-                  value={String(pcPort)}
-                  onChange={(e) => setPcPort(Number(e.target.value || 0))}
-                  disabled={running}
+                  value={pcPort > 0 ? String(pcPort) : ""}
+                  placeholder={t("Online.auto_port")}
+                  readOnly
+                  disabled
                 />
                 <span className="online-inline-hint">
-                  {t("Online.hostname")}: <span className="online-mono">{hostnameForHost}</span>
+                  {t("Online.hostname")}:{" "}
+                  <span className="online-mono">{hostnameForHost || t("Online.auto_port")}</span>
                 </span>
               </div>
             </div>

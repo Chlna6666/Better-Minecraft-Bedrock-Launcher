@@ -192,6 +192,21 @@ pub async fn paperconnect_default_client_id() -> Result<String, String> {
     Ok(default_client_id())
 }
 
+#[tauri::command]
+pub async fn paperconnect_pick_listen_port() -> Result<u16, String> {
+    // Pick an ephemeral TCP port that is likely to be available for PaperConnect.
+    // This isn't perfectly race-free, but we start the server immediately after in the UI flow.
+    for _ in 0..12 {
+        let listener = StdTcpListener::bind(("0.0.0.0", 0)).map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        drop(listener);
+        if port > 0 {
+            return Ok(port);
+        }
+    }
+    Err("failed to pick an available port".to_string())
+}
+
 fn alphabet34() -> &'static [u8; 34] {
     b"0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 }
