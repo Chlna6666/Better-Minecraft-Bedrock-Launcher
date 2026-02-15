@@ -778,36 +778,15 @@ fn build_embedded_easytier_config_with_port_forwards(
     let no_tun_enabled = flags.no_tun;
     cfg.set_flags(flags);
 
-    // Security hardening: when running in PaperConnect over a real TUN interface, limit inbound
-    // UDP to the game discovery/connection ports and explicitly avoid exposing known high-risk
-    // ranges (60000-60005). This helps reduce the risk of peer-to-peer attacks on unrelated local
-    // UDP services over the virtual NIC.
-    if is_paperconnect_net && !no_tun_enabled {
-        const FORBIDDEN_UDP_PORTS: [u16; 6] = [60000, 60001, 60002, 60003, 60004, 60005];
-
-        let mut ports: Vec<u16> = udp_whitelist
-            .as_ref()
-            .map(|wl| {
-                wl.iter()
-                    .filter_map(|s| s.parse::<u16>().ok())
-                    .collect::<Vec<u16>>()
-            })
-            .unwrap_or_default();
-
-        ports.retain(|p| !FORBIDDEN_UDP_PORTS.contains(p));
-        // Always allow Bedrock LAN discovery by default.
-        if !ports.contains(&7551) {
-            ports.push(7551);
-        }
-
-        // Hosts often also need the actual game port (which may differ from 7551). Prefer the
-        // user-provided whitelist (via UI) when available; otherwise keep it discovery-only.
-        if is_paperconnect_host {
-            // No-op; `ports` already includes whatever the UI provided.
-        }
-        ports.sort_unstable();
-        ports.dedup();
-        udp_whitelist = Some(ports.into_iter().map(|p| p.to_string()).collect());
+    // Security hardening: when running as the PaperConnect host over a real TUN interface,
+    // restrict inbound UDP to a small allowlist:
+    // - 7551: LAN discovery / broadcast probe port
+    // - 60000-60005: game UDP port range (as requested)
+    //
+    // Note: applying a strict destination-port whitelist to joiners breaks normal Bedrock client
+    // behavior because the client receives replies on an ephemeral local UDP port.
+    if is_paperconnect_host && !no_tun_enabled {
+        udp_whitelist = Some(vec!["7551".to_string(), "60000-60005".to_string()]);
     }
 
     let resolved_ipv4 = ipv4.as_ref().map(|inet| {
