@@ -621,7 +621,7 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
 
             {/* Content */}
             <div className="cf-content-area">
-                <div ref={resultsRef} className="cf-results-container custom-scrollbar">
+                <div className="cf-results-container">
                     <div className="cf-topbar">
                         <div className="cf-topbar-left" title={t("CurseForge.breadcrumb_title")}>
                             <div className="cf-breadcrumb">
@@ -748,32 +748,34 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                         </div>
                         <div key={progressSeq} className={`cf-refresh-bar ${fetching ? 'active' : ''}`} />
                     </div>
-                    <div className={`cf-results-body ${listAnimOn ? "bm-anim-page-in" : ""}`}>
-                        {isLoadingState ? (
-                            <ModsSkeleton viewMode={viewMode} />
-                        ) : canShowEmptyState ? (
-                            <div className="cf-state"><Package size={48} /><p>{t("CurseForge.no_results")}</p></div>
-                        ) : (
-                            <>
-                                {mods.length > 0 && (
-                                    <div className={`cf-mod-list ${viewMode}`}>
-                                        <AnimatePresence mode='popLayout'>
-                                            {mods.map((mod, i) => (
-                                                <ModItem
-                                                    key={mod.id}
-                                                    mod={mod}
-                                                    viewMode={viewMode}
-                                                    index={i}
-                                                    allCategories={allCategories}
-                                                    onOpen={navigateToMod}
-                                                    onDownload={openDownloadSheet}
-                                                />
-                                            ))}
-                                        </AnimatePresence>
-                                    </div>
-                                )}
-                            </>
-                        )}
+                    <div ref={resultsRef} className="cf-results-scroll custom-scrollbar">
+                        <div className={`cf-results-body ${listAnimOn ? "bm-anim-page-in" : ""}`}>
+                            {isLoadingState ? (
+                                <ModsSkeleton viewMode={viewMode} />
+                            ) : canShowEmptyState ? (
+                                <div className="cf-state"><Package size={48} /><p>{t("CurseForge.no_results")}</p></div>
+                            ) : (
+                                <>
+                                    {mods.length > 0 && (
+                                        <div className={`cf-mod-list ${viewMode}`}>
+                                            <AnimatePresence mode='popLayout'>
+                                                {mods.map((mod, i) => (
+                                                    <ModItem
+                                                        key={mod.id}
+                                                        mod={mod}
+                                                        viewMode={viewMode}
+                                                        index={i}
+                                                        allCategories={allCategories}
+                                                        onOpen={navigateToMod}
+                                                        onDownload={openDownloadSheet}
+                                                    />
+                                                ))}
+                                            </AnimatePresence>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
                     </div>
 
                     {/* Pagination Controls */}

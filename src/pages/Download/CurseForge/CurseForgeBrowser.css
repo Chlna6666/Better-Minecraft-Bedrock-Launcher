@@ -173,14 +173,14 @@
 .cf-tag-chip img { width: 14px; height: 14px; }
 
 /* --- Results List --- */
-.cf-results-container { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.cf-results-container { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.cf-results-scroll { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
 .cf-results-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 /* Topbar (breadcrumb + refresh state) */
 .cf-topbar {
-    position: sticky;
-    top: 10px;
-    z-index: 5;
+    position: relative;
+    z-index: 2;
     display: flex;
     align-items: center;
     justify-content: space-between;
