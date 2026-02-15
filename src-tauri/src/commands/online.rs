@@ -689,7 +689,6 @@ fn build_embedded_easytier_config_with_port_forwards(
 
     let mut tcp_whitelist: Option<Vec<String>> = None;
     let mut udp_whitelist: Option<Vec<String>> = None;
-    let mut requested_udp_ports: Vec<u16> = Vec::new();
     let mut ipv4: Option<cidr::Ipv4Inet> = None;
     let mut dhcp = true;
     let mut host_port_from_hostname: Option<u16> = None;
@@ -705,7 +704,6 @@ fn build_embedded_easytier_config_with_port_forwards(
             tcp_whitelist = Some(wl.into_iter().map(|p| p.to_string()).collect());
         }
         if let Some(wl) = opts.udp_whitelist {
-            requested_udp_ports = wl.clone();
             udp_whitelist = Some(wl.into_iter().map(|p| p.to_string()).collect());
         }
         if let Some(v) = opts.ipv4 {
@@ -783,46 +781,6 @@ fn build_embedded_easytier_config_with_port_forwards(
         let s = inet.to_string();
         s.split_once('/').map(|v| v.0.to_string()).unwrap_or(s)
     });
-
-    // In `no_tun` mode, the host typically runs a real game server bound on the OS network stack,
-    // while the EasyTier virtual network lives in smoltcp. To make the game port reachable from
-    // other peers (who forward their local port to the host VIP), proxy the host VIP port back to
-    // 127.0.0.1 on the host machine.
-    let mut port_forwards = port_forwards;
-    if no_tun_enabled && is_paperconnect_net && host_port_from_hostname.is_some() {
-        let vip_ip = resolved_ipv4
-            .as_deref()
-            .unwrap_or(DEFAULT_PAPERCONNECT_VIP)
-            .trim()
-            .to_string();
-
-        let mut ports = requested_udp_ports;
-        if ports.is_empty() {
-            ports = vec![7551];
-        }
-        // Bedrock LAN discovery often uses 19132; include it as a safe default.
-        if !ports.contains(&19132) {
-            ports.push(19132);
-        }
-        ports.sort_unstable();
-        ports.dedup();
-
-        for p in ports {
-            if !(1..=65535).contains(&p) {
-                continue;
-            }
-            let bind_addr = format!("{vip_ip}:{p}").parse().context("invalid vip bind addr")?;
-            let dst_addr = format!("127.0.0.1:{p}").parse().context("invalid loopback dst addr")?;
-            if port_forwards.iter().any(|f| f.proto == "udp" && f.bind_addr == bind_addr) {
-                continue;
-            }
-            port_forwards.push(PortForwardConfig {
-                bind_addr,
-                dst_addr,
-                proto: "udp".to_string(),
-            });
-        }
-    }
 
     cfg.set_dhcp(dhcp);
     cfg.set_ipv4(ipv4);

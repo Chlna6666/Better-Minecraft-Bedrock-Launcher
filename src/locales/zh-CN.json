@@ -175,6 +175,7 @@
     "latency": "延迟",
     "players": "房间玩家",
     "starting_easytier": "正在启动 EasyTier…",
+    "no_tun_disabled_for_udp_host": "检测到你在创建房间（UDP 游戏端口）。已自动关闭 no_tun 以确保 7551 等端口可用。",
     "embedded_hint": "EasyTier 已内嵌在启动器中；首次启动可能需要管理员权限创建虚拟网卡（TUN）。",
     "starting_paperconnect_server": "正在启动 PaperConnect 服务端…",
     "discovering_center": "正在发现联机中心…",

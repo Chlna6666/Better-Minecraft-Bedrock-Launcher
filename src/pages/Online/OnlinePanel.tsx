@@ -533,6 +533,12 @@ export default function OnlinePage() {
       const hostClientId = clientId.trim() ? clientId.trim() : "BMCBL";
       hostIdentityRef.current = { playerName: hostPlayerName, clientId: hostClientId };
       appendStatus(t("Online.starting_easytier"));
+      const effectiveNoTun = false;
+      if (noTun) {
+        // Hosting a UDP game server in `no_tun` mode can't expose the port on the virtual subnet
+        // because no OS interface owns the VIP. Use TUN for host by default.
+        appendStatus(t("Online.no_tun_disabled_for_udp_host"));
+      }
       await invoke("easytier_start", {
         networkName: nextRoom.networkName,
         networkSecret: nextRoom.networkSecret,
@@ -540,10 +546,10 @@ export default function OnlinePage() {
         hostname,
         options: {
           disableP2p: disableP2P,
-          noTun,
+          noTun: effectiveNoTun,
           tcpWhitelist: [pickedPort],
           udpWhitelist: gamePorts,
-          ipv4: noTun ? "10.144.144.1" : null,
+          ipv4: null,
         },
       });
       await checkVirtualIpHintOnce();

@@ -148,6 +148,7 @@
     "latency": "遅延",
     "players": "プレイヤー",
     "starting_easytier": "EasyTier を起動中…",
+    "no_tun_disabled_for_udp_host": "UDP ゲームをホストするには TUN が必要です。7551 などのポートを使えるよう no_tun を自動で無効化しました。",
     "embedded_hint": "EasyTier はランチャーに内蔵されています。初回は TUN アダプタ作成のため管理者権限が必要になる場合があります。",
     "starting_paperconnect_server": "PaperConnect サーバーを起動中…",
     "discovering_center": "センターを探索中…",
