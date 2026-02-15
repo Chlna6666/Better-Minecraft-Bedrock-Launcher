@@ -11,6 +11,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::sync::{Arc, Mutex};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -402,6 +403,40 @@ pub async fn easytier_restart_with_port_forwards(
         return Err("EasyTier not started yet".to_string());
     };
 
+    // Preflight bind ports before stopping the existing instance. This avoids a bad UX where
+    // EasyTier is stopped, then the restart fails due to local bind errors (e.g. Windows 10013).
+    let mut preflight: Vec<(String, u16)> = Vec::new();
+    for f in forwards.iter() {
+        let proto = f.proto.trim().to_ascii_lowercase();
+        if proto != "tcp" && proto != "udp" {
+            return Err(format!("invalid port forward proto: {}", f.proto));
+        }
+        if preflight.iter().any(|(p, port)| p == &proto && *port == f.bind_port) {
+            continue;
+        }
+        preflight.push((proto, f.bind_port));
+    }
+
+    for (proto, port) in preflight.iter() {
+        let bind = ("127.0.0.1", *port);
+        let res = match proto.as_str() {
+            "tcp" => StdTcpListener::bind(bind).map(|l| drop(l)).map_err(|e| e.to_string()),
+            "udp" => StdUdpSocket::bind(bind).map(|s| drop(s)).map_err(|e| e.to_string()),
+            _ => Ok(()),
+        };
+        if let Err(msg) = res {
+            return Err(format!(
+                "cannot bind local {proto} port {port} on 127.0.0.1 ({msg}). Try changing the port, closing the app using it, or running as admin (Windows may block some ports, e.g. os error 10013)."
+            ));
+        }
+    }
+
+    let network_name = last.network_name.clone();
+    let network_secret = last.network_secret.clone();
+    let peers = last.peers.clone();
+    let hostname = last.hostname.clone();
+    let options = last.options.clone();
+
     let old_id = state.easytier_instance_id.lock().unwrap().take();
     if let Some(id) = old_id {
         let mgr = state.easytier_manager.clone();
@@ -433,19 +468,41 @@ pub async fn easytier_restart_with_port_forwards(
     }
 
     let cfg = build_embedded_easytier_config_with_port_forwards(
-        last.network_name,
-        last.network_secret,
-        last.peers,
-        last.hostname,
-        last.options,
+        network_name.clone(),
+        network_secret.clone(),
+        peers.clone(),
+        hostname.clone(),
+        options.clone(),
         port_forwards,
     )
     .map_err(|e| e.to_string())?;
 
-    let instance_id = state
+    let instance_id = match state
         .easytier_manager
         .run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)
-        .map_err(|e| format!("restart embedded EasyTier failed: {e}"))?;
+    {
+        Ok(id) => id,
+        Err(e) => {
+            // Best-effort rollback: bring EasyTier back up without port-forwards so the online session
+            // isn't left completely offline if port-forward restart fails.
+            let rollback_cfg = build_embedded_easytier_config(
+                network_name,
+                network_secret,
+                peers,
+                hostname,
+                options,
+            )
+            .map_err(|e2| format!("restart embedded EasyTier failed: {e}; rollback build failed: {e2}"))?;
+
+            let rollback_id = state
+                .easytier_manager
+                .run_network_instance(rollback_cfg, true, ConfigFileControl::STATIC_CONFIG)
+                .map_err(|e2| format!("restart embedded EasyTier failed: {e}; rollback start failed: {e2}"))?;
+
+            *state.easytier_instance_id.lock().unwrap() = Some(rollback_id);
+            return Err(format!("restart embedded EasyTier failed: {e}"));
+        }
+    };
 
     *state.easytier_instance_id.lock().unwrap() = Some(instance_id);
 
@@ -469,7 +526,7 @@ pub async fn easytier_restart_with_port_forwards(
 
         if !is_running {
             *state.easytier_instance_id.lock().unwrap() = None;
-            *state.easytier_last_start.lock().unwrap() = None;
+            // Keep last_start so the user can retry without losing settings.
             let _ = state.easytier_manager.delete_network_instance(vec![instance_id]);
             return Err(format!(
                 "embedded EasyTier stopped during restart: {}",
