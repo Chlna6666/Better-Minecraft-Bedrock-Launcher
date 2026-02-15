@@ -649,6 +649,7 @@ fn build_embedded_easytier_config_with_port_forwards(
     port_forwards: Vec<PortForwardConfig>,
 ) -> anyhow::Result<TomlConfigLoader> {
     const DEFAULT_BEDROCK_PORT: u16 = 19132;
+    let net_name_for_policy = network_name.clone();
 
     let cfg = TomlConfigLoader::default();
     cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
@@ -718,11 +719,31 @@ fn build_embedded_easytier_config_with_port_forwards(
         }
     }
 
-    if flags.no_tun {
-        if ipv4.is_none() && host_port_from_hostname.is_some() {
+    let is_paperconnect_net =
+        net_name_for_policy.starts_with("paper-connect-") || net_name_for_policy.starts_with("scaffolding-mc-");
+
+    // PaperConnect expects a stable virtual subnet (10.144.144.0/24). Some EasyTier setups may
+    // otherwise allocate an internal DHCP pool from a different private range, causing peers to
+    // end up in a different /24 and breaking host discovery/port-forward assumptions.
+    //
+    // Enforce the PaperConnect subnet whenever the network name matches, regardless of `no_tun`,
+    // unless the caller explicitly provided an ipv4 override.
+    if ipv4.is_none() && is_paperconnect_net {
+        if host_port_from_hostname.is_some() {
+            // PaperConnect host: fixed virtual IP for compatibility.
             ipv4 = Some(cidr::Ipv4Inet::from_str(&format!("{DEFAULT_PAPERCONNECT_VIP}/24"))?);
             dhcp = false;
+        } else {
+            // PaperConnect clients: keep them in the same /24 so the host can be reached
+            // consistently. Use a random-but-valid host octet to reduce collisions.
+            let b = Uuid::new_v4().as_bytes()[0];
+            let host = 2u8 + (b % 253u8); // 2..254 (avoid .0/.1/.255)
+            ipv4 = Some(cidr::Ipv4Inet::from_str(&format!("10.144.144.{host}/24"))?);
+            dhcp = false;
         }
+    }
+
+    if flags.no_tun {
         if tcp_whitelist.is_none() {
             if let Some(p) = host_port_from_hostname {
                 tcp_whitelist = Some(vec![p.to_string()]);
