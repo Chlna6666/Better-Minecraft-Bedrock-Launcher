@@ -740,6 +740,7 @@ fn build_embedded_easytier_config_with_port_forwards(
 
     let is_paperconnect_net =
         net_name_for_policy.starts_with("paper-connect-") || net_name_for_policy.starts_with("scaffolding-mc-");
+    let is_paperconnect_host = is_paperconnect_net && host_port_from_hostname.is_some();
 
     // PaperConnect expects a stable virtual subnet (10.144.144.0/24). Some EasyTier setups may
     // otherwise allocate an internal DHCP pool from a different private range, causing peers to
@@ -776,6 +777,31 @@ fn build_embedded_easytier_config_with_port_forwards(
     }
     let no_tun_enabled = flags.no_tun;
     cfg.set_flags(flags);
+
+    // Security hardening: when running as the PaperConnect host with a real TUN interface, limit
+    // inbound UDP to the game discovery/connection ports and explicitly avoid exposing known
+    // high-risk ranges (60000-60005). We intentionally do not apply this to joiners because the
+    // client may use an ephemeral local UDP port for discovery responses.
+    if is_paperconnect_host && !no_tun_enabled {
+        const FORBIDDEN_UDP_PORTS: [u16; 6] = [60000, 60001, 60002, 60003, 60004, 60005];
+
+        let mut ports: Vec<u16> = udp_whitelist
+            .as_ref()
+            .map(|wl| {
+                wl.iter()
+                    .filter_map(|s| s.parse::<u16>().ok())
+                    .collect::<Vec<u16>>()
+            })
+            .unwrap_or_default();
+
+        ports.retain(|p| !FORBIDDEN_UDP_PORTS.contains(p));
+        if ports.is_empty() {
+            ports.push(7551);
+        }
+        ports.sort_unstable();
+        ports.dedup();
+        udp_whitelist = Some(ports.into_iter().map(|p| p.to_string()).collect());
+    }
 
     let resolved_ipv4 = ipv4.as_ref().map(|inet| {
         let s = inet.to_string();
