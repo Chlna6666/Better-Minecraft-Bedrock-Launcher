@@ -930,22 +930,14 @@ export default function OnlinePage() {
               <li>{t("Online.host_step_3")}</li>
             </ol>
 
-            <div className="online-field" style={{ marginTop: 12 }}>
-              <div className="online-label">{t("Online.paperconnect_port")}</div>
-              <div className="online-control online-control--row">
-                <input
-                  className="online-input online-mono"
-                  value={pcPort > 0 ? String(pcPort) : ""}
-                  placeholder={t("Online.auto_port")}
-                  readOnly
-                  disabled
-                />
-                <span className="online-inline-hint">
-                  {t("Online.hostname")}:{" "}
-                  <span className="online-mono">{hostnameForHost || t("Online.auto_port")}</span>
-                </span>
+            {hostnameForHost && (
+              <div className="online-field" style={{ marginTop: 12 }}>
+                <div className="online-label">{t("Online.hostname")}</div>
+                <div className="online-control online-control--row">
+                  <input className="online-input online-mono" value={hostnameForHost} readOnly disabled />
+                </div>
               </div>
-            </div>
+            )}
 
             <details className="online-details" style={{ marginTop: 12 }}>
               <summary className="online-details-summary">{t("Online.advanced")}</summary>
