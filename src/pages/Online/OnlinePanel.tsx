@@ -667,15 +667,21 @@ export default function OnlinePage() {
       setRunningRole("join");
 
       appendStatus(t("Online.starting_easytier"));
+      const effectiveNoTun = false;
+      if (noTun) {
+        // LAN discovery relies on broadcast traffic on the virtual subnet, which requires a real
+        // virtual adapter (TUN) so the OS/game can send/receive it normally.
+        appendStatus(t("Online.no_tun_disabled_for_join"));
+      }
       await invoke("easytier_start", {
         networkName: parsed.networkName,
         networkSecret: parsed.networkSecret,
         peers: parsePeers(bootstrapPeer),
         hostname: null,
-        options: { disableP2p: disableP2P, noTun },
+        options: { disableP2p: disableP2P, noTun: effectiveNoTun },
       });
       await checkVirtualIpHintOnce();
-      if (!noTun) {
+      if (!effectiveNoTun) {
         await waitForVirtualIp(20_000);
       }
       setRunning(true);

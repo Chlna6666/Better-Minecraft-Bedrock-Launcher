@@ -150,6 +150,7 @@
     "players": "Players",
     "starting_easytier": "Starting EasyTier…",
     "no_tun_disabled_for_udp_host": "Hosting a UDP game server requires a TUN interface. Disabled no_tun automatically so ports like 7551 work.",
+    "no_tun_disabled_for_join": "Joining via LAN discovery requires a TUN interface. Disabled no_tun automatically to allow broadcast discovery.",
     "embedded_hint": "EasyTier is embedded in the launcher; the first run may require administrator privileges to create the TUN adapter.",
     "starting_paperconnect_server": "Starting PaperConnect server…",
     "discovering_center": "Discovering center…",

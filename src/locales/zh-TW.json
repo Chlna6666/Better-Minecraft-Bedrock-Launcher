@@ -150,6 +150,7 @@
     "players": "房間玩家",
     "starting_easytier": "正在啟動 EasyTier…",
     "no_tun_disabled_for_udp_host": "偵測到你在建立房間（UDP 遊戲連線）。已自動關閉 no_tun 以確保 7551 等連線埠可用。",
+    "no_tun_disabled_for_join": "偵測到你在加入房間。已自動關閉 no_tun 以支援區域網路探索（廣播）。",
     "embedded_hint": "EasyTier 已內嵌在啟動器中；首次啟動可能需要系統管理員權限建立虛擬網卡（TUN）。",
     "starting_paperconnect_server": "正在啟動 PaperConnect 伺服端…",
     "discovering_center": "正在發現連線中心…",
