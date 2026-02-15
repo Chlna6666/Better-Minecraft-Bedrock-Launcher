@@ -778,11 +778,11 @@ fn build_embedded_easytier_config_with_port_forwards(
     let no_tun_enabled = flags.no_tun;
     cfg.set_flags(flags);
 
-    // Security hardening: when running as the PaperConnect host with a real TUN interface, limit
-    // inbound UDP to the game discovery/connection ports and explicitly avoid exposing known
-    // high-risk ranges (60000-60005). We intentionally do not apply this to joiners because the
-    // client may use an ephemeral local UDP port for discovery responses.
-    if is_paperconnect_host && !no_tun_enabled {
+    // Security hardening: when running in PaperConnect over a real TUN interface, limit inbound
+    // UDP to the game discovery/connection ports and explicitly avoid exposing known high-risk
+    // ranges (60000-60005). This helps reduce the risk of peer-to-peer attacks on unrelated local
+    // UDP services over the virtual NIC.
+    if is_paperconnect_net && !no_tun_enabled {
         const FORBIDDEN_UDP_PORTS: [u16; 6] = [60000, 60001, 60002, 60003, 60004, 60005];
 
         let mut ports: Vec<u16> = udp_whitelist
@@ -795,8 +795,15 @@ fn build_embedded_easytier_config_with_port_forwards(
             .unwrap_or_default();
 
         ports.retain(|p| !FORBIDDEN_UDP_PORTS.contains(p));
-        if ports.is_empty() {
+        // Always allow Bedrock LAN discovery by default.
+        if !ports.contains(&7551) {
             ports.push(7551);
+        }
+
+        // Hosts often also need the actual game port (which may differ from 7551). Prefer the
+        // user-provided whitelist (via UI) when available; otherwise keep it discovery-only.
+        if is_paperconnect_host {
+            // No-op; `ports` already includes whatever the UI provided.
         }
         ports.sort_unstable();
         ports.dedup();
