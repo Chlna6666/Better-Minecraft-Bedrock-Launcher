@@ -219,6 +219,7 @@ export default function About() {
     }, [sponsorsOpen, sponsors.length]);
 
     const visibleSponsors = useMemo(() => sponsors.slice(0, sponsorsVisible), [sponsors, sponsorsVisible]);
+    const sponsorSkeletons = useMemo(() => Array.from({ length: 9 }, (_, i) => i), []);
 
     return (
         <>
@@ -390,9 +391,16 @@ export default function About() {
                         </div>
                         <div className="about-modal-body">
                             {sponsorsLoading ? (
-                                <div className="about-modal-empty">
-                                    <SciFiLoader />
-                                    <div>{t("AboutSection.sponsors.loading")}</div>
+                                <div className="sponsor-grid">
+                                    {sponsorSkeletons.map((i) => (
+                                        <div className="sponsor-skeleton" key={i} aria-label={t("AboutSection.sponsors.loading")}>
+                                            <div className="sponsor-skeleton-avatar" />
+                                            <div className="sponsor-skeleton-meta">
+                                                <div className="sponsor-skeleton-line w-70" />
+                                                <div className="sponsor-skeleton-line w-35" />
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             ) : sponsorsError ? (
                                 <div className="about-modal-empty">
