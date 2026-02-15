@@ -878,7 +878,7 @@ export default function OnlinePage() {
             <div className="online-section-title">{t("Online.mode_join")}</div>
             <ol className="online-steps">
               <li>{t("Online.join_step_1")}</li>
-              <li>{t("Online.join_step_2")}</li>
+              <li>{t(noTun ? "Online.join_step_2_no_tun" : "Online.join_step_2")}</li>
             </ol>
 
             <div className="online-field" style={{ marginTop: 12 }}>

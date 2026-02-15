@@ -122,6 +122,7 @@
     "room_status": "Room info",
     "join_step_1": "Enter the join code below and click Join",
     "join_step_2": "Launch the game and join via LAN/Servers list",
+    "join_step_2_no_tun": "Launch the game and add the server using the Game endpoint below (LAN list may not work in no_tun mode)",
     "host_step_1": "Open your world to LAN in-game",
     "host_step_2": "Protocol port will be auto-assigned (no manual input needed)",
     "host_step_3": "Click Host, then copy the join code to friends",
