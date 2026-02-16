@@ -9,6 +9,8 @@ fn allow_rule(
     destination_ips: Vec<String>,
     source_ports: Vec<String>,
     app_protocols: Vec<i32>,
+    rate_limit: u32,
+    burst_limit: u32,
 ) -> Rule {
     Rule {
         name: name.to_string(),
@@ -22,8 +24,8 @@ fn allow_rule(
         source_ports,
         app_protocols,
         action: Action::Allow as i32,
-        rate_limit: 0,
-        burst_limit: 0,
+        rate_limit,
+        burst_limit,
         stateful: false,
         source_groups: vec![],
         destination_groups: vec![],
@@ -48,6 +50,10 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
     // EasyTier app_protocols:
     // RakNet=10, WebRtc=20, WebRtcStun=21, WebRtcDtls=22, WebRtcRtp=23.
     let bedrock_udp_app_protocols: Vec<i32> = vec![10, 20, 21, 22, 23];
+    // 7551 is a LAN-discovery broadcast channel. EasyTier may not be able to classify its
+    // application protocol, so we do NOT filter it by app_protocols. Instead, we rate-limit it.
+    let discovery_rate_limit: u32 = 20;
+    let discovery_burst_limit: u32 = 40;
 
     if is_host {
         // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
@@ -60,6 +66,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.255".to_string()],
             vec![],
             vec![],
+            discovery_rate_limit,
+            discovery_burst_limit,
         ));
 
         // Inbound: allow UDP to host VIP for discovery and game traffic (any port).
@@ -72,6 +80,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            0,
+            0,
         ));
 
         // Inbound: allow PaperConnect control plane TCP to the host protocol port.
@@ -85,6 +95,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
                 vec![host_vip.to_string()],
                 vec![],
                 vec![],
+                0,
+                0,
             ));
         } else {
             inbound_rules.push(allow_rule(
@@ -96,6 +108,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
                 vec![host_vip.to_string()],
                 vec![],
                 vec![],
+                0,
+                0,
             ));
         }
 
@@ -109,6 +123,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            0,
+            0,
         ));
 
         // Outbound: allow host TCP replies/control traffic to members (PaperConnect protocol port).
@@ -121,6 +137,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             vec![],
+            0,
+            0,
         ));
 
         // Outbound: allow host broadcast for discovery.
@@ -133,6 +151,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.255".to_string()],
             vec![],
             vec![],
+            discovery_rate_limit,
+            discovery_burst_limit,
         ));
     } else {
         // Inbound: joiners only accept inbound UDP from host VIP (any port).
@@ -145,6 +165,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            0,
+            0,
         ));
 
         // Inbound: joiners accept control plane TCP from host VIP.
@@ -157,6 +179,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             vec![],
+            0,
+            0,
         ));
 
         // Outbound: joiners can only talk to host VIP (any UDP/TCP port).
@@ -169,6 +193,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            0,
+            0,
         ));
         outbound_rules.push(allow_rule(
             "allow_tcp_to_host",
@@ -179,6 +205,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec![],
             vec![],
+            0,
+            0,
         ));
 
         // Outbound: joiners must be able to broadcast 7551 for host discovery ("ping pong").
@@ -191,6 +219,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.255".to_string()],
             vec![],
             vec![],
+            discovery_rate_limit,
+            discovery_burst_limit,
         ));
     }
 
