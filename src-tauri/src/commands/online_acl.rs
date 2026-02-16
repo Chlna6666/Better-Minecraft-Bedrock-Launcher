@@ -8,6 +8,7 @@ fn allow_rule(
     source_ips: Vec<String>,
     destination_ips: Vec<String>,
     source_ports: Vec<String>,
+    app_protocols: Vec<i32>,
 ) -> Rule {
     Rule {
         name: name.to_string(),
@@ -19,6 +20,7 @@ fn allow_rule(
         source_ips,
         destination_ips,
         source_ports,
+        app_protocols,
         action: Action::Allow as i32,
         rate_limit: 0,
         burst_limit: 0,
@@ -43,6 +45,10 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
     let mut inbound_rules: Vec<Rule> = Vec::new();
     let mut outbound_rules: Vec<Rule> = Vec::new();
 
+    // EasyTier app_protocols:
+    // RakNet=10, WebRtc=20, WebRtcStun=21, WebRtcDtls=22, WebRtcRtp=23.
+    let bedrock_udp_app_protocols: Vec<i32> = vec![10, 20, 21, 22, 23];
+
     if is_host {
         // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
         inbound_rules.push(allow_rule(
@@ -52,6 +58,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["7551".to_string()],
             vec![],
             vec!["10.144.144.255".to_string()],
+            vec![],
             vec![],
         ));
 
@@ -64,6 +71,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             vec![host_vip.to_string()],
             vec![],
+            bedrock_udp_app_protocols.clone(),
         ));
 
         // Inbound: allow PaperConnect control plane TCP to the host protocol port.
@@ -76,6 +84,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
                 vec![],
                 vec![host_vip.to_string()],
                 vec![],
+                vec![],
             ));
         } else {
             inbound_rules.push(allow_rule(
@@ -85,6 +94,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
                 vec!["0-65535".to_string()],
                 vec![],
                 vec![host_vip.to_string()],
+                vec![],
                 vec![],
             ));
         }
@@ -98,6 +108,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec!["10.144.144.0/24".to_string()],
             vec![],
+            bedrock_udp_app_protocols.clone(),
         ));
 
         // Outbound: allow host TCP replies/control traffic to members (PaperConnect protocol port).
@@ -108,6 +119,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["0-65535".to_string()],
             vec![host_vip.to_string()],
             vec!["10.144.144.0/24".to_string()],
+            vec![],
             vec![],
         ));
 
@@ -120,6 +132,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec!["10.144.144.255".to_string()],
             vec![],
+            vec![],
         ));
     } else {
         // Inbound: joiners only accept inbound UDP from host VIP (any port).
@@ -131,6 +144,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec!["10.144.144.0/24".to_string()],
             vec![],
+            bedrock_udp_app_protocols.clone(),
         ));
 
         // Inbound: joiners accept control plane TCP from host VIP.
@@ -141,6 +155,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["0-65535".to_string()],
             vec![host_vip.to_string()],
             vec!["10.144.144.0/24".to_string()],
+            vec![],
             vec![],
         ));
 
@@ -153,6 +168,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             vec![host_vip.to_string()],
             vec![],
+            bedrock_udp_app_protocols.clone(),
         ));
         outbound_rules.push(allow_rule(
             "allow_tcp_to_host",
@@ -161,6 +177,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["0-65535".to_string()],
             vec![],
             vec![host_vip.to_string()],
+            vec![],
             vec![],
         ));
 
@@ -172,6 +189,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["7551".to_string()],
             vec![],
             vec!["10.144.144.255".to_string()],
+            vec![],
             vec![],
         ));
     }
