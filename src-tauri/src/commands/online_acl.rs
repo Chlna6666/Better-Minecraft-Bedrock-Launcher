@@ -61,14 +61,18 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
     // RakNet=10, WebRtc=20, WebRtcStun=21, WebRtcDtls=22, WebRtcRtp=23.
     let bedrock_udp_app_protocols: Vec<i32> = vec![10, 20, 21, 22, 23];
 
-    // 7551 is a LAN-discovery broadcast channel. Clients broadcast to multiple local interfaces
-    // (e.g. 10.144.144.255, 172.31.255.255, 192.168.x.255). To avoid breaking discovery, only
-    // require "dst is broadcast" + port 7551, without payload fingerprint checks.
+    // Bedrock LAN discovery uses broadcast UDP on multiple ports depending on version/stack:
+    // - 19132: RakNet unconnected ping (classic discovery)
+    // - 7551: other LAN announce/probe channel (observed in logs)
+    //
+    // Clients broadcast to multiple local interfaces (e.g. 10.144.144.255, 172.31.255.255,
+    // 192.168.x.255). To avoid breaking discovery, only require "dst is broadcast" + port match.
     let discovery_rate_limit: u32 = 0;
     let discovery_burst_limit: u32 = 0;
     let discovery_payload_min_len: Option<u32> = None;
     let discovery_payload_max_len: Option<u32> = None;
     let discovery_payload_prefix_hex: Vec<String> = vec![];
+    let discovery_broadcast_ports: Vec<String> = vec!["7551".to_string(), "19132".to_string()];
 
     if is_host {
         // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
@@ -76,7 +80,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             "allow_udp_discovery_broadcast_in",
             5000,
             Protocol::Udp,
-            vec!["7551".to_string()],
+            discovery_broadcast_ports.clone(),
             vec![],
             vec![],
             vec![],
@@ -191,7 +195,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             "allow_udp_discovery_broadcast_out",
             4500,
             Protocol::Udp,
-            vec!["7551".to_string()],
+            discovery_broadcast_ports,
             vec![host_vip.to_string()],
             vec![],
             vec![],
@@ -284,7 +288,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             "allow_udp_discovery_broadcast_out",
             4000,
             Protocol::Udp,
-            vec!["7551".to_string()],
+            discovery_broadcast_ports,
             vec![],
             vec![],
             vec![],
