@@ -40,13 +40,14 @@ fn allow_rule(
 //   host on any source port to keep the policy compatible with dynamic host protocol port.
 pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port: Option<u16>) -> Acl {
     // Highest priority wins (processed in priority order).
-    let mut rules: Vec<Rule> = Vec::new();
+    let mut inbound_rules: Vec<Rule> = Vec::new();
+    let mut outbound_rules: Vec<Rule> = Vec::new();
 
     if is_host {
-        // Allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
-        rules.push(allow_rule(
+        // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
+        inbound_rules.push(allow_rule(
             "allow_udp_discovery_broadcast_in",
-            4000,
+            5000,
             Protocol::Udp,
             vec!["7551".to_string()],
             vec![],
@@ -54,76 +55,137 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
         ));
 
-        // Allow direct UDP to the host for discovery and game traffic (any port).
-        rules.push(allow_rule(
+        // Inbound: allow UDP to host VIP for discovery and game traffic (any port).
+        inbound_rules.push(allow_rule(
             "allow_udp_to_host",
-            3500,
+            4500,
             Protocol::Udp,
             vec!["0-65535".to_string()],
-            vec![],
+            vec!["10.144.144.0/24".to_string()],
             vec![host_vip.to_string()],
             vec![],
         ));
 
-        // Allow PaperConnect control plane TCP to the host protocol port.
+        // Inbound: allow PaperConnect control plane TCP to the host protocol port.
         if let Some(p) = host_protocol_port {
-            rules.push(allow_rule(
+            inbound_rules.push(allow_rule(
                 "allow_tcp_to_host_protocol_port",
-                3000,
+                4000,
                 Protocol::Tcp,
                 vec![p.to_string()],
-                vec![],
+                vec!["10.144.144.0/24".to_string()],
                 vec![host_vip.to_string()],
                 vec![],
             ));
         } else {
-            // Fallback: allow TCP to host (still blocks joiner-to-joiner).
-            rules.push(allow_rule(
+            inbound_rules.push(allow_rule(
                 "allow_tcp_to_host",
-                2500,
+                3500,
                 Protocol::Tcp,
                 vec!["0-65535".to_string()],
-                vec![],
+                vec!["10.144.144.0/24".to_string()],
                 vec![host_vip.to_string()],
                 vec![],
             ));
         }
-    } else {
-        // Joiners: allow inbound packets from the host only (any port).
-        rules.push(allow_rule(
-            "allow_udp_from_host",
-            4000,
+
+        // Outbound: host may talk to members on any UDP port (RakNet / NetherNet / WebRTC).
+        outbound_rules.push(allow_rule(
+            "allow_udp_from_host_to_members",
+            5000,
             Protocol::Udp,
             vec!["0-65535".to_string()],
             vec![host_vip.to_string()],
-            vec![],
+            vec!["10.144.144.0/24".to_string()],
             vec![],
         ));
 
-        // PaperConnect control plane / other host communications (keep permissive on source port).
-        rules.push(allow_rule(
+        // Outbound: allow host broadcast for discovery.
+        outbound_rules.push(allow_rule(
+            "allow_udp_discovery_broadcast_out",
+            4500,
+            Protocol::Udp,
+            vec!["7551".to_string()],
+            vec![host_vip.to_string()],
+            vec!["10.144.144.255".to_string()],
+            vec![],
+        ));
+    } else {
+        // Inbound: joiners only accept inbound UDP from host VIP (any port).
+        inbound_rules.push(allow_rule(
+            "allow_udp_from_host",
+            5000,
+            Protocol::Udp,
+            vec!["0-65535".to_string()],
+            vec![host_vip.to_string()],
+            vec!["10.144.144.0/24".to_string()],
+            vec![],
+        ));
+
+        // Inbound: joiners accept control plane TCP from host VIP.
+        inbound_rules.push(allow_rule(
             "allow_tcp_from_host",
-            3000,
+            4500,
             Protocol::Tcp,
             vec!["0-65535".to_string()],
             vec![host_vip.to_string()],
+            vec!["10.144.144.0/24".to_string()],
             vec![],
+        ));
+
+        // Outbound: joiners can only talk to host VIP (any UDP/TCP port).
+        outbound_rules.push(allow_rule(
+            "allow_udp_to_host",
+            5000,
+            Protocol::Udp,
+            vec!["0-65535".to_string()],
+            vec!["10.144.144.0/24".to_string()],
+            vec![host_vip.to_string()],
+            vec![],
+        ));
+        outbound_rules.push(allow_rule(
+            "allow_tcp_to_host",
+            4500,
+            Protocol::Tcp,
+            vec!["0-65535".to_string()],
+            vec!["10.144.144.0/24".to_string()],
+            vec![host_vip.to_string()],
+            vec![],
+        ));
+
+        // Outbound: joiners must be able to broadcast 7551 for host discovery ("ping pong").
+        outbound_rules.push(allow_rule(
+            "allow_udp_discovery_broadcast_out",
+            4000,
+            Protocol::Udp,
+            vec!["7551".to_string()],
+            vec!["10.144.144.0/24".to_string()],
+            vec!["10.144.144.255".to_string()],
             vec![],
         ));
     }
 
-    let chain = Chain {
+    let inbound_chain = Chain {
         name: "paperconnect_inbound".to_string(),
         chain_type: ChainType::Inbound as i32,
         description: "Auto-generated PaperConnect inbound ACL".to_string(),
         enabled: true,
-        rules,
+        rules: inbound_rules,
+        default_action: Action::Drop as i32,
+    };
+
+    let outbound_chain = Chain {
+        name: "paperconnect_outbound".to_string(),
+        chain_type: ChainType::Outbound as i32,
+        description: "Auto-generated PaperConnect outbound ACL".to_string(),
+        enabled: true,
+        rules: outbound_rules,
         default_action: Action::Drop as i32,
     };
 
     Acl {
         acl_v1: Some(AclV1 {
-            chains: vec![chain],
+            chains: vec![inbound_chain, outbound_chain],
             group: Some(GroupInfo {
                 declares: vec![],
                 members: vec![],
@@ -131,4 +193,3 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
         }),
     }
 }
-
