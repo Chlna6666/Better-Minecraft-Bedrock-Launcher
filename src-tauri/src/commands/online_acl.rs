@@ -61,15 +61,14 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
     // RakNet=10, WebRtc=20, WebRtcStun=21, WebRtcDtls=22, WebRtcRtp=23.
     let bedrock_udp_app_protocols: Vec<i32> = vec![10, 20, 21, 22, 23];
 
-    // 7551 is a LAN-discovery broadcast channel. Some discovery payloads are "unknown" at the app
-    // protocol level, so we do not filter it by app_protocols. Instead, we use payload/broadcast
-    // matchers + rate limiting to reduce abuse surface.
-    let discovery_rate_limit: u32 = 20;
-    let discovery_burst_limit: u32 = 40;
-    let discovery_payload_min_len: Option<u32> = Some(64);
-    let discovery_payload_max_len: Option<u32> = Some(64);
-    // Keep this short to avoid pinning the entire packet. Extend if you have more trusted samples.
-    let discovery_payload_prefix_hex: Vec<String> = vec!["0x670B7640".to_string()];
+    // 7551 is a LAN-discovery broadcast channel. Clients broadcast to multiple local interfaces
+    // (e.g. 10.144.144.255, 172.31.255.255, 192.168.x.255). To avoid breaking discovery, only
+    // require "dst is broadcast" + port 7551, without payload fingerprint checks.
+    let discovery_rate_limit: u32 = 0;
+    let discovery_burst_limit: u32 = 0;
+    let discovery_payload_min_len: Option<u32> = None;
+    let discovery_payload_max_len: Option<u32> = None;
+    let discovery_payload_prefix_hex: Vec<String> = vec![];
 
     if is_host {
         // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
@@ -79,7 +78,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             Protocol::Udp,
             vec!["7551".to_string()],
             vec![],
-            vec!["10.144.144.255".to_string()],
+            vec![],
             vec![],
             vec![],
             discovery_rate_limit,
@@ -194,7 +193,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             Protocol::Udp,
             vec!["7551".to_string()],
             vec![host_vip.to_string()],
-            vec!["10.144.144.255".to_string()],
+            vec![],
             vec![],
             vec![],
             discovery_rate_limit,
@@ -287,7 +286,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             Protocol::Udp,
             vec!["7551".to_string()],
             vec![],
-            vec!["10.144.144.255".to_string()],
+            vec![],
             vec![],
             vec![],
             discovery_rate_limit,
