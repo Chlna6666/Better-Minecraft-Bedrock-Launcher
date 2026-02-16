@@ -11,6 +11,11 @@ fn allow_rule(
     app_protocols: Vec<i32>,
     rate_limit: u32,
     burst_limit: u32,
+    payload_prefix_hex: Vec<String>,
+    payload_min_len: Option<u32>,
+    payload_max_len: Option<u32>,
+    dst_is_broadcast: Option<bool>,
+    dst_is_multicast: Option<bool>,
 ) -> Rule {
     Rule {
         name: name.to_string(),
@@ -23,6 +28,11 @@ fn allow_rule(
         destination_ips,
         source_ports,
         app_protocols,
+        payload_prefix_hex,
+        payload_min_len,
+        payload_max_len,
+        dst_is_broadcast,
+        dst_is_multicast,
         action: Action::Allow as i32,
         rate_limit,
         burst_limit,
@@ -50,10 +60,16 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
     // EasyTier app_protocols:
     // RakNet=10, WebRtc=20, WebRtcStun=21, WebRtcDtls=22, WebRtcRtp=23.
     let bedrock_udp_app_protocols: Vec<i32> = vec![10, 20, 21, 22, 23];
-    // 7551 is a LAN-discovery broadcast channel. EasyTier may not be able to classify its
-    // application protocol, so we do NOT filter it by app_protocols. Instead, we rate-limit it.
+
+    // 7551 is a LAN-discovery broadcast channel. Some discovery payloads are "unknown" at the app
+    // protocol level, so we do not filter it by app_protocols. Instead, we use payload/broadcast
+    // matchers + rate limiting to reduce abuse surface.
     let discovery_rate_limit: u32 = 20;
     let discovery_burst_limit: u32 = 40;
+    let discovery_payload_min_len: Option<u32> = Some(64);
+    let discovery_payload_max_len: Option<u32> = Some(64);
+    // Keep this short to avoid pinning the entire packet. Extend if you have more trusted samples.
+    let discovery_payload_prefix_hex: Vec<String> = vec!["0x670B7640".to_string()];
 
     if is_host {
         // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
@@ -68,6 +84,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             discovery_rate_limit,
             discovery_burst_limit,
+            discovery_payload_prefix_hex.clone(),
+            discovery_payload_min_len,
+            discovery_payload_max_len,
+            Some(true),
+            None,
         ));
 
         // Inbound: allow UDP to host VIP for discovery and game traffic (any port).
@@ -82,6 +103,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             bedrock_udp_app_protocols.clone(),
             0,
             0,
+            vec![],
+            None,
+            None,
+            Some(false),
+            None,
         ));
 
         // Inbound: allow PaperConnect control plane TCP to the host protocol port.
@@ -97,6 +123,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
                 vec![],
                 0,
                 0,
+                vec![],
+                None,
+                None,
+                None,
+                None,
             ));
         } else {
             inbound_rules.push(allow_rule(
@@ -110,6 +141,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
                 vec![],
                 0,
                 0,
+                vec![],
+                None,
+                None,
+                None,
+                None,
             ));
         }
 
@@ -125,6 +161,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             bedrock_udp_app_protocols.clone(),
             0,
             0,
+            vec![],
+            None,
+            None,
+            Some(false),
+            None,
         ));
 
         // Outbound: allow host TCP replies/control traffic to members (PaperConnect protocol port).
@@ -139,6 +180,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             0,
             0,
+            vec![],
+            None,
+            None,
+            None,
+            None,
         ));
 
         // Outbound: allow host broadcast for discovery.
@@ -153,6 +199,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             discovery_rate_limit,
             discovery_burst_limit,
+            discovery_payload_prefix_hex,
+            discovery_payload_min_len,
+            discovery_payload_max_len,
+            Some(true),
+            None,
         ));
     } else {
         // Inbound: joiners only accept inbound UDP from host VIP (any port).
@@ -167,6 +218,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             bedrock_udp_app_protocols.clone(),
             0,
             0,
+            vec![],
+            None,
+            None,
+            Some(false),
+            None,
         ));
 
         // Inbound: joiners accept control plane TCP from host VIP.
@@ -181,6 +237,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             0,
             0,
+            vec![],
+            None,
+            None,
+            None,
+            None,
         ));
 
         // Outbound: joiners can only talk to host VIP (any UDP/TCP port).
@@ -195,6 +256,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             bedrock_udp_app_protocols.clone(),
             0,
             0,
+            vec![],
+            None,
+            None,
+            Some(false),
+            None,
         ));
         outbound_rules.push(allow_rule(
             "allow_tcp_to_host",
@@ -207,6 +273,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             0,
             0,
+            vec![],
+            None,
+            None,
+            None,
+            None,
         ));
 
         // Outbound: joiners must be able to broadcast 7551 for host discovery ("ping pong").
@@ -221,6 +292,11 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
             discovery_rate_limit,
             discovery_burst_limit,
+            discovery_payload_prefix_hex,
+            discovery_payload_min_len,
+            discovery_payload_max_len,
+            Some(true),
+            None,
         ));
     }
 
