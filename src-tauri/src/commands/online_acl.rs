@@ -76,8 +76,30 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
         vec!["7551".to_string(), "19132".to_string(), "19133".to_string()];
     let discovery_broadcast_ips: Vec<String> =
         vec!["10.144.144.255".to_string(), "255.255.255.255".to_string()];
+    // Some 7551 traffic is classified as Unknown by app-protocol detection. Keep 7551
+    // host<->member unicast permissive to avoid breaking LAN discovery/announcement flows.
+    let permissive_unicast_ports: Vec<String> = vec!["7551".to_string()];
 
     if is_host {
+        // Inbound: allow 7551 to host VIP regardless of app_protocol.
+        inbound_rules.push(allow_rule(
+            "allow_udp_to_host_unicast_permissive",
+            5200,
+            Protocol::Udp,
+            permissive_unicast_ports.clone(),
+            vec![],
+            vec![host_vip.to_string()],
+            vec![],
+            vec![],
+            0,
+            0,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        ));
+
         // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
         inbound_rules.push(allow_rule(
             "allow_udp_discovery_broadcast_in",
@@ -155,6 +177,25 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             ));
         }
 
+        // Outbound: allow 7551 host->member unicast regardless of app_protocol.
+        outbound_rules.push(allow_rule(
+            "allow_udp_from_host_to_members_unicast_permissive",
+            5200,
+            Protocol::Udp,
+            permissive_unicast_ports.clone(),
+            vec![host_vip.to_string()],
+            vec!["10.144.144.0/24".to_string()],
+            vec![],
+            vec![],
+            0,
+            0,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        ));
+
         // Outbound: host may talk to members on any UDP port (RakNet / NetherNet / WebRTC).
         outbound_rules.push(allow_rule(
             "allow_udp_from_host_to_members",
@@ -212,6 +253,25 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             None,
         ));
     } else {
+        // Inbound: allow 7551 host->joiner unicast regardless of app_protocol.
+        inbound_rules.push(allow_rule(
+            "allow_udp_from_host_unicast_permissive",
+            5200,
+            Protocol::Udp,
+            permissive_unicast_ports.clone(),
+            vec![host_vip.to_string()],
+            vec!["10.144.144.0/24".to_string()],
+            vec![],
+            vec![],
+            0,
+            0,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        ));
+
         // Inbound: joiners only accept inbound UDP from host VIP (any port).
         inbound_rules.push(allow_rule(
             "allow_udp_from_host",
@@ -239,6 +299,25 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["0-65535".to_string()],
             vec![host_vip.to_string()],
             vec!["10.144.144.0/24".to_string()],
+            vec![],
+            vec![],
+            0,
+            0,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        ));
+
+        // Outbound: allow 7551 joiner->host unicast regardless of app_protocol.
+        outbound_rules.push(allow_rule(
+            "allow_udp_to_host_unicast_permissive",
+            5200,
+            Protocol::Udp,
+            permissive_unicast_ports,
+            vec![],
+            vec![host_vip.to_string()],
             vec![],
             vec![],
             0,
