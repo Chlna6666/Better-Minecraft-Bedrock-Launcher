@@ -100,6 +100,17 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![],
         ));
 
+        // Outbound: allow host TCP replies/control traffic to members (PaperConnect protocol port).
+        outbound_rules.push(allow_rule(
+            "allow_tcp_from_host_to_members",
+            4800,
+            Protocol::Tcp,
+            vec!["0-65535".to_string()],
+            vec![host_vip.to_string()],
+            vec!["10.144.144.0/24".to_string()],
+            vec![],
+        ));
+
         // Outbound: allow host broadcast for discovery.
         outbound_rules.push(allow_rule(
             "allow_udp_discovery_broadcast_out",
