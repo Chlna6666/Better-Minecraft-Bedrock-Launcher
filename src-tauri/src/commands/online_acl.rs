@@ -61,18 +61,21 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
     // RakNet=10, WebRtc=20, WebRtcStun=21, WebRtcDtls=22, WebRtcRtp=23.
     let bedrock_udp_app_protocols: Vec<i32> = vec![10, 20, 21, 22, 23];
 
-    // Bedrock LAN discovery uses broadcast UDP on multiple ports depending on version/stack:
-    // - 19132: RakNet unconnected ping (classic discovery)
-    // - 7551: other LAN announce/probe channel (observed in logs)
+    // Bedrock LAN discovery uses subnet-broadcast UDP on multiple ports depending on version/stack:
+    // - 19132/19133: RakNet unconnected ping (classic discovery; IPv4/IPv6)
+    // - 7551: LAN announce/probe channel (observed in logs)
     //
-    // Clients broadcast to multiple local interfaces (e.g. 10.144.144.255, 172.31.255.255,
-    // 192.168.x.255). To avoid breaking discovery, only require "dst is broadcast" + port match.
+    // Note: EasyTier's `dst_is_broadcast` only detects 255.255.255.255, not subnet broadcasts
+    // like 10.144.144.255. So we match PaperConnect's overlay broadcast IP explicitly.
     let discovery_rate_limit: u32 = 0;
     let discovery_burst_limit: u32 = 0;
     let discovery_payload_min_len: Option<u32> = None;
     let discovery_payload_max_len: Option<u32> = None;
     let discovery_payload_prefix_hex: Vec<String> = vec![];
-    let discovery_broadcast_ports: Vec<String> = vec!["7551".to_string(), "19132".to_string()];
+    let discovery_broadcast_ports: Vec<String> =
+        vec!["7551".to_string(), "19132".to_string(), "19133".to_string()];
+    let discovery_broadcast_ips: Vec<String> =
+        vec!["10.144.144.255".to_string(), "255.255.255.255".to_string()];
 
     if is_host {
         // Inbound: allow LAN discovery broadcast probes (clients send to 10.144.144.255:7551).
@@ -82,7 +85,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             Protocol::Udp,
             discovery_broadcast_ports.clone(),
             vec![],
-            vec![],
+            discovery_broadcast_ips.clone(),
             vec![],
             vec![],
             discovery_rate_limit,
@@ -90,7 +93,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             discovery_payload_prefix_hex.clone(),
             discovery_payload_min_len,
             discovery_payload_max_len,
-            Some(true),
+            None,
             None,
         ));
 
@@ -197,7 +200,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             Protocol::Udp,
             discovery_broadcast_ports,
             vec![host_vip.to_string()],
-            vec![],
+            discovery_broadcast_ips,
             vec![],
             vec![],
             discovery_rate_limit,
@@ -205,7 +208,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             discovery_payload_prefix_hex,
             discovery_payload_min_len,
             discovery_payload_max_len,
-            Some(true),
+            None,
             None,
         ));
     } else {
@@ -290,7 +293,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             Protocol::Udp,
             discovery_broadcast_ports,
             vec![],
-            vec![],
+            discovery_broadcast_ips,
             vec![],
             vec![],
             discovery_rate_limit,
@@ -298,7 +301,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             discovery_payload_prefix_hex,
             discovery_payload_min_len,
             discovery_payload_max_len,
-            Some(true),
+            None,
             None,
         ));
     }
