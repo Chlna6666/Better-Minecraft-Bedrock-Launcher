@@ -499,7 +499,6 @@ export default function OnlinePage() {
   }, []);
 
   const checkNatTypes = useCallback(async () => {
-    if (!running) return toast.error(t("Online.err_nat_need_running"));
     try {
       const snap = (await invoke("easytier_embedded_nat_types")) as EasyTierNatTypeSnapshot | null;
       if (!snap || typeof (snap as any)?.udpNatType !== "number" || typeof (snap as any)?.tcpNatType !== "number") {
@@ -517,7 +516,7 @@ export default function OnlinePage() {
     } catch (e: any) {
       toast.error(String(e || t("Online.err_nat_unavailable")));
     }
-  }, [running, t, toast]);
+  }, [t, toast]);
 
   const refreshHostPlayers = useCallback(async () => {
     try {
@@ -946,7 +945,7 @@ export default function OnlinePage() {
                 <SettingsIcon size={18} />
                 EasyTier {t("Sidebar.settings")}
               </button>
-              <button className="online-btn" onClick={checkNatTypes} disabled={!running}>
+              <button className="online-btn" onClick={checkNatTypes}>
                 {t("Online.check_nat")}
               </button>
               <span className={running ? "online-pill online-pill--running" : "online-pill"}>
