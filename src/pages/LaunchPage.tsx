@@ -222,7 +222,7 @@ export const LaunchPage = () => {
                     </div>
                     <div className="btn-right" onClick={(e) => {
                         if (isEmpty) { handleLaunchClick(); }
-                        else { e.stopPropagation(); setIsDropdownOpen(!isDropdownOpen); }
+                        else { e.stopPropagation(); setIsDropdownOpen((v) => !v); }
                     }}>
                         {isEmpty ? (
                             <DownloadCloud size={20} />
