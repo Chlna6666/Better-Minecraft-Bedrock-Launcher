@@ -65,7 +65,8 @@
     visibility: hidden;
     transition:
             opacity 160ms ease,
-            transform 220ms cubic-bezier(0.2, 0, 0, 1);
+            transform 220ms cubic-bezier(0.2, 0, 0, 1),
+            visibility 0s linear 220ms;
 }
 
 .version-list-card.is-open{
@@ -74,13 +75,17 @@
     pointer-events: auto;
     visibility: visible;
     will-change: opacity, transform;
+    transition:
+            opacity 160ms ease,
+            transform 220ms cubic-bezier(0.2, 0, 0, 1),
+            visibility 0s linear 0s;
 }
 
 .list-scroll-area {
     min-height: 0;
-    padding: 10px;
+    padding: 6px;
     overflow-y: auto;
-    max-height: 420px; /* 限制最大高度，内容过多时滚动 */
+    max-height: 370px; /* 限制最大高度，内容过多时滚动 */
 }
 .list-scroll-area::-webkit-scrollbar { width: 4px; }
 .list-scroll-area::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 4px; }
