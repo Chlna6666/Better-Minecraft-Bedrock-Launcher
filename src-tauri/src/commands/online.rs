@@ -3,6 +3,7 @@ use easytier::common::config::{
     gen_default_flags, ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
     TomlConfigLoader,
 };
+use easytier::common::stun::{StunInfoCollector, StunInfoCollectorTrait};
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::proto::api::instance::ListRouteRequest;
 use easytier::proto::rpc_types::controller::BaseController;
@@ -1631,14 +1632,42 @@ async fn handle_paperconnect_conn(
 pub async fn easytier_embedded_nat_types(
     state: State<'_, OnlineState>,
 ) -> Result<Option<EasyTierNatTypeSnapshot>, String> {
-    let id = match state.easytier_instance_id.lock().unwrap().as_ref() {
-        Some(v) => *v,
-        None => return Ok(None),
+    async fn detect_stun_nat_types() -> EasyTierNatTypeSnapshot {
+        tokio::task::spawn_blocking(|| {
+            let collector = StunInfoCollector::new_with_default_servers();
+            collector.update_stun_info();
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(6);
+            let mut last = collector.get_stun_info();
+            while std::time::Instant::now() < deadline {
+                last = collector.get_stun_info();
+                if last.udp_nat_type != 0 || last.tcp_nat_type != 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+
+            EasyTierNatTypeSnapshot {
+                udp_nat_type: last.udp_nat_type,
+                tcp_nat_type: last.tcp_nat_type,
+            }
+        })
+        .await
+        .unwrap_or(EasyTierNatTypeSnapshot {
+            udp_nat_type: 0,
+            tcp_nat_type: 0,
+        })
+    }
+
+    let id_opt = { *state.easytier_instance_id.lock().unwrap() };
+    let id = match id_opt {
+        Some(v) => v,
+        None => return Ok(Some(detect_stun_nat_types().await)),
     };
 
     let svc = match state.easytier_manager.get_instance_service(&id) {
         Some(v) => v,
-        None => return Ok(None),
+        None => return Ok(Some(detect_stun_nat_types().await)),
     };
 
     let resp = svc
@@ -1649,7 +1678,7 @@ pub async fn easytier_embedded_nat_types(
 
     let node = match resp.node_info {
         Some(v) => v,
-        None => return Ok(None),
+        None => return Ok(Some(detect_stun_nat_types().await)),
     };
     let stun = node.stun_info.unwrap_or_default();
 
