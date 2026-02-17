@@ -22,6 +22,31 @@ const BASE34_ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const DEFAULT_GAME_PORTS = "7551";
 const DEFAULT_JOIN_UDP_PORT_FALLBACK = 19132;
 
+function natTypeToI18nKey(value: number): string {
+  switch (Number(value)) {
+    case 1:
+      return "Online.nat_types.open_internet";
+    case 2:
+      return "Online.nat_types.no_pat";
+    case 3:
+      return "Online.nat_types.full_cone";
+    case 4:
+      return "Online.nat_types.restricted";
+    case 5:
+      return "Online.nat_types.port_restricted";
+    case 6:
+      return "Online.nat_types.symmetric";
+    case 7:
+      return "Online.nat_types.sym_udp_firewall";
+    case 8:
+      return "Online.nat_types.symmetric_easy_inc";
+    case 9:
+      return "Online.nat_types.symmetric_easy_dec";
+    default:
+      return "Online.nat_types.unknown";
+  }
+}
+
 function normalizePlayerName(name: string): string {
   return String(name || "")
     .trim()
@@ -103,6 +128,11 @@ type EasyTierEmbeddedStatus = {
   instanceId: string;
   hostname: string;
   ipv4?: string | null;
+};
+
+type EasyTierNatTypeSnapshot = {
+  udpNatType: number;
+  tcpNatType: number;
 };
 
 export default function OnlinePage() {
@@ -228,6 +258,7 @@ export default function OnlinePage() {
   const [peers, setPeers] = useState<EasyTierPeer[]>([]);
   const [gameEndpoint, setGameEndpoint] = useState<{ ip: string; port: number } | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [natTypes, setNatTypes] = useState<EasyTierNatTypeSnapshot | null>(null);
   const [running, setRunning] = useState<boolean>(false);
   const [runningRole, setRunningRole] = useState<"host" | "join" | null>(null);
   const [statusText, setStatusText] = useState<string>("");
@@ -449,6 +480,19 @@ export default function OnlinePage() {
     try {
       const list = (await invoke("easytier_embedded_peers")) as EasyTierPeer[];
       setPeers(Array.isArray(list) ? list : []);
+    } catch {
+      // ignore (avoid toast spam on background refresh)
+    }
+  }, []);
+
+  const refreshNatTypes = useCallback(async () => {
+    try {
+      const snap = (await invoke("easytier_embedded_nat_types")) as EasyTierNatTypeSnapshot | null;
+      if (!snap || typeof (snap as any)?.udpNatType !== "number" || typeof (snap as any)?.tcpNatType !== "number") {
+        setNatTypes(null);
+        return;
+      }
+      setNatTypes({ udpNatType: Number((snap as any).udpNatType), tcpNatType: Number((snap as any).tcpNatType) });
     } catch {
       // ignore (avoid toast spam on background refresh)
     }
@@ -785,6 +829,7 @@ export default function OnlinePage() {
         setRunning(false);
         setRunningRole(null);
         setLatencyMs(null);
+        setNatTypes(null);
         setCenter(null);
         setPlayers([]);
         setPeers([]);
@@ -795,6 +840,7 @@ export default function OnlinePage() {
       }
 
       setRunning(true);
+      refreshNatTypes().catch(() => undefined);
 
       const hostSnap = (await invoke("paperconnect_server_state").catch(() => null)) as any;
       if (cancelled) return;
@@ -828,6 +874,7 @@ export default function OnlinePage() {
       await pingCenter(cForRequest).catch(() => undefined);
       await playerHeartbeatOnce(cForRequest).catch(() => undefined);
       await refreshPeers();
+      refreshNatTypes().catch(() => undefined);
 
       if (peersTimerRef.current) window.clearInterval(peersTimerRef.current);
       peersTimerRef.current = window.setInterval(() => {
@@ -844,6 +891,18 @@ export default function OnlinePage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!running) {
+      setNatTypes(null);
+      return;
+    }
+    refreshNatTypes().catch(() => undefined);
+    const timer = window.setInterval(() => {
+      refreshNatTypes().catch(() => undefined);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [refreshNatTypes, running]);
 
   useEffect(() => {
     return () => {
@@ -1045,6 +1104,15 @@ export default function OnlinePage() {
                   <div>
                     <div className="online-k">{t("Online.latency")}</div>
                     <div className="online-v online-mono">{latencyMs}ms</div>
+                  </div>
+                )}
+                {running && natTypes && (
+                  <div>
+                    <div className="online-k">{t("Online.nat_type")}</div>
+                    <div className="online-v online-mono">
+                      {t("Online.nat_udp")}: {t(natTypeToI18nKey(natTypes.udpNatType))} / {t("Online.nat_tcp")}:{" "}
+                      {t(natTypeToI18nKey(natTypes.tcpNatType))}
+                    </div>
                   </div>
                 )}
                 {gameEndpoint && (

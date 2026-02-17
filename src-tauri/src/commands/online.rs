@@ -20,6 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
+use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use super::online_acl::build_paperconnect_acl;
@@ -97,6 +98,13 @@ pub struct EasyTierEmbeddedStatus {
     pub instance_id: String,
     pub hostname: String,
     pub ipv4: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EasyTierNatTypeSnapshot {
+    pub udp_nat_type: i32,
+    pub tcp_nat_type: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1201,26 +1209,27 @@ async fn write_packet_and_close(stream: &mut TcpStream, msg: &str, framing: TcpF
 pub async fn paperconnect_tcp_request(host: String, port: u16, proto: String, body: Value) -> Result<Value, String> {
     let addr = format!("{host}:{port}");
     let mut body = body;
-    if proto == "c:player" {
-        if !body.is_object() {
+    if proto == "c:player" || proto == "c:ping" {
+        if proto == "c:player" && !body.is_object() {
             body = serde_json::json!({});
         }
-        let obj = body.as_object_mut().expect("paperconnect player body must be object");
-        let client_ok = obj
-            .get("clientId")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        if !client_ok {
-            obj.insert("clientId".to_string(), Value::String(default_client_id()));
-        }
-        let player_ok = obj
-            .get("playerName")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        if !player_ok {
-            obj.insert("playerName".to_string(), Value::String(default_player_name()));
+        if let Some(obj) = body.as_object_mut() {
+            let client_ok = obj
+                .get("clientId")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !client_ok {
+                obj.insert("clientId".to_string(), Value::String(default_client_id()));
+            }
+            let player_ok = obj
+                .get("playerName")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !player_ok {
+                obj.insert("playerName".to_string(), Value::String(default_player_name()));
+            }
         }
     }
 
@@ -1322,10 +1331,17 @@ pub async fn paperconnect_server_start(
     let state_for_handle = state_inner.clone();
 
     let task = tokio::spawn(async move {
+        let mut cleanup_tick = tokio::time::interval(Duration::from_secs(1));
+        cleanup_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = &mut shutdown_rx => {
                     break;
+                }
+                _ = cleanup_tick.tick() => {
+                    let now = now_ms();
+                    let mut st = state_inner.lock().await;
+                    st.cleanup(now);
                 }
                 res = listener.accept() => {
                     let (mut stream, _) = match res {
@@ -1498,8 +1514,43 @@ async fn handle_paperconnect_conn(
 
     match proto {
         "c:ping" => {
-            let req: Value = serde_json::from_str(json).context("invalid json")?;
-            let time = req.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
+            #[derive(Deserialize)]
+            struct PingReq {
+                time: Option<i64>,
+                #[serde(rename = "clientId")]
+                client_id: Option<String>,
+                #[serde(rename = "playerName")]
+                player_name: Option<String>,
+            }
+            let req: PingReq = serde_json::from_str(json).context("invalid json")?;
+            let time = req.time.unwrap_or(0);
+            if let (Some(client_id), Some(player_name)) = (req.client_id, req.player_name) {
+                let now = now_ms();
+                let mut st = state.lock().await;
+                let key = PlayerKey {
+                    player_name: player_name.clone(),
+                    client_id: client_id.clone(),
+                };
+                match st.players.get_mut(&key) {
+                    Some(existing) => {
+                        existing.player_name = player_name;
+                        existing.client_id = client_id;
+                        existing.last_seen_ms = now;
+                    }
+                    None => {
+                        st.players.insert(
+                            key,
+                            PaperConnectPlayer {
+                                player_name,
+                                client_id,
+                                first_seen_ms: now,
+                                last_seen_ms: now,
+                            },
+                        );
+                    }
+                }
+                st.cleanup(now);
+            }
             let (game_type, game_protocol_type, game_port) = {
                 let st = state.lock().await;
                 (st.game_type.clone(), st.game_protocol_type.clone(), st.game_port)
@@ -1574,4 +1625,36 @@ async fn handle_paperconnect_conn(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn easytier_embedded_nat_types(
+    state: State<'_, OnlineState>,
+) -> Result<Option<EasyTierNatTypeSnapshot>, String> {
+    let id = match state.easytier_instance_id.lock().unwrap().as_ref() {
+        Some(v) => *v,
+        None => return Ok(None),
+    };
+
+    let svc = match state.easytier_manager.get_instance_service(&id) {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    let resp = svc
+        .get_peer_manage_service()
+        .show_node_info(BaseController::default(), easytier::proto::api::instance::ShowNodeInfoRequest::default())
+        .await
+        .map_err(|e| format!("show_node_info failed: {e}"))?;
+
+    let node = match resp.node_info {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let stun = node.stun_info.unwrap_or_default();
+
+    Ok(Some(EasyTierNatTypeSnapshot {
+        udp_nat_type: stun.udp_nat_type,
+        tcp_nat_type: stun.tcp_nat_type,
+    }))
 }

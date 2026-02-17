@@ -284,6 +284,7 @@ pub async fn run(preinit: Arc<PreInit>) -> Result<()> {
             easytier_stop,
             easytier_cli_peers,
             easytier_embedded_status,
+            easytier_embedded_nat_types,
             easytier_embedded_peers,
             paperconnect_find_center,
             paperconnect_tcp_request,
