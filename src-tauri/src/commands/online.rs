@@ -1248,12 +1248,36 @@ pub async fn paperconnect_tcp_request(host: String, port: u16, proto: String, bo
         Ok(v)
     }
 
-    // For PaperConnect, requests should respond quickly once the overlay is established.
+    // For PaperConnect, the overlay may come up slightly after the UI initiates the first request.
+    // Instead of forcing the frontend to wait for the next 5s tick, do a short in-command retry
+    // burst for the initial handshake. Once connected, the normal 5s heartbeat cadence is fine.
+    //
     // Follow the spec: raw `namespace\0json` payload.
-    let fast = Duration::from_secs(3);
-    attempt(&addr, &proto, &body, fast)
-        .await
-        .map_err(|e| format!("paperconnect request failed: {e}"))
+    let read_timeout = Duration::from_secs(3);
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for (i, backoff_ms) in [0u64, 150, 350, 650, 1000].into_iter().enumerate() {
+        if backoff_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+        }
+        match attempt(&addr, &proto, &body, read_timeout).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = Some(e);
+                // If it's already been a few attempts, avoid spending too long here.
+                if i >= 4 {
+                    break;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "paperconnect request failed: {}",
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    ))
 }
 
 #[tauri::command]
