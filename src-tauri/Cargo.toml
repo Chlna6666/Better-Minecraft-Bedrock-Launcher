@@ -40,7 +40,7 @@ lazy_static = "1.5.0"
 windows = { version = "0.62.2", features = ["Win32_System_LibraryLoader", "Win32_System_Com", "Win32_Foundation", "Data_Xml_Dom", "Management", "Management_Deployment", "Foundation_Collections", "Win32", "Win32_Data_Xml", "ApplicationModel", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "ApplicationModel_Activation", "Win32_System_Diagnostics_ToolHelp", "Win32_Security", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_Globalization", "Win32_System_Threading", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_Security_Authorization", "Win32_System_Diagnostics_Debug", "Win32_Storage", "Win32_System_Memory", "Win32_Storage_FileSystem", "System", "Win32_System_Kernel", "Win32_Storage_Packaging", "Win32_Storage_Packaging_Appx", "Storage_Search", "Win32_System_Console"] }
 serde_json="1.0.145"
 base64="0.22.1"
-zip = "7.2.0"
+zip = "8.1.0"
 tracing = "0.1.43"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
