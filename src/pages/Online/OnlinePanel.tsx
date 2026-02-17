@@ -498,6 +498,27 @@ export default function OnlinePage() {
     }
   }, []);
 
+  const checkNatTypes = useCallback(async () => {
+    if (!running) return toast.error(t("Online.err_nat_need_running"));
+    try {
+      const snap = (await invoke("easytier_embedded_nat_types")) as EasyTierNatTypeSnapshot | null;
+      if (!snap || typeof (snap as any)?.udpNatType !== "number" || typeof (snap as any)?.tcpNatType !== "number") {
+        setNatTypes(null);
+        toast.error(t("Online.err_nat_unavailable"));
+        return;
+      }
+      const normalized = { udpNatType: Number((snap as any).udpNatType), tcpNatType: Number((snap as any).tcpNatType) };
+      setNatTypes(normalized);
+      toast.success(
+        `${t("Online.nat_udp")}: ${t(natTypeToI18nKey(normalized.udpNatType))} / ${t("Online.nat_tcp")}: ${t(
+          natTypeToI18nKey(normalized.tcpNatType)
+        )}`
+      );
+    } catch (e: any) {
+      toast.error(String(e || t("Online.err_nat_unavailable")));
+    }
+  }, [running, t, toast]);
+
   const refreshHostPlayers = useCallback(async () => {
     try {
       const snap = (await invoke("paperconnect_server_state")) as any;
@@ -924,6 +945,9 @@ export default function OnlinePage() {
               <button className="online-btn" onClick={openEasyTierSettings} disabled={running}>
                 <SettingsIcon size={18} />
                 EasyTier {t("Sidebar.settings")}
+              </button>
+              <button className="online-btn" onClick={checkNatTypes} disabled={!running}>
+                {t("Online.check_nat")}
               </button>
               <span className={running ? "online-pill online-pill--running" : "online-pill"}>
                 {running ? t("Online.state_running") : t("Online.state_stopped")}

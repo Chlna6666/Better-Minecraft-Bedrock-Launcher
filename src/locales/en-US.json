@@ -150,6 +150,9 @@
     "nat_type": "NAT Type",
     "nat_udp": "UDP",
     "nat_tcp": "TCP",
+    "check_nat": "Check NAT",
+    "err_nat_need_running": "Start Online first (EasyTier running) to check NAT",
+    "err_nat_unavailable": "NAT info unavailable (try again later)",
     "nat_types": {
       "unknown": "Unknown",
       "open_internet": "Open Internet",

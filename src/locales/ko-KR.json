@@ -150,6 +150,9 @@
     "nat_type": "NAT 유형",
     "nat_udp": "UDP",
     "nat_tcp": "TCP",
+    "check_nat": "NAT 확인",
+    "err_nat_need_running": "먼저 온라인을 시작(EasyTier 실행 중)한 뒤 NAT를 확인하세요",
+    "err_nat_unavailable": "NAT 정보를 사용할 수 없습니다(잠시 후 다시 시도)",
     "nat_types": {
       "unknown": "알 수 없음",
       "open_internet": "오픈 인터넷",

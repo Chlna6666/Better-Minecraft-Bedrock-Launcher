@@ -177,6 +177,9 @@
     "nat_type": "NAT 类型",
     "nat_udp": "UDP",
     "nat_tcp": "TCP",
+    "check_nat": "检查 NAT",
+    "err_nat_need_running": "请先启动联机（EasyTier 运行中）再检查 NAT",
+    "err_nat_unavailable": "NAT 信息不可用（请稍后重试）",
     "nat_types": {
       "unknown": "未知",
       "open_internet": "开放网络",
