@@ -67,7 +67,7 @@ const Button = forwardRef(function Button({
             className={cls}
             onClick={isDisabled ? undefined : onClick}
             disabled={isDisabled}
-            title={title}
+            data-bm-title={title}
             aria-label={ariaLabel}
             style={inlineStyle}
             {...accessibility}

@@ -161,7 +161,7 @@ export default function UpdateModal({
                                 <button
                                     className="um-icon-btn"
                                     onClick={onClose}
-                                    title={t("common.close")}
+                                    data-bm-title={t("common.close")}
                                 >
                                     <X size={20} />
                                 </button>

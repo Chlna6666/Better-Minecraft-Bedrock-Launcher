@@ -210,7 +210,7 @@ const LayoutHeader = React.memo(({
                 {headerActions}
 
                 {refreshConfig && (
-                    <button className="upl-action-icon-btn" onClick={refreshConfig.onRefresh} title={refreshConfig.title || "Refresh"}>
+                    <button className="upl-action-icon-btn" onClick={refreshConfig.onRefresh} data-bm-title={refreshConfig.title || "Refresh"}>
                         <RefreshCw size={18} className={refreshConfig.loading ? "upl-spin" : ""} />
                     </button>
                 )}

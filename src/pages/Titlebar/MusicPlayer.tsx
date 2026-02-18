@@ -306,7 +306,7 @@ function MusicPlayer() {
                         <button
                             className={`ctrl-btn ${mode === 'shuffle' ? 'active' : ''}`}
                             onClick={() => setMode(m => m === 'repeat' ? 'shuffle' : 'repeat')}
-                            title={mode === 'shuffle' ? "Shuffle On" : "Repeat All"}
+                            data-bm-title={mode === 'shuffle' ? "Shuffle On" : "Repeat All"}
                         >
                             {mode === 'shuffle' ? <Shuffle size={16} /> : <Repeat size={16} />}
                         </button>

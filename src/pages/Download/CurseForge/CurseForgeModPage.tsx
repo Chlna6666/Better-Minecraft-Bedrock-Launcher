@@ -391,7 +391,7 @@ const CurseForgeModPage: React.FC = () => {
 
                                 <div className={`hero-tags-row ${tagsExpanded ? 'expanded' : 'collapsed'}`}>
                                     {(tagsExpanded ? mod.categories : mod.categories.slice(0, 6)).map(c => (
-                                        <span key={c.id} className="hero-tag-pill" title={tCurseForgeTag(t, c)}>
+                                        <span key={c.id} className="hero-tag-pill" data-bm-title={tCurseForgeTag(t, c)}>
                                             {c.iconUrl ? (
                                                 <img
                                                     src={c.iconUrl}
@@ -424,16 +424,16 @@ const CurseForgeModPage: React.FC = () => {
                                     <Download size={18} strokeWidth={2.5} /> 安装
                                 </button>
                                 <div className="hero-action-mini">
-                                    <button className="icon-btn-ghost" onClick={openWebsite} title="打开浏览器">
+                                    <button className="icon-btn-ghost" onClick={openWebsite} data-bm-title="打开浏览器">
                                         <Globe size={16} />
                                     </button>
-                                    <button className="icon-btn-ghost" onClick={copyShareLink} title="复制链接">
+                                    <button className="icon-btn-ghost" onClick={copyShareLink} data-bm-title="复制链接">
                                         <Copy size={16} />
                                     </button>
-                                    <button className="icon-btn-ghost" onClick={copyShareMessage} title="复制分享文本">
+                                    <button className="icon-btn-ghost" onClick={copyShareMessage} data-bm-title="复制分享文本">
                                         <Share2 size={16} />
                                     </button>
-                                    <button className="icon-btn-ghost" onClick={copyAnalysis} title="复制分析">
+                                    <button className="icon-btn-ghost" onClick={copyAnalysis} data-bm-title="复制分析">
                                         <FileText size={16} />
                                     </button>
                                 </div>
@@ -506,7 +506,7 @@ const CurseForgeModPage: React.FC = () => {
                                             {filteredFiles.map(file => (
                                                 <tr key={file.id}>
                                                     <td>
-                                                        <div className="file-name-row" title={file.displayName}>
+                                                        <div className="file-name-row" data-bm-title={file.displayName}>
                                                             {file.displayName}
                                                         </div>
                                                     </td>
@@ -514,7 +514,7 @@ const CurseForgeModPage: React.FC = () => {
                                                     <td className="text-sub">{formatSize(file.fileLength)}</td>
                                                     <td className="text-sub">{new Date(file.fileDate).toLocaleDateString()}</td>
                                                     <td style={{textAlign: 'right'}}>
-                                                        <button className="dl-icon-btn" onClick={() => handleDownload(file)} title={t("CurseForgeMod.download_this_version")}>
+                                                        <button className="dl-icon-btn" onClick={() => handleDownload(file)} data-bm-title={t("CurseForgeMod.download_this_version")}>
                                                             <Download size={18} />
                                                         </button>
                                                     </td>

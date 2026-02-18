@@ -8,7 +8,7 @@
   --accent-color: #3b82f6; /* 蓝色主色调 */
   --card-bg: rgba(255, 255, 255, 0.5);
 
-  /* Custom tooltip (replaces native `title` hover tooltip) */
+  /* Custom tooltip (for `data-bm-title`) */
   --bm-tooltip-bg: rgba(255, 255, 255, 0.92);
   --bm-tooltip-border: rgba(15, 23, 42, 0.14);
   --bm-tooltip-text: rgba(15, 23, 42, 0.92);
@@ -115,20 +115,27 @@ body {
 }
 
 /* =========================================================================================
-   Custom `title` tooltip (global)
+   Custom tooltip for `data-bm-title` (CSS-only)
    ========================================================================================= */
 
-.bm-title-tooltip {
-  position: fixed;
-  z-index: 2147483647;
-  left: 0;
-  top: 0;
-  transform: translate3d(-9999px, -9999px, 0);
+[data-bm-title]{
+  position: relative;
+}
+
+[data-bm-title]::before,
+[data-bm-title]::after{
+  position: absolute;
+  z-index: 9999;
+  left: 50%;
   opacity: 0;
   pointer-events: none;
-  contain: layout paint;
-  will-change: transform, opacity;
+  transition: opacity var(--bm-anim-fast) var(--bm-ease-out);
+}
 
+[data-bm-title]::after{
+  content: attr(data-bm-title);
+  top: calc(100% + 10px);
+  transform: translateX(-50%);
   max-width: min(360px, calc(100vw - 24px));
   padding: 8px 10px;
   border-radius: 10px;
@@ -138,22 +145,34 @@ body {
   box-shadow: var(--bm-tooltip-shadow);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-
   font-size: 12px;
   line-height: 1.3;
   letter-spacing: 0.1px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-
-  transition: opacity var(--bm-anim-fast) var(--bm-ease-out);
 }
 
-.bm-title-tooltip[data-show='true'] {
+[data-bm-title]::before{
+  content: "";
+  top: calc(100% + 4px);
+  transform: translateX(-50%) rotate(45deg);
+  width: 8px;
+  height: 8px;
+  background: var(--bm-tooltip-bg);
+  border-left: 1px solid var(--bm-tooltip-border);
+  border-top: 1px solid var(--bm-tooltip-border);
+}
+
+[data-bm-title]:hover::before,
+[data-bm-title]:hover::after,
+[data-bm-title]:focus-visible::before,
+[data-bm-title]:focus-visible::after{
   opacity: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bm-title-tooltip {
+  [data-bm-title]::before,
+  [data-bm-title]::after{
     transition: none !important;
   }
 }

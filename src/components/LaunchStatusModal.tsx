@@ -76,7 +76,7 @@ export const LaunchStatusModal: React.FC<LaunchStatusModalProps> = ({
             <div className="overlay-backdrop lsm-anim-backdrop" />
             <div className={`launch-modal-fixed glass lsm-anim-modal ${error ? 'error-mode' : ''}`}>
                         {error && (
-                            <button className="close-icon-btn" onClick={onClose} title={t("LaunchStatusModal.close")}>
+                            <button className="close-icon-btn" onClick={onClose} data-bm-title={t("LaunchStatusModal.close")}>
                                 <X size={18} />
                             </button>
                         )}

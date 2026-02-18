@@ -187,7 +187,7 @@ const ManagePage = () => {
                 <div key={v.folder} onClick={() => setSelectedFolder(v.folder)} style={delayStyle} className={`version-item ${animateClass} ${selectedFolder === v.folder ? 'active' : ''}`}>
                     <div className="v-icon">{v.icon ? <img src={v.icon} alt="" width="32" height="32" /> : <Box size={24} style={{ opacity: 0.5 }} />}</div>
                     <div className="v-info">
-                        <div className="v-name" title={v.folder || v.name}>{v.folder || v.name}</div>
+                        <div className="v-name" data-bm-title={v.folder || v.name}>{v.folder || v.name}</div>
                         <div className="v-meta">
                             <span className="v-ver">{v.version}</span>
                             {v.kindLabel && <span className={`v-tag ${String(v.kind || '').toLowerCase()}`}>{v.kindLabel}</span>}
@@ -214,7 +214,7 @@ const ManagePage = () => {
                     <div className="manage-compact-header">
                         <div className="header-top-row">
                             <div className="header-info">
-                                <h2 title={selectedVersion.folder || selectedVersion.name}>{selectedVersion.folder || selectedVersion.name}</h2>
+                                <h2 data-bm-title={selectedVersion.folder || selectedVersion.name}>{selectedVersion.folder || selectedVersion.name}</h2>
                                 <div className="header-badges">
                                     <span className="v-badge primary">{selectedVersion.version}</span>
                                     {selectedVersion.versionTypeLabel && <span className="v-badge secondary">{selectedVersion.versionTypeLabel}</span>}
@@ -228,9 +228,9 @@ const ManagePage = () => {
                             </div>
                             <div className="header-actions">
                                 <div className="icon-group">
-                                    <button className="icon-btn-ghost" title={t("ManagePage.open_version_folder")} onClick={handleOpenFolder}><FolderOpen size={18} /></button>
-                                    <button className="icon-btn-ghost" title={t("ManagePage.version_settings")} onClick={handleSettingsClick}><Settings size={18} /></button>
-                                    <button className="icon-btn-ghost danger" title={t("ManagePage.delete_version")} onClick={handleDeleteClick}><Trash2 size={18} /></button>
+                                    <button className="icon-btn-ghost" data-bm-title={t("ManagePage.open_version_folder")} onClick={handleOpenFolder}><FolderOpen size={18} /></button>
+                                    <button className="icon-btn-ghost" data-bm-title={t("ManagePage.version_settings")} onClick={handleSettingsClick}><Settings size={18} /></button>
+                                    <button className="icon-btn-ghost danger" data-bm-title={t("ManagePage.delete_version")} onClick={handleDeleteClick}><Trash2 size={18} /></button>
                                 </div>
                                 <div className="divider-vertical" />
                                 <button className="launch-btn" onClick={handleLaunchNormal}>

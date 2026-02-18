@@ -712,7 +712,7 @@ export const AssetManager: React.FC<AssetManagerProps> = ({
                         <input placeholder={t("AssetManager.search_placeholder")} value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                         {searchQuery && <X size={14} className="clear-btn" onClick={() => setSearchQuery('')} />}
                     </div>
-                    <span className="am-count-badge" title={t("AssetManager.count_title")}>{processedAssets.length}</span>
+                    <span className="am-count-badge" data-bm-title={t("AssetManager.count_title")}>{processedAssets.length}</span>
                 </div>
 
                 <div className="am-header-right">
@@ -765,7 +765,7 @@ export const AssetManager: React.FC<AssetManagerProps> = ({
                                         </div>
                                         <div className="am-inline-menu-wrapper" style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4 }}>
                                             {isMap && onLaunchMap && (
-                                                <button className="am-list-more-btn" title={t("AssetManager.menu_launch")} onClick={(e) => { e.stopPropagation(); handleLaunchMap(item); }} style={{ color: 'var(--success-color, #4caf50)', opacity: 0.8 }} >
+                                                <button className="am-list-more-btn" data-bm-title={t("AssetManager.menu_launch")} onClick={(e) => { e.stopPropagation(); handleLaunchMap(item); }} style={{ color: 'var(--success-color, #4caf50)', opacity: 0.8 }} >
                                                     <Play size={16} fill="currentColor" />
                                                 </button>
                                             )}

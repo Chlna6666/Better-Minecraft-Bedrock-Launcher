@@ -200,7 +200,7 @@ const DownloadPage = () => {
                             dropdownMatchButton={true}
                         />
                     </div>
-                    <button className="upl-action-icon-btn" onClick={handleImport} title={t('DownloadPage.import_tooltip')}>
+                    <button className="upl-action-icon-btn" onClick={handleImport} data-bm-title={t('DownloadPage.import_tooltip')}>
                         <Upload size={18} />
                     </button>
                 </div>

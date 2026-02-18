@@ -196,7 +196,7 @@ export const LevelDatEditor: React.FC<LevelDatEditorProps> = ({
         const val = getVal(currentData, key, 0);
         const isChecked = Number(val) !== 0;
         return (
-            <div className="le-toggle-item" onClick={() => handleChange(key, 'Byte', isChecked ? 0 : 1)} title={tip || key}>
+            <div className="le-toggle-item" onClick={() => handleChange(key, 'Byte', isChecked ? 0 : 1)} data-bm-title={tip || key}>
                 <div className={`le-toggle-icon ${isChecked ? 'checked' : ''}`}>
                     {isChecked ? <CheckSquare size={16}/> : <Square size={16}/>}
                 </div>
@@ -211,7 +211,7 @@ export const LevelDatEditor: React.FC<LevelDatEditorProps> = ({
         const val = getAbilityVal(currentData, key, 0);
         const isChecked = Number(val) !== 0;
         return (
-            <div className="le-toggle-item" onClick={() => handleAbilityChange(key, 'Byte', isChecked ? 0 : 1)} title={`abilities.${key}`}>
+            <div className="le-toggle-item" onClick={() => handleAbilityChange(key, 'Byte', isChecked ? 0 : 1)} data-bm-title={`abilities.${key}`}>
                 <div className={`le-toggle-icon ${isChecked ? 'checked' : ''}`}>
                     {isChecked ? <CheckSquare size={16}/> : <Square size={16}/>}
                 </div>
@@ -487,7 +487,7 @@ export const LevelDatEditor: React.FC<LevelDatEditorProps> = ({
         <div className="level-editor-wrapper">
             <div className="le-header">
                 <div className="le-header-left">
-                    <button className="le-back-btn" onClick={onBack} title={t("common.back")}><ArrowLeft size={18} /></button>
+                    <button className="le-back-btn" onClick={onBack} data-bm-title={t("common.back")}><ArrowLeft size={18} /></button>
                     <div className="le-title-group">
                         <h3>{t("LevelDatEditor.title")}</h3>
                         <span className="le-subtitle">{fileName}</span>
@@ -496,7 +496,7 @@ export const LevelDatEditor: React.FC<LevelDatEditorProps> = ({
                 <div className="le-header-actions">
                     {/* [新增] 启动按钮 (只在有 onLaunch 回调时显示) */}
                     {onLaunch && (
-                        <button className="le-btn-launch" onClick={onLaunch} title={t("LevelDatEditor.launch_title")}>
+                        <button className="le-btn-launch" onClick={onLaunch} data-bm-title={t("LevelDatEditor.launch_title")}>
                             <Play size={14} fill="currentColor" /> {t("LevelDatEditor.launch")}
                         </button>
                     )}

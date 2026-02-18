@@ -362,11 +362,11 @@ const ConfirmView: React.FC<{
                                         aria-checked={isSelected}
                                     >
                                         <div className="bm-cdn-left">
-                                            <div className="bm-cdn-base tabular-nums" title={r.base}>
+                                            <div className="bm-cdn-base tabular-nums" data-bm-title={r.base}>
                                                 {r.base}
                                             </div>
                                             {r.error && (
-                                                <div className="bm-cdn-error" title={r.error}>
+                                                <div className="bm-cdn-error" data-bm-title={r.error}>
                                                     {r.error}
                                                 </div>
                                             )}

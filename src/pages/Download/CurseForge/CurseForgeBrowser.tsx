@@ -385,14 +385,14 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                 <button
                     className={`toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
                     onClick={() => setViewMode('list')}
-                    title={t("CurseForge.view_list")}
+                    data-bm-title={t("CurseForge.view_list")}
                 >
                     <List size={16} />
                 </button>
                 <button
                     className={`toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
                     onClick={() => setViewMode('grid')}
-                    title={t("CurseForge.view_grid")}
+                    data-bm-title={t("CurseForge.view_grid")}
                 >
                     <LayoutGrid size={16} />
                 </button>
@@ -623,7 +623,7 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
             <div className="cf-content-area">
                 <div className="cf-results-container">
                     <div className="cf-topbar">
-                        <div className="cf-topbar-left" title={t("CurseForge.breadcrumb_title")}>
+                        <div className="cf-topbar-left" data-bm-title={t("CurseForge.breadcrumb_title")}>
                             <div className="cf-breadcrumb">
                                 <span
                                     className={`cf-crumb ${selectedRootId !== null ? 'clickable' : ''}`}
@@ -679,7 +679,7 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                                         resultsRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
                                     }
                                 }}
-                                title={selectedVersion ? t("CurseForge.click_clear_version") : undefined}
+                                data-bm-title={selectedVersion ? t("CurseForge.click_clear_version") : undefined}
                             >
                                 {selectedVersion ? selectedVersion : t("CurseForge.all_versions")}
                             </span>
@@ -699,7 +699,7 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                                         resultsRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
                                     }
                                 }}
-                                title={currentSort !== 1 ? t("CurseForge.click_reset_sort") : undefined}
+                                data-bm-title={currentSort !== 1 ? t("CurseForge.click_reset_sort") : undefined}
                             >
                                 {currentSortLabel}
                             </span>
@@ -719,7 +719,7 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                                             resultsRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
                                         }
                                     }}
-                                    title={onClearSearch ? t("CurseForge.click_clear_search") : undefined}
+                                    data-bm-title={onClearSearch ? t("CurseForge.click_clear_search") : undefined}
                                 >
                                     <span className="cf-search-chip-text">“{deferredSearch}”</span>
                                     {onClearSearch && <X size={14} />}
@@ -734,12 +734,12 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                             ) : (
                                 <>
                                     {lastDataSource === 'idb' && (
-                                        <span className="cf-status cache" title={t("CurseForge.cache_used")}>
+                                        <span className="cf-status cache" data-bm-title={t("CurseForge.cache_used")}>
                                             {t("CurseForge.cache")}
                                         </span>
                                     )}
                                     {lastUpdatedText && (
-                                        <span className="cf-status ok" title={t("CurseForge.updated_at")}>
+                                        <span className="cf-status ok" data-bm-title={t("CurseForge.updated_at")}>
                                             {t("CurseForge.updated")} {lastUpdatedText}
                                         </span>
                                     )}
@@ -871,9 +871,9 @@ const ModItem = ({ mod, viewMode, index, allCategories, onOpen, onDownload }: an
 
             <div className="cf-item-content">
                 <div className="cf-item-header">
-                    <h3 title={mod.name}>{mod.name}</h3>
+                    <h3 data-bm-title={mod.name}>{mod.name}</h3>
                 </div>
-                <p className="cf-item-summary" title={mod.summary}>{mod.summary}</p>
+                <p className="cf-item-summary" data-bm-title={mod.summary}>{mod.summary}</p>
 
                 {viewMode === 'list' && (
                     <div className="cf-item-meta-list">
@@ -1006,7 +1006,7 @@ const DownloadSheet = ({
                                     {files.map(file => (
                                         <div key={file.id} className="cf-file-row">
                                             <div className="file-meta">
-                                                <p className="file-name" title={file.displayName}>{file.displayName}</p>
+                                                <p className="file-name" data-bm-title={file.displayName}>{file.displayName}</p>
                                                 <span className="file-sub">{new Date(file.fileDate).toLocaleDateString()}</span>
                                             </div>
                                             <div className="file-info">

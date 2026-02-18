@@ -1228,7 +1228,7 @@ export default function OnlinePage() {
               <div className="et-modal" onClick={(e) => e.stopPropagation()}>
                 <div className="et-header">
                   <h3 className="et-title">EasyTier {t("Sidebar.settings")}</h3>
-                  <button className="et-icon-btn" onClick={closeEasyTierSettings} title={t("common.cancel")}>
+                  <button className="et-icon-btn" onClick={closeEasyTierSettings} data-bm-title={t("common.cancel")}>
                     <X size={18} />
                   </button>
                 </div>

@@ -114,7 +114,7 @@ export const Navbar: React.FC<NavbarProps> = ({ toggleTheme, isDark, hasNewVersi
                 <button
                     className={`nav-update-capsule ${hasNewVersion ? 'is-visible' : ''}`}
                     onClick={onOpenUpdate}
-                    title={t("Navbar.update_available")}
+                    data-bm-title={t("Navbar.update_available")}
                     style={{ WebkitAppRegion: 'no-drag' } as any}
                     aria-hidden={!hasNewVersion}
                     tabIndex={hasNewVersion ? 0 : -1}
@@ -155,16 +155,16 @@ export const Navbar: React.FC<NavbarProps> = ({ toggleTheme, isDark, hasNewVersi
             <div className="nav-right">
                 <MusicPlayer />
 
-                <button onClick={toggleTheme} className="nav-icon-btn theme-btn" title={t("Navbar.toggle_theme")}>
+                <button onClick={toggleTheme} className="nav-icon-btn theme-btn" data-bm-title={t("Navbar.toggle_theme")}>
                     {isDark ? <Sun size={18} /> : <Moon size={18} />}
                 </button>
 
                 <div className="divider-vertical"></div>
 
-                <button onClick={handleMinimize} className="nav-icon-btn window-btn" title={t("Navbar.minimize")}>
+                <button onClick={handleMinimize} className="nav-icon-btn window-btn" data-bm-title={t("Navbar.minimize")}>
                     <Minus size={18} />
                 </button>
-                <button onClick={handleClose} className="nav-icon-btn window-btn close-btn" title={t("common.close")}>
+                <button onClick={handleClose} className="nav-icon-btn window-btn close-btn" data-bm-title={t("common.close")}>
                     <X size={18} />
                 </button>
             </div>

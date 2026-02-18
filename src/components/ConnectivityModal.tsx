@@ -135,7 +135,7 @@ export default function ConnectivityModal({ isOpen, onClose }: ConnectivityModal
                                     className="header-btn refresh-btn"
                                     onClick={runTests}
                                     disabled={isRunning}
-                                    title={t("common.refresh") || "Refresh"}
+                                    data-bm-title={t("common.refresh") || "Refresh"}
                                 >
                                     {/* 如果正在运行，给刷新图标也加上旋转动画 */}
                                     <RotateCw size={18} className={isRunning ? 'animate-spin' : ''} />
@@ -183,7 +183,7 @@ export default function ConnectivityModal({ isOpen, onClose }: ConnectivityModal
                                                         </div>
                                                     )}
                                                     {res.status === 'error' && (
-                                                        <div className="status-badge error" title={res.error}>
+                                                        <div className="status-badge error" data-bm-title={res.error}>
                                                             <AlertCircle size={14} />
                                                             <span>Error</span>
                                                         </div>

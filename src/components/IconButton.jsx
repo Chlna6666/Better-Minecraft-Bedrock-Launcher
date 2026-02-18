@@ -19,7 +19,7 @@ function IconButton({
     return (
         <button
             className={`ui-icon-btn ui-icon-btn-${typeof size === 'string' ? size : 'md'} ${className}`}
-            title={title}
+            data-bm-title={title}
             style={{ color, ...sizeStyle, ...style }}
             {...props}
         >

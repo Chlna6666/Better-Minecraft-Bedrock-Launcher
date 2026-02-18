@@ -8,7 +8,6 @@ import PluginHost from "./PluginHost.jsx";
 import { invoke } from "@tauri-apps/api/core";
 import { Toast } from "./components/Toast.tsx";
 import { BrowserRouter } from "react-router-dom";
-import { TitleTooltip } from "./components/TitleTooltip.tsx";
 
 (async () => {
     try {
@@ -24,7 +23,6 @@ import { TitleTooltip } from "./components/TitleTooltip.tsx";
             <PluginHost>
                 <BrowserRouter>
                     <Toast>
-                        <TitleTooltip />
                         <App />
                     </Toast>
                 </BrowserRouter>

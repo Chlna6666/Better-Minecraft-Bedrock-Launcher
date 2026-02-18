@@ -450,7 +450,7 @@ export default function About() {
                                             <div className="sponsor-item" key={s.user.user_id}>
                                                 <img className="sponsor-avatar" src={s.user.avatar} alt={s.user.name} loading="lazy" referrerPolicy="no-referrer" />
                                                 <div className="sponsor-meta">
-                                                    <div className="sponsor-name" title={s.user.name}>{s.user.name}</div>
+                                                    <div className="sponsor-name" data-bm-title={s.user.name}>{s.user.name}</div>
                                                     <div className="sponsor-amount">¥{s.all_sum_amount}</div>
                                                 </div>
                                             </div>
