@@ -126,6 +126,8 @@ body {
   transform: translate3d(-9999px, -9999px, 0);
   opacity: 0;
   pointer-events: none;
+  contain: layout paint;
+  will-change: transform, opacity;
 
   max-width: min(360px, calc(100vw - 24px));
   padding: 8px 10px;
@@ -143,8 +145,7 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 
-  transition: opacity var(--bm-anim-fast) var(--bm-ease-out),
-    transform var(--bm-anim-fast) var(--bm-ease-out);
+  transition: opacity var(--bm-anim-fast) var(--bm-ease-out);
 }
 
 .bm-title-tooltip[data-show='true'] {
