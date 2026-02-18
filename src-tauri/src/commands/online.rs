@@ -1727,18 +1727,36 @@ async fn handle_paperconnect_conn(
     let msg = pkt.text;
     let framing = pkt.framing;
     let resp_encoding = effective_response_encoding(pkt.encoding, framing);
-    let (proto, json) = msg
-        .split_once('\0')
-        .ok_or_else(|| anyhow!("missing protocol separator"))?;
+    let (proto, json) = if let Some(v) = msg.split_once('\0') {
+        v
+    } else if let Some(v) = msg.split_once('\n') {
+        // Some third-party implementations accidentally use newline as a separator.
+        v
+    } else if let Some(i) = msg.find('{') {
+        // Last-resort: accept `proto{json}` without an explicit separator.
+        (&msg[..i], &msg[i..])
+    } else {
+        tracing::debug!("paperconnect: invalid request (missing protocol separator)");
+        let resp = serde_json::json!({ "error": "missing protocol separator" });
+        let bytes = resp.to_string().into_bytes();
+        let bytes = match resp_encoding {
+            TcpEncoding::Plain => bytes,
+            TcpEncoding::Zstd => zstd_compress(&bytes)?,
+        };
+        write_packet_bytes_and_close(stream, &bytes, framing).await?;
+        return Ok(());
+    };
+    let proto = proto.trim();
+    let json = json.trim();
 
     match proto {
         "c:ping" => {
             #[derive(Deserialize)]
             struct PingReq {
                 time: Option<i64>,
-                #[serde(rename = "clientId")]
+                #[serde(rename = "clientId", alias = "client_id")]
                 client_id: Option<String>,
-                #[serde(rename = "playerName")]
+                #[serde(rename = "playerName", alias = "player_name", alias = "player")]
                 player_name: Option<String>,
             }
             let req: PingReq = serde_json::from_str(json).context("invalid json")?;
@@ -1795,9 +1813,9 @@ async fn handle_paperconnect_conn(
         "c:player" => {
             #[derive(Deserialize)]
             struct PlayerReq {
-                #[serde(rename = "clientId")]
+                #[serde(rename = "clientId", alias = "client_id")]
                 client_id: String,
-                #[serde(rename = "playerName")]
+                #[serde(rename = "playerName", alias = "player_name", alias = "player")]
                 player_name: String,
             }
             let req: PlayerReq = serde_json::from_str(json).context("invalid json")?;
