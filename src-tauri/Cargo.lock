@@ -1768,6 +1768,7 @@ dependencies = [
  "x25519-dalek",
  "zerocopy",
  "zip",
+ "zstd",
 ]
 
 [[package]]

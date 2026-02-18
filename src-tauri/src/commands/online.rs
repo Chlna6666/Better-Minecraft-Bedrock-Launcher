@@ -6,6 +6,7 @@ use easytier::common::config::{
 use easytier::common::stun::{StunInfoCollector, StunInfoCollectorTrait};
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::proto::api::instance::ListRouteRequest;
+use easytier::proto::common::CompressionAlgoPb;
 use easytier::proto::rpc_types::controller::BaseController;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -150,6 +151,8 @@ pub struct EasyTierStartOptions {
     pub disable_p2p: Option<bool>,
     #[serde(alias = "noTun", alias = "no_tun")]
     pub no_tun: Option<bool>,
+    #[serde(alias = "compression", alias = "dataCompressAlgo", alias = "data_compress_algo")]
+    pub compression: Option<String>,
     #[serde(alias = "tcpWhitelist", alias = "tcp_whitelist")]
     pub tcp_whitelist: Option<Vec<u16>>,
     #[serde(alias = "udpWhitelist", alias = "udp_whitelist")]
@@ -712,6 +715,8 @@ fn build_embedded_easytier_config_with_port_forwards(
     // proxy/port-forward behavior (PaperConnect's typical setup).
     flags.use_smoltcp = true;
     flags.disable_p2p = true;
+    // Compress data-plane packets between EasyTier peers to reduce relay/egress bandwidth.
+    flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
 
     let mut tcp_whitelist: Option<Vec<String>> = None;
     let mut udp_whitelist: Option<Vec<String>> = None;
@@ -725,6 +730,20 @@ fn build_embedded_easytier_config_with_port_forwards(
         }
         if let Some(v) = opts.no_tun {
             flags.no_tun = v;
+        }
+        if let Some(v) = opts.compression {
+            let raw = v.trim().to_ascii_lowercase();
+            if !raw.is_empty() {
+                flags.data_compress_algo = match raw.as_str() {
+                    "zstd" => CompressionAlgoPb::Zstd.into(),
+                    "none" => CompressionAlgoPb::None.into(),
+                    _ => {
+                        return Err(anyhow!(
+                            "invalid compression: {v} (supported: none, zstd)"
+                        ))
+                    }
+                };
+            }
         }
         if let Some(wl) = opts.tcp_whitelist {
             tcp_whitelist = Some(wl.into_iter().map(|p| p.to_string()).collect());
