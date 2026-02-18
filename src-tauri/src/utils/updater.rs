@@ -3,6 +3,7 @@ use crate::downloads::manager::DownloaderManager;
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::{CoreResult};
 use crate::tasks::task_manager::{create_task, finish_task};
+use crate::utils::cloudflare::get_optimized_ip;
 use anyhow::Result;
 use regex::Regex;
 use semver::Version;
@@ -13,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
-use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
 
 #[derive(Deserialize, Debug)]
@@ -102,59 +102,6 @@ fn extract_semver_substring(tag: &str) -> Option<String> {
     let re = Regex::new(r"(?i)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)").unwrap();
     re.captures(&s)
         .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
-}
-
-async fn get_optimized_ip() -> Option<SocketAddr> {
-    let domain = "cloudflare.182682.xyz:443";
-    info!("正在解析优选域名: {}", domain);
-
-    // 1. 异步解析域名
-    let addrs = match tokio::net::lookup_host(domain).await {
-        Ok(iter) => iter,
-        Err(e) => {
-            warn!("解析优选域名失败: {}", e);
-            return None;
-        }
-    };
-
-    let ips: Vec<SocketAddr> = addrs.filter(|ip| ip.is_ipv4()).collect();
-    if ips.is_empty() {
-        warn!("优选域名未解析到有效的 IPv4 地址");
-        return None;
-    }
-    info!("解析到 {} 个候选 IP", ips.len());
-
-    let mut set = JoinSet::new();
-
-    for (i, ip) in ips.iter().cloned().enumerate() {
-        set.spawn(async move {
-            let start = Instant::now();
-            // 尝试 TCP 连接，2秒超时
-            if let Ok(Ok(_)) = tokio::time::timeout(
-                Duration::from_secs(2),
-                tokio::net::TcpStream::connect(ip)
-            ).await {
-                let elapsed = start.elapsed();
-                debug!("[Race #{}] ✅ 连接成功! IP: {}, 耗时: {:.2?}", i, ip, elapsed);
-                return Some(ip);
-            }
-            None
-        });
-    }
-
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok(Some(ip)) => {
-                info!("🏁 竞速冠军诞生: {}。正在终止其他 {} 个测速任务...", ip, set.len());
-                set.abort_all();
-                return Some(ip);
-            }
-            _ => continue,
-        }
-    }
-
-    warn!("所有优选 IP 测速均失败或超时，回退默认解析");
-    None
 }
 
 async fn check_github_is_fast(max_latency_ms: u64) -> bool {

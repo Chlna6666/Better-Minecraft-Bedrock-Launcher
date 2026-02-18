@@ -310,6 +310,7 @@ pub async fn run(preinit: Arc<PreInit>) -> Result<()> {
             let _ = scope.allow_directory("**", true);
 
             set_global_app(app.handle().clone());
+            utils::stats::spawn_startup_ingest();
 
             let args: Vec<String> = env::args().collect();
 

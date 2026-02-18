@@ -147,6 +147,29 @@ pub fn rebuild_no_proxy_client_in_cache() {
     }
 }
 
+/// 返回不使用代理（且不读环境变量 proxy）的 client。
+pub fn get_no_proxy_client() -> Client {
+    if let Ok(cache) = CLIENT_CACHE.lock() {
+        if let Some(c) = cache.get("no_proxy") {
+            return c.clone();
+        }
+    }
+
+    Client::builder()
+        .gzip(true)
+        .brotli(true)
+        .deflate(true)
+        .connect_timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(8)
+        .user_agent(DEFAULT_USER_AGENT.as_str())
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|e| {
+            error!("Failed to build no-proxy client: {}", e);
+            GLOBAL_CLIENT.clone()
+        })
+}
+
 /// 返回当前配置对应的 reqwest::Client（内部读取配置）
 /// 调用处请不要使用 GLOBAL_CLIENT，改为使用本函数返回的 client。
 pub fn get_client_for_proxy() -> Result<Client, CoreError> {
