@@ -9,6 +9,7 @@ fn allow_rule(
     destination_ips: Vec<String>,
     source_ports: Vec<String>,
     app_protocols: Vec<i32>,
+    stateful: bool,
     rate_limit: u32,
     burst_limit: u32,
     payload_prefix_hex: Vec<String>,
@@ -36,7 +37,7 @@ fn allow_rule(
         action: Action::Allow as i32,
         rate_limit,
         burst_limit,
-        stateful: false,
+        stateful,
         source_groups: vec![],
         destination_groups: vec![],
     }
@@ -50,8 +51,8 @@ fn allow_rule(
 // Notes:
 // - Joiners receive replies on ephemeral local UDP ports. For that reason, joiners must not rely on
 //   a destination-port whitelist. Instead, they allow inbound UDP packets from the host (any port).
-// - PaperConnect control plane uses a TCP "protocol port" on the host. Joiners allow TCP from the
-//   host on any source port to keep the policy compatible with dynamic host protocol port.
+// - PaperConnect control plane uses a TCP "protocol port" on the host. For security, only that
+//   port is allowed; return traffic is constrained by source-port matching/stateful TCP.
 pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port: Option<u16>) -> Acl {
     // Highest priority wins (processed in priority order).
     let mut inbound_rules: Vec<Rule> = Vec::new();
@@ -91,6 +92,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec![],
             vec![],
+            false,
             0,
             0,
             vec![],
@@ -110,6 +112,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             discovery_broadcast_ips.clone(),
             vec![],
             vec![],
+            false,
             discovery_rate_limit,
             discovery_burst_limit,
             discovery_payload_prefix_hex.clone(),
@@ -129,6 +132,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            false,
             0,
             0,
             vec![],
@@ -138,7 +142,8 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             None,
         ));
 
-        // Inbound: allow PaperConnect control plane TCP to the host protocol port.
+        // Inbound: allow PaperConnect control plane TCP to the host protocol port only.
+        // If the protocol port isn't known, we don't open TCP at all (default drop).
         if let Some(p) = host_protocol_port {
             inbound_rules.push(allow_rule(
                 "allow_tcp_to_host_protocol_port",
@@ -149,24 +154,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
                 vec![host_vip.to_string()],
                 vec![],
                 vec![],
-                0,
-                0,
-                vec![],
-                None,
-                None,
-                None,
-                None,
-            ));
-        } else {
-            inbound_rules.push(allow_rule(
-                "allow_tcp_to_host",
-                3500,
-                Protocol::Tcp,
-                vec!["0-65535".to_string()],
-                vec![],
-                vec![host_vip.to_string()],
-                vec![],
-                vec![],
+                true,
                 0,
                 0,
                 vec![],
@@ -187,6 +175,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             vec![],
+            false,
             0,
             0,
             vec![],
@@ -206,6 +195,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            false,
             0,
             0,
             vec![],
@@ -215,24 +205,28 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             None,
         ));
 
-        // Outbound: allow host TCP replies/control traffic to members (PaperConnect protocol port).
-        outbound_rules.push(allow_rule(
-            "allow_tcp_from_host_to_members",
-            4800,
-            Protocol::Tcp,
-            vec!["0-65535".to_string()],
-            vec![host_vip.to_string()],
-            vec!["10.144.144.0/24".to_string()],
-            vec![],
-            vec![],
-            0,
-            0,
-            vec![],
-            None,
-            None,
-            None,
-            None,
-        ));
+        // Outbound: allow host TCP traffic to members only when sourced from the protocol port
+        // (server replies will have src port == protocol port; client-initiated TCP will be blocked).
+        if let Some(p) = host_protocol_port {
+            outbound_rules.push(allow_rule(
+                "allow_tcp_from_host_to_members_protocol_src_port",
+                4800,
+                Protocol::Tcp,
+                vec!["0-65535".to_string()],
+                vec![host_vip.to_string()],
+                vec!["10.144.144.0/24".to_string()],
+                vec![p.to_string()],
+                vec![],
+                true,
+                0,
+                0,
+                vec![],
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
 
         // Outbound: allow host broadcast for discovery.
         outbound_rules.push(allow_rule(
@@ -244,6 +238,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             discovery_broadcast_ips,
             vec![],
             vec![],
+            false,
             discovery_rate_limit,
             discovery_burst_limit,
             discovery_payload_prefix_hex,
@@ -263,6 +258,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             vec![],
+            false,
             0,
             0,
             vec![],
@@ -282,6 +278,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec!["10.144.144.0/24".to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            false,
             0,
             0,
             vec![],
@@ -291,24 +288,27 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             None,
         ));
 
-        // Inbound: joiners accept control plane TCP from host VIP.
-        inbound_rules.push(allow_rule(
-            "allow_tcp_from_host",
-            4500,
-            Protocol::Tcp,
-            vec!["0-65535".to_string()],
-            vec![host_vip.to_string()],
-            vec!["10.144.144.0/24".to_string()],
-            vec![],
-            vec![],
-            0,
-            0,
-            vec![],
-            None,
-            None,
-            None,
-            None,
-        ));
+        // Inbound: joiners accept control plane TCP from host VIP only when sourced from protocol port.
+        if let Some(p) = host_protocol_port {
+            inbound_rules.push(allow_rule(
+                "allow_tcp_from_host_protocol_src_port",
+                4500,
+                Protocol::Tcp,
+                vec!["0-65535".to_string()],
+                vec![host_vip.to_string()],
+                vec!["10.144.144.0/24".to_string()],
+                vec![p.to_string()],
+                vec![],
+                true,
+                0,
+                0,
+                vec![],
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
 
         // Outbound: allow 7551 joiner->host unicast regardless of app_protocol.
         outbound_rules.push(allow_rule(
@@ -320,6 +320,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec![],
             vec![],
+            false,
             0,
             0,
             vec![],
@@ -339,6 +340,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             vec![host_vip.to_string()],
             vec![],
             bedrock_udp_app_protocols.clone(),
+            false,
             0,
             0,
             vec![],
@@ -347,23 +349,28 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             Some(false),
             None,
         ));
-        outbound_rules.push(allow_rule(
-            "allow_tcp_to_host",
-            4500,
-            Protocol::Tcp,
-            vec!["0-65535".to_string()],
-            vec![],
-            vec![host_vip.to_string()],
-            vec![],
-            vec![],
-            0,
-            0,
-            vec![],
-            None,
-            None,
-            None,
-            None,
-        ));
+
+        // Outbound: joiners can only connect to the host protocol port.
+        if let Some(p) = host_protocol_port {
+            outbound_rules.push(allow_rule(
+                "allow_tcp_to_host_protocol_port",
+                4500,
+                Protocol::Tcp,
+                vec![p.to_string()],
+                vec![],
+                vec![host_vip.to_string()],
+                vec![],
+                vec![],
+                true,
+                0,
+                0,
+                vec![],
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
 
         // Outbound: joiners must be able to broadcast 7551 for host discovery ("ping pong").
         outbound_rules.push(allow_rule(
@@ -375,6 +382,7 @@ pub fn build_paperconnect_acl(is_host: bool, host_vip: &str, host_protocol_port:
             discovery_broadcast_ips,
             vec![],
             vec![],
+            false,
             discovery_rate_limit,
             discovery_burst_limit,
             discovery_payload_prefix_hex,
