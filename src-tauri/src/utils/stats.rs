@@ -1,5 +1,6 @@
-use crate::http::proxy::get_no_proxy_client;
+use crate::http::proxy::{build_no_proxy_client_with_resolve, get_no_proxy_client};
 use crate::utils::app_info;
+use crate::utils::cloudflare;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -11,6 +12,7 @@ use tracing::{debug, warn};
 
 const STATS_INGEST_URL: &str = "https://stats.bmcbl.com/v1/ingest?key=X9Q4M3T8V2K7";
 const CLIENT_ID_SALT: &str = "bmcbl-stats-clientid-v1";
+const STATS_HOST: &str = "stats.bmcbl.com";
 
 static REPORTED_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
@@ -40,7 +42,22 @@ async fn report_startup_ingest_once() -> anyhow::Result<()> {
         client_id: compute_client_id(),
     };
 
-    let client = get_no_proxy_client();
+    debug!(
+        "stats ingest start: appVersion={}, os={}",
+        payload.app_version, payload.os
+    );
+
+    let client = match cloudflare::get_optimized_ip().await {
+        Some(ip) => {
+            debug!("stats ingest: using optimized IP {} for {}", ip, STATS_HOST);
+            build_no_proxy_client_with_resolve(STATS_HOST, ip)
+        }
+        None => {
+            debug!("stats ingest: no optimized IP, using default no-proxy client");
+            get_no_proxy_client()
+        }
+    };
+
     let resp = client
         .post(STATS_INGEST_URL)
         .timeout(Duration::from_secs(5))
@@ -52,7 +69,7 @@ async fn report_startup_ingest_once() -> anyhow::Result<()> {
         // Don't log the full URL (contains key).
         warn!("stats ingest failed: status={}", resp.status());
     } else {
-        debug!("stats ingest ok");
+        debug!("stats ingest ok: status={}", resp.status());
     }
 
     Ok(())

@@ -5,6 +5,7 @@ use crate::result::CoreError;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Proxy};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{debug, error};
@@ -167,6 +168,24 @@ pub fn get_no_proxy_client() -> Client {
         .unwrap_or_else(|e| {
             error!("Failed to build no-proxy client: {}", e);
             GLOBAL_CLIENT.clone()
+        })
+}
+
+/// 构造一个 no-proxy client，并将指定 host 绑定到固定 IP（常用于 Cloudflare 优选 IP）。
+pub fn build_no_proxy_client_with_resolve(host: &str, addr: SocketAddr) -> Client {
+    Client::builder()
+        .gzip(true)
+        .brotli(true)
+        .deflate(true)
+        .connect_timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(8)
+        .user_agent(DEFAULT_USER_AGENT.as_str())
+        .resolve(host, addr)
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|e| {
+            error!("Failed to build resolved no-proxy client (host={}, addr={}): {}", host, addr, e);
+            get_no_proxy_client()
         })
 }
 
