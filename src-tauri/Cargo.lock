@@ -468,6 +468,7 @@ dependencies = [
  "winreg 0.55.0",
  "xmltree",
  "zip",
+ "zstd",
 ]
 
 [[package]]

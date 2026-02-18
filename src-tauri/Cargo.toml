@@ -72,6 +72,7 @@ bytes = "1.10.1"
 byteorder = "1.5.0"
 pelite = "0.10.0"
 fs_extra="1"
+zstd = "0.13.3"
 
 # Enable `socks5` (implies `smoltcp`) so `no_tun` mode can still proxy/port-forward traffic
 # to EasyTier overlay IPs, matching PaperConnect's typical usage.

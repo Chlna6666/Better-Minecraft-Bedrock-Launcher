@@ -12,6 +12,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::{Cursor, Read};
 use std::net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::sync::{Arc, Mutex};
 use std::str::FromStr;
@@ -28,6 +29,7 @@ use super::online_acl::build_paperconnect_acl;
 
 
 const MAX_PACKET_SIZE: usize = 64 * 1024;
+const ZSTD_LEVEL: i32 = 3;
 const DEFAULT_PAPERCONNECT_VIP: &str = "10.144.144.1";
 const DEFAULT_BOOTSTRAP_PEERS: [&str; 2] = [
     "tcp://39.108.52.138:11010",
@@ -173,6 +175,19 @@ enum TcpFraming {
     LengthPrefixedU16Le,
     LengthPrefixedU16Be,
     LineDelimited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TcpEncoding {
+    Plain,
+    Zstd,
+}
+
+#[derive(Debug, Clone)]
+struct TcpPacket {
+    text: String,
+    framing: TcpFraming,
+    encoding: TcpEncoding,
 }
 
 fn now_ms() -> i64 {
@@ -1024,14 +1039,68 @@ pub async fn easytier_cli_peers(cli_path: String) -> Result<Vec<EasyTierPeer>, S
 }
 
 async fn read_one_message(stream: &mut TcpStream) -> anyhow::Result<String> {
-    Ok(read_one_packet(stream).await?.0)
+    Ok(read_one_packet(stream).await?.text)
 }
 
 async fn write_message_and_close(stream: &mut TcpStream, msg: &str) -> anyhow::Result<()> {
     write_packet_and_close(stream, msg, TcpFraming::LineDelimited).await
 }
 
-async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<(String, TcpFraming)> {
+fn looks_like_zstd_frame(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 {
+        return false;
+    }
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    magic == 0xFD2F_B528 || (0x184D_2A50..=0x184D_2A5F).contains(&magic)
+}
+
+fn zstd_compress(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    zstd::stream::encode_all(Cursor::new(bytes), ZSTD_LEVEL).context("zstd compress")
+}
+
+fn zstd_decompress_limited(bytes: &[u8], limit: usize) -> anyhow::Result<Vec<u8>> {
+    let mut decoder =
+        zstd::stream::read::Decoder::new(Cursor::new(bytes)).context("zstd decoder")?;
+    let mut out = Vec::<u8>::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let n = decoder.read(&mut tmp).context("zstd read")?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&tmp[..n]);
+        if out.len() > limit {
+            return Err(anyhow!("decompressed packet too large"));
+        }
+    }
+    Ok(out)
+}
+
+fn decode_packet_text(bytes: Vec<u8>) -> anyhow::Result<(String, TcpEncoding)> {
+    match String::from_utf8(bytes) {
+        Ok(s) => Ok((s, TcpEncoding::Plain)),
+        Err(e) => {
+            let bytes = e.into_bytes();
+            if !looks_like_zstd_frame(&bytes) {
+                return Err(anyhow!("packet must be utf8"));
+            }
+            let out = zstd_decompress_limited(&bytes, MAX_PACKET_SIZE)
+                .context("zstd decompress packet")?;
+            let s = String::from_utf8(out).context("decompressed packet must be utf8")?;
+            Ok((s, TcpEncoding::Zstd))
+        }
+    }
+}
+
+fn effective_response_encoding(req_encoding: TcpEncoding, framing: TcpFraming) -> TcpEncoding {
+    // Line-delimited framing isn't safe for binary payloads.
+    if framing == TcpFraming::LineDelimited {
+        return TcpEncoding::Plain;
+    }
+    req_encoding
+}
+
+async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<TcpPacket> {
     let mut hdr = [0u8; 4];
     let mut prebuf = Vec::<u8>::new();
 
@@ -1039,8 +1108,12 @@ async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<(String, TcpF
     match stream.read_exact(&mut hdr).await {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-            let msg = String::from_utf8(prebuf).context("packet must be utf8")?;
-            return Ok((msg, TcpFraming::Raw));
+            let (msg, encoding) = decode_packet_text(prebuf)?;
+            return Ok(TcpPacket {
+                text: msg,
+                framing: TcpFraming::Raw,
+                encoding,
+            });
         }
         Err(e) => return Err(anyhow!(e).context("read tcp")),
     }
@@ -1063,8 +1136,12 @@ async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<(String, TcpF
             // If we mis-detected, fall through to other strategies.
             break;
         }
-        let msg = String::from_utf8(buf).context("packet must be utf8")?;
-        return Ok((msg, framing));
+        let (msg, encoding) = decode_packet_text(buf)?;
+        return Ok(TcpPacket {
+            text: msg,
+            framing,
+            encoding,
+        });
     }
 
     // Try a 2-byte length prefix (some PaperConnect implementations use u16 length).
@@ -1102,8 +1179,12 @@ async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<(String, TcpF
             }
             buf.extend_from_slice(&rest);
         }
-        let msg = String::from_utf8(buf).context("packet must be utf8")?;
-        return Ok((msg, framing));
+        let (msg, encoding) = decode_packet_text(buf)?;
+        return Ok(TcpPacket {
+            text: msg,
+            framing,
+            encoding,
+        });
     }
 
     fn json_readiness(bytes: &[u8]) -> Result<bool, serde_json::Error> {
@@ -1131,10 +1212,20 @@ async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<(String, TcpF
     let mut tmp = [0u8; 4096];
     let mut framing = TcpFraming::Raw;
     loop {
-        match paperconnect_readiness(&prebuf) {
-            Ok(true) => break,
-            Ok(false) => {}
-            Err(e) => return Err(anyhow!(e).context("invalid json packet")),
+        if looks_like_zstd_frame(&prebuf) {
+            if let Ok(out) = zstd_decompress_limited(&prebuf, MAX_PACKET_SIZE) {
+                match paperconnect_readiness(&out) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(e) => return Err(anyhow!(e).context("invalid json packet")),
+                }
+            }
+        } else {
+            match paperconnect_readiness(&prebuf) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(e) => return Err(anyhow!(e).context("invalid json packet")),
+            }
         }
 
         let n = stream.read(&mut tmp).await.context("read tcp")?;
@@ -1145,65 +1236,75 @@ async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<(String, TcpF
         if prebuf.len() > MAX_PACKET_SIZE {
             return Err(anyhow!("packet too large"));
         }
-        if prebuf.contains(&b'\n') {
+        if !looks_like_zstd_frame(&prebuf) && prebuf.contains(&b'\n') {
             framing = TcpFraming::LineDelimited;
             break;
         }
     }
-    if let Some(i) = prebuf.iter().position(|b| *b == b'\n') {
-        prebuf.truncate(i);
+    if framing == TcpFraming::LineDelimited {
+        if let Some(i) = prebuf.iter().position(|b| *b == b'\n') {
+            prebuf.truncate(i);
+        }
     }
-    let msg = String::from_utf8(prebuf).context("packet must be utf8")?;
-    Ok((msg, framing))
+    let (msg, encoding) = decode_packet_text(prebuf)?;
+    Ok(TcpPacket {
+        text: msg,
+        framing,
+        encoding,
+    })
 }
 
-async fn write_packet(stream: &mut TcpStream, msg: &str, framing: TcpFraming) -> anyhow::Result<()> {
+async fn write_packet_bytes(stream: &mut TcpStream, bytes: &[u8], framing: TcpFraming) -> anyhow::Result<()> {
     match framing {
         TcpFraming::Raw => {
-            stream.write_all(msg.as_bytes()).await.context("write tcp")?;
+            stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedLe => {
-            let bytes = msg.as_bytes();
             let len = u32::try_from(bytes.len()).context("packet too large")?;
             stream.write_all(&len.to_le_bytes()).await.context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedBe => {
-            let bytes = msg.as_bytes();
             let len = u32::try_from(bytes.len()).context("packet too large")?;
             stream.write_all(&len.to_be_bytes()).await.context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedU16Le => {
-            let bytes = msg.as_bytes();
             let len = u16::try_from(bytes.len()).context("packet too large")?;
             stream.write_all(&len.to_le_bytes()).await.context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedU16Be => {
-            let bytes = msg.as_bytes();
             let len = u16::try_from(bytes.len()).context("packet too large")?;
             stream.write_all(&len.to_be_bytes()).await.context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LineDelimited => {
-            if msg.ends_with('\n') {
-                stream.write_all(msg.as_bytes()).await.context("write tcp")?;
-            } else {
-                stream
-                    .write_all(format!("{msg}\n").as_bytes())
-                    .await
-                    .context("write tcp")?;
+            stream.write_all(bytes).await.context("write tcp")?;
+            if !bytes.ends_with(b"\n") {
+                stream.write_all(b"\n").await.context("write tcp")?;
             }
         }
     }
     Ok(())
 }
 
-async fn write_packet_and_close(stream: &mut TcpStream, msg: &str, framing: TcpFraming) -> anyhow::Result<()> {
-    write_packet(stream, msg, framing).await?;
+async fn write_packet(stream: &mut TcpStream, msg: &str, framing: TcpFraming) -> anyhow::Result<()> {
+    write_packet_bytes(stream, msg.as_bytes(), framing).await
+}
+
+async fn write_packet_bytes_and_close(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    framing: TcpFraming,
+) -> anyhow::Result<()> {
+    write_packet_bytes(stream, bytes, framing).await?;
     let _ = stream.shutdown().await;
     Ok(())
+}
+
+async fn write_packet_and_close(stream: &mut TcpStream, msg: &str, framing: TcpFraming) -> anyhow::Result<()> {
+    write_packet_bytes_and_close(stream, msg.as_bytes(), framing).await
 }
 
 #[tauri::command]
@@ -1247,9 +1348,10 @@ pub async fn paperconnect_tcp_request(host: String, port: u16, proto: String, bo
         let _ = stream.set_nodelay(true);
         let payload = format!("{proto}\0{}", body.to_string());
         write_packet(&mut stream, &payload, TcpFraming::Raw).await?;
-        let (resp, _) = tokio::time::timeout(read_timeout, read_one_packet(&mut stream))
+        let pkt = tokio::time::timeout(read_timeout, read_one_packet(&mut stream))
             .await
             .context("read response timed out")??;
+        let resp = pkt.text;
         let json = resp.split_once('\0').map(|(_, j)| j).unwrap_or(resp.as_str());
         let v: Value = serde_json::from_str(json).context("invalid json response")?;
         if let Some(err_msg) = v.get("error").and_then(|v| v.as_str()) {
@@ -1506,9 +1608,12 @@ async fn handle_paperconnect_conn(
     stream: &mut TcpStream,
     state: std::sync::Arc<tokio::sync::Mutex<PaperConnectServerState>>,
 ) -> anyhow::Result<()> {
-    let (msg, framing) = tokio::time::timeout(Duration::from_secs(5), read_one_packet(stream))
+    let pkt = tokio::time::timeout(Duration::from_secs(5), read_one_packet(stream))
         .await
         .context("read request timed out")??;
+    let msg = pkt.text;
+    let framing = pkt.framing;
+    let resp_encoding = effective_response_encoding(pkt.encoding, framing);
     let (proto, json) = msg
         .split_once('\0')
         .ok_or_else(|| anyhow!("missing protocol separator"))?;
@@ -1563,7 +1668,12 @@ async fn handle_paperconnect_conn(
                 "gameProtocolType": game_protocol_type,
                 "gamePort": game_port
             });
-            write_packet_and_close(stream, &resp.to_string(), framing).await?;
+            let bytes = resp.to_string().into_bytes();
+            let bytes = match resp_encoding {
+                TcpEncoding::Plain => bytes,
+                TcpEncoding::Zstd => zstd_compress(&bytes)?,
+            };
+            write_packet_bytes_and_close(stream, &bytes, framing).await?;
         }
         "c:player" => {
             #[derive(Deserialize)]
@@ -1617,11 +1727,21 @@ async fn handle_paperconnect_conn(
                 "returnTime": now,
                 "players": players
             });
-            write_packet_and_close(stream, &resp.to_string(), framing).await?;
+            let bytes = resp.to_string().into_bytes();
+            let bytes = match resp_encoding {
+                TcpEncoding::Plain => bytes,
+                TcpEncoding::Zstd => zstd_compress(&bytes)?,
+            };
+            write_packet_bytes_and_close(stream, &bytes, framing).await?;
         }
         _ => {
             let resp = serde_json::json!({ "error": "unknown protocol" });
-            write_packet_and_close(stream, &resp.to_string(), framing).await?;
+            let bytes = resp.to_string().into_bytes();
+            let bytes = match resp_encoding {
+                TcpEncoding::Plain => bytes,
+                TcpEncoding::Zstd => zstd_compress(&bytes)?,
+            };
+            write_packet_bytes_and_close(stream, &bytes, framing).await?;
         }
     }
 
@@ -1686,4 +1806,27 @@ pub async fn easytier_embedded_nat_types(
         udp_nat_type: stun.udp_nat_type,
         tcp_nat_type: stun.tcp_nat_type,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zstd_roundtrip_decode_packet_text() {
+        let msg = "c:ping\0{\"time\":1}";
+        let compressed = zstd_compress(msg.as_bytes()).expect("compress");
+        assert!(looks_like_zstd_frame(&compressed));
+        let (out, enc) = decode_packet_text(compressed).expect("decode");
+        assert_eq!(enc, TcpEncoding::Zstd);
+        assert_eq!(out, msg);
+    }
+
+    #[test]
+    fn zstd_decompress_limit_enforced() {
+        let big = vec![b'a'; MAX_PACKET_SIZE + 1];
+        let compressed = zstd_compress(&big).expect("compress");
+        let err = zstd_decompress_limited(&compressed, MAX_PACKET_SIZE).expect_err("should fail");
+        assert!(err.to_string().contains("too large"));
+    }
 }
