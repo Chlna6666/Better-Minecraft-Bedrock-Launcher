@@ -74,18 +74,28 @@ async fn report_startup_ingest_once() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!(e).context("stats ingest request failed"))?;
 
-    if !resp.status().is_success() {
-        // Don't log the full URL (contains key).
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_else(|_| "".to_string());
+    let body_preview = if body.len() > 800 {
+        format!("{}...", &body[..800])
+    } else {
+        body
+    };
+
+    // Don't log the full URL (contains key).
+    if !status.is_success() {
         warn!(
-            "stats ingest failed: status={}, elapsedMs={}",
-            resp.status(),
-            start.elapsed().as_millis()
+            "stats ingest failed: status={}, elapsedMs={}, respBody={}",
+            status,
+            start.elapsed().as_millis(),
+            body_preview
         );
     } else {
         debug!(
-            "stats ingest ok: status={}, elapsedMs={}",
-            resp.status(),
-            start.elapsed().as_millis()
+            "stats ingest ok: status={}, elapsedMs={}, respBody={}",
+            status,
+            start.elapsed().as_millis(),
+            body_preview
         );
     }
 
