@@ -309,7 +309,7 @@ export default function About() {
                     {[
                         { img: Tauri, title: "Tauri", desc: t("AboutSection.thanks.tauri"), link: 'https://v2.tauri.app/', isSquare: true },
                         { img: MCAPPX, title: "MCAPPX", desc: t("AboutSection.thanks.MCAPPX"), link: 'https://www.mcappx.com/', isSquare: true },
-                        { img: MCIM, title: "MCIM", desc: t("AboutSection.thanks.mcim"), link: null, isSquare: true },
+                        { img: MCIM, title: "MCIM", desc: t("AboutSection.thanks.mcim"), link: 'https://www.mcimirror.top/', isSquare: true },
                         { img: EasyTier, title: "EasyTier", desc: t("AboutSection.thanks.easytier"), link: 'https://github.com/EasyTier/EasyTier', isSquare: true },
                         {
                             img: BedrockLauncherCore,
