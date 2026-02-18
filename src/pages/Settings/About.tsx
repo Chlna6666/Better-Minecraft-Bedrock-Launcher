@@ -426,7 +426,6 @@ export default function About() {
                                             <div className="sponsor-skeleton-avatar" />
                                             <div className="sponsor-skeleton-meta">
                                                 <div className="sponsor-skeleton-line w-70" />
-                                                <div className="sponsor-skeleton-line w-35" />
                                             </div>
                                         </div>
                                     ))}
@@ -451,7 +450,6 @@ export default function About() {
                                                 <img className="sponsor-avatar" src={s.user.avatar} alt={s.user.name} loading="lazy" referrerPolicy="no-referrer" />
                                                 <div className="sponsor-meta">
                                                     <div className="sponsor-name" data-bm-title={s.user.name}>{s.user.name}</div>
-                                                    <div className="sponsor-amount">¥{s.all_sum_amount}</div>
                                                 </div>
                                             </div>
                                         ))}
