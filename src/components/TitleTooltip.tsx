@@ -32,11 +32,17 @@ export function TitleTooltip(): null {
     let lastY = 0;
     let tipW = 0;
     let tipH = 0;
+    let moveAttached = false;
 
     const hide = () => {
       tooltip.dataset.show = "false";
       tooltip.textContent = "";
       tooltip.style.transform = "translate3d(-9999px, -9999px, 0)";
+
+      if (moveAttached) {
+        window.removeEventListener("pointermove", onPointerMove);
+        moveAttached = false;
+      }
 
       if (activeEl) {
         const stashed = activeEl.getAttribute(DATA_STASH);
@@ -95,6 +101,12 @@ export function TitleTooltip(): null {
       tooltip.dataset.show = "true";
       tipW = 0;
       tipH = 0;
+
+      if (!moveAttached) {
+        // Only track pointer movement while tooltip is visible.
+        window.addEventListener("pointermove", onPointerMove, { passive: true });
+        moveAttached = true;
+      }
 
       // Measure next frame after content is in place.
       requestAnimationFrame(() => {
@@ -164,7 +176,6 @@ export function TitleTooltip(): null {
     // Capture phase ensures we can stash/remove titles before the browser paints native tooltip.
     window.addEventListener("pointerover", onPointerOver, { capture: true, passive: true });
     window.addEventListener("pointerout", onPointerOut, { capture: true, passive: true });
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
     window.addEventListener("focusin", onFocusIn, true);
     window.addEventListener("focusout", onFocusOut, true);
     window.addEventListener("scroll", hide, true);
@@ -176,7 +187,6 @@ export function TitleTooltip(): null {
       hide();
       window.removeEventListener("pointerover", onPointerOver, true);
       window.removeEventListener("pointerout", onPointerOut, true);
-      window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("focusin", onFocusIn, true);
       window.removeEventListener("focusout", onFocusOut, true);
       window.removeEventListener("scroll", hide, true);
@@ -191,4 +201,3 @@ export function TitleTooltip(): null {
 
   return null;
 }
-
