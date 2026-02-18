@@ -57,7 +57,8 @@
     border: 1px solid var(--about-border);
     border-radius: 16px;
     position: relative;
-    overflow: hidden;
+    /* Tooltips (data-bm-title) need to escape card bounds */
+    overflow: visible;
     transition: all 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94);
     box-shadow: 0 4px 6px var(--about-shadow);
 }
