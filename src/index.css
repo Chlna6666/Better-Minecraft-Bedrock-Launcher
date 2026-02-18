@@ -137,8 +137,8 @@ body {
 
 [data-bm-title]::after{
   content: attr(data-bm-title);
-  bottom: calc(100% + 12px);
-  transform: translate3d(-50%, 6px, 0) scale(0.98);
+  top: calc(100% + 12px);
+  transform: translate3d(-50%, -6px, 0) scale(0.98);
 
   display: inline-flex;
   align-items: center;
@@ -168,14 +168,27 @@ body {
 
 [data-bm-title]::before{
   content: "";
-  bottom: calc(100% + 8px);
-  transform: translate3d(-50%, 6px, 0) rotate(45deg);
+  top: calc(100% + 8px);
+  transform: translate3d(-50%, -6px, 0) rotate(45deg);
   width: 8px;
   height: 8px;
   background: var(--bm-tooltip-bg);
-  border-left: 1px solid var(--bm-tooltip-border);
-  border-top: 1px solid var(--bm-tooltip-border);
+  outline: 1px solid var(--bm-tooltip-border);
+  outline-offset: -1px;
   box-shadow: var(--bm-tooltip-shadow);
+}
+
+/* Optional placement override */
+[data-bm-title][data-bm-title-placement="top"]::after{
+  top: auto;
+  bottom: calc(100% + 12px);
+  transform: translate3d(-50%, 6px, 0) scale(0.98);
+}
+
+[data-bm-title][data-bm-title-placement="top"]::before{
+  top: auto;
+  bottom: calc(100% + 8px);
+  transform: translate3d(-50%, 6px, 0) rotate(45deg);
 }
 
 [data-bm-title]:hover::before,
