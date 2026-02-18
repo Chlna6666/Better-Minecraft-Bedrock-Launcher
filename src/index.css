@@ -122,6 +122,13 @@ body {
   position: relative;
   /* Allow tooltip pseudo-elements to escape rounded/interactive UI surfaces */
   overflow: visible;
+  z-index: 0;
+}
+
+[data-bm-title]:hover,
+[data-bm-title]:focus-visible{
+  /* Lift the whole anchor above siblings within the same stacking context */
+  z-index: 10000;
 }
 
 [data-bm-title]::before,
