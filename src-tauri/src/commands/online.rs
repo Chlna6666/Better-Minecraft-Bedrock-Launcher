@@ -1031,13 +1031,17 @@ pub async fn easytier_embedded_peers(
             let s = inet.to_string();
             s.split_once('/').map(|v| v.0.to_string()).unwrap_or(s)
         });
-        if r.hostname.trim().is_empty() {
-            continue;
+        // Some third-party clients don't set hostname; keep them visible in UI.
+        let mut hostname = r.hostname;
+        if hostname.trim().is_empty() {
+            let id = r.inst_id.trim();
+            hostname = if id.is_empty() {
+                "node-unknown".to_string()
+            } else {
+                format!("node-{id}")
+            };
         }
-        peers.push(EasyTierPeer {
-            ipv4,
-            hostname: r.hostname,
-        });
+        peers.push(EasyTierPeer { ipv4, hostname });
     }
 
     Ok(peers)
