@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 const STATS_INGEST_URL: &str = "https://stats.bmcbl.com/v1/ingest?key=X9Q4M3T8V2K7";
@@ -27,12 +27,16 @@ struct StatsIngestPayload {
 pub fn spawn_startup_ingest() {
     // Best-effort fire-and-forget; never block startup.
     tauri::async_runtime::spawn(async move {
-        let _ = report_startup_ingest_once().await;
+        match report_startup_ingest_once().await {
+            Ok(_) => debug!("stats ingest task finished"),
+            Err(e) => warn!("stats ingest task failed: {e:#}"),
+        }
     });
 }
 
 async fn report_startup_ingest_once() -> anyhow::Result<()> {
     if REPORTED_ONCE.swap(true, Ordering::SeqCst) {
+        debug!("stats ingest skipped: already reported");
         return Ok(());
     }
 
@@ -42,9 +46,12 @@ async fn report_startup_ingest_once() -> anyhow::Result<()> {
         client_id: compute_client_id(),
     };
 
+    let start = Instant::now();
     debug!(
-        "stats ingest start: appVersion={}, os={}",
-        payload.app_version, payload.os
+        "stats ingest start: appVersion={}, os={}, clientIdPrefix={}",
+        payload.app_version,
+        payload.os,
+        payload.client_id.chars().take(12).collect::<String>()
     );
 
     let client = match cloudflare::get_optimized_ip().await {
@@ -58,18 +65,28 @@ async fn report_startup_ingest_once() -> anyhow::Result<()> {
         }
     };
 
+    debug!("stats ingest: sending request (timeout=5s)");
     let resp = client
         .post(STATS_INGEST_URL)
         .timeout(Duration::from_secs(5))
         .json(&payload)
         .send()
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("stats ingest request failed"))?;
 
     if !resp.status().is_success() {
         // Don't log the full URL (contains key).
-        warn!("stats ingest failed: status={}", resp.status());
+        warn!(
+            "stats ingest failed: status={}, elapsedMs={}",
+            resp.status(),
+            start.elapsed().as_millis()
+        );
     } else {
-        debug!("stats ingest ok: status={}", resp.status());
+        debug!(
+            "stats ingest ok: status={}, elapsedMs={}",
+            resp.status(),
+            start.elapsed().as_millis()
+        );
     }
 
     Ok(())
