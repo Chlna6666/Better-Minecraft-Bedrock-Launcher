@@ -8,6 +8,7 @@ import PluginHost from "./PluginHost.jsx";
 import { invoke } from "@tauri-apps/api/core";
 import { Toast } from "./components/Toast.tsx";
 import { BrowserRouter } from "react-router-dom";
+import { initTitleTooltip } from "./utils/titleTooltip.ts";
 
 (async () => {
     try {
@@ -17,6 +18,8 @@ import { BrowserRouter } from "react-router-dom";
     } catch (e) {
         console.warn("Locale setup failed, fallback to default", e);
     }
+
+    initTitleTooltip();
 
     createRoot(document.getElementById('root')).render(
         <I18nextProvider i18n={i18n}>
