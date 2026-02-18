@@ -775,6 +775,17 @@ export default function OnlinePage() {
         ? { ...c, ipv4: "127.0.0.1" }
         : c;
 
+      if (!useNoTun) {
+        // In TUN mode, apply a strict ACL: only allow TCP to the PaperConnect protocol port.
+        appendStatus(`Applying TCP security policy (port ${c.port})...`);
+        await invoke("easytier_restart_with_port_forwards", {
+          forwards: [],
+          options: { disableP2p: disableP2P, noTun: false, tcpWhitelist: [c.port] },
+        });
+        await checkVirtualIpHintOnce();
+        await waitForVirtualIp(20_000);
+      }
+
       if (useNoTun) {
         appendStatus("Setting up port forward...");
         let udpPorts = [primaryGamePort, DEFAULT_JOIN_UDP_PORT_FALLBACK]

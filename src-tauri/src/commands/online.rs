@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
 use easytier::common::config::{
-    gen_default_flags, ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
-    TomlConfigLoader,
+    gen_default_flags, ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig,
+    PortForwardConfig, TomlConfigLoader,
 };
 use easytier::common::stun::{StunInfoCollector, StunInfoCollectorTrait};
 use easytier::instance_manager::NetworkInstanceManager;
@@ -15,8 +15,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
-use std::sync::{Arc, Mutex};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::State;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,14 +28,11 @@ use uuid::Uuid;
 
 use super::online_acl::build_paperconnect_acl;
 
-
 const MAX_PACKET_SIZE: usize = 64 * 1024;
 const ZSTD_LEVEL: i32 = 3;
 const DEFAULT_PAPERCONNECT_VIP: &str = "10.144.144.1";
-const DEFAULT_BOOTSTRAP_PEERS: [&str; 2] = [
-    "tcp://39.108.52.138:11010",
-    "tcp://8.148.29.206:11010",
-];
+const DEFAULT_BOOTSTRAP_PEERS: [&str; 2] =
+    ["tcp://39.108.52.138:11010", "tcp://8.148.29.206:11010"];
 
 pub struct OnlineState {
     easytier_manager: Arc<NetworkInstanceManager>,
@@ -151,7 +148,11 @@ pub struct EasyTierStartOptions {
     pub disable_p2p: Option<bool>,
     #[serde(alias = "noTun", alias = "no_tun")]
     pub no_tun: Option<bool>,
-    #[serde(alias = "compression", alias = "dataCompressAlgo", alias = "data_compress_algo")]
+    #[serde(
+        alias = "compression",
+        alias = "dataCompressAlgo",
+        alias = "data_compress_algo"
+    )]
     pub compression: Option<String>,
     #[serde(alias = "tcpWhitelist", alias = "tcp_whitelist")]
     pub tcp_whitelist: Option<Vec<u16>>,
@@ -205,7 +206,10 @@ fn default_client_id() -> String {
 }
 
 fn default_bootstrap_peers() -> Vec<String> {
-    DEFAULT_BOOTSTRAP_PEERS.iter().map(|s| s.to_string()).collect()
+    DEFAULT_BOOTSTRAP_PEERS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 static DEFAULT_PLAYER_NAME: Lazy<String> = Lazy::new(|| {
@@ -261,11 +265,14 @@ fn group_to_value_le_base34(group8: &str) -> anyhow::Result<u128> {
     let mut value: u128 = 0;
     let mut place: u128 = 1;
     for ch in s.chars() {
-        let digit = char_to_digit34(ch).ok_or_else(|| anyhow!("invalid char in group: {ch}"))? as u128;
+        let digit =
+            char_to_digit34(ch).ok_or_else(|| anyhow!("invalid char in group: {ch}"))? as u128;
         value = value
             .checked_add(digit * place)
             .ok_or_else(|| anyhow!("group value overflow"))?;
-        place = place.checked_mul(34).ok_or_else(|| anyhow!("group value overflow"))?;
+        place = place
+            .checked_mul(34)
+            .ok_or_else(|| anyhow!("group value overflow"))?;
     }
     Ok(value)
 }
@@ -328,7 +335,9 @@ pub async fn paperconnect_generate_room() -> Result<PaperConnectRoom, String> {
 #[tauri::command]
 pub async fn paperconnect_parse_room_code(room_code: String) -> Result<PaperConnectRoom, String> {
     let s = room_code.trim();
-    let s = s.strip_prefix("P/").ok_or_else(|| "roomCode must start with P/".to_string())?;
+    let s = s
+        .strip_prefix("P/")
+        .ok_or_else(|| "roomCode must start with P/".to_string())?;
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 4 {
         return Err("roomCode must be like P/NNNN-NNNN-SSSS-SSSS".to_string());
@@ -387,15 +396,16 @@ pub async fn easytier_start(
         if id.is_some() {
             return Err("EasyTier already running".to_string());
         }
-        let (cfg, resolved_hostname, resolved_ipv4) = build_embedded_easytier_config_with_port_forwards(
-            network_name.clone(),
-            network_secret.clone(),
-            peers.clone(),
-            hostname.clone(),
-            options.clone(),
-            Vec::new(),
-        )
-        .map_err(|e| e.to_string())?;
+        let (cfg, resolved_hostname, resolved_ipv4) =
+            build_embedded_easytier_config_with_port_forwards(
+                network_name.clone(),
+                network_secret.clone(),
+                peers.clone(),
+                hostname.clone(),
+                options.clone(),
+                Vec::new(),
+            )
+            .map_err(|e| e.to_string())?;
         *state.easytier_last_start.lock().unwrap() = Some(EasyTierLastStart {
             network_name: network_name.clone(),
             network_secret: network_secret.clone(),
@@ -415,7 +425,10 @@ pub async fn easytier_start(
     let instance_id = *state.easytier_instance_id.lock().unwrap().as_ref().unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let has_api = state.easytier_manager.get_instance_service(&instance_id).is_some();
+        let has_api = state
+            .easytier_manager
+            .get_instance_service(&instance_id)
+            .is_some();
         if has_api {
             break;
         }
@@ -434,7 +447,9 @@ pub async fn easytier_start(
         if !is_running {
             *state.easytier_instance_id.lock().unwrap() = None;
             *state.easytier_last_start.lock().unwrap() = None;
-            let _ = state.easytier_manager.delete_network_instance(vec![instance_id]);
+            let _ = state
+                .easytier_manager
+                .delete_network_instance(vec![instance_id]);
             return Err(format!(
                 "embedded EasyTier stopped during startup: {}",
                 last_err.unwrap_or_else(|| "unknown error".to_string())
@@ -453,6 +468,7 @@ pub async fn easytier_start(
 pub async fn easytier_restart_with_port_forwards(
     state: State<'_, OnlineState>,
     forwards: Vec<EasyTierPortForwardArgs>,
+    options: Option<EasyTierStartOptions>,
 ) -> Result<(), String> {
     let Some(last) = state.easytier_last_start.lock().unwrap().clone() else {
         return Err("EasyTier not started yet".to_string());
@@ -466,7 +482,10 @@ pub async fn easytier_restart_with_port_forwards(
         if proto != "tcp" && proto != "udp" {
             return Err(format!("invalid port forward proto: {}", f.proto));
         }
-        if preflight.iter().any(|(p, port)| p == &proto && *port == f.bind_port) {
+        if preflight
+            .iter()
+            .any(|(p, port)| p == &proto && *port == f.bind_port)
+        {
             continue;
         }
         preflight.push((proto, f.bind_port));
@@ -475,8 +494,12 @@ pub async fn easytier_restart_with_port_forwards(
     for (proto, port) in preflight.iter() {
         let bind = ("127.0.0.1", *port);
         let res = match proto.as_str() {
-            "tcp" => StdTcpListener::bind(bind).map(|l| drop(l)).map_err(|e| e.to_string()),
-            "udp" => StdUdpSocket::bind(bind).map(|s| drop(s)).map_err(|e| e.to_string()),
+            "tcp" => StdTcpListener::bind(bind)
+                .map(|l| drop(l))
+                .map_err(|e| e.to_string()),
+            "udp" => StdUdpSocket::bind(bind)
+                .map(|s| drop(s))
+                .map_err(|e| e.to_string()),
             _ => Ok(()),
         };
         if let Err(msg) = res {
@@ -490,7 +513,7 @@ pub async fn easytier_restart_with_port_forwards(
     let network_secret = last.network_secret.clone();
     let peers = last.peers.clone();
     let hostname = last.hostname.clone();
-    let options = last.options.clone();
+    let options = options.or_else(|| last.options.clone());
 
     let old_id = state.easytier_instance_id.lock().unwrap().take();
     if let Some(id) = old_id {
@@ -522,20 +545,22 @@ pub async fn easytier_restart_with_port_forwards(
         });
     }
 
-    let (cfg, resolved_hostname, resolved_ipv4) = build_embedded_easytier_config_with_port_forwards(
-        network_name.clone(),
-        network_secret.clone(),
-        peers.clone(),
-        hostname.clone(),
-        options.clone(),
-        port_forwards,
-    )
-    .map_err(|e| e.to_string())?;
+    let (cfg, resolved_hostname, resolved_ipv4) =
+        build_embedded_easytier_config_with_port_forwards(
+            network_name.clone(),
+            network_secret.clone(),
+            peers.clone(),
+            hostname.clone(),
+            options.clone(),
+            port_forwards,
+        )
+        .map_err(|e| e.to_string())?;
 
-    let instance_id = match state
-        .easytier_manager
-        .run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)
-    {
+    let instance_id = match state.easytier_manager.run_network_instance(
+        cfg,
+        true,
+        ConfigFileControl::STATIC_CONFIG,
+    ) {
         Ok(id) => id,
         Err(e) => {
             // Best-effort rollback: bring EasyTier back up without port-forwards so the online session
@@ -547,12 +572,16 @@ pub async fn easytier_restart_with_port_forwards(
                 hostname,
                 options,
             )
-            .map_err(|e2| format!("restart embedded EasyTier failed: {e}; rollback build failed: {e2}"))?;
+            .map_err(|e2| {
+                format!("restart embedded EasyTier failed: {e}; rollback build failed: {e2}")
+            })?;
 
             let rollback_id = state
                 .easytier_manager
                 .run_network_instance(rollback_cfg, true, ConfigFileControl::STATIC_CONFIG)
-                .map_err(|e2| format!("restart embedded EasyTier failed: {e}; rollback start failed: {e2}"))?;
+                .map_err(|e2| {
+                    format!("restart embedded EasyTier failed: {e}; rollback start failed: {e2}")
+                })?;
 
             *state.easytier_instance_id.lock().unwrap() = Some(rollback_id);
             return Err(format!("restart embedded EasyTier failed: {e}"));
@@ -572,7 +601,10 @@ pub async fn easytier_restart_with_port_forwards(
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let has_api = state.easytier_manager.get_instance_service(&instance_id).is_some();
+        let has_api = state
+            .easytier_manager
+            .get_instance_service(&instance_id)
+            .is_some();
         if has_api {
             break;
         }
@@ -591,7 +623,9 @@ pub async fn easytier_restart_with_port_forwards(
         if !is_running {
             *state.easytier_instance_id.lock().unwrap() = None;
             // Keep last_start so the user can retry without losing settings.
-            let _ = state.easytier_manager.delete_network_instance(vec![instance_id]);
+            let _ = state
+                .easytier_manager
+                .delete_network_instance(vec![instance_id]);
             return Err(format!(
                 "embedded EasyTier stopped during restart: {}",
                 last_err.unwrap_or_else(|| "unknown error".to_string())
@@ -723,6 +757,7 @@ fn build_embedded_easytier_config_with_port_forwards(
     let mut ipv4: Option<cidr::Ipv4Inet> = None;
     let mut dhcp = true;
     let mut host_port_from_hostname: Option<u16> = None;
+    let mut paperconnect_protocol_port: Option<u16> = None;
 
     if let Some(opts) = options {
         if let Some(v) = opts.disable_p2p {
@@ -737,11 +772,7 @@ fn build_embedded_easytier_config_with_port_forwards(
                 flags.data_compress_algo = match raw.as_str() {
                     "zstd" => CompressionAlgoPb::Zstd.into(),
                     "none" => CompressionAlgoPb::None.into(),
-                    _ => {
-                        return Err(anyhow!(
-                            "invalid compression: {v} (supported: none, zstd)"
-                        ))
-                    }
+                    _ => return Err(anyhow!("invalid compression: {v} (supported: none, zstd)")),
                 };
             }
         }
@@ -759,7 +790,10 @@ fn build_embedded_easytier_config_with_port_forwards(
                 } else {
                     format!("{raw}/24")
                 };
-                ipv4 = Some(cidr::Ipv4Inet::from_str(&cidr).with_context(|| format!("invalid ipv4 cidr: {cidr}"))?);
+                ipv4 = Some(
+                    cidr::Ipv4Inet::from_str(&cidr)
+                        .with_context(|| format!("invalid ipv4 cidr: {cidr}"))?,
+                );
                 dhcp = false;
             }
         }
@@ -783,9 +817,24 @@ fn build_embedded_easytier_config_with_port_forwards(
         }
     }
 
-    let is_paperconnect_net =
-        net_name_for_policy.starts_with("paper-connect-") || net_name_for_policy.starts_with("scaffolding-mc-");
+    let is_paperconnect_net = net_name_for_policy.starts_with("paper-connect-")
+        || net_name_for_policy.starts_with("scaffolding-mc-");
     let is_paperconnect_host = is_paperconnect_net && host_port_from_hostname.is_some();
+
+    // Joiners may learn the PaperConnect protocol port out-of-band (e.g. via `paperconnect_find_center`)
+    // and restart EasyTier with `tcpWhitelist: [port]` to apply the stricter ACL.
+    paperconnect_protocol_port = host_port_from_hostname.or_else(|| {
+        tcp_whitelist.as_ref().and_then(|wl| {
+            if wl.len() != 1 {
+                return None;
+            }
+            wl[0]
+                .trim()
+                .parse::<u16>()
+                .ok()
+                .filter(|p| (1025..=65535).contains(p))
+        })
+    });
 
     // PaperConnect expects a stable virtual subnet (10.144.144.0/24). Some EasyTier setups may
     // otherwise allocate an internal DHCP pool from a different private range, causing peers to
@@ -796,7 +845,9 @@ fn build_embedded_easytier_config_with_port_forwards(
     if ipv4.is_none() && is_paperconnect_net {
         if host_port_from_hostname.is_some() {
             // PaperConnect host: fixed virtual IP for compatibility.
-            ipv4 = Some(cidr::Ipv4Inet::from_str(&format!("{DEFAULT_PAPERCONNECT_VIP}/24"))?);
+            ipv4 = Some(cidr::Ipv4Inet::from_str(&format!(
+                "{DEFAULT_PAPERCONNECT_VIP}/24"
+            ))?);
             dhcp = false;
         } else {
             // PaperConnect clients: keep them in the same /24 so the host can be reached
@@ -831,7 +882,11 @@ fn build_embedded_easytier_config_with_port_forwards(
         tcp_whitelist = None;
         udp_whitelist = None;
 
-        let acl = build_paperconnect_acl(is_paperconnect_host, DEFAULT_PAPERCONNECT_VIP, host_port_from_hostname);
+        let acl = build_paperconnect_acl(
+            is_paperconnect_host,
+            DEFAULT_PAPERCONNECT_VIP,
+            paperconnect_protocol_port,
+        );
         cfg.set_acl(Some(acl));
     }
 
@@ -931,7 +986,9 @@ pub async fn easytier_embedded_status(
                 }
                 if ipv4.is_none() {
                     let hn = hostname.trim();
-                    if hn.starts_with("paper-connect-server-") || hn.starts_with("scaffolding-mc-server-") {
+                    if hn.starts_with("paper-connect-server-")
+                        || hn.starts_with("scaffolding-mc-server-")
+                    {
                         ipv4 = Some(DEFAULT_PAPERCONNECT_VIP.to_string());
                     }
                 }
@@ -947,7 +1004,9 @@ pub async fn easytier_embedded_status(
 }
 
 #[tauri::command]
-pub async fn easytier_embedded_peers(state: State<'_, OnlineState>) -> Result<Vec<EasyTierPeer>, String> {
+pub async fn easytier_embedded_peers(
+    state: State<'_, OnlineState>,
+) -> Result<Vec<EasyTierPeer>, String> {
     let id = state
         .easytier_instance_id
         .lock()
@@ -1273,29 +1332,45 @@ async fn read_one_packet(stream: &mut TcpStream) -> anyhow::Result<TcpPacket> {
     })
 }
 
-async fn write_packet_bytes(stream: &mut TcpStream, bytes: &[u8], framing: TcpFraming) -> anyhow::Result<()> {
+async fn write_packet_bytes(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    framing: TcpFraming,
+) -> anyhow::Result<()> {
     match framing {
         TcpFraming::Raw => {
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedLe => {
             let len = u32::try_from(bytes.len()).context("packet too large")?;
-            stream.write_all(&len.to_le_bytes()).await.context("write tcp")?;
+            stream
+                .write_all(&len.to_le_bytes())
+                .await
+                .context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedBe => {
             let len = u32::try_from(bytes.len()).context("packet too large")?;
-            stream.write_all(&len.to_be_bytes()).await.context("write tcp")?;
+            stream
+                .write_all(&len.to_be_bytes())
+                .await
+                .context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedU16Le => {
             let len = u16::try_from(bytes.len()).context("packet too large")?;
-            stream.write_all(&len.to_le_bytes()).await.context("write tcp")?;
+            stream
+                .write_all(&len.to_le_bytes())
+                .await
+                .context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LengthPrefixedU16Be => {
             let len = u16::try_from(bytes.len()).context("packet too large")?;
-            stream.write_all(&len.to_be_bytes()).await.context("write tcp")?;
+            stream
+                .write_all(&len.to_be_bytes())
+                .await
+                .context("write tcp")?;
             stream.write_all(bytes).await.context("write tcp")?;
         }
         TcpFraming::LineDelimited => {
@@ -1308,7 +1383,11 @@ async fn write_packet_bytes(stream: &mut TcpStream, bytes: &[u8], framing: TcpFr
     Ok(())
 }
 
-async fn write_packet(stream: &mut TcpStream, msg: &str, framing: TcpFraming) -> anyhow::Result<()> {
+async fn write_packet(
+    stream: &mut TcpStream,
+    msg: &str,
+    framing: TcpFraming,
+) -> anyhow::Result<()> {
     write_packet_bytes(stream, msg.as_bytes(), framing).await
 }
 
@@ -1322,12 +1401,21 @@ async fn write_packet_bytes_and_close(
     Ok(())
 }
 
-async fn write_packet_and_close(stream: &mut TcpStream, msg: &str, framing: TcpFraming) -> anyhow::Result<()> {
+async fn write_packet_and_close(
+    stream: &mut TcpStream,
+    msg: &str,
+    framing: TcpFraming,
+) -> anyhow::Result<()> {
     write_packet_bytes_and_close(stream, msg.as_bytes(), framing).await
 }
 
 #[tauri::command]
-pub async fn paperconnect_tcp_request(host: String, port: u16, proto: String, body: Value) -> Result<Value, String> {
+pub async fn paperconnect_tcp_request(
+    host: String,
+    port: u16,
+    proto: String,
+    body: Value,
+) -> Result<Value, String> {
     let addr = format!("{host}:{port}");
     let mut body = body;
     if proto == "c:player" || proto == "c:ping" {
@@ -1349,7 +1437,10 @@ pub async fn paperconnect_tcp_request(host: String, port: u16, proto: String, bo
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !player_ok {
-                obj.insert("playerName".to_string(), Value::String(default_player_name()));
+                obj.insert(
+                    "playerName".to_string(),
+                    Value::String(default_player_name()),
+                );
             }
         }
     }
@@ -1371,7 +1462,10 @@ pub async fn paperconnect_tcp_request(host: String, port: u16, proto: String, bo
             .await
             .context("read response timed out")??;
         let resp = pkt.text;
-        let json = resp.split_once('\0').map(|(_, j)| j).unwrap_or(resp.as_str());
+        let json = resp
+            .split_once('\0')
+            .map(|(_, j)| j)
+            .unwrap_or(resp.as_str());
         let v: Value = serde_json::from_str(json).context("invalid json response")?;
         if let Some(err_msg) = v.get("error").and_then(|v| v.as_str()) {
             return Err(anyhow!("server error: {err_msg}"));
@@ -1678,7 +1772,11 @@ async fn handle_paperconnect_conn(
             }
             let (game_type, game_protocol_type, game_port) = {
                 let st = state.lock().await;
-                (st.game_type.clone(), st.game_protocol_type.clone(), st.game_port)
+                (
+                    st.game_type.clone(),
+                    st.game_protocol_type.clone(),
+                    st.game_port,
+                )
             };
             let resp = serde_json::json!({
                 "time": time,
@@ -1811,7 +1909,10 @@ pub async fn easytier_embedded_nat_types(
 
     let resp = svc
         .get_peer_manage_service()
-        .show_node_info(BaseController::default(), easytier::proto::api::instance::ShowNodeInfoRequest::default())
+        .show_node_info(
+            BaseController::default(),
+            easytier::proto::api::instance::ShowNodeInfoRequest::default(),
+        )
         .await
         .map_err(|e| format!("show_node_info failed: {e}"))?;
 
