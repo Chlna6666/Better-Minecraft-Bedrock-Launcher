@@ -176,38 +176,47 @@ fn detect_os_string() -> String {
 
 #[cfg(target_os = "windows")]
 fn windows_os_string() -> Option<String> {
-    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
-    use winreg::RegKey;
+    let os_ver = sysinfo::System::os_version();
+    let kernel = sysinfo::System::kernel_version();
+    format_windows_os(os_ver.as_deref(), kernel.as_deref())
+}
 
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let key = hklm
-        .open_subkey_with_flags(
-            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
-            KEY_READ | KEY_WOW64_64KEY,
-        )
-        .ok()?;
+#[cfg(target_os = "windows")]
+fn format_windows_os(os_version: Option<&str>, kernel_version: Option<&str>) -> Option<String> {
+    fn first_number(s: &str) -> Option<String> {
+        let mut started = false;
+        let mut out = String::new();
+        for ch in s.chars() {
+            if ch.is_ascii_digit() {
+                started = true;
+                out.push(ch);
+            } else if started {
+                break;
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
+}
 
-    let product: String = key.get_value("ProductName").unwrap_or_default();
-    let build: String = key
-        .get_value("CurrentBuildNumber")
-        .or_else(|_| key.get_value("CurrentBuild"))
-        .unwrap_or_default();
-
-    let product_trim = product.trim();
-    let build_trim = build.trim();
-    if build_trim.is_empty() {
+    let os_version = os_version?.trim();
+    if os_version.is_empty() {
         return None;
     }
 
-    let name = if product_trim.contains("Windows 11") {
-        "Windows 11"
-    } else if product_trim.contains("Windows 10") {
-        "Windows 10"
-    } else if product_trim.is_empty() {
-        "Windows"
-    } else {
-        product_trim
-    };
+    // `sysinfo::System::os_version()` on Windows often looks like "11 (26100)".
+    // Prefer that for major version, and prefer kernel_version for build.
+    let major = first_number(os_version)?;
 
-    Some(format!("{name} Build {build_trim}"))
+    let build = kernel_version
+        .and_then(|s| first_number(s.trim()))
+        .or_else(|| {
+            // Fallback: try to parse the "(26100)" portion if present.
+            let start = os_version.find('(')?;
+            let end = os_version[start..].find(')')? + start;
+            first_number(os_version.get(start + 1..end)?.trim())
+        });
+
+    Some(match build {
+        Some(b) => format!("Windows {major} Build {b}"),
+        None => format!("Windows {major}"),
+    })
 }
