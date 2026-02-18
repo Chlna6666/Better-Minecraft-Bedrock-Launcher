@@ -168,14 +168,14 @@ body {
 
 [data-bm-title]::before{
   content: "";
-  top: calc(100% + 8px);
-  transform: translate3d(-50%, -6px, 0) rotate(45deg);
-  width: 8px;
-  height: 8px;
-  background: var(--bm-tooltip-bg);
-  outline: 1px solid var(--bm-tooltip-border);
-  outline-offset: -1px;
-  box-shadow: var(--bm-tooltip-shadow);
+  top: calc(100% + 6px);
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 7px solid var(--bm-tooltip-bg);
+  transform: translate3d(-50%, -6px, 0) scale(1);
+  filter: drop-shadow(0 0 0 var(--bm-tooltip-border)) drop-shadow(var(--bm-tooltip-shadow));
 }
 
 /* Optional placement override */
@@ -187,8 +187,10 @@ body {
 
 [data-bm-title][data-bm-title-placement="top"]::before{
   top: auto;
-  bottom: calc(100% + 8px);
-  transform: translate3d(-50%, 6px, 0) rotate(45deg);
+  bottom: calc(100% + 6px);
+  border-bottom: 0;
+  border-top: 7px solid var(--bm-tooltip-bg);
+  transform: translate3d(-50%, 6px, 0) scale(1);
 }
 
 [data-bm-title]:hover::before,
