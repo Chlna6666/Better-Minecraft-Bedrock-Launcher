@@ -54,16 +54,23 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    overflow: hidden;
+}
+[data-theme='dark'] .vs-group {
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.08);
 }
 
 .vs-subpanel {
-    padding: 12px;
-    border-radius: 10px;
-    background: rgba(17, 24, 39, 0.02);
-    border: 1px dashed rgba(17, 24, 39, 0.12);
+    padding: 0 12px 12px;
+    background: transparent;
+    border-top: 1px dashed rgba(17, 24, 39, 0.12);
 }
 [data-theme='dark'] .vs-subpanel {
-    background: rgba(255,255,255,0.04);
     border-color: rgba(255,255,255,0.14);
 }
 
@@ -72,7 +79,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 8px 0;
+    padding: 10px 0;
     min-width: 0;
 }
 .vs-subrow + .vs-subrow {
@@ -98,6 +105,18 @@
 }
 [data-theme='dark'] .vs-subhint {
     color: rgba(255,255,255,0.72);
+}
+
+/* Make the grouped "mouse lock" block appear as a single card */
+.vs-group > .vs-option-item {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 14px 12px;
+}
+[data-theme='dark'] .vs-group > .vs-option-item {
+    background: transparent;
+    border: none;
 }
 
 /* 开关项样式 */
