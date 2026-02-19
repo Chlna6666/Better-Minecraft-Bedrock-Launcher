@@ -218,7 +218,18 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                 </div>
                             )}
 
-                            {/* 4. 编辑器模式 (低版本隐藏) */}
+                            {/* 4. Mod 加载开关 (BLoader.dll 管理) */}
+                            <div className="vs-option-item">
+                                <div className="vs-option-info">
+                                    <span className="vs-option-label">{t("VersionSettingsModal.disable_mod_loading_label")}</span>
+                                    <span className="vs-option-desc">{t("VersionSettingsModal.disable_mod_loading_desc")}</span>
+                                </div>
+                                <div className={`vs-switch ${config.disable_mod_loading ? 'checked' : ''}`} onClick={() => toggle('disable_mod_loading')}>
+                                    <div className="vs-switch-thumb" />
+                                </div>
+                            </div>
+
+                            {/* 5. 编辑器模式 (低版本隐藏) */}
                             {canUseEditor ? (
                                 <div className="vs-option-item">
                                     <div className="vs-option-info">
@@ -230,17 +241,6 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                     </div>
                                 </div>
                             ) : null}
-
-                            {/* 5. Mod 加载开关 (BLoader.dll 管理) */}
-                            <div className="vs-option-item">
-                                <div className="vs-option-info">
-                                    <span className="vs-option-label">{t("VersionSettingsModal.disable_mod_loading_label")}</span>
-                                    <span className="vs-option-desc">{t("VersionSettingsModal.disable_mod_loading_desc")}</span>
-                                </div>
-                                <div className={`vs-switch ${config.disable_mod_loading ? 'checked' : ''}`} onClick={() => toggle('disable_mod_loading')}>
-                                    <div className="vs-switch-thumb" />
-                                </div>
-                            </div>
                         </>
                     )}
                 </div>
