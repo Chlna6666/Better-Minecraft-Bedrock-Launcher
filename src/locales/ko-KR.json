@@ -627,6 +627,8 @@
     "disable_mod_loading_desc": "실행 시 모드 인젝션/로딩 비활성화(BLoader에서 관리)",
     "mouse_lock_label": "마우스 잠금",
     "mouse_lock_desc": "실행 후 마우스 잠금(핫키로 해제)",
+    "mouse_lock_gdk_label": "마우스 잠금(GDK 사용 불가)",
+    "mouse_lock_gdk_desc": "GDK 빌드는 공식 수정이 있어 마우스 잠금이 필요하지 않습니다",
     "mouse_lock_reduce_label": "픽셀 감소",
     "mouse_lock_reduce_desc": "가장자리 트리거 감소(값이 클수록 가장자리 도달이 어려움)",
     "mouse_lock_hotkey_label": "해제 핫키",

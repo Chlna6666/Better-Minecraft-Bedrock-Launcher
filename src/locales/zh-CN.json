@@ -666,6 +666,8 @@
     "disable_mod_loading_desc": "禁用启动时 Mod 注入与加载（由 BLoader 管理）",
     "mouse_lock_label": "鼠标锁定",
     "mouse_lock_desc": "启动后自动锁定鼠标（按热键解锁）",
+    "mouse_lock_gdk_label": "鼠标锁定（GDK 不可用）",
+    "mouse_lock_gdk_desc": "GDK 版本官方已修复鼠标问题，无需启用鼠标锁定",
     "mouse_lock_reduce_label": "减少像素",
     "mouse_lock_reduce_desc": "减少鼠标贴边触发（数值越大越不容易贴边）",
     "mouse_lock_hotkey_label": "解锁热键",

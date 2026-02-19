@@ -627,6 +627,8 @@
     "disable_mod_loading_desc": "停用啟動時 Mod 注入與載入（由 BLoader 管理）",
     "mouse_lock_label": "滑鼠鎖定",
     "mouse_lock_desc": "啟動後自動鎖定滑鼠（按熱鍵解除）",
+    "mouse_lock_gdk_label": "滑鼠鎖定（GDK 不可用）",
+    "mouse_lock_gdk_desc": "GDK 版本官方已修復滑鼠問題，無需啟用滑鼠鎖定",
     "mouse_lock_reduce_label": "減少像素",
     "mouse_lock_reduce_desc": "減少滑鼠貼邊觸發（數值越大越不容易貼邊）",
     "mouse_lock_hotkey_label": "解除熱鍵",

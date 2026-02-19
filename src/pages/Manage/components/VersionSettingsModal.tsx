@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { X, Save, Loader2, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '../../../components/Toast';
+import { Input, Select } from '../../../components';
 import './VersionSettingsModal.css';
 
 interface VersionSettingsModalProps {
@@ -45,6 +46,8 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
 
     // 1.19.80.20 是编辑器模式的最低版本要求
     const canUseEditor = version?.version && isVersionAtLeast(version.version, "1.19.80.20");
+    const buildType = String(version?.kind || 'uwp').toLowerCase();
+    const isGdk = buildType === 'gdk';
 
     const HOTKEY_OPTIONS: Array<{ value: string; label: string }> = [
         { value: 'ALT', label: 'ALT' },
@@ -60,7 +63,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
             invoke('get_version_config', { folderName: version.folder })
                 .then((res: any) => {
                     // 确保拿到的是对象
-                    setConfig(res || {
+                    const next = res || {
                         enable_debug_console: false,
                         enable_redirection: false,
                         editor_mode: false,
@@ -68,14 +71,20 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                         lock_mouse_on_launch: false,
                         unlock_mouse_hotkey: 'ALT',
                         reduce_pixels: 0,
-                    });
+                    };
+
+                    // GDK: mouse lock is not needed (official fix), force disabled.
+                    if (isGdk) {
+                        next.lock_mouse_on_launch = false;
+                    }
+                    setConfig(next);
                 })
                 .catch((err) => {
                     toast.error(t("VersionSettingsModal.load_failed", { message: String(err) }));
                 })
                 .finally(() => setLoading(false));
         }
-    }, [isOpen, version, t]);
+    }, [isOpen, version, t, isGdk]);
 
     const handleSave = async () => {
         setSaving(true);
@@ -84,6 +93,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                 ...config,
                 enable_redirection: config.enable_redirection,
                 editor_mode: canUseEditor ? config.editor_mode : false,
+                lock_mouse_on_launch: isGdk ? false : config.lock_mouse_on_launch,
                 reduce_pixels: Number.isFinite(Number(config.reduce_pixels)) ? Number(config.reduce_pixels) : 0,
                 unlock_mouse_hotkey: String(config.unlock_mouse_hotkey || 'ALT'),
             };
@@ -150,29 +160,39 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                             </div>
 
                             {/* 3. 鼠标锁定 */}
-                            <div className="vs-option-item">
-                                <div className="vs-option-info">
-                                    <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_label")}</span>
-                                    <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_desc")}</span>
+                            {isGdk ? (
+                                <div className="vs-option-item disabled" style={{opacity: 0.5}}>
+                                    <div className="vs-option-info">
+                                        <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_gdk_label")}</span>
+                                        <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_gdk_desc")}</span>
+                                    </div>
                                 </div>
-                                <div className={`vs-switch ${config.lock_mouse_on_launch ? 'checked' : ''}`} onClick={() => toggle('lock_mouse_on_launch')}>
-                                    <div className="vs-switch-thumb" />
+                            ) : (
+                                <div className="vs-option-item">
+                                    <div className="vs-option-info">
+                                        <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_label")}</span>
+                                        <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_desc")}</span>
+                                    </div>
+                                    <div className={`vs-switch ${config.lock_mouse_on_launch ? 'checked' : ''}`} onClick={() => toggle('lock_mouse_on_launch')}>
+                                        <div className="vs-switch-thumb" />
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
-                            {config.lock_mouse_on_launch && (
+                            {!isGdk && config.lock_mouse_on_launch && (
                                 <>
                                     <div className="vs-option-item">
                                         <div className="vs-option-info">
                                             <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_reduce_label")}</span>
                                             <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_reduce_desc")}</span>
                                         </div>
-                                        <input
-                                            className="vs-input"
+                                        <Input
                                             type="number"
                                             value={config.reduce_pixels as any}
                                             min={0}
-                                            onChange={(e) => setField('reduce_pixels', parseInt(e.target.value, 10) || 0)}
+                                            onChange={(e: any) => setField('reduce_pixels', parseInt(e.target.value, 10) || 0)}
+                                            style={{ width: 140, flexShrink: 0 }}
+                                            inputStyle={{ textAlign: 'right' }}
                                         />
                                     </div>
                                     <div className="vs-option-item">
@@ -180,15 +200,14 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                             <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_hotkey_label")}</span>
                                             <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_hotkey_desc")}</span>
                                         </div>
-                                        <select
-                                            className="vs-select"
+                                        <Select
                                             value={config.unlock_mouse_hotkey as any}
-                                            onChange={(e) => setField('unlock_mouse_hotkey', e.target.value)}
-                                        >
-                                            {HOTKEY_OPTIONS.map((o) => (
-                                                <option key={o.value} value={o.value}>{o.label}</option>
-                                            ))}
-                                        </select>
+                                            onChange={(val: any) => setField('unlock_mouse_hotkey', val)}
+                                            options={HOTKEY_OPTIONS}
+                                            size={13}
+                                            dropdownMatchButton={false}
+                                            style={{ minWidth: 140, flexShrink: 0 }}
+                                        />
                                     </div>
                                 </>
                             )}

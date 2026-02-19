@@ -627,6 +627,8 @@
     "disable_mod_loading_desc": "起動時の Mod 注入/読み込みを無効化（BLoader が管理）",
     "mouse_lock_label": "マウスロック",
     "mouse_lock_desc": "起動後にマウスをロック（ホットキーで解除）",
+    "mouse_lock_gdk_label": "マウスロック（GDK では使用不可）",
+    "mouse_lock_gdk_desc": "GDK ビルドは公式修正があるため、マウスロックは不要です",
     "mouse_lock_reduce_label": "ピクセル低減",
     "mouse_lock_reduce_desc": "端のトリガーを抑制（値が大きいほど端に当たりにくい）",
     "mouse_lock_hotkey_label": "解除ホットキー",
