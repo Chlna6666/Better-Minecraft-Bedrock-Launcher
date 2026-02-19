@@ -148,7 +148,20 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                 </div>
                             </div>
 
-                            {/* 2. Mod 加载开关 (BLoader.dll 管理) */}
+                            {/* 2. 目录重定向 */}
+                            <div className="vs-option-item">
+                                <div className="vs-option-info">
+                                    <span className="vs-option-label">{t("VersionSettingsModal.redirection_label")}</span>
+                                    <span className="vs-option-desc">
+                                        {t("VersionSettingsModal.redirection_desc")}
+                                    </span>
+                                </div>
+                                <div className={`vs-switch ${config.enable_redirection ? 'checked' : ''}`} onClick={() => toggle('enable_redirection')}>
+                                    <div className="vs-switch-thumb" />
+                                </div>
+                            </div>
+
+                            {/* 3. Mod 加载开关 (BLoader.dll 管理) */}
                             <div className="vs-option-item">
                                 <div className="vs-option-info">
                                     <span className="vs-option-label">{t("VersionSettingsModal.disable_mod_loading_label")}</span>
@@ -159,7 +172,27 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                 </div>
                             </div>
 
-                            {/* 3. 鼠标锁定 */}
+                            {/* 4. 编辑器模式 */}
+                            {canUseEditor ? (
+                                <div className="vs-option-item">
+                                    <div className="vs-option-info">
+                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_label")}</span>
+                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_desc")}</span>
+                                    </div>
+                                    <div className={`vs-switch ${config.editor_mode ? 'checked' : ''}`} onClick={() => toggle('editor_mode')}>
+                                        <div className="vs-switch-thumb" />
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="vs-option-item disabled" style={{opacity: 0.5}}>
+                                    <div className="vs-option-info">
+                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_unavailable_label")}</span>
+                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_unavailable_desc")}</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* 5. 鼠标锁定 */}
                             {isGdk ? (
                                 <div className="vs-option-item disabled" style={{opacity: 0.5}}>
                                     <div className="vs-option-info">
@@ -220,39 +253,6 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                             </div>
                                         </div>
                                     )}
-                                </div>
-                            )}
-
-                            {/* 2. 目录重定向 */}
-                            <div className="vs-option-item">
-                                <div className="vs-option-info">
-                                    <span className="vs-option-label">{t("VersionSettingsModal.redirection_label")}</span>
-                                    <span className="vs-option-desc">
-                                        {t("VersionSettingsModal.redirection_desc")}
-                                    </span>
-                                </div>
-                                <div className={`vs-switch ${config.enable_redirection ? 'checked' : ''}`} onClick={() => toggle('enable_redirection')}>
-                                    <div className="vs-switch-thumb" />
-                                </div>
-                            </div>
-
-                            {/* 3. 编辑器模式 */}
-                            {canUseEditor ? (
-                                <div className="vs-option-item">
-                                    <div className="vs-option-info">
-                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_label")}</span>
-                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_desc")}</span>
-                                    </div>
-                                    <div className={`vs-switch ${config.editor_mode ? 'checked' : ''}`} onClick={() => toggle('editor_mode')}>
-                                        <div className="vs-switch-thumb" />
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="vs-option-item disabled" style={{opacity: 0.5}}>
-                                    <div className="vs-option-info">
-                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_unavailable_label")}</span>
-                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_unavailable_desc")}</span>
-                                    </div>
                                 </div>
                             )}
                         </>
