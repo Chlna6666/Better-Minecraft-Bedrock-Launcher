@@ -12,19 +12,15 @@ pub struct VersionConfig {
     #[serde(default)]
     pub editor_mode: bool,
 
-    // Per-version settings migrated from global config.game
-    #[serde(default = "default_true")]
-    pub inject_on_launch: bool,
+    // Disable mod loading/injection (managed by BLoader.dll). Default: false (load mods).
+    #[serde(default)]
+    pub disable_mod_loading: bool,
     #[serde(default)]
     pub lock_mouse_on_launch: bool,
     #[serde(default = "default_unlock_hotkey")]
     pub unlock_mouse_hotkey: String,
     #[serde(default)]
     pub reduce_pixels: i32,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_unlock_hotkey() -> String {
@@ -37,7 +33,7 @@ impl Default for VersionConfig {
             enable_debug_console: false,
             enable_redirection: false,
             editor_mode: false,
-            inject_on_launch: true,
+            disable_mod_loading: false,
             lock_mouse_on_launch: false,
             unlock_mouse_hotkey: "ALT".to_string(),
             reduce_pixels: 0,
@@ -59,8 +55,22 @@ pub async fn get_version_config(folder_name: String) -> Result<VersionConfig, St
         .await
         .map_err(|e| format!("无法读取配置文件: {}", e))?;
 
-    let config: VersionConfig = serde_json::from_str(&content)
-        .unwrap_or_else(|_| VersionConfig::default());
+    // Small migration: older builds used `inject_on_launch` (true = load mods).
+    // Now we use `disable_mod_loading` (true = disable mod loading/injection).
+    let config: VersionConfig = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                let has_disable = obj.get("disable_mod_loading").and_then(|x| x.as_bool()).is_some();
+                if !has_disable {
+                    if let Some(inject) = obj.get("inject_on_launch").and_then(|x| x.as_bool()) {
+                        obj.insert("disable_mod_loading".to_string(), serde_json::Value::Bool(!inject));
+                    }
+                }
+            }
+            serde_json::from_value(v).unwrap_or_else(|_| VersionConfig::default())
+        }
+        Err(_) => serde_json::from_str(&content).unwrap_or_else(|_| VersionConfig::default()),
+    };
 
     Ok(config)
 }

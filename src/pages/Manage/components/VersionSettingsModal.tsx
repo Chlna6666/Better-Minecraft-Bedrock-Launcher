@@ -33,7 +33,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
         enable_debug_console: false,
         enable_redirection: false,
         editor_mode: false,
-        inject_on_launch: true,
+        disable_mod_loading: false,
         lock_mouse_on_launch: false,
         unlock_mouse_hotkey: 'ALT',
         reduce_pixels: 0,
@@ -64,7 +64,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                         enable_debug_console: false,
                         enable_redirection: false,
                         editor_mode: false,
-                        inject_on_launch: true,
+                        disable_mod_loading: false,
                         lock_mouse_on_launch: false,
                         unlock_mouse_hotkey: 'ALT',
                         reduce_pixels: 0,
@@ -138,13 +138,13 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                 </div>
                             </div>
 
-                            {/* 2. DLL 注入 */}
+                            {/* 2. Mod 加载开关 (BLoader.dll 管理) */}
                             <div className="vs-option-item">
                                 <div className="vs-option-info">
-                                    <span className="vs-option-label">{t("VersionSettingsModal.inject_label")}</span>
-                                    <span className="vs-option-desc">{t("VersionSettingsModal.inject_desc")}</span>
+                                    <span className="vs-option-label">{t("VersionSettingsModal.disable_mod_loading_label")}</span>
+                                    <span className="vs-option-desc">{t("VersionSettingsModal.disable_mod_loading_desc")}</span>
                                 </div>
-                                <div className={`vs-switch ${config.inject_on_launch ? 'checked' : ''}`} onClick={() => toggle('inject_on_launch')}>
+                                <div className={`vs-switch ${config.disable_mod_loading ? 'checked' : ''}`} onClick={() => toggle('disable_mod_loading')}>
                                     <div className="vs-switch-thumb" />
                                 </div>
                             </div>

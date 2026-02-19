@@ -235,7 +235,7 @@ pub async fn register_and_start(
     let mut startup_mods_relative_paths = Vec::new();
     let mut delayed_mods = Vec::new();
 
-    if auto_start && ver_config.inject_on_launch {
+    if auto_start && !ver_config.disable_mod_loading {
         if let Ok(list) = load_mods_config(&mods_dir).await {
             for (path_buf, delay) in list {
                 if let Some(path_str) = path_buf.to_str() {
@@ -303,7 +303,10 @@ pub async fn register_and_start(
                 }
             }
 
-            let config_json = json!({ "mods": startup_mods_relative_paths });
+            let config_json = json!({
+                "disable_mod_loading": ver_config.disable_mod_loading,
+                "mods": startup_mods_relative_paths
+            });
             let config_content = serde_json::to_string_pretty(&config_json).unwrap_or_default();
             let _ = ensure_file_in_dir(exe_dir, "preloader.json", config_content.as_bytes());
 
@@ -370,7 +373,9 @@ pub async fn register_and_start(
             match launch_win32_with_injection(exe_path.to_str().unwrap(), final_launch_args.as_deref(), Vec::new(), final_console, Some(log_cb.clone())).await {
                 Ok(pid) => {
                     emit_launch(app, "launch", "ok", Some(format!("启动成功 PID: {}", pid)), None);
-                    handle_delayed_injection(pid, delayed_mods, log_cb.clone(), final_console);
+                    if !ver_config.disable_mod_loading {
+                        handle_delayed_injection(pid, delayed_mods, log_cb.clone(), final_console);
+                    }
                     return Ok(Some(pid));
                 },
                 Err(e) => return Err(format!("启动失败: {:?}", e)),
@@ -385,7 +390,9 @@ pub async fn register_and_start(
             let target_exe = if identity_name.contains("Education") { "Minecraft.Education.exe" } else { "Minecraft.Windows.exe" };
             let pfn = aumid.split('!').next().unwrap_or("").to_string();
             if let Some(pid) = wait_for_uwp_pid(target_exe, &pfn).await {
-                handle_delayed_injection(pid, delayed_mods, log_cb.clone(), final_console);
+                if !ver_config.disable_mod_loading {
+                    handle_delayed_injection(pid, delayed_mods, log_cb.clone(), final_console);
+                }
                 return Ok(Some(pid));
             }
             return Err("启动超时".to_string());
