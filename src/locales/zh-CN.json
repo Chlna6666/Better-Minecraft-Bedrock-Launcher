@@ -672,6 +672,7 @@
     "mouse_lock_reduce_desc": "减少鼠标贴边触发（数值越大越不容易贴边）",
     "mouse_lock_hotkey_label": "解锁热键",
     "mouse_lock_hotkey_desc": "按下该按键解除鼠标锁定",
+    "mouse_lock_hotkey_tip": "提示：锁定生效后，按下解锁热键即可恢复鼠标自由移动。",
     "redirection_label": "目录重定向",
     "redirection_desc": "为此版本重定向 Minecraft 目录",
     "editor_label": "编辑器模式",

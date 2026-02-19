@@ -633,6 +633,7 @@
     "mouse_lock_reduce_desc": "Reduce edge-triggering (higher value makes it harder to hit edges)",
     "mouse_lock_hotkey_label": "Unlock Hotkey",
     "mouse_lock_hotkey_desc": "Press this key to unlock the mouse",
+    "mouse_lock_hotkey_tip": "Tip: when mouse lock is active, press the hotkey to regain free mouse movement.",
     "redirection_label": "Directory Redirect",
     "redirection_desc": "Redirect Minecraft directories for this version",
     "editor_label": "Editor Mode",

@@ -633,6 +633,7 @@
     "mouse_lock_reduce_desc": "減少滑鼠貼邊觸發（數值越大越不容易貼邊）",
     "mouse_lock_hotkey_label": "解除熱鍵",
     "mouse_lock_hotkey_desc": "按下該按鍵解除滑鼠鎖定",
+    "mouse_lock_hotkey_tip": "提示：鎖定生效後，按下解除熱鍵即可恢復滑鼠自由移動。",
     "redirection_label": "目錄重新導向",
     "redirection_desc": "為此版本重新導向 Minecraft 目錄",
     "editor_label": "編輯器模式",

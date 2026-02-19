@@ -50,6 +50,56 @@
     overflow: auto;
 }
 
+.vs-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.vs-subpanel {
+    padding: 12px;
+    border-radius: 10px;
+    background: rgba(17, 24, 39, 0.02);
+    border: 1px dashed rgba(17, 24, 39, 0.12);
+}
+[data-theme='dark'] .vs-subpanel {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.14);
+}
+
+.vs-subrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    min-width: 0;
+}
+.vs-subrow + .vs-subrow {
+    border-top: 1px solid rgba(17, 24, 39, 0.06);
+}
+[data-theme='dark'] .vs-subrow + .vs-subrow {
+    border-top-color: rgba(255,255,255,0.08);
+}
+
+.vs-control {
+    width: 160px;
+    flex-shrink: 0;
+}
+.vs-control-narrow {
+    width: 120px;
+}
+
+.vs-subhint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #6b7280;
+    line-height: 1.35;
+}
+[data-theme='dark'] .vs-subhint {
+    color: rgba(255,255,255,0.72);
+}
+
 /* 开关项样式 */
 .vs-option-item {
     display: flex;

@@ -168,49 +168,59 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                     </div>
                                 </div>
                             ) : (
-                                <div className="vs-option-item">
-                                    <div className="vs-option-info">
-                                        <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_label")}</span>
-                                        <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_desc")}</span>
+                                <div className="vs-group">
+                                    <div className="vs-option-item">
+                                        <div className="vs-option-info">
+                                            <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_label")}</span>
+                                            <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_desc")}</span>
+                                        </div>
+                                        <div className={`vs-switch ${config.lock_mouse_on_launch ? 'checked' : ''}`} onClick={() => toggle('lock_mouse_on_launch')}>
+                                            <div className="vs-switch-thumb" />
+                                        </div>
                                     </div>
-                                    <div className={`vs-switch ${config.lock_mouse_on_launch ? 'checked' : ''}`} onClick={() => toggle('lock_mouse_on_launch')}>
-                                        <div className="vs-switch-thumb" />
-                                    </div>
-                                </div>
-                            )}
 
-                            {!isGdk && config.lock_mouse_on_launch && (
-                                <>
-                                    <div className="vs-option-item">
-                                        <div className="vs-option-info">
-                                            <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_reduce_label")}</span>
-                                            <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_reduce_desc")}</span>
+                                    {config.lock_mouse_on_launch && (
+                                        <div className="vs-subpanel">
+                                            <div className="vs-subrow">
+                                                <div className="vs-option-info">
+                                                    <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_reduce_label")}</span>
+                                                    <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_reduce_desc")}</span>
+                                                </div>
+                                                <div className="vs-control vs-control-narrow">
+                                                    <Input
+                                                        type="number"
+                                                        value={config.reduce_pixels as any}
+                                                        min={0}
+                                                        onChange={(e: any) => setField('reduce_pixels', parseInt(e.target.value, 10) || 0)}
+                                                        fullWidth
+                                                        inputStyle={{ textAlign: 'right' }}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            <div className="vs-subrow">
+                                                <div className="vs-option-info">
+                                                    <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_hotkey_label")}</span>
+                                                    <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_hotkey_desc")}</span>
+                                                </div>
+                                                <div className="vs-control">
+                                                    <Select
+                                                        value={config.unlock_mouse_hotkey as any}
+                                                        onChange={(val: any) => setField('unlock_mouse_hotkey', val)}
+                                                        options={HOTKEY_OPTIONS}
+                                                        size={13}
+                                                        dropdownMatchButton={false}
+                                                        maxHeight={180}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            <div className="vs-subhint">
+                                                {t("VersionSettingsModal.mouse_lock_hotkey_tip")}
+                                            </div>
                                         </div>
-                                        <Input
-                                            type="number"
-                                            value={config.reduce_pixels as any}
-                                            min={0}
-                                            onChange={(e: any) => setField('reduce_pixels', parseInt(e.target.value, 10) || 0)}
-                                            style={{ width: 140, flexShrink: 0 }}
-                                            inputStyle={{ textAlign: 'right' }}
-                                        />
-                                    </div>
-                                    <div className="vs-option-item">
-                                        <div className="vs-option-info">
-                                            <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_hotkey_label")}</span>
-                                            <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_hotkey_desc")}</span>
-                                        </div>
-                                        <Select
-                                            value={config.unlock_mouse_hotkey as any}
-                                            onChange={(val: any) => setField('unlock_mouse_hotkey', val)}
-                                            options={HOTKEY_OPTIONS}
-                                            size={13}
-                                            dropdownMatchButton={false}
-                                            maxHeight={180}
-                                            style={{ minWidth: 140, flexShrink: 0 }}
-                                        />
-                                    </div>
-                                </>
+                                    )}
+                                </div>
                             )}
 
                             {/* 2. 目录重定向 */}

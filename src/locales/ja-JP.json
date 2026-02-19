@@ -633,6 +633,7 @@
     "mouse_lock_reduce_desc": "端のトリガーを抑制（値が大きいほど端に当たりにくい）",
     "mouse_lock_hotkey_label": "解除ホットキー",
     "mouse_lock_hotkey_desc": "このキーでマウスロックを解除",
+    "mouse_lock_hotkey_tip": "ヒント：マウスロック有効時、このホットキーで自由に動かせます。",
     "redirection_label": "ディレクトリのリダイレクト",
     "redirection_desc": "このバージョンで Minecraft のディレクトリをリダイレクト",
     "editor_label": "エディターモード",
