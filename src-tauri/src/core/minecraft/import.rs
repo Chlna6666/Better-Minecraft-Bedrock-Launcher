@@ -1285,36 +1285,41 @@ fn extract_archive_parallel(file_path: &Path, dest_root: &Path) -> Result<()> {
 
     if has_files_at_root { common_root = None; }
 
-    // 并行解压：每个任务独立打开 ZipArchive，避免共享可变借用
-    entries.par_iter().for_each(|(idx, original_path, is_dir)| {
-        if original_path.to_string_lossy().contains("__MACOSX") { return; }
+    // 并行解压（按块）：每个线程只打开一次 ZipArchive，避免“每个文件条目都重开 zip”导致的巨大开销。
+    // 对于 .mctemplate 这种包含海量小文件的包，这个改动能显著加速。
+    let common_root_cloned = common_root.clone();
+    const CHUNK_SIZE: usize = 64;
 
-        let relative_path = if let Some(ref root) = common_root {
-            if let Ok(stripped) = original_path.strip_prefix(root) { stripped.to_path_buf() } else { original_path.clone() }
-        } else {
-            original_path.clone()
-        };
+    entries.par_chunks(CHUNK_SIZE).for_each(|chunk| {
+        let Ok(file) = File::open(file_path) else { return; };
+        let Ok(mut z) = ZipArchive::new(file) else { return; };
 
-        if relative_path.as_os_str().is_empty() { return; }
-        let target_path = dest_root.join(&relative_path);
-        if !target_path.starts_with(dest_root) { return; }
+        for (idx, original_path, is_dir) in chunk {
+            if original_path.to_string_lossy().contains("__MACOSX") { continue; }
 
-        if *is_dir {
-            let _ = fs::create_dir_all(&target_path);
-            return;
-        }
+            let relative_path = if let Some(ref root) = common_root_cloned {
+                if let Ok(stripped) = original_path.strip_prefix(root) { stripped.to_path_buf() } else { original_path.clone() }
+            } else {
+                original_path.clone()
+            };
 
-        if let Some(p) = target_path.parent() {
-            let _ = fs::create_dir_all(p);
-        }
+            if relative_path.as_os_str().is_empty() { continue; }
+            let target_path = dest_root.join(&relative_path);
+            if !target_path.starts_with(dest_root) { continue; }
 
-        if let Ok(file) = File::open(file_path) {
-            if let Ok(mut z) = ZipArchive::new(file) {
-                if let Ok(mut entry) = z.by_index(*idx) {
-                    if let Ok(out) = std::fs::File::create(&target_path) {
-                        let mut out = std::io::BufWriter::new(out);
-                        let _ = std::io::copy(&mut entry, &mut out);
-                    }
+            if *is_dir {
+                let _ = fs::create_dir_all(&target_path);
+                continue;
+            }
+
+            if let Some(p) = target_path.parent() {
+                let _ = fs::create_dir_all(p);
+            }
+
+            if let Ok(mut entry) = z.by_index(*idx) {
+                if let Ok(out) = std::fs::File::create(&target_path) {
+                    let mut out = std::io::BufWriter::new(out);
+                    let _ = std::io::copy(&mut entry, &mut out);
                 }
             }
         }
