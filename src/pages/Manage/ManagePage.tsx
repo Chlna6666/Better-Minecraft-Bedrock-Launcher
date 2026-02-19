@@ -247,13 +247,13 @@ const ManagePage = () => {
 
                     <div className="manage-body-content" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
                         {activeTab === 'mods' && <AssetManager key="mods" version={selectedVersion} type="dll_mod" fileExtensions={['dll']} />}
-                        {activeTab === 'resource' && <AssetManager key="resource" version={selectedVersion} type="resource_pack" fileExtensions={['mcpack', 'zip']} />}
+                        {activeTab === 'resource' && <AssetManager key="resource" version={selectedVersion} type="resource_pack" fileExtensions={['mcpack', 'mcaddon', 'mctemplate', 'zip']} />}
                         {activeTab === 'maps' && (
                             <AssetManager
                                 key="maps"
                                 version={selectedVersion}
                                 type="map"
-                                fileExtensions={['mcworld', 'zip']}
+                                fileExtensions={['mcworld', 'mctemplate', 'zip']}
                                 onLaunchMap={handleLaunchMap}
                             />
                         )}

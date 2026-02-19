@@ -374,6 +374,14 @@
       "overwriteImport": "覆盖导入"
     }
   },
+  "ManageImport": {
+    "title_resource": "导入资源",
+    "title_maps": "导入存档",
+    "start": "开始",
+    "selected_count": "已选择 {{count}} 个文件",
+    "no_files": "未选择文件",
+    "preview_unavailable": "无法解析预览"
+  },
   "AppxDeps": {
     "title": "游戏依赖",
     "main": "检测到以下依赖未安装或版本不足。",

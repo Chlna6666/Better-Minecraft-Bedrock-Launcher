@@ -343,6 +343,14 @@
       "overwriteImport": "덮어쓰기"
     }
   },
+  "ManageImport": {
+    "title_resource": "리소스 가져오기",
+    "title_maps": "월드 가져오기",
+    "start": "시작",
+    "selected_count": "{{count}}개 파일 선택됨",
+    "no_files": "선택된 파일이 없습니다",
+    "preview_unavailable": "미리보기를 불러올 수 없습니다"
+  },
   "AppxDeps": {
     "title": "게임 종속성",
     "main": "필요한 구성 요소가 설치되어 있지 않습니다.",

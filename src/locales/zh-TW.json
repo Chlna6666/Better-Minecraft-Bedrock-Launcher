@@ -343,6 +343,14 @@
       "overwriteImport": "覆蓋匯入"
     }
   },
+  "ManageImport": {
+    "title_resource": "匯入資源",
+    "title_maps": "匯入存檔",
+    "start": "開始",
+    "selected_count": "已選擇 {{count}} 個檔案",
+    "no_files": "未選擇檔案",
+    "preview_unavailable": "無法解析預覽"
+  },
   "AppxDeps": {
     "title": "遊戲相依性",
     "main": "偵測到以下相依性未安裝或版本不足。",

@@ -343,6 +343,14 @@
       "overwriteImport": "上書き"
     }
   },
+  "ManageImport": {
+    "title_resource": "リソースをインポート",
+    "title_maps": "ワールドをインポート",
+    "start": "開始",
+    "selected_count": "{{count}} 個のファイルを選択",
+    "no_files": "ファイルが選択されていません",
+    "preview_unavailable": "プレビューを表示できません"
+  },
   "AppxDeps": {
     "title": "ゲームの依存関係",
     "main": "必要なコンポーネントがインストールされていません。",

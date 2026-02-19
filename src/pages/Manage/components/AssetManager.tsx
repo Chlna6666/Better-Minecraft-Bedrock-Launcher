@@ -18,6 +18,7 @@ import { GDKUserSelect } from './GDKUserSelect';
 import { ConfirmModal } from './ConfirmModal';
 import { LevelDatEditor } from './LevelDatEditor';
 import { AssetContextMenu, ContextMenuItem } from './AssetContextMenu';
+import { AssetImportModal } from './AssetImportModal';
 import MinecraftFormattedText from '../../../utils/MinecraftFormattedText';
 import { useTranslation } from 'react-i18next';
 import Slider from '../../../components/Slider/Slider';
@@ -214,6 +215,8 @@ export const AssetManager: React.FC<AssetManagerProps> = ({
     const [editorData, setEditorData] = useState<any>(null);
     const [editingItem, setEditingItem] = useState<AssetItem | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+    const [importModalFiles, setImportModalFiles] = useState<string[]>([]);
 
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -546,12 +549,29 @@ export const AssetManager: React.FC<AssetManagerProps> = ({
         } finally { setIsProcessing(false); }
     };
 
-    const handleImportBtn = async () => {
-        const selected = await openFileDialog({ multiple: true, filters: [{ name: t("AssetManager.filter_supported"), extensions: fileExtensions }] });
-        if (selected) {
-            const files = Array.isArray(selected) ? selected : [selected];
-            await performImport(files);
+    const openImportModalForFiles = (files: string[]) => {
+        const validPaths = (files || []).filter(p => p && p.includes && (p.includes('/') || p.includes('\\')));
+        if (validPaths.length === 0) {
+            toast.error(t("AssetManager.import_no_paths"));
+            return;
         }
+        setImportModalFiles(validPaths);
+        setIsImportModalOpen(true);
+    };
+
+    const handleImportBtn = async () => {
+        if (type !== 'dll_mod') {
+            const selected = await openFileDialog({ multiple: true, filters: [{ name: t("AssetManager.filter_supported"), extensions: fileExtensions }] });
+            if (!selected) return;
+            const files = Array.isArray(selected) ? selected : [selected];
+            openImportModalForFiles(files);
+            return;
+        }
+
+        const selected = await openFileDialog({ multiple: true, filters: [{ name: t("AssetManager.filter_supported"), extensions: fileExtensions }] });
+        if (!selected) return;
+        const files = Array.isArray(selected) ? selected : [selected];
+        await performImport(files);
     };
 
     // --- UI Helpers (Sort, Drag, Menu) ---
@@ -627,7 +647,9 @@ export const AssetManager: React.FC<AssetManagerProps> = ({
     const handleDrop = async (e: React.DragEvent) => {
         e.preventDefault(); e.stopPropagation(); setIsDragging(false);
         const files = Array.from(e.dataTransfer.files).map((f: any) => f.path || f.name);
-        if (files.length > 0) await performImport(files);
+        if (files.length === 0) return;
+        if (type === 'dll_mod') await performImport(files);
+        else openImportModalForFiles(files);
     };
 
     const getMenuItems = (items: AssetItem[]): ContextMenuItem[] => {
@@ -696,6 +718,20 @@ export const AssetManager: React.FC<AssetManagerProps> = ({
     return (
         <div className="asset-manager-container" ref={containerRef} tabIndex={0} onKeyDown={handleKeyDown} onClick={() => setSelectedKeys(new Set())} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} style={{ outline: 'none' }}>
             <AnimatePresence>{isDragging && <motion.div className="am-drag-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><div className="drag-content"><UploadCloud size={48} className="bounce" /><p>{t("AssetManager.drag_drop_hint")}</p></div></motion.div>}</AnimatePresence>
+
+            {type !== 'dll_mod' && (
+                <AssetImportModal
+                    isOpen={isImportModalOpen}
+                    type={type === 'map' ? 'map' : 'resource_pack'}
+                    version={version}
+                    enableIsolation={!!isIsolationActiveRef.current}
+                    edition={edition}
+                    userId={isMap ? (gdkUserId || null) : null}
+                    filePaths={importModalFiles}
+                    onClose={() => { setIsImportModalOpen(false); setImportModalFiles([]); }}
+                    onImported={() => fetchAssets()}
+                />
+            )}
 
             <div className="am-header">
                 <div className="am-header-left">

@@ -343,6 +343,14 @@
       "overwriteImport": "Overwrite"
     }
   },
+  "ManageImport": {
+    "title_resource": "Import Assets",
+    "title_maps": "Import Worlds",
+    "start": "Start",
+    "selected_count": "{{count}} files selected",
+    "no_files": "No files selected",
+    "preview_unavailable": "Preview unavailable"
+  },
   "AppxDeps": {
     "title": "Game Dependencies",
     "main": "Some required components are not installed.",
