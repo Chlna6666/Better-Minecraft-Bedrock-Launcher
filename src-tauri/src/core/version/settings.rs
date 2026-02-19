@@ -19,12 +19,16 @@ pub struct VersionConfig {
     pub lock_mouse_on_launch: bool,
     #[serde(default = "default_unlock_hotkey")]
     pub unlock_mouse_hotkey: String,
-    #[serde(default)]
+    #[serde(default = "default_reduce_pixels")]
     pub reduce_pixels: i32,
 }
 
 fn default_unlock_hotkey() -> String {
     "ALT".to_string()
+}
+
+fn default_reduce_pixels() -> i32 {
+    20
 }
 
 impl Default for VersionConfig {
@@ -36,7 +40,7 @@ impl Default for VersionConfig {
             disable_mod_loading: false,
             lock_mouse_on_launch: false,
             unlock_mouse_hotkey: "ALT".to_string(),
-            reduce_pixels: 0,
+            reduce_pixels: 20,
         }
     }
 }

@@ -37,7 +37,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
         disable_mod_loading: false,
         lock_mouse_on_launch: false,
         unlock_mouse_hotkey: 'ALT',
-        reduce_pixels: 0,
+        reduce_pixels: 20,
     });
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -70,7 +70,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                         disable_mod_loading: false,
                         lock_mouse_on_launch: false,
                         unlock_mouse_hotkey: 'ALT',
-                        reduce_pixels: 0,
+                        reduce_pixels: 20,
                     };
 
                     // GDK: mouse lock is not needed (official fix), force disabled.
@@ -206,6 +206,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                             options={HOTKEY_OPTIONS}
                                             size={13}
                                             dropdownMatchButton={false}
+                                            maxHeight={180}
                                             style={{ minWidth: 140, flexShrink: 0 }}
                                         />
                                     </div>
