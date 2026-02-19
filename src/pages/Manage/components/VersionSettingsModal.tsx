@@ -161,46 +161,8 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                 </div>
                             </div>
 
-                            {/* 3. Mod 加载开关 (BLoader.dll 管理) */}
-                            <div className="vs-option-item">
-                                <div className="vs-option-info">
-                                    <span className="vs-option-label">{t("VersionSettingsModal.disable_mod_loading_label")}</span>
-                                    <span className="vs-option-desc">{t("VersionSettingsModal.disable_mod_loading_desc")}</span>
-                                </div>
-                                <div className={`vs-switch ${config.disable_mod_loading ? 'checked' : ''}`} onClick={() => toggle('disable_mod_loading')}>
-                                    <div className="vs-switch-thumb" />
-                                </div>
-                            </div>
-
-                            {/* 4. 编辑器模式 */}
-                            {canUseEditor ? (
-                                <div className="vs-option-item">
-                                    <div className="vs-option-info">
-                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_label")}</span>
-                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_desc")}</span>
-                                    </div>
-                                    <div className={`vs-switch ${config.editor_mode ? 'checked' : ''}`} onClick={() => toggle('editor_mode')}>
-                                        <div className="vs-switch-thumb" />
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="vs-option-item disabled" style={{opacity: 0.5}}>
-                                    <div className="vs-option-info">
-                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_unavailable_label")}</span>
-                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_unavailable_desc")}</span>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* 5. 鼠标锁定 */}
-                            {isGdk ? (
-                                <div className="vs-option-item disabled" style={{opacity: 0.5}}>
-                                    <div className="vs-option-info">
-                                        <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_gdk_label")}</span>
-                                        <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_gdk_desc")}</span>
-                                    </div>
-                                </div>
-                            ) : (
+                            {/* 3. 鼠标锁定 (GDK 隐藏) */}
+                            {!isGdk && (
                                 <div className={`vs-option-item vs-mouse-lock-card ${config.lock_mouse_on_launch ? 'expanded' : ''}`}>
                                     <div className="vs-mouse-lock-header">
                                         <div className="vs-option-info">
@@ -255,6 +217,30 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                     )}
                                 </div>
                             )}
+
+                            {/* 4. 编辑器模式 (低版本隐藏) */}
+                            {canUseEditor ? (
+                                <div className="vs-option-item">
+                                    <div className="vs-option-info">
+                                        <span className="vs-option-label">{t("VersionSettingsModal.editor_label")}</span>
+                                        <span className="vs-option-desc">{t("VersionSettingsModal.editor_desc")}</span>
+                                    </div>
+                                    <div className={`vs-switch ${config.editor_mode ? 'checked' : ''}`} onClick={() => toggle('editor_mode')}>
+                                        <div className="vs-switch-thumb" />
+                                    </div>
+                                </div>
+                            ) : null}
+
+                            {/* 5. Mod 加载开关 (BLoader.dll 管理) */}
+                            <div className="vs-option-item">
+                                <div className="vs-option-info">
+                                    <span className="vs-option-label">{t("VersionSettingsModal.disable_mod_loading_label")}</span>
+                                    <span className="vs-option-desc">{t("VersionSettingsModal.disable_mod_loading_desc")}</span>
+                                </div>
+                                <div className={`vs-switch ${config.disable_mod_loading ? 'checked' : ''}`} onClick={() => toggle('disable_mod_loading')}>
+                                    <div className="vs-switch-thumb" />
+                                </div>
+                            </div>
                         </>
                     )}
                 </div>
