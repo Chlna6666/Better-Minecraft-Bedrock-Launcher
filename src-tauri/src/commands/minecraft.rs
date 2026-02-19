@@ -235,7 +235,7 @@ pub async fn register_and_start(
     let mut startup_mods_relative_paths = Vec::new();
     let mut delayed_mods = Vec::new();
 
-    if auto_start && game_cfg.inject_on_launch {
+    if auto_start && ver_config.inject_on_launch {
         if let Ok(list) = load_mods_config(&mods_dir).await {
             for (path_buf, delay) in list {
                 if let Some(path_str) = path_buf.to_str() {
@@ -458,10 +458,13 @@ pub async fn launch_appx(
 
     if let Some(_pid) = pid_opt {
         if let Ok(config) = read_config() {
-            if config.game.lock_mouse_on_launch {
-                start_window_monitor("Minecraft", &config.game.unlock_mouse_hotkey, config.game.reduce_pixels);
+            // Per-version mouse lock settings
+            let ver_cfg = get_version_config(file_name.clone()).await.unwrap_or_default();
+            if ver_cfg.lock_mouse_on_launch {
+                start_window_monitor("Minecraft", &ver_cfg.unlock_mouse_hotkey, ver_cfg.reduce_pixels);
                 sleep(Duration::from_secs(2)).await;
             }
+
             match config.game.launcher_visibility.as_str() {
                 "minimize" => minimize_launcher_window(&app),
                 "close" => close_launcher_window(&app),

@@ -69,6 +69,33 @@
 [data-theme='dark'] .vs-option-label { color: #e5e7eb; }
 .vs-option-desc { font-size: 12px; color: #9ca3af; }
 
+.vs-input,
+.vs-select {
+    height: 34px;
+    min-width: 120px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    color: #111827;
+    font-size: 13px;
+    outline: none;
+    box-sizing: border-box;
+}
+
+[data-theme='dark'] .vs-input,
+[data-theme='dark'] .vs-select {
+    border-color: rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.92);
+}
+
+.vs-input:focus,
+.vs-select:focus {
+    border-color: color-mix(in srgb, var(--accent-color, #2563eb), transparent 55%);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color, #2563eb), transparent 85%);
+}
+
 /* 禁用状态 */
 .vs-option-item.disabled {
     opacity: 0.6;

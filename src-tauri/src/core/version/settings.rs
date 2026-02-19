@@ -11,6 +11,24 @@ pub struct VersionConfig {
     pub enable_redirection: bool,
     #[serde(default)]
     pub editor_mode: bool,
+
+    // Per-version settings migrated from global config.game
+    #[serde(default = "default_true")]
+    pub inject_on_launch: bool,
+    #[serde(default)]
+    pub lock_mouse_on_launch: bool,
+    #[serde(default = "default_unlock_hotkey")]
+    pub unlock_mouse_hotkey: String,
+    #[serde(default)]
+    pub reduce_pixels: i32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_unlock_hotkey() -> String {
+    "ALT".to_string()
 }
 
 impl Default for VersionConfig {
@@ -19,6 +37,10 @@ impl Default for VersionConfig {
             enable_debug_console: false,
             enable_redirection: false,
             editor_mode: false,
+            inject_on_launch: true,
+            lock_mouse_on_launch: false,
+            unlock_mouse_hotkey: "ALT".to_string(),
+            reduce_pixels: 0,
         }
     }
 }

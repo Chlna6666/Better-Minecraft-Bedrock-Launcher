@@ -33,6 +33,10 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
         enable_debug_console: false,
         enable_redirection: false,
         editor_mode: false,
+        inject_on_launch: true,
+        lock_mouse_on_launch: false,
+        unlock_mouse_hotkey: 'ALT',
+        reduce_pixels: 0,
     });
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -41,6 +45,14 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
 
     // 1.19.80.20 是编辑器模式的最低版本要求
     const canUseEditor = version?.version && isVersionAtLeast(version.version, "1.19.80.20");
+
+    const HOTKEY_OPTIONS: Array<{ value: string; label: string }> = [
+        { value: 'ALT', label: 'ALT' },
+        { value: 'CTRL', label: 'CTRL' },
+        { value: 'SHIFT', label: 'SHIFT' },
+        { value: 'LWIN', label: 'LWIN' },
+        { value: 'RWIN', label: 'RWIN' },
+    ];
 
     useEffect(() => {
         if (isOpen && version) {
@@ -52,10 +64,14 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                         enable_debug_console: false,
                         enable_redirection: false,
                         editor_mode: false,
+                        inject_on_launch: true,
+                        lock_mouse_on_launch: false,
+                        unlock_mouse_hotkey: 'ALT',
+                        reduce_pixels: 0,
                     });
                 })
                 .catch((err) => {
-                    toast.error(t("VersionSettingsModal.load_failed", { error: err }));
+                    toast.error(t("VersionSettingsModal.load_failed", { message: String(err) }));
                 })
                 .finally(() => setLoading(false));
         }
@@ -67,7 +83,9 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
             const payload = {
                 ...config,
                 enable_redirection: config.enable_redirection,
-                editor_mode: canUseEditor ? config.editor_mode : false
+                editor_mode: canUseEditor ? config.editor_mode : false,
+                reduce_pixels: Number.isFinite(Number(config.reduce_pixels)) ? Number(config.reduce_pixels) : 0,
+                unlock_mouse_hotkey: String(config.unlock_mouse_hotkey || 'ALT'),
             };
             await invoke('save_version_config', { folderName: version.folder, config: payload });
             toast.success(t("VersionSettingsModal.save_success"));
@@ -78,7 +96,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
             }
             onClose();
         } catch (err: any) {
-            toast.error(t("VersionSettingsModal.save_failed", { error: err }));
+            toast.error(t("VersionSettingsModal.save_failed", { message: String(err) }));
         } finally {
             setSaving(false);
         }
@@ -86,6 +104,10 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
 
     const toggle = (key: keyof typeof config) => {
         setConfig(prev => ({ ...prev, [key]: !prev[key] }));
+    };
+
+    const setField = (key: keyof typeof config, value: any) => {
+        setConfig(prev => ({ ...prev, [key]: value }));
     };
 
     if (!isOpen) return null;
@@ -115,6 +137,61 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                     <div className="vs-switch-thumb" />
                                 </div>
                             </div>
+
+                            {/* 2. DLL 注入 */}
+                            <div className="vs-option-item">
+                                <div className="vs-option-info">
+                                    <span className="vs-option-label">{t("VersionSettingsModal.inject_label")}</span>
+                                    <span className="vs-option-desc">{t("VersionSettingsModal.inject_desc")}</span>
+                                </div>
+                                <div className={`vs-switch ${config.inject_on_launch ? 'checked' : ''}`} onClick={() => toggle('inject_on_launch')}>
+                                    <div className="vs-switch-thumb" />
+                                </div>
+                            </div>
+
+                            {/* 3. 鼠标锁定 */}
+                            <div className="vs-option-item">
+                                <div className="vs-option-info">
+                                    <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_label")}</span>
+                                    <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_desc")}</span>
+                                </div>
+                                <div className={`vs-switch ${config.lock_mouse_on_launch ? 'checked' : ''}`} onClick={() => toggle('lock_mouse_on_launch')}>
+                                    <div className="vs-switch-thumb" />
+                                </div>
+                            </div>
+
+                            {config.lock_mouse_on_launch && (
+                                <>
+                                    <div className="vs-option-item">
+                                        <div className="vs-option-info">
+                                            <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_reduce_label")}</span>
+                                            <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_reduce_desc")}</span>
+                                        </div>
+                                        <input
+                                            className="vs-input"
+                                            type="number"
+                                            value={config.reduce_pixels as any}
+                                            min={0}
+                                            onChange={(e) => setField('reduce_pixels', parseInt(e.target.value, 10) || 0)}
+                                        />
+                                    </div>
+                                    <div className="vs-option-item">
+                                        <div className="vs-option-info">
+                                            <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_hotkey_label")}</span>
+                                            <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_hotkey_desc")}</span>
+                                        </div>
+                                        <select
+                                            className="vs-select"
+                                            value={config.unlock_mouse_hotkey as any}
+                                            onChange={(e) => setField('unlock_mouse_hotkey', e.target.value)}
+                                        >
+                                            {HOTKEY_OPTIONS.map((o) => (
+                                                <option key={o.value} value={o.value}>{o.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </>
+                            )}
 
                             {/* 2. 目录重定向 */}
                             <div className="vs-option-item">
