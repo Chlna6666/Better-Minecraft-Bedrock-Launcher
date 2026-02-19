@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use std::net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
+use std::net::{IpAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1415,11 +1415,13 @@ async fn write_packet_and_close(
 
 #[tauri::command]
 pub async fn paperconnect_tcp_request(
+    state: State<'_, OnlineState>,
     host: String,
     port: u16,
     proto: String,
     body: Value,
 ) -> Result<Value, String> {
+    let host = host.trim().to_string();
     let addr = format!("{host}:{port}");
     let mut body = body;
     if proto == "c:player" || proto == "c:ping" {
@@ -1453,9 +1455,10 @@ pub async fn paperconnect_tcp_request(
         addr: &str,
         proto: &str,
         body: &Value,
+        connect_timeout: Duration,
         read_timeout: Duration,
     ) -> anyhow::Result<Value> {
-        let mut stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+        let mut stream = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
             .await
             .context("connect timed out")?
             .context("connect tcp")?;
@@ -1477,11 +1480,40 @@ pub async fn paperconnect_tcp_request(
         Ok(v)
     }
 
+    async fn easytier_has_route_to_host(
+        state: &OnlineState,
+        host: &str,
+    ) -> Option<bool> {
+        let ip: IpAddr = host.parse().ok()?;
+        if ip.is_loopback() {
+            return None;
+        }
+
+        let id = state.easytier_instance_id.lock().unwrap().as_ref().copied()?;
+        let svc = state.easytier_manager.get_instance_service(&id)?;
+        let resp = svc
+            .get_peer_manage_service()
+            .list_route(BaseController::default(), ListRouteRequest::default())
+            .await
+            .ok()?;
+
+        for r in resp.routes {
+            let Some(inet) = r.ipv4_addr else { continue };
+            let s = inet.to_string();
+            let route_ip = s.split_once('/').map(|v| v.0).unwrap_or(s.as_str());
+            if route_ip == host {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
     // For PaperConnect, the overlay may come up slightly after the UI initiates the first request.
     // Instead of forcing the frontend to wait for the next 5s tick, do a short in-command retry
     // burst for the initial handshake. Once connected, the normal 5s heartbeat cadence is fine.
     //
     // Follow the spec: raw `namespace\0json` payload.
+    let connect_timeout = Duration::from_millis(1500);
     let read_timeout = Duration::from_secs(3);
 
     let mut last_err: Option<anyhow::Error> = None;
@@ -1489,10 +1521,18 @@ pub async fn paperconnect_tcp_request(
         if backoff_ms > 0 {
             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
         }
-        match attempt(&addr, &proto, &body, read_timeout).await {
+        match attempt(&addr, &proto, &body, connect_timeout, read_timeout).await {
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = Some(e);
+                // If the host route is already gone (e.g. room closed), fail fast so the
+                // frontend can stop showing a "connecting" state.
+                if matches!(
+                    easytier_has_route_to_host(&state, &host).await,
+                    Some(false)
+                ) {
+                    return Err("paperconnect host offline".to_string());
+                }
                 // If it's already been a few attempts, avoid spending too long here.
                 if i >= 4 {
                     break;

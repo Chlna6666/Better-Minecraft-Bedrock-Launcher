@@ -265,6 +265,8 @@ export default function OnlinePage() {
 
   const heartbeatTimerRef = useRef<number | null>(null);
   const peersTimerRef = useRef<number | null>(null);
+  const joinHeartbeatFailRef = useRef<number>(0);
+  const joinHeartbeatStoppingRef = useRef<boolean>(false);
   const hostIdentityRef = useRef<{ playerName: string; clientId: string } | null>(null);
 
   const hostnameForHost = useMemo(() => (pcPort > 0 ? `paper-connect-server-${pcPort}` : ""), [pcPort]);
@@ -721,9 +723,38 @@ export default function OnlinePage() {
     [clientId, playerName, t]
   );
 
+  const joinHeartbeatTick = useCallback(
+    async (c: PaperConnectCenter) => {
+      if (joinHeartbeatStoppingRef.current) return;
+      try {
+        await playerHeartbeatOnce(c);
+        joinHeartbeatFailRef.current = 0;
+      } catch (e: any) {
+        const msg = String(e || "");
+        const isOffline = msg.includes("paperconnect host offline");
+        joinHeartbeatFailRef.current = (joinHeartbeatFailRef.current || 0) + 1;
+
+        // If host is gone (or we keep failing), stop the session so UI doesn't stay "connecting".
+        if (isOffline || joinHeartbeatFailRef.current >= 3) {
+          joinHeartbeatStoppingRef.current = true;
+          if (msg) appendStatus(msg);
+          appendStatus(t("Online.center_not_found"));
+          try {
+            await stopAll();
+          } finally {
+            joinHeartbeatFailRef.current = 0;
+            joinHeartbeatStoppingRef.current = false;
+          }
+        }
+      }
+    },
+    [appendStatus, playerHeartbeatOnce, stopAll, t]
+  );
+
   const startJoin = useCallback(async () => {
     if (!joinRoomCode.trim()) return toast.error(t("Online.err_need_room_code"));
     setStatusText("");
+    joinHeartbeatFailRef.current = 0;
 
     try {
       const parsed = (await invoke("paperconnect_parse_room_code", { roomCode: joinRoomCode })) as PaperConnectRoom;
@@ -829,10 +860,10 @@ export default function OnlinePage() {
 
       if (heartbeatTimerRef.current) window.clearInterval(heartbeatTimerRef.current);
       heartbeatTimerRef.current = window.setInterval(() => {
-        playerHeartbeatOnce(cForRequest).catch(() => undefined);
+        joinHeartbeatTick(cForRequest).catch(() => undefined);
       }, 5000);
       try {
-        await playerHeartbeatOnce(cForRequest);
+        await joinHeartbeatTick(cForRequest);
       } catch (e: any) {
         // Don't stop the whole session if the first heartbeat fails; background retry may succeed
         // once the overlay/port-forward is fully established.
@@ -903,7 +934,7 @@ export default function OnlinePage() {
       const cForRequest: PaperConnectCenter = noTun ? { ...c, ipv4: "127.0.0.1" } : c;
 
       await pingCenter(cForRequest).catch(() => undefined);
-      await playerHeartbeatOnce(cForRequest).catch(() => undefined);
+      await joinHeartbeatTick(cForRequest).catch(() => undefined);
       await refreshPeers();
       refreshNatTypes().catch(() => undefined);
 
@@ -914,7 +945,7 @@ export default function OnlinePage() {
 
       if (heartbeatTimerRef.current) window.clearInterval(heartbeatTimerRef.current);
       heartbeatTimerRef.current = window.setInterval(() => {
-        playerHeartbeatOnce(cForRequest).catch(() => undefined);
+        joinHeartbeatTick(cForRequest).catch(() => undefined);
       }, 5000);
     })();
 
