@@ -23,7 +23,7 @@
 body {
     margin: 0;
     padding: 0;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--bm-font-sans);
     background-color: var(--bg-color);
     color: var(--text-color);
     overflow: hidden;

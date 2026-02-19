@@ -1,4 +1,56 @@
 :root {
+  --bm-font-sans: 'HarmonyOS Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans/HarmonyOS_Sans_Thin.ttf') format('truetype');
+  font-weight: 100;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans/HarmonyOS_Sans_Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans/HarmonyOS_Sans_Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans/HarmonyOS_Sans_Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans/HarmonyOS_Sans_Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans/HarmonyOS_Sans_Black.ttf') format('truetype');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
   /* 浅色模式变量 */
   --bg-color: #f0f2f5;
   --text-color: #1a1a1a;
@@ -44,7 +96,7 @@ html, body {
 
 body {
   margin: 0;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--bm-font-sans);
   background-color: var(--bg-color);
   color: var(--text-color);
   /* 添加一个漂亮的背景渐变，方便展示玻璃效果 */

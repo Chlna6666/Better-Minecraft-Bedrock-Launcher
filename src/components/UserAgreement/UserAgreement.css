@@ -104,7 +104,7 @@
     color: var(--text-sub);
     font-size: 0.95rem;
     line-height: 1.7;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: var(--bm-font-sans);
 }
 
 .markdown-body h3 {
