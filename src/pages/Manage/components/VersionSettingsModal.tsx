@@ -168,8 +168,8 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                     </div>
                                 </div>
                             ) : (
-                                <div className="vs-group">
-                                    <div className="vs-option-item">
+                                <div className={`vs-option-item vs-mouse-lock-card ${config.lock_mouse_on_launch ? 'expanded' : ''}`}>
+                                    <div className="vs-mouse-lock-header">
                                         <div className="vs-option-info">
                                             <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_label")}</span>
                                             <span className="vs-option-desc">{t("VersionSettingsModal.mouse_lock_desc")}</span>
@@ -180,7 +180,7 @@ export const VersionSettingsModal: React.FC<VersionSettingsModalProps> = ({ isOp
                                     </div>
 
                                     {config.lock_mouse_on_launch && (
-                                        <div className="vs-subpanel">
+                                        <div className="vs-mouse-lock-body">
                                             <div className="vs-subrow">
                                                 <div className="vs-option-info">
                                                     <span className="vs-option-label">{t("VersionSettingsModal.mouse_lock_reduce_label")}</span>
