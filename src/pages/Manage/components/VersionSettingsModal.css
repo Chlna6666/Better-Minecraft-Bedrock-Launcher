@@ -123,6 +123,18 @@
     border-color: rgba(255,255,255,0.08);
 }
 
+/* Override base option layout for the mouse-lock card (column layout). */
+.vs-option-item.vs-mouse-lock-card {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+}
+
+.vs-option-item.vs-mouse-lock-card > .vs-mouse-lock-header,
+.vs-option-item.vs-mouse-lock-card > .vs-mouse-lock-body {
+    width: 100%;
+}
+
 .vs-option-info {
     display: flex;
     flex-direction: column;
