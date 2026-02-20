@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "tauri": "node scripts/tauri.mjs",
     "tauri:dev": "node scripts/tauri.mjs dev",
-    "tauri:build": "node scripts/tauri.mjs build"
+    "tauri:build": "node scripts/tauri.mjs build",
+    "prepare": "husky",
+    "lint:commit": "commitlint --from HEAD~20 --to HEAD"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
@@ -45,12 +47,15 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
     "@tauri-apps/cli": "^2.10.0",
     "@types/node": "^25.2.1",
     "@types/react": "^19.2.13",
     "@types/react-dom": "^19.2.3",
     "@types/react-helmet-async": "^1.0.3",
     "@vitejs/plugin-react": "^5.1.3",
+    "husky": "^9.1.7",
     "sharp": "^0.34.5",
     "svgo": "^4.0.0",
     "terser": "^5.46.0",

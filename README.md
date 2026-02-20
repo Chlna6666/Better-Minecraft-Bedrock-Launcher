@@ -94,6 +94,8 @@
 
 欢迎任何形式的 PR 与 Issue！如果你发现 Bug 或有新功能建议，欢迎在 Issues 中反馈。
 
+提交信息请遵循 Conventional Commits（见 `docs/commit-messages.md`），本仓库使用 `commitlint` + `husky` 在本地 `commit-msg` 阶段进行校验。
+
 ---
 
 ## 致谢与引用
