@@ -17,7 +17,7 @@ use tracing::{debug, error, warn};
 use crate::downloads::md5 as md5_utils;
 use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
-use crate::tasks::task_manager::{finish_task, is_cancelled, set_total, update_progress};
+use crate::tasks::task_manager::{is_cancelled, set_total, update_progress};
 
 // =========================================================================
 // 性能配置常量 (针对 2.5G+ 宽带优化)
@@ -438,7 +438,6 @@ pub async fn download_multi(
     }
 
     if is_cancelled(task_id) {
-        let _ = tokio::fs::remove_file(dest.as_ref()).await;
         return Ok(CoreResult::Cancelled);
     }
 
@@ -466,6 +465,5 @@ pub async fn download_multi(
         }
     }
 
-    finish_task(task_id, "completed", Some(dest.as_ref().to_string_lossy().to_string()));
     Ok(CoreResult::Success(()))
 }

@@ -172,9 +172,9 @@ pub async fn download_appx(
             .await;
 
         match res {
-            Ok(CoreResult::Success(_)) => {
+            Ok(CoreResult::Success(final_path)) => {
                 // 下载成功：将路径回传给前端，用于后续解压
-                let dest_str = dest_clone.to_string_lossy().to_string();
+                let dest_str = final_path.to_string_lossy().to_string();
                 finish_task(&task_id_clone, "completed", Some(dest_str));
             }
             Ok(CoreResult::Cancelled) => {
@@ -250,9 +250,9 @@ pub async fn download_resource(
 
         // 3. 显式处理结果，确保 Success 时带上文件路径
         match res {
-            Ok(CoreResult::Success(_)) => {
+            Ok(CoreResult::Success(final_path)) => {
                 // [修复核心] 必须在这里显式传入路径，前端才能收到 message 并触发解压
-                let dest_str = dest_clone.to_string_lossy().to_string();
+                let dest_str = final_path.to_string_lossy().to_string();
                 debug!("GDK/Resource 下载完成，发送路径: {}", dest_str);
                 finish_task(&task_id_clone, "completed", Some(dest_str));
             }
@@ -314,8 +314,8 @@ pub async fn download_resource_to_cache(
             .await;
 
         match res {
-            Ok(CoreResult::Success(_)) => {
-                let dest_str = dest_clone.to_string_lossy().to_string();
+            Ok(CoreResult::Success(final_path)) => {
+                let dest_str = final_path.to_string_lossy().to_string();
                 debug!("Resource 下载完成(缓存)，发送路径: {}", dest_str);
                 finish_task(&task_id_clone, "completed", Some(dest_str));
             }

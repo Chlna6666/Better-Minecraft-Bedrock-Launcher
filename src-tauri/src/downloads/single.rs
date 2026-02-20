@@ -1,7 +1,7 @@
 // src/downloads/single.rs
 use crate::downloads::md5::verify_md5;
 use crate::result::{CoreError, CoreResult};
-use crate::tasks::task_manager::{finish_task, is_cancelled, set_total, update_progress};
+use crate::tasks::task_manager::{is_cancelled, set_total, update_progress};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
@@ -120,7 +120,6 @@ pub async fn download_file(
                     }
 
                     if is_cancelled(&task_id) {
-                        finish_task(&task_id, "cancelled", Some("user cancelled".into()));
                         return Ok(CoreResult::Cancelled);
                     }
                 }
@@ -141,11 +140,9 @@ pub async fn download_file(
                 match writer_handle.join() {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        finish_task(&task_id, "error", Some(format!("Disk write error: {}", e)));
                         return Err(CoreError::Io(e));
                     }
                     Err(_) => {
-                        finish_task(&task_id, "error", Some("Writer thread panic".into()));
                         return Err(CoreError::Other("Writer thread panic".into()));
                     }
                 }
@@ -155,17 +152,14 @@ pub async fn download_file(
                     match verify_md5(&dest_buf, expected).await {
                         Ok(true) => debug!("MD5 OK"),
                         Ok(false) => {
-                            finish_task(&task_id, "error", Some("md5 mismatch".into()));
                             return Err(CoreError::ChecksumMismatch(format!("expected {}", expected)));
                         }
                         Err(e) => {
-                            finish_task(&task_id, "error", Some("md5 error".into()));
                             return Err(CoreError::Io(e));
                         }
                     }
                 }
 
-                finish_task(&task_id, "completed", Some(dest_buf.to_string_lossy().to_string()));
                 return Ok(CoreResult::Success(()));
             }
             Err(e) if retry < 3 => {
@@ -174,7 +168,6 @@ pub async fn download_file(
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
             Err(e) => {
-                finish_task(&task_id, "error", Some(format!("{}", e)));
                 return Err(CoreError::Request(e));
             }
         }
