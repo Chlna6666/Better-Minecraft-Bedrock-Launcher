@@ -26,6 +26,7 @@
     "load_failed": "読み込み失敗",
     "no_path": "パスなし",
     "open_failed": "開く失敗",
+    "open": "開く",
     "unknown": "不明",
     "save_success": "保存済み",
     "saved": "保存済み",
@@ -38,6 +39,7 @@
     "unknown_asset": "不明なリソース",
     "downloading": "DL中",
     "download": "ダウンロード",
+    "install": "インストール",
     "go_download": "ダウンロード"
   },
   "manage": {
@@ -400,30 +402,41 @@
   },
   "LauncherSettings": {
     "debug": "デバッグ",
-    "gpu_acceleration": "GPU アクセラレーション（WebView2、再起動が必要）",
+    "debug_desc": "詳細ログを有効化します（再起動が必要）。",
+    "gpu_acceleration": "GPU アクセラレーション",
+    "gpu_acceleration_desc": "WebView2 の描画で GPU 加速を使用します。問題がある場合は無効化してください（再起動が必要）。",
+    "stats_upload": "統計情報の送信",
+    "stats_upload_desc": "ランチャー改善のため基本的な実行情報を送信します（アカウント/ゲームデータは含みません）。",
     "language": "言語",
+    "language_desc": "ランチャーの表示言語を設定します（自動は OS に従います）。",
     "lang_options": {
       "auto": "自動",
       "en": "英語",
       "zh": "中国語"
     },
     "update_channel": "チャンネル",
+    "update_channel_desc": "ナイトリーには未完成または不安定な機能が含まれる場合があります。",
     "update_channel.stable": "安定",
     "update_channel.nightly": "ナイトリー",
     "update_channel.placeholder": "選択",
     "auto_check_updates": "自動チェック",
+    "auto_check_updates_desc": "起動時にアップデートを自動チェックします。",
     "download": {
       "multi_thread": "多スレッド",
+      "multi_thread_desc": "複数接続でダウンロードを高速化します（CPU/ネットワーク使用量が増える場合があります）。",
       "auto_thread_count": "自動スレッド",
+      "auto_thread_count_desc": "ネットワーク状況に応じてスレッド数を自動調整します。",
       "max_threads": "最大スレッド",
       "curseforge_api_base": "CurseForge API ベース",
       "curseforge_api_source": "CurseForge API ソース",
+      "curseforge_api_source_desc": "API の取得元を選択します。地域によってはミラーが高速です。",
       "curseforge_api_source.official": "公式",
       "curseforge_api_source.mirror": "ミラー (MCIM)",
       "curseforge_api_source.custom": "カスタム",
       "curseforge_api_source.placeholder": "選択",
       "proxy": {
         "mode": "プロキシ",
+        "mode_desc": "ダウンロード/更新に使用するプロキシ方式です。",
         "none": "なし",
         "system": "システム",
         "http": "HTTP",
@@ -434,6 +447,7 @@
       "title": "ダウンロード"
     },
     "connectivity_test": "接続テスト",
+    "connectivity_test_desc": "ダウンロード/更新サービスの到達性と遅延を確認します。",
     "lang_placeholder": "言語を選択"
   },
   "AboutSection": {
@@ -499,19 +513,28 @@
     "reduce_pixels": "縁トリム(px)",
     "unlock_hotkey": "解除ホットキー",
     "launcher_visibility": "ランチャー表示",
+    "launcher_visibility_desc": "ゲーム起動後のランチャーウィンドウの動作を設定します。",
     "visibility": {
       "minimize": "起動後最小化",
       "close": "起動後閉じる",
       "keep": "表示維持"
     },
-    "keep_appx_after_install": "APPX 保持",
+    "keep_appx_after_install": "ダウンロードしたパッケージを保持",
     "modify_appx_manifest": "AppxManifest 編集",
-    "uwp_minimize_fix": "UWP 最小化修正"
+    "keep_appx_after_install_desc": "インストール/展開後にダウンロードしたパッケージ（APPX/MSIXVC）を保持します（ディスク容量を使用します）。",
+    "keep_downloaded_game_package": "ダウンロードしたパッケージを保持",
+    "keep_downloaded_game_package_desc": "インストール/展開後にダウンロードしたパッケージ（APPX/MSIXVC）を保持します（ディスク容量を使用します）。",
+    "modify_appx_manifest_desc": "UWP をサンドボックス外で実行し、同時起動を可能にします。",
+    "uwp_minimize_fix": "UWP 最小化修正",
+    "uwp_minimize_fix_desc": "UWP の最小化関連のウィンドウ問題を修正します。"
   },
   "CustomizationSettings": {
     "launch_animation": "起動アニメ",
+    "launch_animation_desc": "画面遷移時のアニメーションを表示します。",
     "theme_color": "テーマ色",
+    "theme_color_desc": "テーマ/アクセントカラーを調整します。",
     "custom_background": "背景",
+    "custom_background_desc": "背景の種類を選択します（既定/ローカル/URL）。",
     "h": "画像パス",
     "background_options": {
       "default": "既定",
@@ -932,7 +955,15 @@
     "pagination_next": "次へ",
     "pagination_goto": "移動",
     "pagination_go": "移動",
-    "local_import": "ローカルインポート"
+    "local_import": "ローカルインポート",
+    "local_package_actions_title": "ローカルパッケージの選択",
+    "local_package_actions_desc": "ローカルにダウンロード済みのパッケージが見つかりました。ローカルからインストール、再ダウンロード、または削除して容量を確保できます。",
+    "local_install": "ローカルからインストール",
+    "local_install_desc": "ローカルのパッケージファイルから直接インストールします",
+    "redownload": "再ダウンロード",
+    "redownload_desc": "ローカルファイルを無視して再ダウンロードします",
+    "delete_local_package": "ローカルパッケージを削除",
+    "delete_local_package_desc": "ダウンロードフォルダからローカルパッケージを削除します"
   },
   "McDeps": {
     "themeToggle": "テーマ切り替え",

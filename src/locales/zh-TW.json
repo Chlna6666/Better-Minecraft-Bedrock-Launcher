@@ -26,6 +26,7 @@
     "load_failed": "載入失敗",
     "no_path": "無路徑",
     "open_failed": "開啟失敗",
+    "open": "開啟",
     "unknown": "未知",
     "save_success": "已儲存",
     "saved": "已儲存",
@@ -38,6 +39,7 @@
     "unknown_asset": "未知資源",
     "downloading": "下載中",
     "download": "下載",
+    "install": "安裝",
     "go_download": "下載"
   },
   "manage": {
@@ -400,30 +402,41 @@
   },
   "LauncherSettings": {
     "debug": "除錯",
-    "gpu_acceleration": "GPU 加速（WebView2，需要重新啟動）",
+    "debug_desc": "啟用後輸出更多日誌（需要重新啟動生效），方便排查問題。",
+    "gpu_acceleration": "GPU 加速",
+    "gpu_acceleration_desc": "WebView2 使用 GPU 加速渲染，關閉可緩解部分顯卡相容問題（需要重新啟動生效）。",
+    "stats_upload": "上傳資訊統計",
+    "stats_upload_desc": "上傳基礎執行資訊以改進啟動器（不包含帳號與遊戲資料）。",
     "language": "語言",
+    "language_desc": "設定啟動器介面語言（自動會跟隨系統語言）。",
     "lang_options": {
       "auto": "自動",
       "en": "英文",
       "zh": "中文"
     },
     "update_channel": "通道",
+    "update_channel_desc": "夜間版可能包含未完成或不穩定的功能。",
     "update_channel.stable": "穩定",
     "update_channel.nightly": "夜間",
     "update_channel.placeholder": "選擇",
     "auto_check_updates": "自動檢查",
+    "auto_check_updates_desc": "啟動時自動檢查啟動器更新。",
     "download": {
       "multi_thread": "多執行緒",
+      "multi_thread_desc": "啟用多執行緒下載以提高速度（可能增加 CPU 與網路佔用）。",
       "auto_thread_count": "自動執行緒",
+      "auto_thread_count_desc": "依照網路與下載情況自動調整執行緒數。",
       "max_threads": "最大執行緒",
       "curseforge_api_base": "CurseForge API 基址",
       "curseforge_api_source": "CurseForge API 來源",
+      "curseforge_api_source_desc": "選擇 API 來源，鏡像來源通常更適合部分地區的網路環境。",
       "curseforge_api_source.official": "官方",
       "curseforge_api_source.mirror": "鏡像(MCIM 源)",
       "curseforge_api_source.custom": "自訂",
       "curseforge_api_source.placeholder": "選擇",
       "proxy": {
         "mode": "代理",
+        "mode_desc": "下載與更新時使用的代理模式。",
         "none": "無",
         "system": "系統",
         "http": "HTTP",
@@ -434,6 +447,7 @@
       "title": "下載"
     },
     "connectivity_test": "連通性測試",
+    "connectivity_test_desc": "檢測下載、更新等服務的可用性與延遲。",
     "lang_placeholder": "選擇語言"
   },
   "AboutSection": {
@@ -499,19 +513,28 @@
     "reduce_pixels": "裁剪邊緣(px)",
     "unlock_hotkey": "解鎖熱鍵",
     "launcher_visibility": "啟動器顯示",
+    "launcher_visibility_desc": "啟動遊戲後，啟動器視窗的顯示方式。",
     "visibility": {
       "minimize": "啟動後最小化",
       "close": "啟動後關閉",
       "keep": "保持顯示"
     },
-    "keep_appx_after_install": "保留 APPX",
+    "keep_appx_after_install": "保留下載遊戲包",
     "modify_appx_manifest": "修改 AppxManifest",
-    "uwp_minimize_fix": "修復 UWP 最小化"
+    "keep_appx_after_install_desc": "安裝/解壓完成後保留下載的遊戲包（APPX/MSIXVC），方便離線安裝或除錯（會佔用磁碟空間）。",
+    "keep_downloaded_game_package": "保留下載遊戲包",
+    "keep_downloaded_game_package_desc": "安裝/解壓完成後保留下載的遊戲包（APPX/MSIXVC），方便離線安裝或除錯（會佔用磁碟空間）。",
+    "modify_appx_manifest_desc": "讓 UWP 脫離沙盒執行並支援多開。",
+    "uwp_minimize_fix": "修復 UWP 最小化",
+    "uwp_minimize_fix_desc": "修復 UWP 版在最小化相關場景下的視窗異常。"
   },
   "CustomizationSettings": {
     "launch_animation": "啟動動畫",
+    "launch_animation_desc": "啟動器頁面切換時顯示過渡動畫。",
     "theme_color": "主題色",
+    "theme_color_desc": "調整啟動器主題色與強調色。",
     "custom_background": "自訂背景",
+    "custom_background_desc": "選擇啟動器背景來源：預設、本機圖片或網路圖片。",
     "h": "本機圖片路徑",
     "background_options": {
       "default": "預設",
@@ -932,7 +955,15 @@
     "pagination_next": "下一頁",
     "pagination_goto": "跳轉至",
     "pagination_go": "跳轉",
-    "local_import": "本機匯入"
+    "local_import": "本機匯入",
+    "local_package_actions_title": "本機安裝選項",
+    "local_package_actions_desc": "偵測到本機已下載的安裝包。你可以直接本機安裝、重新下載，或刪除本機包以釋放空間。",
+    "local_install": "本機安裝",
+    "local_install_desc": "直接使用本機安裝包進行安裝",
+    "redownload": "重新下載",
+    "redownload_desc": "忽略本機包並重新下載",
+    "delete_local_package": "刪除本機安裝包",
+    "delete_local_package_desc": "從下載資料夾刪除該本機安裝包"
   },
   "McDeps": {
     "themeToggle": "切換主題",

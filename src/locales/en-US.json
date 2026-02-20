@@ -26,6 +26,7 @@
     "load_failed": "Load failed",
     "no_path": "No path",
     "open_failed": "Open failed",
+    "open": "Open",
     "unknown": "Unknown",
     "save_success": "Saved",
     "saved": "Saved",
@@ -38,6 +39,7 @@
     "unknown_asset": "Unknown Asset",
     "downloading": "Downloading",
     "download": "Download",
+    "install": "Install",
     "go_download": "Download"
   },
   "manage": {
@@ -400,30 +402,41 @@
   },
   "LauncherSettings": {
     "debug": "Debug",
-    "gpu_acceleration": "GPU Acceleration (WebView2, restart required)",
+    "debug_desc": "Enable extra logs (restart required).",
+    "gpu_acceleration": "GPU Acceleration",
+    "gpu_acceleration_desc": "WebView2 rendering uses GPU acceleration. Disable if you hit GPU/WebView issues (restart required).",
+    "stats_upload": "Upload statistics",
+    "stats_upload_desc": "Upload basic runtime info to help improve the launcher (no account or game data).",
     "language": "Language",
+    "language_desc": "Set the launcher UI language (Auto follows system).",
     "lang_options": {
       "auto": "Auto",
       "en": "English",
       "zh": "Chinese"
     },
     "update_channel": "Channel",
+    "update_channel_desc": "Nightly builds may contain unfinished or unstable features.",
     "update_channel.stable": "Stable",
     "update_channel.nightly": "Nightly",
     "update_channel.placeholder": "Select",
     "auto_check_updates": "Auto Update",
+    "auto_check_updates_desc": "Check for launcher updates on startup.",
     "download": {
       "multi_thread": "Multi-thread",
+      "multi_thread_desc": "Use multiple connections to speed up downloads (may increase CPU/network usage).",
       "auto_thread_count": "Auto threads",
+      "auto_thread_count_desc": "Automatically adjust thread count based on network conditions.",
       "max_threads": "Max threads",
       "curseforge_api_base": "CurseForge API Base",
       "curseforge_api_source": "CurseForge API Source",
+      "curseforge_api_source_desc": "Choose the API source. Mirror is usually faster in some regions.",
       "curseforge_api_source.official": "Official",
       "curseforge_api_source.mirror": "Mirror (MCIM)",
       "curseforge_api_source.custom": "Custom",
       "curseforge_api_source.placeholder": "Select",
       "proxy": {
         "mode": "Proxy",
+        "mode_desc": "Proxy mode used for downloads and updates.",
         "none": "None",
         "system": "System",
         "http": "HTTP",
@@ -434,6 +447,7 @@
       "title": "Download"
     },
     "connectivity_test": "Connectivity Test",
+    "connectivity_test_desc": "Test availability and latency of download/update services.",
     "lang_placeholder": "Select language"
   },
   "AboutSection": {
@@ -499,19 +513,28 @@
     "reduce_pixels": "Trim edge (px)",
     "unlock_hotkey": "Unlock hotkey",
     "launcher_visibility": "Launcher visibility",
+    "launcher_visibility_desc": "What the launcher window does after the game starts.",
     "visibility": {
       "minimize": "Minimize",
       "close": "Close",
       "keep": "Keep"
     },
-    "keep_appx_after_install": "Keep APPX",
+    "keep_appx_after_install": "Keep downloaded package",
     "modify_appx_manifest": "Edit AppxManifest",
-    "uwp_minimize_fix": "UWP minimize fix"
+    "keep_appx_after_install_desc": "Keep downloaded game packages after install/unpack (APPX/MSIXVC). Useful for offline install (uses disk space).",
+    "keep_downloaded_game_package": "Keep downloaded package",
+    "keep_downloaded_game_package_desc": "Keep downloaded game packages after install/unpack (APPX/MSIXVC). Useful for offline install (uses disk space).",
+    "modify_appx_manifest_desc": "Run UWP out of sandbox and allow multi-instance.",
+    "uwp_minimize_fix": "UWP minimize fix",
+    "uwp_minimize_fix_desc": "Fix window issues related to UWP minimize behavior."
   },
   "CustomizationSettings": {
     "launch_animation": "Launch animation",
+    "launch_animation_desc": "Show transition animations in the launcher.",
     "theme_color": "Theme color",
+    "theme_color_desc": "Adjust the launcher theme and accent color.",
     "custom_background": "Background",
+    "custom_background_desc": "Choose background source: default, local image, or URL.",
     "h": "Local image path",
     "background_options": {
       "default": "Default",
@@ -933,7 +956,15 @@
     "pagination_next": "Next",
     "pagination_goto": "Go to",
     "pagination_go": "Go",
-    "local_import": "Local Import"
+    "local_import": "Local Import",
+    "local_package_actions_title": "Local Package Options",
+    "local_package_actions_desc": "A local package is available. You can install from the local file, re-download, or delete it to free up space.",
+    "local_install": "Install (Local)",
+    "local_install_desc": "Install directly from the local package file",
+    "redownload": "Re-download",
+    "redownload_desc": "Ignore the local file and download again",
+    "delete_local_package": "Delete Local Package",
+    "delete_local_package_desc": "Remove the local package from the downloads folder"
   },
   "McDeps": {
     "themeToggle": "Toggle theme",

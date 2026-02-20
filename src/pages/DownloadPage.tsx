@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 
 // Hooks
 import { useMinecraftVersions } from '../hooks/useMinecraftVersions';
@@ -10,13 +11,15 @@ import { useToast } from "../components/Toast";
 import Select from "../components/Select";
 import InstallProgressBar from "./Download/InstallProgressBar";
 import UnifiedPageLayout from '../components/UnifiedPageLayout/UnifiedPageLayout';
+import Modal from "../components/Modal";
+import Button from "../components/Button";
 
 const CurseForgeBrowser = React.lazy(() =>
     import('./Download/CurseForge/CurseForgeBrowser').then((m: any) => ({ default: m.CurseForgeBrowser }))
 );
 
 // Icons & Styles
-import { Download, Upload, Box, Layers, Package, Cpu } from 'lucide-react';
+import { Download, Upload, Box, Layers, Package, Cpu, RotateCcw, Trash2, ChevronRight } from 'lucide-react';
 import './DownloadPage.css';
 
 // Assets
@@ -27,7 +30,7 @@ import {useLocation} from "react-router-dom";
 // ============================================================================
 // 1. 版本行组件 (保持不变)
 // ============================================================================
-const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownload, onStatusChange, onComplete, onCancel, t }: any) => {
+const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownload, onStatusChange, onComplete, onCancel, t, localPathMap }: any) => {
     const isCurrentDownloading = activeDownloadId === ver.packageId;
     const isRelease = ver.type === 0;
     const isBeta = ver.type === 1;
@@ -35,6 +38,8 @@ const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownloa
     const displayIcon = (isRelease || isBeta) ? releaseIcon : previewIcon;
     const typeLabel = ver.type === 0 ? t('common.release') : ver.type === 1 ? t('common.beta') : t('common.preview');
     const isDisabled = isDownloading || !ver.metaPresent || (ver.archivalStatus === 1 || ver.archivalStatus === 0);
+    const localPath = localPathMap?.[ver.packageId] || null;
+    const isLocalReady = !!localPath;
 
     return (
         <div className="version-row">
@@ -54,13 +59,13 @@ const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownloa
             </div>
             <div className="col-action">
                 {isCurrentDownloading ? (
-                    <InstallProgressBar version={ver.version} packageId={ver.packageId} versionType={ver.type} md5={ver.md5} isGDK={ver.isGDK} onStatusChange={onStatusChange} onCompleted={onComplete} onCancel={onCancel}>
+                    <InstallProgressBar version={ver.version} packageId={ver.packageId} versionType={ver.type} md5={ver.md5} isGDK={ver.isGDK} autoExtractPath={localPath} onStatusChange={onStatusChange} onCompleted={onComplete} onCancel={onCancel}>
                         <button className="download-btn-sm" disabled style={{ width: 110, justifyContent: 'center' }}>{t('common.downloading')}</button>
                     </InstallProgressBar>
                 ) : (
                     <button className="download-btn-sm" onClick={() => onDownload(ver)} disabled={isDisabled}>
                         <Download size={16} strokeWidth={2.5} />
-                        {t('common.download')}
+                        {isLocalReady ? (t('common.install') || 'Install') : t('common.download')}
                     </button>
                 )}
             </div>
@@ -104,13 +109,17 @@ const DownloadPage = () => {
     const [activeDownloadId, setActiveDownloadId] = useState<string | null>(null);
     const [isImporting, setIsImporting] = useState(false);
     const [sourcePath, setSourcePath] = useState<string | null>(null);
+    const [localPathMap, setLocalPathMap] = useState<Record<string, string | null>>({});
+    const [localActionsOpen, setLocalActionsOpen] = useState(false);
+    const [localActionsVer, setLocalActionsVer] = useState<any | null>(null);
+    const [localActionsBusy, setLocalActionsBusy] = useState(false);
 
     // Filter Logic for Game Tab
     const filteredVersions = useMemo(() => {
         if (!rawVersions) return [];
         return rawVersions.map((v: any) => ({
             version: v[0], packageId: v[1], type: v[2], typeStr: v[3], buildType: v[4],
-            archivalStatus: v[5], metaPresent: v[6], md5: v[7], isGDK: v[4] === "GDK"
+            archivalStatus: v[5], metaPresent: v[6], md5: v[7], isGDK: String(v[4] || "").toLowerCase() === "gdk"
         })).filter((item: any) => {
             if (filterType !== 'all') {
                 if (filterType === 'release' && item.type !== 0) return false;
@@ -131,6 +140,36 @@ const DownloadPage = () => {
         return filteredVersions.slice(start, start + PAGE_SIZE);
     }, [filteredVersions, currentPage]);
 
+    const getLocalPackageFileName = useCallback((ver: any) => {
+        const ext = ver?.isGDK ? ".msixvc" : ".appx";
+        return `${ver.version}${ext}`;
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        const run = async () => {
+            if (activeTab !== 'game') return;
+            if (!paginatedVersions || paginatedVersions.length === 0) return;
+
+            const updates: Record<string, string | null> = {};
+            for (const ver of paginatedVersions) {
+                try {
+                    const fileName = getLocalPackageFileName(ver);
+                    // Fast path: check existence only (no MD5 hashing) so the UI can show "Install" immediately.
+                    const p = await invoke<string | null>("local_download_path", { fileName, md5: null });
+                    updates[ver.packageId] = p;
+                } catch {
+                    updates[ver.packageId] = null;
+                }
+            }
+
+            if (cancelled) return;
+            setLocalPathMap((prev) => ({ ...prev, ...updates }));
+        };
+        run();
+        return () => { cancelled = true; };
+    }, [activeTab, paginatedVersions, getLocalPackageFileName]);
+
     useEffect(() => {
         if (activeTab === 'game') setCurrentPage(1);
         setSearchTerm("");
@@ -148,6 +187,19 @@ const DownloadPage = () => {
         setActiveDownloadId(ver.packageId);
         setIsDownloading(true);
     }, [isDownloading, toast, t]);
+
+    const handleGameAction = useCallback((ver: any) => {
+        if (isDownloading) return;
+        if (!ver.metaPresent) return toast.error(t('DownloadPage.no_metadata'));
+        const localPath = localPathMap?.[ver.packageId] || null;
+        if (localPath) {
+            setLocalActionsVer(ver);
+            setLocalActionsOpen(true);
+            return;
+        }
+        setActiveDownloadId(ver.packageId);
+        setIsDownloading(true);
+    }, [isDownloading, toast, t, localPathMap]);
 
     const handleComplete = useCallback(() => { setActiveDownloadId(null); setIsDownloading(false); }, []);
 
@@ -229,6 +281,55 @@ const DownloadPage = () => {
         return undefined;
     };
 
+    const localActionsPath = localActionsVer?.packageId ? (localPathMap?.[localActionsVer.packageId] || null) : null;
+    const localActionsFileName = localActionsVer ? getLocalPackageFileName(localActionsVer) : null;
+
+    const closeLocalActions = useCallback(() => {
+        if (localActionsBusy) return;
+        setLocalActionsOpen(false);
+        setLocalActionsVer(null);
+    }, [localActionsBusy]);
+
+    const startInstall = useCallback((ver: any) => {
+        setLocalActionsOpen(false);
+        setLocalActionsVer(null);
+        setActiveDownloadId(ver.packageId);
+        setIsDownloading(true);
+    }, []);
+
+    const handleLocalInstall = useCallback(() => {
+        if (!localActionsVer || !localActionsPath) return;
+        startInstall(localActionsVer);
+    }, [localActionsVer, localActionsPath, startInstall]);
+
+    const handleRedownload = useCallback(async () => {
+        if (!localActionsVer || !localActionsFileName) return;
+        setLocalActionsBusy(true);
+        try {
+            await invoke("delete_local_download", { fileName: localActionsFileName });
+            setLocalPathMap((prev) => ({ ...prev, [localActionsVer.packageId]: null }));
+            startInstall(localActionsVer);
+        } catch (e: any) {
+            toast?.error(e?.message || String(e));
+        } finally {
+            setLocalActionsBusy(false);
+        }
+    }, [localActionsVer, localActionsFileName, startInstall, toast]);
+
+    const handleDeleteLocal = useCallback(async () => {
+        if (!localActionsVer || !localActionsFileName) return;
+        setLocalActionsBusy(true);
+        try {
+            await invoke("delete_local_download", { fileName: localActionsFileName });
+            setLocalPathMap((prev) => ({ ...prev, [localActionsVer.packageId]: null }));
+            closeLocalActions();
+        } catch (e: any) {
+            toast?.error(e?.message || String(e));
+        } finally {
+            setLocalActionsBusy(false);
+        }
+    }, [localActionsVer, localActionsFileName, closeLocalActions, toast]);
+
     return (
         <>
             {isImporting && activeDownloadId === 'import' && (
@@ -286,7 +387,7 @@ const DownloadPage = () => {
                             ) : (
                                 <div className="version-list-container">
                                     {paginatedVersions.map((ver: any, idx: number) => (
-                                        <VersionRow key={`${ver.version}-${idx}`} ver={ver} activeDownloadId={activeDownloadId} isDownloading={isDownloading} onDownload={handleGameDownload} onStatusChange={setIsDownloading} onComplete={handleComplete} onCancel={handleComplete} t={t} />
+                                        <VersionRow key={`${ver.version}-${idx}`} ver={ver} activeDownloadId={activeDownloadId} isDownloading={isDownloading} onDownload={handleGameAction} onStatusChange={setIsDownloading} onComplete={handleComplete} onCancel={handleComplete} t={t} localPathMap={localPathMap} />
                                     ))}
                                 </div>
                             )}
@@ -316,6 +417,76 @@ const DownloadPage = () => {
                     )}
                 </div>
             </UnifiedPageLayout>
+
+            <Modal
+                open={localActionsOpen}
+                title={t("DownloadPage.local_package_actions_title")}
+                onClose={closeLocalActions}
+                width="560px"
+                footer={(
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
+                        <Button variant="ghost" onClick={closeLocalActions}>{t("common.cancel")}</Button>
+                    </div>
+                )}
+            >
+                <div className="dp-local-actions">
+                    <div className="dp-local-actions-desc">{t("DownloadPage.local_package_actions_desc")}</div>
+
+                    <div className="dp-local-actions-meta">
+                        <div className="dp-local-actions-meta-left">
+                            <div className="dp-local-actions-name">{localActionsVer?.version || "-"}</div>
+                            {localActionsPath ? <div className="dp-local-actions-path" title={localActionsPath}>{localActionsPath}</div> : null}
+                        </div>
+                        <div className="dp-local-actions-meta-right">
+                            <span className={`mini-badge ${localActionsVer?.type === 0 ? "badge-release" : (localActionsVer?.type === 1 ? "badge-beta" : "badge-preview")}`}>
+                                {localActionsVer?.type === 0 ? t("common.release") : (localActionsVer?.type === 1 ? t("common.beta") : t("common.preview"))}
+                            </span>
+                            {localActionsVer?.isGDK && <span className="meta-tag tag-gdk">{t("common.gdk")}</span>}
+                        </div>
+                    </div>
+
+                    <div className="dp-local-actions-list" role="list">
+                        <button
+                            type="button"
+                            className={`dp-action-item ${(!localActionsPath || localActionsBusy) ? "is-disabled" : ""}`}
+                            onClick={(!localActionsPath || localActionsBusy) ? undefined : handleLocalInstall}
+                        >
+                            <div className="dp-action-icon is-primary"><Box size={18} /></div>
+                            <div className="dp-action-main">
+                                <div className="dp-action-title">{t("DownloadPage.local_install")}</div>
+                                <div className="dp-action-sub">{t("DownloadPage.local_install_desc")}</div>
+                            </div>
+                            <div className="dp-action-end"><ChevronRight size={18} /></div>
+                        </button>
+
+                        <button
+                            type="button"
+                            className={`dp-action-item ${(localActionsBusy) ? "is-disabled" : ""}`}
+                            onClick={localActionsBusy ? undefined : handleRedownload}
+                        >
+                            <div className="dp-action-icon"><RotateCcw size={18} /></div>
+                            <div className="dp-action-main">
+                                <div className="dp-action-title">{t("DownloadPage.redownload")}</div>
+                                <div className="dp-action-sub">{t("DownloadPage.redownload_desc")}</div>
+                            </div>
+                            <div className="dp-action-end"><ChevronRight size={18} /></div>
+                        </button>
+
+                        <button
+                            type="button"
+                            className={`dp-action-item is-danger ${(localActionsBusy) ? "is-disabled" : ""}`}
+                            onClick={localActionsBusy ? undefined : handleDeleteLocal}
+                        >
+                            <div className="dp-action-icon is-danger"><Trash2 size={18} /></div>
+                            <div className="dp-action-main">
+                                <div className="dp-action-title">{t("DownloadPage.delete_local_package")}</div>
+                                <div className="dp-action-sub">{t("DownloadPage.delete_local_package_desc")}</div>
+                            </div>
+                            <div className="dp-action-end"><ChevronRight size={18} /></div>
+                        </button>
+                    </div>
+                </div>
+            </Modal>
         </>
     );
 };

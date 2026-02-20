@@ -26,6 +26,7 @@
     "load_failed": "불러오기 실패",
     "no_path": "경로 없음",
     "open_failed": "열기 실패",
+    "open": "열기",
     "unknown": "알 수 없음",
     "save_success": "저장됨",
     "saved": "저장됨",
@@ -38,6 +39,7 @@
     "unknown_asset": "알 수 없는 리소스",
     "downloading": "다운로드 중",
     "download": "다운로드",
+    "install": "설치",
     "go_download": "다운로드"
   },
   "manage": {
@@ -400,30 +402,41 @@
   },
   "LauncherSettings": {
     "debug": "디버그",
-    "gpu_acceleration": "GPU 가속 (WebView2, 재시작 필요)",
+    "debug_desc": "추가 로그를 출력합니다(재시작 필요).",
+    "gpu_acceleration": "GPU 가속",
+    "gpu_acceleration_desc": "WebView2 렌더링에 GPU 가속을 사용합니다. 문제가 있으면 끄세요(재시작 필요).",
+    "stats_upload": "통계 업로드",
+    "stats_upload_desc": "런처 개선을 위해 기본 실행 정보를 업로드합니다(계정/게임 데이터는 포함되지 않음).",
     "language": "언어",
+    "language_desc": "런처 UI 언어를 설정합니다(자동은 시스템을 따름).",
     "lang_options": {
       "auto": "자동",
       "en": "영어",
       "zh": "중국어"
     },
     "update_channel": "채널",
+    "update_channel_desc": "나이틀리에는 미완성 또는 불안정한 기능이 포함될 수 있습니다.",
     "update_channel.stable": "안정",
     "update_channel.nightly": "나이틀리",
     "update_channel.placeholder": "선택",
     "auto_check_updates": "자동 확인",
+    "auto_check_updates_desc": "시작 시 런처 업데이트를 자동으로 확인합니다.",
     "download": {
       "multi_thread": "멀티스레드",
+      "multi_thread_desc": "여러 연결로 다운로드 속도를 높입니다(자원 사용이 늘 수 있음).",
       "auto_thread_count": "자동 스레드",
+      "auto_thread_count_desc": "네트워크 상황에 따라 스레드 수를 자동으로 조절합니다.",
       "max_threads": "최대 스레드",
       "curseforge_api_base": "CurseForge API 기준",
       "curseforge_api_source": "CurseForge API 소스",
+      "curseforge_api_source_desc": "API 소스를 선택합니다. 지역에 따라 미러가 더 빠를 수 있습니다.",
       "curseforge_api_source.official": "공식",
       "curseforge_api_source.mirror": "미러 (MCIM)",
       "curseforge_api_source.custom": "사용자 정의",
       "curseforge_api_source.placeholder": "선택",
       "proxy": {
         "mode": "프록시",
+        "mode_desc": "다운로드/업데이트에 사용할 프록시 모드입니다.",
         "none": "없음",
         "system": "시스템",
         "http": "HTTP",
@@ -434,6 +447,7 @@
       "title": "다운로드"
     },
     "connectivity_test": "연결 테스트",
+    "connectivity_test_desc": "다운로드/업데이트 서비스의 가용성과 지연을 테스트합니다.",
     "lang_placeholder": "언어 선택"
   },
   "AboutSection": {
@@ -499,19 +513,28 @@
     "reduce_pixels": "가장자리(px)",
     "unlock_hotkey": "해제 단축키",
     "launcher_visibility": "런처 표시",
+    "launcher_visibility_desc": "게임 실행 후 런처 창 동작을 설정합니다.",
     "visibility": {
       "minimize": "실행 후 최소화",
       "close": "실행 후 닫기",
       "keep": "표시 유지"
     },
-    "keep_appx_after_install": "APPX 유지",
+    "keep_appx_after_install": "다운로드한 패키지 보관",
     "modify_appx_manifest": "AppxManifest 수정",
-    "uwp_minimize_fix": "UWP 최소화 수정"
+    "keep_appx_after_install_desc": "설치/압축 해제 후 다운로드한 패키지(APPX/MSIXVC)를 보관합니다(디스크 공간 사용).",
+    "keep_downloaded_game_package": "다운로드한 패키지 보관",
+    "keep_downloaded_game_package_desc": "설치/압축 해제 후 다운로드한 패키지(APPX/MSIXVC)를 보관합니다(디스크 공간 사용).",
+    "modify_appx_manifest_desc": "UWP를 샌드박스 밖에서 실행하고 다중 실행을 지원합니다.",
+    "uwp_minimize_fix": "UWP 최소화 수정",
+    "uwp_minimize_fix_desc": "UWP 최소화 관련 창 문제를 수정합니다."
   },
   "CustomizationSettings": {
     "launch_animation": "시작 애니메",
+    "launch_animation_desc": "런처에서 화면 전환 애니메이션을 표시합니다.",
     "theme_color": "테마 색",
+    "theme_color_desc": "테마/강조 색상을 조절합니다.",
     "custom_background": "배경",
+    "custom_background_desc": "배경 소스를 선택합니다(기본/로컬/URL).",
     "h": "로컬 이미지 경로",
     "background_options": {
       "default": "기본",
@@ -932,7 +955,15 @@
     "pagination_next": "다음",
     "pagination_goto": "이동",
     "pagination_go": "이동",
-    "local_import": "로컬 가져오기"
+    "local_import": "로컬 가져오기",
+    "local_package_actions_title": "로컬 패키지 옵션",
+    "local_package_actions_desc": "로컬에 다운로드된 패키지가 있습니다. 로컬 파일로 설치하거나, 다시 다운로드하거나, 삭제하여 공간을 확보할 수 있습니다.",
+    "local_install": "로컬 설치",
+    "local_install_desc": "로컬 패키지 파일에서 바로 설치합니다",
+    "redownload": "다시 다운로드",
+    "redownload_desc": "로컬 파일을 무시하고 다시 다운로드합니다",
+    "delete_local_package": "로컬 패키지 삭제",
+    "delete_local_package_desc": "다운로드 폴더에서 로컬 패키지를 삭제합니다"
   },
   "McDeps": {
     "themeToggle": "테마 전환",
