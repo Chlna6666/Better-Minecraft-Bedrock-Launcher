@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs, io};
 use tracing::{debug, error};
+use crate::utils::file_ops;
 
 fn default_true() -> bool {
     true
@@ -22,7 +23,8 @@ pub struct CustomStyle {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct GameConfig {
     pub launcher_visibility: String,   // "minimize", "close", "keep"
-    pub keep_appx_after_install: bool, // 安装完成保留 APPX（默认关闭）
+    #[serde(default, alias = "keep_appx_after_install")]
+    pub keep_downloaded_game_package: bool, // 安装完成保留下载的游戏包（默认关闭）
     pub modify_appx_manifest: bool,    // 是否修改 AppxManifest.xml
     pub uwp_minimize_fix: bool,
 }
@@ -86,6 +88,8 @@ pub struct Launcher {
     pub language: String, // "auto", "en-US", "zh-CN" 等
     #[serde(default = "default_true")]
     pub gpu_acceleration: bool, // WebView2 GPU 加速 (默认开启)
+    #[serde(default = "default_true")]
+    pub stats_upload: bool, // 上传基础统计信息 (默认开启)
     pub custom_appx_api: String,
     pub download: DownloadConfig,
     #[serde(default)]
@@ -104,12 +108,11 @@ pub struct Config {
 }
 
 pub fn get_config_file_path() -> PathBuf {
-    let config_dir = std::env::current_dir().unwrap().join("BMCBL/config");
-    config_dir.join("settings.toml")
+    file_ops::bmcbl_subdir("config").join("settings.toml")
 }
 
 pub fn ensure_config_dir() -> io::Result<()> {
-    let config_dir = std::env::current_dir()?.join("BMCBL/config");
+    let config_dir = file_ops::bmcbl_subdir("config");
     if !config_dir.exists() {
         fs::create_dir_all(&config_dir)?;
     }
@@ -140,6 +143,7 @@ pub fn get_default_config() -> Config {
             debug: false,
             language: "auto".to_string(),
             gpu_acceleration: true,
+            stats_upload: true,
             custom_appx_api: "https://data.mcappx.com/v2/bedrock.json".to_string(),
             download: DownloadConfig {
                 multi_thread: false,
@@ -160,7 +164,7 @@ pub fn get_default_config() -> Config {
         },
         game: GameConfig {
             launcher_visibility: "keep".to_string(),
-            keep_appx_after_install: false,
+            keep_downloaded_game_package: false,
             modify_appx_manifest: true,
             uwp_minimize_fix: true,
         },
@@ -174,6 +178,7 @@ pub fn read_config() -> io::Result<Config> {
 
     let config_file = get_config_file_path();
     let content = fs::read_to_string(&config_file)?;
+    let has_legacy_keep_appx = content.contains("keep_appx_after_install");
 
     let config: Config = match toml::from_str(&content) {
         Ok(parsed_config) => parsed_config,
@@ -211,9 +216,12 @@ pub fn read_config() -> io::Result<Config> {
         config.launcher.language = normalized_lang;
         migrated = true;
     }
+    if has_legacy_keep_appx {
+        migrated = true;
+    }
     if migrated {
         let _ = write_config(&config);
-        debug!("Migrated config language to normalized format");
+        debug!("Migrated config");
     }
 
     debug!("Read and updated config: {:?}", config);

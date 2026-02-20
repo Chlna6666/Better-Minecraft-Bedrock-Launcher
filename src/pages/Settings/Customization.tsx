@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { SketchPicker, ColorResult } from 'react-color';
 import { useToast } from "../../components/Toast";
 import { Button } from "../../components";
+import SettingText from "./SettingText";
 
 // ==========================================
 // 辅助函数
@@ -334,7 +335,14 @@ export default function Customization() {
 
             {/* 1. 启动动画 */}
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("CustomizationSettings.launch_animation")}</label>
+                <SettingText
+                    title={t("CustomizationSettings.launch_animation")}
+                    desc={(() => {
+                        const key = "CustomizationSettings.launch_animation_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Switch checked={showLaunchAnimation} onChange={async () => {
                     const newValue = !showLaunchAnimation;
                     setShowLaunchAnimation(newValue);
@@ -350,7 +358,14 @@ export default function Customization() {
 
             {/* 2. 主题色 */}
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("CustomizationSettings.theme_color")}</label>
+                <SettingText
+                    title={t("CustomizationSettings.theme_color")}
+                    desc={(() => {
+                        const key = "CustomizationSettings.theme_color_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <button
                         ref={buttonRef}
@@ -388,7 +403,14 @@ export default function Customization() {
             <motion.div variants={itemVariants} className="setting-item grouped">
                 {/* 组头：背景源选择 */}
                 <div className="setting-header">
-                    <label>{t("CustomizationSettings.custom_background")}</label>
+                    <SettingText
+                        title={t("CustomizationSettings.custom_background")}
+                        desc={(() => {
+                            const key = "CustomizationSettings.custom_background_desc";
+                            const val = t(key);
+                            return val === key ? undefined : val;
+                        })()}
+                    />
                     <Select
                         value={backgroundOption}
                         onChange={handleBackgroundSelect}

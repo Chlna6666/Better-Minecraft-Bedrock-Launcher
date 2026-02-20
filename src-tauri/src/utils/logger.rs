@@ -1,7 +1,9 @@
 use crate::config::config::read_config;
+use crate::utils::file_ops;
 use chrono::Local;
 use once_cell::sync::Lazy;
 use std::fs::{create_dir_all, OpenOptions};
+use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::format::Writer;
@@ -52,11 +54,11 @@ pub fn log(level: &str, message: &str) {
 
 // 初始化日志系统
 pub fn init_logging() {
-    let logs_dir = "BMCBL/logs";
-    let latest_log_file = format!("{}/latest.log", logs_dir);
+    let logs_dir: PathBuf = file_ops::bmcbl_subdir("logs");
+    let latest_log_file = logs_dir.join("latest.log");
 
     // 确保日志目录存在
-    if let Err(e) = create_dir_all(logs_dir) {
+    if let Err(e) = create_dir_all(&logs_dir) {
         eprintln!("Failed to create logs directory: {}", e);
         return;
     }
@@ -99,11 +101,7 @@ pub fn init_logging() {
             std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(format!(
-                    "{}/{}.log",
-                    logs_dir,
-                    Local::now().format("%Y-%m-%d")
-                ))
+                .open(logs_dir.join(format!("{}.log", Local::now().format("%Y-%m-%d"))))
                 .unwrap(),
         ); // 明确指定文件输出
 

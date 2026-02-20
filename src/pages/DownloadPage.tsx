@@ -308,6 +308,17 @@ const DownloadPage = () => {
 
     const localActionsPath = localActionsVer?.packageId ? (localPathMap?.[localActionsVer.packageId] || null) : null;
     const localActionsFileName = localActionsVer ? getLocalPackageFileName(localActionsVer) : null;
+    const localActionsFileDisplay = localActionsPath ? (String(localActionsPath).split(/[\\/]/).pop() || String(localActionsPath)) : null;
+
+    const handleOpenLocalActionsFolder = useCallback(async () => {
+        if (!localActionsPath) return;
+        try {
+            const dir = String(localActionsPath).replace(/[\\/][^\\/]+$/, "");
+            await invoke("open_path", { path: dir });
+        } catch (e) {
+            console.error(e);
+        }
+    }, [localActionsPath]);
 
     const closeLocalActions = useCallback(() => {
         if (localActionsBusy) return;
@@ -454,13 +465,29 @@ const DownloadPage = () => {
                     <div className="dp-local-actions-meta">
                         <div className="dp-local-actions-meta-left">
                             <div className="dp-local-actions-name">{localActionsVer?.version || "-"}</div>
-                            {localActionsPath ? <div className="dp-local-actions-path" title={localActionsPath}>{localActionsPath}</div> : null}
+                            {localActionsFileDisplay ? (
+                                <div className="dp-local-actions-file-row">
+                                    <div className="dp-local-actions-path">{localActionsFileDisplay}</div>
+                                </div>
+                            ) : null}
                         </div>
                         <div className="dp-local-actions-meta-right">
                             <span className={`mini-badge ${localActionsVer?.type === 0 ? "badge-release" : (localActionsVer?.type === 1 ? "badge-beta" : "badge-preview")}`}>
                                 {localActionsVer?.type === 0 ? t("common.release") : (localActionsVer?.type === 1 ? t("common.beta") : t("common.preview"))}
                             </span>
                             {localActionsVer?.isGDK && <span className="meta-tag tag-gdk">{t("common.gdk")}</span>}
+                            <button
+                                type="button"
+                                className={`dp-open-folder-btn ${(!localActionsPath || localActionsBusy) ? "is-disabled" : ""}`}
+                                onClick={(!localActionsPath || localActionsBusy) ? undefined : handleOpenLocalActionsFolder}
+                                aria-label={t("DownloadPage.open_folder")}
+                            >
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                                    <path d="M12 11v6" />
+                                    <path d="M9 14h6" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
 
@@ -524,10 +551,26 @@ const DownloadPage = () => {
                     <div className="dp-local-actions-meta">
                         <div className="dp-local-actions-meta-left">
                             <div className="dp-local-actions-name">{localActionsVer?.version || "-"}</div>
-                            {localActionsPath ? <div className="dp-local-actions-path" title={localActionsPath}>{localActionsPath}</div> : null}
+                            {localActionsFileDisplay ? (
+                                <div className="dp-local-actions-file-row">
+                                    <div className="dp-local-actions-path">{localActionsFileDisplay}</div>
+                                </div>
+                            ) : null}
                         </div>
                         <div className="dp-local-actions-meta-right">
                             {localActionsVer?.isGDK && <span className="meta-tag tag-gdk">{t("common.gdk")}</span>}
+                            <button
+                                type="button"
+                                className={`dp-open-folder-btn ${(!localActionsPath || localActionsBusy) ? "is-disabled" : ""}`}
+                                onClick={(!localActionsPath || localActionsBusy) ? undefined : handleOpenLocalActionsFolder}
+                                aria-label={t("DownloadPage.open_folder")}
+                            >
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                                    <path d="M12 11v6" />
+                                    <path d="M9 14h6" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
                 </div>

@@ -402,6 +402,26 @@
 .dp-local-actions-meta-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding-top: 2px; }
 .dp-local-actions-name { font-weight: 800; color: var(--text-main); font-size: 1.05rem; }
 .dp-local-actions-path { color: var(--text-sub); font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-local-actions-file-row { display: flex; align-items: center; min-width: 0; }
+.dp-local-actions-file-row .dp-local-actions-path { flex: 1; min-width: 0; }
+.dp-open-folder-btn {
+    appearance: none;
+    border: 1px solid rgba(0,0,0,0.10);
+    background: rgba(255,255,255,0.60);
+    border-radius: 10px;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    cursor: pointer;
+    color: var(--theme-color);
+}
+[data-theme='dark'] .dp-open-folder-btn { border-color: rgba(255,255,255,0.10); background: rgba(255,255,255,0.06); }
+.dp-open-folder-btn:active { transform: translateY(1px); }
+.dp-open-folder-btn.is-disabled { opacity: 0.55; cursor: not-allowed; pointer-events: none; transform: none; }
 
 .dp-local-actions-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 .dp-action-item {

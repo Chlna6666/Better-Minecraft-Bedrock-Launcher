@@ -11,6 +11,7 @@ import { SUPPORTED_LANGUAGES } from "../../locales/i18n";
 import { Input } from "../../components";
 import { ChevronRight } from "lucide-react"; // [新增] 引入箭头图标
 import ConnectivityModal from "../../components/ConnectivityModal"; // [新增] 引入弹窗组件
+import SettingText from "./SettingText";
 
 // ... (Variants 保持不变)
 const containerVariants = {
@@ -32,6 +33,7 @@ export default function Launcher() {
     const [loaded, setLoaded] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
     const [gpuAcceleration, setGpuAcceleration] = useState(true);
+    const [statsUpload, setStatsUpload] = useState(true);
     const [language, setLanguage] = useState("auto");
     const [userLanguage, setUserLanguage] = useState("auto");
     // const [customAppxApi, setCustomAppxApi] = useState(""); // 未使用的变量可以注释或删除
@@ -65,6 +67,7 @@ export default function Launcher() {
 
                 setDebugMode(launcher.debug || false);
                 setGpuAcceleration(launcher.hasOwnProperty('gpu_acceleration') ? !!launcher.gpu_acceleration : true);
+                setStatsUpload(launcher.hasOwnProperty('stats_upload') ? !!launcher.stats_upload : true);
                 const storedLang = launcher.language || "auto";
                 const normalizedLang = storedLang === "auto"
                     ? "auto"
@@ -105,6 +108,7 @@ export default function Launcher() {
 
                 launcher.debug = debugMode;
                 launcher.gpu_acceleration = gpuAcceleration;
+                launcher.stats_upload = statsUpload;
                 launcher.language = language;
                 launcher.update_channel = updateChannel;
                 launcher.auto_check_updates = autoCheckUpdates;
@@ -124,7 +128,7 @@ export default function Launcher() {
             } catch (e) {}
         };
         save();
-    }, [loaded, debugMode, gpuAcceleration, language, multiThread, autoThreadCount, maxThreads, proxyType, httpProxyUrl, socksProxyUrl, autoCheckUpdates, updateChannel, curseforgeApiSource, curseforgeApiBase]);
+    }, [loaded, debugMode, gpuAcceleration, statsUpload, language, multiThread, autoThreadCount, maxThreads, proxyType, httpProxyUrl, socksProxyUrl, autoCheckUpdates, updateChannel, curseforgeApiSource, curseforgeApiBase]);
 
     // Debounce Save Helper
     const saveRef = useRef<NodeJS.Timeout | null>(null);
@@ -187,17 +191,50 @@ export default function Launcher() {
             <motion.h3 variants={itemVariants} className="settings-group-title">{t("Settings.tabs.launcher")}</motion.h3>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("LauncherSettings.debug")}</label>
+                <SettingText
+                    title={t("LauncherSettings.debug")}
+                    desc={(() => {
+                        const key = "LauncherSettings.debug_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Switch checked={debugMode} onChange={() => setDebugMode(!debugMode)} />
             </motion.div>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("LauncherSettings.gpu_acceleration")}</label>
+                <SettingText
+                    title={t("LauncherSettings.gpu_acceleration")}
+                    desc={(() => {
+                        const key = "LauncherSettings.gpu_acceleration_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Switch checked={gpuAcceleration} onChange={() => setGpuAcceleration(!gpuAcceleration)} />
             </motion.div>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("LauncherSettings.language")}</label>
+                <SettingText
+                    title={t("LauncherSettings.stats_upload")}
+                    desc={(() => {
+                        const key = "LauncherSettings.stats_upload_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
+                <Switch checked={statsUpload} onChange={() => setStatsUpload(!statsUpload)} />
+            </motion.div>
+
+            <motion.div variants={itemVariants} className="setting-item">
+                <SettingText
+                    title={t("LauncherSettings.language")}
+                    desc={(() => {
+                        const key = "LauncherSettings.language_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <div style={fixedControlStyle}>
                     <Select
                         value={userLanguage}
@@ -220,9 +257,15 @@ export default function Launcher() {
                 onClick={() => setShowConnectivity(true)} // 点击触发弹窗
                 // 添加 hover 效果增强交互感 (可选，因为 css 中 .setting-item:hover 已经有了)
             >
-                <label style={{ cursor: 'pointer' }}>
-                    {t("LauncherSettings.connectivity_test") || "服务连通性测试"}
-                </label>
+                <SettingText
+                    title={t("LauncherSettings.connectivity_test") || "服务连通性测试"}
+                    desc={(() => {
+                        const key = "LauncherSettings.connectivity_test_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                    style={{ cursor: "pointer" }}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', color: 'var(--c-text-secondary)' }}>
                     {/* 使用箭头图标作为“按钮” */}
                     <ChevronRight size={20} />
@@ -231,7 +274,14 @@ export default function Launcher() {
 
             <motion.div variants={itemVariants} className="setting-item grouped">
                 <div className="setting-header">
-                    <label>{t("LauncherSettings.auto_check_updates")}</label>
+                    <SettingText
+                        title={t("LauncherSettings.auto_check_updates")}
+                        desc={(() => {
+                            const key = "LauncherSettings.auto_check_updates_desc";
+                            const val = t(key);
+                            return val === key ? undefined : val;
+                        })()}
+                    />
                     <Switch
                         checked={autoCheckUpdates}
                         onChange={() => setAutoCheckUpdates(!autoCheckUpdates)}
@@ -276,7 +326,14 @@ export default function Launcher() {
             {/* --- 多线程下载 --- */}
             <motion.div variants={itemVariants} className="setting-item grouped">
                 <div className="setting-header">
-                    <label>{t("LauncherSettings.download.multi_thread")}</label>
+                    <SettingText
+                        title={t("LauncherSettings.download.multi_thread")}
+                        desc={(() => {
+                            const key = "LauncherSettings.download.multi_thread_desc";
+                            const val = t(key);
+                            return val === key ? undefined : val;
+                        })()}
+                    />
                     <Switch
                         checked={multiThread}
                         onChange={() => {
@@ -331,7 +388,14 @@ export default function Launcher() {
             </motion.div>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("LauncherSettings.download.auto_thread_count")}</label>
+                <SettingText
+                    title={t("LauncherSettings.download.auto_thread_count")}
+                    desc={(() => {
+                        const key = "LauncherSettings.download.auto_thread_count_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Switch
                     checked={autoThreadCount}
                     onChange={() => {
@@ -344,7 +408,14 @@ export default function Launcher() {
 
             <motion.div variants={itemVariants} className="setting-item grouped">
                 <div className="setting-header">
-                    <label>{t("LauncherSettings.download.curseforge_api_source") || "CurseForge API Source"}</label>
+                    <SettingText
+                        title={t("LauncherSettings.download.curseforge_api_source") || "CurseForge API Source"}
+                        desc={(() => {
+                            const key = "LauncherSettings.download.curseforge_api_source_desc";
+                            const val = t(key);
+                            return val === key ? undefined : val;
+                        })()}
+                    />
                     <div style={fixedControlStyle}>
                         <Select
                             value={curseforgeApiSource}
@@ -403,7 +474,14 @@ export default function Launcher() {
             {/* 代理设置 */}
             <motion.div variants={itemVariants} className="setting-item grouped">
                 <div className="setting-header">
-                    <label>{t("LauncherSettings.download.proxy.mode") || "Proxy Mode"}</label>
+                    <SettingText
+                        title={t("LauncherSettings.download.proxy.mode") || "Proxy Mode"}
+                        desc={(() => {
+                            const key = "LauncherSettings.download.proxy.mode_desc";
+                            const val = t(key);
+                            return val === key ? undefined : val;
+                        })()}
+                    />
                     <div style={fixedControlStyle}>
                         <Select
                             value={proxyType}

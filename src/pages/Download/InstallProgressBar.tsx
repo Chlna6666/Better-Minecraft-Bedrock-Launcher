@@ -382,11 +382,11 @@ const ConfirmView: React.FC<{
                                         aria-checked={isSelected}
                                     >
                                         <div className="bm-cdn-left">
-                                            <div className="bm-cdn-base tabular-nums" data-bm-title={r.base}>
+                                            <div className="bm-cdn-base tabular-nums">
                                                 {r.base}
                                             </div>
                                             {r.error && (
-                                                <div className="bm-cdn-error" data-bm-title={r.error}>
+                                                <div className="bm-cdn-error">
                                                     {r.error}
                                                 </div>
                                             )}
@@ -486,13 +486,12 @@ const LocalInstallConfirmView: React.FC<{
                 <div className="bm-input-group">
                     <label className="bm-input-label">{t("InstallProgressBar.local_path_label")}</label>
                     <div className="bm-local-pkg-row">
-                        <div className="bm-modern-input bm-path-readonly" title={localPath}>{localPackageName}</div>
+                        <div className="bm-modern-input bm-path-readonly">{localPackageName}</div>
                         <button
                             type="button"
                             className="bm-icon-only-btn"
                             onClick={handleOpenLocalFolder}
                             aria-label={t("InstallProgressBar.open_folder")}
-                            data-bm-title={t("InstallProgressBar.open_folder")}
                         >
                             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />

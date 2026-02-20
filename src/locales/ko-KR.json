@@ -971,7 +971,8 @@
     "delete_local_package_desc": "다운로드 폴더에서 로컬 패키지를 삭제합니다",
     "delete_local_confirm_title": "삭제 확인",
     "delete_local_confirm_desc": "다운로드 폴더에서 로컬 패키지 파일을 삭제합니다.",
-    "delete_local_confirm": "삭제"
+    "delete_local_confirm": "삭제",
+    "open_folder": "폴더 열기"
   },
   "McDeps": {
     "themeToggle": "테마 전환",

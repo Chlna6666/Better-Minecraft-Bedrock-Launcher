@@ -971,7 +971,8 @@
     "delete_local_package_desc": "ダウンロードフォルダからローカルパッケージを削除します",
     "delete_local_confirm_title": "削除の確認",
     "delete_local_confirm_desc": "ダウンロードフォルダからローカルパッケージファイルを削除します。",
-    "delete_local_confirm": "削除"
+    "delete_local_confirm": "削除",
+    "open_folder": "フォルダーを開く"
   },
   "McDeps": {
     "themeToggle": "テーマ切り替え",

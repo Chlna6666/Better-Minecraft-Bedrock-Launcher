@@ -2,11 +2,10 @@
    1. Design Tokens & Variables
    ================================================================================================ */
 :root {
-    /* Color Palette - Modern Blue */
-    --bm-primary-hue: 212;
-    --bm-primary: hsl(var(--bm-primary-hue), 100%, 50%);
-    --bm-primary-hover: hsl(var(--bm-primary-hue), 100%, 45%);
-    --bm-primary-glow: hsla(var(--bm-primary-hue), 100%, 50%, 0.4);
+    /* Primary maps to app theme color */
+    --bm-primary: var(--theme-color, hsl(212, 100%, 50%));
+    --bm-primary-hover: color-mix(in srgb, var(--bm-primary), black 12%);
+    --bm-primary-glow: color-mix(in srgb, var(--bm-primary), transparent 60%);
 
     /* Semantic Colors */
     --bm-danger: #ef4444;
@@ -163,9 +162,9 @@
 }
 
 .bm-chip.platform.uwp {
-    border-color: rgba(59, 130, 246, 0.35);
-    background: rgba(59, 130, 246, 0.12);
-    color: #1d4ed8;
+    border-color: color-mix(in srgb, var(--bm-primary), transparent 70%);
+    background: color-mix(in srgb, var(--bm-primary), transparent 88%);
+    color: color-mix(in srgb, var(--bm-primary), black 12%);
 }
 
 /* ================================================================================================
@@ -199,7 +198,7 @@
 }
 
 .bm-icon-circle.confirm {
-    background: hsla(var(--bm-primary-hue), 100%, 50%, 0.1);
+    background: color-mix(in srgb, var(--bm-primary), transparent 88%);
     color: var(--bm-primary);
 }
 

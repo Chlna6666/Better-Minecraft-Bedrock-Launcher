@@ -972,7 +972,8 @@
     "delete_local_package_desc": "Remove the local package from the downloads folder",
     "delete_local_confirm_title": "Confirm Delete",
     "delete_local_confirm_desc": "This will delete the local package file from the downloads folder.",
-    "delete_local_confirm": "Delete"
+    "delete_local_confirm": "Delete",
+    "open_folder": "Open folder"
   },
   "McDeps": {
     "themeToggle": "Toggle theme",

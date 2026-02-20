@@ -7,6 +7,7 @@ use std::{
 use tauri::command;
 use tokio::{fs, io::AsyncWriteExt};
 use tracing::{warn, info}; // 引入 info 用于常规日志
+use crate::utils::file_ops;
 
 // 与 preloader.dll 保持一致的 Manifest 结构
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -34,7 +35,7 @@ struct ModItem {
 // ---------------- Helper functions ----------------
 
 fn versions_base() -> PathBuf {
-    PathBuf::from("./BMCBL/versions")
+    file_ops::bmcbl_subdir("versions")
 }
 
 fn mods_dir_for(folder_name: &str) -> PathBuf {

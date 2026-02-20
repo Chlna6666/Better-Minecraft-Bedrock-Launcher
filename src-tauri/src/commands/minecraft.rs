@@ -29,6 +29,7 @@ use windows::core::HSTRING;
 use windows::Management::Deployment::PackageManager;
 
 use pelite::pe64::{Pe, PeFile};
+use crate::utils::file_ops;
 
 const INJECTOR_BYTES: &[u8] = include_bytes!("../../assets/BLoader.dll");
 
@@ -451,7 +452,7 @@ pub async fn launch_appx(
     enable_console: Option<bool>,
 ) -> Result<(), String> {
     info!("Command: launch_appx, file={}, auto={}, console={:?}", file_name, auto_start, enable_console);
-    let versions_root = Path::new("./BMCBL/versions");
+    let versions_root = file_ops::bmcbl_subdir("versions");
     let package_folder = versions_root.join(&file_name);
     if !package_folder.exists() { return Err(format!("版本不存在: {}", package_folder.display())); }
 

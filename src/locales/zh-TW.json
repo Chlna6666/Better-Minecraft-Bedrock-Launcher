@@ -971,7 +971,8 @@
     "delete_local_package_desc": "從下載資料夾刪除該本機安裝包",
     "delete_local_confirm_title": "確認刪除",
     "delete_local_confirm_desc": "此操作會從下載資料夾刪除本機安裝包檔案，刪除後可重新下載。",
-    "delete_local_confirm": "刪除"
+    "delete_local_confirm": "刪除",
+    "open_folder": "開啟資料夾"
   },
   "McDeps": {
     "themeToggle": "切換主題",

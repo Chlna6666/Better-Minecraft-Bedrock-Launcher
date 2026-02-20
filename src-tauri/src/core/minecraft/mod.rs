@@ -1,6 +1,5 @@
 pub mod appx;
 pub mod assets;
-pub mod dll_mods;
 pub mod key_patcher;
 pub mod launcher;
 pub mod map;

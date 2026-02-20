@@ -78,7 +78,8 @@
     "delete_local_package_desc": "从下载目录删除该本地安装包",
     "delete_local_confirm_title": "确认删除",
     "delete_local_confirm_desc": "该操作会从下载目录删除本地安装包文件，删除后可重新下载。",
-    "delete_local_confirm": "删除"
+    "delete_local_confirm": "删除",
+    "open_folder": "打开文件夹"
   },
   "manage": {
     "title": "版本管理",

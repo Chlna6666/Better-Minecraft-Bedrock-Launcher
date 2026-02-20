@@ -122,6 +122,31 @@
     margin: 0;
 }
 
+.setting-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0; /* allow wrapping inside grid */
+}
+
+.setting-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--c-text-primary);
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.setting-desc {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--c-text-secondary);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
 .setting-item > :last-child {
     justify-self: end;
 }

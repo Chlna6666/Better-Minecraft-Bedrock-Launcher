@@ -5,6 +5,7 @@ import { getConfig } from "../../utils/config";
 import Switch from "../../components/Switch";
 import Select from "../../components/Select";
 import { useTranslation } from 'react-i18next';
+import SettingText from "./SettingText";
 
 // 动画配置
 const pageVariants = {
@@ -25,7 +26,7 @@ const itemVariants = {
 export default function Game() {
     const { t } = useTranslation();
     const [launcherVis, setLauncherVis] = useState("keep");
-    const [keepAppx, setKeepAppx] = useState(false);
+    const [keepDownloadedGamePackage, setKeepDownloadedGamePackage] = useState(false);
     const [modifyAppxManifest, setModifyAppxManifest] = useState(true);
     const [uwpMinimizeFix, setUwpMinimizeFix] = useState(true);
 
@@ -41,7 +42,9 @@ export default function Game() {
                 const config: any = await getConfig();
                 const cfg = config.game || {};
                 setLauncherVis(cfg.launcher_visibility ?? "keep");
-                setKeepAppx(cfg.keep_appx_after_install ?? false);
+                setKeepDownloadedGamePackage(
+                    cfg.keep_downloaded_game_package ?? cfg.keep_appx_after_install ?? false
+                );
                 setModifyAppxManifest(cfg.modify_appx_manifest ?? true);
                 setUwpMinimizeFix(cfg.uwp_minimize_fix ?? true);
             } catch (e) {
@@ -61,7 +64,7 @@ export default function Game() {
     const updateConfig = (updatedFields: any) => {
         const updated = {
             launcher_visibility: launcherVis,
-            keep_appx_after_install: keepAppx,
+            keep_downloaded_game_package: keepDownloadedGamePackage,
             modify_appx_manifest: modifyAppxManifest,
             uwp_minimize_fix: uwpMinimizeFix,
             ...updatedFields,
@@ -80,7 +83,14 @@ export default function Game() {
             <motion.h3 className="settings-group-title">{t("Settings.tabs.game")}</motion.h3>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("GameSettings.launcher_visibility")}</label>
+                <SettingText
+                    title={t("GameSettings.launcher_visibility")}
+                    desc={(() => {
+                        const key = "GameSettings.launcher_visibility_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Select
                     value={launcherVis}
                     onChange={(val: any) => {
@@ -94,7 +104,14 @@ export default function Game() {
             </motion.div>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("GameSettings.uwp_minimize_fix")}</label>
+                <SettingText
+                    title={t("GameSettings.uwp_minimize_fix")}
+                    desc={(() => {
+                        const key = "GameSettings.uwp_minimize_fix_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Switch
                     checked={uwpMinimizeFix}
                     onChange={() => {
@@ -106,19 +123,33 @@ export default function Game() {
             </motion.div>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("GameSettings.keep_appx_after_install")}</label>
+                <SettingText
+                    title={t("GameSettings.keep_downloaded_game_package")}
+                    desc={(() => {
+                        const key = "GameSettings.keep_downloaded_game_package_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Switch
-                    checked={keepAppx}
+                    checked={keepDownloadedGamePackage}
                     onChange={() => {
-                        const next = !keepAppx;
-                        setKeepAppx(next);
-                        updateConfig({ keep_appx_after_install: next });
+                        const next = !keepDownloadedGamePackage;
+                        setKeepDownloadedGamePackage(next);
+                        updateConfig({ keep_downloaded_game_package: next });
                     }}
                 />
             </motion.div>
 
             <motion.div variants={itemVariants} className="setting-item">
-                <label>{t("GameSettings.modify_appx_manifest")}</label>
+                <SettingText
+                    title={t("GameSettings.modify_appx_manifest")}
+                    desc={(() => {
+                        const key = "GameSettings.modify_appx_manifest_desc";
+                        const val = t(key);
+                        return val === key ? undefined : val;
+                    })()}
+                />
                 <Switch
                     checked={modifyAppxManifest}
                     onChange={() => {

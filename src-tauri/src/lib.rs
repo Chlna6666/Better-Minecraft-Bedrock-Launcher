@@ -19,7 +19,9 @@ use crate::config::config::Config;
 use crate::core::minecraft::assets::{delete_game_asset, import_assets,check_import_conflict,inspect_import_file};
 use crate::core::minecraft::gdk::commands::unpack_gdk;
 use crate::core::version::gdk_users::get_gdk_users;
-use crate::downloads::commands::{download_appx, download_resource, download_resource_to_cache};
+use crate::downloads::commands::{
+    delete_local_download, download_appx, download_resource, download_resource_to_cache, local_download_path,
+};
 use crate::http::commands::fetch_remote;
 use crate::plugins::manager::scan_plugins;
 use crate::tasks::commands::{cancel_task, get_task_status};
@@ -231,6 +233,8 @@ pub async fn run(preinit: Arc<PreInit>) -> Result<()> {
             download_appx,
             download_resource,
             download_resource_to_cache,
+            local_download_path,
+            delete_local_download,
             get_app_version,
             get_app_license,
             get_tauri_sdk_version,
@@ -310,7 +314,9 @@ pub async fn run(preinit: Arc<PreInit>) -> Result<()> {
             let _ = scope.allow_directory("**", true);
 
             set_global_app(app.handle().clone());
-            utils::stats::spawn_startup_ingest();
+            if config_ref.launcher.stats_upload {
+                utils::stats::spawn_startup_ingest();
+            }
 
             let args: Vec<String> = env::args().collect();
 

@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
+use crate::utils::file_ops;
 
 const STATS_INGEST_URL: &str = "https://stats.bmcbl.com/v1/ingest?key=X9Q4M3T8V2K7";
 const CLIENT_ID_SALT: &str = "bmcbl-stats-clientid-v1";
@@ -118,7 +119,8 @@ fn device_code() -> String {
     }
 
     // Stable per-install fallback: persist a random UUID locally.
-    let path = Path::new("./BMCBL/client_id");
+    let path_buf = file_ops::bmcbl_dir().join("client_id");
+    let path = path_buf.as_path();
     if let Ok(s) = fs::read_to_string(path) {
         let s = s.trim().to_string();
         if !s.is_empty() {
@@ -126,7 +128,7 @@ fn device_code() -> String {
         }
     }
     let id = uuid::Uuid::new_v4().to_string();
-    let _ = fs::create_dir_all("./BMCBL");
+    let _ = fs::create_dir_all(file_ops::bmcbl_dir());
     let _ = fs::write(path, &id);
     format!("install:{}", id)
 }

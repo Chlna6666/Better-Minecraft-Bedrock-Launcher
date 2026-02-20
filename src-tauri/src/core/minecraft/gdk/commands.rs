@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use tauri::command;
 use tracing::{error, info};
+use crate::config::config::read_config;
+use crate::utils::file_ops;
 use crate::core::minecraft::gdk::stream::MsiXVDStream;
 use crate::tasks::task_manager::{create_task, finish_task, is_cancelled, update_progress};
 
@@ -11,7 +13,7 @@ pub async fn unpack_gdk(input_path: String, folder_name: String) -> Result<Strin
 
     // 2. 准备参数以供后台任务使用
     let input_path_buf = PathBuf::from(input_path);
-    let version_dir = PathBuf::from("./BMCBL/versions").join(&folder_name);
+    let version_dir = file_ops::bmcbl_subdir("versions").join(&folder_name);
     let task_id_clone = task_id.clone();
 
     info!("启动 GDK 解包任务: {}, 输出目录: {:?}", task_id, version_dir);
@@ -43,6 +45,27 @@ pub async fn unpack_gdk(input_path: String, folder_name: String) -> Result<Strin
         match stream.extract_to(&version_dir, task_id_clone.clone()) {
             Ok(_) => {
                 info!("GDK 解包任务完成: {}", task_id_clone);
+
+                // 根据配置决定是否删除下载的包（仅删除 BMCBL/downloads 下的文件，避免误删用户文件）
+                if let Ok(cfg) = read_config() {
+                    if !cfg.game.keep_downloaded_game_package {
+                        let downloads_dir = file_ops::bmcbl_subdir("downloads");
+                        let input_abs =
+                            input_path_buf.canonicalize().unwrap_or_else(|_| input_path_buf.clone());
+                        let downloads_abs =
+                            downloads_dir.canonicalize().unwrap_or_else(|_| downloads_dir.clone());
+                        if input_abs.starts_with(&downloads_abs) {
+                            if let Err(e) = std::fs::remove_file(&input_abs) {
+                                error!("GDK 解包完成后删除源文件失败: {}", e);
+                            } else {
+                                info!("GDK 解包完成后已删除源文件: {:?}", input_abs);
+                            }
+                        } else {
+                            info!("GDK 解包完成：源文件不在 downloads 目录，跳过删除: {:?}", input_abs);
+                        }
+                    }
+                }
+
                 finish_task(&task_id_clone, "completed", None);
             },
             Err(e) => {
