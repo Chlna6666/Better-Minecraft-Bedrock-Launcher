@@ -35,6 +35,7 @@ interface InstallProgressBarProps {
     sourcePath?: string | null;
     children: React.ReactNode;
     isGDK?: boolean;
+    autoExtractPath?: string | null; // when set, install from local path after user confirms
 }
 
 type CdnProbeResult = {
@@ -502,7 +503,7 @@ const ErrorView: React.FC<{
 const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     const {
         version, packageId, md5, onStatusChange, onCompleted, onCancel,
-        isImport = false, sourcePath = null, isGDK = false, children
+        isImport = false, sourcePath = null, isGDK = false, autoExtractPath = null, children
     } = props;
 
     const [state, dispatch] = useReducer(reducer, initialState);
@@ -511,6 +512,8 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     const taskIdRef = useRef<string | null>(null);
     const isExtractingRef = useRef(false);
     const unlistenRef = useRef<Promise<UnlistenFn> | null>(null);
+    // unused; kept to avoid noisy diffs in this file
+    const autoExtractStartedRef = useRef(false);
 
     const [gdkCdnLoading, setGdkCdnLoading] = useState(false);
     const [gdkCdnError, setGdkCdnError] = useState<string | null>(null);
@@ -709,12 +712,22 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         }
     };
 
+    // Local installs should still show the confirm view so users can edit the target name.
+
     // 初始启动逻辑
     useEffect(() => {
         if (state.status === 'starting') {
             const run = async () => {
                 try {
                     isExtractingRef.current = false;
+
+                    // Local install path: skip downloading, but still respect user-provided name.
+                    if (!isImport && autoExtractPath) {
+                        dispatch({ type: 'DOWNLOAD_STARTED' });
+                        await handleSwitchToExtract(autoExtractPath);
+                        return;
+                    }
+
                     let safeName = state.fileName.trim();
                     while (safeName.endsWith('.')) safeName = safeName.slice(0, -1);
                     safeName = safeName.replace(/[\\/:*?"<>|]+/g, "_") || version;

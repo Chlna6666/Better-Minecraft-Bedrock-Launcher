@@ -4,6 +4,7 @@ use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest}
 use crate::core::minecraft::key_patcher::{patch_path, PatchResult};
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{create_task, finish_task, is_cancelled, update_progress};
+use crate::utils::file_ops;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
@@ -58,9 +59,9 @@ pub async fn import_appx(
             dest_file_name
         };
 
-        // 准备版本目录
-        let versions_root = Path::new("./BMCBL/versions");
-        if let Err(e) = fs::create_dir_all(versions_root) {
+        // 准备版本目录（统一使用 exe-dir 下的 BMCBL）
+        let versions_root = file_ops::bmcbl_subdir("versions");
+        if let Err(e) = fs::create_dir_all(&versions_root) {
             let msg = format!(
                 "创建 versions 目录失败：{}，目录：{}",
                 e,
@@ -255,9 +256,9 @@ pub async fn extract_zip_appx(
     tokio::spawn(async move {
         update_progress(&task_id_clone, 0, None, Some("starting"));
 
-        // 准备目标路径
-        let versions_root = Path::new("./BMCBL/versions");
-        if let Err(e) = fs::create_dir_all(versions_root) {
+        // 准备目标路径（统一使用 exe-dir 下的 BMCBL）
+        let versions_root = file_ops::bmcbl_subdir("versions");
+        if let Err(e) = fs::create_dir_all(&versions_root) {
             let msg = format!(
                 "创建 versions 目录失败：{}，目录：{}",
                 e,
@@ -268,11 +269,23 @@ pub async fn extract_zip_appx(
             return;
         }
 
-        let stem = Path::new(&destination_clone)
+        // Use the user-provided name (from the frontend filename input) as the folder name.
+        // This avoids local-install cases extracting into an unintended/duplicate folder name.
+        let preferred_stem = Path::new(&file_name_clone)
             .file_stem()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| file_name_clone.clone());
+            .unwrap_or_default();
+
+        let stem = if !preferred_stem.trim().is_empty() {
+            preferred_stem
+        } else {
+            Path::new(&destination_clone)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        };
 
         let extract_to: PathBuf = versions_root.join(stem);
 
@@ -321,7 +334,7 @@ pub async fn extract_zip_appx(
                 info!("解压完成：{}", extract_to.display());
                 // 删除源文件（根据配置或参数）
                 if let Ok(cfg) = read_config() {
-                    if !cfg.game.keep_appx_after_install {
+                    if !cfg.game.keep_downloaded_game_package {
                         if let Err(e) = fs::remove_file(&destination_clone) {
                             error!(
                                 "解压完成后删除源文件失败：{}，路径：{}",
@@ -331,7 +344,7 @@ pub async fn extract_zip_appx(
                             info!("解压完成后已删除源文件：{}", destination_clone);
                         }
                     } else {
-                        info!("配置要求保留 APPX，未删除：{}", destination_clone);
+                        info!("配置要求保留下载的游戏包，未删除：{}", destination_clone);
                     }
                 }
                 // 删除签名（如果需要）
