@@ -262,7 +262,7 @@
     "local_install_title": "本機安裝",
     "local_install_sub": "設定版本資料夾名稱後開始安裝",
     "folder_label": "版本資料夾名稱",
-    "local_path_label": "本機安裝包路徑",
+    "local_path_label": "本機安裝包",
     "filename_label": "檔名",
     "gdk_cdn_label": "下載 CDN（GDK）",
     "gdk_cdn_hint": "預設自動選擇延遲最低的 CDN，也可在下載前手動切換。",

@@ -262,7 +262,7 @@
     "local_install_title": "Install From Local",
     "local_install_sub": "Set the version folder name, then start installation",
     "folder_label": "Version folder",
-    "local_path_label": "Local package path",
+    "local_path_label": "Local package",
     "filename_label": "Filename",
     "gdk_cdn_label": "Download CDN (GDK)",
     "gdk_cdn_hint": "Auto-selects the lowest-latency CDN. You can change it before downloading.",

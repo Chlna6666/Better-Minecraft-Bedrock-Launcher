@@ -283,7 +283,8 @@ const ConfirmView: React.FC<{
         return '';
     };
 
-    const getLatencyLevel = (latencyMs: number | null): 'fast' | 'ok' | 'slow' | 'bad' | 'fail' => {
+    const getLatencyLevel = (latencyMs: number | null, err: string | null): 'fast' | 'ok' | 'slow' | 'bad' | 'fail' | 'pending' => {
+        if (cdnLoading && latencyMs == null && !err) return 'pending';
         if (latencyMs == null) return 'fail';
         if (latencyMs <= 50) return 'fast';
         if (latencyMs <= 150) return 'ok';
@@ -291,7 +292,15 @@ const ConfirmView: React.FC<{
         return 'bad';
     };
 
-    const renderLatencyText = (latencyMs: number | null) => {
+    const renderLatencyText = (latencyMs: number | null, err: string | null) => {
+        if (cdnLoading && latencyMs == null && !err) {
+            return (
+                <span className="bm-latency-pending">
+                    <span className="bm-mini-spinner" aria-hidden="true" />
+                    {t("InstallProgressBar.gdk_cdn_testing")}
+                </span>
+            );
+        }
         if (latencyMs == null) return t("InstallProgressBar.gdk_cdn_failed");
         return `${latencyMs} ms`;
     };
@@ -352,7 +361,7 @@ const ConfirmView: React.FC<{
                         <div className="bm-cdn-list" role="radiogroup" aria-label={t("InstallProgressBar.gdk_cdn_label")}>
                             {(cdnResults.length ? cdnResults : [{ base: selectedCdnBase || t("InstallProgressBar.gdk_cdn_unknown"), url: "", latency_ms: null, error: null }]).map((r) => {
                                 const isSelected = r.base === selectedCdnBase;
-                                const level = getLatencyLevel(r.latency_ms);
+                                const level = getLatencyLevel(r.latency_ms, r.error);
                                 return (
                                     <button
                                         key={r.base}
@@ -374,7 +383,7 @@ const ConfirmView: React.FC<{
                                             )}
                                         </div>
                                         <div className={`bm-cdn-badge ${level}`}>
-                                            {renderLatencyText(r.latency_ms)}
+                                            {renderLatencyText(r.latency_ms, r.error)}
                                         </div>
                                     </button>
                                 );
@@ -408,10 +417,11 @@ const LocalInstallConfirmView: React.FC<{
     versionType: number;
     isGdk: boolean;
     localPath: string;
+    localPackageName: string;
     onFileNameChange: (name: string) => void;
     onConfirm: () => void;
     onCancel: () => void;
-}> = React.memo(({ fileName, versionType, isGdk, localPath, onFileNameChange, onConfirm, onCancel }) => {
+}> = React.memo(({ fileName, versionType, isGdk, localPath, localPackageName, onFileNameChange, onConfirm, onCancel }) => {
     const { t } = useTranslation();
 
     const getTypeLabel = () => {
@@ -457,7 +467,7 @@ const LocalInstallConfirmView: React.FC<{
                 </div>
                 <div className="bm-input-group">
                     <label className="bm-input-label">{t("InstallProgressBar.local_path_label")}</label>
-                    <div className="bm-modern-input bm-path-readonly" title={localPath}>{localPath}</div>
+                    <div className="bm-modern-input bm-path-readonly" title={localPath}>{localPackageName}</div>
                 </div>
 
                 <div className="bm-button-row">
@@ -878,6 +888,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                             versionType={props.versionType}
                             isGdk={isGDK}
                             localPath={autoExtractPath}
+                            localPackageName={String(autoExtractPath).split(/[\\/]/).pop() || ""}
                             onFileNameChange={(name) => dispatch({ type: 'SET_FILENAME', payload: name })}
                             onConfirm={() => dispatch({ type: 'START_DOWNLOAD' })}
                             onCancel={() => handleClose(true)}
