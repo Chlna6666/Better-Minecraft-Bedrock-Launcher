@@ -263,6 +263,7 @@
     "local_install_sub": "버전 폴더 이름을 설정한 후 설치를 시작합니다",
     "folder_label": "버전 폴더",
     "local_path_label": "로컬 패키지",
+    "open_folder": "폴더 열기",
     "filename_label": "파일명",
     "gdk_cdn_label": "다운로드 CDN (GDK)",
     "gdk_cdn_hint": "기본값은 지연 시간이 가장 낮은 CDN을 자동 선택합니다. 다운로드 전에 변경할 수 있습니다.",

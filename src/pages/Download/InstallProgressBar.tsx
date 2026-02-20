@@ -249,6 +249,7 @@ const ConfirmView: React.FC<{
     fileName: string;
     isImport: boolean;
     isGdk: boolean;
+    cdnBases: string[];
     cdnLoading: boolean;
     cdnError: string | null;
     cdnResults: CdnProbeResult[];
@@ -264,6 +265,7 @@ const ConfirmView: React.FC<{
     fileName,
     isImport,
     isGdk,
+    cdnBases,
     cdnLoading,
     cdnError,
     cdnResults,
@@ -304,6 +306,13 @@ const ConfirmView: React.FC<{
         if (latencyMs == null) return t("InstallProgressBar.gdk_cdn_failed");
         return `${latencyMs} ms`;
     };
+
+    const displayCdnResults: CdnProbeResult[] = (() => {
+        if (!isGdk || isImport) return [];
+        if (cdnResults.length) return cdnResults;
+        if (cdnBases.length) return cdnBases.map((b) => ({ base: b, url: "", latency_ms: null, error: null }));
+        return [{ base: selectedCdnBase || t("InstallProgressBar.gdk_cdn_unknown"), url: "", latency_ms: null, error: null }];
+    })();
 
     return (
         <>
@@ -359,7 +368,7 @@ const ConfirmView: React.FC<{
                         </div>
 
                         <div className="bm-cdn-list" role="radiogroup" aria-label={t("InstallProgressBar.gdk_cdn_label")}>
-                            {(cdnResults.length ? cdnResults : [{ base: selectedCdnBase || t("InstallProgressBar.gdk_cdn_unknown"), url: "", latency_ms: null, error: null }]).map((r) => {
+                            {displayCdnResults.map((r) => {
                                 const isSelected = r.base === selectedCdnBase;
                                 const level = getLatencyLevel(r.latency_ms, r.error);
                                 return (
@@ -424,6 +433,15 @@ const LocalInstallConfirmView: React.FC<{
 }> = React.memo(({ fileName, versionType, isGdk, localPath, localPackageName, onFileNameChange, onConfirm, onCancel }) => {
     const { t } = useTranslation();
 
+    const handleOpenLocalFolder = async () => {
+        try {
+            const dir = String(localPath).replace(/[\\/][^\\/]+$/, "");
+            await invoke("open_path", { path: dir });
+        } catch (e) {
+            console.error(e);
+        }
+    };
+
     const getTypeLabel = () => {
         if (versionType === 0) return t('common.release');
         if (versionType === 1) return t('common.beta');
@@ -467,7 +485,22 @@ const LocalInstallConfirmView: React.FC<{
                 </div>
                 <div className="bm-input-group">
                     <label className="bm-input-label">{t("InstallProgressBar.local_path_label")}</label>
-                    <div className="bm-modern-input bm-path-readonly" title={localPath}>{localPackageName}</div>
+                    <div className="bm-local-pkg-row">
+                        <div className="bm-modern-input bm-path-readonly" title={localPath}>{localPackageName}</div>
+                        <button
+                            type="button"
+                            className="bm-icon-only-btn"
+                            onClick={handleOpenLocalFolder}
+                            aria-label={t("InstallProgressBar.open_folder")}
+                            data-bm-title={t("InstallProgressBar.open_folder")}
+                        >
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                                <path d="M12 11v6" />
+                                <path d="M9 14h6" />
+                            </svg>
+                        </button>
+                    </div>
                 </div>
 
                 <div className="bm-button-row">
@@ -900,6 +933,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                             fileName={state.fileName}
                             isImport={isImport}
                             isGdk={isGDK}
+                            cdnBases={gdkCdnBases.current}
                             cdnLoading={gdkCdnLoading}
                             cdnError={gdkCdnError}
                             cdnResults={gdkCdnResults}

@@ -301,6 +301,7 @@
     "local_install_sub": "设置版本目录名称后开始安装",
     "folder_label": "版本目录名",
     "local_path_label": "本地安装包",
+    "open_folder": "打开文件夹",
     "filename_label": "文件名",
     "gdk_cdn_label": "下载 CDN（GDK）",
     "gdk_cdn_hint": "默认自动选择延迟最低的 CDN，也可以在下载前手动切换。",

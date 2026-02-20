@@ -414,6 +414,28 @@
     user-select: text;
 }
 
+.bm-local-pkg-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bm-icon-only-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    border: 1px solid var(--bm-border-color);
+    background: var(--bm-bg-subtle);
+    color: var(--bm-text-main);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: transform 0.08s var(--bm-ease-smooth);
+}
+.bm-icon-only-btn:active { transform: translateY(1px); }
+
 .bm-button-row {
     display: flex;
     justify-content: flex-start;

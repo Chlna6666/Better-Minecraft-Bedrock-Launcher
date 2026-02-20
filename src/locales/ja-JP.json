@@ -263,6 +263,7 @@
     "local_install_sub": "バージョンフォルダ名を設定してからインストールします",
     "folder_label": "バージョンフォルダ",
     "local_path_label": "ローカルパッケージ",
+    "open_folder": "フォルダを開く",
     "filename_label": "ファイル名",
     "gdk_cdn_label": "ダウンロード CDN（GDK）",
     "gdk_cdn_hint": "既定ではレイテンシが最も低い CDN を自動選択します。ダウンロード前に変更できます。",
