@@ -259,6 +259,10 @@
   "InstallProgressBar": {
     "confirm_title": "확인",
     "confirm_sub": "버전 이름",
+    "local_install_title": "로컬에서 설치",
+    "local_install_sub": "버전 폴더 이름을 설정한 후 설치를 시작합니다",
+    "folder_label": "버전 폴더",
+    "local_path_label": "로컬 패키지 경로",
     "filename_label": "파일명",
     "gdk_cdn_label": "다운로드 CDN (GDK)",
     "gdk_cdn_hint": "기본값은 지연 시간이 가장 낮은 CDN을 자동 선택합니다. 다운로드 전에 변경할 수 있습니다.",
@@ -963,7 +967,10 @@
     "redownload": "다시 다운로드",
     "redownload_desc": "로컬 파일을 무시하고 다시 다운로드합니다",
     "delete_local_package": "로컬 패키지 삭제",
-    "delete_local_package_desc": "다운로드 폴더에서 로컬 패키지를 삭제합니다"
+    "delete_local_package_desc": "다운로드 폴더에서 로컬 패키지를 삭제합니다",
+    "delete_local_confirm_title": "삭제 확인",
+    "delete_local_confirm_desc": "다운로드 폴더에서 로컬 패키지 파일을 삭제합니다.",
+    "delete_local_confirm": "삭제"
   },
   "McDeps": {
     "themeToggle": "테마 전환",

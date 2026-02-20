@@ -75,7 +75,10 @@
     "redownload": "重新下载",
     "redownload_desc": "忽略本地包并重新下载最新安装包",
     "delete_local_package": "删除本地安装包",
-    "delete_local_package_desc": "从下载目录删除该本地安装包"
+    "delete_local_package_desc": "从下载目录删除该本地安装包",
+    "delete_local_confirm_title": "确认删除",
+    "delete_local_confirm_desc": "该操作会从下载目录删除本地安装包文件，删除后可重新下载。",
+    "delete_local_confirm": "删除"
   },
   "manage": {
     "title": "版本管理",
@@ -294,6 +297,10 @@
   "InstallProgressBar": {
     "confirm_title": "确认",
     "confirm_sub": "版本名称",
+    "local_install_title": "本地安装",
+    "local_install_sub": "设置版本目录名称后开始安装",
+    "folder_label": "版本目录名",
+    "local_path_label": "本地安装包路径",
     "filename_label": "文件名",
     "gdk_cdn_label": "下载 CDN（GDK）",
     "gdk_cdn_hint": "默认自动选择延迟最低的 CDN，也可以在下载前手动切换。",

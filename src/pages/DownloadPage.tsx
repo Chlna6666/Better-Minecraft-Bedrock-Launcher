@@ -30,7 +30,7 @@ import {useLocation} from "react-router-dom";
 // ============================================================================
 // 1. 版本行组件 (保持不变)
 // ============================================================================
-const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownload, onStatusChange, onComplete, onCancel, t, localPathMap }: any) => {
+const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownload, onStatusChange, onComplete, onCancel, t, localPathMap, forceDownloadMap }: any) => {
     const isCurrentDownloading = activeDownloadId === ver.packageId;
     const isRelease = ver.type === 0;
     const isBeta = ver.type === 1;
@@ -40,6 +40,7 @@ const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownloa
     const isDisabled = isDownloading || !ver.metaPresent || (ver.archivalStatus === 1 || ver.archivalStatus === 0);
     const localPath = localPathMap?.[ver.packageId] || null;
     const isLocalReady = !!localPath;
+    const forceDownload = !!forceDownloadMap?.[ver.packageId];
 
     return (
         <div className="version-row">
@@ -59,7 +60,18 @@ const VersionRow = React.memo(({ ver, activeDownloadId, isDownloading, onDownloa
             </div>
             <div className="col-action">
                 {isCurrentDownloading ? (
-                    <InstallProgressBar version={ver.version} packageId={ver.packageId} versionType={ver.type} md5={ver.md5} isGDK={ver.isGDK} autoExtractPath={localPath} onStatusChange={onStatusChange} onCompleted={onComplete} onCancel={onCancel}>
+                    <InstallProgressBar
+                        version={ver.version}
+                        packageId={ver.packageId}
+                        versionType={ver.type}
+                        md5={ver.md5}
+                        isGDK={ver.isGDK}
+                        autoExtractPath={forceDownload ? null : localPath}
+                        forceDownload={forceDownload}
+                        onStatusChange={onStatusChange}
+                        onCompleted={onComplete}
+                        onCancel={onCancel}
+                    >
                         <button className="download-btn-sm" disabled style={{ width: 110, justifyContent: 'center' }}>{t('common.downloading')}</button>
                     </InstallProgressBar>
                 ) : (
@@ -110,9 +122,11 @@ const DownloadPage = () => {
     const [isImporting, setIsImporting] = useState(false);
     const [sourcePath, setSourcePath] = useState<string | null>(null);
     const [localPathMap, setLocalPathMap] = useState<Record<string, string | null>>({});
+    const [forceDownloadMap, setForceDownloadMap] = useState<Record<string, boolean>>({});
     const [localActionsOpen, setLocalActionsOpen] = useState(false);
     const [localActionsVer, setLocalActionsVer] = useState<any | null>(null);
     const [localActionsBusy, setLocalActionsBusy] = useState(false);
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
     // Filter Logic for Game Tab
     const filteredVersions = useMemo(() => {
@@ -201,7 +215,18 @@ const DownloadPage = () => {
         setIsDownloading(true);
     }, [isDownloading, toast, t, localPathMap]);
 
-    const handleComplete = useCallback(() => { setActiveDownloadId(null); setIsDownloading(false); }, []);
+    const handleComplete = useCallback((packageId?: string | null) => {
+        setActiveDownloadId(null);
+        setIsDownloading(false);
+        if (packageId) {
+            setForceDownloadMap((prev) => {
+                if (!prev[packageId]) return prev;
+                const next = { ...prev };
+                delete next[packageId];
+                return next;
+            });
+        }
+    }, []);
 
     const handleImport = async () => {
         if (isDownloading) return;
@@ -304,31 +329,30 @@ const DownloadPage = () => {
 
     const handleRedownload = useCallback(async () => {
         if (!localActionsVer || !localActionsFileName) return;
-        setLocalActionsBusy(true);
-        try {
-            await invoke("delete_local_download", { fileName: localActionsFileName });
-            setLocalPathMap((prev) => ({ ...prev, [localActionsVer.packageId]: null }));
-            startInstall(localActionsVer);
-        } catch (e: any) {
-            toast?.error(e?.message || String(e));
-        } finally {
-            setLocalActionsBusy(false);
-        }
+        setForceDownloadMap((prev) => ({ ...prev, [localActionsVer.packageId]: true }));
+        startInstall(localActionsVer);
     }, [localActionsVer, localActionsFileName, startInstall, toast]);
 
     const handleDeleteLocal = useCallback(async () => {
+        if (!localActionsVer || !localActionsFileName) return;
+        setLocalActionsOpen(false);
+        setDeleteConfirmOpen(true);
+    }, [localActionsVer, localActionsFileName]);
+
+    const handleConfirmDeleteLocal = useCallback(async () => {
         if (!localActionsVer || !localActionsFileName) return;
         setLocalActionsBusy(true);
         try {
             await invoke("delete_local_download", { fileName: localActionsFileName });
             setLocalPathMap((prev) => ({ ...prev, [localActionsVer.packageId]: null }));
-            closeLocalActions();
+            setDeleteConfirmOpen(false);
+            setLocalActionsVer(null);
         } catch (e: any) {
             toast?.error(e?.message || String(e));
         } finally {
             setLocalActionsBusy(false);
         }
-    }, [localActionsVer, localActionsFileName, closeLocalActions, toast]);
+    }, [localActionsVer, localActionsFileName, toast]);
 
     return (
         <>
@@ -387,7 +411,7 @@ const DownloadPage = () => {
                             ) : (
                                 <div className="version-list-container">
                                     {paginatedVersions.map((ver: any, idx: number) => (
-                                        <VersionRow key={`${ver.version}-${idx}`} ver={ver} activeDownloadId={activeDownloadId} isDownloading={isDownloading} onDownload={handleGameAction} onStatusChange={setIsDownloading} onComplete={handleComplete} onCancel={handleComplete} t={t} localPathMap={localPathMap} />
+                                        <VersionRow key={`${ver.version}-${idx}`} ver={ver} activeDownloadId={activeDownloadId} isDownloading={isDownloading} onDownload={handleGameAction} onStatusChange={setIsDownloading} onComplete={handleComplete} onCancel={handleComplete} t={t} localPathMap={localPathMap} forceDownloadMap={forceDownloadMap} />
                                     ))}
                                 </div>
                             )}
@@ -423,11 +447,6 @@ const DownloadPage = () => {
                 title={t("DownloadPage.local_package_actions_title")}
                 onClose={closeLocalActions}
                 width="560px"
-                footer={(
-                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
-                        <Button variant="ghost" onClick={closeLocalActions}>{t("common.cancel")}</Button>
-                    </div>
-                )}
             >
                 <div className="dp-local-actions">
                     <div className="dp-local-actions-desc">{t("DownloadPage.local_package_actions_desc")}</div>
@@ -484,6 +503,32 @@ const DownloadPage = () => {
                             </div>
                             <div className="dp-action-end"><ChevronRight size={18} /></div>
                         </button>
+                    </div>
+                </div>
+            </Modal>
+
+            <Modal
+                open={deleteConfirmOpen}
+                title={t("DownloadPage.delete_local_confirm_title")}
+                onClose={() => (localActionsBusy ? undefined : setDeleteConfirmOpen(false))}
+                width="520px"
+                footer={(
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
+                        <Button variant="ghost" disabled={localActionsBusy} onClick={() => setDeleteConfirmOpen(false)}>{t("common.cancel")}</Button>
+                        <Button variant="danger" loading={localActionsBusy} onClick={handleConfirmDeleteLocal}>{t("DownloadPage.delete_local_confirm")}</Button>
+                    </div>
+                )}
+            >
+                <div className="dp-local-actions">
+                    <div className="dp-local-actions-desc">{t("DownloadPage.delete_local_confirm_desc")}</div>
+                    <div className="dp-local-actions-meta">
+                        <div className="dp-local-actions-meta-left">
+                            <div className="dp-local-actions-name">{localActionsVer?.version || "-"}</div>
+                            {localActionsPath ? <div className="dp-local-actions-path" title={localActionsPath}>{localActionsPath}</div> : null}
+                        </div>
+                        <div className="dp-local-actions-meta-right">
+                            {localActionsVer?.isGDK && <span className="meta-tag tag-gdk">{t("common.gdk")}</span>}
+                        </div>
                     </div>
                 </div>
             </Modal>

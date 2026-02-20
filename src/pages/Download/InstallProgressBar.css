@@ -406,6 +406,14 @@
     box-shadow: inset 0 0 0 2px var(--bm-primary);
 }
 
+.bm-modern-input.bm-path-readonly {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: text;
+}
+
 .bm-install-footer {
     display: flex;
     justify-content: flex-end;

@@ -259,6 +259,10 @@
   "InstallProgressBar": {
     "confirm_title": "Confirm",
     "confirm_sub": "Version name",
+    "local_install_title": "Install From Local",
+    "local_install_sub": "Set the version folder name, then start installation",
+    "folder_label": "Version folder",
+    "local_path_label": "Local package path",
     "filename_label": "Filename",
     "gdk_cdn_label": "Download CDN (GDK)",
     "gdk_cdn_hint": "Auto-selects the lowest-latency CDN. You can change it before downloading.",
@@ -964,7 +968,10 @@
     "redownload": "Re-download",
     "redownload_desc": "Ignore the local file and download again",
     "delete_local_package": "Delete Local Package",
-    "delete_local_package_desc": "Remove the local package from the downloads folder"
+    "delete_local_package_desc": "Remove the local package from the downloads folder",
+    "delete_local_confirm_title": "Confirm Delete",
+    "delete_local_confirm_desc": "This will delete the local package file from the downloads folder.",
+    "delete_local_confirm": "Delete"
   },
   "McDeps": {
     "themeToggle": "Toggle theme",

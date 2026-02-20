@@ -259,6 +259,10 @@
   "InstallProgressBar": {
     "confirm_title": "確認",
     "confirm_sub": "バージョン名",
+    "local_install_title": "ローカルからインストール",
+    "local_install_sub": "バージョンフォルダ名を設定してからインストールします",
+    "folder_label": "バージョンフォルダ",
+    "local_path_label": "ローカルパッケージパス",
     "filename_label": "ファイル名",
     "gdk_cdn_label": "ダウンロード CDN（GDK）",
     "gdk_cdn_hint": "既定ではレイテンシが最も低い CDN を自動選択します。ダウンロード前に変更できます。",
@@ -963,7 +967,10 @@
     "redownload": "再ダウンロード",
     "redownload_desc": "ローカルファイルを無視して再ダウンロードします",
     "delete_local_package": "ローカルパッケージを削除",
-    "delete_local_package_desc": "ダウンロードフォルダからローカルパッケージを削除します"
+    "delete_local_package_desc": "ダウンロードフォルダからローカルパッケージを削除します",
+    "delete_local_confirm_title": "削除の確認",
+    "delete_local_confirm_desc": "ダウンロードフォルダからローカルパッケージファイルを削除します。",
+    "delete_local_confirm": "削除"
   },
   "McDeps": {
     "themeToggle": "テーマ切り替え",

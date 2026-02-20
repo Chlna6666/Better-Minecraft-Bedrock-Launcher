@@ -1,14 +1,17 @@
 // src/downloads/commands.rs
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing::{debug, error};
 
 use crate::config::config::read_config;
 use crate::downloads::manager::DownloaderManager;
+use crate::downloads::md5::verify_md5;
 use crate::downloads::wu_client::client::WuClient;
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{create_task, finish_task, is_cancelled, update_progress};
+use crate::utils::file_ops;
 
 fn sanitize_filename(name: &str) -> String {
     let trimmed = name.trim();
@@ -23,11 +26,69 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
+fn safe_file_name(file_name: &str) -> String {
+    Path::new(file_name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download.bin")
+        .to_string()
+}
+
+fn downloads_dir() -> PathBuf {
+    file_ops::bmcbl_subdir("downloads")
+}
+
+async fn local_file_ok(dest: &PathBuf, md5: &Option<String>) -> bool {
+    if !dest.exists() {
+        return false;
+    }
+    if let Some(expected) = md5.as_deref() {
+        verify_md5(dest, expected).await.unwrap_or(false)
+    } else {
+        true
+    }
+}
+
+#[tauri::command]
+pub async fn local_download_path(
+    file_name: String,
+    md5: Option<String>,
+) -> Result<Option<String>, String> {
+    let downloads_dir = downloads_dir();
+    fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
+    let safe_name = safe_file_name(&file_name);
+    let dest = downloads_dir.join(&safe_name);
+    if local_file_ok(&dest, &md5).await {
+        Ok(Some(dest.to_string_lossy().to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn delete_local_download(file_name: String) -> Result<(), String> {
+    let downloads_dir = downloads_dir();
+    fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
+    let safe_name = safe_file_name(&file_name);
+    let dest = downloads_dir.join(&safe_name);
+
+    if dest.exists() {
+        if dest.is_file() {
+            fs::remove_file(&dest).map_err(|e| e.to_string())?;
+            debug!("Deleted local download: {}", dest.to_string_lossy());
+        } else {
+            return Err("目标不是文件，无法删除".into());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn download_appx(
     package_id: String,
     file_name: String,
     md5: Option<String>,
+    force_download: Option<bool>,
 ) -> Result<String, String> {
     let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
@@ -37,9 +98,22 @@ pub async fn download_appx(
     }
     let (update_id, revision) = (parts[0], parts[1]);
 
-    let downloads_dir = PathBuf::from("./BMCBL/downloads");
+    let downloads_dir = downloads_dir();
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
-    let dest = downloads_dir.join(&file_name);
+    let safe_name = safe_file_name(&file_name);
+    let dest = downloads_dir.join(&safe_name);
+
+    // 如果本地已存在且校验通过，直接跳过下载，走本地安装/解压流程
+    let force = force_download.unwrap_or(false);
+    if !force && local_file_ok(&dest, &md5).await {
+        let task_id = create_task(None, "ready", None);
+        let dest_str = dest.to_string_lossy().to_string();
+        finish_task(&task_id, "completed", Some(dest_str));
+        return Ok(task_id);
+    }
+    if force && dest.exists() {
+        let _ = fs::remove_file(&dest);
+    }
 
     // 1. 创建 Task
     let task_id = create_task(None, "ready", None);
@@ -127,12 +201,26 @@ pub async fn download_resource(
     url: String,
     file_name: String,
     md5: Option<String>,
+    force_download: Option<bool>,
 ) -> Result<String, String> {
     let client = get_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
-    let downloads_dir = PathBuf::from("./BMCBL/downloads");
+    let downloads_dir = downloads_dir();
     fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
-    let dest = downloads_dir.join(&file_name);
+    let safe_name = safe_file_name(&file_name);
+    let dest = downloads_dir.join(&safe_name);
+
+    // 如果本地已存在且校验通过，直接跳过下载
+    let force = force_download.unwrap_or(false);
+    if !force && local_file_ok(&dest, &md5).await {
+        let task_id = create_task(None, "ready", None);
+        let dest_str = dest.to_string_lossy().to_string();
+        finish_task(&task_id, "completed", Some(dest_str));
+        return Ok(task_id);
+    }
+    if force && dest.exists() {
+        let _ = fs::remove_file(&dest);
+    }
 
     let task_id = create_task(None, "ready", None);
 

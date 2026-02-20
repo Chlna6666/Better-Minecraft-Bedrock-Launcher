@@ -259,6 +259,10 @@
   "InstallProgressBar": {
     "confirm_title": "確認",
     "confirm_sub": "版本名稱",
+    "local_install_title": "本機安裝",
+    "local_install_sub": "設定版本資料夾名稱後開始安裝",
+    "folder_label": "版本資料夾名稱",
+    "local_path_label": "本機安裝包路徑",
     "filename_label": "檔名",
     "gdk_cdn_label": "下載 CDN（GDK）",
     "gdk_cdn_hint": "預設自動選擇延遲最低的 CDN，也可在下載前手動切換。",
@@ -963,7 +967,10 @@
     "redownload": "重新下載",
     "redownload_desc": "忽略本機包並重新下載",
     "delete_local_package": "刪除本機安裝包",
-    "delete_local_package_desc": "從下載資料夾刪除該本機安裝包"
+    "delete_local_package_desc": "從下載資料夾刪除該本機安裝包",
+    "delete_local_confirm_title": "確認刪除",
+    "delete_local_confirm_desc": "此操作會從下載資料夾刪除本機安裝包檔案，刪除後可重新下載。",
+    "delete_local_confirm": "刪除"
   },
   "McDeps": {
     "themeToggle": "切換主題",

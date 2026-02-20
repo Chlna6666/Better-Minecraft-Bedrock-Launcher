@@ -36,6 +36,7 @@ interface InstallProgressBarProps {
     children: React.ReactNode;
     isGDK?: boolean;
     autoExtractPath?: string | null; // when set, install from local path after user confirms
+    forceDownload?: boolean; // ignore local cache and re-download
 }
 
 type CdnProbeResult = {
@@ -402,6 +403,72 @@ const ConfirmView: React.FC<{
     );
 });
 
+const LocalInstallConfirmView: React.FC<{
+    fileName: string;
+    versionType: number;
+    isGdk: boolean;
+    localPath: string;
+    onFileNameChange: (name: string) => void;
+    onConfirm: () => void;
+    onCancel: () => void;
+}> = React.memo(({ fileName, versionType, isGdk, localPath, onFileNameChange, onConfirm, onCancel }) => {
+    const { t } = useTranslation();
+
+    const getTypeLabel = () => {
+        if (versionType === 0) return t('common.release');
+        if (versionType === 1) return t('common.beta');
+        if (versionType === 2) return t('common.preview');
+        return '';
+    };
+
+    return (
+        <>
+            <div className="bm-install-header">
+                <div className="bm-icon-circle confirm">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                </div>
+                <div className="bm-install-header-main">
+                    <div className="bm-install-header-text">
+                        <h2 className="bm-install-title">{t("InstallProgressBar.local_install_title")}</h2>
+                        <p className="bm-install-subtitle">{t("InstallProgressBar.local_install_sub")}</p>
+                    </div>
+                    <div className="bm-meta-row">
+                        {getTypeLabel() && <span className="bm-chip type">{getTypeLabel()}</span>}
+                        <span className={`bm-chip platform ${isGdk ? 'gdk' : 'uwp'}`}>{isGdk ? 'GDK' : 'UWP'}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div className="bm-install-body">
+                <div className="bm-input-group">
+                    <label htmlFor="filename-input" className="bm-input-label">{t("InstallProgressBar.folder_label")}</label>
+                    <input
+                        id="filename-input"
+                        className="bm-modern-input"
+                        value={fileName}
+                        onChange={(e) => onFileNameChange(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && onConfirm()}
+                        autoFocus
+                    />
+                </div>
+                <div className="bm-input-group">
+                    <label className="bm-input-label">{t("InstallProgressBar.local_path_label")}</label>
+                    <div className="bm-modern-input bm-path-readonly" title={localPath}>{localPath}</div>
+                </div>
+
+                <div className="bm-button-row">
+                    <button className="bm-btn secondary" onClick={onCancel}>{t("common.cancel")}</button>
+                    <button className="bm-btn primary" onClick={onConfirm}>{t("common.install")}</button>
+                </div>
+            </div>
+        </>
+    );
+});
+
 const ProgressView: React.FC<{
     progress: ProgressData;
     onCancel: () => void;
@@ -503,7 +570,7 @@ const ErrorView: React.FC<{
 const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     const {
         version, packageId, md5, onStatusChange, onCompleted, onCancel,
-        isImport = false, sourcePath = null, isGDK = false, autoExtractPath = null, children
+        isImport = false, sourcePath = null, isGDK = false, autoExtractPath = null, forceDownload = false, children
     } = props;
 
     const [state, dispatch] = useReducer(reducer, initialState);
@@ -754,10 +821,10 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
                     } else if (isGDK) {
                         const base = gdkSelectedCdnBaseRef.current || getBaseFromUrl(packageId || "") || gdkCdnBases.current[0];
                         const url = applyCdnBase(String(packageId), base);
-                        taskId = await invoke("download_resource", { url, fileName: safeName, md5 });
+                        taskId = await invoke("download_resource", { url, fileName: safeName, md5, forceDownload });
                     } else {
                         const fullId = `${packageId}_1`;
-                        taskId = await invoke("download_appx", { packageId: fullId, fileName: safeName, md5 });
+                        taskId = await invoke("download_appx", { packageId: fullId, fileName: safeName, md5, forceDownload });
                     }
 
                     if (!taskId) throw new Error("Failed to get Task ID");
@@ -805,22 +872,34 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         return (
             <div className="bm-view-wrapper">
                 {state.status === 'confirming' && (
-                    <ConfirmView
-                        downloadVersion={version}
-                        versionType={props.versionType}
-                        fileName={state.fileName}
-                        isImport={isImport}
-                        isGdk={isGDK}
-                        cdnLoading={gdkCdnLoading}
-                        cdnError={gdkCdnError}
-                        cdnResults={gdkCdnResults}
-                        selectedCdnBase={gdkSelectedCdnBase}
-                        onSelectCdnBase={(base) => setGdkSelectedCdnBase(base)}
-                        onRefreshCdn={refreshGdkCdn}
-                        onFileNameChange={(name) => dispatch({ type: 'SET_FILENAME', payload: name })}
-                        onConfirm={() => dispatch({ type: 'START_DOWNLOAD' })}
-                        onCancel={() => handleClose(true)}
-                    />
+                    (!isImport && autoExtractPath ? (
+                        <LocalInstallConfirmView
+                            fileName={state.fileName}
+                            versionType={props.versionType}
+                            isGdk={isGDK}
+                            localPath={autoExtractPath}
+                            onFileNameChange={(name) => dispatch({ type: 'SET_FILENAME', payload: name })}
+                            onConfirm={() => dispatch({ type: 'START_DOWNLOAD' })}
+                            onCancel={() => handleClose(true)}
+                        />
+                    ) : (
+                        <ConfirmView
+                            downloadVersion={version}
+                            versionType={props.versionType}
+                            fileName={state.fileName}
+                            isImport={isImport}
+                            isGdk={isGDK}
+                            cdnLoading={gdkCdnLoading}
+                            cdnError={gdkCdnError}
+                            cdnResults={gdkCdnResults}
+                            selectedCdnBase={gdkSelectedCdnBase}
+                            onSelectCdnBase={(base) => setGdkSelectedCdnBase(base)}
+                            onRefreshCdn={refreshGdkCdn}
+                            onFileNameChange={(name) => dispatch({ type: 'SET_FILENAME', payload: name })}
+                            onConfirm={() => dispatch({ type: 'START_DOWNLOAD' })}
+                            onCancel={() => handleClose(true)}
+                        />
+                    ))
                 )}
                 {(state.status === 'starting' || state.status === 'progress') && (
                     <ProgressView
