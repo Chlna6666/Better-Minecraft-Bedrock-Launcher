@@ -15,9 +15,9 @@ Welcome to the Better Minecraft Bedrock Launcher. Please read these terms carefu
 
 ### 4. Online Multiplayer Terms
 * **Safety Mechanism**: The lobby multiplayer feature uses a modified version of EasyTier and applies application-level ACL rules to help protect users.
-* **Legal Compliance (Mainland China)**: You agree to strictly comply with applicable laws and regulations of Mainland China and will not use the lobby feature for any illegal or non-compliant purposes.
-* **Assumption of Risk**: You agree that all risks arising from using the lobby feature are borne solely by you.
-* **Legal Compliance (Your Region)**: Throughout the entire multiplayer process, you must comply with all laws and regulations of your country and region.
+* **Legal Compliance (Mainland China)**: The user undertakes to strictly comply with applicable laws and regulations of Mainland China and not to use the lobby feature for any illegal or non-compliant purposes.
+* **Assumption of Risk**: The user undertakes that all risks arising from using the lobby feature are borne solely by the user.
+* **Legal Compliance (Your Region)**: The user undertakes that, throughout the entire multiplayer process, the user will comply with all laws and regulations of the user's country and region.
 * **P2P Networking Notice**: The feature uses P2P technology. After a successful connection, users in the same room connect directly with each other; no third-party server is used to relay your traffic. Multiplayer quality depends heavily on the participants' network conditions.
 
 ### 5. License & Disclaimer
