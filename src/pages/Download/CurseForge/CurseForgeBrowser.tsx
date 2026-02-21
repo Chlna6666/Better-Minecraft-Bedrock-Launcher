@@ -503,15 +503,15 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
             const text = await navigator.clipboard.readText();
             const parsed = parseSharedCurseForge(text);
             if (!parsed?.id) {
-                toast.error('未识别到资源 ID');
+                toast.error(t("CurseForge.share_import_invalid"));
                 return;
             }
-            toast.success('已识别分享内容，正在打开…');
+            toast.success(t("CurseForge.share_import_opening"));
             navigateToMod(parsed.id);
         } catch {
-            toast.error('读取剪贴板失败');
+            toast.error(t("CurseForge.share_import_clipboard_failed"));
         }
-    }, [navigateToMod, toast]);
+    }, [navigateToMod, toast, t]);
 
     useEffect(() => {
         const onPaste = (e: ClipboardEvent) => {
@@ -519,13 +519,13 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
             const parsed = parseSharedCurseForge(text);
             if (!parsed?.id) return;
 
-            toast.success('已识别分享内容，正在打开…');
+            toast.success(t("CurseForge.share_import_opening"));
             navigateToMod(parsed.id);
         };
 
         window.addEventListener('paste', onPaste);
         return () => window.removeEventListener('paste', onPaste);
-    }, [navigateToMod, toast]);
+    }, [navigateToMod, toast, t]);
 
     useEffect(() => {
         if (didRestoreScrollRef.current) return;
@@ -540,10 +540,8 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
     }, [isLoadingState, initialCfState?.scrollTop]);
     const maxPage = !hasMore ? page : null;
     const pageInfoText = useMemo(() => {
-        if (maxPage) return `第 ${page} / ${maxPage} 页`;
-        const raw = t("CurseForge.page_info", { page });
-        if (raw && !raw.includes("{{")) return raw;
-        return `第 ${page} / ? 页`;
+        const total = maxPage ?? '?';
+        return t("CurseForge.page_info", { current: page, total });
     }, [t, page, maxPage]);
 
     const applyJump = () => {
@@ -611,10 +609,10 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
 
                 <div className="cf-sidebar-divider" />
                 <div className="cf-share-import">
-                    <div className="cf-share-title">分享导入</div>
-                    <div className="cf-share-hint">Ctrl+V 粘贴分享内容，或点击按钮读取剪贴板</div>
+                    <div className="cf-share-title">{t("CurseForge.share_import_title")}</div>
+                    <div className="cf-share-hint">{t("CurseForge.share_import_hint")}</div>
                     <button className="cf-share-btn" onClick={openFromClipboard}>
-                        <Clipboard size={16} /> 从剪贴板打开
+                        <Clipboard size={16} /> {t("CurseForge.share_import_open_clipboard")}
                     </button>
                 </div>
             </div>
@@ -790,7 +788,7 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                             </button>
                             <span className="cf-page-info">{pageInfoText}</span>
                             <div className="cf-page-jump">
-                                <span className="jump-label">跳转</span>
+                                <span className="jump-label">{t("CurseForge.jump_label")}</span>
                                 <input
                                     className="cf-page-input"
                                     type="number"
@@ -802,9 +800,9 @@ export const CurseForgeBrowser: React.FC<Props> = ({ searchQuery, refreshNonce, 
                                         (e.currentTarget as HTMLInputElement).blur();
                                     }}
                                     onKeyDown={(e) => { if (e.key === 'Enter') applyJump(); }}
-                                    placeholder="页码"
+                                    placeholder={t("CurseForge.jump_placeholder")}
                                 />
-                                <button className="cf-page-go" onClick={applyJump}>Go</button>
+                                <button className="cf-page-go" onClick={applyJump}>{t("CurseForge.jump_go")}</button>
                             </div>
                             <button
                                 className="cf-page-btn"
