@@ -27,6 +27,7 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use super::online_acl::build_paperconnect_acl;
+use crate::core::easytier::runtime::ensure_easytier_runtime_ready;
 
 const MAX_PACKET_SIZE: usize = 64 * 1024;
 const ZSTD_LEVEL: i32 = 3;
@@ -385,6 +386,9 @@ pub async fn easytier_start(
     hostname: Option<String>,
     options: Option<EasyTierStartOptions>,
 ) -> Result<(), String> {
+    // Ensure embedded wintun.dll is available and preloaded before EasyTier starts.
+    ensure_easytier_runtime_ready()?;
+
     let peers = if peers.iter().any(|p| !p.trim().is_empty()) {
         peers
     } else {
@@ -470,6 +474,9 @@ pub async fn easytier_restart_with_port_forwards(
     forwards: Vec<EasyTierPortForwardArgs>,
     options: Option<EasyTierStartOptions>,
 ) -> Result<(), String> {
+    // Ensure embedded wintun.dll is available and preloaded before restarting EasyTier.
+    ensure_easytier_runtime_ready()?;
+
     let Some(last) = state.easytier_last_start.lock().unwrap().clone() else {
         return Err("EasyTier not started yet".to_string());
     };
