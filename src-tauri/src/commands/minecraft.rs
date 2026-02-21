@@ -147,6 +147,17 @@ fn compare_versions(v1: &str, v2: &str) -> Ordering {
     vec1.cmp(&vec2)
 }
 
+fn build_editor_deeplink(is_win32: bool, is_preview: bool) -> String {
+    let scheme = if is_preview { "minecraft-preview" } else { "minecraft" };
+    // UWP: `minecraft://?Editor=true`
+    // GDK/Win32: `minecraft://creator/?Editor=true`
+    if is_win32 {
+        format!("{scheme}://creator/?Editor=true")
+    } else {
+        format!("{scheme}://?Editor=true")
+    }
+}
+
 fn is_win32_version(version: &str) -> bool {
     if version.starts_with("1.22.") || version.starts_with("1.23.") {
         return true;
@@ -228,7 +239,8 @@ pub async fn register_and_start(
 
     if ver_config.editor_mode {
         if compare_versions(&identity_version, "1.19.80.20") != Ordering::Less {
-            final_launch_args = Some("minecraft://?Editor=true".to_string());
+            let is_preview = identity_name.contains("Beta") || identity_name.contains("Preview");
+            final_launch_args = Some(build_editor_deeplink(is_win32, is_preview));
         }
     }
 
