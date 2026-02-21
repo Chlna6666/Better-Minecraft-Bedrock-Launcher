@@ -7,8 +7,14 @@ use std::{fs, io};
 use tracing::{debug, error};
 use crate::utils::file_ops;
 
+const CURRENT_CONFIG_VERSION: u32 = 1;
+
 fn default_true() -> bool {
     true
+}
+
+fn default_config_version() -> u32 {
+    CURRENT_CONFIG_VERSION
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -101,6 +107,8 @@ pub struct Launcher {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
+    #[serde(default = "default_config_version")]
+    pub config_version: u32,
     pub custom_style: CustomStyle,
     pub launcher: Launcher,
     pub game: GameConfig,
@@ -132,6 +140,7 @@ pub fn ensure_config_file() -> io::Result<()> {
 
 pub fn get_default_config() -> Config {
     Config {
+        config_version: CURRENT_CONFIG_VERSION,
         custom_style: CustomStyle {
             theme_color: "#a0d9b6".to_string(),
             background_option: "default".to_string(),
@@ -179,6 +188,7 @@ pub fn read_config() -> io::Result<Config> {
     let config_file = get_config_file_path();
     let content = fs::read_to_string(&config_file)?;
     let has_legacy_keep_appx = content.contains("keep_appx_after_install");
+    let has_config_version = content.contains("config_version");
 
     let config: Config = match toml::from_str(&content) {
         Ok(parsed_config) => parsed_config,
@@ -211,6 +221,17 @@ pub fn read_config() -> io::Result<Config> {
 
     let mut config = config;
     let mut migrated = false;
+
+    // Ensure the version field exists on disk even for older configs that deserialize via defaults.
+    if !has_config_version {
+        config.config_version = CURRENT_CONFIG_VERSION;
+        migrated = true;
+    } else if config.config_version < CURRENT_CONFIG_VERSION {
+        // Future migrations can be keyed off config.config_version.
+        config.config_version = CURRENT_CONFIG_VERSION;
+        migrated = true;
+    }
+
     let normalized_lang = normalize_language_code(&config.launcher.language);
     if normalized_lang != config.launcher.language {
         config.launcher.language = normalized_lang;
