@@ -225,6 +225,8 @@ pub fn read_config() -> io::Result<Config> {
     // Ensure the version field exists on disk even for older configs that deserialize via defaults.
     if !has_config_version {
         config.config_version = CURRENT_CONFIG_VERSION;
+        // Old configs predate schema versioning; force re-acceptance when terms change.
+        config.agreement_accepted = false;
         migrated = true;
     } else if config.config_version < CURRENT_CONFIG_VERSION {
         // Future migrations can be keyed off config.config_version.
