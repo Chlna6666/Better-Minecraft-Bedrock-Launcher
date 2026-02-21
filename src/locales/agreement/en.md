@@ -3,7 +3,7 @@ Welcome to the Better Minecraft Bedrock Launcher. Please read these terms carefu
 
 ### 2. Privacy & Data Security
 * **Basic Runtime Telemetry**: To improve the launcher, we may collect and upload basic runtime information (this does not include accounts or in-game data).
-* **Decrypted Locally Before Upload**: Relevant information will be decrypted locally before it is uploaded.
+* **Encrypted Locally Before Upload**: Relevant information will be encrypted locally before it is uploaded.
 * **Opt-out**: If you do not want this, you can disable it in `Settings -> Launcher`.
 * **Local Storage**: All configuration data, mods, and game files are stored locally on your device.
 * **Network Requests**: Network requests are only made when checking for updates or downloading game resources.
