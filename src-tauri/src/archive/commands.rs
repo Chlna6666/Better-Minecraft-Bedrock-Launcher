@@ -11,6 +11,17 @@ use std::path::Path;
 use std::path::PathBuf;
 use tracing::{debug, error, info};
 
+fn strip_known_archive_extension(name: &str) -> String {
+    let trimmed = name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for ext in [".msixvc", ".appxbundle", ".appx", ".zip"] {
+        if lower.ends_with(ext) && trimmed.len() > ext.len() {
+            return trimmed[..(trimmed.len() - ext.len())].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
 #[tauri::command]
 pub async fn import_appx(
     source_path: String, // 前端传入的本地文件路径（绝对或相对）
@@ -72,11 +83,12 @@ pub async fn import_appx(
             return;
         }
 
-        let stem = Path::new(&dest_file_name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "import_unknown".to_string());
+        let stem = strip_known_archive_extension(&dest_file_name);
+        let stem = if stem.trim().is_empty() {
+            "import_unknown".to_string()
+        } else {
+            stem
+        };
 
         let extract_to = versions_root.join(stem);
 
@@ -271,19 +283,15 @@ pub async fn extract_zip_appx(
 
         // Use the user-provided name (from the frontend filename input) as the folder name.
         // This avoids local-install cases extracting into an unintended/duplicate folder name.
-        let preferred_stem = Path::new(&file_name_clone)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
+        let preferred_stem = strip_known_archive_extension(&file_name_clone);
 
         let stem = if !preferred_stem.trim().is_empty() {
             preferred_stem
         } else {
             Path::new(&destination_clone)
-                .file_stem()
+                .file_name()
                 .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
+                .map(strip_known_archive_extension)
                 .unwrap_or_else(|| "unknown".to_string())
         };
 

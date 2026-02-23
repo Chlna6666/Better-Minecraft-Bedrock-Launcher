@@ -28,12 +28,24 @@ use uuid::Uuid;
 
 use super::online_acl::build_paperconnect_acl;
 use crate::core::easytier::runtime::ensure_easytier_runtime_ready;
+use crate::http::proxy::{build_no_proxy_client_with_resolve, get_no_proxy_client};
+use crate::utils::cloudflare;
 
 const MAX_PACKET_SIZE: usize = 64 * 1024;
 const ZSTD_LEVEL: i32 = 3;
 const DEFAULT_PAPERCONNECT_VIP: &str = "10.144.144.1";
-const DEFAULT_BOOTSTRAP_PEERS: [&str; 2] =
-    ["tcp://39.108.52.138:11010", "tcp://8.148.29.206:11010"];
+const DEFAULT_BOOTSTRAP_PEERS: [&str; 1] = ["tcp://public.easytier.bmcbl.com:54321"];
+const PUBLIC_BOOTSTRAP_PEERS_URL: &str = "https://et-public-node.roundstudio.top/";
+const PUBLIC_BOOTSTRAP_PEERS_HOST: &str = "et-public-node.roundstudio.top";
+
+struct BootstrapPeersCache {
+    fetched_at: Instant,
+    peers: Vec<String>,
+}
+
+static BOOTSTRAP_PEERS_CACHE: Lazy<Mutex<Option<BootstrapPeersCache>>> =
+    Lazy::new(|| Mutex::new(None));
+const BOOTSTRAP_PEERS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 pub struct OnlineState {
     easytier_manager: Arc<NetworkInstanceManager>,
@@ -206,11 +218,78 @@ fn default_client_id() -> String {
     format!("BMCBL v{}", env!("CARGO_PKG_VERSION"))
 }
 
-fn default_bootstrap_peers() -> Vec<String> {
-    DEFAULT_BOOTSTRAP_PEERS
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+async fn fetch_public_bootstrap_peers() -> anyhow::Result<Vec<String>> {
+    // Prefer a fast Cloudflare anycast IP (CN "best IP") for the CDN domain.
+    let client = match cloudflare::race_ipv4(
+        &format!("{PUBLIC_BOOTSTRAP_PEERS_HOST}:443"),
+        Duration::from_secs(2),
+    )
+    .await
+    {
+        Some(ip) => build_no_proxy_client_with_resolve(PUBLIC_BOOTSTRAP_PEERS_HOST, ip),
+        None => get_no_proxy_client(),
+    };
+
+    let resp = client
+        .get(PUBLIC_BOOTSTRAP_PEERS_URL)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .context("fetch public bootstrap peers failed")?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow!("public bootstrap peers http status={status}, body={body}"));
+    }
+
+    let mut peers: Vec<String> =
+        serde_json::from_str(&body).context("public bootstrap peers: invalid json")?;
+
+    peers = peers
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|s| s.len() <= 2048)
+        .collect();
+
+    if peers.is_empty() {
+        return Err(anyhow!("public bootstrap peers: empty list"));
+    }
+
+    Ok(peers)
+}
+
+fn fallback_bootstrap_peers() -> Vec<String> {
+    DEFAULT_BOOTSTRAP_PEERS.iter().map(|s| s.to_string()).collect()
+}
+
+async fn default_bootstrap_peers() -> Vec<String> {
+    // Cache so we don't hit the CDN on every start.
+    if let Ok(cache_guard) = BOOTSTRAP_PEERS_CACHE.lock() {
+        if let Some(cached) = cache_guard.as_ref() {
+            if cached.fetched_at.elapsed() < BOOTSTRAP_PEERS_CACHE_TTL && !cached.peers.is_empty()
+            {
+                return cached.peers.clone();
+            }
+        }
+    }
+
+    match fetch_public_bootstrap_peers().await {
+        Ok(peers) => {
+            if let Ok(mut cache_guard) = BOOTSTRAP_PEERS_CACHE.lock() {
+                *cache_guard = Some(BootstrapPeersCache {
+                    fetched_at: Instant::now(),
+                    peers: peers.clone(),
+                });
+            }
+            peers
+        }
+        Err(e) => {
+            tracing::warn!("fetch public bootstrap peers failed, fallback to built-in: {e:#}");
+            fallback_bootstrap_peers()
+        }
+    }
 }
 
 static DEFAULT_PLAYER_NAME: Lazy<String> = Lazy::new(|| {
@@ -392,7 +471,7 @@ pub async fn easytier_start(
     let peers = if peers.iter().any(|p| !p.trim().is_empty()) {
         peers
     } else {
-        default_bootstrap_peers()
+        default_bootstrap_peers().await
     };
 
     {

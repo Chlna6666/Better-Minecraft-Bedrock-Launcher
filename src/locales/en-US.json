@@ -112,7 +112,7 @@
     "easytier_core": "EasyTier Core",
     "easytier_cli": "EasyTier CLI",
     "bootstrap_peer": "Bootstrap peer",
-    "bootstrap_peer_placeholder": "tcp://39.108.52.138:11010\ntcp://8.148.29.206:11010",
+    "bootstrap_peer_placeholder": "tcp://public.easytier.bmcbl.com:54321",
     "bootstrap_peer_hint": "You can provide multiple bootstrap peers separated by space/comma/newline. If the bootstrap peer is unreachable, members may not discover each other. The first run may require administrator privileges to create the TUN adapter.",
     "notice": "Notice: the online service is sensitive to network conditions; connections may be slow or fail.",
     "easytier_flags": "EasyTier Options",

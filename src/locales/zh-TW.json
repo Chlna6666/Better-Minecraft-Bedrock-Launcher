@@ -112,7 +112,7 @@
     "easytier_core": "EasyTier Core",
     "easytier_cli": "EasyTier CLI",
     "bootstrap_peer": "引導節點",
-    "bootstrap_peer_placeholder": "tcp://39.108.52.138:11010\ntcp://8.148.29.206:11010",
+    "bootstrap_peer_placeholder": "tcp://public.easytier.bmcbl.com:54321",
     "bootstrap_peer_hint": "可填寫多個，引導節點之間用空格/逗號/換行分隔；引導節點不可達會導致房間成員無法互相發現。首次啟動可能需要系統管理員權限建立虛擬網卡（TUN）。",
     "notice": "提示：連線服務目前對網路要求較高，連線可能較慢或失敗。",
     "easytier_flags": "EasyTier 選項",

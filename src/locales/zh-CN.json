@@ -151,7 +151,7 @@
     "easytier_core": "EasyTier Core",
     "easytier_cli": "EasyTier CLI",
     "bootstrap_peer": "引导节点",
-    "bootstrap_peer_placeholder": "tcp://39.108.52.138:11010\ntcp://8.148.29.206:11010",
+    "bootstrap_peer_placeholder": "tcp://public.easytier.bmcbl.com:54321",
     "bootstrap_peer_hint": "可填写多个，引导节点之间用空格/逗号/换行分隔；引导节点不可达会导致房间成员无法互相发现。首次启动可能需要管理员权限创建虚拟网卡（TUN）。",
     "notice": "提示：联机服务目前对网络要求较高，连接可能较慢或失败。",
     "easytier_flags": "EasyTier 选项",

@@ -750,7 +750,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         if (snap.status === "completed") {
             if (!isImport && !isExtractingRef.current) {
                 if (snap.message) {
-                    handleSwitchToExtract(snap.message);
+                    handleSwitchToExtract(snap.message, true);
                 } else {
                     dispatch({ type: 'SET_ERROR', payload: "Download finished but no file path returned." });
                 }
@@ -784,7 +784,7 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
     };
 
     // 切换到解压
-    const handleSwitchToExtract = async (filePath: string) => {
+    const handleSwitchToExtract = async (filePath: string, preferBasename = false) => {
         isExtractingRef.current = true;
         if (unlistenRef.current) {
             const oldUnlisten = unlistenRef.current;
@@ -798,15 +798,24 @@ const InstallProgressBar: React.FC<InstallProgressBarProps> = (props) => {
         });
 
         try {
+            // For download flows, prefer the actual downloaded file name (includes extension).
+            // This avoids treating version-like names (e.g. 1.18.31) as "file with extension .31".
+            let effectiveFileName = state.fileName;
+            if (preferBasename) {
+                try {
+                    effectiveFileName = await basename(filePath);
+                } catch { /* ignore */ }
+            }
+
             let extractTaskId: string;
             if (isGDK) {
-                const folderName = state.fileName
+                const folderName = effectiveFileName
                     .replace(/\.msixvc$/i, "")
                     .replace(/\.appx$/i, "")
                     .replace(/\.zip$/i, "");
                 extractTaskId = await invoke("unpack_gdk", { inputPath: filePath, folderName: folderName });
             } else {
-                extractTaskId = await invoke("extract_zip_appx", { fileName: state.fileName, destination: filePath, forceReplace: true, deleteSignature: true });
+                extractTaskId = await invoke("extract_zip_appx", { fileName: effectiveFileName, destination: filePath, forceReplace: true, deleteSignature: true });
             }
 
             if (extractTaskId) {

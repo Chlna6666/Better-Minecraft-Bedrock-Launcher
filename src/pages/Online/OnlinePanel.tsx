@@ -6,8 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useToast } from "../../components/Toast";
 import "./OnlinePage.css";
 
-const LEGACY_DEFAULT_BOOTSTRAP_PEER = "tcp://public.easytier.top:11010";
-const DEFAULT_BOOTSTRAP_PEER = "tcp://39.108.52.138:11010\ntcp://8.148.29.206:11010";
+const DEFAULT_BOOTSTRAP_PEER = "tcp://public.easytier.bmcbl.com:54321";
 const PLAYER_NAME_STORAGE_KEY = "bmcbL.online.playerName";
 const LEGACY_PLAYER_NAME_STORAGE_KEY = "bmcbk.online.playerName";
 const BOOTSTRAP_PEER_STORAGE_KEY = "bmcbL.online.bootstrapPeer";
@@ -143,10 +142,6 @@ export default function OnlinePage() {
     try {
       const stored = String(localStorage.getItem(BOOTSTRAP_PEER_STORAGE_KEY) || "").trim();
       if (!stored) return DEFAULT_BOOTSTRAP_PEER;
-      if (stored === LEGACY_DEFAULT_BOOTSTRAP_PEER) {
-        localStorage.setItem(BOOTSTRAP_PEER_STORAGE_KEY, DEFAULT_BOOTSTRAP_PEER);
-        return DEFAULT_BOOTSTRAP_PEER;
-      }
       return stored;
     } catch {
       return DEFAULT_BOOTSTRAP_PEER;
