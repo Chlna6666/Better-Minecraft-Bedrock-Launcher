@@ -104,20 +104,49 @@ pub struct ManifestHeader {
     pub name: Option<String>,
     pub uuid: Option<String>,
     pub description: Option<String>,
-    pub version: Option<Vec<u32>>,
+    pub version: Option<ManifestVersion>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ManifestModule {
     #[serde(rename = "type")]
     pub module_type: String,
-    pub version: Option<Vec<u32>>, // [新增]
+    pub version: Option<ManifestVersion>, // [新增]
     pub uuid: Option<String>, // [新增]
     pub description: Option<String>, // [新增]
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum ManifestVersion {
+    Array(Vec<u32>),
+    String(String),
+}
+
+impl ManifestVersion {
+    fn to_display_string(&self) -> Option<String> {
+        match self {
+            ManifestVersion::Array(v) => {
+                if v.is_empty() { None } else { Some(v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".")) }
+            }
+            ManifestVersion::String(s) => {
+                let s = s.trim();
+                if s.is_empty() { None } else { Some(s.to_string()) }
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum ManifestFormatVersion {
+    Number(u32),
+    String(String),
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PartialManifest {
+    pub format_version: Option<ManifestFormatVersion>,
     pub header: Option<ManifestHeader>,
     pub modules: Option<Vec<ManifestModule>>,
 }
@@ -324,7 +353,8 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
         // C. 解析 Manifest 并应用翻译
         if let Some(content) = manifest_content {
             let clean = strip_json_comments(&content);
-            if let Ok(mut manifest) = serde_json::from_str::<PartialManifest>(&clean) {
+            let clean = clean.trim_start_matches('\u{feff}');
+            if let Ok(mut manifest) = serde_json::from_str::<PartialManifest>(clean) {
                 // 应用翻译
                 if let Some(header) = manifest.header.as_mut() {
                     if let Some(n) = &header.name {
@@ -336,7 +366,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
                         header.description = Some(description.clone());
                     }
                     if let Some(v) = &header.version {
-                        version_str = Some(v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."));
+                        version_str = v.to_display_string();
                     }
                     if header.uuid.is_none() {
                         valid = false;
@@ -757,7 +787,12 @@ pub fn scan_archive<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Archi
                 continue;
             }
 
-            if !path.file_name().map(|f| f == "manifest.json").unwrap_or(false) {
+            let is_manifest = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .map(|s| s.eq_ignore_ascii_case("manifest.json"))
+                .unwrap_or(false);
+            if !is_manifest {
                 if !file.is_dir() {
                     let ext = path
                         .extension()
@@ -777,7 +812,8 @@ pub fn scan_archive<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Archi
             let mut json = String::new();
             if file.read_to_string(&mut json).is_err() { continue; }
             let clean = strip_json_comments(&json);
-            if let Ok(manifest) = serde_json::from_str::<PartialManifest>(&clean) {
+            let clean = clean.trim_start_matches('\u{feff}');
+            if let Ok(manifest) = serde_json::from_str::<PartialManifest>(clean) {
                 let pack_type = detect_type_from_manifest(&manifest);
                 hits.push(ScanHit::Manifest(PackEntry {
                     root,
@@ -1760,7 +1796,8 @@ fn import_pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Re
     }
     let content = fs::read_to_string(&manifest_path)?;
     let clean = strip_json_comments(&content);
-    let manifest: PartialManifest = serde_json::from_str(&clean)
+    let clean = clean.trim_start_matches('\u{feff}');
+    let manifest: PartialManifest = serde_json::from_str(clean)
         .with_context(|| format!("Failed to parse manifest.json in {:?}", dir))?;
 
     let target_type = detect_type_from_manifest(&manifest);
@@ -1858,7 +1895,8 @@ fn get_pack_uuid_from_dir(dir: &Path) -> Option<String> {
     if !manifest_path.exists() { return None; }
     let content = fs::read_to_string(&manifest_path).ok()?;
     let clean = strip_json_comments(&content);
-    let manifest: PartialManifest = serde_json::from_str(&clean).ok()?;
+    let clean = clean.trim_start_matches('\u{feff}');
+    let manifest: PartialManifest = serde_json::from_str(clean).ok()?;
     manifest.header.and_then(|h| h.uuid)
 }
 
@@ -1870,7 +1908,8 @@ fn get_pack_info_from_dir(
     let manifest_path = dir.join("manifest.json");
     let content = fs::read_to_string(&manifest_path)?;
     let clean = strip_json_comments(&content);
-    let mut manifest: PartialManifest = serde_json::from_str(&clean)?;
+    let clean = clean.trim_start_matches('\u{feff}');
+    let mut manifest: PartialManifest = serde_json::from_str(clean)?;
 
     let detected_type = if *target_type == ImportTargetType::Unknown {
         detect_type_from_manifest(&manifest)
@@ -1908,7 +1947,7 @@ fn get_pack_info_from_dir(
 
     if let Some(header) = &manifest.header {
         if let Some(v) = &header.version {
-            version_str = Some(v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."));
+            version_str = v.to_display_string();
         }
         if header.uuid.is_none() && !matches!(detected_type, ImportTargetType::World) {
             valid = false;
@@ -2454,7 +2493,7 @@ fn get_pack_info_from_zip<R: Read + Seek>(
             header.description = Some(description.clone());
         }
         if let Some(v) = &header.version {
-            version_str = Some(v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."));
+            version_str = v.to_display_string();
         }
         if header.uuid.is_none() {
             valid = false;

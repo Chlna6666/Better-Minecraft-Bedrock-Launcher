@@ -123,6 +123,16 @@
 .toggle-btn.active { background: #fff; color: var(--primary-color); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 .divider-vertical { width: 1px; height: 20px; background: rgba(0,0,0,0.1); margin: 0 8px; }
 
+/* Dark theme: view mode toggle */
+[data-theme='dark'] .cf-view-toggle { background: rgba(255,255,255,0.08); }
+[data-theme='dark'] .toggle-btn { color: rgba(226,232,240,0.82); }
+[data-theme='dark'] .toggle-btn.active {
+    background: rgba(255,255,255,0.14);
+    color: rgba(248,250,252,0.95);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+}
+[data-theme='dark'] .divider-vertical { background: rgba(255,255,255,0.16); }
+
 /* [修复] Horizontal Scroll Tags */
 .horizontal-scroll-container {
     display: flex;
