@@ -6,3 +6,6 @@
 # Local GDK CIK key material.
 /src/core/minecraft/gdk/Cik/
 *.cik
+
+# Local Playwright MCP session artifacts.
+/.playwright-mcp/
