@@ -1,0 +1,22 @@
+[package]
+name = "gpui_hooks"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gpui = { path = "../../vendor/gpui", default-features = false }
+gpui_hooks_macros = { path = "../gpui-hooks-macros" }
+smallvec = "1.15.1"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+

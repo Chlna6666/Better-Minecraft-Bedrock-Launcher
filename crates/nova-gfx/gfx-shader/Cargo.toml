@@ -1,0 +1,27 @@
+[package]
+name = "gfx-shader"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "WGSL validation and backend shader generation for nova-gfx"
+readme = "README.md"
+documentation = "https://docs.rs/gfx-shader"
+keywords = ["graphics", "shader", "wgsl", "naga", "rendering"]
+categories = ["rendering::graphics-api"]
+include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+
+[lib]
+path = "src/gfx_shader.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { version = "0.1.0", path = "../gfx-core" }
+naga = { version = "29.0.1", features = ["hlsl-out", "msl-out", "spv-out", "wgsl-in"] }
+thiserror = "2.0.17"

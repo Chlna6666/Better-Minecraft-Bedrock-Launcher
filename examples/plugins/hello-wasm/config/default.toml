@@ -1,0 +1,14 @@
+# Whether the Essentials overlay badge is intended to be visible.
+# The current sample always registers the hook; BMCBL exposes this value in the plugin manager.
+show_overlay_badge = true
+
+# Controls the behavior preset shown by this sample plugin.
+# Valid values are: "balanced", "quiet", "verbose".
+display_mode = "balanced"
+
+# Example numeric value for BMCBL's generated config form.
+# Higher values can be used by plugins to increase their own UI density.
+max_status_items = 5
+
+# Optional custom status text. Leave empty to use the localized default text.
+custom_status = ""

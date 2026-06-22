@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-leveldb/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-leveldb/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-world/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-world/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-world/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/gpui-hooks-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/gpui-hooks/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/lucide-gpui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/mc-motd/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/gpui/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/gpui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/gpui/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-render/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-render/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-render/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bedrock-render/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-hook-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-hooks-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-macros/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-route-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-router-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/collections/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_linux/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_macos/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_macros/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_platform/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_util/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_web/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_web/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_wgpu/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/gpui_windows/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/http_client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/http_client_tls/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/media/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/refineable/derive_refineable/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/refineable/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/reqwest_client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/scheduler/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/sum_tree/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/util/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/util_macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/zlog/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/ztracing/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/crates/ztracing_macro/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/.tmp/zed-upstream/tooling/perf/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/egpui-hook-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/egpui-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/egpui-macros/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/egpui-route-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/egpui/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/egpui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/egpui/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/gpui-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/vendor/gpui-macros/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bmcbl-plugin-api/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bmcbl-plugin-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/bmcbl-plugin-tools/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/atlas-smoke-dx12/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/atlas-smoke-metal/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/atlas-smoke/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/triangle-dx12/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/triangle-metal/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/triangle/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-dx12/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-memory/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-metal/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-shader/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-vulkan/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/gpui-minimal-window-smoke/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

@@ -1,0 +1,45 @@
+[package]
+name = "bmcbl-essentials"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+build = "build.rs"
+authors = ["BMCBL"]
+description = "Core example plugin for BMCBL."
+license = "GPL-3.0-only"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+bmcbl_plugin_api = { path = "../../../crates/bmcbl-plugin-api" }
+
+[build-dependencies]
+bmcbl_plugin_api = { path = "../../../crates/bmcbl-plugin-api", features = ["pack"] }
+
+[package.metadata.bmcbl-plugin]
+id = "bmcbl-essentials"
+name = "BMCBL Essentials"
+website = "https://bmcbl.com"
+tags = ["essentials", "example", "wasm"]
+capabilities = ["ui.page", "ui.window", "ui.hook", "event.global", "toast", "config.read"]
+readme = "README.md"
+readme_locales = { "zh-CN" = "README.zh-CN.md", "en-US" = "README.md" }
+lang_dir = "lang"
+config_default = "config/default.toml"
+config_schema = "config/schema.toml"
+
+[package.metadata.bmcbl-plugin.limits]
+memory_mb = 64
+max_storage_bytes = 1048576
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

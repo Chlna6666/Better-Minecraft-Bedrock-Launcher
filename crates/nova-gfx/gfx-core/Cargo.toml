@@ -1,0 +1,30 @@
+[package]
+name = "gfx-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "Backend-neutral graphics API types for nova-gfx"
+readme = "README.md"
+documentation = "https://docs.rs/gfx-core"
+keywords = ["graphics", "gpu", "rendering", "backend", "traits"]
+categories = ["rendering::graphics-api"]
+include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+
+[lib]
+path = "src/gfx_core.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+bitflags = "2.10.0"
+thiserror = "2.0.17"

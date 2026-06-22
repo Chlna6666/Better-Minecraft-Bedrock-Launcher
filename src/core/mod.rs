@@ -1,0 +1,9 @@
+pub mod curseforge;
+pub mod easytier;
+pub mod inject;
+pub mod minecraft;
+#[path = "online/online.rs"]
+pub mod online;
+pub mod sponsors;
+pub mod ui_prefs;
+pub mod version;

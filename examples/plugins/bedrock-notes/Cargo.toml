@@ -1,0 +1,53 @@
+[package]
+name = "bmcbl-bedrock-notes"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+build = "build.rs"
+authors = ["BMCBL"]
+description = "Shows Minecraft Bedrock patch notes on the BMCBL home page."
+license = "GPL-3.0-only"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+bmcbl_plugin_api = { path = "../../../crates/bmcbl-plugin-api" }
+
+[build-dependencies]
+bmcbl_plugin_api = { path = "../../../crates/bmcbl-plugin-api", features = ["pack"] }
+
+[package.metadata.bmcbl-plugin]
+id = "bmcbl-bedrock-notes"
+name = "BMCBL Bedrock Notes"
+website = "https://www.minecraft.net"
+tags = ["minecraft", "bedrock", "notes", "example"]
+capabilities = ["ui.page", "ui.hook", "network.http"]
+readme = "README.md"
+readme_locales = { "zh-CN" = "README.zh-CN.md", "en-US" = "README.md" }
+icon = "assets/icon.svg"
+lang_dir = "lang"
+
+[package.metadata.bmcbl-plugin.permissions.network]
+allow = [
+    "https://launchercontent.mojang.com/v2/bedrockPatchNotes.json",
+    "https://launchercontent.mojang.com/v2/bedrockPatchNotes/",
+]
+
+[package.metadata.bmcbl-plugin.permissions.resource]
+allow = ["assets/"]
+
+[package.metadata.bmcbl-plugin.limits]
+memory_mb = 64
+max_http_bytes = 524288
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

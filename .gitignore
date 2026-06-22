@@ -1,0 +1,8 @@
+/target
+/.upstream_bmbl_*/
+/target/
+/.tmp/
+
+# Local GDK CIK key material.
+/src/core/minecraft/gdk/Cik/
+*.cik

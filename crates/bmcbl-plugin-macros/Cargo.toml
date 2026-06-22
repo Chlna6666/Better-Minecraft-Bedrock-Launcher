@@ -1,0 +1,23 @@
+[package]
+name = "bmcbl_plugin_macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[lib]
+proc-macro = true
+path = "src/lib.rs"
+
+[dependencies]
+proc-macro2 = "1.0.106"
+quote = "1.0.42"
+syn = { version = "2.0.111", features = ["full"] }
+toml = "0.8.23"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

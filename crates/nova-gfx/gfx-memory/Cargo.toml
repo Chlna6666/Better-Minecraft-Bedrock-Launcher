@@ -1,0 +1,37 @@
+[package]
+name = "gfx-memory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "GPU memory allocation wrappers for nova-gfx"
+readme = "README.md"
+documentation = "https://docs.rs/gfx-memory"
+keywords = ["graphics", "gpu", "memory", "allocator", "rendering"]
+categories = ["rendering::graphics-api", "memory-management"]
+include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+
+[lib]
+path = "src/gfx_memory.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[features]
+default = []
+vulkan = ["ash", "gpu-allocator/vulkan"]
+dx12 = ["gpu-allocator/d3d12", "windows"]
+metal = ["gpu-allocator/metal", "objc2", "objc2-metal"]
+
+[dependencies]
+ash = { version = "0.38", features = ["loaded"], optional = true }
+gfx-core = { version = "0.1.0", path = "../gfx-core" }
+gpu-allocator = { version = "0.28.0", default-features = false, features = ["std"] }
+thiserror = "2.0.17"
+objc2 = { version = "0.6", default-features = false, features = ["std"], optional = true }
+objc2-metal = { version = "0.3", default-features = false, features = ["MTLDevice", "MTLResource", "MTLHeap", "MTLTexture", "std"], optional = true }
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D12"], optional = true }

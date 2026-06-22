@@ -1,0 +1,32 @@
+[package]
+name = "gfx-dx12"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "Direct3D 12 backend for nova-gfx"
+readme = "README.md"
+documentation = "https://docs.rs/gfx-dx12"
+keywords = ["graphics", "gpu", "dx12", "rendering", "backend"]
+categories = ["rendering::graphics-api"]
+include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+
+[lib]
+path = "src/gfx_dx12.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { version = "0.1.0", path = "../gfx-core" }
+thiserror = "2.0.17"
+log = "0.4.29"
+
+[target.'cfg(windows)'.dependencies]
+gfx-memory = { version = "0.1.0", path = "../gfx-memory", default-features = false, features = ["dx12"] }
+raw-window-handle = "0.6"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D12", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Threading"] }

@@ -1,0 +1,30 @@
+[package]
+name = "gfx-vulkan"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "Vulkan backend for nova-gfx"
+readme = "README.md"
+documentation = "https://docs.rs/gfx-vulkan"
+keywords = ["graphics", "gpu", "vulkan", "rendering", "backend"]
+categories = ["rendering::graphics-api"]
+include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+
+[lib]
+path = "src/gfx_vulkan.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+ash = { version = "0.38", features = ["loaded"] }
+ash-window = "0.13"
+gfx-core = { version = "0.1.0", path = "../gfx-core" }
+gfx-memory = { version = "0.1.0", path = "../gfx-memory", default-features = false, features = ["vulkan"] }
+raw-window-handle = "0.6"
+thiserror = "2.0.17"

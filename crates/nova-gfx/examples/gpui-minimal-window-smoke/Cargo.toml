@@ -1,0 +1,30 @@
+[package]
+name = "nova-gpui-minimal-window-smoke"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "GPUI nova-gfx present smoke test"
+publish = false
+
+[[bin]]
+name = "nova-gpui-minimal-window-smoke"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+sysinfo = "0.39.0"
+
+[target.'cfg(windows)'.dependencies]
+gpui = { path = "../../../../vendor/gpui", default-features = false, features = ["nova-gfx-dx12", "nova-gfx-vulkan", "windows-manifest"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { path = "../../../../vendor/gpui", default-features = false, features = ["nova-gfx-metal"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui = { path = "../../../../vendor/gpui", default-features = false, features = ["nova-gfx-vulkan"] }

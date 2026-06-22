@@ -1,0 +1,45 @@
+[package]
+name = "nova-triangle-metal"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "nova-gfx Metal triangle baseline"
+publish = false
+
+[[bin]]
+name = "nova-triangle-metal"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { path = "../../gfx-core" }
+gfx-metal = { path = "../../gfx-metal" }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+gfx-shader = { path = "../../gfx-shader" }
+objc2 = { version = "0.6", default-features = false }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "NSApplication",
+    "NSEvent",
+    "NSGraphics",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSView",
+    "NSWindow",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "NSDate",
+    "NSGeometry",
+    "NSRunLoop",
+    "NSString",
+    "objc2-core-foundation",
+] }
+raw-window-handle = "0.6"
+sysinfo = "0.39.0"

@@ -1,0 +1,43 @@
+[package]
+name = "bmcbl_plugin_api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bmcbl-plugin-tools"
+path = "src/bin/tools.rs"
+required-features = ["pack-cli"]
+
+[[bin]]
+name = "bmcbl-plugin-post-pack"
+path = "src/bin/post_pack.rs"
+required-features = ["pack"]
+
+[dependencies]
+alloc-no-stdlib = { version = "2.0.4", optional = true }
+anyhow = { version = "1.0.100", optional = true }
+bmcbl_plugin_macros = { path = "../bmcbl-plugin-macros" }
+clap = { version = "4.5.53", features = ["derive"], optional = true }
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+semver = { version = "1.0.27", optional = true }
+serde = { version = "1.0.219", default-features = false, features = ["derive", "alloc"] }
+sha2 = { version = "0.11.0", optional = true }
+toml = { version = "0.8.23", optional = true }
+zip = { version = "8.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
+
+[features]
+default = []
+pack = ["dep:anyhow", "dep:semver", "dep:sha2", "dep:toml", "dep:zip"]
+pack-cli = ["pack", "dep:clap"]
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

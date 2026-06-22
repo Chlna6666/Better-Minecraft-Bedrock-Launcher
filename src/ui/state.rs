@@ -1,0 +1,11 @@
+pub mod agreement;
+pub mod debug;
+pub mod diagnostics;
+pub mod i18n;
+pub mod launch_prereq;
+pub mod launcher;
+pub mod local_versions;
+pub mod navigation;
+pub mod quit;
+pub mod theme;
+pub mod update;

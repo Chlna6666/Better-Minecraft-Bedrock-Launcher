@@ -1,0 +1,56 @@
+[[fields]]
+key = "show_overlay_badge"
+label = "Show overlay badge"
+label_key = "essentials.config.show_overlay_badge.label"
+description = "Controls whether the sample plugin should show its main-window badge."
+description_key = "essentials.config.show_overlay_badge.description"
+type = "bool"
+default = true
+restart_required = false
+
+[[fields]]
+key = "display_mode"
+label = "Display mode"
+label_key = "essentials.config.display_mode.label"
+description = "Selects the sample plugin behavior preset."
+description_key = "essentials.config.display_mode.description"
+type = "select"
+default = "balanced"
+restart_required = false
+
+[[fields.options]]
+value = "balanced"
+label = "Balanced"
+label_key = "essentials.config.display_mode.balanced"
+
+[[fields.options]]
+value = "quiet"
+label = "Quiet"
+label_key = "essentials.config.display_mode.quiet"
+
+[[fields.options]]
+value = "verbose"
+label = "Verbose"
+label_key = "essentials.config.display_mode.verbose"
+
+[[fields]]
+key = "max_status_items"
+label = "Max status items"
+label_key = "essentials.config.max_status_items.label"
+description = "Example integer option rendered by the BMCBL plugin manager."
+description_key = "essentials.config.max_status_items.description"
+type = "integer"
+default = 5
+min = 1
+max = 20
+restart_required = false
+
+[[fields]]
+key = "custom_status"
+label = "Custom status"
+label_key = "essentials.config.custom_status.label"
+description = "Optional custom status text. Empty value uses the localized default."
+description_key = "essentials.config.custom_status.description"
+type = "string"
+default = ""
+restart_required = false

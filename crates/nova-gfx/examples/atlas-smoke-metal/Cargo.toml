@@ -1,0 +1,25 @@
+[package]
+name = "nova-atlas-smoke-metal"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "nova-gfx Metal atlas resource binding smoke test"
+publish = false
+
+[[bin]]
+name = "nova-atlas-smoke-metal"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { path = "../../gfx-core" }
+gfx-metal = { path = "../../gfx-metal" }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+gfx-shader = { path = "../../gfx-shader" }
