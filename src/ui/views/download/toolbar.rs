@@ -14,25 +14,25 @@ pub(super) fn render_toolbar(colors: &ThemeColors, state: &DownloadPageState, no
 
     div()
         .w_full()
-        .h(px(72.))
+        .h(px(68.))
         .bg(Hsla {
             a: 0.0,
             ..colors.surface
         })
-        .px(px(24.))
-        .py(px(16.))
+        .px(px(20.))
+        .py(px(14.))
         .flex()
         .items_center()
-        .gap(px(16.))
+        .gap(px(12.))
         .child(render_tabs(colors, state, now))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .px(px(12.))
+                .px(px(8.))
                 .flex()
                 .items_center()
-                .child(div().w(px(320.)).min_w(px(0.)).child(search)),
+                .child(div().w(px(200.)).min_w(px(0.)).child(search)),
         )
         .child(render_toolbar_controls(colors, state))
 }
@@ -44,52 +44,62 @@ fn render_toolbar_search(colors: &ThemeColors, state: &DownloadPageState) -> Any
         DownloadTab::Mod => "搜索模组...",
     };
 
-    // Keep this consistent with other pages; avoid the red tint from the upstream web UI.
-    let bg = Hsla {
-        a: 0.65,
-        ..colors.surface
+    let dark_mode = colors.bg.l < 0.5;
+    let shell_background = if dark_mode {
+        Hsla {
+            a: 0.85,
+            ..colors.settings_card_bg
+        }
+    } else {
+        Hsla {
+            a: 1.0,
+            ..colors.settings_card_bg
+        }
     };
-    let border = colors.border;
+    let shell_border = Hsla {
+        a: 0.25,
+        ..colors.border
+    };
 
     if let Some(input_state) = state.search_input.as_ref() {
-        Input::new(input_state)
-            .appearance(false)
-            .bordered(false)
-            .focus_bordered(false)
-            .cleanable(true)
-            .prefix(themed_icon(
-                lucide_icons::icon_search(),
-                18.0,
-                colors.text_secondary,
-            ))
+        div()
+            .id("download-search-input-wrapper")
             .w_full()
-            .h(px(40.))
-            .px(px(12.))
-            .rounded(px(12.))
-            .bg(bg)
-            .border_1()
-            .border_color(border)
+            .flex()
+            .items_center()
+            .child(
+                Input::new(input_state)
+                    .cleanable(true)
+                    .prefix(themed_icon(
+                        lucide_icons::icon_search(),
+                        16.0,
+                        colors.text_secondary,
+                    ))
+                    .w_full()
+                    .with_size(crate::ui::components::input::InputSize::Small),
+            )
             .into_any_element()
     } else {
         div()
+            .id("download-search-placeholder-wrapper")
             .w_full()
-            .h(px(40.))
-            .px(px(12.))
-            .rounded(px(12.))
-            .bg(bg)
+            .h(px(32.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .bg(shell_background)
             .border_1()
-            .border_color(border)
+            .border_color(shell_border)
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(px(8.))
             .child(themed_icon(
                 lucide_icons::icon_search(),
-                18.0,
+                16.0,
                 colors.text_secondary,
             ))
             .child(
                 div()
-                    .text_size(px(14.))
+                    .text_size(px(13.))
                     .text_color(colors.text_muted)
                     .child(placeholder),
             )
@@ -101,7 +111,12 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
     let active = state.tab;
     let (t, animating) = state.tab_anim_factor(now);
     let from = state.tab_anim_from;
-    let t = (1.0 - (1.0 - t).powi(3)).clamp(0.0, 1.0);
+    // ease-out-back for a subtle elastic overshoot on the sliding pill
+    let t_eased = {
+        let tc = t.clamp(0.0, 1.0);
+        let p = tc - 1.0;
+        (1.0 + 1.35 * p.powi(3) + 0.35 * p.powi(2)).clamp(0.0, 1.05)
+    };
 
     let idx = |tab: DownloadTab| match tab {
         DownloadTab::Game => 0f32,
@@ -109,11 +124,22 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
         DownloadTab::Mod => 2f32,
     };
 
-    // UnifiedPageLayout tab switcher uses a single background with a sliding pill.
     let item_w = 104.0f32;
     let from_x = idx(from) * item_w;
     let to_x = idx(active) * item_w;
-    let x = from_x + (to_x - from_x) * t;
+    let x = from_x + (to_x - from_x) * t_eased;
+
+    // Pill width stretches during transition for a dynamic feel
+    let stretch = {
+        let mid = (t * 2.0 - 1.0).abs();
+        let stretch_factor = 1.0 - mid * 0.5;
+        let distance = (idx(active) - idx(from)).abs();
+        if animating && distance > 0.0 {
+            item_w * stretch_factor.max(0.7)
+        } else {
+            item_w
+        }
+    };
 
     let tab = |id: &'static str,
                icon_path: &'static str,
@@ -121,7 +147,14 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
                tab: DownloadTab,
                active: DownloadTab| {
         let is_active = tab == active;
-        let fg = colors.text_primary;
+        let fg = if is_active {
+            colors.text_primary
+        } else {
+            Hsla {
+                a: 0.65,
+                ..colors.text_primary
+            }
+        };
 
         div()
             .id(id)
@@ -129,14 +162,15 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
             .h(px(32.))
             .rounded(px(7.))
             .cursor_pointer()
+            .relative()
             .flex()
             .items_center()
             .justify_center()
-            .gap(px(6.))
-            .child(themed_icon(icon_path, 18.0, fg))
+            .gap(px(5.))
+            .child(svg().path(icon_path).size(px(15.)).text_color(fg))
             .child(
                 div()
-                    .text_size(px(14.))
+                    .text_size(px(13.))
                     .font_weight(if is_active {
                         FontWeight::SEMIBOLD
                     } else {
@@ -145,13 +179,35 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
                     .text_color(fg)
                     .child(label),
             )
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            .hover(move |s| {
+                if is_active {
+                    s
+                } else {
+                    s.bg(Hsla {
+                        a: 0.08,
+                        ..colors.text_primary
+                    })
+                }
+            })
+            .active(|s| s.top(px(1.0)))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 cx.update_global(|s: &mut DownloadPageState, cx| {
                     if s.tab != tab {
                         s.tab_anim_from = s.tab;
                         s.tab_anim_at = Some(Instant::now());
                     }
                     s.tab = tab;
+
+                    if let Some(ref search_input) = s.search_input {
+                        let placeholder = match tab {
+                            DownloadTab::Game => "搜索游戏版本...",
+                            DownloadTab::ResourcePack => "搜索资源包...",
+                            DownloadTab::Mod => "搜索模组...",
+                        };
+                        let _ = search_input.update(cx, |st, cx| {
+                            st.set_placeholder(SharedString::from(placeholder), window, cx);
+                        });
+                    }
 
                     match tab {
                         DownloadTab::Game => {
@@ -174,14 +230,14 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
                     }
                 });
             })
-            .when(!is_active, |this| this.hover(|s| s.opacity(0.7)))
     };
 
+    // Pill indicator with no shadow for flat depth
     let indicator = div()
         .absolute()
-        .left(px(x))
+        .left(px(x + (item_w - stretch) * 0.5 + 3.0))
         .top(px(3.))
-        .w(px(item_w))
+        .w(px(stretch))
         .h(px(32.))
         .rounded(px(7.))
         .bg(colors.surface);
@@ -191,11 +247,16 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
         .flex()
         .items_center()
         .bg(Hsla {
-            a: 0.12,
-            ..colors.text_secondary
+            a: if colors.bg.l < 0.5 { 0.65 } else { 0.85 },
+            ..colors.settings_card_bg
         })
         .p(px(3.))
         .rounded(px(10.))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.08,
+            ..colors.border
+        })
         .child(indicator)
         .child(tab(
             "download-tab-game",
@@ -239,11 +300,11 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
     let icon_btn = |id: &'static str, icon_path: &'static str, disabled: bool| {
         IconButton::new(id, icon_path)
             .icon_color(colors.text_secondary)
-            .px(px(8.))
-            .py(px(8.))
-            .rounded(px(8.))
+            .w(px(32.))
+            .h(px(32.))
+            .rounded(px(6.))
             .bg(Hsla {
-                a: 0.05,
+                a: 0.06,
                 ..colors.text_secondary
             })
             .disabled(disabled)
@@ -266,7 +327,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
         Dropdown::new(
             "download-channel-filter",
             colors,
-            px(132.),
+            px(112.),
             label,
             options,
             selected_index,
@@ -288,6 +349,8 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 });
             },
         )
+        .with_height(px(32.))
+        .rounded(px(6.))
         .into_any_element()
     } else {
         div().into_any_element()
@@ -295,9 +358,9 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
 
     let refresh = IconButton::new("download-refresh", lucide_icons::icon_refresh_cw())
         .icon_color(colors.text_secondary)
-        .px(px(8.))
-        .py(px(8.))
-        .rounded(px(8.))
+        .w(px(32.))
+        .h(px(32.))
+        .rounded(px(6.))
         .bg(Hsla {
             a: 0.05,
             ..colors.text_secondary
@@ -381,7 +444,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             let version_select = Dropdown::new(
                 "download-cf-version",
                 colors,
-                px(168.),
+                px(148.),
                 version_label,
                 version_options,
                 selected_version_index,
@@ -416,6 +479,8 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                     crate::ui::views::download::curseforge::ensure_results_loaded(false, cx);
                 },
             )
+            .with_height(px(32.))
+            .rounded(px(6.))
             .into_any_element();
 
             let sort_options = vec![
@@ -437,7 +502,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             let sort_select = Dropdown::new(
                 "download-cf-sort",
                 colors,
-                px(132.),
+                px(112.),
                 if enabled {
                     sort_label
                 } else {
@@ -473,6 +538,8 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                     crate::ui::views::download::curseforge::ensure_results_loaded(false, cx);
                 },
             )
+            .with_height(px(32.))
+            .rounded(px(6.))
             .into_any_element();
 
             row = row.child(version_select).child(sort_select).child(refresh);

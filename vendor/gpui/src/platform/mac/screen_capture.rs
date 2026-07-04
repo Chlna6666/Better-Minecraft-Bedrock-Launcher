@@ -230,7 +230,7 @@ unsafe fn screen_id_to_human_label() -> HashMap<CGDirectDisplayID, ScreenMeta> {
     map
 }
 
-pub(crate) fn get_sources() -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
+pub(crate) fn sources() -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
     unsafe {
         let (mut tx, rx) = oneshot::channel();
         let tx = Rc::new(RefCell::new(Some(tx)));

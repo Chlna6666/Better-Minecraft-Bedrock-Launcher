@@ -325,10 +325,6 @@ fn launcher_render_engine_row(
 ) -> impl IntoElement {
     let section = i18n.t("Settings.tabs.launcher");
 
-    #[cfg(all(target_os = "windows", not(feature = "gpui-windows-vulkan")))]
-    let values = vec![SharedString::from("auto"), SharedString::from("dx12")];
-
-    #[cfg(not(all(target_os = "windows", not(feature = "gpui-windows-vulkan"))))]
     let values = vec![
         SharedString::from("auto"),
         SharedString::from("vulkan"),
@@ -367,6 +363,7 @@ fn launcher_render_engine_row(
                 .cloned()
                 .unwrap_or_else(|| SharedString::from("auto"))
                 .to_string();
+            let selected_renderer_backend = renderer_backend.clone();
             let snapshot = cx.update_global(|settings: &mut SettingsPageState, cx| {
                 settings.renderer_backend = SharedString::from(renderer_backend);
                 settings.gpu_adapter_name =
@@ -374,6 +371,7 @@ fn launcher_render_engine_row(
                 settings.gpu_adapter_options.clear();
                 snapshot_from_state(settings)
             });
+            super::tabs::refresh_gpu_adapters_for_backend(selected_renderer_backend, cx);
             spawn_persist_settings(snapshot, cx);
         },
     )

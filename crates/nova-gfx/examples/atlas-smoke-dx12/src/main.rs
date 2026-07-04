@@ -241,6 +241,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             let metrics_started_at = Instant::now();
             let mut device = Dx12Device::new(&DeviceDesc {
                 application_name: "nova-gfx atlas smoke dx12".to_string(),
+                ..DeviceDesc::default()
             })?;
             let surface = device.create_surface(window, &SurfaceDesc { label: None })?;
             let current_size = WindowSize {
@@ -261,6 +262,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 color_attachment: ColorAttachmentDesc {
                     format: surface_config.format,
                 },
+                depth_attachment: None,
             })?;
             let layout = device.create_resource_set_layout(&atlas_layout_desc())?;
             let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDesc {
@@ -334,6 +336,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     color_format: surface_config.format,
                     blend_mode: BlendMode::Replace,
                     primitive_topology: gfx_core::PrimitiveTopology::TriangleList,
+                    depth_state: None,
                 },
                 surface_config.size,
             )?;

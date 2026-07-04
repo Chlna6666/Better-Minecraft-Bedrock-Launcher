@@ -45,7 +45,7 @@ impl PlatformKeyboardMapper for MacKeyboardMapper {
         KeybindingKeystroke::from_keystroke(keystroke)
     }
 
-    fn get_key_equivalents(&self) -> Option<&HashMap<char, char>> {
+    fn key_equivalents(&self) -> Option<&HashMap<char, char>> {
         self.key_equivalents.as_ref()
     }
 }
@@ -76,7 +76,7 @@ impl MacKeyboardLayout {
 
 impl MacKeyboardMapper {
     pub(crate) fn new(layout_id: &str) -> Self {
-        let key_equivalents = get_key_equivalents(layout_id);
+        let key_equivalents = key_equivalents_for_layout(layout_id);
 
         Self { key_equivalents }
     }
@@ -106,7 +106,7 @@ impl MacKeyboardMapper {
 // output to remove languages with no mappings and other oddities, and converting it to a less verbose representation with:
 //  jq -s 'map(to_entries | map({key: .key, value: [(.value | to_entries | map(.key) | join("")), (.value | to_entries | map(.value) | join(""))]}) | from_entries) | add'
 // From there I used multi-cursor to produce this match statement.
-fn get_key_equivalents(layout_id: &str) -> Option<HashMap<char, char>> {
+fn key_equivalents_for_layout(layout_id: &str) -> Option<HashMap<char, char>> {
     let mappings: &[(char, char)] = match layout_id {
         "com.apple.keylayout.ABC-AZERTY" => &[
             ('!', '1'),

@@ -24,38 +24,20 @@ Use `Application::new_with_renderer_options(options)` or
 ## Environment Override
 
 `GPUI_RENDERER` can override the configured backend. Accepted values include
-`auto`, `vulkan`, `nova-vulkan`, `dx12`, `nova-dx12`, `metal`,
-`nova-metal`, and `headless`.
+`auto`, `vulkan`, `dx12`, `metal`, and `headless`.
 
 Keep application UI for renderer choice outside GPUI itself. GPUI should expose
 the options and metrics; applications decide their own defaults.
 
-## Windows Nova GPU Path
+## Nova-gfx Path
 
-The Windows platform path is Nova-first and uses a native Win32 event loop.
-`RendererBackend::Auto` tries the supported Nova backends in platform order,
-while explicit Vulkan or DX12 preferences select one backend with fallback
-diagnostics. Renderer surfaces are created through `raw-window-handle`
-implementations exposed by platform windows.
+The GPUI platform path uses nova-gfx. `RendererBackend::Auto` chooses the
+platform default backend, while explicit Vulkan, DX12, or Metal preferences
+select a native backend with fallback diagnostics.
 
 The Windows renderer also owns frame scheduling for event-driven, continuous,
 and presentation-only frames. Presentation-only frames are used when already
 prepared content can be shown without rebuilding the full scene.
-
-## Cross-Platform Surface Handles
-
-GPUI platform windows implement `HasWindowHandle` and `HasDisplayHandle`.
-Windows exposes Win32 handles, macOS exposes AppKit handles, and Linux/FreeBSD
-exposes Wayland or XCB handles depending on the selected compositor. Nova
-backends consume those traits through `raw-window-handle`; applications should
-not depend on backend device, queue, command buffer, or swapchain handles.
-
-## macOS Nova Metal Status
-
-`RendererBackend::NovaMetal` selects the nova-gfx Metal backend
-(`crates/nova-gfx/gfx-metal`) for macOS normal windows. This path was not
-compiled or smoke-tested in the current Windows development environment.
-Validate it on macOS before treating it as production ready.
 
 ## Frame Policy
 

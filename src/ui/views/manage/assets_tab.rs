@@ -25,6 +25,50 @@ pub(super) struct AssetSortEntry {
 }
 
 impl ManagePageView {
+    pub(super) fn open_skin_preview_asset(&mut self, asset: ManageAssetEntry, cx: &mut App) {
+        let skins = asset
+            .skin_previews
+            .as_ref()
+            .map(|skins| {
+                skins
+                    .iter()
+                    .map(|skin| crate::ui::window::skin_pack::SkinPreviewWindowSkin {
+                        display_name: skin.display_name.clone(),
+                        texture_path: skin.full_texture_path.clone(),
+                        model_label: Some(skin.model_label.clone()),
+                        preview_path: skin.preview_path.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|skins| !skins.is_empty())
+            .or_else(|| {
+                asset
+                    .first_skin_full_texture_path
+                    .clone()
+                    .map(|texture_path| {
+                        vec![crate::ui::window::skin_pack::SkinPreviewWindowSkin {
+                            display_name: asset.display_name.clone(),
+                            texture_path,
+                            model_label: asset.first_skin_model_label.clone(),
+                            preview_path: asset.icon_path.clone(),
+                        }]
+                    })
+            });
+        let Some(skins) = skins else {
+            toast::error(cx, SharedString::from("这个皮肤包没有可预览的皮肤贴图"));
+            return;
+        };
+
+        crate::ui::window::skin_pack::open_skin_preview_window(
+            crate::ui::window::skin_pack::SkinPreviewWindowInit {
+                title: asset.display_name,
+                skins: Arc::from(skins.into_boxed_slice()),
+                selected_index: 0,
+            },
+            cx,
+        );
+    }
+
     pub(super) fn set_pack_subtype(
         &mut self,
         pack_subtype: ManagePackSubtype,
@@ -92,6 +136,7 @@ impl ManagePageView {
         let (filter_name, extensions): (&str, &[&str]) = match tab {
             ManageTab::Mod => ("DLL", &["dll"]),
             ManageTab::ResourcePack => ("Packs", &["mcpack", "mcaddon", "mctemplate", "zip"]),
+            ManageTab::SkinPack => ("Skin Packs", &["mcpack", "mcaddon", "zip"]),
             ManageTab::Map => ("Maps", &["mcworld", "mctemplate", "zip"]),
             ManageTab::Screenshot | ManageTab::Server => return,
         };
@@ -115,23 +160,25 @@ impl ManagePageView {
                     )
                     .await
                     .map(|_| format!("已导入 {} 个 Mod", files.len())),
-                    ManageTab::ResourcePack | ManageTab::Map => data::import_non_mod_files(
-                        &version,
-                        &config,
-                        tab,
-                        pack_subtype,
-                        selected_gdk_user.as_ref().map(SharedString::as_ref),
-                        files,
-                        false,
-                        false,
-                    )
-                    .await
-                    .map(|summary| {
-                        format!(
-                            "导入完成：成功 {} 个，失败 {} 个",
-                            summary.imported_count, summary.failed_count
+                    ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+                        data::import_non_mod_files(
+                            &version,
+                            &config,
+                            tab,
+                            pack_subtype,
+                            selected_gdk_user.as_ref().map(SharedString::as_ref),
+                            files,
+                            false,
+                            false,
                         )
-                    }),
+                        .await
+                        .map(|summary| {
+                            format!(
+                                "导入完成：成功 {} 个，失败 {} 个",
+                                summary.imported_count, summary.failed_count
+                            )
+                        })
+                    }
                     ManageTab::Screenshot | ManageTab::Server => Ok(String::new()),
                 };
 
@@ -198,6 +245,31 @@ impl ManagePageView {
     }
 }
 
+fn append_skin_pack_asset_actions(
+    actions: Div,
+    colors: &ThemeColors,
+    asset: &ManageAssetEntry,
+    action_key: &SharedString,
+    cx: &mut Context<ManagePageView>,
+) -> Div {
+    actions.child(
+        compact_icon_button(
+            colors,
+            SharedString::from(format!("manage-skin-preview-{}", asset.key)),
+            lucide_icons::icon_box(),
+        )
+        .on_mouse_down(MouseButton::Left, {
+            let key = action_key.clone();
+            cx.listener(move |this, _, _, cx| {
+                let asset = resolve_asset_by_key(cx.global::<ManagePageState>(), &key);
+                if let Some(asset) = asset {
+                    this.open_skin_preview_asset(asset, cx);
+                }
+            })
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +305,10 @@ mod tests {
             inject_delay_ms: None,
             resource_pack_count: None,
             behavior_pack_count: None,
+            skin_count: None,
+            first_skin_full_texture_path: None,
+            first_skin_model_label: None,
+            skin_previews: None,
             kind: state::ManageAssetKind::ResourcePack,
         }
     }
@@ -541,6 +617,7 @@ pub(super) fn render_asset_list(
         let (title, description) = match state.tab {
             ManageTab::Mod => ("没有 Mod", "导入 DLL 后会显示在这里。"),
             ManageTab::ResourcePack => ("没有资源包", "支持导入 mcpack、mcaddon、zip。"),
+            ManageTab::SkinPack => ("没有皮肤包", "支持导入 mcpack、mcaddon、zip。"),
             ManageTab::Map => ("没有地图", "支持导入 mcworld、mctemplate、zip。"),
             ManageTab::Screenshot => ("没有截图", "游戏截图会显示在这里。"),
             ManageTab::Server => ("没有服务器", "添加服务器后会显示在这里。"),
@@ -676,6 +753,7 @@ pub(super) fn render_asset_row(
             let icon = match asset.kind {
                 state::ManageAssetKind::Mod => lucide_icons::icon_layers(),
                 state::ManageAssetKind::ResourcePack => lucide_icons::icon_package(),
+                state::ManageAssetKind::SkinPack => lucide_icons::icon_user(),
                 state::ManageAssetKind::Map => lucide_icons::icon_map(),
             };
 
@@ -705,6 +783,7 @@ pub(super) fn render_asset_row(
             let icon = match asset.kind {
                 state::ManageAssetKind::Mod => lucide_icons::icon_layers(),
                 state::ManageAssetKind::ResourcePack => lucide_icons::icon_package(),
+                state::ManageAssetKind::SkinPack => lucide_icons::icon_user(),
                 state::ManageAssetKind::Map => lucide_icons::icon_map(),
             };
             rounded_asset_thumbnail(colors, &icon_path, icon.into(), thumbnail_background)
@@ -774,6 +853,9 @@ pub(super) fn render_asset_row(
     if let Some(behavior_count) = asset.behavior_pack_count {
         meta = meta.child(subtle_badge(colors, format!("行为包 {behavior_count}")));
     }
+    if let Some(skin_count) = asset.skin_count {
+        meta = meta.child(subtle_badge(colors, format!("皮肤 {skin_count}")));
+    }
     if let Some(mod_type) = asset.mod_type.clone() {
         meta = meta.child(
             div()
@@ -814,6 +896,9 @@ pub(super) fn render_asset_row(
             append_mod_asset_actions(actions, colors, asset, &action_key, cx)
         }
         state::ManageAssetKind::ResourcePack => actions,
+        state::ManageAssetKind::SkinPack => {
+            append_skin_pack_asset_actions(actions, colors, asset, &action_key, cx)
+        }
         state::ManageAssetKind::Map => {
             append_map_asset_actions(actions, colors, version, asset, &action_key, cx)
         }

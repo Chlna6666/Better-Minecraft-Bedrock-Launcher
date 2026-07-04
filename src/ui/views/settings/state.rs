@@ -397,6 +397,47 @@ impl SettingsPageState {
         true
     }
 
+    pub fn has_releasable_route_state(&self) -> bool {
+        let blur = crate::config::config::clamp_background_blur(self.background_blur_preview);
+        (self.background_blur - blur).abs() > f32::EPSILON
+            || self.download_curseforge_api_base_input.is_some()
+            || self.download_http_proxy_url_input.is_some()
+            || self.download_socks_proxy_url_input.is_some()
+            || self.launcher_connectivity_open
+            || self.launcher_connectivity_running
+            || self.launcher_connectivity_cancel_tx.is_some()
+            || !self.launcher_connectivity_items.is_empty()
+            || self.launcher_connectivity_task.is_some()
+            || self.theme_color_input.is_some()
+            || self.local_image_path_input.is_some()
+            || self.network_image_url_input.is_some()
+            || self.theme_color_picker_popup_open
+            || !self.theme_color_picker_drag_target.as_ref().is_empty()
+            || self.network_image_refreshing
+            || self.network_image_refresh_started_at.is_some()
+            || !self.network_image_refresh_target_url.as_ref().is_empty()
+            || self.about_sponsors_open
+            || self.about_sponsors_loading
+            || self.about_sponsors_error.is_some()
+            || !self.about_sponsors.is_empty()
+            || self.about_sponsors_page != 0
+            || self.about_sponsors_skeleton_phase != 0
+            || self.about_dependencies_open
+            || self.about_agreement_open
+            || self.font_restart_confirm_open
+            || self.selected_plugin_id.is_some()
+            || self.plugin_sub_tab != PluginSettingsSubTab::Readme
+            || !self.plugin_config_draft.as_ref().is_empty()
+            || self.plugin_config_loaded_for.is_some()
+            || !self.plugin_config_inputs.is_empty()
+            || self.plugin_config_inputs_for.is_some()
+            || self.plugin_cached_generation != 0
+            || !self.plugin_cached_locale.as_ref().is_empty()
+            || !self.plugin_readme_cache.is_empty()
+            || !self.plugin_config_cache.is_empty()
+            || !self.plugin_config_schema_cache.is_empty()
+    }
+
     pub fn release_route_state(&mut self) {
         if let Some(cancel_tx) = self.launcher_connectivity_cancel_tx.take() {
             let _ = cancel_tx.send(true);
@@ -470,6 +511,21 @@ mod tests {
 
         state.close_about_dependencies();
         assert!(!state.about_dependencies_open);
+    }
+
+    #[test]
+    fn default_settings_state_has_no_releasable_route_state() {
+        let state = SettingsPageState::default();
+
+        assert!(!state.has_releasable_route_state());
+    }
+
+    #[test]
+    fn modal_state_forces_settings_route_release() {
+        let mut state = SettingsPageState::default();
+        state.open_font_restart_confirm();
+
+        assert!(state.has_releasable_route_state());
     }
 
     #[test]

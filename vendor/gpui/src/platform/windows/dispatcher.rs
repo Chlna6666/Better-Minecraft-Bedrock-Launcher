@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::{ThreadId, current},
@@ -10,44 +10,34 @@ use std::{
 
 use async_task::Runnable;
 use flume::Sender;
-use windows::{
-    System::Threading::{
-        ThreadPool, ThreadPoolTimer, TimerElapsedHandler, WorkItemHandler, WorkItemPriority,
-    },
-    Win32::{
-        Foundation::{LPARAM, WPARAM},
-        UI::WindowsAndMessaging::PostMessageW,
-    },
+use windows::System::Threading::{
+    ThreadPool, ThreadPoolTimer, TimerElapsedHandler, WorkItemHandler, WorkItemPriority,
 };
+use winit::event_loop::EventLoopProxy;
 
-use crate::{
-    HWND, PlatformDispatcher, SafeHwnd, TaskLabel, WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD,
-};
+use super::WindowsUserEvent;
+use crate::{PlatformDispatcher, TaskLabel};
 
 pub(crate) struct WindowsDispatcher {
     main_sender: Sender<Runnable>,
     main_thread_wakeup_pending: Arc<AtomicBool>,
     main_thread_id: ThreadId,
-    platform_window_handle: SafeHwnd,
-    validation_number: usize,
+    event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
 }
 
 impl WindowsDispatcher {
     pub(crate) fn new(
         main_sender: Sender<Runnable>,
         main_thread_wakeup_pending: Arc<AtomicBool>,
-        platform_window_handle: HWND,
-        validation_number: usize,
+        event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
     ) -> Self {
         let main_thread_id = current().id();
-        let platform_window_handle = platform_window_handle.into();
 
         WindowsDispatcher {
             main_sender,
             main_thread_wakeup_pending,
             main_thread_id,
-            platform_window_handle,
-            validation_number,
+            event_loop_proxy,
         }
     }
 
@@ -105,20 +95,24 @@ impl PlatformDispatcher for WindowsDispatcher {
         match self.main_sender.send(runnable) {
             Ok(_) => {
                 if !self.main_thread_wakeup_pending.swap(true, Ordering::AcqRel) {
-                    unsafe {
-                        if let Err(error) = PostMessageW(
-                            Some(self.platform_window_handle.as_raw()),
-                            WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD,
-                            WPARAM(self.validation_number),
-                            LPARAM(0),
-                        ) {
+                    let event_loop_proxy = self.event_loop_proxy.lock().unwrap().clone();
+                    if let Some(event_loop_proxy) = event_loop_proxy {
+                        if let Err(error) =
+                            event_loop_proxy.send_event(WindowsUserEvent::RunMainThreadTasks)
+                        {
                             self.main_thread_wakeup_pending
                                 .store(false, Ordering::Release);
                             log::error!(
-                                "WindowsDispatcher::dispatch_on_main_thread post failed: {:?}",
+                                "WindowsDispatcher::dispatch_on_main_thread send failed: {:?}",
                                 error
                             );
                         }
+                    } else {
+                        self.main_thread_wakeup_pending
+                            .store(false, Ordering::Release);
+                        log::warn!(
+                            "WindowsDispatcher::dispatch_on_main_thread dropped wakeup before event loop initialization"
+                        );
                     }
                 }
             }

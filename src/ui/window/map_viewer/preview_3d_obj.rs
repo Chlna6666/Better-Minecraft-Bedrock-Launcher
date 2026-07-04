@@ -28,36 +28,51 @@ pub(super) fn export_preview_3d_obj_with_materials_with_progress(
 
 impl ObjMeshFaceSource for Preview3dChunkMesh {
     fn obj_face_count(&self) -> usize {
-        (self.gpu_mesh.vertices.len() / 6)
-            .min(self.face_materials.len())
-            .min(self.face_uvs.len())
+        (self.gpu_mesh.indices.len() / 6).min(self.face_metadata.len())
     }
 
     fn obj_face_material(&self, face_index: usize) -> Option<&str> {
-        self.face_materials.get(face_index).map(AsRef::as_ref)
+        self.face_metadata
+            .get(face_index)
+            .map(|metadata| metadata.material.as_ref())
     }
 
     fn obj_face_color(&self, face_index: usize) -> Option<[f32; 4]> {
+        let vertex_index = *self.face_indices(face_index)?.first()?;
         self.gpu_mesh
             .vertices
-            .get(face_index.checked_mul(6)?)
+            .get(usize::try_from(vertex_index).ok()?)
             .map(|vertex| vertex.color)
     }
 
     fn obj_face_triangle_positions(&self, face_index: usize) -> Option<[[f32; 3]; 6]> {
-        let vertex_start = face_index.checked_mul(6)?;
-        let vertices = self.gpu_mesh.vertices.get(vertex_start..vertex_start + 6)?;
+        let indices = self.face_indices(face_index)?;
         Some([
-            vertices[0].position,
-            vertices[1].position,
-            vertices[2].position,
-            vertices[3].position,
-            vertices[4].position,
-            vertices[5].position,
+            self.index_position(indices[0])?,
+            self.index_position(indices[1])?,
+            self.index_position(indices[2])?,
+            self.index_position(indices[3])?,
+            self.index_position(indices[4])?,
+            self.index_position(indices[5])?,
         ])
     }
 
     fn obj_face_uv(&self, face_index: usize) -> Option<[[f32; 2]; 4]> {
-        self.face_uvs.get(face_index).copied()
+        self.face_metadata.get(face_index)?.uv
+    }
+}
+
+impl Preview3dChunkMesh {
+    fn face_indices(&self, face_index: usize) -> Option<&[u32]> {
+        let start = face_index.checked_mul(6)?;
+        let end = start.checked_add(6)?;
+        self.gpu_mesh.indices.get(start..end)
+    }
+
+    fn index_position(&self, index: u32) -> Option<[f32; 3]> {
+        self.gpu_mesh
+            .vertices
+            .get(usize::try_from(index).ok()?)
+            .map(|vertex| vertex.position)
     }
 }

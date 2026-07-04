@@ -2,63 +2,135 @@ use std::{
     cell::RefCell,
     ffi::OsStr,
     path::{Path, PathBuf},
-    rc::{Rc, Weak},
+    rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use ::util::{ResultExt, paths::SanitizedPath};
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use async_task::Runnable;
+use collections::FxHashMap;
 use futures::channel::oneshot::{self, Receiver};
 use itertools::Itertools;
-use parking_lot::RwLock;
 use smallvec::SmallVec;
 use windows::{
     UI::ViewManagement::UISettings,
     Win32::{
         Foundation::*,
         Security::Credentials::*,
-        System::{Com::*, LibraryLoader::*, Ole::*, SystemInformation::*},
-        UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
+        System::{
+            Com::*, Ole::*, ProcessStatus::K32EmptyWorkingSet, SystemInformation::*,
+            Threading::GetCurrentProcess,
+        },
+        UI::{
+            HiDpi::{
+                DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, PROCESS_DPI_AWARENESS,
+                PROCESS_PER_MONITOR_DPI_AWARE, SetProcessDpiAwareness,
+                SetProcessDpiAwarenessContext,
+            },
+            Shell::*,
+            WindowsAndMessaging::*,
+        },
     },
     core::*,
 };
+use winit::application::ApplicationHandler;
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 
+use super::{
+    apply_cursor_style_to_window, keystroke_from_winit, modifiers_from_winit,
+    mouse_button_from_winit,
+};
 use crate::*;
-use crate::platform::CosmicTextSystem;
+
+const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
+const DISABLE_STARTUP_WORKING_SET_TRIM: &str = "GPUI_DISABLE_STARTUP_WORKING_SET_TRIM";
+const STARTUP_WORKING_SET_TRIM_DELAY: Duration = Duration::from_secs(5);
+#[cfg(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan"))]
+const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] =
+    &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan];
+#[cfg(not(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan")))]
+const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] = &[RendererBackend::NovaDx12];
+
+pub(super) fn windows_auto_renderer_backend_order() -> &'static [RendererBackend] {
+    WINDOWS_AUTO_RENDERER_BACKEND_ORDER
+}
+
+fn startup_working_set_trim_enabled() -> bool {
+    !std::env::var(DISABLE_STARTUP_WORKING_SET_TRIM)
+        .is_ok_and(|value| value == "true" || value == "1")
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_startup_working_set_trim_task() {
+    std::thread::spawn(|| {
+        std::thread::sleep(STARTUP_WORKING_SET_TRIM_DELAY);
+        unsafe {
+            let process = GetCurrentProcess();
+            let _ = K32EmptyWorkingSet(process);
+        }
+    });
+}
+
+thread_local! {
+    static ACTIVE_CONTEXT: RefCell<Option<(*const ActiveEventLoop, *mut WindowsApplication)>> = const { RefCell::new(None) };
+}
+
+fn with_active_context<R>(
+    f: impl FnOnce(&ActiveEventLoop, &mut WindowsApplication) -> R,
+) -> Option<R> {
+    ACTIVE_CONTEXT.with(|storage| {
+        let (event_loop, app) = storage.borrow().as_ref().copied()?;
+        // SAFETY: The pointers are only set while winit is executing callbacks on the same thread.
+        Some(unsafe { f(&*event_loop, &mut *app) })
+    })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum WindowsUserEvent {
+    RunMainThreadTasks,
+    DockMenuAction(usize),
+    Quit,
+}
 
 pub(crate) struct WindowsPlatform {
     inner: Rc<WindowsPlatformInner>,
-    raw_window_handles: Arc<RwLock<SmallVec<[SafeHwnd; 4]>>>,
     // The below members will never change throughout the entire lifecycle of the app.
-    icon: HICON,
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
-    text_system: Arc<CosmicTextSystem>,
-    windows_version: WindowsVersion,
-    drop_target_helper: IDropTargetHelper,
-    handle: HWND,
+    text_system: Arc<dyn PlatformTextSystem>,
+    disable_direct_composition: bool,
+    renderer_backend: RendererBackend,
     renderer_options: RendererOptions,
+    event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+    ole_initialized: bool,
 }
 
-struct WindowsPlatformInner {
+pub(crate) struct WindowsPlatformInner {
     state: RefCell<WindowsPlatformState>,
-    raw_window_handles: std::sync::Weak<RwLock<SmallVec<[SafeHwnd; 4]>>>,
     // The below members will never change throughout the entire lifecycle of the app.
-    validation_number: usize,
     main_receiver: flume::Receiver<Runnable>,
     main_thread_wakeup_pending: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct PendingFileDrop {
+    paths: SmallVec<[PathBuf; 2]>,
 }
 
 pub(crate) struct WindowsPlatformState {
     callbacks: PlatformCallbacks,
     menus: Vec<OwnedMenu>,
     jump_list: JumpList,
-    // NOTE: standard cursor handles don't need to close.
-    pub(crate) current_cursor: Option<HCURSOR>,
+    cursor_style: CursorStyle,
+    displays: Vec<WindowsDisplay>,
+    primary_display_id: Option<DisplayId>,
+    active_window_handle: Option<AnyWindowHandle>,
 }
 
 #[derive(Default)]
@@ -76,130 +148,182 @@ impl WindowsPlatformState {
     fn new() -> Self {
         let callbacks = PlatformCallbacks::default();
         let jump_list = JumpList::new();
-        let current_cursor = load_cursor(CursorStyle::Arrow);
 
         Self {
             callbacks,
             jump_list,
-            current_cursor,
+            cursor_style: CursorStyle::Arrow,
+            displays: Vec::new(),
+            primary_display_id: None,
+            active_window_handle: None,
             menus: Vec::new(),
         }
     }
 }
 
-impl WindowsPlatform {
-    pub(crate) fn new_headless() -> Self {
-        Self::new(RendererOptions::with_backend(RendererBackend::HeadlessTest))
-            .expect("failed to initialize Windows platform")
+fn create_windows_text_system(
+    renderer_backend: RendererBackend,
+) -> Result<Arc<dyn PlatformTextSystem>> {
+    let _ = renderer_backend;
+    Ok(Arc::new(CosmicTextSystem::new()))
+}
+
+fn become_dpi_aware() {
+    if set_process_dpi_awareness_context(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_ok()
+        || set_process_dpi_awareness_context(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE).is_ok()
+        || set_process_dpi_awareness(PROCESS_PER_MONITOR_DPI_AWARE).is_ok()
+    {
+        return;
     }
 
-    pub(crate) fn new(renderer_options: RendererOptions) -> Result<Self> {
-        unsafe {
-            OleInitialize(None).context("unable to initialize Windows OLE")?;
+    // SAFETY: This process-wide DPI fallback is called before GPUI creates winit windows.
+    unsafe {
+        if !SetProcessDPIAware().as_bool() {
+            log::debug!("failed to set process DPI awareness with legacy Windows API");
         }
-        let mut renderer_options = renderer_options;
-        renderer_options.backend = match renderer_options.backend {
-            RendererBackend::NovaVulkan => RendererBackend::NovaVulkan,
-            RendererBackend::Auto
-            | RendererBackend::NovaDx12
-            | RendererBackend::NovaMetal
-            | RendererBackend::HeadlessTest => RendererBackend::NovaDx12,
-        };
-        record_renderer_backend(renderer_options.backend);
+    }
+}
+
+fn set_process_dpi_awareness_context(context: DPI_AWARENESS_CONTEXT) -> windows::core::Result<()> {
+    // SAFETY: This process-wide DPI setting is only attempted during platform initialization,
+    // before any GPUI platform window has been created.
+    unsafe { SetProcessDpiAwarenessContext(context) }
+}
+
+fn set_process_dpi_awareness(awareness: PROCESS_DPI_AWARENESS) -> windows::core::Result<()> {
+    // SAFETY: This process-wide DPI setting is only attempted during platform initialization,
+    // before any GPUI platform window has been created.
+    unsafe { SetProcessDpiAwareness(awareness) }
+}
+
+impl WindowsPlatform {
+    fn new_common_parts() -> (
+        Rc<WindowsPlatformInner>,
+        BackgroundExecutor,
+        ForegroundExecutor,
+        Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+    ) {
         let (main_sender, main_receiver) = flume::unbounded::<Runnable>();
         let main_thread_wakeup_pending = Arc::new(AtomicBool::new(false));
-        let validation_number = if usize::BITS == 64 {
-            rand::random::<u64>() as usize
-        } else {
-            rand::random::<u32>() as usize
-        };
-        let raw_window_handles = Arc::new(RwLock::new(SmallVec::new()));
-        let text_system = Arc::new(CosmicTextSystem::new());
-        register_platform_window_class();
-        let mut context = PlatformWindowCreateContext {
-            inner: None,
-            raw_window_handles: Arc::downgrade(&raw_window_handles),
-            validation_number,
-            main_receiver: Some(main_receiver),
+        let event_loop_proxy = Arc::new(Mutex::new(None));
+        let inner = Rc::new(WindowsPlatformInner {
+            state: RefCell::new(WindowsPlatformState::new()),
+            main_receiver,
             main_thread_wakeup_pending: main_thread_wakeup_pending.clone(),
-        };
-        let result = unsafe {
-            CreateWindowExW(
-                WINDOW_EX_STYLE(0),
-                PLATFORM_WINDOW_CLASS_NAME,
-                None,
-                WINDOW_STYLE(0),
-                0,
-                0,
-                0,
-                0,
-                Some(HWND_MESSAGE),
-                None,
-                None,
-                Some(&context as *const _ as *const _),
-            )
-        };
-        let inner = context.inner.take().unwrap()?;
-        let handle = result?;
+        });
         let dispatcher = Arc::new(WindowsDispatcher::new(
             main_sender,
             main_thread_wakeup_pending,
-            handle,
-            validation_number,
+            event_loop_proxy.clone(),
         ));
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
 
-        let drop_target_helper: IDropTargetHelper = unsafe {
-            CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER)
-                .context("Error creating drop target helper.")?
-        };
-        let icon = load_icon().unwrap_or_default();
-        let windows_version = WindowsVersion::new().context("Error retrieve windows version")?;
-
-        Ok(Self {
+        (
             inner,
-            handle,
-            raw_window_handles,
-            icon,
+            background_executor,
+            foreground_executor,
+            event_loop_proxy,
+        )
+    }
+
+    pub(crate) fn new_headless() -> Self {
+        let (inner, background_executor, foreground_executor, event_loop_proxy) =
+            Self::new_common_parts();
+        let renderer_backend = RendererBackend::HeadlessTest;
+        let text_system = create_windows_text_system(renderer_backend)
+            .unwrap_or_else(|_| Arc::new(NoopTextSystem) as Arc<dyn PlatformTextSystem>);
+
+        Self {
+            inner,
             background_executor,
             foreground_executor,
             text_system,
+            disable_direct_composition: true,
+            renderer_backend,
+            renderer_options: RendererOptions::with_backend(renderer_backend),
+            event_loop_proxy,
+            ole_initialized: false,
+        }
+    }
+
+    fn resolve_renderer_backend(renderer_options: &RendererOptions) -> Result<RendererBackend> {
+        match renderer_options.backend {
+            RendererBackend::Auto => {
+                resolve_auto_renderer_backend(WINDOWS_AUTO_RENDERER_BACKEND_ORDER, |backend| {
+                    match backend {
+                        RendererBackend::NovaDx12 => dx12_renderer_backend_is_available(),
+                        RendererBackend::NovaVulkan => vulkan_renderer_backend_is_available(),
+                        RendererBackend::Auto
+                        | RendererBackend::NovaMetal
+                        | RendererBackend::HeadlessTest => {
+                            Err(anyhow!("{backend} is not a Windows auto GPU backend"))
+                        }
+                    }
+                })
+            }
+            RendererBackend::NovaVulkan => Ok(RendererBackend::NovaVulkan),
+            RendererBackend::NovaDx12 | RendererBackend::NovaMetal => Ok(RendererBackend::NovaDx12),
+            RendererBackend::HeadlessTest => {
+                Err(anyhow!("headless test is not a Windows GPU backend"))
+            }
+        }
+    }
+
+    pub(crate) fn new(renderer_options: RendererOptions) -> Result<Self> {
+        become_dpi_aware();
+        unsafe {
+            OleInitialize(None).context("unable to initialize Windows OLE")?;
+        }
+        let requested_renderer_backend = renderer_options.backend;
+        let renderer_backend = match requested_renderer_backend {
+            RendererBackend::HeadlessTest => RendererBackend::HeadlessTest,
+            RendererBackend::Auto
+            | RendererBackend::NovaVulkan
+            | RendererBackend::NovaDx12
+            | RendererBackend::NovaMetal => Self::resolve_renderer_backend(&renderer_options)?,
+        };
+        record_renderer_backend(renderer_backend);
+        if matches!(
+            requested_renderer_backend,
+            RendererBackend::Auto
+                | RendererBackend::NovaVulkan
+                | RendererBackend::NovaDx12
+                | RendererBackend::NovaMetal
+        ) {
+            log::info!(
+                "GPUI Windows resolved renderer backend: {}",
+                renderer_backend
+            );
+        }
+        let text_system = create_windows_text_system(renderer_backend)?;
+        let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
+            .is_ok_and(|value| value == "true" || value == "1");
+        let (inner, background_executor, foreground_executor, event_loop_proxy) =
+            Self::new_common_parts();
+
+        if startup_working_set_trim_enabled() {
+            spawn_startup_working_set_trim_task();
+        }
+
+        Ok(Self {
+            inner,
+            background_executor,
+            foreground_executor,
+            text_system,
+            disable_direct_composition,
+            renderer_backend,
             renderer_options,
-            windows_version,
-            drop_target_helper,
+            event_loop_proxy,
+            ole_initialized: true,
         })
-    }
-
-    pub fn window_from_hwnd(&self, hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {
-        self.raw_window_handles
-            .read()
-            .iter()
-            .find(|entry| entry.as_raw() == hwnd)
-            .and_then(|hwnd| window_from_hwnd(hwnd.as_raw()))
-    }
-
-    #[inline]
-    fn post_message(&self, message: u32, wparam: WPARAM, lparam: LPARAM) {
-        self.raw_window_handles
-            .read()
-            .iter()
-            .for_each(|handle| unsafe {
-                PostMessageW(Some(handle.as_raw()), message, wparam, lparam).log_err();
-            });
     }
 
     fn generate_creation_info(&self) -> WindowCreationInfo {
         WindowCreationInfo {
-            icon: self.icon,
             executor: self.foreground_executor.clone(),
-            current_cursor: self.inner.state.borrow().current_cursor,
-            windows_version: self.windows_version,
-            drop_target_helper: self.drop_target_helper.clone(),
-            validation_number: self.inner.validation_number,
-            main_receiver: self.inner.main_receiver.clone(),
-            main_thread_wakeup_pending: self.inner.main_thread_wakeup_pending.clone(),
-            platform_window_handle: self.handle,
+            disable_direct_composition: self.disable_direct_composition,
+            renderer_backend: self.renderer_backend,
             renderer_options: self.renderer_options.clone(),
         }
     }
@@ -234,19 +358,77 @@ impl WindowsPlatform {
             .log_err()
             .unwrap_or_default()
     }
+}
 
-    fn find_current_active_window(&self) -> Option<HWND> {
-        let active_window_hwnd = unsafe { GetActiveWindow() };
-        if active_window_hwnd.is_invalid() {
-            return None;
+fn resolve_auto_renderer_backend(
+    backends: &[RendererBackend],
+    mut backend_available: impl FnMut(RendererBackend) -> Result<()>,
+) -> Result<RendererBackend> {
+    let mut unavailable = Vec::new();
+
+    for backend in backends {
+        match backend_available(*backend) {
+            Ok(()) => return Ok(*backend),
+            Err(error) => {
+                log::warn!("GPUI Windows auto renderer skipped {backend}: {error}");
+                unavailable.push(format!("{backend}: {error}"));
+            }
         }
-        self.raw_window_handles
-            .read()
-            .iter()
-            .find(|hwnd| hwnd.as_raw() == active_window_hwnd)
-            .map(|hwnd| hwnd.as_raw())
     }
 
+    if unavailable.is_empty() {
+        bail!("GPUI Windows auto renderer has no compiled GPU backends");
+    }
+
+    bail!(
+        "GPUI Windows auto renderer found no usable GPU backend; checked {}",
+        unavailable.join("; ")
+    );
+}
+
+fn dx12_renderer_backend_is_available() -> Result<()> {
+    #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
+    {
+        backend_has_adapters(
+            RendererBackend::NovaDx12,
+            gfx_dx12::enumerate_adapter_info(),
+        )
+    }
+
+    #[cfg(not(all(target_os = "windows", feature = "nova-gfx-dx12")))]
+    {
+        bail!("nova-gfx DX12 renderer was not compiled in");
+    }
+}
+
+fn vulkan_renderer_backend_is_available() -> Result<()> {
+    #[cfg(all(target_os = "windows", feature = "nova-gfx-vulkan"))]
+    {
+        backend_has_adapters(
+            RendererBackend::NovaVulkan,
+            gfx_vulkan::enumerate_adapter_info(),
+        )
+    }
+
+    #[cfg(not(all(target_os = "windows", feature = "nova-gfx-vulkan")))]
+    {
+        bail!("nova-gfx Vulkan renderer was not compiled in");
+    }
+}
+
+#[cfg(any(
+    all(target_os = "windows", feature = "nova-gfx-dx12"),
+    all(target_os = "windows", feature = "nova-gfx-vulkan")
+))]
+fn backend_has_adapters(
+    backend: RendererBackend,
+    adapters: std::result::Result<Vec<gfx_core::AdapterInfo>, gfx_core::GfxError>,
+) -> Result<()> {
+    let adapters = adapters?;
+    if adapters.is_empty() {
+        bail!("{backend} enumerated no hardware adapters");
+    }
+    Ok(())
 }
 
 impl Platform for WindowsPlatform {
@@ -283,24 +465,33 @@ impl Platform for WindowsPlatform {
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
-        on_finish_launching();
-
-        let mut msg = MSG::default();
-        unsafe {
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                DispatchMessageW(&msg);
-            }
+        let event_loop = EventLoop::<WindowsUserEvent>::with_user_event()
+            .build()
+            .expect("event loop");
+        {
+            let mut lock = self.event_loop_proxy.lock().unwrap();
+            *lock = Some(event_loop.create_proxy());
         }
-
-        if let Some(ref mut callback) = self.inner.state.borrow_mut().callbacks.quit {
-            callback();
-        }
+        let inner = self.inner.clone();
+        let event_loop_proxy = self.event_loop_proxy.clone();
+        let mut application = WindowsApplication {
+            inner,
+            on_finish_launching: Some(on_finish_launching),
+            event_loop_proxy,
+            windows: FxHashMap::default(),
+            focused_window_id: None,
+            current_modifiers: Modifiers::default(),
+            pressed_button: None,
+            hovered_window_id: None,
+            pending_file_drops: FxHashMap::default(),
+        };
+        let _ = event_loop.run_app(&mut application);
     }
 
     fn quit(&self) {
-        self.foreground_executor()
-            .spawn(async { unsafe { PostQuitMessage(0) } })
-            .detach();
+        if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
+            let _ = proxy.send_event(WindowsUserEvent::Quit);
+        }
     }
 
     fn restart(&self, binary_path: Option<PathBuf>) {
@@ -341,7 +532,9 @@ impl Platform for WindowsPlatform {
         }
     }
 
-    fn activate(&self, _ignoring_other_apps: bool) {}
+    fn activate(&self, _ignoring_other_apps: bool) {
+        let _ = with_active_context(|_event_loop, app| app.activate_window());
+    }
 
     fn hide(&self) {}
 
@@ -356,11 +549,33 @@ impl Platform for WindowsPlatform {
     }
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
-        WindowsDisplay::displays()
+        if self.inner.state.borrow().displays.is_empty() {
+            let _ = with_active_context(|event_loop, app| app.refresh_display_cache(event_loop));
+        }
+
+        self.inner
+            .state
+            .borrow()
+            .displays
+            .iter()
+            .cloned()
+            .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
+            .collect()
     }
 
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        WindowsDisplay::primary_monitor().map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
+        if self.inner.state.borrow().displays.is_empty() {
+            let _ = with_active_context(|event_loop, app| app.refresh_display_cache(event_loop));
+        }
+
+        let state = self.inner.state.borrow();
+        let primary_id = state.primary_display_id?;
+        state
+            .displays
+            .iter()
+            .find(|display| display.id() == primary_id)
+            .cloned()
+            .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
     }
 
     #[cfg(feature = "screen-capture")]
@@ -376,9 +591,7 @@ impl Platform for WindowsPlatform {
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        let active_window_hwnd = unsafe { GetActiveWindow() };
-        self.window_from_hwnd(active_window_hwnd)
-            .map(|inner| inner.handle)
+        self.inner.state.borrow().active_window_handle
     }
 
     fn open_window(
@@ -386,9 +599,17 @@ impl Platform for WindowsPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
-        let handle = window.get_raw_handle();
-        self.raw_window_handles.write().push(handle.into());
+        let creation_info = self.generate_creation_info();
+        let cursor_style = self.inner.state.borrow().cursor_style;
+        let window = with_active_context(|event_loop, app| {
+            let window = WindowsWindow::new(event_loop, handle, options, creation_info)?;
+            let window_id = window.window_id();
+            apply_cursor_style_to_window(window.window(), cursor_style);
+            app.windows.insert(window_id, window.clone());
+            window.window().request_redraw();
+            Ok::<_, anyhow::Error>(window)
+        })
+        .context("winit event loop is not active")??;
 
         Ok(Box::new(window))
     }
@@ -420,7 +641,7 @@ impl Platform for WindowsPlatform {
         options: PathPromptOptions,
     ) -> Receiver<Result<Option<Vec<PathBuf>>>> {
         let (tx, rx) = oneshot::channel();
-        let window = self.find_current_active_window();
+        let window = with_active_context(|_event_loop, app| app.focused_window_hwnd()).flatten();
         self.foreground_executor()
             .spawn(async move {
                 let _ = tx.send(file_open_dialog(options, window));
@@ -438,7 +659,7 @@ impl Platform for WindowsPlatform {
         let directory = directory.to_owned();
         let suggested_name = suggested_name.map(|s| s.to_owned());
         let (tx, rx) = oneshot::channel();
-        let window = self.find_current_active_window();
+        let window = with_active_context(|_event_loop, app| app.focused_window_hwnd()).flatten();
         self.foreground_executor()
             .spawn(async move {
                 let _ = tx.send(file_save_dialog(directory, suggested_name, window));
@@ -493,7 +714,7 @@ impl Platform for WindowsPlatform {
         self.inner.state.borrow_mut().menus = menus.into_iter().map(|menu| menu.owned()).collect();
     }
 
-    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
+    fn menus(&self) -> Option<Vec<OwnedMenu>> {
         Some(self.inner.state.borrow().menus.clone())
     }
 
@@ -527,16 +748,18 @@ impl Platform for WindowsPlatform {
     }
 
     fn set_cursor_style(&self, style: CursorStyle) {
-        let hcursor = load_cursor(style);
         let mut lock = self.inner.state.borrow_mut();
-        if lock.current_cursor.map(|c| c.0) != hcursor.map(|c| c.0) {
-            self.post_message(
-                WM_GPUI_CURSOR_STYLE_CHANGED,
-                WPARAM(0),
-                LPARAM(hcursor.map_or(0, |c| c.0 as isize)),
-            );
-            lock.current_cursor = hcursor;
+        if lock.cursor_style == style {
+            return;
         }
+        lock.cursor_style = style;
+        drop(lock);
+
+        let _ = with_active_context(|_event_loop, app| {
+            for window in app.windows.values() {
+                apply_cursor_style_to_window(window.window(), style);
+            }
+        });
     }
 
     fn should_auto_hide_scrollbars(&self) -> bool {
@@ -630,14 +853,10 @@ impl Platform for WindowsPlatform {
     }
 
     fn perform_dock_menu_action(&self, action: usize) {
-        unsafe {
-            PostMessageW(
-                Some(self.handle),
-                WM_GPUI_DOCK_MENU_ACTION,
-                WPARAM(self.inner.validation_number),
-                LPARAM(action as isize),
-            )
-            .log_err();
+        if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
+            proxy
+                .send_event(WindowsUserEvent::DockMenuAction(action))
+                .log_err();
         }
     }
 
@@ -651,90 +870,17 @@ impl Platform for WindowsPlatform {
 }
 
 impl WindowsPlatformInner {
-    fn new(context: &mut PlatformWindowCreateContext) -> Result<Rc<Self>> {
-        let state = RefCell::new(WindowsPlatformState::new());
-        Ok(Rc::new(Self {
-            state,
-            raw_window_handles: context.raw_window_handles.clone(),
-            validation_number: context.validation_number,
-            main_receiver: context.main_receiver.take().unwrap(),
-            main_thread_wakeup_pending: context.main_thread_wakeup_pending.clone(),
-        }))
-    }
-
-    fn handle_msg(
-        self: &Rc<Self>,
-        handle: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        let handled = match msg {
-            WM_GPUI_CLOSE_ONE_WINDOW
-            | WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD
-            | WM_GPUI_DOCK_MENU_ACTION
-            | WM_GPUI_KEYBOARD_LAYOUT_CHANGED
-            | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(msg, wparam, lparam),
-            _ => None,
-        };
-        if let Some(result) = handled {
-            LRESULT(result)
-        } else {
-            unsafe { DefWindowProcW(handle, msg, wparam, lparam) }
-        }
-    }
-
-    fn handle_gpui_events(&self, message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
-        if wparam.0 != self.validation_number {
-            log::error!("Wrong validation number while processing message: {message}");
-            return None;
-        }
-        match message {
-            WM_GPUI_CLOSE_ONE_WINDOW => {
-                if self.close_one_window(HWND(lparam.0 as _)) {
-                    unsafe { PostQuitMessage(0) };
-                }
-                Some(0)
-            }
-            WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD => self.run_foreground_task(),
-            WM_GPUI_DOCK_MENU_ACTION => self.handle_dock_action_event(lparam.0 as _),
-            WM_GPUI_KEYBOARD_LAYOUT_CHANGED => self.handle_keyboard_layout_change(),
-            WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
-            _ => unreachable!(),
-        }
-    }
-
-    fn close_one_window(&self, target_window: HWND) -> bool {
-        let Some(all_windows) = self.raw_window_handles.upgrade() else {
-            log::error!("Failed to upgrade raw window handles");
-            return false;
-        };
-        let mut lock = all_windows.write();
-        let index = lock
-            .iter()
-            .position(|handle| handle.as_raw() == target_window)
-            .unwrap();
-        lock.remove(index);
-
-        lock.is_empty()
-    }
-
     #[inline]
-    fn run_foreground_task(&self) -> Option<isize> {
-        loop {
-            self.main_thread_wakeup_pending
-                .store(false, Ordering::Release);
-            while let Ok(runnable) = self.main_receiver.try_recv() {
-                runnable.run();
-            }
-            if self.main_receiver.is_empty() {
-                break;
-            }
-        }
-        Some(0)
+    fn run_foreground_tasks(&self) -> bool {
+        self.main_thread_wakeup_pending
+            .store(false, Ordering::Release);
+        drain_foreground_tasks(
+            || self.main_receiver.try_recv().ok(),
+            || !self.main_receiver.is_empty(),
+        )
     }
 
-    fn handle_dock_action_event(&self, action_idx: usize) -> Option<isize> {
+    pub(crate) fn handle_dock_action_event(&self, action_idx: usize) -> Option<isize> {
         let mut lock = self.state.borrow_mut();
         let mut callback = lock.callbacks.app_menu_action.take()?;
         let Some(action) = lock
@@ -752,60 +898,556 @@ impl WindowsPlatformInner {
         self.state.borrow_mut().callbacks.app_menu_action = Some(callback);
         Some(0)
     }
+}
 
-    fn handle_keyboard_layout_change(&self) -> Option<isize> {
-        let mut callback = self
-            .state
-            .borrow_mut()
-            .callbacks
-            .keyboard_layout_change
-            .take()?;
-        callback();
-        self.state.borrow_mut().callbacks.keyboard_layout_change = Some(callback);
-        Some(0)
+struct WindowsApplication {
+    inner: Rc<WindowsPlatformInner>,
+    on_finish_launching: Option<Box<dyn FnOnce()>>,
+    event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+    windows: FxHashMap<winit::window::WindowId, WindowsWindow>,
+    focused_window_id: Option<winit::window::WindowId>,
+    current_modifiers: Modifiers,
+    pressed_button: Option<MouseButton>,
+    hovered_window_id: Option<winit::window::WindowId>,
+    pending_file_drops: FxHashMap<winit::window::WindowId, PendingFileDrop>,
+}
+
+impl WindowsApplication {
+    fn run_foreground_tasks(&self) {
+        if self.inner.run_foreground_tasks() {
+            self.request_main_thread_task_wakeup();
+        }
     }
 
-    fn handle_device_lost(&self, lparam: LPARAM) -> Option<isize> {
-        let _ = lparam;
-        Some(0)
+    fn request_main_thread_task_wakeup(&self) {
+        if !self
+            .inner
+            .main_thread_wakeup_pending
+            .swap(true, Ordering::AcqRel)
+        {
+            let event_loop_proxy = self.event_loop_proxy.lock().unwrap().clone();
+            if let Some(event_loop_proxy) = event_loop_proxy {
+                if let Err(error) =
+                    event_loop_proxy.send_event(WindowsUserEvent::RunMainThreadTasks)
+                {
+                    self.inner
+                        .main_thread_wakeup_pending
+                        .store(false, Ordering::Release);
+                    log::error!(
+                        "WindowsApplication::request_main_thread_task_wakeup send failed: {:?}",
+                        error
+                    );
+                }
+            } else {
+                self.inner
+                    .main_thread_wakeup_pending
+                    .store(false, Ordering::Release);
+                log::warn!(
+                    "WindowsApplication::request_main_thread_task_wakeup dropped wakeup before event loop initialization"
+                );
+            }
+        }
+    }
+
+    fn sync_window_size(
+        window: &WindowsWindow,
+        physical_size: winit::dpi::PhysicalSize<u32>,
+        scale_factor: f32,
+    ) -> Option<(Size<Pixels>, f32)> {
+        if physical_size.width == 0 || physical_size.height == 0 {
+            return None;
+        }
+
+        let logical_size = Size {
+            width: Pixels(physical_size.width as f32 / scale_factor),
+            height: Pixels(physical_size.height as f32 / scale_factor),
+        };
+        // Keep resize callbacks responsive; the renderer applies the latest size
+        // from the frame path where repeated Windows resize events are coalesced.
+        window.queue_renderer_resize(Size {
+            width: DevicePixels(physical_size.width as i32),
+            height: DevicePixels(physical_size.height as i32),
+        });
+        if let Ok(state) = window.try_borrow_state() {
+            state.logical_size.set(logical_size);
+            state.scale_factor.set(scale_factor);
+        } else {
+            log::warn!("window state is already borrowed while synchronizing Windows size");
+        }
+
+        Some((logical_size, scale_factor))
+    }
+
+    fn refresh_display_cache(&mut self, event_loop: &ActiveEventLoop) {
+        let displays: Vec<WindowsDisplay> = event_loop
+            .available_monitors()
+            .enumerate()
+            .map(|(index, monitor)| {
+                WindowsDisplay::from_monitor_handle(DisplayId(index as u32), &monitor)
+            })
+            .collect();
+        let primary_display_id = event_loop.primary_monitor().and_then(|primary_monitor| {
+            displays
+                .iter()
+                .find(|display| display.matches_monitor(&primary_monitor))
+                .map(PlatformDisplay::id)
+        });
+
+        let mut state = self.inner.state.borrow_mut();
+        state.displays = displays;
+        state.primary_display_id = primary_display_id;
+    }
+
+    fn sync_active_window_handle(&mut self) {
+        let active_window_handle = self
+            .focused_window_id
+            .and_then(|window_id| self.windows.get(&window_id))
+            .map(|window| window.0.handle);
+        self.inner.state.borrow_mut().active_window_handle = active_window_handle;
+    }
+
+    fn activate_window(&mut self) {
+        let window = self
+            .focused_window_id
+            .and_then(|window_id| self.windows.get(&window_id))
+            .or_else(|| self.windows.values().next())
+            .cloned();
+
+        if let Some(window) = window {
+            window.activate();
+        }
+    }
+
+    fn focused_window_hwnd(&self) -> Option<HWND> {
+        self.focused_window_id
+            .and_then(|window_id| self.windows.get(&window_id))
+            .and_then(WindowsWindow::native_hwnd)
+    }
+}
+
+impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
+        });
+        self.refresh_display_cache(event_loop);
+        if let Some(on_finish_launching) = self.on_finish_launching.take() {
+            on_finish_launching();
+        }
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = None;
+        });
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: WindowsUserEvent) {
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
+        });
+        match event {
+            WindowsUserEvent::RunMainThreadTasks => {
+                self.run_foreground_tasks();
+            }
+            WindowsUserEvent::DockMenuAction(action_index) => {
+                self.inner.handle_dock_action_event(action_index);
+            }
+            WindowsUserEvent::Quit => event_loop.exit(),
+        }
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = None;
+        });
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
+        });
+        if self
+            .inner
+            .main_thread_wakeup_pending
+            .load(Ordering::Acquire)
+        {
+            self.run_foreground_tasks();
+        }
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = None;
+        });
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
+        });
+        let Some(window) = self.windows.get(&window_id) else {
+            ACTIVE_CONTEXT.with(|storage| {
+                *storage.borrow_mut() = None;
+            });
+            return;
+        };
+        let window = window.clone();
+
+        match event {
+            winit::event::WindowEvent::Resized(physical_size) => {
+                let scale_factor = window.scale_factor();
+                if let Some((logical_size, scale_factor)) =
+                    Self::sync_window_size(&window, physical_size, scale_factor)
+                {
+                    window.invoke_resize(logical_size, scale_factor);
+                    window.0.request_frame(RequestFrameOptions::from_refresh());
+                }
+                self.refresh_display_cache(event_loop);
+            }
+            winit::event::WindowEvent::Moved(_) => {
+                self.refresh_display_cache(event_loop);
+                let callback = window.0.state.borrow_mut().callbacks.moved.take();
+                if let Some(mut callback) = callback {
+                    callback();
+                    window.0.state.borrow_mut().callbacks.moved = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::Focused(active) => {
+                if active {
+                    self.focused_window_id = Some(window_id);
+                    window.0.request_frame(RequestFrameOptions::from_refresh());
+                } else if self.focused_window_id == Some(window_id) {
+                    self.focused_window_id = None;
+                }
+                self.sync_active_window_handle();
+                window.invoke_active_status_change(active);
+            }
+            winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let physical_size = window.window().inner_size();
+                if let Some((logical_size, scale_factor)) =
+                    Self::sync_window_size(&window, physical_size, scale_factor as f32)
+                {
+                    self.refresh_display_cache(event_loop);
+                    window.invoke_resize(logical_size, scale_factor);
+                    window.0.request_frame(RequestFrameOptions::from_refresh());
+                } else {
+                    self.refresh_display_cache(event_loop);
+                }
+            }
+            winit::event::WindowEvent::ThemeChanged(_) => {
+                let callback = window
+                    .0
+                    .state
+                    .borrow_mut()
+                    .callbacks
+                    .appearance_changed
+                    .take();
+                if let Some(mut callback) = callback {
+                    callback();
+                    window.0.state.borrow_mut().callbacks.appearance_changed = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::CloseRequested => {
+                let should_close = window.should_close().unwrap_or(true);
+                if should_close {
+                    window.invoke_close();
+                    if self.hovered_window_id == Some(window_id) {
+                        self.hovered_window_id = None;
+                    }
+                    if self.focused_window_id == Some(window_id) {
+                        self.focused_window_id = None;
+                    }
+                    self.windows.remove(&window_id);
+                    self.sync_active_window_handle();
+                    if self.windows.is_empty() {
+                        event_loop.exit();
+                    }
+                }
+            }
+            winit::event::WindowEvent::RedrawRequested => {
+                window.invoke_request_frame(window.take_pending_frame_request());
+            }
+            winit::event::WindowEvent::CursorEntered { .. } => {
+                self.hovered_window_id = Some(window_id);
+                let mut state = window.0.state.borrow_mut();
+                if !state.hovered.get() {
+                    state.hovered.set(true);
+                    let callback = state.callbacks.hovered_status_change.take();
+                    drop(state);
+                    if let Some(mut callback) = callback {
+                        callback(true);
+                        window.0.state.borrow_mut().callbacks.hovered_status_change =
+                            Some(callback);
+                    }
+                }
+            }
+            winit::event::WindowEvent::CursorMoved { position, .. } => {
+                self.hovered_window_id = Some(window_id);
+                let scale_factor = window.scale_factor();
+                let position = point(
+                    Pixels(position.x as f32 / scale_factor),
+                    Pixels(position.y as f32 / scale_factor),
+                );
+                let mut state = window.0.state.borrow_mut();
+                state.mouse_position.set(position);
+                let hovered_callback = if !state.hovered.get() {
+                    state.hovered.set(true);
+                    state.callbacks.hovered_status_change.take()
+                } else {
+                    None
+                };
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = hovered_callback {
+                    callback(true);
+                    window.0.state.borrow_mut().callbacks.hovered_status_change = Some(callback);
+                }
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: self.pressed_button,
+                        modifiers: self.current_modifiers,
+                    }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::CursorLeft { .. } => {
+                if self.hovered_window_id == Some(window_id) {
+                    self.hovered_window_id = None;
+                }
+                let mut state = window.0.state.borrow_mut();
+                state.hovered.set(false);
+                let position = state.mouse_position.get();
+                let pressed_button = self.pressed_button;
+                let modifiers = self.current_modifiers;
+                let hovered_callback = state.callbacks.hovered_status_change.take();
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = hovered_callback {
+                    callback(false);
+                    window.0.state.borrow_mut().callbacks.hovered_status_change = Some(callback);
+                }
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::MouseExited(MouseExitEvent {
+                        position,
+                        pressed_button,
+                        modifiers,
+                    }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::HoveredFile(path) => {
+                let position = window.0.state.borrow().mouse_position.get();
+                let entry = self.pending_file_drops.entry(window_id).or_default();
+                entry.paths.push(path);
+                let paths = ExternalPaths(entry.paths.clone());
+                let mut state = window.0.state.borrow_mut();
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::FileDrop(FileDropEvent::Entered {
+                        position,
+                        paths,
+                    }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::DroppedFile(path) => {
+                let position = window.0.state.borrow().mouse_position.get();
+                let entry = self.pending_file_drops.entry(window_id).or_default();
+                if !entry.paths.iter().any(|existing| existing == &path) {
+                    entry.paths.push(path.clone());
+                }
+                let paths = ExternalPaths(entry.paths.clone());
+                self.pending_file_drops.remove(&window_id);
+                let mut state = window.0.state.borrow_mut();
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::FileDrop(FileDropEvent::Entered {
+                        position,
+                        paths,
+                    }));
+                    let _ = callback(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::HoveredFileCancelled => {
+                self.pending_file_drops.remove(&window_id);
+                let mut state = window.0.state.borrow_mut();
+                let position = state.mouse_position.get();
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::FileDrop(FileDropEvent::Exited));
+                    let _ = callback(PlatformInput::FileDrop(FileDropEvent::Pending { position }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(button) = mouse_button_from_winit(button) {
+                    let mut window_state = window.0.state.borrow_mut();
+                    let position = window_state.mouse_position.get();
+                    let modifiers = self.current_modifiers;
+                    let scale_factor = window_state.scale_factor.get();
+                    let input_callback = window_state.callbacks.input.take();
+                    match state {
+                        winit::event::ElementState::Pressed => {
+                            self.pressed_button = Some(button);
+                            let click_count = window_state.click_state.borrow_mut().update(
+                                button,
+                                point(
+                                    DevicePixels((position.x.0 * scale_factor) as i32),
+                                    DevicePixels((position.y.0 * scale_factor) as i32),
+                                ),
+                            );
+                            drop(window_state);
+                            if let Some(mut callback) = input_callback {
+                                let _ = callback(PlatformInput::MouseDown(MouseDownEvent {
+                                    button,
+                                    position,
+                                    modifiers,
+                                    click_count,
+                                    first_mouse: false,
+                                }));
+                                window.0.state.borrow_mut().callbacks.input = Some(callback);
+                            }
+                        }
+                        winit::event::ElementState::Released => {
+                            self.pressed_button = None;
+                            let click_count = window_state.click_state.borrow().current_count;
+                            drop(window_state);
+                            if let Some(mut callback) = input_callback {
+                                let _ = callback(PlatformInput::MouseUp(MouseUpEvent {
+                                    button,
+                                    position,
+                                    modifiers,
+                                    click_count,
+                                }));
+                                window.0.state.borrow_mut().callbacks.input = Some(callback);
+                            }
+                        }
+                    }
+                }
+            }
+            winit::event::WindowEvent::MouseWheel { delta, phase, .. } => {
+                let mut state = window.0.state.borrow_mut();
+                let position = state.mouse_position.get();
+                let delta = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        ScrollDelta::Lines(point(x, y))
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pixel) => {
+                        let scale_factor = window.scale_factor();
+                        ScrollDelta::Pixels(point(
+                            Pixels(pixel.x as f32 / scale_factor),
+                            Pixels(pixel.y as f32 / scale_factor),
+                        ))
+                    }
+                };
+                let touch_phase = match phase {
+                    winit::event::TouchPhase::Started => TouchPhase::Started,
+                    winit::event::TouchPhase::Moved => TouchPhase::Moved,
+                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                        TouchPhase::Ended
+                    }
+                };
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        position,
+                        delta,
+                        modifiers: self.current_modifiers,
+                        touch_phase,
+                    }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::ModifiersChanged(new_modifiers) => {
+                let modifiers = modifiers_from_winit(new_modifiers.state());
+                self.current_modifiers = modifiers;
+                let mut state = window.0.state.borrow_mut();
+                state.modifiers.set(modifiers);
+                let capslock = state.capslock.get();
+                let input_callback = state.callbacks.input.take();
+                drop(state);
+                if let Some(mut callback) = input_callback {
+                    let _ = callback(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                        modifiers,
+                        capslock,
+                    }));
+                    window.0.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+            winit::event::WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state,
+                        text,
+                        repeat,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(keystroke) =
+                    keystroke_from_winit(&logical_key, self.current_modifiers, &text)
+                {
+                    let mut state_ref = window.0.state.borrow_mut();
+                    let input_callback = state_ref.callbacks.input.take();
+                    drop(state_ref);
+                    if let Some(mut callback) = input_callback {
+                        let input = match state {
+                            winit::event::ElementState::Pressed => {
+                                PlatformInput::KeyDown(KeyDownEvent {
+                                    keystroke,
+                                    is_held: repeat,
+                                })
+                            }
+                            winit::event::ElementState::Released => {
+                                PlatformInput::KeyUp(KeyUpEvent { keystroke })
+                            }
+                        };
+                        let _ = callback(input);
+                        window.0.state.borrow_mut().callbacks.input = Some(callback);
+                    }
+                }
+            }
+            _ => {}
+        }
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = None;
+        });
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(ref mut callback) = self.inner.state.borrow_mut().callbacks.quit {
+            callback();
+        }
+        *self.event_loop_proxy.lock().unwrap() = None;
+        ACTIVE_CONTEXT.with(|storage| {
+            *storage.borrow_mut() = None;
+        });
     }
 }
 
 impl Drop for WindowsPlatform {
     fn drop(&mut self) {
-        unsafe {
-            DestroyWindow(self.handle)
-                .context("Destroying platform window")
-                .log_err();
-            OleUninitialize();
+        if self.ole_initialized {
+            unsafe {
+                OleUninitialize();
+            }
         }
     }
 }
 
 impl Drop for WindowsPlatformState {
-    fn drop(&mut self) {
-    }
+    fn drop(&mut self) {}
 }
 
 pub(crate) struct WindowCreationInfo {
-    pub(crate) icon: HICON,
     pub(crate) executor: ForegroundExecutor,
-    pub(crate) current_cursor: Option<HCURSOR>,
-    pub(crate) windows_version: WindowsVersion,
-    pub(crate) drop_target_helper: IDropTargetHelper,
-    pub(crate) validation_number: usize,
-    pub(crate) main_receiver: flume::Receiver<Runnable>,
-    pub(crate) main_thread_wakeup_pending: Arc<AtomicBool>,
-    pub(crate) platform_window_handle: HWND,
+    pub(crate) disable_direct_composition: bool,
+    pub(crate) renderer_backend: RendererBackend,
     pub(crate) renderer_options: RendererOptions,
-}
-
-struct PlatformWindowCreateContext {
-    inner: Option<Result<Rc<WindowsPlatformInner>>>,
-    raw_window_handles: std::sync::Weak<RwLock<SmallVec<[SafeHwnd; 4]>>>,
-    validation_number: usize,
-    main_receiver: Option<flume::Receiver<Runnable>>,
-    main_thread_wakeup_pending: Arc<AtomicBool>,
 }
 
 fn open_target(target: impl AsRef<OsStr>) -> Result<()> {
@@ -969,86 +1611,16 @@ fn file_save_dialog(
     Ok(Some(PathBuf::from(file_path_string)))
 }
 
-fn load_icon() -> Result<HICON> {
-    let module = unsafe { GetModuleHandleW(None).context("unable to get module handle")? };
-    let handle = unsafe {
-        LoadImageW(
-            Some(module.into()),
-            windows::core::PCWSTR(1 as _),
-            IMAGE_ICON,
-            0,
-            0,
-            LR_DEFAULTSIZE | LR_SHARED,
-        )
-        .context("unable to load icon file")?
-    };
-    Ok(HICON(handle.0))
-}
-
 #[inline]
 fn should_auto_hide_scrollbars() -> Result<bool> {
     let ui_settings = UISettings::new()?;
     Ok(ui_settings.AutoHideScrollBars()?)
 }
 
-const PLATFORM_WINDOW_CLASS_NAME: PCWSTR = w!("Zed::PlatformWindow");
-
-fn register_platform_window_class() {
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(window_procedure),
-        lpszClassName: PCWSTR(PLATFORM_WINDOW_CLASS_NAME.as_ptr()),
-        ..Default::default()
-    };
-    unsafe { RegisterClassW(&wc) };
-}
-
-unsafe extern "system" fn window_procedure(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if msg == WM_NCCREATE {
-        let params = lparam.0 as *const CREATESTRUCTW;
-        let params = unsafe { &*params };
-        let creation_context = params.lpCreateParams as *mut PlatformWindowCreateContext;
-        let creation_context = unsafe { &mut *creation_context };
-        return match WindowsPlatformInner::new(creation_context) {
-            Ok(inner) => {
-                let weak = Box::new(Rc::downgrade(&inner));
-                unsafe { set_window_long(hwnd, GWLP_USERDATA, Box::into_raw(weak) as isize) };
-                creation_context.inner = Some(Ok(inner));
-                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-            }
-            Err(error) => {
-                creation_context.inner = Some(Err(error));
-                LRESULT(0)
-            }
-        };
-    }
-
-    let ptr = unsafe { get_window_long(hwnd, GWLP_USERDATA) } as *mut Weak<WindowsPlatformInner>;
-    if ptr.is_null() {
-        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
-    }
-    let inner = unsafe { &*ptr };
-    let result = if let Some(inner) = inner.upgrade() {
-        inner.handle_msg(hwnd, msg, wparam, lparam)
-    } else {
-        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-    };
-
-    if msg == WM_NCDESTROY {
-        unsafe { set_window_long(hwnd, GWLP_USERDATA, 0) };
-        unsafe { drop(Box::from_raw(ptr)) };
-    }
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::{ClipboardItem, read_from_clipboard, write_to_clipboard};
+    use super::WINDOWS_AUTO_RENDERER_BACKEND_ORDER;
+    use crate::{ClipboardItem, RendererBackend, read_from_clipboard, write_to_clipboard};
 
     #[test]
     fn test_clipboard() {
@@ -1063,5 +1635,80 @@ mod tests {
         let item = ClipboardItem::new_string_with_json_metadata("abcdef".to_string(), vec![3, 4]);
         write_to_clipboard(item.clone());
         assert_eq!(read_from_clipboard(), Some(item));
+    }
+
+    #[test]
+    fn windows_renderer_backends_remain_nova_only() {
+        assert_eq!(
+            "nova-vulkan".parse::<RendererBackend>().unwrap(),
+            RendererBackend::NovaVulkan
+        );
+        assert_eq!(
+            "nova-dx12".parse::<RendererBackend>().unwrap(),
+            RendererBackend::NovaDx12
+        );
+    }
+
+    #[test]
+    fn windows_auto_renderer_prefers_dx12_before_vulkan() {
+        #[cfg(not(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan")))]
+        assert_eq!(
+            WINDOWS_AUTO_RENDERER_BACKEND_ORDER,
+            &[RendererBackend::NovaDx12]
+        );
+
+        #[cfg(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan"))]
+        assert_eq!(
+            WINDOWS_AUTO_RENDERER_BACKEND_ORDER,
+            &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan]
+        );
+    }
+
+    #[test]
+    fn windows_auto_renderer_skips_unavailable_backend() {
+        let resolved = super::resolve_auto_renderer_backend(
+            &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan],
+            |backend| match backend {
+                RendererBackend::NovaDx12 => Err(anyhow::anyhow!("DX12 driver unavailable")),
+                RendererBackend::NovaVulkan => Ok(()),
+                RendererBackend::Auto
+                | RendererBackend::NovaMetal
+                | RendererBackend::HeadlessTest => Err(anyhow::anyhow!("unexpected backend")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved, RendererBackend::NovaVulkan);
+    }
+
+    #[test]
+    fn windows_auto_renderer_reports_all_unavailable_backends() {
+        let error = super::resolve_auto_renderer_backend(
+            &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan],
+            |backend| Err(anyhow::anyhow!("{backend} unavailable")),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("nova-dx12"));
+        assert!(error.contains("nova-vulkan"));
+    }
+
+    #[test]
+    fn windows_auto_renderer_reports_empty_backend_list() {
+        let error = super::resolve_auto_renderer_backend(&[], |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("no compiled GPU backends"));
+    }
+
+    #[test]
+    fn windows_headless_platform_skips_gpu_initialization() {
+        let platform = super::WindowsPlatform::new_headless();
+
+        assert_eq!(platform.renderer_backend, RendererBackend::HeadlessTest);
+        assert!(!platform.ole_initialized);
+        assert!(platform.disable_direct_composition);
     }
 }

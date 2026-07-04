@@ -1,4 +1,4 @@
-use crate::ui::animation::request_animation_frame_if;
+use crate::ui::animation::{ease_out_cubic, request_animation_frame_if};
 use crate::ui::components::modal;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
@@ -162,6 +162,62 @@ impl DownloadPageView {
             cx.notify();
         }));
 
+        let page_jump_input =
+            cx.read_global(|state: &DownloadPageState, _cx| state.page_jump_input.clone());
+        if let Some(input) = page_jump_input {
+            let sub = cx.subscribe(
+                &input,
+                |this, input, ev: &crate::ui::components::input::InputEvent, cx| {
+                    if matches!(
+                        ev,
+                        crate::ui::components::input::InputEvent::PressEnter { .. }
+                    ) {
+                        let raw = input.read(cx).value().to_string();
+                        cx.update_global(|s: &mut DownloadPageState, cx| match s.tab {
+                            DownloadTab::Game => {
+                                let total_pages =
+                                    (s.versions.len() + s.page_size - 1) / s.page_size;
+                                if total_pages > 0 {
+                                    let parsed = raw.trim().parse::<usize>().ok();
+                                    if let Some(n) = parsed {
+                                        let target = n.clamp(1, total_pages);
+                                        s.page_index = target.saturating_sub(1);
+                                        s.game_rows_scroll.set_offset(point(px(0.), px(0.)));
+                                    }
+                                }
+                            }
+                            DownloadTab::ResourcePack => {
+                                let page_size = s.curseforge_page_size.max(1) as usize;
+                                let total_count = s.curseforge_total_count.unwrap_or(0) as usize;
+                                let total_pages = (total_count + page_size - 1) / page_size;
+                                if total_pages > 0 {
+                                    let parsed = raw.trim().parse::<usize>().ok();
+                                    if let Some(n) = parsed {
+                                        let target = n.clamp(1, total_pages);
+                                        let target_page = target.saturating_sub(1);
+                                        s.curseforge_page_index = target_page;
+                                        s.curseforge_page_commit_task.take();
+                                        s.curseforge_pending_page_index = None;
+                                        curseforge::begin_page_results_transition_in_state(s, cx);
+                                        curseforge::ensure_results_loaded_after_page_transition(
+                                            false,
+                                            target_page,
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
+                            DownloadTab::Mod => {}
+                        });
+                        let _ = input.update(cx, |st, cx| {
+                            st.set_text(SharedString::from(""), cx);
+                        });
+                    }
+                },
+            );
+            subscriptions.push(sub);
+        }
+
         let game_panel_view = if last_observed_tab == DownloadTab::Game {
             Some(cx.new(game::DownloadGamePanelView::new))
         } else {
@@ -218,7 +274,7 @@ impl Render for DownloadPageView {
             theme.factor(now),
             theme.accent,
         );
-        let window_size = window.window_bounds().get_bounds().size;
+        let window_size = window.bounds().size;
         let active_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
         let game_panel_view = if active_tab == DownloadTab::Game {
             Some(self.ensure_game_panel_view(cx))
@@ -262,15 +318,32 @@ pub fn render_download_page(
     curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
 ) -> impl IntoElement {
-    let (active_tab, tab_t, tab_animating) = cx.read_global(|state: &DownloadPageState, _cx| {
-        let (tab_t, tab_animating) = state.tab_anim_factor(now);
-        (state.tab, tab_t, tab_animating)
-    });
-    let tab_t = (1.0 - (1.0 - tab_t).powi(3)).clamp(0.0, 1.0);
+    let (active_tab, tab_t, tab_animating, tab_from) =
+        cx.read_global(|state: &DownloadPageState, _cx| {
+            let (tab_t, tab_animating) = state.tab_anim_factor(now);
+            (state.tab, tab_t, tab_animating, state.tab_anim_from)
+        });
+    let tab_t_eased = {
+        let tc = tab_t.clamp(0.0, 1.0);
+        let p = tc - 1.0;
+        (1.0 + 1.35 * p.powi(3) + 0.35 * p.powi(2)).clamp(0.0, 1.05)
+    };
     let content_opacity = if tab_animating {
-        0.92 + 0.08 * tab_t
+        0.88 + 0.12 * tab_t_eased.clamp(0.0, 1.0)
     } else {
         1.0
+    };
+    // Slide direction: new tab content slides in from the right if moving forward, left if backward
+    let tab_idx = |t: DownloadTab| match t {
+        DownloadTab::Game => 0i32,
+        DownloadTab::ResourcePack => 1i32,
+        DownloadTab::Mod => 2i32,
+    };
+    let slide_direction = (tab_idx(active_tab) - tab_idx(tab_from)).signum() as f32;
+    let slide_offset_px = if tab_animating {
+        slide_direction * 24.0 * (1.0 - tab_t_eased)
+    } else {
+        0.0
     };
 
     // Mirror `.upstream_bmbl_1/src/components/UnifiedPageLayout/*`:
@@ -301,14 +374,14 @@ pub fn render_download_page(
 
     let unified_panel = div()
         .size_full()
-        .rounded(px(20.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.40,
+            a: 0.15,
             ..colors.border
         })
         .bg(Hsla {
-            a: 0.65,
+            a: 0.95,
             ..colors.surface
         })
         .overflow_hidden()
@@ -321,6 +394,8 @@ pub fn render_download_page(
                 .min_h(px(0.))
                 .min_w(px(0.))
                 .opacity(content_opacity)
+                .relative()
+                .left(px(slide_offset_px))
                 .flex()
                 .flex_col()
                 .child(body),

@@ -18,9 +18,9 @@ pub trait PlatformKeyboardMapper {
         keystroke: Keystroke,
         use_key_equivalents: bool,
     ) -> KeybindingKeystroke;
-    /// Get the key equivalents for the current keyboard layout,
-    /// only used on macOS
-    fn get_key_equivalents(&self) -> Option<&HashMap<char, char>>;
+    /// Returns the key equivalents for the current keyboard layout.
+    /// Only used on macOS.
+    fn key_equivalents(&self) -> Option<&HashMap<char, char>>;
 }
 
 /// A dummy implementation of the platform keyboard mapper
@@ -35,7 +35,7 @@ impl PlatformKeyboardMapper for DummyKeyboardMapper {
         KeybindingKeystroke::from_keystroke(keystroke)
     }
 
-    fn get_key_equivalents(&self) -> Option<&HashMap<char, char>> {
+    fn key_equivalents(&self) -> Option<&HashMap<char, char>> {
         None
     }
 }

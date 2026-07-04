@@ -229,3 +229,62 @@ impl Deref for PromptBuilder {
         }
     }
 }
+
+impl Window {
+    /// Present a platform dialog.
+    /// The provided message will be presented, along with buttons for each answer.
+    /// When a button is clicked, the returned Receiver will receive the index of the clicked button.
+    pub fn prompt<T>(
+        &mut self,
+        level: PromptLevel,
+        message: &str,
+        detail: Option<&str>,
+        answers: &[T],
+        cx: &mut App,
+    ) -> oneshot::Receiver<usize>
+    where
+        T: Clone + Into<PromptButton>,
+    {
+        let prompt_builder = cx.prompt_builder.take();
+        let Some(prompt_builder) = prompt_builder else {
+            unreachable!("Re-entrant window prompting is not supported by GPUI");
+        };
+
+        let answers = answers
+            .iter()
+            .map(|answer| answer.clone().into())
+            .collect::<Vec<_>>();
+
+        let receiver = match &prompt_builder {
+            PromptBuilder::Default => self
+                .platform_window
+                .prompt(level, message, detail, &answers)
+                .unwrap_or_else(|| {
+                    self.build_custom_prompt(&prompt_builder, level, message, detail, &answers, cx)
+                }),
+            PromptBuilder::Custom(_) => {
+                self.build_custom_prompt(&prompt_builder, level, message, detail, &answers, cx)
+            }
+        };
+
+        cx.prompt_builder = Some(prompt_builder);
+
+        receiver
+    }
+
+    fn build_custom_prompt(
+        &mut self,
+        prompt_builder: &PromptBuilder,
+        level: PromptLevel,
+        message: &str,
+        detail: Option<&str>,
+        answers: &[PromptButton],
+        cx: &mut App,
+    ) -> oneshot::Receiver<usize> {
+        let (sender, receiver) = oneshot::channel();
+        let handle = PromptHandle::new(sender);
+        let handle = (prompt_builder)(level, message, detail, answers, handle, self, cx);
+        self.prompt = Some(handle);
+        receiver
+    }
+}

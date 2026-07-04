@@ -5,7 +5,7 @@ use super::{BladeAtlas, BladeContext};
 use crate::{
     Background, Bounds, ColorGlyphLayer, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point,
     PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline,
-    performance_metrics::{record_backdrop_blur_primitive_count, record_draw_time},
+    diagnostics::performance_metrics::{record_backdrop_blur_primitive_count, record_draw_time},
 };
 use anyhow::{Context as _, Result};
 use blade_graphics as gpu;
@@ -417,7 +417,9 @@ pub struct BladeRenderer {
 }
 
 impl BladeRenderer {
-    pub fn new<I: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle>(
+    pub fn new<
+        I: ::winit::raw_window_handle::HasWindowHandle + ::winit::raw_window_handle::HasDisplayHandle,
+    >(
         context: &BladeContext,
         window: &I,
         config: BladeSurfaceConfig,
@@ -537,14 +539,14 @@ impl BladeRenderer {
         self.update_drawable_size_impl(size, true);
     }
 
-    fn update_drawable_size_impl(&mut self, size: Size<DevicePixels>, always_resize: bool) {
+    fn update_drawable_size_impl(&mut self, size: Size<DevicePixels>, force_resize: bool) {
         let gpu_size = gpu::Extent {
             width: size.width.0 as u32,
             height: size.height.0 as u32,
             depth: 1,
         };
 
-        if always_resize || gpu_size != self.surface_config.size {
+        if force_resize || gpu_size != self.surface_config.size {
             self.wait_for_gpu();
             self.surface_config.size = gpu_size;
             self.gpu
@@ -554,12 +556,12 @@ impl BladeRenderer {
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
-    pub fn update_transparency(&mut self, transparent: bool) {
-        if transparent != self.surface_config.transparent {
+    pub fn update_transparency(&mut self, is_transparent: bool) {
+        if is_transparent != self.surface_config.transparent {
             self.wait_for_gpu();
             let previous_config = self.surface_config;
             let mut next_config = self.surface_config;
-            next_config.transparent = transparent;
+            next_config.transparent = is_transparent;
             self.gpu.reconfigure_surface(&mut self.surface, next_config);
             let next_pipelines = BladePipelines::new(
                 &self.gpu,
@@ -639,7 +641,7 @@ impl BladeRenderer {
                     size.height,
                 );
             let (path_intermediate_msaa_texture, path_intermediate_msaa_texture_view) =
-                create_msaa_texture_if_needed(
+                create_msaa_texture(
                     &self.gpu,
                     self.surface.info().format,
                     size.width,
@@ -928,7 +930,7 @@ impl BladeRenderer {
                     sampling: _,
                     sprites,
                 } => {
-                    let tex_info = self.atlas.get_texture_info(texture_id);
+                    let tex_info = self.atlas.texture_info(texture_id);
                     let instance_buf =
                         unsafe { self.instance_belt.alloc_typed(sprites, &self.gpu) };
                     let mut encoder = pass.with(&self.pipelines.mono_sprites);
@@ -951,7 +953,7 @@ impl BladeRenderer {
                     texture_id,
                     sprites,
                 } => {
-                    let tex_info = self.atlas.get_texture_info(texture_id);
+                    let tex_info = self.atlas.texture_info(texture_id);
                     let instance_buf =
                         unsafe { self.instance_belt.alloc_typed(sprites, &self.gpu) };
                     let mut encoder = pass.with(&self.pipelines.poly_sprites);
@@ -1130,7 +1132,7 @@ fn create_path_intermediate_texture(
     (texture, texture_view)
 }
 
-fn create_msaa_texture_if_needed(
+fn create_msaa_texture(
     gpu: &gpu::Context,
     format: gpu::TextureFormat,
     width: u32,
@@ -1202,7 +1204,7 @@ impl RenderingParameters {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1.8_f32)
             .clamp(1.0, 2.2);
-        let gamma_ratios = Self::get_gamma_ratios(gamma);
+        let gamma_ratios = Self::gamma_ratios(gamma);
         let grayscale_enhanced_contrast = env::var("ZED_FONTS_GRAYSCALE_ENHANCED_CONTRAST")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -1218,7 +1220,7 @@ impl RenderingParameters {
 
     // Gamma ratios for brightening/darkening edges for better contrast
     // https://github.com/microsoft/terminal/blob/1283c0f5b99a2961673249fa77c6b986efb5086c/src/renderer/atlas/dwrite.cpp#L50
-    fn get_gamma_ratios(gamma: f32) -> [f32; 4] {
+    fn gamma_ratios(gamma: f32) -> [f32; 4] {
         const GAMMA_INCORRECT_TARGET_RATIOS: [[f32; 4]; 13] = [
             [0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0], // gamma = 1.0
             [0.0166 / 4.0, -0.0807 / 4.0, 0.2227 / 4.0, -0.0751 / 4.0], // gamma = 1.1

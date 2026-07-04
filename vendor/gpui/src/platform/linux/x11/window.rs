@@ -6,9 +6,9 @@ use crate::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, FrameRenderPlan,
     GpuSpecs, GpuiMemoryTrimLevel, Modifiers, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
-    RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size, Tiling, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations, WindowKind,
-    WindowParams, X11ClientStatePtr, px, size,
+    RendererOptions, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size, Tiling,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
 };
 
 use raw_window_handle as rwh;
@@ -94,7 +94,7 @@ fn query_render_extent(
     xcb: &Rc<XCBConnection>,
     x_window: xproto::Window,
 ) -> anyhow::Result<Size<DevicePixels>> {
-    let reply = get_reply(|| "X11 GetGeometry failed.", xcb.get_geometry(x_window))?;
+    let reply = xcb_reply(|| "X11 GetGeometry failed.", xcb.get_geometry(x_window))?;
     Ok(size(
         DevicePixels(reply.width as i32),
         DevicePixels(reply.height as i32),
@@ -305,12 +305,12 @@ pub(crate) struct X11WindowStatePtr {
 }
 
 impl X11WindowStatePtr {
-    pub fn request_frame(&self, request_frame_options: RequestFrameOptions) {
+    pub fn request_frame(&self, frame_options: RequestFrameOptions) {
         let state = self.state.borrow();
         let pending = state.pending_frame_request.get();
         state
             .pending_frame_request
-            .set(merge_frame_request(pending, request_frame_options));
+            .set(merge_frame_request(pending, frame_options));
     }
 
     pub fn take_pending_frame_request(&self) -> RequestFrameOptions {
@@ -362,8 +362,7 @@ impl rwh::HasDisplayHandle for X11Window {
     fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
         let state = self.0.state.borrow();
         let Some(connection) = NonNull::new(
-            as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(&self.0.xcb)
-                as *mut _,
+            as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(&self.0.xcb) as *mut _,
         ) else {
             log::error!("Null X11Window.xcb connection when getting display handle.");
             return Err(rwh::HandleError::Unavailable);
@@ -378,7 +377,7 @@ impl rwh::HasDisplayHandle for X11Window {
 
 pub(crate) fn xcb_flush(xcb: &XCBConnection) {
     xcb.flush()
-        .map_err(handle_connection_error)
+        .map_err(map_connection_error)
         .context("X11 flush failed")
         .log_err();
 }
@@ -393,12 +392,12 @@ where
     C: RequestConnection,
 {
     result
-        .map_err(handle_connection_error)
+        .map_err(map_connection_error)
         .and_then(|response| response.check().map_err(|reply_error| anyhow!(reply_error)))
         .with_context(failure_context)
 }
 
-pub(crate) fn get_reply<E, F, C, O>(
+pub(crate) fn xcb_reply<E, F, C, O>(
     failure_context: F,
     result: Result<Cookie<'_, C, O>, ConnectionError>,
 ) -> anyhow::Result<O>
@@ -409,14 +408,14 @@ where
     O: x11rb::x11_utils::TryParse,
 {
     result
-        .map_err(handle_connection_error)
+        .map_err(map_connection_error)
         .and_then(|response| response.reply().map_err(|reply_error| anyhow!(reply_error)))
         .with_context(failure_context)
 }
 
 /// Convert X11 connection errors to `anyhow::Error` and panic for unrecoverable errors.
-pub(crate) fn handle_connection_error(err: ConnectionError) -> anyhow::Error {
-    match err {
+pub(crate) fn map_connection_error(error: ConnectionError) -> anyhow::Error {
+    match error {
         ConnectionError::UnknownError => anyhow!("X11 connection: Unknown error"),
         ConnectionError::UnsupportedExtension => anyhow!("X11 connection: Unsupported extension"),
         ConnectionError::MaximumRequestLengthExceeded => {
@@ -430,7 +429,7 @@ pub(crate) fn handle_connection_error(err: ConnectionError) -> anyhow::Error {
         }
         ConnectionError::InsufficientMemory => panic!("X11 connection: Insufficient memory"),
         ConnectionError::IoError(err) => anyhow!(err).context("X11 connection: IOError"),
-        _ => anyhow!(err),
+        connection_error => anyhow!(connection_error),
     }
 }
 
@@ -439,7 +438,7 @@ impl X11WindowState {
         handle: AnyWindowHandle,
         client: X11ClientStatePtr,
         executor: ForegroundExecutor,
-        renderer_backend: crate::RendererBackend,
+        renderer_options: &RendererOptions,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
         client_side_decorations_supported: bool,
@@ -559,7 +558,7 @@ impl X11WindowState {
                 )?;
             }
 
-            let reply = get_reply(|| "X11 GetGeometry failed.", xcb.get_geometry(x_window))?;
+            let reply = xcb_reply(|| "X11 GetGeometry failed.", xcb.get_geometry(x_window))?;
             if reply.x == 0 && reply.y == 0 {
                 bounds.origin.x.0 += 2;
                 // Work around a bug where our rendered content appears
@@ -643,7 +642,7 @@ impl X11WindowState {
                 ),
             )?;
 
-            get_reply(
+            xcb_reply(
                 || "X11 sync protocol initialize failed.",
                 sync::initialize(xcb, 3, 1),
             )?;
@@ -833,7 +832,7 @@ impl X11Window {
                 handle,
                 client,
                 executor,
-                renderer_backend,
+                renderer_options.backend,
                 params,
                 xcb,
                 client_side_decorations_supported,
@@ -882,12 +881,9 @@ impl X11Window {
         Ok(())
     }
 
-    fn get_root_position(
-        &self,
-        position: Point<Pixels>,
-    ) -> anyhow::Result<TranslateCoordinatesReply> {
+    fn root_position(&self, position: Point<Pixels>) -> anyhow::Result<TranslateCoordinatesReply> {
         let state = self.0.state.borrow();
-        get_reply(
+        xcb_reply(
             || "X11 TranslateCoordinates failed.",
             self.0.xcb.translate_coordinates(
                 self.0.x_window,
@@ -906,7 +902,7 @@ impl X11Window {
             self.0.xcb.ungrab_pointer(x11rb::CURRENT_TIME),
         )?;
 
-        let pointer = get_reply(
+        let pointer = xcb_reply(
             || "X11 QueryPointer before move/resize of window failed.",
             self.0.xcb.query_pointer(self.0.x_window),
         )?;
@@ -963,7 +959,7 @@ impl X11WindowStatePtr {
         &self,
         mut state: std::cell::RefMut<X11WindowState>,
     ) -> anyhow::Result<()> {
-        let reply = get_reply(
+        let reply = xcb_reply(
             || "X11 GetProperty for _GTK_EDGE_CONSTRAINTS failed.",
             self.xcb.get_property(
                 false,
@@ -992,7 +988,7 @@ impl X11WindowStatePtr {
         &self,
         mut state: std::cell::RefMut<X11WindowState>,
     ) -> anyhow::Result<()> {
-        let reply = get_reply(
+        let reply = xcb_reply(
             || "X11 GetProperty for _NET_WM_STATE failed.",
             self.xcb.get_property(
                 false,
@@ -1039,14 +1035,14 @@ impl X11WindowStatePtr {
         }
     }
 
-    pub fn refresh(&self, request_frame_options: RequestFrameOptions) {
+    pub fn refresh(&self, frame_options: RequestFrameOptions) {
         let mut cb = self.callbacks.borrow_mut();
         if let Some(ref mut fun) = cb.request_frame {
-            fun(request_frame_options);
+            fun(frame_options);
         }
     }
 
-    pub fn handle_input(&self, input: PlatformInput) {
+    pub fn dispatch_input(&self, input: PlatformInput) {
         if let Some(ref mut fun) = self.callbacks.borrow_mut().input
             && !fun(input.clone()).propagate
         {
@@ -1110,7 +1106,7 @@ impl X11WindowStatePtr {
         }
     }
 
-    pub fn get_ime_area(&self) -> Option<Bounds<ScaledPixels>> {
+    pub fn ime_area(&self) -> Option<Bounds<ScaledPixels>> {
         let mut state = self.state.borrow_mut();
         let scale_factor = state.scale_factor;
         let mut bounds: Option<Bounds<Pixels>> = None;
@@ -1170,15 +1166,15 @@ impl X11WindowStatePtr {
         Ok(())
     }
 
-    pub fn set_active(&self, focus: bool) {
+    pub fn set_active(&self, is_active: bool) {
         if let Some(ref mut fun) = self.callbacks.borrow_mut().active_status_change {
-            fun(focus);
+            fun(is_active);
         }
     }
 
-    pub fn set_hovered(&self, focus: bool) {
+    pub fn set_hovered(&self, is_hovered: bool) {
         if let Some(ref mut fun) = self.callbacks.borrow_mut().hovered_status_change {
-            fun(focus);
+            fun(is_hovered);
         }
     }
 
@@ -1288,7 +1284,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        get_reply(
+        xcb_reply(
             || "X11 QueryPointer failed.",
             self.0.xcb.query_pointer(self.0.x_window),
         )
@@ -1558,7 +1554,7 @@ impl PlatformWindow for X11Window {
         )
         .log_err();
 
-        let Some(coords) = self.get_root_position(position).log_err() else {
+        let Some(coords) = self.root_position(position).log_err() else {
             return;
         };
         let message = ClientMessageEvent::new(

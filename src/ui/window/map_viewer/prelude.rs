@@ -6,7 +6,8 @@ pub(super) use super::actions::{
     MapViewerRotatePastePreviewCounterClockwise, MapViewerStartPastePreview, MapViewerUndoEdit,
 };
 pub(super) use super::canvas::{
-    MapCanvasAction, MapCanvasSnapshot, MapCanvasView, TilePaintSnapshot, build_tile_paint_snapshot,
+    MapCanvasAction, MapCanvasSnapshot, MapCanvasView, TilePaintSnapshot, TilePaintSnapshotPatch,
+    build_tile_paint_snapshot, patch_tile_paint_snapshot,
 };
 pub(super) use super::layout::{
     CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_ICON_SIZE, CHROME_SECTION_GAP,
@@ -23,9 +24,9 @@ pub(super) use super::map_history::{
 pub(super) use super::menu_overlay::{MapMenuOverlaySnapshot, MapMenuOverlayView};
 pub(super) use super::model::ChunkTransferProgress;
 pub(super) use super::preview_3d::{
-    Preview3dBuildStatus, Preview3dCamera, Preview3dMesh, Preview3dModelRotation,
-    Preview3dSelectionSignature, Preview3dSource, Preview3dState, Preview3dStatus,
-    load_preview_3d_mesh_blocking_incremental,
+    Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState, Preview3dMesh,
+    Preview3dModelRotation, Preview3dSelectionSignature, Preview3dSource, Preview3dState,
+    Preview3dStatus, load_preview_3d_mesh_blocking_incremental,
     load_preview_3d_mesh_blocking_incremental_with_block_models,
     load_preview_3d_mesh_from_copied_chunk_blocking,
     load_preview_3d_mesh_from_mcstructure_blocking, preview_3d_bounds_depth,
@@ -44,6 +45,7 @@ pub(super) use super::state::{
 pub(super) use super::tool_stripe::{MapToolStripeSnapshot, MapToolStripeView};
 pub(super) use super::top_bar::{MapTopBarSnapshot, MapTopBarView};
 pub(super) use crate::tasks::task_manager::{self, TaskSnapshot};
+pub(super) use crate::ui::animation::request_animation_frame_if;
 pub(super) use crate::ui::components::code_editor::{
     CodeEditor, CodeEditorEvent, CodeEditorLanguage, CodeEditorState,
 };
@@ -73,8 +75,8 @@ pub(super) use bedrock_render::{
     RenderGpuOptions, RenderGpuPipelineLevel, RenderJob, RenderLayout, RenderMemoryBudget,
     RenderMode, RenderOptions, RenderPalette, RenderPipelineStats, RenderTaskControl,
     RenderThreadingOptions, RenderTileOutputOptions, RenderTilePriority, ResolvedRenderBackend,
-    SurfaceRenderOptions, TerrainLightingOptions, TileCacheKey, TileCacheValidationOutcome,
-    TileCoord, TileManifestProbeRequest, TilePixelFormat, TileReadySource, TileStreamEventV2,
+    SurfaceRenderOptions, TerrainLightingOptions, TileCoord, TileManifestProbeRequest,
+    TilePixelFormat, TileReadySource, TileStreamEventV2,
     editor::{
         ActorRecord, ActorSource, Biome3d, BlockEntityRecord, GlobalRecordKind,
         HardcodedSpawnAreaKind, HeightMap2d, MapEditInvalidation, MapRecordId, MapWorldEditor,
@@ -98,9 +100,7 @@ pub(super) use gpui::prelude::FluentBuilder as _;
 pub(super) use gpui::*;
 pub(super) use serde::{Deserialize, Serialize};
 pub(super) use std::collections::{BTreeMap, BTreeSet, HashMap};
-pub(super) use std::hash::{Hash, Hasher};
-pub(super) use std::io::{ErrorKind, Read, Write};
+pub(super) use std::hash::Hash;
 pub(super) use std::path::{Path, PathBuf};
-pub(super) use std::sync::{Arc, Mutex, OnceLock, mpsc as std_mpsc};
-pub(super) use std::thread;
-pub(super) use std::time::{Duration, Instant, UNIX_EPOCH};
+pub(super) use std::sync::{Arc, Mutex, OnceLock};
+pub(super) use std::time::{Duration, Instant};

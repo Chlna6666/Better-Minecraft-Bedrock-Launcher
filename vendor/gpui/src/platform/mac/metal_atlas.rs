@@ -37,7 +37,7 @@ struct MetalAtlasState {
 }
 
 impl PlatformAtlas for MetalAtlas {
-    fn get_or_insert_with<'a>(
+    fn ensure_tile_with<'a>(
         &self,
         key: &AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
@@ -59,7 +59,7 @@ impl PlatformAtlas for MetalAtlas {
         }
     }
 
-    fn get_or_update_with<'a>(
+    fn refresh_tile_with<'a>(
         &self,
         key: &AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
@@ -77,7 +77,7 @@ impl PlatformAtlas for MetalAtlas {
         }
         drop(lock);
         self.remove(key);
-        self.get_or_insert_with(key, &mut || Ok(Some((size, bytes.clone()))))
+        self.ensure_tile_with(key, &mut || Ok(Some((size, bytes.clone()))))
     }
 
     fn clear_glyphs(&self) {
@@ -103,7 +103,7 @@ impl PlatformAtlas for MetalAtlas {
 
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
-            AtlasTextureKind::Bgra | AtlasTextureKind::Subpixel => &mut lock.polychrome_textures,
+            AtlasTextureKind::Bgra => &mut lock.polychrome_textures,
             AtlasTextureKind::Rgba => &mut lock.rgba_textures,
         };
 
@@ -137,9 +137,7 @@ impl MetalAtlasState {
         {
             let textures = match texture_kind {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
-                AtlasTextureKind::Bgra | AtlasTextureKind::Subpixel => {
-                    &mut self.polychrome_textures
-                }
+                AtlasTextureKind::Bgra => &mut self.polychrome_textures,
                 AtlasTextureKind::Rgba => &mut self.rgba_textures,
             };
 
@@ -185,10 +183,6 @@ impl MetalAtlasState {
                 pixel_format = metal::MTLPixelFormat::BGRA8Unorm;
                 usage = metal::MTLTextureUsage::ShaderRead;
             }
-            AtlasTextureKind::Subpixel => {
-                pixel_format = metal::MTLPixelFormat::BGRA8Unorm;
-                usage = metal::MTLTextureUsage::ShaderRead;
-            }
             AtlasTextureKind::Rgba => {
                 pixel_format = metal::MTLPixelFormat::RGBA8Unorm;
                 usage = metal::MTLTextureUsage::ShaderRead;
@@ -200,7 +194,7 @@ impl MetalAtlasState {
 
         let texture_list = match kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
-            AtlasTextureKind::Bgra | AtlasTextureKind::Subpixel => &mut self.polychrome_textures,
+            AtlasTextureKind::Bgra => &mut self.polychrome_textures,
             AtlasTextureKind::Rgba => &mut self.rgba_textures,
         };
 
@@ -231,9 +225,7 @@ impl MetalAtlasState {
     fn texture(&self, id: AtlasTextureId) -> &MetalAtlasTexture {
         let textures = match id.kind {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
-            crate::AtlasTextureKind::Bgra | crate::AtlasTextureKind::Subpixel => {
-                &self.polychrome_textures
-            }
+            crate::AtlasTextureKind::Bgra => &self.polychrome_textures,
             crate::AtlasTextureKind::Rgba => &self.rgba_textures,
         };
         textures[id.index as usize].as_ref().unwrap()

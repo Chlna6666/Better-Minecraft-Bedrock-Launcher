@@ -41,7 +41,7 @@ default = [
     "windows-manifest",
     "build-shader-validation",
 ]
-build-shader-validation = ["dep:naga"]
+build-shader-validation = []
 inspector = ["gpui_macros/inspector"]
 dhat-heap = []
 font-kit = []
@@ -84,6 +84,7 @@ wayland = [
     "open",
 ]
 windows-manifest = ["dep:embed-resource"]
+windows-vulkan = ["nova-gfx-vulkan"]
 x11 = [
     "bytemuck",
     "ashpd",
@@ -374,11 +375,16 @@ version = "1"
 version = "0.10.1"
 optional = true
 
-[dependencies.raw-window-handle]
-version = "0.6"
-
 [dependencies.cursor-icon]
 version = "1.2"
+
+[dependencies.dpi]
+version = "0.1"
+
+[dependencies.winit]
+version = "0.30.13"
+default-features = false
+features = ["rwh_06"]
 
 [dependencies.refineable]
 version = "0.2.2"
@@ -440,7 +446,7 @@ version = "0.2.2"
 package = "gpui_sum_tree"
 
 [dependencies.taffy]
-version = "=0.9.0"
+version = "=0.11.0"
 
 [dependencies.thiserror]
 version = "2.0.12"
@@ -535,6 +541,16 @@ default-features = false
 version = "1"
 optional = true
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-core]
+path = "../../crates/nova-gfx/gfx-core"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-shader]
+path = "../../crates/nova-gfx/gfx-shader"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-vulkan]
+path = "../../crates/nova-gfx/gfx-vulkan"
+optional = true
+
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.calloop]
 version = "0.14.4"
 
@@ -548,16 +564,6 @@ optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.flume]
 version = "0.12.0"
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-core]
-path = "../../crates/nova-gfx/gfx-core"
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-shader]
-path = "../../crates/nova-gfx/gfx-shader"
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-vulkan]
-path = "../../crates/nova-gfx/gfx-vulkan"
-optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.oo7]
 version = "0.6.0"
@@ -638,7 +644,6 @@ optional = true
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies.naga]
 version = "29.0.1"
 features = ["wgsl-in"]
-optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))'.dependencies.pathfinder_geometry]
 version = "0.5"
@@ -722,10 +727,12 @@ default-features = false
 [target.'cfg(target_os = "macos")'.build-dependencies.naga]
 version = "29.0.1"
 features = ["wgsl-in"]
-optional = true
 
 [target.'cfg(target_os = "windows")'.dependencies.flume]
 version = "0.12.0"
+
+[target.'cfg(target_os = "windows")'.dependencies.bytemuck]
+version = "1"
 
 [target.'cfg(target_os = "windows")'.dependencies.gfx-core]
 path = "../../crates/nova-gfx/gfx-core"
@@ -740,9 +747,6 @@ path = "../../crates/nova-gfx/gfx-shader"
 [target.'cfg(target_os = "windows")'.dependencies.gfx-vulkan]
 path = "../../crates/nova-gfx/gfx-vulkan"
 optional = true
-
-[target.'cfg(target_os = "windows")'.dependencies.bytemuck]
-version = "1"
 
 [target.'cfg(target_os = "windows")'.dependencies.rand]
 version = "0.10.1"
@@ -815,7 +819,6 @@ optional = true
 [target.'cfg(target_os = "windows")'.build-dependencies.naga]
 version = "29.0.1"
 features = ["wgsl-in"]
-optional = true
 
 [lints.clippy]
 dbg_macro = "deny"

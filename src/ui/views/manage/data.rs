@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self as std_fs, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::warn;
@@ -22,11 +23,12 @@ use crate::core::minecraft::nbt::{
 };
 use crate::core::minecraft::paths::{GamePathOptions, get_game_root};
 use crate::core::minecraft::resource_packs::{Header, McPackInfo};
+use crate::core::minecraft::skin_packs::McSkinPackInfo;
 use crate::core::version::settings::{VersionConfig, get_version_config, save_version_config};
 use crate::ui::views::manage::state::{
     ManageAssetEntry, ManageAssetKind, ManageGdkUser, ManagePackSubtype, ManageScreenshotEntry,
-    ManageServerEntry, ManageServerMotd, ManageServerMotdStatus, ManageServerMotdTarget, ManageTab,
-    ManageVersionConfig, ManagedVersionEntry,
+    ManageServerEntry, ManageServerMotd, ManageServerMotdStatus, ManageServerMotdTarget,
+    ManageSkinPreviewEntry, ManageTab, ManageVersionConfig, ManagedVersionEntry,
 };
 use futures_util::stream::{self, StreamExt as _};
 use std::time::{Duration, Instant};
@@ -139,6 +141,7 @@ pub async fn load_assets(
             )
             .await
         }
+        ManageTab::SkinPack => load_skin_pack_assets(version, config, locale_code).await,
         ManageTab::Map => load_map_assets(version, config, selected_gdk_user).await,
         ManageTab::Screenshot | ManageTab::Server => Ok(Vec::new()),
     }
@@ -154,11 +157,12 @@ pub async fn delete_assets(
 ) -> Result<(), String> {
     match tab {
         ManageTab::Mod => delete_mods(version.folder.as_ref(), folder_names).await,
-        ManageTab::ResourcePack | ManageTab::Map => {
+        ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
             let build_type = version.build_type();
             let edition = version.edition();
             let delete_type = match tab {
                 ManageTab::Map => "maps",
+                ManageTab::SkinPack => "skins",
                 ManageTab::ResourcePack => match pack_subtype {
                     ManagePackSubtype::Resource => "resourcePacks",
                     ManagePackSubtype::Behavior => "behaviorPacks",
@@ -736,6 +740,10 @@ fn load_mod_assets_blocking(version_folder: &str) -> Result<Vec<ManageAssetEntry
             inject_delay_ms: Some(manifest.inject_delay_ms.unwrap_or(0)),
             resource_pack_count: None,
             behavior_pack_count: None,
+            skin_count: None,
+            first_skin_full_texture_path: None,
+            first_skin_model_label: None,
+            skin_previews: None,
             kind: ManageAssetKind::Mod,
         });
     }
@@ -778,6 +786,33 @@ async fn load_pack_assets(
     Ok(entries
         .into_iter()
         .map(|pack| manage_asset_from_pack(pack, pack_subtype))
+        .collect())
+}
+
+async fn load_skin_pack_assets(
+    version: &ManagedVersionEntry,
+    config: &ManageVersionConfig,
+    locale_code: &str,
+) -> Result<Vec<ManageAssetEntry>, String> {
+    let options = GamePathOptions {
+        build_type: version.build_type(),
+        edition: version.edition(),
+        version_name: version.folder.to_string(),
+        enable_isolation: config.enable_redirection,
+        user_id: None,
+        allow_shared_fallback: false,
+    };
+    let locale = locale_code.to_string();
+    let entries = tokio::task::spawn_blocking(move || {
+        crate::core::minecraft::skin_packs::read_skin_packs_standard(&locale, &options)
+    })
+    .await
+    .map_err(|error| format!("读取皮肤包任务失败: {error:?}"))?
+    .map_err(|error| format!("读取皮肤包失败: {error:?}"))?;
+
+    Ok(entries
+        .into_iter()
+        .map(manage_asset_from_skin_pack)
         .collect())
 }
 
@@ -848,12 +883,86 @@ fn manage_asset_from_pack(pack: McPackInfo, pack_subtype: ManagePackSubtype) -> 
         inject_delay_ms: None,
         resource_pack_count: None,
         behavior_pack_count: None,
+        skin_count: None,
+        first_skin_full_texture_path: None,
+        first_skin_model_label: None,
+        skin_previews: None,
         kind: match pack_subtype {
             ManagePackSubtype::Resource | ManagePackSubtype::Behavior => {
                 ManageAssetKind::ResourcePack
             }
         },
     }
+}
+
+fn manage_asset_from_skin_pack(pack: McSkinPackInfo) -> ManageAssetEntry {
+    let mut detail_parts = Vec::new();
+    detail_parts.push(format!("{} 个皮肤", pack.skin_count));
+    if pack.slim_skin_count > 0 {
+        detail_parts.push(format!("Alex {}", pack.slim_skin_count));
+    }
+    if let Some(version) = pack.version.clone() {
+        detail_parts.push(version);
+    }
+    let detail = (!detail_parts.is_empty()).then(|| SharedString::from(detail_parts.join(" · ")));
+    let first_skin_full_texture_path = pack
+        .first_full_skin_texture_path()
+        .map(|path| SharedString::from(path.to_string()));
+    let skin_previews = skin_previews_from_pack(&pack);
+    let description = pack
+        .description
+        .filter(|value| !value.trim().is_empty())
+        .map(SharedString::from);
+    let first_skin_model_label = pack
+        .skins
+        .iter()
+        .find(|skin| skin.full_texture_path().is_some())
+        .map(|skin| SharedString::from(skin.model_label.clone()));
+    ManageAssetEntry {
+        key: SharedString::from(format!("skin:{}", pack.folder_name)),
+        folder_name: SharedString::from(pack.folder_name.clone()),
+        display_name: SharedString::from(pack.display_name),
+        detail,
+        description,
+        file_path: SharedString::from(pack.folder_path.clone()),
+        open_path: SharedString::from(pack.folder_path.clone()),
+        icon_path: pack.preview_path.or(pack.icon_path).map(SharedString::from),
+        modified_iso: None,
+        modified_label: None,
+        size_bytes: None,
+        size_label: None,
+        source: pack.source.map(SharedString::from),
+        edition: pack.edition.map(SharedString::from),
+        gdk_user: pack.gdk_user.map(SharedString::from),
+        enabled: None,
+        mod_type: None,
+        inject_delay_ms: None,
+        resource_pack_count: None,
+        behavior_pack_count: None,
+        skin_count: Some(pack.skin_count),
+        first_skin_full_texture_path,
+        first_skin_model_label,
+        skin_previews,
+        kind: ManageAssetKind::SkinPack,
+    }
+}
+
+fn skin_previews_from_pack(pack: &McSkinPackInfo) -> Option<Arc<[ManageSkinPreviewEntry]>> {
+    let previews = pack
+        .skins
+        .iter()
+        .filter_map(|skin| {
+            let full_texture_path = skin.full_texture_path()?;
+            Some(ManageSkinPreviewEntry {
+                display_name: SharedString::from(skin.display_name.clone()),
+                full_texture_path: SharedString::from(full_texture_path.to_string()),
+                preview_path: skin.preview_path.clone().map(SharedString::from),
+                model_label: SharedString::from(skin.model_label.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    (!previews.is_empty()).then(|| Arc::from(previews.into_boxed_slice()))
 }
 
 fn manage_asset_from_map(map: McMapInfo) -> ManageAssetEntry {
@@ -896,6 +1005,10 @@ fn manage_asset_from_map(map: McMapInfo) -> ManageAssetEntry {
         inject_delay_ms: None,
         resource_pack_count: map.resource_packs_count,
         behavior_pack_count: map.behavior_packs_count,
+        skin_count: None,
+        first_skin_full_texture_path: None,
+        first_skin_model_label: None,
+        skin_previews: None,
         kind: ManageAssetKind::Map,
     }
 }

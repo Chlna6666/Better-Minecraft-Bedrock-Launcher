@@ -1,4 +1,5 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
+use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::adaptive::{
     AdaptiveModalSpec, AdaptiveSizeClass, WindowMetrics, adaptive_modal_size,
 };
@@ -562,7 +563,7 @@ pub fn render_update_modal(
                             ))
                             .with_animation(
                                 "update-download-indeterminate",
-                                Animation::new(Duration::from_millis(1200)).repeat(),
+                                repeating_linear_motion(Duration::from_millis(1200)),
                                 |this, t| this.left(relative(-0.36 + t * 1.42)),
                             )
                             .into_any_element()

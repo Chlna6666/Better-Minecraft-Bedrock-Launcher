@@ -46,7 +46,7 @@ pub unsafe fn new_renderer(
     _native_window: *mut c_void,
     _native_view: *mut c_void,
     _bounds: crate::Size<f32>,
-    _transparent: bool,
+    _is_transparent: bool,
 ) -> Renderer {
     MetalRenderer::new(context)
 }
@@ -289,10 +289,10 @@ impl MetalRenderer {
         &self.sprite_atlas
     }
 
-    pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
-        self.presents_with_transaction = presents_with_transaction;
+    pub fn set_presents_with_transaction(&mut self, should_present_with_transaction: bool) {
+        self.presents_with_transaction = should_present_with_transaction;
         self.layer
-            .set_presents_with_transaction(presents_with_transaction);
+            .set_presents_with_transaction(should_present_with_transaction);
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
@@ -353,7 +353,7 @@ impl MetalRenderer {
         }
     }
 
-    pub fn update_transparency(&self, _transparent: bool) {
+    pub fn update_transparency(&self, _is_transparent: bool) {
         // todo(mac)?
     }
 

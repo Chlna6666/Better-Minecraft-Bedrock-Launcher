@@ -33,7 +33,7 @@ impl Default for NavState {
             pill_from_steps: 0.0,
             pill_to_steps: 0.0,
             pill_started_at: None,
-            pill_duration: Duration::from_millis(165),
+            pill_duration: Duration::from_millis(250),
             pill_from_index: 0,
             pill_to_index: 0,
 
@@ -83,10 +83,12 @@ impl NavState {
     }
 
     pub fn confirm_route(&mut self, index: usize) {
-        self.active_index = index;
-        if self.pending_route_index != Some(index) {
-            self.sync_to_route(index);
+        if self.pending_route_index == Some(index) {
+            self.active_index = index;
+            return;
         }
+
+        self.sync_to_route(index);
     }
 
     pub fn is_animating(&self, now: Instant) -> bool {
@@ -98,7 +100,7 @@ impl NavState {
             return self.active_index as f32;
         };
         let t = eased_progress(now, t0, self.pill_duration);
-        let eased = ease_out_cubic(t);
+        let eased = ease_out_back(t, 0.45);
 
         self.pill_from_steps + (self.pill_to_steps - self.pill_from_steps) * eased
     }
@@ -161,6 +163,16 @@ impl NavState {
         self.labels_started_at = Some(now);
     }
 
+    pub fn set_labels_target_immediate(&mut self, visible: bool) {
+        let target = if visible { 1.0 } else { 0.0 };
+        self.labels_target_visible = visible;
+        self.labels_from = target;
+        self.labels_to = target;
+        self.labels_opacity_from = target;
+        self.labels_opacity_to = target;
+        self.labels_started_at = None;
+    }
+
     pub fn labels_animating(&self, now: Instant) -> bool {
         self.labels_started_at.is_some_and(|t0| {
             let elapsed = now.saturating_duration_since(t0);
@@ -209,5 +221,41 @@ impl NavState {
         };
         (self.labels_opacity_from + (self.labels_opacity_to - self.labels_opacity_from) * eased)
             .clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirm_route_preserves_pending_pill_animation() {
+        let now = Instant::now();
+        let mut nav = NavState::default();
+
+        nav.start_pill_animation(5, now);
+        assert_eq!(nav.pending_route_index, Some(5));
+        assert!(nav.is_animating(now));
+
+        nav.confirm_route(5);
+
+        assert_eq!(nav.active_index, 5);
+        assert_eq!(nav.pending_route_index, Some(5));
+        assert!(nav.is_animating(now));
+    }
+
+    #[test]
+    fn immediate_label_target_does_not_leave_animation_running() {
+        let now = Instant::now();
+        let mut nav = NavState::default();
+
+        nav.set_labels_target(false, now);
+        assert!(nav.labels_animating(now));
+
+        nav.set_labels_target_immediate(false);
+
+        assert!(!nav.labels_animating(now));
+        assert_eq!(nav.labels_layout_factor(now), 0.0);
+        assert_eq!(nav.labels_opacity_factor(now), 0.0);
     }
 }

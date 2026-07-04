@@ -64,12 +64,6 @@ impl AppBootstrap {
 
 fn renderer_backend_from_config(renderer_backend: &str) -> gpui::RendererBackend {
     let normalized = crate::config::config::normalize_renderer_backend(renderer_backend);
-    #[cfg(all(target_os = "windows", not(feature = "gpui-windows-vulkan")))]
-    let normalized = if normalized == "vulkan" {
-        "dx12".to_string()
-    } else {
-        normalized
-    };
     normalized
         .parse::<gpui::RendererBackend>()
         .unwrap_or_default()
@@ -146,12 +140,8 @@ fn application_default_font(bootstrap: &AppBootstrap) -> gpui::DefaultFontConfig
     )
 }
 
-fn gpu_power_preference_for_adapter(gpu_adapter_name: Option<&str>) -> gpui::GpuPowerPreference {
-    if gpu_adapter_name.is_some() {
-        gpui::GpuPowerPreference::HighPerformance
-    } else {
-        gpui::GpuPowerPreference::AutoLowPower
-    }
+fn gpu_power_preference_for_adapter(_gpu_adapter_name: Option<&str>) -> gpui::GpuPowerPreference {
+    gpui::GpuPowerPreference::HighPerformance
 }
 
 #[derive(Default)]
@@ -216,6 +206,16 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
 
         gpui_router::init(cx);
         if matches!(bootstrap.launch_mode, LaunchMode::Main) {
+            let preloaded_backgrounds =
+                crate::ui::main_window::preload_startup_background_bytes_from_values(
+                    &bootstrap.config.custom_style.background_option,
+                    &bootstrap.config.custom_style.local_image_path,
+                    &bootstrap.config.custom_style.network_image_url,
+                    cx,
+                );
+            if preloaded_backgrounds > 0 {
+                debug!("startup background compressed image bytes preload scheduled");
+            }
             crate::ui::navigation::set_route(cx, crate::ui::navigation::AppRoute::Home);
             let main_window_opened = open_main_window(&bootstrap, cx);
             if main_window_opened {
@@ -294,7 +294,7 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::update::UpdateState>();
     cx.default_global::<crate::ui::state::agreement::AgreementState>();
     cx.default_global::<crate::ui::state::diagnostics::DiagnosticsState>();
-    cx.default_global::<crate::music::MusicState>();
+    cx.default_global::<crate::ui::state::music::MusicState>();
     cx.default_global::<crate::ui::main_window::AppChromeState>();
     cx.default_global::<crate::ui::components::toast::ToastState>();
     cx.default_global::<crate::ui::components::dropdown::DropdownOverlayState>();
@@ -364,10 +364,24 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
 
 fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
     let startup_check_updates = bootstrap.startup_check_updates;
+    let startup_background_option = bootstrap.config.custom_style.background_option.clone();
+    let startup_local_image_path = bootstrap.config.custom_style.local_image_path.clone();
+    let startup_network_image_url = bootstrap.config.custom_style.network_image_url.clone();
     let window_title = crate::utils::app_info::runtime_app_name();
     let window_options = main_window_options(&window_title, cx);
     let main_window = cx.open_window(window_options, move |window, cx| {
-        window.set_window_title(&window_title);
+        window.set_title(&window_title);
+        let preloaded_targets =
+            crate::ui::main_window::preload_startup_background_target_from_values(
+                &startup_background_option,
+                &startup_local_image_path,
+                &startup_network_image_url,
+                window,
+                cx,
+            );
+        if preloaded_targets > 0 {
+            debug!("startup background target image preload scheduled");
+        }
 
         let view = cx.new(|cx| {
             let view =
@@ -451,7 +465,7 @@ fn open_debug_window(cx: &mut App) {
     let window_title = format!("{} Debug", crate::utils::app_info::runtime_app_name());
     let window_options = debug_window_options(&window_title, cx);
     let debug_window = cx.open_window(window_options, move |window, cx| {
-        window.set_window_title(&window_title);
+        window.set_title(&window_title);
 
         let view = cx.new(crate::ui::window::debug::DebugView::new);
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))
@@ -485,7 +499,7 @@ fn open_import_window(import_context: crate::launch::ImportLaunchContext, cx: &m
     let import_view = Rc::new(RefCell::new(None));
     let import_view_in_closure = Rc::clone(&import_view);
     let import_window = cx.open_window(window_options, move |window, cx| {
-        window.set_window_title("资源导入");
+        window.set_title("资源导入");
 
         let view = cx
             .new(|cx| crate::ui::window::import::ImportWindowView::new(import_context, window, cx));
@@ -516,7 +530,7 @@ fn open_import_window(import_context: crate::launch::ImportLaunchContext, cx: &m
 
 fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
-    let fixed_size = size(px(972.), px(600.));
+    let fixed_size = crate::ui::main_window::MAIN_WINDOW_INITIAL_SIZE;
     options.window_bounds = Some(WindowBounds::centered(fixed_size, cx));
     options.window_min_size = Some(fixed_size);
     options.is_resizable = true;
@@ -528,7 +542,6 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
         options.titlebar = Some(TitlebarOptions {
             title: Some(SharedString::from(window_title.to_string())),
             appears_transparent: true,
-            transparent_caption_height: Some(px(66.0)),
             ..Default::default()
         });
         options.window_background = WindowBackgroundAppearance::Transparent;
@@ -572,7 +585,6 @@ fn import_window_options(cx: &mut App) -> WindowOptions {
         options.titlebar = Some(TitlebarOptions {
             title: Some(SharedString::from("资源导入")),
             appears_transparent: true,
-            transparent_caption_height: Some(px(46.0)),
             ..Default::default()
         });
         options.window_background = WindowBackgroundAppearance::Transparent;
@@ -666,10 +678,10 @@ mod tests {
     use gpui::GpuPowerPreference;
 
     #[test]
-    fn automatic_gpu_adapter_uses_low_power_preference() {
+    fn automatic_gpu_adapter_uses_high_performance_preference() {
         assert_eq!(
             gpu_power_preference_for_adapter(None),
-            GpuPowerPreference::AutoLowPower
+            GpuPowerPreference::HighPerformance
         );
     }
 

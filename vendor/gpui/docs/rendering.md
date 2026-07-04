@@ -71,7 +71,7 @@ Custom elements are appropriate for:
 - direct drawing calls;
 - window-local element state;
 - manual input routing;
-- custom GPU surfaces;
+- custom scene primitives;
 - advanced layout or prepaint behavior.
 
 Custom paint code must respect the layout bounds passed by GPUI, use `Window`

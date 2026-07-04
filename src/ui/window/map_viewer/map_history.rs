@@ -3,6 +3,7 @@ use sha2::Digest as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 const HISTORY_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 const HISTORY_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -179,8 +180,16 @@ pub(crate) struct MapHistoryCaptureSpec {
 #[derive(Clone, Debug, Default)]
 pub(super) struct MapHistoryApplyOutcome {
     pub(super) affected_chunks: BTreeSet<ChunkPos>,
+    pub(super) refresh_all_tiles: bool,
     pub(super) level_dat_changed: bool,
     pub(super) message: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MapHistoryAppliedChange {
+    affected_chunks: BTreeSet<ChunkPos>,
+    refresh_all_tiles: bool,
+    level_dat_changed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -379,11 +388,12 @@ pub(super) fn apply_undo_with_progress(
     else {
         return Err("没有可撤回的地图修改".to_string());
     };
-    apply_history_entry(world_path, &entry, true, progress)?;
+    let applied_change = apply_history_entry(world_path, &entry, true, progress)?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Undone, None)?;
     Ok(MapHistoryApplyOutcome {
-        affected_chunks: entry.chunks.iter().copied().collect(),
-        level_dat_changed: entry.level_dat_changed,
+        affected_chunks: applied_change.affected_chunks,
+        refresh_all_tiles: applied_change.refresh_all_tiles,
+        level_dat_changed: applied_change.level_dat_changed,
         message: format!("已撤回 {}", entry.label),
     })
 }
@@ -398,11 +408,12 @@ pub(super) fn apply_redo_with_progress(
     else {
         return Err("没有可重做的地图修改".to_string());
     };
-    apply_history_entry(world_path, &entry, false, progress)?;
+    let applied_change = apply_history_entry(world_path, &entry, false, progress)?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Success, None)?;
     Ok(MapHistoryApplyOutcome {
-        affected_chunks: entry.chunks.iter().copied().collect(),
-        level_dat_changed: entry.level_dat_changed,
+        affected_chunks: applied_change.affected_chunks,
+        refresh_all_tiles: applied_change.refresh_all_tiles,
+        level_dat_changed: applied_change.level_dat_changed,
         message: format!("已重做 {}", entry.label),
     })
 }
@@ -419,10 +430,11 @@ pub(super) fn restore_history_entry_with_progress(
     if entry.status == MapHistoryEntryStatus::Failed {
         return Err("失败的历史项不能回档".to_string());
     }
-    apply_history_entry(world_path, &entry, true, progress)?;
+    let applied_change = apply_history_entry(world_path, &entry, true, progress)?;
     Ok(MapHistoryApplyOutcome {
-        affected_chunks: entry.chunks.iter().copied().collect(),
-        level_dat_changed: entry.level_dat_changed,
+        affected_chunks: applied_change.affected_chunks,
+        refresh_all_tiles: applied_change.refresh_all_tiles,
+        level_dat_changed: applied_change.level_dat_changed,
         message: format!("已回档到 {}", entry.label),
     })
 }
@@ -500,8 +512,9 @@ fn apply_history_entry(
     entry: &MapHistoryEntry,
     undo: bool,
     mut progress: impl FnMut(MapHistoryApplyProgress),
-) -> Result<(), String> {
+) -> Result<MapHistoryAppliedChange, String> {
     let change = read_history_change(&history_dir_for_world(world_path), &entry.id)?;
+    let applied_change = history_applied_change(entry.chunks.iter().copied(), &change);
     let raw_total = change.raw_records.len();
     let total = raw_total
         .saturating_add(usize::from(change.level_dat.is_some()))
@@ -572,7 +585,39 @@ fn apply_history_entry(
             total,
         });
     }
-    Ok(())
+    Ok(applied_change)
+}
+
+fn history_applied_change(
+    entry_chunks: impl IntoIterator<Item = ChunkPos>,
+    change: &MapHistoryChange,
+) -> MapHistoryAppliedChange {
+    let mut affected_chunks = entry_chunks.into_iter().collect::<BTreeSet<_>>();
+    let mut has_raw_records = false;
+    let mut has_unmapped_raw_records = false;
+    for delta in &change.raw_records {
+        has_raw_records = true;
+        if let Some(chunk) = history_delta_chunk(&delta.key) {
+            affected_chunks.insert(chunk);
+        } else {
+            has_unmapped_raw_records = true;
+        }
+    }
+    let refresh_all_tiles =
+        has_raw_records && affected_chunks.is_empty() && has_unmapped_raw_records;
+    MapHistoryAppliedChange {
+        affected_chunks,
+        refresh_all_tiles,
+        level_dat_changed: change.level_dat.is_some(),
+    }
+}
+
+fn history_delta_chunk(key: &[u8]) -> Option<ChunkPos> {
+    match bedrock_world::BedrockDbKey::decode(key) {
+        bedrock_world::BedrockDbKey::Chunk(chunk_key) => Some(chunk_key.pos),
+        bedrock_world::BedrockDbKey::ActorDigest { pos } => Some(pos),
+        _ => None,
+    }
 }
 
 fn apply_history_raw_delta(
@@ -1117,9 +1162,11 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        HISTORY_OBJECT_STORE_DIR, MapHistoryCapture, MapHistoryEntryKind, build_raw_record_deltas,
-        complete_snapshot, now_secs, prune_history, read_history_change, world_history_id,
+        HISTORY_OBJECT_STORE_DIR, MapHistoryCapture, MapHistoryChange, MapHistoryEntryKind,
+        RawRecordDelta, build_raw_record_deltas, complete_snapshot, history_applied_change,
+        now_secs, prune_history, read_history_change, world_history_id,
     };
+    use bedrock_world::{ActorDigestKey, ChunkKey, ChunkPos, ChunkRecordTag, Dimension};
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::PathBuf;
@@ -1195,6 +1242,63 @@ mod tests {
                 && delta.before == Some(b"gone".to_vec())
                 && delta.after.is_none()
         }));
+    }
+
+    #[test]
+    fn history_applied_change_decodes_raw_delta_chunks() {
+        let chunk = ChunkPos {
+            x: 12,
+            z: -7,
+            dimension: Dimension::Nether,
+        };
+        let digest_chunk = ChunkPos {
+            x: -2,
+            z: 5,
+            dimension: Dimension::Overworld,
+        };
+        let change = MapHistoryChange {
+            raw_records: vec![
+                RawRecordDelta {
+                    key: ChunkKey::new(chunk, ChunkRecordTag::Data2D)
+                        .encode()
+                        .to_vec(),
+                    before: None,
+                    after: Some(vec![1]),
+                },
+                RawRecordDelta {
+                    key: ActorDigestKey::new(digest_chunk).storage_key().to_vec(),
+                    before: Some(vec![2]),
+                    after: Some(vec![3]),
+                },
+            ],
+            level_dat: None,
+        };
+
+        let applied_change = history_applied_change(BTreeSet::new(), &change);
+
+        assert_eq!(
+            applied_change.affected_chunks,
+            [chunk, digest_chunk].into_iter().collect()
+        );
+        assert!(!applied_change.refresh_all_tiles);
+        assert!(!applied_change.level_dat_changed);
+    }
+
+    #[test]
+    fn history_applied_change_refreshes_all_tiles_for_unmapped_raw_delta() {
+        let change = MapHistoryChange {
+            raw_records: vec![RawRecordDelta {
+                key: b"~local_player".to_vec(),
+                before: Some(vec![1]),
+                after: Some(vec![2]),
+            }],
+            level_dat: None,
+        };
+
+        let applied_change = history_applied_change(BTreeSet::new(), &change);
+
+        assert!(applied_change.affected_chunks.is_empty());
+        assert!(applied_change.refresh_all_tiles);
     }
 
     #[test]

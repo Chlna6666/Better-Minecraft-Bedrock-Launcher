@@ -62,7 +62,7 @@ pub fn open_plugin_window(
     let options = plugin_window_options(cx);
     let window_title = title.clone();
     let handle = cx.open_window(options, move |window, cx| {
-        window.set_window_title(&window_title);
+        window.set_title(&window_title);
         window.activate_window();
         let view = cx.new(|cx| PluginWindowView::new(plugin_id, page_id, title, cx));
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))

@@ -14,40 +14,36 @@ GPUI 会在构建时校验并嵌入内置渲染器 WGSL。拥有自定义 Nova G
 
 ```rust
 let source = gpui::WgslShaderSource::from_path("examples/viewer.wgsl")?;
-let shader = source.compile(surface.device());
 ```
 
 一次性编译可以使用 helper：
 
 ```rust
-let shader = gpui::compile_wgsl_shader_module_from_path(
-    surface.device(),
-    "examples/viewer.wgsl",
-)?;
+let shader = gpui::compile_wgsl_shader_module_from_path("examples/viewer.wgsl")?;
 ```
 
 生成的或内嵌的 shader 字符串可以使用 source label：
 
 ```rust
 let shader = gpui::compile_wgsl_shader_module(
-    surface.device(),
     "generated-material-shader",
     generated_wgsl,
 )?;
 ```
 
-loader 会在创建 Nova shader module 之前用 `naga` 校验 WGSL。文件读取错误会包含
-路径；解析和校验错误会包含传入的 label 或路径，以及格式化后的 WGSL 诊断信息。
+loader 会在应用渲染代码创建后端 shader module 前用 `naga` 校验 WGSL。文件读取错
+误会包含路径；解析和校验错误会包含传入的 label 或路径，以及格式化后的 WGSL 诊断
+信息。
 
-## 与 GPU Surface 集成
+## 与应用渲染集成
 
-运行时 WGSL 通常配合 `Window::paint_gpu_mesh_3d` 使用：
+运行时 WGSL 属于应用自己拥有的 renderer：
 
-1. 创建由 GPUI 管理的 GPU surface。
-2. 使用 surface device 编译 shader。
-3. 从同一个 device 构建 bind groups、pipelines、buffers 和 textures。
-4. 渲染到 `GpuSurfaceHandle::back_buffer_view`。
-5. present 或 swap 渲染后的 buffer，再把 surface 绘制到 GPUI 场景。
+1. 使用 `WgslShaderSource` 加载并校验 WGSL。
+2. 按选中的后端 cross-compile 或转换 shader。
+3. 从 renderer device 构建 bind groups、pipelines、buffers 和 textures。
+4. 渲染到应用自己拥有的 render target 或 surface。
+5. 通过应用的集成点把渲染结果合成进 GPUI scene。
 
 自定义 render pipeline 的 color target 必须匹配 surface texture format。
 

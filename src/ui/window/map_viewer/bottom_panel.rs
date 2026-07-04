@@ -129,8 +129,7 @@ impl MapViewerWindowView {
         let chunks = self
             .tile_chunk_index
             .get(&tile)
-            .cloned()
-            .unwrap_or_default();
+            .map_or([].as_slice(), |positions| positions.as_ref());
         self.db_tree.nodes = Arc::new(chunk_tree_nodes_for_tile(self.dimension, tile, chunks));
         self.db_tree.loading = self.metadata_loading || self.manifest_probe_in_flight;
         self.db_tree.selection = Default::default();
@@ -244,11 +243,15 @@ impl MapViewerWindowView {
                     ..colors.surface
                 }
             })
-            .hover(|style| {
-                style.bg(Hsla {
-                    a: 0.62,
-                    ..colors.surface_hover
-                })
+            .hover(move |style| {
+                if selected {
+                    style
+                } else {
+                    style.bg(Hsla {
+                        a: 0.62,
+                        ..colors.surface_hover
+                    })
+                }
             })
             .on_mouse_down(
                 MouseButton::Left,

@@ -6,6 +6,7 @@ use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 use super::region_package;
+use super::tile_cache::render_image_pixels;
 use super::tile_render::{
     RenderTilePlan, TileBatchRequest, open_map_render_session, render_tile_batch_stream,
 };
@@ -415,7 +416,7 @@ impl MapViewerWindowView {
         let release = take_pointer_captures(
             &mut self.drag,
             &mut self.right_selection_drag,
-            &mut self.preview_3d.drag_origin,
+            &mut self.preview_3d.drag,
             &mut self.ui_state.dock_drag,
         );
         let changed = release.changed();
@@ -438,7 +439,7 @@ impl MapViewerWindowView {
         let release = take_pointer_captures(
             &mut self.drag,
             &mut self.right_selection_drag,
-            &mut self.preview_3d.drag_origin,
+            &mut self.preview_3d.drag,
             &mut self.ui_state.dock_drag,
         );
         let changed = release.changed();
@@ -456,7 +457,7 @@ impl MapViewerWindowView {
     pub(super) fn begin_exclusive_pointer_interaction(&mut self) {
         self.drag = None;
         self.right_selection_drag = None;
-        self.preview_3d.drag_origin = None;
+        self.preview_3d.drag = None;
         self.ui_state.dock_drag = None;
         self.context_menu = None;
         self.ui_state.top_more_open = false;
@@ -472,6 +473,9 @@ impl MapViewerWindowView {
             offset_x: self.viewport.offset_x,
             offset_y: self.viewport.offset_y,
             moved: false,
+            last_position: position,
+            last_movement_x: 0.0,
+            last_movement_y: 0.0,
         });
         cx.notify();
     }
@@ -483,6 +487,7 @@ impl MapViewerWindowView {
         let hover_changed = self.update_hover_block(position);
         let Some(mut drag) = self.drag else {
             if hover_changed {
+                self.last_drag_canvas_snapshot_sync = None;
                 let colors = self.theme_colors(cx);
                 self.sync_canvas_snapshot(colors, cx);
             }
@@ -494,12 +499,27 @@ impl MapViewerWindowView {
             drag.moved = true;
             self.drag = Some(drag);
         }
+        if let Some(active_drag) = self.drag.as_mut() {
+            let movement_x = position.x - active_drag.last_position.x;
+            let movement_y = position.y - active_drag.last_position.y;
+            active_drag.last_position = position;
+            active_drag.last_movement_x = movement_x.into();
+            active_drag.last_movement_y = movement_y.into();
+        }
         self.viewport.offset_x = drag.offset_x + (position.x - drag.start.x) / px(1.0);
         self.viewport.offset_y = drag.offset_y + (position.y - drag.start.y) / px(1.0);
         self.ensure_visible_tiles_throttled(cx);
         self.professional.pending_overlay_refresh = true;
+        self.schedule_viewport_idle_refresh(cx);
         let colors = self.theme_colors(cx);
-        self.sync_canvas_snapshot(colors, cx);
+        let now = Instant::now();
+        let should_sync = self.last_drag_canvas_snapshot_sync.is_none_or(|last_sync| {
+            now.saturating_duration_since(last_sync) >= DRAG_CANVAS_SYNC_INTERVAL
+        });
+        if should_sync {
+            self.last_drag_canvas_snapshot_sync = Some(now);
+            self.sync_canvas_snapshot(colors, cx);
+        }
     }
 
     pub(super) fn end_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -516,6 +536,9 @@ impl MapViewerWindowView {
             self.ensure_visible_tiles(cx);
             self.refresh_professional_render_caches();
             self.refresh_professional_overlays(cx);
+            self.last_drag_canvas_snapshot_sync = None;
+            let colors = self.theme_colors(cx);
+            self.sync_canvas_snapshot(colors, cx);
             cx.notify();
         }
     }
@@ -866,9 +889,11 @@ impl MapViewerWindowView {
     pub(super) fn replace_paste_preview_images(
         &mut self,
         images: Vec<PastePreviewImage>,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         replace_paste_preview_image_set(&mut self.paste_preview_images, images);
+        self.paste_preview_images_generation =
+            self.paste_preview_images_generation.saturating_add(1);
     }
 
     fn clear_paste_preview_state(&mut self, cx: &mut Context<Self>) {
@@ -887,9 +912,6 @@ impl MapViewerWindowView {
             return Vec::new();
         }
         let source_bounds = copied_chunk_chunk_bounds(copied_chunk);
-        let delta_bounds = copied_chunk
-            .chunk_delta_bounds(preview.source_anchor)
-            .unwrap_or((0, 0, 0, 0));
         copied_chunk
             .chunks
             .iter()
@@ -900,7 +922,7 @@ impl MapViewerWindowView {
                     .get(&chunk.chunk)
                     .cloned()
                     .or_else(|| {
-                        source_bounds.map(|bounds| {
+                        source_bounds.and_then(|bounds| {
                             fallback_copied_chunk_preview_image(
                                 chunk.chunk,
                                 preview.source_anchor,
@@ -911,9 +933,7 @@ impl MapViewerWindowView {
                 let delta_x = chunk.chunk.x.saturating_sub(preview.source_anchor.x);
                 let delta_z = chunk.chunk.z.saturating_sub(preview.source_anchor.z);
                 let (target_delta_x, target_delta_z) =
-                    preview
-                        .transform
-                        .transform_delta_in_bounds(delta_x, delta_z, delta_bounds);
+                    preview.transform.transform_chunk_delta(delta_x, delta_z);
                 let target = ChunkPos {
                     x: preview.target_anchor.x.saturating_add(target_delta_x),
                     z: preview.target_anchor.z.saturating_add(target_delta_z),
@@ -951,12 +971,19 @@ impl MapViewerWindowView {
             .tiles
             .iter()
             .find(|tile| tile.coord == tile_coord)?;
+        let (pixels, pixel_format) = render_image_pixels(
+            tile.image.as_ref(),
+            tile.pixel_format,
+            tile.width,
+            tile.height,
+        )
+        .ok()?;
         copy_chunk_preview_image_from_tile(
             source,
             tile.coord,
             chunks_per_tile,
-            tile.pixels.as_ref()?,
-            tile.pixel_format?,
+            pixels,
+            pixel_format,
             tile.width,
             tile.height,
         )
@@ -1443,7 +1470,7 @@ impl MapViewerWindowView {
             pressed_button,
             self.drag.is_some(),
             self.right_selection_drag.is_some(),
-            self.preview_3d.drag_origin.is_some(),
+            self.preview_3d.drag.is_some(),
             self.ui_state.dock_drag.is_some(),
         ) {
             CanvasPointerMoveAction::UpdateMapPointer => {
@@ -2555,6 +2582,7 @@ impl MapViewerWindowView {
                     z: menu.block_z,
                     label: SharedString::from(format!("{}, {}", menu.block_x, menu.block_z)),
                 });
+            self.markers_generation = self.markers_generation.saturating_add(1);
             self.status = SharedString::from("已添加地图标记");
         }
         self.context_menu = None;
@@ -2562,7 +2590,9 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn clear_dimension_markers(&mut self, cx: &mut Context<Self>) {
-        self.markers.remove(&self.dimension);
+        if self.markers.remove(&self.dimension).is_some() {
+            self.markers_generation = self.markers_generation.saturating_add(1);
+        }
         self.context_menu = None;
         self.status = SharedString::from("已清除当前维度标记");
         cx.notify();
@@ -2810,7 +2840,9 @@ pub(super) fn canvas_pointer_move_action(
         Some(MouseButton::Right) | None if right_selection_active => {
             CanvasPointerMoveAction::UpdateRightSelection
         }
-        Some(MouseButton::Left) if preview_3d_drag_active => CanvasPointerMoveAction::Ignore,
+        Some(MouseButton::Left | MouseButton::Right) if preview_3d_drag_active => {
+            CanvasPointerMoveAction::Ignore
+        }
         _ if map_drag_active
             || right_selection_active
             || preview_3d_drag_active
@@ -2853,13 +2885,13 @@ fn preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf
 pub(super) fn take_pointer_captures(
     drag: &mut Option<DragState>,
     right_selection_drag: &mut Option<RightSelectionDrag>,
-    preview_3d_drag_origin: &mut Option<Point<Pixels>>,
+    preview_3d_drag: &mut Option<Preview3dDragState>,
     dock_drag: &mut Option<DockDragState>,
 ) -> PointerCaptureRelease {
     PointerCaptureRelease {
         map_drag: drag.take().is_some(),
         right_selection: right_selection_drag.take().is_some(),
-        preview_3d_drag: preview_3d_drag_origin.take().is_some(),
+        preview_3d_drag: preview_3d_drag.take().is_some(),
         dock_drag: dock_drag.take().is_some(),
     }
 }
@@ -2888,6 +2920,7 @@ fn paste_preview_image_for_chunk(
     target: ChunkPos,
     transform: PasteTransform,
 ) -> Option<PastePreviewImage> {
+    let source_pixels = source.image.as_bytes(0)?;
     let expected_len = usize::try_from(source.width)
         .ok()
         .and_then(|width| {
@@ -2896,7 +2929,7 @@ fn paste_preview_image_for_chunk(
                 .and_then(|height| width.checked_mul(height))
         })
         .and_then(|pixel_count| pixel_count.checked_mul(4))?;
-    if source.pixels.len() < expected_len {
+    if source_pixels.len() < expected_len {
         return None;
     }
 
@@ -2936,23 +2969,17 @@ fn paste_preview_image_for_chunk(
                 .checked_mul(output_width_usize)?
                 .checked_add(usize::try_from(target_x).ok()?)?
                 .checked_mul(4)?;
-            output[target_index] = source.pixels[source_index];
-            output[target_index + 1] = source.pixels[source_index + 1];
-            output[target_index + 2] = source.pixels[source_index + 2];
+            output[target_index] = source_pixels[source_index];
+            output[target_index + 1] = source_pixels[source_index + 1];
+            output[target_index + 2] = source_pixels[source_index + 2];
             output[target_index + 3] =
-                ((u16::from(source.pixels[source_index + 3]) * 184) / 255) as u8;
+                ((u16::from(source_pixels[source_index + 3]) * 184) / 255) as u8;
         }
     }
-    let image = import_preview::copied_preview_image_to_render_image(&CopiedChunkPreviewImage {
-        chunk: target,
-        pixels: Arc::<[u8]>::from(output.clone()),
-        width: output_width,
-        height: output_height,
-    })?;
+    let image = render_image_from_rgba_pixels(output_width, output_height, output)?;
     Some(PastePreviewImage {
         target,
         image,
-        pixels: Arc::<[u8]>::from(output),
         width: output_width,
         height: output_height,
     })
@@ -2975,7 +3002,7 @@ fn fallback_copied_chunk_preview_image(
     chunk: ChunkPos,
     source_anchor: ChunkPos,
     bounds: (i32, i32, i32, i32),
-) -> CopiedChunkPreviewImage {
+) -> Option<CopiedChunkPreviewImage> {
     let (min_x, max_x, min_z, max_z) = bounds;
     let mut pixels = vec![0_u8; 16 * 16 * 4];
     let is_origin = chunk == source_anchor;
@@ -3011,12 +3038,13 @@ fn fallback_copied_chunk_preview_image(
             pixels[index + 3] = color[3];
         }
     }
-    CopiedChunkPreviewImage {
+    let image = render_image_from_rgba_pixels(16, 16, pixels)?;
+    Some(CopiedChunkPreviewImage {
         chunk,
-        pixels: Arc::<[u8]>::from(pixels),
+        image,
         width: 16,
         height: 16,
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3028,7 +3056,7 @@ fn render_copied_chunk_preview_images_blocking(
     dimension: Dimension,
     layout: RenderLayout,
     cpu_budget: RenderCpuBudget,
-    tile_chunk_index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
+    tile_chunk_index: TileChunkIndex,
     copied_chunk: &CopiedChunkData,
 ) -> Result<BTreeMap<ChunkPos, CopiedChunkPreviewImage>, String> {
     let chunks_per_tile = i32::try_from(layout.chunks_per_tile)
@@ -3055,8 +3083,8 @@ fn render_copied_chunk_preview_images_blocking(
     for (coord, chunks) in &chunks_by_tile {
         let indexed_positions = tile_chunk_index
             .get(coord)
-            .cloned()
-            .unwrap_or_else(|| chunks.clone());
+            .map(Arc::clone)
+            .unwrap_or_else(|| TileChunkPositions::from(chunks.clone()));
         plans.push(RenderTilePlan::new(
             dimension,
             mode,
@@ -3072,13 +3100,14 @@ fn render_copied_chunk_preview_images_blocking(
     );
     let render_cancel = RenderCancelFlag::new();
     let (event_sender, mut event_receiver) = unbounded::<TileRenderEvent>();
-    let cache_identity = decoded_cache_identity(&world_path, render_backend, render_gpu_backend);
-    let tile_cache_validation_seed = cache_identity.validation_seed;
+    let tile_cache_validation_seed = bedrock_render::render_preset_cache_validation_seed(
+        &world_path,
+        render_backend,
+        render_gpu_backend,
+    );
     render_tile_batch_stream(
         TileBatchRequest {
             render_session,
-            world_path: world_path.clone(),
-            mode,
             dimension,
             layout,
             center_tile,
@@ -3087,7 +3116,6 @@ fn render_copied_chunk_preview_images_blocking(
             cpu_budget,
             render_backend,
             render_gpu_backend,
-            cache_identity,
             tile_cache_validation_seed,
             quick_reveal: true,
             render_cancel,
@@ -3102,10 +3130,12 @@ fn render_copied_chunk_preview_images_blocking(
                 let Some(chunks) = chunks_by_tile.get(&coord) else {
                     continue;
                 };
-                let Some(pixels) = tile.pixels.as_ref() else {
-                    continue;
-                };
-                let Some(pixel_format) = tile.pixel_format else {
+                let Ok((pixels, pixel_format)) = render_image_pixels(
+                    tile.image.as_ref(),
+                    tile.pixel_format,
+                    tile.width,
+                    tile.height,
+                ) else {
                     continue;
                 };
                 for chunk in chunks {
@@ -3131,8 +3161,8 @@ fn render_copied_chunk_preview_images_blocking(
 fn preview_tile_chunk_index_for_chunks(
     chunks: &[ChunkPos],
     layout: RenderLayout,
-    tile_chunk_index: &BTreeMap<(i32, i32), Vec<ChunkPos>>,
-) -> BTreeMap<(i32, i32), Vec<ChunkPos>> {
+    tile_chunk_index: &TileChunkIndex,
+) -> TileChunkIndex {
     let Ok(chunks_per_tile) = i32::try_from(layout.chunks_per_tile) else {
         return BTreeMap::new();
     };
@@ -3146,7 +3176,7 @@ fn preview_tile_chunk_index_for_chunks(
             );
             tile_chunk_index
                 .get(&coord)
-                .cloned()
+                .map(Arc::clone)
                 .map(|indexed| (coord, indexed))
         })
         .collect()
@@ -3221,9 +3251,10 @@ fn copy_chunk_preview_image_from_tile(
             output[target_index..target_index + 4].copy_from_slice(&rgba);
         }
     }
+    let image = render_image_from_rgba_pixels(chunk_width, chunk_height, output)?;
     Some(CopiedChunkPreviewImage {
         chunk: source,
-        pixels: Arc::<[u8]>::from(output),
+        image,
         width: chunk_width,
         height: chunk_height,
     })
@@ -3279,7 +3310,7 @@ fn build_chunk_image_export_blocking(
     dimension: Dimension,
     layout: RenderLayout,
     cpu_budget: RenderCpuBudget,
-    tile_chunk_index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
+    tile_chunk_index: TileChunkIndex,
     canvas_preview_images: BTreeMap<ChunkPos, CopiedChunkPreviewImage>,
     chunks: Vec<ChunkPos>,
     mut progress: impl FnMut(ChunkTransferProgress),
@@ -3338,7 +3369,7 @@ pub(super) struct ChunkImageExport {
 
 pub(super) struct ChunkImageExportChunk {
     pub(super) chunk: ChunkPos,
-    pub(super) pixels: Arc<[u8]>,
+    pub(super) pixels: Vec<u8>,
     pub(super) width: u32,
     pub(super) height: u32,
 }
@@ -3349,14 +3380,27 @@ fn chunk_image_export_from_paste_preview(
 ) -> Option<ChunkImageExport> {
     let chunks = images
         .iter()
-        .map(|image| ChunkImageExportChunk {
-            chunk: image.target,
-            pixels: image.pixels.clone(),
-            width: image.width,
-            height: image.height,
+        .filter_map(|image| {
+            let pixels = image.image.as_bytes(0)?;
+            Some(ChunkImageExportChunk {
+                chunk: image.target,
+                pixels: pixels.to_vec(),
+                width: image.width,
+                height: image.height,
+            })
         })
         .collect::<Vec<_>>();
     chunk_image_export_from_chunks(prefix, chunks)
+}
+
+fn render_image_from_rgba_pixels(
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+) -> Option<Arc<RenderImage>> {
+    RenderImage::from_raw_pixels(width, height, RenderImagePixelFormat::Rgba8, pixels)
+        .ok()
+        .map(Arc::new)
 }
 
 fn chunk_image_export_from_copied_images(
@@ -3365,11 +3409,14 @@ fn chunk_image_export_from_copied_images(
 ) -> Option<ChunkImageExport> {
     let chunks = images
         .values()
-        .map(|image| ChunkImageExportChunk {
-            chunk: image.chunk,
-            pixels: image.pixels.clone(),
-            width: image.width,
-            height: image.height,
+        .filter_map(|image| {
+            let pixels = image.image.as_bytes(0)?;
+            Some(ChunkImageExportChunk {
+                chunk: image.chunk,
+                pixels: pixels.to_vec(),
+                width: image.width,
+                height: image.height,
+            })
         })
         .collect::<Vec<_>>();
     chunk_image_export_from_chunks(prefix, chunks)

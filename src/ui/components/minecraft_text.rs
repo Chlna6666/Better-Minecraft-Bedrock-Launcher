@@ -1,3 +1,4 @@
+use crate::ui::animation::request_animation_frame_if;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::*;
 use once_cell::sync::Lazy;
@@ -120,7 +121,7 @@ impl RenderOnce for MinecraftFormattedText {
         }
 
         if parsed.has_obfuscated && self.animate_obfuscated {
-            window.request_animation_frame();
+            request_animation_frame_if(window, true);
             let frame = obfuscated_frame_tick();
             parsed = apply_obfuscated_frame(&parsed, frame);
         }

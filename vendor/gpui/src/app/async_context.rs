@@ -1,8 +1,7 @@
 use crate::{
     AnyView, AnyWindowHandle, App, AppCell, AppContext, BackgroundExecutor, BorrowAppContext,
-    Entity, EventEmitter, Focusable, ForegroundExecutor, Global, Priority, PromptButton,
-    PromptLevel, Render, Reservation, Result, Subscription, Task, VisualContext, Window,
-    WindowHandle,
+    Entity, EventEmitter, Focusable, ForegroundExecutor, Global, PromptButton, PromptLevel, Render,
+    Reservation, Result, Subscription, Task, VisualContext, Window, WindowHandle,
 };
 use anyhow::{Context as _, anyhow};
 use derive_more::{Deref, DerefMut};
@@ -189,18 +188,6 @@ impl AsyncApp {
             .spawn(async move { f(&mut cx).await })
     }
 
-    /// Schedule a future to be polled on the foreground thread with the given priority.
-    #[track_caller]
-    pub fn spawn_with_priority<AsyncFn, R>(&self, priority: Priority, f: AsyncFn) -> Task<R>
-    where
-        AsyncFn: AsyncFnOnce(&mut AsyncApp) -> R + 'static,
-        R: 'static,
-    {
-        let mut cx = self.clone();
-        self.foreground_executor
-            .spawn_with_priority(priority, async move { f(&mut cx).await })
-    }
-
     /// Determine whether global state of the specified type has been assigned.
     /// Returns an error if the `App` has been dropped.
     pub fn has_global<G: Global>(&self) -> Result<bool> {
@@ -348,18 +335,6 @@ impl AsyncWindowContext {
         let mut cx = self.clone();
         self.foreground_executor
             .spawn(async move { f(&mut cx).await })
-    }
-
-    /// Schedule a future to be executed on the main thread with the given priority.
-    #[track_caller]
-    pub fn spawn_with_priority<AsyncFn, R>(&self, priority: Priority, f: AsyncFn) -> Task<R>
-    where
-        AsyncFn: AsyncFnOnce(&mut AsyncWindowContext) -> R + 'static,
-        R: 'static,
-    {
-        let mut cx = self.clone();
-        self.foreground_executor
-            .spawn_with_priority(priority, async move { f(&mut cx).await })
     }
 
     /// Present a platform dialog.

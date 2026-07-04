@@ -559,18 +559,15 @@ impl MapViewerWindowView {
                     .text_size(px(11.0))
                     .text_color(colors.text_muted)
                     .child(format!(
-                        "区块 {:?} · 解码瓦片缓存 显示 {} / 校验 {} / 过期 {} / 不匹配 {} / 探测 {} / 命中 {} / 未命中 {} / 空负缓存 {} · 读取 {}ms · 解压 {}ms",
+                        "区块 {:?} · 渲染缓存 探测 {} / 命中 {} / 未命中 {} / 空负缓存 {} · 读取 {}ms · 解压 {}ms · blob 解码 {}ms",
                         self.chunk_bounds.map(|bounds| bounds.chunk_count).unwrap_or(0),
-                        self.cache_displayed_tiles,
-                        self.cache_verified_tiles,
-                        self.legacy_stale_cache_tiles,
-                        self.cache_validation_mismatches,
                         self.render_stats.cache_probes,
                         self.render_stats.cache_disk_fresh_hits,
                         self.render_stats.cache_misses,
                         self.render_stats.cache_empty_negative_hits,
                         self.render_stats.cache_read_ms,
                         self.render_stats.cache_decode_ms,
+                        self.render_stats.tile_blob_decode_ms,
                     )),
             )
             .child(
@@ -605,11 +602,17 @@ impl MapViewerWindowView {
                     .text_size(px(11.0))
                     .text_color(colors.text_muted)
                     .child(format!(
-                        "数据 缓存 区域 {}/{} · 区块烘焙 {}/{} · 局部 chunk {} · 刷新渲染 {} · 冷渲染 {} · 队列未命中 {} · 距离² {} · 缺失区块 {} · 未知方块 {} · 透明像素 {} · 错误像素 {} · 校验 {}",
+                        "数据 缓存 区域 {}/{} · 瓦片索引 T/V/M/E {}/{}/{}/{} · 索引读 {}ms · 依赖校验 {}ms · 写入丢弃 {} · 损坏 miss {} · 局部 chunk {} · 刷新渲染 {} · 冷渲染 {} · 队列未命中 {} · 距离² {} · 缺失区块 {} · 未知方块 {} · 透明像素 {} · 错误像素 {} · 校验 {}",
                         self.render_stats.region_cache_hits,
                         self.render_stats.region_cache_misses,
-                        self.render_stats.chunk_bake_cache_hits,
-                        self.render_stats.chunk_bake_cache_misses,
+                        self.render_stats.tile_index_trusted_hits,
+                        self.render_stats.tile_index_validated_hits,
+                        self.render_stats.tile_index_misses,
+                        self.render_stats.tile_index_empty_hits,
+                        self.render_stats.tile_index_read_ms,
+                        self.render_stats.tile_dep_validation_ms,
+                        self.render_stats.tile_cache_writer_dropped,
+                        self.render_stats.index_corrupt_misses,
                         self.partial_refreshed_chunks,
                         self.refresh_rendered_tiles,
                         self.cold_rendered_tiles,

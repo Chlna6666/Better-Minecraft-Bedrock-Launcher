@@ -244,10 +244,27 @@ impl MainWindowView {
     }
 
     pub(super) fn release_download_page(&mut self, cx: &mut Context<Self>) {
+        let has_page_resources = self.download_page_view.is_some()
+            || self.download_controls_initialized
+            || !self.download_controls_subscriptions.is_empty()
+            || self.download_prefs_last_save.is_some();
+        let has_route_state = cx.read_global(
+            |state: &crate::ui::views::download::state::DownloadPageState, _cx| {
+                state.has_releasable_route_state()
+            },
+        );
+        if !has_page_resources && !has_route_state {
+            return;
+        }
+
         clear_optional_page_view(&mut self.download_page_view);
         self.download_controls_initialized = false;
         self.download_controls_subscriptions.clear();
         self.download_prefs_last_save = None;
+        if !has_route_state {
+            return;
+        }
+
         cx.update_global(
             |state: &mut crate::ui::views::download::state::DownloadPageState, cx| {
                 let mods_before = state.curseforge_mods.len();
@@ -255,10 +272,14 @@ impl MainWindowView {
                 let versions_before = state.curseforge_versions.len();
                 let game_versions_before = state.versions.len();
                 state.release_curseforge_tab_state(cx);
+                state.search_input = None;
+                state.page_jump_input = None;
+                state.search_query = SharedString::from("");
+                state.page_index = 0;
                 state.tab = crate::ui::views::download::state::DownloadTab::Game;
                 state.tab_anim_at = None;
                 state.force_refresh_next = false;
-                debug!(
+                trace!(
                     "release download page game_versions={} mods={} categories={} versions={}",
                     game_versions_before, mods_before, categories_before, versions_before
                 );
@@ -267,9 +288,25 @@ impl MainWindowView {
     }
 
     pub(super) fn release_manage_page(&mut self, cx: &mut Context<Self>) {
+        let has_page_resources = self.manage_page_view.is_some()
+            || self.manage_controls_initialized
+            || !self.manage_controls_subscriptions.is_empty();
+        let has_route_state = cx.read_global(
+            |state: &crate::ui::views::manage::state::ManagePageState, _cx| {
+                state.search_input.is_some()
+            },
+        );
+        if !has_page_resources && !has_route_state {
+            return;
+        }
+
         clear_optional_page_view(&mut self.manage_page_view);
         self.manage_controls_initialized = false;
         self.manage_controls_subscriptions.clear();
+        if !has_route_state {
+            return;
+        }
+
         cx.update_global(
             |state: &mut crate::ui::views::manage::state::ManagePageState, _cx| {
                 state.search_input = None;
@@ -278,21 +315,60 @@ impl MainWindowView {
     }
 
     pub(super) fn release_tools_page(&mut self, cx: &mut Context<Self>) {
+        let has_page_resources = self.tools_page_view.is_some()
+            || self.tools_controls_initialized
+            || !self.tools_controls_subscriptions.is_empty();
+        let has_route_state = cx.read_global(
+            |state: &crate::ui::views::tools::state::ToolsPageState, _cx| {
+                state.room_code_input.is_some()
+                    || state.bootstrap_peers_input.is_some()
+                    || state.player_name_input.is_some()
+                    || state.game_ports_input.is_some()
+            },
+        );
+        if !has_page_resources && !has_route_state {
+            return;
+        }
+
         clear_optional_page_view(&mut self.tools_page_view);
         self.tools_controls_initialized = false;
         self.tools_controls_subscriptions.clear();
+        if !has_route_state {
+            return;
+        }
+
         cx.update_global(
             |state: &mut crate::ui::views::tools::state::ToolsPageState, _cx| {
                 state.room_code_input = None;
+                state.bootstrap_peers_input = None;
+                state.player_name_input = None;
+                state.game_ports_input = None;
             },
         );
     }
 
     pub(super) fn release_settings_page(&mut self, cx: &mut Context<Self>) {
+        let has_page_resources = self.settings_page_view.is_some()
+            || self.settings_controls_initialized
+            || !self.settings_controls_subscriptions.is_empty()
+            || self.settings_load_started;
+        let has_route_state = cx.read_global(
+            |state: &crate::ui::views::settings::state::SettingsPageState, _cx| {
+                state.has_releasable_route_state()
+            },
+        );
+        if !has_page_resources && !has_route_state {
+            return;
+        }
+
         clear_optional_page_view(&mut self.settings_page_view);
         self.settings_controls_initialized = false;
         self.settings_controls_subscriptions.clear();
         self.settings_load_started = false;
+        if !has_route_state {
+            return;
+        }
+
         let custom_style = cx.update_global(
             |state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
                 let custom_style = if state.commit_background_blur_preview() {

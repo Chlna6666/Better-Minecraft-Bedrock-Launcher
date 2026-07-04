@@ -1040,8 +1040,8 @@ impl Render for DebugView {
         let copy = DebugCopy::from_locale(locale);
         let debug = cx.global::<DebugState>().clone();
         let update = cx.global::<UpdateState>();
-        let debug_window_width = window.window_bounds().get_bounds().size.width / px(1.);
-        let debug_window_height = window.window_bounds().get_bounds().size.height / px(1.);
+        let debug_window_width = window.bounds().size.width / px(1.);
+        let debug_window_height = window.bounds().size.height / px(1.);
         crate::ui::window::debug::state::record_debug_window_frame(
             debug_window_width,
             debug_window_height,

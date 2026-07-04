@@ -22,7 +22,7 @@ impl FontFeatures {
     /// Returns whether the `calt` feature is enabled.
     ///
     /// Returns `None` if the feature is not present.
-    pub fn is_calt_enabled(&self) -> Option<bool> {
+    pub fn calt_enabled(&self) -> Option<bool> {
         self.0
             .iter()
             .find(|(feature, _)| feature == "calt")

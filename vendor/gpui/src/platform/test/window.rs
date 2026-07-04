@@ -6,12 +6,14 @@ use crate::{
 };
 use collections::HashMap;
 use parking_lot::Mutex;
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
     cell::Cell,
     rc::{Rc, Weak},
     sync::{self, Arc},
+    thread,
+    time::Duration,
 };
+use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub(crate) struct TestWindowState {
     pub(crate) bounds: Bounds<Pixels>,
@@ -32,13 +34,11 @@ pub(crate) struct TestWindowState {
     moved_callback: Option<Box<dyn FnMut()>>,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     request_frame_count: Rc<Cell<usize>>,
-    timed_out_frame_count: Rc<Cell<usize>>,
-    last_request_frame_options: Rc<Cell<Option<RequestFrameOptions>>>,
-    draw_count: Rc<Cell<usize>>,
+    last_requested_frame: Rc<Cell<Option<RequestFrameOptions>>>,
+    start_window_move_count: Rc<Cell<usize>>,
     present_framebuffer_only_count: Rc<Cell<usize>>,
-    native_move_active: Rc<Cell<bool>>,
+    draw_delay: Duration,
     input_handler: Option<PlatformInputHandler>,
-    background_appearance: WindowBackgroundAppearance,
     is_maximized: bool,
     is_fullscreen: bool,
 }
@@ -49,7 +49,8 @@ pub(crate) struct TestWindow(pub(crate) Rc<Mutex<TestWindowState>>);
 impl HasWindowHandle for TestWindow {
     fn window_handle(
         &self,
-    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+    ) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError>
+    {
         unimplemented!("Test Windows are not backed by a real platform window")
     }
 }
@@ -57,7 +58,8 @@ impl HasWindowHandle for TestWindow {
 impl HasDisplayHandle for TestWindow {
     fn display_handle(
         &self,
-    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+    ) -> Result<winit::raw_window_handle::DisplayHandle<'_>, winit::raw_window_handle::HandleError>
+    {
         unimplemented!("Test Windows are not backed by a real platform window")
     }
 }
@@ -88,13 +90,11 @@ impl TestWindow {
             moved_callback: None,
             request_frame_callback: None,
             request_frame_count: Rc::new(Cell::new(0)),
-            timed_out_frame_count: Rc::new(Cell::new(0)),
-            last_request_frame_options: Rc::new(Cell::new(None)),
-            draw_count: Rc::new(Cell::new(0)),
+            last_requested_frame: Rc::new(Cell::new(None)),
+            start_window_move_count: Rc::new(Cell::new(0)),
             present_framebuffer_only_count: Rc::new(Cell::new(0)),
-            native_move_active: Rc::new(Cell::new(false)),
+            draw_delay: Duration::ZERO,
             input_handler: None,
-            background_appearance: params.window_background,
             is_maximized: false,
             is_fullscreen: false,
         })))
@@ -112,13 +112,13 @@ impl TestWindow {
         self.0.lock().resize_callback = Some(callback);
     }
 
-    pub(crate) fn simulate_active_status_change(&self, active: bool) {
+    pub(crate) fn simulate_active_status_change(&self, is_active: bool) {
         let mut lock = self.0.lock();
         let Some(mut callback) = lock.active_status_change_callback.take() else {
             return;
         };
         drop(lock);
-        callback(active);
+        callback(is_active);
         self.0.lock().active_status_change_callback = Some(callback);
     }
 
@@ -137,16 +137,12 @@ impl TestWindow {
         self.0.lock().request_frame_count.get()
     }
 
-    pub(crate) fn timed_out_frame_count(&self) -> usize {
-        self.0.lock().timed_out_frame_count.get()
+    pub(crate) fn last_requested_frame(&self) -> Option<RequestFrameOptions> {
+        self.0.lock().last_requested_frame.get()
     }
 
-    pub(crate) fn last_request_frame_options(&self) -> Option<RequestFrameOptions> {
-        self.0.lock().last_request_frame_options.get()
-    }
-
-    pub(crate) fn draw_count(&self) -> usize {
-        self.0.lock().draw_count.get()
+    pub(crate) fn start_window_move_count(&self) -> usize {
+        self.0.lock().start_window_move_count.get()
     }
 
     pub(crate) fn simulate_request_frame(&self, options: RequestFrameOptions) {
@@ -163,15 +159,14 @@ impl TestWindow {
         self.0.lock().present_framebuffer_only_count.get()
     }
 
-    pub(crate) fn set_native_move_active(&self, active: bool) {
-        self.0.lock().native_move_active.set(active);
+    pub(crate) fn set_draw_delay(&self, delay: Duration) {
+        self.0.lock().draw_delay = delay;
     }
 
     pub(crate) fn is_shown(&self) -> bool {
         self.0.lock().shown
     }
 
-    #[expect(dead_code, reason = "kept for focused-map behavior diagnostics")]
     pub(crate) fn focus_on_map(&self) -> bool {
         self.0.lock().focus_on_map
     }
@@ -280,16 +275,10 @@ impl PlatformWindow for TestWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
-    fn set_background_appearance(&self, background: WindowBackgroundAppearance) {
-        self.0.lock().background_appearance = background;
-    }
+    fn set_background_appearance(&self, _background: WindowBackgroundAppearance) {}
 
-    fn background_appearance(&self) -> WindowBackgroundAppearance {
-        self.0.lock().background_appearance
-    }
-
-    fn set_edited(&mut self, edited: bool) {
-        self.0.lock().edited = edited;
+    fn set_edited(&mut self, is_edited: bool) {
+        self.0.lock().edited = is_edited;
     }
 
     fn show_character_palette(&self) {
@@ -330,17 +319,7 @@ impl PlatformWindow for TestWindow {
         let mut lock = self.0.lock();
         lock.request_frame_count
             .set(lock.request_frame_count.get() + 1);
-        lock.last_request_frame_options.set(Some(options));
-    }
-
-    fn frame_request_timed_out(&self, _options: RequestFrameOptions) {
-        let lock = self.0.lock();
-        lock.timed_out_frame_count
-            .set(lock.timed_out_frame_count.get() + 1);
-    }
-
-    fn is_native_move_active(&self) -> bool {
-        self.0.lock().native_move_active.get()
+        lock.last_requested_frame.set(Some(options));
     }
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
@@ -380,8 +359,10 @@ impl PlatformWindow for TestWindow {
     fn on_appearance_changed(&self, _callback: Box<dyn FnMut()>) {}
 
     fn draw(&self, _render_plan: crate::FrameRenderPlan<'_>) {
-        let lock = self.0.lock();
-        lock.draw_count.set(lock.draw_count.get() + 1);
+        let draw_delay = self.0.lock().draw_delay;
+        if !draw_delay.is_zero() {
+            thread::sleep(draw_delay);
+        }
     }
 
     fn present_framebuffer_only(&self, _render_plan: crate::FrameRenderPlan<'_>) {
@@ -403,7 +384,9 @@ impl PlatformWindow for TestWindow {
     }
 
     fn start_window_move(&self) {
-        unimplemented!()
+        let lock = self.0.lock();
+        lock.start_window_move_count
+            .set(lock.start_window_move_count.get() + 1);
     }
 
     fn map_window(&mut self) -> anyhow::Result<()> {
@@ -442,7 +425,7 @@ impl TestAtlas {
 }
 
 impl PlatformAtlas for TestAtlas {
-    fn get_or_insert_with<'a>(
+    fn ensure_tile_with<'a>(
         &self,
         key: &crate::AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
@@ -451,7 +434,7 @@ impl PlatformAtlas for TestAtlas {
     ) -> anyhow::Result<Option<crate::AtlasTile>> {
         let mut state = self.0.lock();
         if let Some(tile) = state.tiles.get(key) {
-            return Ok(Some(*tile));
+            return Ok(Some(tile.clone()));
         }
         drop(state);
 
@@ -481,10 +464,10 @@ impl PlatformAtlas for TestAtlas {
             },
         );
 
-        Ok(Some(state.tiles[key]))
+        Ok(Some(state.tiles[key].clone()))
     }
 
-    fn get_or_update_with<'a>(
+    fn refresh_tile_with<'a>(
         &self,
         key: &crate::AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
@@ -498,11 +481,11 @@ impl PlatformAtlas for TestAtlas {
         if let Some(tile) = state.tiles.get_mut(key)
             && tile.bounds.size == size
         {
-            return Ok(Some(*tile));
+            return Ok(Some(tile.clone()));
         }
         drop(state);
         self.remove(key);
-        self.get_or_insert_with(key, &mut || {
+        self.ensure_tile_with(key, &mut || {
             Ok(Some((size, std::borrow::Cow::Borrowed(&[]))))
         })
     }

@@ -80,8 +80,10 @@ pub fn delete_game_asset(payload: DeleteAssetPayload) -> Result<serde_json::Valu
         allow_shared_fallback: false,
     };
 
-    let is_shared_preferred =
-        payload.delete_type == "resourcePacks" || payload.delete_type == "behaviorPacks";
+    let is_shared_preferred = matches!(
+        payload.delete_type.as_str(),
+        "resourcePacks" | "behaviorPacks" | "skins"
+    );
 
     let parent_dir = resolve_target_parent(&options, dir_name, is_shared_preferred)
         .ok_or_else(|| "Could not resolve target directory".to_string())?;

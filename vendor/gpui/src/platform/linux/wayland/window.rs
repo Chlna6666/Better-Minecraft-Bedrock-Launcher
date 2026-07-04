@@ -26,7 +26,7 @@ use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
 use crate::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, FrameRenderPlan, Globals, GpuSpecs,
     GpuiMemoryTrimLevel, Modifiers, Output, Pixels, PlatformDisplay, PlatformInput, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, Size, Tiling,
+    PromptButton, PromptLevel, RendererOptions, RequestFrameOptions, ResizeEdge, Size, Tiling,
     WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowControls, WindowDecorations, WindowParams, px, size,
 };
@@ -134,7 +134,7 @@ impl WaylandWindowState {
         viewport: Option<wp_viewport::WpViewport>,
         client: WaylandClientStatePtr,
         globals: Globals,
-        renderer_backend: crate::RendererBackend,
+        renderer_options: &RendererOptions,
         options: WindowParams,
     ) -> anyhow::Result<Self> {
         let renderer = {
@@ -154,7 +154,7 @@ impl WaylandWindowState {
             let transparent = options.window_background != WindowBackgroundAppearance::Opaque;
             NovaRenderer::new(
                 &raw_window,
-                renderer_backend,
+                renderer_options.backend,
                 crate::GpuSubmissionMode::Deferred,
                 drawable_size,
                 transparent,
@@ -690,7 +690,7 @@ impl WaylandWindowStatePtr {
         }
     }
 
-    pub fn get_ime_area(&self) -> Option<Bounds<Pixels>> {
+    pub fn ime_area(&self) -> Option<Bounds<Pixels>> {
         let mut state = self.state.borrow_mut();
         let mut bounds: Option<Bounds<Pixels>> = None;
         if let Some(mut input_handler) = state.input_handler.take() {
@@ -749,7 +749,7 @@ impl WaylandWindowStatePtr {
         }
     }
 
-    pub fn handle_input(&self, input: PlatformInput) {
+    pub fn dispatch_input(&self, input: PlatformInput) {
         if let Some(ref mut fun) = self.callbacks.borrow_mut().input
             && !fun(input.clone()).propagate
         {
@@ -768,16 +768,16 @@ impl WaylandWindowStatePtr {
         }
     }
 
-    pub fn set_focused(&self, focus: bool) {
-        self.state.borrow_mut().active = focus;
+    pub fn set_focused(&self, is_focused: bool) {
+        self.state.borrow_mut().active = is_focused;
         if let Some(ref mut fun) = self.callbacks.borrow_mut().active_status_change {
-            fun(focus);
+            fun(is_focused);
         }
     }
 
-    pub fn set_hovered(&self, focus: bool) {
+    pub fn set_hovered(&self, is_hovered: bool) {
         if let Some(ref mut fun) = self.callbacks.borrow_mut().hover_status_change {
-            fun(focus);
+            fun(is_hovered);
         }
     }
 
@@ -913,18 +913,18 @@ impl PlatformWindow for WaylandWindow {
     fn mouse_position(&self) -> Point<Pixels> {
         self.borrow()
             .client
-            .get_client()
+            .client()
             .borrow()
             .mouse_location
             .unwrap_or_default()
     }
 
     fn modifiers(&self) -> Modifiers {
-        self.borrow().client.get_client().borrow().modifiers
+        self.borrow().client.client().borrow().modifiers
     }
 
     fn capslock(&self) -> Capslock {
-        self.borrow().client.get_client().borrow().capslock
+        self.borrow().client.client().borrow().capslock
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
@@ -954,7 +954,7 @@ impl PlatformWindow for WaylandWindow {
             state.client.set_pending_activation(state.surface.id());
             let token = activation.get_activation_token(&state.globals.qh, ());
             // The serial isn't exactly important here, since the activation is probably going to be rejected anyway.
-            let serial = state.client.get_serial(SerialKind::MousePress);
+            let serial = state.client.serial(SerialKind::MousePress);
             token.set_app_id(app_id);
             token.set_serial(serial, &state.globals.seat);
             token.set_surface(&state.surface);
@@ -1087,7 +1087,7 @@ impl PlatformWindow for WaylandWindow {
 
     fn show_window_menu(&self, position: Point<Pixels>) {
         let state = self.borrow();
-        let serial = state.client.get_serial(SerialKind::MousePress);
+        let serial = state.client.serial(SerialKind::MousePress);
         state.toplevel.show_window_menu(
             &state.globals.seat,
             serial,
@@ -1098,7 +1098,7 @@ impl PlatformWindow for WaylandWindow {
 
     fn start_window_move(&self) {
         let state = self.borrow();
-        let serial = state.client.get_serial(SerialKind::MousePress);
+        let serial = state.client.serial(SerialKind::MousePress);
         state.toplevel._move(&state.globals.seat, serial);
     }
 
@@ -1106,7 +1106,7 @@ impl PlatformWindow for WaylandWindow {
         let state = self.borrow();
         state.toplevel.resize(
             &state.globals.seat,
-            state.client.get_serial(SerialKind::MousePress),
+            state.client.serial(SerialKind::MousePress),
             edge.to_xdg(),
         )
     }

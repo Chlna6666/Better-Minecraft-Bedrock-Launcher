@@ -1,4 +1,5 @@
-use crate::music::{MusicDragTarget, MusicPlaybackMode, MusicSnapshot, MusicState};
+use crate::music::MusicPlaybackMode;
+use crate::ui::state::music::{MusicDragTarget, MusicSnapshot, MusicState};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
@@ -320,7 +321,7 @@ pub fn render_music_player(
             cx.stop_propagation();
             let now = Instant::now();
             cx.update_global(|music: &mut MusicState, cx: &mut App| {
-                music.toggle_playback(now);
+                music.toggle_playback(now, cx);
             });
         })
         .child(
@@ -356,7 +357,7 @@ pub fn render_music_player(
                 let popup_visible = music.snapshot.expanded
                     || music.popup_animating(now)
                     || music.expanded_factor(now) > 0.001;
-                music.set_expanded(!popup_visible, now);
+                music.set_expanded(!popup_visible, now, cx);
             });
         })
         .child(inline_cover(
@@ -774,7 +775,7 @@ pub fn render_music_player(
                                     cx.stop_propagation();
                                     let now = Instant::now();
                                     cx.update_global(|music: &mut MusicState, cx| {
-                                        music.toggle_playback(now);
+                                        music.toggle_playback(now, cx);
                                     });
                                 })
                                 .child(
@@ -910,7 +911,7 @@ pub fn render_music_player(
                         music.commit_drag(now, cx);
                         music.clear_drag();
                         if music.expanded_target_open() {
-                            music.set_expanded(false, now);
+                            music.set_expanded(false, now, cx);
                         }
                     });
                 })

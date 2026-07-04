@@ -4,7 +4,7 @@ use std::rc::Rc;
 use calloop::{EventLoop, LoopHandle};
 use util::ResultExt;
 
-use crate::platform::linux::LinuxClient;
+use crate::platform::linux::{LinuxClient, insert_foreground_task_idle};
 use crate::platform::{LinuxCommon, PlatformWindow};
 use crate::{
     AnyWindowHandle, CursorStyle, DisplayId, LinuxKeyboardLayout, PlatformDisplay,
@@ -24,17 +24,17 @@ impl HeadlessClient {
     pub(crate) fn new() -> Self {
         let event_loop = EventLoop::try_new().unwrap();
 
-        let (common, main_receiver, main_queue_receiver) =
-            LinuxCommon::new(event_loop.get_signal());
+        let (common, main_receiver) = LinuxCommon::new(event_loop.get_signal());
+        let foreground_task_queue = common.foreground_task_queue.clone();
 
         let handle = event_loop.handle();
 
         handle
-            .insert_source(main_receiver, |event, _, _: &mut HeadlessClient| {
-                if let calloop::channel::Event::Msg(()) = event {
-                    match main_queue_receiver.try_pop() {
-                        Ok(Some((_, runnable))) => runnable.run(),
-                        Ok(None) | Err(_) => {}
+            .insert_source(main_receiver, {
+                let handle = handle.clone();
+                move |event, _, _: &mut HeadlessClient| {
+                    if let calloop::channel::Event::Msg(()) = event {
+                        insert_foreground_task_idle(&handle, foreground_task_queue.clone());
                     }
                 }
             })

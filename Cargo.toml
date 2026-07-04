@@ -29,7 +29,7 @@ toml = "1.0.3"
 [dependencies]
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
-gpui = { path = "vendor/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx", "nova-gfx-dx12"] }
+gpui = { path = "vendor/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx", "nova-gfx-dx12", "nova-gfx-vulkan"] }
 gpui-router = { version = "0.3.0", default-features = false, features = [] }
 gpui_hooks = { path = "crates/gpui-hooks" }
 lucide-gpui = { path = "crates/lucide-gpui" }
@@ -111,13 +111,16 @@ members = [
     "crates/nova-gfx/gfx-shader",
     "crates/nova-gfx/gfx-dx12",
     "crates/nova-gfx/gfx-metal",
+    "crates/nova-gfx/gfx-opengl",
     "crates/nova-gfx/gfx-vulkan",
+    "crates/nova-gfx/gfx-webgl",
     "crates/nova-gfx/examples/triangle",
     "crates/nova-gfx/examples/triangle-dx12",
     "crates/nova-gfx/examples/triangle-metal",
     "crates/nova-gfx/examples/atlas-smoke",
     "crates/nova-gfx/examples/atlas-smoke-dx12",
     "crates/nova-gfx/examples/atlas-smoke-metal",
+    "crates/nova-gfx/examples/public-api-smoke",
     "crates/nova-gfx/examples/gpui-minimal-window-smoke",
 ]
 

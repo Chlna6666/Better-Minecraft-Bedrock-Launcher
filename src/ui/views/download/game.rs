@@ -1,4 +1,5 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
+use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::scroll::ScrollableElement;
@@ -22,7 +23,7 @@ use tracing::warn;
 
 use super::common::{status_card, wait_task_finished};
 
-const GAME_ROW_PITCH_PX: f32 = 77.0;
+const GAME_ROW_PITCH_PX: f32 = 96.0;
 const GAME_ROW_OVERSCAN: usize = 1;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -283,7 +284,7 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
             })
             .with_animation(
                 "game-skeleton-shimmer",
-                Animation::new(Duration::from_millis(1400)).repeat(),
+                repeating_linear_motion(Duration::from_millis(1400)),
                 |this, t| this.left(px(-160.0 + t * 420.0)),
             )
             .into_any_element()
@@ -293,16 +294,7 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
         div()
             .w_full()
             .min_h(px(77.))
-            .rounded(px(14.))
-            .bg(Hsla {
-                a: 0.90,
-                ..colors.surface
-            })
-            .border_1()
-            .border_color(Hsla {
-                a: 0.06,
-                ..colors.border
-            })
+            .rounded(px(8.))
             .px(px(16.))
             .py(px(14.))
             .relative()
@@ -373,12 +365,32 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
         })
     };
 
+    let skeleton_shimmer = || {
+        div()
+            .absolute()
+            .top(px(0.))
+            .bottom(px(0.))
+            .w(px(120.))
+            .bg(Hsla {
+                a: 0.24,
+                ..colors.surface
+            })
+            .with_animation(
+                "game-skeleton-shimmer-aligned",
+                repeating_linear_motion(Duration::from_millis(1400)),
+                |this, t| this.left(px(-160.0 + t * 420.0)),
+            )
+            .into_any_element()
+    };
+
     let skeleton_row = || {
         div()
             .w_full()
             .h(px(76.))
             .px(px(24.))
             .py(px(12.))
+            .relative()
+            .overflow_hidden()
             .flex()
             .items_center()
             .justify_between()
@@ -440,6 +452,7 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                         ..colors.accent
                     })),
             )
+            .child(skeleton_shimmer())
     };
 
     let row_count = state.page_size.max(1).min(8) as usize;
@@ -538,7 +551,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
         );
     }
 
-    let (_filtered_total, total_pages, page_index, page_rows) = {
+    let (filtered_total, total_pages, page_index, page_rows) = {
         let cached = cache.read(cx);
         (
             cached.filtered_total,
@@ -647,10 +660,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 row.local_path.clone(),
                 row.active_snapshot.clone(),
             ))
-            .child(div().h(px(1.)).bg(Hsla {
-                a: 0.06,
-                ..colors.border
-            }));
+            .child(div().h(px(12.)));
     }
 
     let render_elapsed_ms = render_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -672,6 +682,8 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
         .flex_1()
         .min_h(px(0.))
         .min_w(px(0.))
+        .px(px(20.))
+        .py(px(16.))
         .overflow_y_scroll()
         .scrollbar_width(px(0.))
         .track_scroll(&state.game_rows_scroll)
@@ -693,10 +705,11 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                     ..colors.surface
                 })
                 .child(render_pager(
+                    window,
+                    cx,
                     colors,
-                    page_index,
-                    total_pages,
-                    state.page_jump_input.as_ref(),
+                    page_rows.len(),
+                    filtered_total,
                 )),
         );
 
@@ -704,65 +717,85 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
 }
 
 fn render_pager(
+    window: &mut Window,
+    cx: &mut App,
     colors: &ThemeColors,
-    page_index: usize,
-    total_pages: usize,
-    page_jump_input: Option<&Entity<InputState>>,
+    showing: usize,
+    total: usize,
 ) -> Div {
+    let state = cx.global::<DownloadPageState>();
+    let page_index = state.page_index;
+    let page_size = state.page_size;
+    let total_pages = (total + page_size - 1) / page_size;
+    let page_index = page_index.min(total_pages.saturating_sub(1));
+    let page_jump_input = state.page_jump_input.clone();
+
     if total_pages <= 1 {
         return div().w_full().h(px(0.));
+    }
+
+    let total_pages = total_pages.max(1);
+    if let Some(input) = &page_jump_input {
+        let placeholder = format!("{}/{}", page_index + 1, total_pages);
+        let _ = input.update(cx, |st, cx| {
+            st.set_placeholder(SharedString::from(placeholder), window, cx);
+        });
     }
 
     let prev_enabled = page_index > 0;
     let next_enabled = page_index + 1 < total_pages;
 
-    let nav_btn =
-        |icon: &'static str, enabled: bool, on_click: Box<dyn Fn(&mut DownloadPageState)>| {
-            div()
-                .min_w(px(32.))
-                .h(px(32.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(if enabled {
+    let nav_btn = |id: &'static str,
+                   icon: &'static str,
+                   enabled: bool,
+                   on_click: Box<dyn Fn(&mut DownloadPageState)>| {
+        div()
+            .id(id)
+            .min_w(px(32.))
+            .h(px(32.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(if enabled {
+                colors.text_primary
+            } else {
+                colors.text_muted
+            })
+            .when(!enabled, |this| this.opacity(0.35))
+            .child(themed_icon(
+                icon,
+                16.0,
+                if enabled {
                     colors.text_primary
                 } else {
                     colors.text_muted
+                },
+            ))
+            .hover(|s| {
+                s.bg(Hsla {
+                    a: if colors.bg.l < 0.5 { 0.12 } else { 0.08 },
+                    ..colors.text_primary
                 })
-                .when(!enabled, |this| this.opacity(0.35))
-                .child(themed_icon(
-                    icon,
-                    16.0,
-                    if enabled {
-                        colors.text_primary
-                    } else {
-                        colors.text_muted
-                    },
-                ))
-                .hover(|s| {
-                    s.bg(Hsla {
-                        a: 0.05,
-                        ..colors.text_secondary
-                    })
-                })
-                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                    if !enabled {
-                        return;
-                    }
-                    cx.update_global(|s: &mut DownloadPageState, cx| {
-                        on_click(s);
-                        s.game_rows_scroll.set_offset(point(px(0.), px(0.)));
-                    });
-                })
-        };
+            })
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                if !enabled {
+                    return;
+                }
+                cx.update_global(|s: &mut DownloadPageState, cx| {
+                    on_click(s);
+                    s.game_rows_scroll.set_offset(point(px(0.), px(0.)));
+                });
+            })
+    };
 
     let page_btn = |label: SharedString, active: bool, page: usize| {
         div()
+            .id(("download-page-btn", page))
             .min_w(px(32.))
             .h(px(32.))
-            .rounded(px(8.))
+            .rounded(px(6.))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -786,11 +819,15 @@ fn render_pager(
                     .font_weight(FontWeight::MEDIUM)
                     .child(label),
             )
-            .hover(|s| {
-                s.bg(Hsla {
-                    a: 0.05,
-                    ..colors.text_secondary
-                })
+            .hover(move |s| {
+                if active {
+                    s
+                } else {
+                    s.bg(Hsla {
+                        a: if colors.bg.l < 0.5 { 0.12 } else { 0.08 },
+                        ..colors.text_primary
+                    })
+                }
             })
             .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                 cx.update_global(|s: &mut DownloadPageState, cx| {
@@ -846,20 +883,10 @@ fn render_pager(
 
     let jump = page_jump_input.map(|input| {
         let input_entity = input.clone();
-        let total_pages = total_pages;
-        let current = page_index + 1;
-
         div()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .ml(px(8.))
-            .pl(px(10.))
-            .border_l_1()
-            .border_color(Hsla {
-                a: 0.08,
-                ..colors.border
-            })
+            .gap(px(6.))
             .child(
                 div()
                     .text_size(px(12.))
@@ -868,78 +895,15 @@ fn render_pager(
             )
             .child(
                 Input::new(&input_entity)
-                    .appearance(false)
-                    .bordered(false)
-                    .focus_bordered(false)
-                    .w(px(72.))
-                    .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(10.))
-                    .bg(Hsla {
-                        a: 0.55,
-                        ..colors.surface
-                    })
-                    .border_1()
-                    .border_color(Hsla {
-                        a: 0.12,
-                        ..colors.border
-                    }),
+                    .w(px(56.))
+                    .px(px(4.))
+                    .with_size(crate::ui::components::input::InputSize::Small),
             )
             .child(
                 div()
-                    .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(10.))
-                    .bg(Hsla {
-                        a: 0.05,
-                        ..colors.text_secondary
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
                     .text_size(px(12.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(colors.text_secondary)
-                    .child(format!("{current}/{total_pages}")),
-            )
-            .child(
-                div()
-                    .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(10.))
-                    .bg(Hsla {
-                        a: 0.05,
-                        ..colors.text_secondary
-                    })
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(colors.text_secondary)
-                    .child("跳转")
-                    .hover(|s| {
-                        s.bg(Hsla {
-                            a: 0.10,
-                            ..colors.text_secondary
-                        })
-                    })
-                    .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
-                        let raw = input_entity.read(cx).value().to_string();
-                        let parsed = raw.trim().parse::<usize>().ok();
-                        let Some(n) = parsed else {
-                            return;
-                        };
-                        let target = n.clamp(1, total_pages);
-                        cx.update_global(|s: &mut DownloadPageState, cx| {
-                            s.page_index = target.saturating_sub(1);
-                            s.game_rows_scroll.set_offset(point(px(0.), px(0.)));
-                        });
-                        let _ = input_entity.update(cx, |st, cx| {
-                            st.set_value(SharedString::from(""), window, cx);
-                        });
-                    }),
+                    .text_color(colors.text_muted)
+                    .child("页"),
             )
     });
 
@@ -947,21 +911,49 @@ fn render_pager(
         .w_full()
         .flex()
         .items_center()
-        .justify_center()
-        .gap(px(8.))
-        .flex_wrap()
-        .child(nav_btn(
-            lucide_icons::icon_chevron_left(),
-            prev_enabled,
-            Box::new(|s| s.page_index = s.page_index.saturating_sub(1)),
-        ))
-        .child(page_row)
-        .child(nav_btn(
-            lucide_icons::icon_chevron_right(),
-            next_enabled,
-            Box::new(|s| s.page_index = s.page_index.saturating_add(1)),
-        ))
-        .when_some(jump, |this, jump| this.child(jump))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .justify_start()
+                .text_size(px(12.))
+                .text_color(colors.text_muted)
+                .child({
+                    let start = if total == 0 {
+                        0
+                    } else {
+                        page_index * page_size + 1
+                    };
+                    let end = (start + showing.saturating_sub(1)).min(total);
+                    format!("结果: {start}-{end} / {total}")
+                }),
+        )
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(nav_btn(
+                    "download-nav-prev",
+                    lucide_icons::icon_chevron_left(),
+                    prev_enabled,
+                    Box::new(|s| s.page_index = s.page_index.saturating_sub(1)),
+                ))
+                .child(page_row)
+                .child(nav_btn(
+                    "download-nav-next",
+                    lucide_icons::icon_chevron_right(),
+                    next_enabled,
+                    Box::new(|s| s.page_index = s.page_index.saturating_add(1)),
+                )),
+        )
+        .child(
+            div().flex_1().flex().justify_end().child(
+                jump.map(IntoElement::into_any_element)
+                    .unwrap_or_else(|| div().into_any_element()),
+            ),
+        )
 }
 
 fn render_version_row(
@@ -1024,19 +1016,40 @@ fn render_version_row(
         "images/minecraft/Release.png"
     };
 
+    let dark_mode = colors.bg.l < 0.5;
+    let card_bg = if dark_mode {
+        Hsla {
+            a: 0.80,
+            ..colors.surface
+        }
+    } else {
+        Hsla {
+            a: 0.95,
+            ..colors.surface
+        }
+    };
+
+    let card_hover_bg = if dark_mode {
+        Hsla {
+            a: 0.95,
+            ..colors.surface
+        }
+    } else {
+        Hsla {
+            a: 1.0,
+            ..colors.surface
+        }
+    };
+
     let row = div()
         .id(("download-game-row", row_element_id))
         .w_full()
-        .h(px(76.))
-        .px(px(24.))
+        .h(px(84.))
+        .px(px(20.))
         .py(px(12.))
+        .rounded(px(8.))
         .flex()
         .items_center()
-        .justify_between()
-        .bg(Hsla {
-            a: 0.0,
-            ..colors.surface
-        })
         .child(
             div()
                 .flex()
@@ -1157,21 +1170,28 @@ fn render_version_row(
                     action_bg
                 };
 
-                div()
-                    .w(px(140.))
-                    .h(px(36.))
-                    .rounded(px(10.))
-                    .bg(btn_bg)
-                    .cursor_pointer()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(btn_fg)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(8.))
-                    .child(themed_icon(lucide_icons::icon_download(), 16.0, btn_fg))
-                    .child(btn_label)
+                {
+                    let is_interactive = !disabled && active_task.is_none();
+                    div()
+                        .id(("download-game-action-btn", row_element_id))
+                        .w(px(140.))
+                        .h(px(36.))
+                        .rounded(px(10.))
+                        .bg(btn_bg)
+                        .cursor_pointer()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(btn_fg)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(8.))
+                        .relative()
+                        .hover(move |s| if is_interactive { s.opacity(0.85) } else { s })
+                        .active(move |s| if is_interactive { s.top(px(1.5)) } else { s })
+                        .child(themed_icon(lucide_icons::icon_download(), 16.0, btn_fg))
+                        .child(btn_label)
+                }
             }
             .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
                 if disabled || active_task.is_some() {
@@ -1710,7 +1730,7 @@ where
     F: Fn(&mut Window, &mut App) + 'static,
 {
     div()
-        .rounded(px(15.))
+        .rounded(px(10.))
         .border_1()
         .border_color(Hsla {
             a: if primary { 0.18 } else { 0.16 },
@@ -1876,7 +1896,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
         }));
 
     let package_card = div()
-        .rounded(px(15.))
+        .rounded(px(10.))
         .border_1()
         .border_color(Hsla {
             a: 0.16,
@@ -2078,7 +2098,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
         .w(px(560.))
         .max_w(px(560.))
         .max_h(px(880.))
-        .rounded(px(20.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.18,
@@ -2149,20 +2169,10 @@ pub(super) fn render_game_dialog(
                     )
                     .child(
                         Input::new(input)
-                            .appearance(false)
                             .w_full()
                             .h(px(40.))
                             .px(px(12.))
-                            .rounded(px(12.))
-                            .bg(Hsla {
-                                a: 0.55,
-                                ..colors.surface_hover
-                            })
-                            .border_1()
-                            .border_color(Hsla {
-                                a: 0.12,
-                                ..colors.border
-                            }),
+                            .rounded(px(10.)),
                     )
             })
         })
@@ -2170,7 +2180,7 @@ pub(super) fn render_game_dialog(
 
     let delete_notice = matches!(dialog.kind, GameDialogKind::ConfirmDelete).then(|| {
         div()
-            .rounded(px(14.))
+            .rounded(px(10.))
             .border_1()
             .border_color(Hsla {
                 a: 0.18,
@@ -2387,7 +2397,7 @@ pub(super) fn render_game_dialog(
         .w(px(if dialog.is_gdk { 640. } else { 560. }))
         .max_w(px(640.))
         .max_h(px(760.))
-        .rounded(px(20.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.18,

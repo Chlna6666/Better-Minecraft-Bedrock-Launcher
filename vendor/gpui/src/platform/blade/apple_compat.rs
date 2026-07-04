@@ -23,7 +23,7 @@ pub unsafe fn new_renderer(
     bounds: crate::Size<f32>,
     transparent: bool,
 ) -> Renderer {
-    use raw_window_handle as rwh;
+    use ::winit::raw_window_handle as rwh;
     struct RawWindow {
         view: *mut c_void,
     }

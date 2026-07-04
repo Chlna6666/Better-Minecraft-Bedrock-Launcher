@@ -21,16 +21,15 @@
   image cache providers 和 texture lifetime。
 - [Image cache](image_cache.zh-CN.md)：scoped image cache 行为和自定义 cache
   providers。
+- [动画引擎](animation_engine.zh-CN.md)：timing、easing、transition metadata、
+  drivers、窗口调度和 scene/nova animation 数据通道。
 - [Renderer backend](renderer_backend.zh-CN.md)：backend options、frame
-  scheduling、Windows Nova GPU startup 和 metrics。
-- [Windows renderer backend](windows_renderer_backend.zh-CN.md)：Windows Nova GPU
-  backend selection、原生 Win32 event loop 和 raw-window-handle surfaces。
-- [GPU surfaces](gpu_surfaces.zh-CN.md)：在 GPUI window 中进行自定义 Nova GPU
-  渲染。
+  scheduling、Windows GPU startup 和 metrics。
+- [Windows renderer backend](windows_renderer_backend.zh-CN.md)：Windows GPU
+  backend selection 和 winit frame delivery。
 - [运行时 WGSL shaders](runtime_wgsl_shaders.zh-CN.md)：运行时 shader 校验和自
-  定义 Nova shader modules。
-- [Backdrop blur](backdrop_blur.zh-CN.md)：Nova GPU backdrop blur pipeline 行为。
-- [GPU mesh 3D](gpu_mesh_3d.zh-CN.md)：在 GPUI scenes 中直接绘制 3D mesh。
+  定义 GPU shader modules。
+- [Backdrop blur](backdrop_blur.zh-CN.md)：GPU backdrop blur pipeline 行为。
 - [默认字体](default_fonts.zh-CN.md)：font setup boundaries 和平台 defaults。
 - [Performance pipeline](performance_pipeline.zh-CN.md)：frame metrics 和 retained
   resource trimming。

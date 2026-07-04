@@ -32,6 +32,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSView
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFCGTypes"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGGeometry"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSError", "NSObject", "NSString"] }
-objc2-metal = { version = "0.3", default-features = false, features = ["MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLTexture", "std"] }
+objc2-metal = { version = "0.3", default-features = false, features = ["MTLArgument", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLTexture", "std"] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = ["CALayer", "CAMetalLayer", "objc2-metal"] }
 raw-window-handle = "0.6"

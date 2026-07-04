@@ -31,5 +31,5 @@ headings。
 示例必须使用当前 GPUI APIs 编译，并避免引用缺失 dependencies。平台专用示例应通过
 guarded fallback entry point 在不支持的平台上通过编译。
 
-更新 Nova GPU examples 时，确认 flow 根据渲染发生的位置使用 `paint_gpu_mesh_3d`、
-`back_buffer_view`、`present` 或 `swap_buffers`，以及 `paint_gpu_mesh_3d`。
+更新 GPU examples 时，确认 flow 根据渲染发生的位置使用 `removed surface API`、
+`back_buffer_view`、`present` 或 `swap_buffers`，以及 `removed surface paint API`。

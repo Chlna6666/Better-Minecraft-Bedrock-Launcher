@@ -703,10 +703,10 @@ mod lenient_font_attributes {
     };
 
     pub fn family_name(descriptor: &CTFontDescriptor) -> Option<String> {
-        unsafe { get_string_attribute(descriptor, kCTFontFamilyNameAttribute) }
+        unsafe { string_attribute(descriptor, kCTFontFamilyNameAttribute) }
     }
 
-    fn get_string_attribute(
+    fn string_attribute(
         descriptor: &CTFontDescriptor,
         attribute: CFStringRef,
     ) -> Option<String> {

@@ -68,7 +68,7 @@ Elements 使用 builder-style methods 表达 layout、paint 和 interaction。st
 - 直接绘制调用；
 - window-local element state；
 - 手动输入路由；
-- 自定义 GPU surfaces；
+- 自定义 GPU extension points；
 - 高级 layout 或 prepaint 行为。
 
 Custom paint code 必须遵守 GPUI 传入的 layout bounds，使用 `Window` 上的绘制 API，

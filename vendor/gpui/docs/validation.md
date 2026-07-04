@@ -33,6 +33,5 @@ Examples must compile with current GPUI APIs and avoid references to missing
 dependencies. Platform-specific examples should compile on unsupported
 platforms through a guarded fallback entry point.
 
-When updating Nova GPU examples, verify the flow uses `paint_gpu_mesh_3d`,
-`back_buffer_view`, `present` or `swap_buffers`, and `paint_gpu_mesh_3d`
-according to where rendering occurs.
+When updating GPU examples, verify they use current GPUI scene primitives and
+available nova-gfx renderer extension points rather than removed surface APIs.

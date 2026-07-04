@@ -1,4 +1,4 @@
-use super::editor::{chunk_record_tag_is_copy_safe, copy_chunks_blocking};
+use super::editor::copy_chunks_blocking;
 use super::model::*;
 use super::prelude::*;
 
@@ -121,12 +121,6 @@ impl RegionChunkDisk {
         for record in self.records {
             let mut key = ChunkKey::decode(&record.key)
                 .map_err(|error| format!("区域包包含无效 chunk key：{error}"))?;
-            if !chunk_record_tag_is_copy_safe(key.tag) {
-                return Err(format!(
-                    "区域包包含不支持导入的 chunk record tag：{:?}",
-                    key.tag
-                ));
-            }
             key.pos = chunk;
             records.push(ChunkRecord {
                 key,

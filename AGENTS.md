@@ -1,6 +1,23 @@
-# Rust Skills - Agent Instructions
+# Rust Design Conventions / Rust 设计规范
 
-> For OpenAI Codex and compatible agents
+本项目使用 `skills/rust-design-conventions` 技能作为 Rust 全栈设计与性能权威指南。
+当涉及编写 Rust 代码、项目结构、模块/Crate 划分、API 设计、Cargo.toml 配置、命名
+规范、性能优化、内存与布局、并发（Send/Sync/原子）、异步（Future/Pin/Tokio）、
+零成本抽象、unsafe/FFI、零拷贝、生命周期、宏系统、构建/Features/交叉编译、测试、
+文档注释、Lint/clippy、SemVer、依赖管理与供应链等任务时，**优先读取该技能**。
+
+技能位置：
+
+- `skills/rust-design-conventions/SKILL.md` — 主文件：默认行为规则 + 场景路由索引。
+- `skills/rust-design-conventions/references/*.md` — 按主题拆分的深度参考模块
+  （api-design、async-programming、cargo-build-features、code-robustness、
+  concurrency、dependency-management、documentation、file-layout、lifetimes、
+  lint-and-clippy、macros、memory-and-layout、naming-conventions、
+  performance-optimization、performance-pitfalls、testing-standards、unsafe-rust、
+  zero-copy、zero-cost-abstractions）。
+
+> 用法：不要一次性读取所有参考文件。根据当前任务场景，按主文件中的「场景 → 模块对照表」
+> 按需读取最相关的 1–2 个模块。
 
 ## Default Project Settings
 
@@ -17,98 +34,6 @@ unsafe_code = "warn"
 all = "warn"
 pedantic = "warn"
 ```
-
-## Core Capabilities
-
-### 1. Question Routing
-Route Rust questions to appropriate skills:
-- Ownership/borrowing → m01-ownership
-- Smart pointers → m02-resource
-- Error handling → m06-error-handling
-- Concurrency → m07-concurrency
-- Unsafe code → unsafe-checker
-
-### 2. Code Style
-Follow Rust coding guidelines:
-- Use snake_case for variables and functions
-- Use PascalCase for types and traits
-- Use SCREAMING_SNAKE_CASE for constants
-- Max line length: 100 characters
-- Use `?` operator instead of `unwrap()` in library code
-
-### 3. Error Handling
-```rust
-// Good: Use Result with context
-fn read_config() -> Result<Config, ConfigError> {
-    let content = std::fs::read_to_string("config.toml")
-        .map_err(|e| ConfigError::Io(e))?;
-    toml::from_str(&content)
-        .map_err(|e| ConfigError::Parse(e))
-}
-
-// Avoid: unwrap() in library code
-fn read_config() -> Config {
-    let content = std::fs::read_to_string("config.toml").unwrap(); // Bad
-    toml::from_str(&content).unwrap() // Bad
-}
-```
-
-### 4. Unsafe Code
-Every `unsafe` block MUST have a `// SAFETY:` comment:
-```rust
-// SAFETY: We checked that index < len above, so this is in bounds
-unsafe { slice.get_unchecked(index) }
-```
-
-### 5. Common Error Fixes
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| E0382 | Use of moved value | Clone, borrow, or use reference |
-| E0597 | Lifetime too short | Extend lifetime or restructure |
-| E0502 | Borrow conflict | Split borrows or use RefCell |
-| E0499 | Multiple mut borrows | Restructure to single mut borrow |
-| E0277 | Missing trait impl | Add trait bound or implement trait |
-
-## Quick Reference
-
-### Ownership
-- Each value has one owner
-- Borrowing: `&T` (shared) or `&mut T` (exclusive)
-- Lifetimes: `'a` annotations for references
-
-### Smart Pointers
-- `Box<T>`: Heap allocation
-- `Rc<T>`: Reference counting (single-threaded)
-- `Arc<T>`: Atomic reference counting (thread-safe)
-- `RefCell<T>`: Interior mutability
-
-### Concurrency
-- `Send`: Safe to transfer between threads
-- `Sync`: Safe to share references between threads
-- `Mutex<T>`: Mutual exclusion
-- `RwLock<T>`: Reader-writer lock
-
-### Async
-```rust
-#[tokio::main]
-async fn main() {
-    let handle = tokio::spawn(async {
-        // async work
-    });
-    handle.await.unwrap();
-}
-```
-
-## Skill Files
-
-For detailed guidance, see:
-- `skills/rust-router/SKILL.md` - Question routing
-- `skills/coding-guidelines/SKILL.md` - Code style rules
-- `skills/unsafe-checker/SKILL.md` - Unsafe code review
-- `skills/m01-ownership/SKILL.md` - Ownership concepts
-- `skills/m06-error-handling/SKILL.md` - Error patterns
-- `skills/m07-concurrency/SKILL.md` - Concurrency patterns
 
 
 # Rust coding guidelines
@@ -138,6 +63,161 @@ For detailed guidance, see:
       }
   });
   ```
+
+# BMCBL Project Structure / 项目结构
+
+BMCBL 是一个基于 GPUI 的原生 Rust 桌面启动器（Windows 优先）。下面给出仓库的文件路径树，并说明每个目录与关键文件的功能。图标资源（`crates/lucide-gpui/icons/`）与 `vendor/` 第三方依赖在树中省略，避免噪声。
+
+## Workspace Layout / 顶层布局
+
+```
+BMCBL/
+├── Cargo.toml              # Workspace 根清单，声明成员 crate 与共享依赖
+├── Cargo.lock              # 依赖锁定
+├── build.rs                # 应用级构建脚本：嵌入 Windows 清单、图标、payload 元数据
+├── src/                    # BMCBL 应用主 crate（二进制 + 库）
+├── crates/                 # 本地工作空间成员 crate
+│   ├── gpui-hooks/         # GPUI React 风格 hooks 适配层（use_state 等）
+│   ├── gpui-hooks-macros/  # hooks 的过程宏
+│   ├── lucide-gpui/        # Lucide 图标资源 crate（基于 GPUI）
+│   ├── nova-gfx/           # 跨后端图形抽象（Vulkan/DX12/Metal）与示例
+│   ├── bmcbl-plugin-api/   # 插件宿主/插件间公共 API 类型
+│   ├── bmcbl-plugin-macros/# 插件开发派生宏
+│   └── bmcbl-plugin-tools/ # 插件打包/校验工具
+├── vendor/gpui/            # 内嵌的 GPUI 框架源码（独立子清单，勿直接耦合业务）
+├── assets/                 # 嵌入资源（编译期通过 AssetSource 打包）
+├── docs/                   # 架构与设计文档
+├── examples/plugins/       # 插件示例（bedrock-notes、hello-wasm）
+└── scripts/                # 构建/校验/性能脚本（PowerShell）
+```
+
+## Application Source / 应用主 crate (`src/`)
+
+```
+src/
+├── main.rs                 # 二进制入口：解析参数并启动 app
+├── lib.rs                  # 库根：重导出模块，供测试与集成
+├── app.rs                  # 应用启动：globals、字体注册、窗口、启动策略
+├── startup.rs              # 启动流程编排（初始化顺序、单实例检查等）
+├── launch.rs               # Minecraft 进程拉起逻辑
+├── result.rs               # 统一错误/结果类型别名
+├── config/                 # 配置模型与持久化
+│   ├── config.rs           # Config 结构与字段
+│   ├── defaults.rs         # 默认值
+│   ├── storage.rs          # 读写配置文件
+│   └── test.rs             # 配置测试辅助
+├── core/                   # 非 UI 业务逻辑（核心领域）
+│   ├── mod.rs
+│   ├── minecraft/          # MC 版本管理、mod 管理、地图、截图、服务器、
+│   │                       #   level.dat、资源包、UWP/AppX/GDK 集成、
+│   │                       #   key patcher、mouse lock、远程版本源等
+│   ├── curseforge/         # CurseForge API 客户端与数据模型
+│   ├── easytier/           # EasyTier 联网（虚拟局域网）集成
+│   ├── inject/             # 注入/补丁相关底层工具
+│   ├── online/             # 在线房间/对等连接业务
+│   ├── version/            # 版本号解析与比较
+│   ├── sponsors.rs         # 赞助者数据
+│   └── ui_prefs.rs         # UI 偏好（桥接 config 与 UI）
+├── downloads/              # 下载引擎
+│   ├── manager.rs          # 下载管理器（调度、任务编排）
+│   ├── single.rs / multi.rs # 单文件 / 多文件下载
+│   ├── integrity.rs / md5.rs # 校验完整性、MD5
+│   ├── api.rs / runtime.rs # 下载对外 API 与运行时支持
+│   └── mod.rs
+├── archive/                # 归档/解压（zip 等）
+├── http/                   # HTTP 客户端
+│   ├── request.rs          # 请求封装
+│   ├── gpui_client.rs      # GPUI 线程友好的客户端
+│   └── proxy.rs            # 代理支持
+├── tasks/                  # 后台任务管理器（下载/解压/联网等统一调度）
+├── music/                  # 内置音乐播放器（service/state/types）
+├── plugins/                # 插件运行时（事件、清单、watcher、UI DSL、window）
+├── i18n/                   # 本地化实现（读取 assets/locales）
+├── assets/                 # 资源加载（asset_source / generated / mod）
+└── utils/                  # 通用工具（日志、网络、内存、诊断、更新器、
+                            #   文件操作、单实例、系统信息、Cloudflare 等）
+```
+
+## UI Layer / UI 层 (`src/ui/`)
+
+遵循「页面/窗口根 view 只负责组合与生命周期」的原则，每个大页面按职责拆分到子模块。
+
+```
+src/ui/
+├── mod.rs                  # UI 模块总装配
+├── main_window.rs          # 主窗口入口（组合）
+├── main_window/            # 主窗口职责模块
+│   ├── background(.rs/_support.rs)  # 动态背景与支撑逻辑
+│   ├── chrome(.rs/_view.rs)         # 标题栏/窗口边框 chrome
+│   ├── controls.rs                  # 窗口控件（最小化/关闭等）
+│   ├── music_player.rs              # 内嵌播放器面板
+│   ├── page_loading.rs / page_registry.rs / route_effects.rs
+│   ├── update_flow.rs / support.rs
+├── window.rs               # 工具/子窗口入口
+├── window/                 # 子窗口实现
+│   ├── map_viewer/         # 地图查看器（含 3D 预览、WGSL 着色器、瓦片缓存、
+│   │                       #   交互、预览面板渲染、测试）
+│   ├── chrome.rs / debug(/) # 子窗口 chrome 与调试视图
+│   ├── import(/)            # 导入流程窗口
+│   └── level_dat(/)         # level.dat 编辑器窗口
+├── views/                  # 顶层路由页面
+│   ├── home(/)             # 首页
+│   ├── download(/)         # 下载中心（游戏/mod/CurseForge 子页）
+│   ├── manage/             # 存档管理（actions、tabs、layout、state、
+│   │                        #   level_dat_editor/schema、version_settings…）
+│   ├── settings(/)         # 设置（launcher/about/customization/game/plugins）
+│   ├── tasks(/)            # 任务列表页
+│   ├── tools(/)            # 工具页（在线联机 room/peers/widgets/sidebar）
+│   └── plugin.rs           # 插件页面
+├── components/             # 可复用 UI 组件（button、modal、dropdown、
+│                            #   markdown_renderer、html_renderer、tabs、
+│                            #   split_pane、virtual_list、color_picker…）
+├── state/                  # 全局/共享 UI 状态（navigation、launcher、
+│                            #   i18n、theme、update、diagnostics、agreement…）
+├── theme/                  # 主题 tokens（colors）与 helper
+├── runtime/                # 运行时根视图装配（root_view）
+├── overlays/               # 全屏覆盖层（更新、诊断、启动前置、用户协议）
+├── hooks.rs / hooks/       # GPUI hooks 适配与封装
+├── animation.rs            # 动画辅助
+├── navigation.rs           # 路由/导航状态机
+├── overlays.rs             # 覆盖层装配
+├── state.rs                # 状态装配
+├── runtime.rs              # 运行时装配
+├── update_check.rs         # 更新检查编排
+└── README.md               # UI 层约定说明
+```
+
+## Assets & Docs / 资源与文档
+
+```
+assets/
+├── fonts/                  # 嵌入字体（HarmonyOS Sans / MiSans / OPPO Sans）
+├── icons/                  # 应用图标
+├── images/                 # 内嵌图片（about、minecraft 等）
+├── locales/                # 翻译源数据（含 agreement）
+└── bin/                    # 需随应用分发的二进制
+
+docs/
+├── AI.md                   # AI 代码贡献约定（双语，GPUI 规则）
+├── ARCHITECTURE_BOUNDARIES.md  # GPUI 框架与应用的边界（改框架前必读）
+├── PROJECT_SPEC.md         # 项目规格
+├── GPUI_ROUTER_HOOKS.md    # 路由与 hooks 用法
+├── GPUI_VENDOR_RENDERING.md # vendor GPUI 渲染说明
+├── GPUI_DEFAULT_FONT.md    # 默认字体策略
+└── MAP_RENDERER.md         # 地图渲染器设计
+
+scripts/
+├── check_i18n_lang.ps1     # 校验多语言键完整性
+├── profile_startup.ps1     # 启动性能分析
+└── tmp_patch_bedrock_model_material.ps1  # 临时补丁脚本
+```
+
+## Boundary Rules Recap / 边界要点
+
+- `src/ui` 只渲染与协调 UI 状态；网络 IO、解码、持久缓存、解析、下载与长流程放在 `src/core`、`src/downloads`、`src/tasks` 等非 UI 模块。
+- 修改 `vendor/gpui`、`src/app.rs` 或 `src/ui` 顶层前，先读 `docs/ARCHITECTURE_BOUNDARIES.md`。
+- GPUI 框架代码不得依赖 BMCBL 的 routes/pages/assets/默认背景/下载服务/窗口策略。
+- 应用默认值（Vulkan 偏好、嵌入字体、默认背景、主窗口 chrome、启动服务）归应用启动或 UI 代码，而非 GPUI 框架默认。
 
 # GPUI
 

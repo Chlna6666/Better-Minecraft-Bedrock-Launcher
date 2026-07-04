@@ -368,11 +368,15 @@ impl MapViewerWindowView {
                     ..colors.surface
                 }
             })
-            .hover(|style| {
-                style.bg(Hsla {
-                    a: 0.58,
-                    ..colors.surface_hover
-                })
+            .hover(move |style| {
+                if selected {
+                    style
+                } else {
+                    style.bg(Hsla {
+                        a: 0.58,
+                        ..colors.surface_hover
+                    })
+                }
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -506,16 +510,22 @@ impl MapViewerWindowView {
                             match result {
                                 Ok(outcome) => {
                                     this.complete_chunk_transfer_progress();
-                                    let invalidation = MapEditInvalidation::chunks(
-                                        outcome.affected_chunks.clone(),
-                                    )
-                                    .with_metadata();
-                                    this.apply_map_edit_invalidation_with_tile_priority(
-                                        &invalidation,
-                                        TilePriority::EditRefresh,
-                                        cx,
-                                    );
-                                    if outcome.level_dat_changed {
+                                    if outcome.refresh_all_tiles {
+                                        this.invalidate_tiles(cx);
+                                        this.refresh_metadata(cx);
+                                        this.ensure_visible_tiles(cx);
+                                    } else {
+                                        let invalidation = MapEditInvalidation::chunks(
+                                            outcome.affected_chunks.clone(),
+                                        )
+                                        .with_metadata();
+                                        this.apply_map_edit_invalidation_with_tile_priority(
+                                            &invalidation,
+                                            TilePriority::EditRefresh,
+                                            cx,
+                                        );
+                                    }
+                                    if outcome.level_dat_changed && !outcome.refresh_all_tiles {
                                         this.refresh_metadata(cx);
                                     }
                                     this.status = SharedString::from(outcome.message.clone());

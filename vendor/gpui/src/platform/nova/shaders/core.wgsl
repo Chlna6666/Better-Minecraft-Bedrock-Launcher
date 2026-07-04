@@ -1,4 +1,4 @@
-// Core definitions shared by GPUI WGPU shader bundles.
+// Core definitions shared by GPUI GPU shader bundles.
 struct GlobalParams {
     viewport_size: vec2<f32>,
     premultiplied_alpha: u32,
@@ -13,9 +13,7 @@ struct GlobalParams {
 // Clip strategy:
 // Most Nova shaders pass software clip distances to the fragment stage and
 // return transparent outside the clip, because hardware `clip_distance` is not
-// available through the current Naga/backend path. Mesh 3D uses `discard` for
-// its intermediate color pass, where clipped fragments should not contribute to
-// the premultiplied composite target.
+// available through the current Naga/backend path.
 
 const M_PI_F: f32 = 3.1415926;
 const SHADER_EPSILON: f32 = 0.000001;

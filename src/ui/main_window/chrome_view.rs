@@ -1,6 +1,6 @@
 use super::*;
-use crate::music::MusicState;
 use crate::ui::animation::request_animation_frame_if_active;
+use crate::ui::state::music::{MusicDragTarget, MusicState};
 use crate::ui::state::navigation::NavState;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::instrument;
@@ -17,8 +17,8 @@ const DISABLE_CHROME_UI_STALL_WATCH_TASK: bool = true;
 /// 封面解码并发限制：只允许 1 个封面解码任务，避免狂点下一首时 CPU 占满
 static COVER_DECODE_LIMITER: Semaphore = Semaphore::const_new(1);
 const COVER_DECODE_TIMEOUT: Duration = Duration::from_secs(8);
-const MUSIC_REFRESH_ACTIVE_INTERVAL: Duration = Duration::from_millis(250);
-const MUSIC_REFRESH_ACTIVE_INTERVAL_NON_HOME: Duration = Duration::from_secs(2);
+const MUSIC_REFRESH_ACTIVE_INTERVAL: Duration = Duration::from_millis(500);
+const MUSIC_REFRESH_ACTIVE_INTERVAL_NON_HOME: Duration = Duration::from_millis(750);
 const MUSIC_REFRESH_IDLE_INTERVAL: Duration = Duration::from_millis(750);
 const MUSIC_REFRESH_IDLE_INTERVAL_NON_HOME: Duration = Duration::from_secs(2);
 const MUSIC_REFRESH_BACKGROUND_INTERVAL: Duration = Duration::from_secs(10);
@@ -35,14 +35,15 @@ type MusicRenderSignature = (
         bool,
         bool,
         bool,
-        crate::music::types::MusicPlaybackMode,
+        crate::music::MusicPlaybackMode,
         bool,
-        Option<crate::music::MusicDragTarget>,
+        Option<MusicDragTarget>,
     ),
     (u16, u16),
 );
 
 type ChromeRenderSignature = (bool, bool);
+type ChromeAnimationFlags = (bool, bool, bool, bool);
 
 fn ratio_bucket(value: f32) -> u16 {
     (value.clamp(0.0, 1.0) * 1000.0).round() as u16
@@ -129,6 +130,7 @@ pub(super) struct AppChromeView {
     last_update_available: bool,
     last_music_render_signature: MusicRenderSignature,
     last_chrome_render_signature: ChromeRenderSignature,
+    last_animation_flags: Option<ChromeAnimationFlags>,
 }
 
 impl AppChromeView {
@@ -137,12 +139,16 @@ impl AppChromeView {
         let initial_chrome_render_signature = build_chrome_render_signature(cx);
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe_global::<MusicState>(|this, cx| {
+            let music_available = cx.global::<MusicState>().snapshot.available;
+            if this.last_music_available != music_available {
+                this.sync_layout_targets(this.last_window_width_px, Instant::now(), cx);
+            }
+
             let signature = build_music_render_signature(cx);
             if this.last_music_render_signature != signature {
                 this.last_music_render_signature = signature;
                 cx.notify();
             }
-            this.sync_layout_targets(this.last_window_width_px, Instant::now(), cx);
         }));
         subscriptions.push(
             cx.observe_global::<crate::ui::main_window::chrome::AppChromeState>(|this, cx| {
@@ -178,13 +184,13 @@ impl AppChromeView {
             }),
         );
         subscriptions.push(cx.observe_window_bounds(window, |this, window, cx| {
-            let window_width_px = window.window_bounds().get_bounds().size.width / px(1.0);
+            let window_width_px = window.bounds().size.width / px(1.0);
             this.sync_layout_targets(window_width_px, Instant::now(), cx);
             cx.notify();
         }));
         // 创建封面解码请求 channel (使用 mpsc 保证可靠传递)
         let (cover_req_tx, mut cover_req_rx) =
-            mpsc::unbounded_channel::<crate::music::service::CoverDecodeRequest>();
+            mpsc::unbounded_channel::<crate::music::CoverDecodeRequest>();
 
         let _cover_decode_task = if DISABLE_CHROME_COVER_DECODE_TASK {
             None
@@ -201,11 +207,10 @@ impl AppChromeView {
                     let _permit = COVER_DECODE_LIMITER.acquire().await.ok();
                     let request_clone = request.clone();
 
-                    // 后台解码封面
-                    let cover_image = match tokio::time::timeout(
+                    let decoded_cover = match tokio::time::timeout(
                         COVER_DECODE_TIMEOUT,
                         tokio::task::spawn_blocking(move || {
-                            crate::music::service::MusicController::decode_cover_render_image(
+                            crate::music::MusicController::decode_cover_thumbnail(
                                 &request_clone.track_path,
                             )
                         }),
@@ -245,7 +250,11 @@ impl AppChromeView {
 
                     // 应用结果（代际校验会自动丢弃旧结果）
                     match cx.update_global(|music: &mut MusicState, _cx| {
-                        music.apply_decoded_cover_if_current(&request, cover_image, Instant::now());
+                        music.apply_decoded_cover_if_current(
+                            &request,
+                            decoded_cover,
+                            Instant::now(),
+                        );
                     }) {
                         Ok(()) => {
                             tracing::debug!(
@@ -304,12 +313,10 @@ impl AppChromeView {
                                 && !music.snapshot.expanded
                                 && music.drag_target().is_none();
 
-                            if background_quiet {
-                                return MUSIC_REFRESH_BACKGROUND_INTERVAL;
-                            }
-
                             if music.snapshot.is_playing || music.drag_target().is_some() {
                                 active_interval
+                            } else if background_quiet {
+                                MUSIC_REFRESH_BACKGROUND_INTERVAL
                             } else if music.snapshot.available {
                                 idle_interval
                             } else {
@@ -353,9 +360,14 @@ impl AppChromeView {
                         // 切歌首刷走快路径，避免同步封面解码
                         // 注意：由于 Topbar 已订阅 MusicState，不需要手动触发重绘
                         last_generation = current_generation;
-                        let _ = cx.update_global(|music: &mut MusicState, cx| {
+                        if let Err(error) = cx.update_global(|music: &mut MusicState, cx| {
                             music.refresh_no_cover(Instant::now(), cx);
-                        });
+                        }) {
+                            tracing::warn!(
+                                generation = current_generation,
+                                "music_refresh: failed to refresh after song change: {error:?}"
+                            );
+                        }
                     } else if cover_changed {
                         // 封面变化只更新计数，不触发额外重绘
                         // 因为 apply_decoded_cover_if_current 会触发重绘
@@ -374,9 +386,14 @@ impl AppChromeView {
                         // Background/non-home playback is intentionally decimated
                         // by the poll interval chosen above to avoid competing
                         // with normal rendering and image work.
-                        let _ = cx.update_global(|music: &mut MusicState, cx| {
+                        if let Err(error) = cx.update_global(|music: &mut MusicState, cx| {
                             music.refresh_no_cover(Instant::now(), cx);
-                        });
+                        }) {
+                            tracing::warn!(
+                                generation = current_generation,
+                                "music_refresh: failed to refresh playback progress: {error:?}"
+                            );
+                        }
                     }
 
                     if !window_foreground
@@ -427,7 +444,7 @@ impl AppChromeView {
                 loop {
                     Timer::after(UI_STALL_WATCH_INTERVAL).await;
 
-                    let music_snapshot = cx
+                    let _music_snapshot = cx
                         .read_global(|music: &MusicState, _cx| {
                             (
                                 music.snapshot.is_playing,
@@ -437,7 +454,7 @@ impl AppChromeView {
                             )
                         })
                         .unwrap_or((false, 0, 0, SharedString::from("unknown")));
-                    let download_snapshot = cx
+                    let _download_snapshot = cx
                         .read_global(
                             |download: &crate::ui::views::download::state::DownloadPageState,
                              _cx| {
@@ -460,12 +477,13 @@ impl AppChromeView {
             _music_refresh_task: music_refresh_task,
             _cover_decode_task: _cover_decode_task,
             _ui_stall_watch_task: ui_stall_watch_task,
-            last_window_width_px: window.window_bounds().get_bounds().size.width / px(1.0),
+            last_window_width_px: window.bounds().size.width / px(1.0),
             last_window_width_bucket: None,
             last_music_available: false,
             last_update_available: false,
             last_music_render_signature: initial_music_render_signature,
             last_chrome_render_signature: initial_chrome_render_signature,
+            last_animation_flags: None,
         };
         let initial_window_width_px = this.last_window_width_px;
         this.sync_layout_targets(initial_window_width_px, Instant::now(), cx);
@@ -536,7 +554,7 @@ impl AppChromeView {
 
         if labels_target_visible != show_labels_target {
             cx.update_global(|nav: &mut NavState, _cx| {
-                nav.set_labels_target(show_labels_target, now);
+                nav.set_labels_target_immediate(show_labels_target);
             });
         }
         cx.update_global(
@@ -559,14 +577,13 @@ impl AppChromeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> TopbarRenderState {
-        let route = crate::ui::navigation::current_route(cx);
         let theme_k = cx.global::<ThemeState>().factor(now);
         let theme_accent = cx.global::<ThemeState>().accent;
 
         // 移除 render 路径中的 debug 状态更新：避免自驱动重绘循环
         // DebugState 的帧统计应在 debug 面板自己的 render 中处理
 
-        let window_width = window.window_bounds().get_bounds().size.width;
+        let window_width = window.bounds().size.width;
 
         let (
             music_snapshot,
@@ -777,6 +794,22 @@ impl Render for AppChromeView {
         let music_inline_animating = topbar_state.music_inline_animating;
         // music_popup_animating 现在是纯展开/收起动画，不包含拖拽
         let music_popup_animating = topbar_state.music_popup_animating;
+        let animation_flags = (
+            nav_animating,
+            theme_animating,
+            music_popup_animating,
+            music_inline_animating,
+        );
+        if self.last_animation_flags != Some(animation_flags) {
+            self.last_animation_flags = Some(animation_flags);
+            tracing::trace!(
+                nav_animating,
+                theme_animating,
+                music_popup_animating,
+                music_inline_animating,
+                "chrome animation flags"
+            );
+        }
 
         // 只在动画进行中或动画状态变化时请求 RAF
         request_animation_frame_if_active(window, nav_animating);

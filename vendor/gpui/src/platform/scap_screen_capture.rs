@@ -19,7 +19,7 @@ pub(crate) fn scap_screen_sources(
     foreground_executor: &ForegroundExecutor,
 ) -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
     let (sources_tx, sources_rx) = oneshot::channel();
-    get_screen_targets(sources_tx);
+    screen_targets(sources_tx);
     to_dyn_screen_capture_sources(sources_rx, foreground_executor)
 }
 
@@ -43,7 +43,7 @@ struct ScapCaptureSource {
 }
 
 /// Populates the sender with the screens available for capture.
-fn get_screen_targets(sources_tx: oneshot::Sender<Result<Vec<ScapCaptureSource>>>) {
+fn screen_targets(sources_tx: oneshot::Sender<Result<Vec<ScapCaptureSource>>>) {
     // Due to use of blocking APIs, a new thread is used.
     std::thread::spawn(|| {
         let targets = match scap::get_all_targets() {
@@ -126,7 +126,7 @@ fn start_default_target_screen_capture(
 ) {
     // Due to use of blocking APIs, a dedicated thread is used.
     std::thread::spawn(|| {
-        let start_result = util::maybe!({
+        let capture_start = util::maybe!({
             let mut capturer = new_scap_capturer(None)?;
             capturer.start_capture();
             let first_frame = capturer
@@ -140,7 +140,7 @@ fn start_default_target_screen_capture(
             Ok((capturer, size, target))
         });
 
-        match start_result {
+        match capture_start {
             Ok((capturer, size, Target::Display(display))) => {
                 let (stream_call_tx, stream_rx) = std::sync::mpsc::sync_channel(1);
                 sources_tx
@@ -223,12 +223,12 @@ fn run_capture(
         width: DevicePixels(display.width as i32),
         height: DevicePixels(display.height as i32),
     };
-    let stream_send_result = stream_tx.send(Ok(ScapStream {
+    let stream_send_status = stream_tx.send(Ok(ScapStream {
         cancel_stream: cancel_stream.clone(),
         display,
         size,
     }));
-    if stream_send_result.is_err() {
+    if stream_send_status.is_err() {
         return;
     }
     while !cancel_stream.load(std::sync::atomic::Ordering::SeqCst) {
@@ -279,7 +279,7 @@ fn frame_size(frame: &scap::frame::Frame) -> Size<DevicePixels> {
     size(DevicePixels(width), DevicePixels(height))
 }
 
-/// This is used by `get_screen_targets` and `start_default_target_screen_capture` to turn their
+/// This is used by `screen_targets` and `start_default_target_screen_capture` to turn their
 /// results into `Rc<dyn ScreenCaptureSource>`. They need to `Send` their capture source, and so
 /// the capture source structs are used as `Rc<dyn ScreenCaptureSource>` is not `Send`.
 fn to_dyn_screen_capture_sources<T: ScreenCaptureSource + 'static>(

@@ -35,6 +35,9 @@ pub enum ShaderError {
     /// MSL generation failed.
     #[error("MSL generation failed: {0}")]
     Msl(String),
+    /// The requested backend has no shader translator yet.
+    #[error("shader translation is not implemented for {0:?}")]
+    UnsupportedBackend(BackendKind),
 }
 
 /// A validated WGSL module and its Naga metadata.
@@ -139,6 +142,9 @@ impl WgslModule {
             BackendKind::Vulkan => self.compile_spirv(stage, entry_point),
             BackendKind::Dx12 => self.compile_hlsl(stage, entry_point),
             BackendKind::Metal => self.compile_msl(stage, entry_point),
+            BackendKind::OpenGl | BackendKind::WebGl => {
+                Err(ShaderError::UnsupportedBackend(backend))
+            }
         }
     }
 }

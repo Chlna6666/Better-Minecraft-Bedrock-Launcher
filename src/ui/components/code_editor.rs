@@ -5,7 +5,7 @@ use gpui::{
     GlobalElementId, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels,
     Point, ScrollWheelEvent, ShapedLine, SharedString, Size, Style, Styled, TextRun,
-    UTF16Selection, UnderlineStyle, Window, actions, black, div, fill, hsla, point, px, relative,
+    UnderlineStyle, Utf16Selection, Window, actions, black, div, fill, hsla, point, px, relative,
     size,
 };
 use std::ops::Range;
@@ -1212,8 +1212,8 @@ impl EntityInputHandler for CodeEditorState {
         _ignore_disabled_input: bool,
         _window: &mut Window,
         _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
+    ) -> Option<Utf16Selection> {
+        Some(Utf16Selection {
             range: self.range_to_utf16(&self.selected_range),
             reversed: self.selection_reversed,
         })
@@ -1603,7 +1603,7 @@ impl Element for EditorElement {
         cx: &mut App,
     ) {
         let focus_handle = self.editor.read(cx).focus_handle.clone();
-        window.handle_input(
+        window.set_input_handler(
             &focus_handle,
             ElementInputHandler::new(bounds, self.editor.clone()),
             cx,

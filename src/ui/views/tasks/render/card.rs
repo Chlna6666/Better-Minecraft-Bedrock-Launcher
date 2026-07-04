@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::animation::{ease_in_cubic, ease_out_cubic};
+use crate::ui::animation::{ease_in_cubic_motion, ease_out_cubic_motion};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::views::tasks::TaskCardMotionKind;
 use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageView};
@@ -328,7 +328,7 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Enter => base_card
                 .with_animation(
                     ("task-card-motion-enter", stable_task_id(model.id.as_ref())),
-                    Animation::new(Duration::from_millis(240)).with_easing(ease_out_cubic),
+                    ease_out_cubic_motion(Duration::from_millis(240)),
                     |card, progress| {
                         card.opacity(0.15 + progress * 0.85)
                             .relative()
@@ -342,7 +342,7 @@ pub(crate) fn render_task_card(
                         "task-card-motion-complete",
                         stable_task_id(model.id.as_ref()),
                     ),
-                    Animation::new(Duration::from_millis(320)).with_easing(ease_out_cubic),
+                    ease_out_cubic_motion(Duration::from_millis(320)),
                     move |card, progress| {
                         let pulse = if progress < 0.5 {
                             progress * 2.0
@@ -366,7 +366,7 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Warn => base_card
                 .with_animation(
                     ("task-card-motion-warn", stable_task_id(model.id.as_ref())),
-                    Animation::new(Duration::from_millis(220)).with_easing(ease_out_cubic),
+                    ease_out_cubic_motion(Duration::from_millis(220)),
                     move |card, progress| {
                         let pulse = if progress < 0.5 {
                             progress * 2.0
@@ -388,7 +388,7 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Exit => base_card
                 .with_animation(
                     ("task-card-motion-exit", stable_task_id(model.id.as_ref())),
-                    Animation::new(Duration::from_millis(220)).with_easing(ease_in_cubic),
+                    ease_in_cubic_motion(Duration::from_millis(220)),
                     move |card, progress| {
                         let fade = 1.0 - progress;
                         let collapsed = (1.0 - progress).clamp(0.0, 1.0);

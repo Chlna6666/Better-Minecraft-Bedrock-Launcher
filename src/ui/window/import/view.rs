@@ -478,7 +478,7 @@ impl Render for ImportWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         sync_launcher_state(now, cx);
-        let window_width_px = window.window_bounds().get_bounds().size.width / px(1.0);
+        let window_width_px = window.bounds().size.width / px(1.0);
         let use_two_column_layout = window_width_px >= IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX;
         let colors = self.theme_colors(cx);
         let sidebar_dropdown_width = px((window_width_px - 40.0).clamp(240.0, 520.0));
@@ -674,7 +674,7 @@ fn render_window_header(
     window: &mut Window,
     cx: &mut Context<ImportWindowView>,
 ) -> AnyElement {
-    let window_width = window.window_bounds().get_bounds().size.width / px(1.0);
+    let window_width = window.bounds().size.width / px(1.0);
     let compact_controls = window_width <= IMPORT_WINDOW_COMPACT_WIDTH_PX;
     let hide_file_path = window_width <= IMPORT_WINDOW_NARROW_WIDTH_PX;
     let controls_width = if compact_controls { px(56.) } else { px(68.) };

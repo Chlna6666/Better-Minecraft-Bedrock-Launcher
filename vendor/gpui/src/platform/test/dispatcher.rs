@@ -125,7 +125,7 @@ impl TestDispatcher {
         }
     }
 
-    pub fn tick(&self, background_only: bool) -> bool {
+    pub fn tick(&self, run_background_only: bool) -> bool {
         let mut state = self.state.lock();
 
         while let Some((deadline, _)) = state.delayed.first() {
@@ -136,7 +136,7 @@ impl TestDispatcher {
             state.background.push(runnable);
         }
 
-        let foreground_len: usize = if background_only {
+        let foreground_len: usize = if run_background_only {
             0
         } else {
             state

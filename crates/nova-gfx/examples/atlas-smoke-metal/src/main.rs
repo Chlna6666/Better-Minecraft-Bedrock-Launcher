@@ -56,6 +56,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut device = MetalDevice::new(&DeviceDesc {
             application_name: "nova-gfx atlas smoke metal".to_string(),
+            ..DeviceDesc::default()
         })?;
         let _vertex_shader = compile_wgsl_to_msl(ATLAS_WGSL, ShaderStage::Vertex, "vs_main")?;
         let _fragment_shader = compile_wgsl_to_msl(ATLAS_WGSL, ShaderStage::Fragment, "fs_main")?;

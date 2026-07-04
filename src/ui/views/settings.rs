@@ -44,12 +44,16 @@ impl SettingsPageView {
         let last_update_checking = cx.global::<UpdateState>().checking;
         let subscriptions = vec![
             cx.observe_global::<SettingsPageState>(|_, cx| {
+                let tab = cx.global::<SettingsPageState>().tab;
+                tracing::trace!(?tab, "settings view notify source=SettingsPageState");
                 cx.notify();
             }),
             cx.observe_global::<ThemeState>(|_, cx| {
+                tracing::trace!("settings view notify source=ThemeState");
                 cx.notify();
             }),
             cx.observe_global::<I18n>(|_, cx| {
+                tracing::trace!("settings view notify source=I18n");
                 cx.notify();
             }),
             cx.observe_global::<UpdateState>(|this, cx| {
@@ -62,11 +66,21 @@ impl SettingsPageView {
                     && settings_state.tab == SettingsTab::About
                     && checking_changed
                 {
+                    tracing::trace!(
+                        checking = update_state.checking,
+                        "settings view notify source=UpdateState"
+                    );
                     cx.notify();
                 }
             }),
             cx.observe_global::<PluginRegistry>(|_, cx| {
-                cx.notify();
+                let route = crate::ui::navigation::current_route(cx);
+                let tab = cx.global::<SettingsPageState>().tab;
+                if route == crate::ui::navigation::AppRoute::Settings && tab == SettingsTab::Plugins
+                {
+                    tracing::trace!(?tab, "settings view notify source=PluginRegistry");
+                    cx.notify();
+                }
             }),
         ];
         Self {
@@ -86,7 +100,7 @@ impl Render for SettingsPageView {
             theme.factor(now),
             theme.accent,
         );
-        let window_size = window.window_bounds().get_bounds().size;
+        let window_size = window.bounds().size;
         let render_engine = about::render_engine_label(window);
         plugins::ensure_plugin_resources(window, cx);
         let plugin_model =

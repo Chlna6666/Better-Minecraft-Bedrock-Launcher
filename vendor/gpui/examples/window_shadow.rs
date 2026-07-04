@@ -33,16 +33,13 @@ impl Render for WindowShadow {
                         canvas(
                             |_bounds, window, _cx| {
                                 window.insert_hitbox(
-                                    Bounds::new(
-                                        point(px(0.0), px(0.0)),
-                                        window.window_bounds().get_bounds().size,
-                                    ),
+                                    Bounds::new(point(px(0.0), px(0.0)), window.bounds().size),
                                     HitboxBehavior::Normal,
                                 )
                             },
                             move |_bounds, hitbox, window, _cx| {
                                 let mouse = window.mouse_position();
-                                let size = window.window_bounds().get_bounds().size;
+                                let size = window.bounds().size;
                                 let Some(edge) = resize_edge(mouse, shadow_size, size) else {
                                     return;
                                 };
@@ -78,7 +75,7 @@ impl Render for WindowShadow {
                     .when(!tiling.right, |div| div.pr(shadow_size))
                     .on_mouse_move(|_e, window, _cx| window.refresh())
                     .on_mouse_down(MouseButton::Left, move |e, window, _cx| {
-                        let size = window.window_bounds().get_bounds().size;
+                        let size = window.bounds().size;
                         let pos = e.position;
 
                         match resize_edge(pos, shadow_size, size) {

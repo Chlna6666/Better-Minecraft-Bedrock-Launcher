@@ -12,13 +12,11 @@ mod screen_capture;
 #[cfg(not(feature = "macos-blade"))]
 mod metal_atlas;
 #[cfg(not(feature = "macos-blade"))]
-pub mod metal_renderer;
-#[cfg(not(feature = "macos-blade"))]
-pub mod nova_metal_renderer;
+mod metal_renderer;
 
 use core_video::image_buffer::CVImageBuffer;
 #[cfg(not(feature = "macos-blade"))]
-use nova_metal_renderer as renderer;
+use metal_renderer as renderer;
 
 #[cfg(feature = "macos-blade")]
 use crate::platform::blade as renderer;

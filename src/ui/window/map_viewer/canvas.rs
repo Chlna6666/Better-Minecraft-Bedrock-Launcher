@@ -5,18 +5,17 @@ use super::model::{
 use super::paint::{draw_map_canvas, draw_professional_overlay_canvas};
 use super::selection::ChunkSelection;
 use super::state::MIN_CENTER_HEIGHT;
-use super::tile_state::{PaintTile, RegionManager, TileLoadState};
+use super::tile_state::{MapRenderRange, PaintTile, RegionManager, TileLoadState};
 use super::viewport::{
-    region_render_range_for_viewport, ruler_blocks, screen_x_for_block, screen_y_for_block,
-    tile_paint_rect, tile_paint_sort_key, viewport_screen_for_block,
-    visible_tile_bounds_for_render_range,
+    TileBounds, region_render_range_for_viewport, ruler_blocks, screen_x_for_block,
+    screen_y_for_block, tile_coords_for_paint_order, tile_paint_rect, tile_paint_sort_key,
+    viewport_screen_for_block, visible_tile_bounds_for_viewport,
 };
 use crate::ui::theme::colors::ThemeColors;
 use bedrock_render::RenderLayout;
 use bedrock_world::SlimeChunkWindow;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use std::hash::Hash;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -30,6 +29,8 @@ pub(super) struct TilePaintSnapshot {
     pub(super) tiles: Arc<Vec<PaintTile>>,
     pub(super) debug_overlays: Arc<Vec<TileDebugOverlay>>,
     pub(super) generation: u64,
+    pub(super) estimated_bytes: usize,
+    pub(super) paint_bounds: Option<TileBounds>,
 }
 
 impl Default for TilePaintSnapshot {
@@ -38,6 +39,8 @@ impl Default for TilePaintSnapshot {
             tiles: Arc::new(Vec::new()),
             debug_overlays: Arc::new(Vec::new()),
             generation: 0,
+            estimated_bytes: 0,
+            paint_bounds: None,
         }
     }
 }
@@ -54,9 +57,17 @@ pub(super) struct MapCanvasSnapshot {
     pub(super) selection: Option<ChunkSelection>,
     pub(super) paste_preview: Option<PastePreview>,
     pub(super) paste_preview_images: Arc<Vec<PastePreviewImage>>,
+    pub(super) paste_preview_images_generation: u64,
     pub(super) highlighted_window: Option<SlimeChunkWindow>,
     pub(super) markers: Arc<Vec<Marker>>,
+    pub(super) markers_generation: u64,
     pub(super) hover_label: SharedString,
+}
+
+pub(super) enum TilePaintSnapshotPatch {
+    Unchanged,
+    Patched(TilePaintSnapshot),
+    Rebuild,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +145,27 @@ impl MapCanvasView {
             view.set_snapshot(PasteControlsSnapshot::from_canvas(&snapshot), cx)
         });
     }
+
+    pub(super) fn set_tile_snapshot(
+        &mut self,
+        viewport: MapViewport,
+        layout: RenderLayout,
+        colors: ThemeColors,
+        tiles: Arc<TilePaintSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        self.tile_layer.update(cx, |view, cx| {
+            view.set_snapshot(
+                TileLayerSnapshot {
+                    viewport,
+                    layout,
+                    colors,
+                    tiles,
+                },
+                cx,
+            )
+        });
+    }
 }
 
 impl EventEmitter<MapCanvasAction> for MapCanvasView {}
@@ -147,15 +179,23 @@ impl Render for MapCanvasView {
             .min_h(px(MIN_CENTER_HEIGHT))
             .overflow_hidden()
             .bg(colors.surface)
-            .child(self.tile_layer.clone())
-            .child(self.grid_layer.clone())
-            .child(self.overlay_layer.clone())
-            .child(self.marker_layer.clone())
-            .child(self.hud_layer.clone())
+            .child(cached_absolute_layer(&self.tile_layer))
+            .child(cached_absolute_layer(&self.grid_layer))
+            .child(cached_absolute_layer(&self.overlay_layer))
+            .child(cached_absolute_layer(&self.marker_layer))
+            .child(cached_absolute_layer(&self.hud_layer))
             .child(render_interaction_layer(&self.map_focus_handle, cx))
-            .child(self.paste_controls_layer.clone())
+            .child(cached_absolute_layer(&self.paste_controls_layer))
             .into_any_element()
     }
+}
+
+fn cached_absolute_layer<V: Render + 'static>(layer: &Entity<V>) -> AnyView {
+    let cache_key = layer.entity_id().as_u64();
+    AnyView::from(layer.clone())
+        .cached_absolute_by(&cache_key)
+        .reuse_on_window_refresh()
+        .progressive()
 }
 
 #[derive(Clone)]
@@ -164,22 +204,23 @@ struct TileLayerSnapshot {
     layout: RenderLayout,
     colors: ThemeColors,
     tiles: Arc<TilePaintSnapshot>,
-    snapshot_id: u64,
 }
 
 impl TileLayerSnapshot {
     fn from_canvas(snapshot: &MapCanvasSnapshot) -> Self {
-        let mut hasher = RenderFingerprint::new();
-        hash_viewport(snapshot.viewport, &mut hasher);
-        hash_layout(snapshot.layout, &mut hasher);
-        snapshot.tiles.generation.hash(&mut hasher);
         Self {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
             colors: snapshot.colors,
             tiles: snapshot.tiles.clone(),
-            snapshot_id: hasher.value(),
         }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.viewport == other.viewport
+            && self.layout == other.layout
+            && self.colors == other.colors
+            && self.tiles.generation == other.tiles.generation
     }
 }
 
@@ -193,7 +234,7 @@ impl MapTileLayerView {
         if self
             .snapshot
             .as_ref()
-            .is_some_and(|current| current.snapshot_id == snapshot.snapshot_id)
+            .is_some_and(|current| current.same_as(&snapshot))
         {
             return;
         }
@@ -217,22 +258,23 @@ struct GridLayerSnapshot {
     layout: RenderLayout,
     overlays: OverlayOptions,
     colors: ThemeColors,
-    snapshot_id: u64,
 }
 
 impl GridLayerSnapshot {
     fn from_canvas(snapshot: &MapCanvasSnapshot) -> Self {
-        let mut hasher = RenderFingerprint::new();
-        hash_viewport(snapshot.viewport, &mut hasher);
-        hash_layout(snapshot.layout, &mut hasher);
-        hash_overlay_options(snapshot.overlays, &mut hasher);
         Self {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
             overlays: snapshot.overlays,
             colors: snapshot.colors,
-            snapshot_id: hasher.value(),
         }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.viewport == other.viewport
+            && self.layout == other.layout
+            && self.overlays == other.overlays
+            && self.colors == other.colors
     }
 }
 
@@ -246,7 +288,7 @@ impl MapGridLayerView {
         if self
             .snapshot
             .as_ref()
-            .is_some_and(|current| current.snapshot_id == snapshot.snapshot_id)
+            .is_some_and(|current| current.same_as(&snapshot))
         {
             return;
         }
@@ -274,38 +316,15 @@ struct OverlayLayerSnapshot {
     selection: Option<ChunkSelection>,
     paste_preview: Option<PastePreview>,
     paste_preview_images: Arc<Vec<PastePreviewImage>>,
+    paste_preview_images_generation: u64,
     highlighted_window: Option<SlimeChunkWindow>,
+    overlay_paint_ptr: Option<usize>,
+    slime_runs_ptr: Option<usize>,
     colors: ThemeColors,
-    snapshot_id: u64,
 }
 
 impl OverlayLayerSnapshot {
     fn from_canvas(snapshot: &MapCanvasSnapshot) -> Self {
-        let mut hasher = RenderFingerprint::new();
-        hash_viewport(snapshot.viewport, &mut hasher);
-        hash_layout(snapshot.layout, &mut hasher);
-        hash_overlay_options(snapshot.overlays, &mut hasher);
-        snapshot.selection.hash(&mut hasher);
-        if let Some(preview) = snapshot.paste_preview.as_ref() {
-            preview.hash_stable(&mut hasher);
-        } else {
-            0_u8.hash(&mut hasher);
-        }
-        for image in snapshot.paste_preview_images.iter() {
-            image.target.hash(&mut hasher);
-            image.image.id.hash(&mut hasher);
-        }
-        snapshot.highlighted_window.is_some().hash(&mut hasher);
-        snapshot
-            .overlay_paint
-            .as_ref()
-            .map(|cache| Arc::as_ptr(cache) as usize)
-            .hash(&mut hasher);
-        snapshot
-            .slime_runs
-            .as_ref()
-            .map(|cache| Arc::as_ptr(cache) as usize)
-            .hash(&mut hasher);
         Self {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
@@ -315,10 +334,25 @@ impl OverlayLayerSnapshot {
             selection: snapshot.selection,
             paste_preview: snapshot.paste_preview.clone(),
             paste_preview_images: snapshot.paste_preview_images.clone(),
+            paste_preview_images_generation: snapshot.paste_preview_images_generation,
             highlighted_window: snapshot.highlighted_window.clone(),
+            overlay_paint_ptr: arc_option_ptr(&snapshot.overlay_paint),
+            slime_runs_ptr: arc_option_ptr(&snapshot.slime_runs),
             colors: snapshot.colors,
-            snapshot_id: hasher.value(),
         }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.viewport == other.viewport
+            && self.layout == other.layout
+            && self.overlays == other.overlays
+            && self.selection == other.selection
+            && self.paste_preview == other.paste_preview
+            && self.paste_preview_images_generation == other.paste_preview_images_generation
+            && self.highlighted_window == other.highlighted_window
+            && self.overlay_paint_ptr == other.overlay_paint_ptr
+            && self.slime_runs_ptr == other.slime_runs_ptr
+            && self.colors == other.colors
     }
 }
 
@@ -332,7 +366,7 @@ impl MapOverlayLayerView {
         if self
             .snapshot
             .as_ref()
-            .is_some_and(|current| current.snapshot_id == snapshot.snapshot_id)
+            .is_some_and(|current| current.same_as(&snapshot))
         {
             return;
         }
@@ -356,26 +390,25 @@ struct MarkerLayerSnapshot {
     layout: RenderLayout,
     colors: ThemeColors,
     markers: Arc<Vec<Marker>>,
-    snapshot_id: u64,
+    markers_generation: u64,
 }
 
 impl MarkerLayerSnapshot {
     fn from_canvas(snapshot: &MapCanvasSnapshot) -> Self {
-        let mut hasher = RenderFingerprint::new();
-        hash_viewport(snapshot.viewport, &mut hasher);
-        hash_layout(snapshot.layout, &mut hasher);
-        for marker in snapshot.markers.iter() {
-            marker.x.hash(&mut hasher);
-            marker.z.hash(&mut hasher);
-            marker.label.as_ref().hash(&mut hasher);
-        }
         Self {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
             colors: snapshot.colors,
             markers: snapshot.markers.clone(),
-            snapshot_id: hasher.value(),
+            markers_generation: snapshot.markers_generation,
         }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.viewport == other.viewport
+            && self.layout == other.layout
+            && self.colors == other.colors
+            && self.markers_generation == other.markers_generation
     }
 }
 
@@ -389,7 +422,7 @@ impl MapMarkerLayerView {
         if self
             .snapshot
             .as_ref()
-            .is_some_and(|current| current.snapshot_id == snapshot.snapshot_id)
+            .is_some_and(|current| current.same_as(&snapshot))
         {
             return;
         }
@@ -413,22 +446,23 @@ struct HudSnapshot {
     layout: RenderLayout,
     colors: ThemeColors,
     hover_label: SharedString,
-    snapshot_id: u64,
 }
 
 impl HudSnapshot {
     fn from_canvas(snapshot: &MapCanvasSnapshot) -> Self {
-        let mut hasher = RenderFingerprint::new();
-        snapshot.viewport.scale.to_bits().hash(&mut hasher);
-        hash_layout(snapshot.layout, &mut hasher);
-        snapshot.hover_label.as_ref().hash(&mut hasher);
         Self {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
             colors: snapshot.colors,
             hover_label: snapshot.hover_label.clone(),
-            snapshot_id: hasher.value(),
         }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.viewport == other.viewport
+            && self.layout == other.layout
+            && self.colors == other.colors
+            && self.hover_label == other.hover_label
     }
 }
 
@@ -442,7 +476,7 @@ impl MapHudView {
         if self
             .snapshot
             .as_ref()
-            .is_some_and(|current| current.snapshot_id == snapshot.snapshot_id)
+            .is_some_and(|current| current.same_as(&snapshot))
         {
             return;
         }
@@ -466,26 +500,23 @@ struct PasteControlsSnapshot {
     layout: RenderLayout,
     colors: ThemeColors,
     paste_preview: Option<PastePreview>,
-    snapshot_id: u64,
 }
 
 impl PasteControlsSnapshot {
     fn from_canvas(snapshot: &MapCanvasSnapshot) -> Self {
-        let mut hasher = RenderFingerprint::new();
-        hash_viewport(snapshot.viewport, &mut hasher);
-        hash_layout(snapshot.layout, &mut hasher);
-        if let Some(preview) = snapshot.paste_preview.as_ref() {
-            preview.hash_stable(&mut hasher);
-        } else {
-            0_u8.hash(&mut hasher);
-        }
         Self {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
             colors: snapshot.colors,
             paste_preview: snapshot.paste_preview.clone(),
-            snapshot_id: hasher.value(),
         }
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.viewport == other.viewport
+            && self.layout == other.layout
+            && self.colors == other.colors
+            && self.paste_preview == other.paste_preview
     }
 }
 
@@ -499,7 +530,7 @@ impl MapPasteControlsView {
         if self
             .snapshot
             .as_ref()
-            .is_some_and(|current| current.snapshot_id == snapshot.snapshot_id)
+            .is_some_and(|current| current.same_as(&snapshot))
         {
             return;
         }
@@ -879,7 +910,7 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
                     let Some(render_range) = render_range else {
                         return;
                     };
-                    for tile in paint_tiles.iter() {
+                    let requests = paint_tiles.iter().filter_map(|tile| {
                         let Some(rect) = tile_paint_rect(
                             viewport,
                             layout,
@@ -887,20 +918,15 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
                             tile.coord.0,
                             tile.coord.1,
                         ) else {
-                            continue;
+                            return None;
                         };
                         let Some(image_bounds) = rect.to_bounds(bounds) else {
-                            continue;
+                            return None;
                         };
-                        if let Err(error) = window.paint_image(
-                            image_bounds,
-                            Corners::all(px(0.0)),
-                            tile.image.clone(),
-                            0,
-                            false,
-                        ) {
-                            tracing::debug!(?error, "failed to paint map tile image");
-                        }
+                        Some(ImagePaintRequest::new(image_bounds, tile.image.as_ref()))
+                    });
+                    if let Err(error) = window.paint_images(requests) {
+                        tracing::debug!(?error, "failed to paint map tile images");
                     }
                 },
             )
@@ -1060,31 +1086,6 @@ fn hud_pill(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-fn hash_viewport(viewport: MapViewport, hasher: &mut RenderFingerprint) {
-    viewport.offset_x.to_bits().hash(hasher);
-    viewport.offset_y.to_bits().hash(hasher);
-    viewport.scale.to_bits().hash(hasher);
-    viewport.width.to_bits().hash(hasher);
-    viewport.height.to_bits().hash(hasher);
-}
-
-fn hash_layout(layout: RenderLayout, hasher: &mut RenderFingerprint) {
-    layout.chunks_per_tile.hash(hasher);
-    layout.blocks_per_pixel.hash(hasher);
-    layout.pixels_per_block.hash(hasher);
-}
-
-fn hash_overlay_options(overlays: OverlayOptions, hasher: &mut RenderFingerprint) {
-    overlays.axis.hash(hasher);
-    overlays.dense_grid.hash(hasher);
-    overlays.ruler.hash(hasher);
-    overlays.slime_chunks.hash(hasher);
-    overlays.entities.hash(hasher);
-    overlays.block_entities.hash(hasher);
-    overlays.villages.hash(hasher);
-    overlays.hardcoded_spawn_areas.hash(hasher);
-}
-
 fn theme_colors(cx: &App) -> ThemeColors {
     let theme = cx.global::<crate::ui::state::theme::ThemeState>();
     crate::ui::theme::colors::lerp_theme_colors(
@@ -1093,6 +1094,10 @@ fn theme_colors(cx: &App) -> ThemeColors {
         theme.factor(std::time::Instant::now()),
         theme.accent,
     )
+}
+
+fn arc_option_ptr<T>(value: &Option<Arc<T>>) -> Option<usize> {
+    value.as_ref().map(|value| Arc::as_ptr(value) as usize)
 }
 
 pub(super) fn build_tile_paint_snapshot(
@@ -1104,55 +1109,346 @@ pub(super) fn build_tile_paint_snapshot(
 ) -> TilePaintSnapshot {
     let mut paint_tiles = Vec::new();
     let mut debug_overlays = Vec::new();
+    let mut estimated_bytes = 0usize;
     let Some(render_range) = region_render_range_for_viewport(viewport, layout) else {
         return TilePaintSnapshot {
             tiles: Arc::new(paint_tiles),
             debug_overlays: Arc::new(debug_overlays),
             generation,
+            estimated_bytes,
+            paint_bounds: None,
         };
     };
     let center = viewport.center_tile(layout);
-    let Some(visible_bounds) = visible_tile_bounds_for_render_range(render_range, center) else {
+    let Some(paint_bounds) = visible_tile_bounds_for_viewport(viewport, layout, center) else {
         return TilePaintSnapshot {
             tiles: Arc::new(paint_tiles),
             debug_overlays: Arc::new(debug_overlays),
             generation,
+            estimated_bytes,
+            paint_bounds: None,
         };
     };
-    let paint_bounds = visible_bounds.expand(1);
-    for tile_z in paint_bounds.min_z..=paint_bounds.max_z {
-        for tile_x in paint_bounds.min_x..=paint_bounds.max_x {
-            let Some(entry) = tile_manager.entries.get(&(tile_x, tile_z)) else {
-                continue;
-            };
-            if let Some(tile) = &entry.image {
-                paint_tiles.push(PaintTile {
-                    coord: (tile_x, tile_z),
-                    image: tile.image.clone(),
-                    pixels: tile.pixels.clone(),
-                    pixel_format: tile.pixel_format,
-                    width: tile.width,
-                    height: tile.height,
-                });
-            } else if diagnostics_open
-                && matches!(entry.state, TileLoadState::Failed | TileLoadState::Invalid)
-            {
-                debug_overlays.push(TileDebugOverlay {
-                    coord: (tile_x, tile_z),
-                    label: if entry.state == TileLoadState::Invalid {
-                        SharedString::from("空")
-                    } else {
-                        SharedString::from("失败")
-                    },
-                });
-            }
+    for (tile_x, tile_z) in tile_coords_for_paint_order(paint_bounds) {
+        let Some(entry) = tile_manager.entries.get(&(tile_x, tile_z)) else {
+            continue;
+        };
+        if let Some(tile) = &entry.image {
+            estimated_bytes = estimated_bytes.saturating_add(tile.estimated_bytes);
+            paint_tiles.push(PaintTile {
+                coord: (tile_x, tile_z),
+                image: tile.image.clone(),
+                pixel_format: tile.pixel_format,
+                width: tile.width,
+                height: tile.height,
+                estimated_bytes: tile.estimated_bytes,
+            });
+        } else if diagnostics_open
+            && matches!(entry.state, TileLoadState::Failed | TileLoadState::Invalid)
+        {
+            debug_overlays.push(TileDebugOverlay {
+                coord: (tile_x, tile_z),
+                label: if entry.state == TileLoadState::Invalid {
+                    SharedString::from("空")
+                } else {
+                    SharedString::from("失败")
+                },
+            });
         }
     }
-    paint_tiles.sort_by_key(|tile| tile_paint_sort_key(tile.coord, render_range));
+    debug_assert!(paint_tiles.windows(2).all(|tiles| {
+        tile_paint_sort_key(tiles[0].coord, render_range)
+            <= tile_paint_sort_key(tiles[1].coord, render_range)
+    }));
+    debug_assert!(debug_overlays.windows(2).all(|overlays| {
+        tile_paint_sort_key(overlays[0].coord, render_range)
+            <= tile_paint_sort_key(overlays[1].coord, render_range)
+    }));
 
     TilePaintSnapshot {
         tiles: Arc::new(paint_tiles),
         debug_overlays: Arc::new(debug_overlays),
         generation,
+        estimated_bytes,
+        paint_bounds: Some(paint_bounds),
     }
+}
+
+pub(super) fn patch_tile_paint_snapshot(
+    current: &TilePaintSnapshot,
+    tile_manager: &RegionManager,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    diagnostics_open: bool,
+    changed_tiles: &[(i32, i32)],
+    generation: u64,
+) -> TilePaintSnapshotPatch {
+    if changed_tiles.is_empty() {
+        return TilePaintSnapshotPatch::Unchanged;
+    }
+    let Some(render_range) = region_render_range_for_viewport(viewport, layout) else {
+        return TilePaintSnapshotPatch::Rebuild;
+    };
+    let center = viewport.center_tile(layout);
+    let Some(paint_bounds) = visible_tile_bounds_for_viewport(viewport, layout, center) else {
+        return TilePaintSnapshotPatch::Rebuild;
+    };
+    if current.paint_bounds != Some(paint_bounds) {
+        return TilePaintSnapshotPatch::Rebuild;
+    }
+
+    let mut tiles = current.tiles.as_ref().clone();
+    let mut debug_overlays = current.debug_overlays.as_ref().clone();
+    let mut estimated_bytes = current.estimated_bytes;
+    let mut changed = false;
+    for coord in changed_tiles.iter().copied() {
+        if !paint_bounds_contains(paint_bounds, coord) {
+            continue;
+        }
+        if let Some(change) = patch_paint_tile(&mut tiles, tile_manager, coord, render_range) {
+            estimated_bytes = estimated_bytes
+                .saturating_sub(change.old_bytes)
+                .saturating_add(change.new_bytes);
+            changed = true;
+        }
+        changed |= patch_debug_overlay(
+            &mut debug_overlays,
+            tile_manager,
+            coord,
+            diagnostics_open,
+            render_range,
+        );
+    }
+
+    if !changed {
+        return TilePaintSnapshotPatch::Unchanged;
+    }
+    debug_assert!(paint_tiles_are_ordered(&tiles, render_range));
+    debug_assert!(debug_overlays_are_ordered(&debug_overlays, render_range));
+    TilePaintSnapshotPatch::Patched(TilePaintSnapshot {
+        tiles: Arc::new(tiles),
+        debug_overlays: Arc::new(debug_overlays),
+        generation,
+        estimated_bytes,
+        paint_bounds: Some(paint_bounds),
+    })
+}
+
+#[derive(Clone, Copy)]
+struct PaintTilePatchChange {
+    old_bytes: usize,
+    new_bytes: usize,
+}
+
+fn patch_paint_tile(
+    tiles: &mut Vec<PaintTile>,
+    tile_manager: &RegionManager,
+    coord: (i32, i32),
+    render_range: MapRenderRange,
+) -> Option<PaintTilePatchChange> {
+    match paint_tile_for_coord(tile_manager, coord) {
+        Some(tile) => insert_or_replace_paint_tile(tiles, tile, render_range),
+        None => remove_paint_tile(tiles, coord),
+    }
+}
+
+fn patch_debug_overlay(
+    debug_overlays: &mut Vec<TileDebugOverlay>,
+    tile_manager: &RegionManager,
+    coord: (i32, i32),
+    diagnostics_open: bool,
+    render_range: MapRenderRange,
+) -> bool {
+    match debug_overlay_for_coord(tile_manager, coord, diagnostics_open) {
+        Some(overlay) => insert_or_replace_debug_overlay(debug_overlays, overlay, render_range),
+        None => remove_debug_overlay(debug_overlays, coord),
+    }
+}
+
+fn paint_tile_for_coord(tile_manager: &RegionManager, coord: (i32, i32)) -> Option<PaintTile> {
+    let entry = tile_manager.entries.get(&coord)?;
+    let tile = entry.image.as_ref()?;
+    Some(PaintTile {
+        coord,
+        image: tile.image.clone(),
+        pixel_format: tile.pixel_format,
+        width: tile.width,
+        height: tile.height,
+        estimated_bytes: tile.estimated_bytes,
+    })
+}
+
+fn debug_overlay_for_coord(
+    tile_manager: &RegionManager,
+    coord: (i32, i32),
+    diagnostics_open: bool,
+) -> Option<TileDebugOverlay> {
+    let entry = tile_manager.entries.get(&coord)?;
+    if !diagnostics_open || !matches!(entry.state, TileLoadState::Failed | TileLoadState::Invalid) {
+        return None;
+    }
+    Some(TileDebugOverlay {
+        coord,
+        label: if entry.state == TileLoadState::Invalid {
+            SharedString::from("空")
+        } else {
+            SharedString::from("失败")
+        },
+    })
+}
+
+fn insert_or_replace_paint_tile(
+    tiles: &mut Vec<PaintTile>,
+    tile: PaintTile,
+    render_range: MapRenderRange,
+) -> Option<PaintTilePatchChange> {
+    if let Some(index) = tiles
+        .iter()
+        .position(|existing| existing.coord == tile.coord)
+    {
+        if paint_tile_same(&tiles[index], &tile) {
+            return None;
+        }
+        let old_bytes = tiles[index].estimated_bytes;
+        let new_bytes = tile.estimated_bytes;
+        tiles.remove(index);
+        let key = tile_paint_sort_key(tile.coord, render_range);
+        let insert_index = tiles
+            .binary_search_by_key(&key, |existing| {
+                tile_paint_sort_key(existing.coord, render_range)
+            })
+            .unwrap_or_else(|index| index);
+        tiles.insert(insert_index, tile);
+        return Some(PaintTilePatchChange {
+            old_bytes,
+            new_bytes,
+        });
+    }
+    let key = tile_paint_sort_key(tile.coord, render_range);
+    match tiles.binary_search_by_key(&key, |existing| {
+        tile_paint_sort_key(existing.coord, render_range)
+    }) {
+        Ok(index) => {
+            if paint_tile_same(&tiles[index], &tile) {
+                return None;
+            }
+            let old_bytes = tiles[index].estimated_bytes;
+            let new_bytes = tile.estimated_bytes;
+            tiles[index] = tile;
+            Some(PaintTilePatchChange {
+                old_bytes,
+                new_bytes,
+            })
+        }
+        Err(index) => {
+            let new_bytes = tile.estimated_bytes;
+            tiles.insert(index, tile);
+            Some(PaintTilePatchChange {
+                old_bytes: 0,
+                new_bytes,
+            })
+        }
+    }
+}
+
+fn remove_paint_tile(
+    tiles: &mut Vec<PaintTile>,
+    coord: (i32, i32),
+) -> Option<PaintTilePatchChange> {
+    let Some(index) = tiles.iter().position(|tile| tile.coord == coord) else {
+        return None;
+    };
+    let tile = tiles.remove(index);
+    Some(PaintTilePatchChange {
+        old_bytes: tile.estimated_bytes,
+        new_bytes: 0,
+    })
+}
+
+fn insert_or_replace_debug_overlay(
+    debug_overlays: &mut Vec<TileDebugOverlay>,
+    overlay: TileDebugOverlay,
+    render_range: MapRenderRange,
+) -> bool {
+    if let Some(index) = debug_overlays
+        .iter()
+        .position(|existing| existing.coord == overlay.coord)
+    {
+        if debug_overlay_same(&debug_overlays[index], &overlay) {
+            return false;
+        }
+        debug_overlays.remove(index);
+        let key = tile_paint_sort_key(overlay.coord, render_range);
+        let insert_index = debug_overlays
+            .binary_search_by(|existing| {
+                tile_paint_sort_key(existing.coord, render_range).cmp(&key)
+            })
+            .unwrap_or_else(|index| index);
+        debug_overlays.insert(insert_index, overlay);
+        return true;
+    }
+    let key = tile_paint_sort_key(overlay.coord, render_range);
+    match debug_overlays
+        .binary_search_by(|existing| tile_paint_sort_key(existing.coord, render_range).cmp(&key))
+    {
+        Ok(index) => {
+            if debug_overlay_same(&debug_overlays[index], &overlay) {
+                return false;
+            }
+            debug_overlays[index] = overlay;
+            true
+        }
+        Err(index) => {
+            debug_overlays.insert(index, overlay);
+            true
+        }
+    }
+}
+
+fn remove_debug_overlay(debug_overlays: &mut Vec<TileDebugOverlay>, coord: (i32, i32)) -> bool {
+    let Some(index) = debug_overlays
+        .iter()
+        .position(|overlay| overlay.coord == coord)
+    else {
+        return false;
+    };
+    debug_overlays.remove(index);
+    true
+}
+
+fn paint_bounds_contains(bounds: super::viewport::TileBounds, coord: (i32, i32)) -> bool {
+    coord.0 >= bounds.min_x
+        && coord.0 <= bounds.max_x
+        && coord.1 >= bounds.min_z
+        && coord.1 <= bounds.max_z
+}
+
+fn paint_tile_same(left: &PaintTile, right: &PaintTile) -> bool {
+    left.coord == right.coord
+        && Arc::ptr_eq(&left.image, &right.image)
+        && left.pixel_format == right.pixel_format
+        && left.width == right.width
+        && left.height == right.height
+        && left.estimated_bytes == right.estimated_bytes
+}
+
+fn debug_overlay_same(left: &TileDebugOverlay, right: &TileDebugOverlay) -> bool {
+    left.coord == right.coord && left.label == right.label
+}
+
+fn paint_tiles_are_ordered(tiles: &[PaintTile], render_range: MapRenderRange) -> bool {
+    tiles.windows(2).all(|tiles| {
+        tile_paint_sort_key(tiles[0].coord, render_range)
+            <= tile_paint_sort_key(tiles[1].coord, render_range)
+    })
+}
+
+fn debug_overlays_are_ordered(
+    debug_overlays: &[TileDebugOverlay],
+    render_range: MapRenderRange,
+) -> bool {
+    debug_overlays.windows(2).all(|overlays| {
+        tile_paint_sort_key(overlays[0].coord, render_range)
+            <= tile_paint_sort_key(overlays[1].coord, render_range)
+    })
 }

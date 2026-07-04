@@ -26,6 +26,9 @@ pub(super) struct AppBackgroundView {
     last_background_blur: f32,
     animation_suppressed: bool,
     startup_first_paint_logged: bool,
+    preloaded_background_resource: Option<Resource>,
+    preloaded_background_target: Option<TargetSizeImageSource>,
+    preloaded_background_task: Option<TargetSizeImageLoadingTask>,
 }
 
 impl AppBackgroundView {
@@ -49,6 +52,9 @@ impl AppBackgroundView {
             last_background_blur: crate::config::config::default_background_blur(),
             animation_suppressed: false,
             startup_first_paint_logged: false,
+            preloaded_background_resource: None,
+            preloaded_background_target: None,
+            preloaded_background_task: None,
         }
     }
 
@@ -178,19 +184,62 @@ impl AppBackgroundView {
             display_background: Some(desired_background),
         }
     }
+
+    fn sync_preloaded_background_resource(
+        &mut self,
+        source: Option<&BackgroundSource>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let next_resource = source.and_then(background_resource);
+        let next_target = next_resource.clone().and_then(|resource| {
+            cx.target_size_image_source(
+                resource,
+                window.viewport_size(),
+                window.scale_factor(),
+                ObjectFit::Cover,
+            )
+        });
+        if self.preloaded_background_resource == next_resource
+            && self.preloaded_background_target == next_target
+        {
+            return;
+        }
+
+        if let Some(previous_resource) = self.preloaded_background_resource.take() {
+            self.preloaded_background_task.take();
+            if let Some(previous_target) = self.preloaded_background_target.take() {
+                cx.remove_target_size_image_source_in(&previous_target, Some(window));
+                if next_resource.as_ref() != Some(&previous_resource) {
+                    cx.remove_compressed_image_resource(&previous_resource);
+                }
+            }
+        }
+
+        if let (Some(resource), Some(target)) = (next_resource, next_target) {
+            let task = cx.preload_target_size_image(target.clone());
+            self.preloaded_background_resource = Some(resource);
+            self.preloaded_background_target = Some(target);
+            self.preloaded_background_task = Some(task);
+        }
+    }
 }
 
 fn background_animation_policy(
     animation_suppressed: bool,
     window_active: bool,
 ) -> ImageAnimationPolicy {
-    if animation_suppressed || !window_active {
+    if animation_suppressed {
         ImageAnimationPolicy::paused()
     } else {
         ImageAnimationPolicy {
             play: true,
             max_fps: Some(BACKGROUND_ANIMATION_MAX_FPS),
-            inactive_max_fps: Some(1.0),
+            inactive_max_fps: Some(if window_active {
+                BACKGROUND_ANIMATION_MAX_FPS
+            } else {
+                1.0
+            }),
         }
     }
 }
@@ -253,6 +302,7 @@ impl Render for AppBackgroundView {
         }
 
         let display_background = prepared.display_background;
+        self.sync_preloaded_background_resource(display_background.as_ref(), window, cx);
 
         self.render_background_container(
             display_background.as_ref(),
@@ -276,10 +326,11 @@ mod tests {
     }
 
     #[test]
-    fn background_animation_policy_pauses_when_window_inactive() {
+    fn background_animation_policy_throttles_when_window_inactive() {
         let policy = background_animation_policy(false, false);
 
-        assert!(!policy.play);
+        assert!(policy.play);
+        assert_eq!(policy.inactive_max_fps, Some(1.0));
     }
 
     #[test]

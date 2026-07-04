@@ -267,21 +267,32 @@ impl MapViewerWindowView {
 
     pub(super) fn preview_3d_begin_drag(
         &mut self,
+        mode: Preview3dDragMode,
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.preview_3d.drag_origin = Some(position);
+        self.preview_3d.drag = Some(Preview3dDragState { mode, position });
         cx.notify();
     }
 
-    pub(super) fn preview_3d_drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(origin) = self.preview_3d.drag_origin else {
+    pub(super) fn preview_3d_orbit_camera_to(
+        &mut self,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.preview_3d.drag else {
             return;
         };
-        let delta_x = (position.x - origin.x) / px(1.0);
-        let delta_y = (position.y - origin.y) / px(1.0);
+        if drag.mode != Preview3dDragMode::OrbitCamera {
+            return;
+        }
+        let delta_x = (position.x - drag.position.x) / px(1.0);
+        let delta_y = (position.y - drag.position.y) / px(1.0);
         self.preview_3d.camera.rotate_view(delta_x, delta_y);
-        self.preview_3d.drag_origin = Some(position);
+        self.preview_3d.drag = Some(Preview3dDragState {
+            mode: drag.mode,
+            position,
+        });
         cx.notify();
     }
 
@@ -290,13 +301,19 @@ impl MapViewerWindowView {
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        let Some(origin) = self.preview_3d.drag_origin else {
+        let Some(drag) = self.preview_3d.drag else {
             return;
         };
-        let delta_x = (position.x - origin.x) / px(1.0);
-        let delta_y = (position.y - origin.y) / px(1.0);
+        if drag.mode != Preview3dDragMode::RotateModel {
+            return;
+        }
+        let delta_x = (position.x - drag.position.x) / px(1.0);
+        let delta_y = (position.y - drag.position.y) / px(1.0);
         self.preview_3d.model_rotation.rotate_drag(delta_x, delta_y);
-        self.preview_3d.drag_origin = Some(position);
+        self.preview_3d.drag = Some(Preview3dDragState {
+            mode: drag.mode,
+            position,
+        });
         cx.notify();
     }
 
@@ -323,7 +340,7 @@ impl MapViewerWindowView {
             return;
         }
         self.preview_3d.last_motion_frame_at = None;
-        window.request_animation_frame();
+        request_animation_frame_if(window, true);
         cx.notify();
     }
 

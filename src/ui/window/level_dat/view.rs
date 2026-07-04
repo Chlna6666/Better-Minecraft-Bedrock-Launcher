@@ -481,7 +481,7 @@ pub fn open_level_dat_code_window(init: LevelDatCodeWindowInit, cx: &mut App) {
     let title = format!("Level.dat JSON - {}", init.asset.display_name);
     let options = level_dat_code_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
-        window.set_window_title(&title);
+        window.set_title(&title);
         window.activate_window();
 
         let view = cx.new(|cx| LevelDatCodeWindowView::new(init, window, cx));

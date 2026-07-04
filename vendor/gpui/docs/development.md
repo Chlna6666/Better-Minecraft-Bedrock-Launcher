@@ -13,7 +13,7 @@ examples, and downstream applications.
   `Render` implementations. When a closure receives an inner `cx`, use that
   inner context instead of an outer one.
 - Use `Window` explicitly for focus, input state, drawing, frame requests,
-  actions, custom GPU surfaces, and window-local element state.
+  actions, and window-local element state.
 - Use `AsyncApp` and `AsyncWindowContext` only across await points.
 
 Do not introduce obsolete application API names: `Model<T>`, `View<T>`,
@@ -72,14 +72,12 @@ state.
 
 `RendererOptions` carries backend, adapter, power, present mode, render policy,
 and metrics preferences. `RendererBackend::Auto` chooses the platform default;
-Windows supports explicit `NovaVulkan` and `NovaDx12`, and macOS uses
-`NovaMetal` for nova-gfx Metal integration. The macOS NovaMetal path was not
-compiled or smoke-tested in the current Windows development environment.
+Windows supports explicit `NovaVulkan` and `NovaDx12`.
 
 Use frame requests precisely:
 
 - `force_render` means layout or paint scene state changed.
-- `require_presentation` means prepared content or GPU surface output needs to
+- `require_presentation` means prepared GPU content needs to
   be presented without necessarily rebuilding the scene.
 
 The normal idle model is event driven. Continuous composition requires explicit
@@ -87,17 +85,9 @@ The normal idle model is event driven. Continuous composition requires explicit
 
 ## GPU Surface Examples
 
-Custom GPU examples should:
-
-- create surfaces through `Window::paint_gpu_mesh_3d`;
-- render into `GpuSurfaceHandle::back_buffer_view`;
-- submit work through `GpuSurfaceHandle::queue`;
-- call `present` when rendered output should request a later presentation;
-- call `swap_buffers` when rendering happens inside the current paint path;
-- call `Window::paint_gpu_mesh_3d` during paint.
-
-Keep platform-specific examples behind `cfg` guards and provide a small
-fallback `main` for unsupported platforms.
+Custom GPU examples should use current GPUI scene primitives and nova-gfx
+renderer extension points. Keep platform-specific examples behind `cfg` guards
+and provide a small fallback `main` for unsupported platforms.
 
 ## Lint And Documentation Rules
 

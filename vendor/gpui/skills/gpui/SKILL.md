@@ -1,6 +1,6 @@
 ---
 name: gpui
-description: "Use when writing, reviewing, documenting, or updating GPUI framework code, GPUI examples, or applications that use GPUI. Triggers include GPUI, App, Context, Window, Entity, Render, RenderOnce, GPU surface, RendererBackend, WindowOptions, GPUI docs, and GPUI examples."
+description: "Use when writing, reviewing, documenting, or updating GPUI framework code, GPUI examples, or applications that use GPUI. Triggers include GPUI, App, Context, Window, Entity, Render, RenderOnce, RendererBackend, WindowOptions, GPUI docs, and GPUI examples."
 ---
 
 # GPUI
@@ -26,7 +26,7 @@ GPUI application code.
 - Use `App` as the root context and `Context<T>` inside entity creation,
   updates, listeners, and `Render` implementations.
 - Pass `Window` explicitly when code needs focus, input state, drawing, frame
-  requests, actions, image-cache scope, or GPU surfaces.
+  requests, actions, or image-cache scope.
 - Use `Entity<T>` and `WeakEntity<T>` for GPUI-owned state.
 - Use `cx.spawn(async move |cx| ...)` from `App`.
 - Use `cx.spawn(async move |handle, cx| ...)` from `Context<T>`.
@@ -51,7 +51,5 @@ Load these only when relevant:
 
 - `references/api-patterns.md`: contexts, entities, rendering, input, actions,
   and async patterns.
-- `references/renderer-nova-gfx.md`: renderer options, frame scheduling, Nova GPU
-  surfaces, runtime WGSL, and platform notes.
 - `references/examples-lint-docs.md`: example rules, lint policy, docs
   validation, and expected commands.

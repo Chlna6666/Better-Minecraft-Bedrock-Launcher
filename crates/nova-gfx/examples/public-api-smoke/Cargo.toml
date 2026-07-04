@@ -1,0 +1,19 @@
+[package]
+name = "nova-public-api-smoke"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "nova-public-api-smoke"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { path = "../../gfx-core" }

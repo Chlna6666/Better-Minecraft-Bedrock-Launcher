@@ -1,0 +1,26 @@
+[package]
+name = "gfx-opengl"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "OpenGL backend for nova-gfx"
+readme = "README.md"
+documentation = "https://docs.rs/gfx-opengl"
+keywords = ["graphics", "gpu", "opengl", "rendering", "backend"]
+categories = ["rendering::graphics-api"]
+include = ["src/**", "Cargo.toml", "README.md", "README.zh-CN.md"]
+
+[lib]
+path = "src/gfx_opengl.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { version = "0.1.0", path = "../gfx-core" }
+thiserror = "2.0.17"

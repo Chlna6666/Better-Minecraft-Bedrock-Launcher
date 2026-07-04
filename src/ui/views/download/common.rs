@@ -20,7 +20,7 @@ pub(crate) fn status_card(colors: &ThemeColors, text: &str, accent: Option<Hsla>
 
     div()
         .w_full()
-        .rounded(px(16.))
+        .rounded(px(10.))
         .border_1()
         .border_color(border)
         .bg(bg)
@@ -38,7 +38,7 @@ pub(crate) fn panel_shell(colors: &ThemeColors) -> Div {
         .flex_1()
         .min_w(px(0.))
         .min_h(px(0.))
-        .rounded(px(18.))
+        .rounded(px(10.))
         .border_1()
         .border_color(colors.border)
         .bg(Hsla {

@@ -9,6 +9,7 @@ use crate::ui::components::input::InputState;
 pub enum ManageTab {
     Mod,
     ResourcePack,
+    SkinPack,
     Map,
     Screenshot,
     Server,
@@ -31,6 +32,7 @@ pub enum ManageAssetSortKey {
 pub enum ManageAssetKind {
     Mod,
     ResourcePack,
+    SkinPack,
     Map,
 }
 
@@ -65,6 +67,14 @@ pub struct ManageGdkUser {
 }
 
 #[derive(Clone, Debug)]
+pub struct ManageSkinPreviewEntry {
+    pub display_name: SharedString,
+    pub full_texture_path: SharedString,
+    pub preview_path: Option<SharedString>,
+    pub model_label: SharedString,
+}
+
+#[derive(Clone, Debug)]
 pub struct ManageAssetEntry {
     pub key: SharedString,
     pub folder_name: SharedString,
@@ -86,6 +96,10 @@ pub struct ManageAssetEntry {
     pub inject_delay_ms: Option<u64>,
     pub resource_pack_count: Option<usize>,
     pub behavior_pack_count: Option<usize>,
+    pub skin_count: Option<usize>,
+    pub first_skin_full_texture_path: Option<SharedString>,
+    pub first_skin_model_label: Option<SharedString>,
+    pub skin_previews: Option<Arc<[ManageSkinPreviewEntry]>>,
     pub kind: ManageAssetKind,
 }
 

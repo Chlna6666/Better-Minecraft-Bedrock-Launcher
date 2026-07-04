@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::Duration;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// 全局 client 缓存（key -> Client）
 /// 优化：使用 LRU 策略管理客户端缓存，避免无限增长
@@ -265,15 +265,14 @@ fn load_current_proxy_config() -> ProxyConfig {
 
 /// 清空缓存（并重建 no_proxy 项），可在配置变更时调用
 pub fn clear_client_cache() {
-    if let Ok(mut cache) = CLIENT_CACHE.lock() {
-        cache.clear();
-
-        let fallback = build_optimized_client(|builder| builder.no_proxy());
-        cache.insert("no_proxy".to_string(), fallback);
-        debug!("CLIENT_CACHE cleared and no_proxy rebuilt");
-    } else {
-        error!("Failed to lock CLIENT_CACHE to clear it");
-    }
+    retain_client_cache_entries("CLIENT_CACHE", &CLIENT_CACHE, |key| key == "no_proxy");
+    retain_client_cache_entries("DOWNLOAD_CLIENT_CACHE", &DOWNLOAD_CLIENT_CACHE, |key| {
+        key == "download:no_proxy"
+    });
+    retain_client_cache_entries("BLOCKING_CLIENT_CACHE", &BLOCKING_CLIENT_CACHE, |key| {
+        key == "no_proxy"
+    });
+    prewarm_current_proxy_clients_in_background();
 }
 
 /// 强制重建 no_proxy client 并放回缓存（如果你希望在运行时刷新）
@@ -537,8 +536,56 @@ pub fn get_blocking_client_for_proxy() -> Result<BlockingClient, CoreError> {
 /// 构建当前代理配置下的常用 client，但不发起任何网络请求。
 pub fn prewarm_current_proxy_clients() -> Result<(), CoreError> {
     get_client_for_proxy()?;
+    get_download_client_for_proxy()?;
     get_blocking_client_for_proxy()?;
     Ok(())
+}
+
+pub fn prewarm_current_proxy_clients_in_background() {
+    fn prewarm() {
+        match prewarm_current_proxy_clients() {
+            Ok(()) => debug!("HTTP proxy clients prewarmed"),
+            Err(error) => warn!("HTTP proxy client prewarm failed: {error}"),
+        }
+    }
+
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            drop(handle.spawn_blocking(prewarm));
+        }
+        Err(_) => {
+            if let Err(error) = std::thread::Builder::new()
+                .name("bmcbl-http-client-prewarm".to_string())
+                .spawn(prewarm)
+            {
+                error!("Failed to spawn HTTP proxy client prewarm thread: {error}");
+            }
+        }
+    }
+}
+
+fn retain_client_cache_entries<T>(
+    cache_name: &str,
+    cache: &Lazy<Mutex<HashMap<String, T>>>,
+    keep_entry: impl Fn(&str) -> bool,
+) {
+    let Some(cache) = Lazy::get(cache) else {
+        debug!("{cache_name} not initialized; skipping clear");
+        return;
+    };
+
+    match cache.lock() {
+        Ok(mut cache) => {
+            let previous_len = cache.len();
+            cache.retain(|key, _| keep_entry(key));
+            debug!(
+                "{cache_name} cleared stale proxy clients: before={} after={}",
+                previous_len,
+                cache.len()
+            );
+        }
+        Err(error) => error!("Failed to lock {cache_name} to clear it: {error}"),
+    }
 }
 
 fn get_no_proxy_blocking_client() -> BlockingClient {

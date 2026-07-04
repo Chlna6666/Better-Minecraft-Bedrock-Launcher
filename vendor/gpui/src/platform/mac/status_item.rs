@@ -225,7 +225,7 @@ impl platform::Window for StatusItem {
         unimplemented!()
     }
 
-    fn set_edited(&mut self, _: bool) {
+    fn set_edited(&mut self, _is_edited: bool) {
         unimplemented!()
     }
 
@@ -326,7 +326,7 @@ extern "C" fn dealloc_view(this: &Object, _: Sel) {
 
 extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
     unsafe {
-        if let Some(state) = get_state(this).upgrade() {
+        if let Some(state) = status_item_state(this).upgrade() {
             let mut state_borrow = state.as_ref().borrow_mut();
             if let Some(event) =
                 Event::from_native(native_event, Some(state_borrow.content_size().y()))
@@ -342,7 +342,7 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
 }
 
 extern "C" fn make_backing_layer(this: &Object, _: Sel) -> id {
-    if let Some(state) = unsafe { get_state(this).upgrade() } {
+    if let Some(state) = unsafe { status_item_state(this).upgrade() } {
         let state = state.borrow();
         state.renderer.layer().as_ptr() as id
     } else {
@@ -352,7 +352,7 @@ extern "C" fn make_backing_layer(this: &Object, _: Sel) -> id {
 
 extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     unsafe {
-        if let Some(state) = get_state(this).upgrade() {
+        if let Some(state) = status_item_state(this).upgrade() {
             let mut state = state.borrow_mut();
             if let Some(scene) = state.scene.take() {
                 state.renderer.render(&scene);
@@ -363,7 +363,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
 
 extern "C" fn view_did_change_effective_appearance(this: &Object, _: Sel) {
     unsafe {
-        if let Some(state) = get_state(this).upgrade() {
+        if let Some(state) = status_item_state(this).upgrade() {
             let mut state_borrow = state.as_ref().borrow_mut();
             if let Some(mut callback) = state_borrow.appearance_changed_callback.take() {
                 drop(state_borrow);
@@ -374,7 +374,7 @@ extern "C" fn view_did_change_effective_appearance(this: &Object, _: Sel) {
     }
 }
 
-unsafe fn get_state(object: &Object) -> Weak<RefCell<StatusItemState>> {
+unsafe fn status_item_state(object: &Object) -> Weak<RefCell<StatusItemState>> {
     let raw: *mut c_void = *object.get_ivar(STATE_IVAR);
     let weak1 = Weak::from_raw(raw as *mut RefCell<StatusItemState>);
     let weak2 = weak1.clone();

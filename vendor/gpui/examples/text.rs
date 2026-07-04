@@ -28,7 +28,7 @@ impl Default for TextContext {
 }
 
 impl TextContext {
-    pub fn get_global(cx: &App) -> &Arc<TextContext> {
+    pub fn global(cx: &App) -> &Arc<TextContext> {
         &cx.global::<GlobalTextContext>().0
     }
 }

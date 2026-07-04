@@ -7,8 +7,8 @@ rendering, or listening for events on an `Entity<T>`. Use the inner `cx`
 provided to nested closures instead of an outer context.
 
 Pass `Window` explicitly before `cx` when both are present. Use it for focus,
-input state, action dispatch, frame requests, image-cache scope, custom element
-state, and GPU surfaces.
+input state, action dispatch, frame requests, image-cache scope, and custom
+element state.
 
 ## Entities
 

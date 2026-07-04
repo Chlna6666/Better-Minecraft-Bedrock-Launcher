@@ -37,6 +37,7 @@ pub enum GameTargetDir {
     MinecraftWorlds,
     ResourcePacks,
     BehaviorPacks,
+    SkinPacks,
     Screenshots,
     MinecraftPe,
 }
@@ -47,13 +48,17 @@ impl GameTargetDir {
             Self::MinecraftWorlds => "minecraftWorlds",
             Self::ResourcePacks => "resource_packs",
             Self::BehaviorPacks => "behavior_packs",
+            Self::SkinPacks => "skin_packs",
             Self::Screenshots => "Screenshots",
             Self::MinecraftPe => "minecraftpe",
         }
     }
 
     pub const fn should_include_shared(self) -> bool {
-        matches!(self, Self::ResourcePacks | Self::BehaviorPacks)
+        matches!(
+            self,
+            Self::ResourcePacks | Self::BehaviorPacks | Self::SkinPacks
+        )
     }
 }
 
@@ -363,9 +368,10 @@ pub fn scan_game_dirs(options: &GamePathOptions, target_dir_name: &str) -> Vec<P
                 }
 
                 // 如果是查找资源包，通常也要包含 Shared
-                if target_dir_name.contains("resource_packs")
-                    || target_dir_name.contains("behavior_packs")
-                {
+                if matches!(
+                    target_dir_name,
+                    "resource_packs" | "behavior_packs" | "skin_packs"
+                ) {
                     let shared = user_com_mojang_dir(&root, "Shared").join(target_dir_name);
                     if shared.exists() {
                         paths.push(shared);
@@ -467,6 +473,7 @@ mod tests {
         assert_eq!(GameTargetDir::MinecraftWorlds.name(), "minecraftWorlds");
         assert_eq!(GameTargetDir::ResourcePacks.name(), "resource_packs");
         assert_eq!(GameTargetDir::BehaviorPacks.name(), "behavior_packs");
+        assert_eq!(GameTargetDir::SkinPacks.name(), "skin_packs");
         assert_eq!(GameTargetDir::Screenshots.name(), "Screenshots");
         assert_eq!(GameTargetDir::MinecraftPe.name(), "minecraftpe");
     }

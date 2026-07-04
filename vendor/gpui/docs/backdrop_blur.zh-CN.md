@@ -11,9 +11,9 @@ scene rendering，而不是 application-level visual policy。
 primitives 与 frame 其他内容一起 batch，并为 performance metrics 记录 diagnostic
 counts。
 
-## Nova GPU Pipeline
+## GPU Pipeline
 
-Nova renderer 使用专用 WGSL 实现 backdrop blur。它把 base shader 与 blur-specific
+nova-gfx renderer 使用专用 WGSL 实现 backdrop blur。它把 base shader 与 blur-specific
 shader modules 分离，让 feature pipelines 可以按需创建，并在 retained resource
 trimming 中释放。
 

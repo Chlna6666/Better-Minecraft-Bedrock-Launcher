@@ -17,11 +17,11 @@ pub enum Event {
     CursorSize(u32),
 }
 
-pub struct XDPEventSource {
+pub struct XdpEventSource {
     channel: Channel<Event>,
 }
 
-impl XDPEventSource {
+impl XdpEventSource {
     pub fn new(executor: &BackgroundExecutor) -> Self {
         let (sender, channel) = calloop::channel::channel();
 
@@ -104,7 +104,7 @@ impl XDPEventSource {
     }
 }
 
-impl EventSource for XDPEventSource {
+impl EventSource for XdpEventSource {
     type Event = Event;
     type Metadata = ();
     type Ret = ();
@@ -154,6 +154,10 @@ impl EventSource for XDPEventSource {
         Ok(())
     }
 }
+
+/// Compatibility alias for [`XdpEventSource`].
+#[deprecated(note = "use `XdpEventSource`")]
+pub type XDPEventSource = XdpEventSource;
 
 impl WindowAppearance {
     fn from_native(cs: ColorScheme) -> WindowAppearance {

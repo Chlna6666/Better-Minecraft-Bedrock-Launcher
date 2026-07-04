@@ -2,7 +2,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use crate::{PlatformDispatcher, TaskLabel};
+use crate::{ForegroundTaskQueue, PlatformDispatcher, TaskLabel};
 use async_task::Runnable;
 use objc::{
     class, msg_send,
@@ -12,6 +12,7 @@ use objc::{
 use std::{
     ffi::c_void,
     ptr::{NonNull, addr_of},
+    sync::Arc,
     time::Duration,
 };
 
@@ -26,7 +27,17 @@ pub(crate) fn dispatch_get_main_queue() -> dispatch_queue_t {
     addr_of!(_dispatch_main_q) as *const _ as dispatch_queue_t
 }
 
-pub(crate) struct MacDispatcher;
+pub(crate) struct MacDispatcher {
+    main_queue: Arc<ForegroundTaskQueue>,
+}
+
+impl MacDispatcher {
+    pub(crate) fn new() -> Self {
+        Self {
+            main_queue: Arc::new(ForegroundTaskQueue::new()),
+        }
+    }
+}
 
 impl PlatformDispatcher for MacDispatcher {
     fn is_main_thread(&self) -> bool {
@@ -45,12 +56,8 @@ impl PlatformDispatcher for MacDispatcher {
     }
 
     fn dispatch_on_main_thread(&self, runnable: Runnable) {
-        unsafe {
-            dispatch_async_f(
-                dispatch_get_main_queue(),
-                runnable.into_raw().as_ptr() as *mut c_void,
-                Some(trampoline),
-            );
+        if self.main_queue.push(runnable) {
+            dispatch_main_queue_drain(self.main_queue.clone());
         }
     }
 
@@ -72,4 +79,21 @@ impl PlatformDispatcher for MacDispatcher {
 extern "C" fn trampoline(runnable: *mut c_void) {
     let task = unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(runnable as *mut ())) };
     task.run();
+}
+
+fn dispatch_main_queue_drain(queue: Arc<ForegroundTaskQueue>) {
+    unsafe {
+        dispatch_async_f(
+            dispatch_get_main_queue(),
+            Arc::into_raw(queue) as *mut c_void,
+            Some(main_queue_trampoline),
+        );
+    }
+}
+
+extern "C" fn main_queue_trampoline(queue: *mut c_void) {
+    let queue = unsafe { Arc::from_raw(queue as *const ForegroundTaskQueue) };
+    if queue.drain() {
+        dispatch_main_queue_drain(queue.clone());
+    }
 }

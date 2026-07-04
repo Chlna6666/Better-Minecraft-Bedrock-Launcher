@@ -133,6 +133,20 @@ pub(super) fn render_tab_bar(
                 },
             )
             .icon(lucide_icons::icon_package()),
+            TabItem::new(
+                "manage-tab-skin-pack",
+                "皮肤",
+                state.tab == ManageTab::SkinPack,
+                {
+                    let view_handle = view_handle.clone();
+                    move |_window, cx| {
+                        let _ = view_handle.update(cx, |this, cx| {
+                            this.set_tab(ManageTab::SkinPack, cx);
+                        });
+                    }
+                },
+            )
+            .icon(lucide_icons::icon_user()),
             TabItem::new("manage-tab-map", "地图", state.tab == ManageTab::Map, {
                 let view_handle = view_handle.clone();
                 move |_window, cx| {
@@ -234,6 +248,7 @@ pub(super) fn render_toolbar_search_input(
     let width_px: f32 = width.into();
 
     div()
+        .id("manage-search-input-wrapper")
         .w(width)
         .h(px(32.))
         .px(px(10.))
@@ -464,7 +479,7 @@ pub(super) fn render_active_toolbar_actions(
     cx: &mut Context<ManagePageView>,
 ) -> Vec<AnyElement> {
     match state.tab {
-        ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => {
+        ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
             vec![
                 render_sort_controls(colors, state, cx),
                 if state.selected_asset_keys.is_empty() {

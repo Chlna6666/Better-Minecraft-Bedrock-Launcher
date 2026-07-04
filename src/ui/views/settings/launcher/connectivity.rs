@@ -1,3 +1,4 @@
+use crate::ui::animation::{ease_out_cubic_motion, repeating_linear_motion};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
@@ -79,10 +80,6 @@ const CONNECTIVITY_GROUPS: &[ConnectivityGroup] = &[
         ],
     },
 ];
-
-fn ease_out_cubic(t: f32) -> f32 {
-    1.0 - (1.0 - t).powi(3)
-}
 
 pub(super) fn launcher_connectivity_row(
     colors: &ThemeColors,
@@ -376,7 +373,7 @@ pub(super) fn render_connectivity_modal(
 
     let animated_card = card.with_animation(
         "launcher-connectivity-modal-card",
-        Animation::new(Duration::from_millis(260)).with_easing(ease_out_cubic),
+        ease_out_cubic_motion(Duration::from_millis(260)),
         |card, progress| {
             card.opacity(progress)
                 .relative()
@@ -584,8 +581,7 @@ fn render_connectivity_list(
                                     connectivity_item_row(colors, i18n, service, item)
                                         .with_animation(
                                             row_id,
-                                            Animation::new(Duration::from_millis(220))
-                                                .with_easing(ease_out_cubic),
+                                            ease_out_cubic_motion(Duration::from_millis(220)),
                                             |row, progress| {
                                                 row.opacity(0.72 + progress * 0.28)
                                                     .relative()
@@ -596,8 +592,7 @@ fn render_connectivity_list(
                                 _ => connectivity_item_row(colors, i18n, service, item)
                                     .with_animation(
                                         row_id,
-                                        Animation::new(Duration::from_millis(220))
-                                            .with_easing(ease_out_cubic),
+                                        ease_out_cubic_motion(Duration::from_millis(220)),
                                         |row, progress| {
                                             row.opacity(0.58 + progress * 0.42)
                                                 .relative()
@@ -856,9 +851,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         })
                         .with_animation(
                             "launcher-connectivity-loading-dot-1",
-                            Animation::new(Duration::from_millis(720))
-                                .repeat()
-                                .with_easing(|t| t),
+                            repeating_linear_motion(Duration::from_millis(720)),
                             |dot, progress| {
                                 let pulse = if progress < 0.5 {
                                     progress * 2.0
@@ -880,9 +873,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         })
                         .with_animation(
                             "launcher-connectivity-loading-dot-2",
-                            Animation::new(Duration::from_millis(900))
-                                .repeat()
-                                .with_easing(|t| t),
+                            repeating_linear_motion(Duration::from_millis(900)),
                             |dot, progress| {
                                 let pulse = if progress < 0.5 {
                                     progress * 2.0
@@ -904,9 +895,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         })
                         .with_animation(
                             "launcher-connectivity-loading-dot-3",
-                            Animation::new(Duration::from_millis(1080))
-                                .repeat()
-                                .with_easing(|t| t),
+                            repeating_linear_motion(Duration::from_millis(1080)),
                             |dot, progress| {
                                 let pulse = if progress < 0.5 {
                                     progress * 2.0

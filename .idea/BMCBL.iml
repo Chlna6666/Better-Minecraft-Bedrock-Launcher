@@ -82,6 +82,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-shader/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-vulkan/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/gpui-minimal-window-smoke/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/examples/public-api-smoke/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-opengl/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nova-gfx/gfx-webgl/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

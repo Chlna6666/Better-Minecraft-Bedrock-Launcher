@@ -31,20 +31,23 @@ mod platform {
     use crate::error::Dx12Error;
     use crate::registry::ResourceRegistry;
     use gfx_core::{
-        AddressMode, BackendKind, BlendMode, BufferDesc, BufferId, ClearColor, CommandEncoderDesc,
-        CommandEncoderId, CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, FilterMode,
-        Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxPipelineDevice,
-        GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice,
-        GfxThreadingMode, LoadOp, MemoryLocation, PipelineLayoutDesc, PipelineLayoutId,
-        PresentMode, PrimitiveTopology, RenderPassDesc, RenderPassId, RenderPipelineDesc,
-        RenderPipelineId, RenderTarget, ResourceBindingResource, ResourceBindingType,
+        AdapterInfo, AddressMode, BackendCapabilities, BackendKind, BlendMode, BufferDesc,
+        BufferId, BufferUsage, ClearColor, CommandEncoderDesc, CommandEncoderId,
+        CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, FilterMode, Format, GfxBackend,
+        GfxCommandDevice, GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice,
+        GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxThreadingMode,
+        IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineLayoutDesc,
+        PipelineLayoutId, PresentMode, PrimitiveTopology, RenderPassDepthAttachment,
+        RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor,
+        RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource, ResourceBindingType,
         ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
         SamplerDesc, SamplerId, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage,
         ShaderStages, SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId,
         SwapchainId, TextureDesc, TextureDimension, TextureId, TextureUsage, TextureViewDesc,
-        TextureViewId, TextureWriteDesc,
+        TextureViewId, TextureWriteDesc, resource_set_list,
     };
     use gfx_memory::{UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc};
+    use log::log;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
     use windows::{
         Win32::Graphics::{
@@ -72,13 +75,14 @@ mod platform {
                 D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_GPU_DESCRIPTOR_HANDLE,
                 D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
                 D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_UPLOAD,
-                D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INPUT_LAYOUT_DESC,
-                D3D12_LOGIC_OP_NOOP, D3D12_MESSAGE, D3D12_PIPELINE_STATE_FLAG_NONE,
-                D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
-                D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
-                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC,
-                D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
+                D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MESSAGE,
+                D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_BARRIER,
+                D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
+                D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
                 D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PRESENT,
@@ -107,11 +111,11 @@ mod platform {
                     DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_UNKNOWN,
                     DXGI_SAMPLE_DESC,
                 },
-                CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING,
-                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-                DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1, IDXGIFactory4, IDXGIOutput,
-                IDXGISwapChain1, IDXGISwapChain3,
+                CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
+                DXGI_ERROR_NOT_FOUND, DXGI_PRESENT, DXGI_SCALING, DXGI_SCALING_STRETCH,
+                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
+                IDXGIFactory4, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain3,
             },
         },
         Win32::{
@@ -120,7 +124,6 @@ mod platform {
         },
         core::{Error as WindowsError, Interface, PCSTR, PCWSTR},
     };
-    use log::log;
 
     const BACK_BUFFER_COUNT: u32 = 2;
     const NAGA_HLSL_SAMPLER_HEAP_SIZE: u32 = 2048;
@@ -457,6 +460,20 @@ mod platform {
             config: SurfaceConfig,
         ) -> Result<()> {
             self.reconfigure_swapchain_in_place(swapchain, config)
+        }
+
+        /// Recreates an existing swapchain and returns the still-live handle.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`GfxError`] when the swapchain handle is invalid or recreation fails.
+        pub fn recreate_swapchain(
+            &mut self,
+            swapchain: SwapchainId,
+            config: SurfaceConfig,
+        ) -> Result<SwapchainId> {
+            self.reconfigure_swapchain_in_place(swapchain, config)?;
+            Ok(swapchain)
         }
 
         fn reconfigure_swapchain_in_place(
@@ -1103,6 +1120,21 @@ mod platform {
             self.present(swapchain, 0)
         }
 
+        fn render_steps_and_present(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+        ) -> Result<()> {
+            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+            let result = self
+                .record_render_steps_frame(encoder, swapchain, render_pass, steps, clear_color)
+                .and_then(|()| self.submit(encoder));
+            self.finish_temporary_command_encoder(encoder, result)?;
+            self.present(swapchain, 0)
+        }
+
         /// Records and submits draw steps into a regular texture view.
         ///
         /// # Errors
@@ -1126,6 +1158,63 @@ mod platform {
                 )
                 .and_then(|()| self.submit_temporary_command_encoder_deferred(encoder));
             self.finish_temporary_command_encoder_after_result(encoder, result)
+        }
+
+        fn render_steps_to_texture(
+            &mut self,
+            texture_view: TextureViewId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            color_load_op: LoadOp<ClearColor>,
+        ) -> Result<()> {
+            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+            let result = self
+                .record_render_steps_texture(
+                    encoder,
+                    texture_view,
+                    render_pass,
+                    steps,
+                    color_load_op,
+                )
+                .and_then(|()| self.submit_temporary_command_encoder_deferred(encoder));
+            self.finish_temporary_command_encoder_after_result(encoder, result)
+        }
+
+        fn render_steps_and_present_deferred(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+        ) -> Result<SubmissionId> {
+            self.render_step_list_and_present_deferred(
+                swapchain,
+                render_pass,
+                RenderStepList::from_render_steps(steps),
+                clear_color,
+            )
+        }
+
+        fn render_step_list_and_present_deferred(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+        ) -> Result<SubmissionId> {
+            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+            let result = self
+                .record_render_step_list_frame(encoder, swapchain, render_pass, steps, clear_color)
+                .and_then(|()| Self::submit_deferred(self, encoder));
+            let submission = match result {
+                Ok(submission) => submission,
+                Err(error) => {
+                    let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
+                    return Err(error);
+                }
+            };
+            self.present(swapchain, 0)?;
+            Ok(submission)
         }
 
         fn submit_temporary_command_encoder_deferred(
@@ -1596,7 +1685,7 @@ mod platform {
                 render_pass_id,
                 &[DrawStepDesc {
                     pipeline: pipeline_id,
-                    resource_sets: resource_sets.to_vec(),
+                    resource_sets: resource_set_list(resource_sets.iter().copied()),
                     vertex_count,
                     first_vertex: 0,
                     instance_count: 1,
@@ -1607,16 +1696,50 @@ mod platform {
             )
         }
 
-        #[expect(
-            clippy::too_many_lines,
-            reason = "D3D12 frame recording stays together at the command-list FFI boundary"
-        )]
         fn record_resource_steps_frame(
             &mut self,
             encoder_id: CommandEncoderId,
             swapchain_id: SwapchainId,
             render_pass_id: RenderPassId,
             steps: &[DrawStepDesc],
+            clear_color: ClearColor,
+        ) -> Result<()> {
+            self.record_render_step_list_frame(
+                encoder_id,
+                swapchain_id,
+                render_pass_id,
+                RenderStepList::from_draw_steps(steps),
+                clear_color,
+            )
+        }
+
+        fn record_render_steps_frame(
+            &mut self,
+            encoder_id: CommandEncoderId,
+            swapchain_id: SwapchainId,
+            render_pass_id: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+        ) -> Result<()> {
+            self.record_render_step_list_frame(
+                encoder_id,
+                swapchain_id,
+                render_pass_id,
+                RenderStepList::from_render_steps(steps),
+                clear_color,
+            )
+        }
+
+        #[expect(
+            clippy::too_many_lines,
+            reason = "D3D12 frame recording stays together at the command-list FFI boundary"
+        )]
+        fn record_render_step_list_frame(
+            &mut self,
+            encoder_id: CommandEncoderId,
+            swapchain_id: SwapchainId,
+            render_pass_id: RenderPassId,
+            steps: RenderStepList<'_>,
             clear_color: ClearColor,
         ) -> Result<()> {
             let (allocator, command_list) = {
@@ -1635,7 +1758,7 @@ mod platform {
                 GfxError::InvalidInput("DX12 draw step list must not be empty".to_string())
             })?;
             let (pipeline_state, root_signature, pipeline_color_format, primitive_topology) = {
-                let pipeline = self.render_pipelines.get(first_step.pipeline)?;
+                let pipeline = self.render_pipelines.get(first_step.pipeline())?;
                 let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
                     GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
                 })?;
@@ -1707,7 +1830,7 @@ mod platform {
             };
             let clear_rects = steps
                 .iter()
-                .filter_map(|step| step.scissor)
+                .filter_map(RenderStepRef::scissor)
                 .find(|scissor| !scissor.is_empty())
                 .and_then(|scissor| dx12_rect_for_scissor(scissor, swapchain.config.size).ok())
                 .map(|rect| vec![rect]);
@@ -1732,9 +1855,9 @@ mod platform {
                 command_list.ClearRenderTargetView(rtv_handle, &clear, clear_rects.as_deref());
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
             }
-            for step in steps {
+            for step in steps.iter() {
                 let step_scissor = step
-                    .scissor
+                    .scissor()
                     .and_then(|scissor| dx12_rect_for_scissor(scissor, swapchain.config.size).ok())
                     .unwrap_or(scissor);
                 let (
@@ -1743,7 +1866,7 @@ mod platform {
                     primitive_topology,
                     draw_step_constants_root_index,
                 ) = {
-                    let pipeline = self.render_pipelines.get(step.pipeline)?;
+                    let pipeline = self.render_pipelines.get(step.pipeline())?;
                     let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
                         GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
                     })?;
@@ -1770,23 +1893,8 @@ mod platform {
                     command_list
                         .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
                 }
-                bind_resource_sets(&command_list, self, &step.resource_sets)?;
-                // SAFETY: Command list is open and pipeline/root signature are bound.
-                unsafe {
-                    bind_draw_step_constants(
-                        &command_list,
-                        draw_step_constants_root_index,
-                        step.first_vertex,
-                        step.first_instance,
-                        0,
-                    );
-                    command_list.DrawInstanced(
-                        step.vertex_count,
-                        step.instance_count,
-                        step.first_vertex,
-                        step.first_instance,
-                    );
-                }
+                bind_resource_sets(&command_list, self, step.resource_sets())?;
+                self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
             }
             let to_present = transition_barrier(
                 render_target,
@@ -1802,16 +1910,50 @@ mod platform {
             Ok(())
         }
 
-        #[expect(
-            clippy::too_many_lines,
-            reason = "D3D12 offscreen frame recording stays together at the command-list FFI boundary"
-        )]
         fn record_resource_steps_texture(
             &mut self,
             encoder_id: CommandEncoderId,
             texture_view_id: TextureViewId,
             render_pass_id: RenderPassId,
             steps: &[DrawStepDesc],
+            color_load_op: LoadOp<ClearColor>,
+        ) -> Result<()> {
+            self.record_render_step_list_texture(
+                encoder_id,
+                texture_view_id,
+                render_pass_id,
+                RenderStepList::from_draw_steps(steps),
+                color_load_op,
+            )
+        }
+
+        fn record_render_steps_texture(
+            &mut self,
+            encoder_id: CommandEncoderId,
+            texture_view_id: TextureViewId,
+            render_pass_id: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            color_load_op: LoadOp<ClearColor>,
+        ) -> Result<()> {
+            self.record_render_step_list_texture(
+                encoder_id,
+                texture_view_id,
+                render_pass_id,
+                RenderStepList::from_render_steps(steps),
+                color_load_op,
+            )
+        }
+
+        #[expect(
+            clippy::too_many_lines,
+            reason = "D3D12 offscreen frame recording stays together at the command-list FFI boundary"
+        )]
+        fn record_render_step_list_texture(
+            &mut self,
+            encoder_id: CommandEncoderId,
+            texture_view_id: TextureViewId,
+            render_pass_id: RenderPassId,
+            steps: RenderStepList<'_>,
             color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
             let first_step = steps.first().ok_or_else(|| {
@@ -1847,7 +1989,7 @@ mod platform {
                 ));
             }
             let (first_pipeline_state, first_root_signature, pipeline_color_format, first_topology) = {
-                let pipeline = self.render_pipelines.get(first_step.pipeline)?;
+                let pipeline = self.render_pipelines.get(first_step.pipeline())?;
                 let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
                     GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
                 })?;
@@ -1944,14 +2086,14 @@ mod platform {
                 }
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(first_topology));
             }
-            for step in steps {
+            for step in steps.iter() {
                 let (
                     pipeline_state,
                     root_signature,
                     primitive_topology,
                     draw_step_constants_root_index,
                 ) = {
-                    let pipeline = self.render_pipelines.get(step.pipeline)?;
+                    let pipeline = self.render_pipelines.get(step.pipeline())?;
                     let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
                         GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
                     })?;
@@ -1977,23 +2119,8 @@ mod platform {
                     command_list
                         .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
                 }
-                bind_resource_sets(&command_list, self, &step.resource_sets)?;
-                // SAFETY: Command list is open and pipeline/root signature are bound.
-                unsafe {
-                    bind_draw_step_constants(
-                        &command_list,
-                        draw_step_constants_root_index,
-                        step.first_vertex,
-                        step.first_instance,
-                        0,
-                    );
-                    command_list.DrawInstanced(
-                        step.vertex_count,
-                        step.instance_count,
-                        step.first_vertex,
-                        step.first_instance,
-                    );
-                }
+                bind_resource_sets(&command_list, self, step.resource_sets())?;
+                self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
             }
             let to_shader_read = transition_barrier(
                 &texture_resource,
@@ -2009,6 +2136,109 @@ mod platform {
             self.textures.get_mut(texture_view.texture)?.state =
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             Ok(())
+        }
+
+        fn record_render_step_draw(
+            &self,
+            command_list: &ID3D12GraphicsCommandList,
+            draw_step_constants_root_index: u32,
+            step: RenderStepRef<'_>,
+        ) -> Result<()> {
+            match step {
+                RenderStepRef::Draw(step) => {
+                    // SAFETY: Command list is open and pipeline/root signature are bound.
+                    unsafe {
+                        bind_draw_step_constants(
+                            command_list,
+                            draw_step_constants_root_index,
+                            step.first_vertex,
+                            step.first_instance,
+                            0,
+                        );
+                        command_list.DrawInstanced(
+                            step.vertex_count,
+                            step.instance_count,
+                            step.first_vertex,
+                            step.first_instance,
+                        );
+                    }
+                    Ok(())
+                }
+                RenderStepRef::DrawIndexed(step) => {
+                    let index_buffer_view = self.index_buffer_view(
+                        step.index_buffer,
+                        step.first_index,
+                        step.index_count,
+                    )?;
+                    let first_vertex_constant = u32::try_from(step.base_vertex).map_err(|error| {
+                        GfxError::InvalidInput(format!(
+                            "negative DX12 indexed draw base vertex is unsupported by HLSL vertex_index constants: {error}"
+                        ))
+                    })?;
+                    // SAFETY: Command list is open, the index buffer view references a live
+                    // D3D12 buffer, and pipeline/root signature are bound.
+                    unsafe {
+                        bind_draw_step_constants(
+                            command_list,
+                            draw_step_constants_root_index,
+                            first_vertex_constant,
+                            step.first_instance,
+                            0,
+                        );
+                        command_list.IASetIndexBuffer(Some(&raw const index_buffer_view));
+                        command_list.DrawIndexedInstanced(
+                            step.index_count,
+                            step.instance_count,
+                            step.first_index,
+                            step.base_vertex,
+                            step.first_instance,
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        fn index_buffer_view(
+            &self,
+            binding: IndexBufferBinding,
+            first_index: u32,
+            index_count: u32,
+        ) -> Result<D3D12_INDEX_BUFFER_VIEW> {
+            let buffer = self.buffers.get(binding.buffer)?;
+            validate_index_buffer_range(
+                buffer.desc.usage,
+                buffer.desc.size,
+                binding,
+                first_index,
+                index_count,
+            )?;
+            let resource = buffer.resource.as_ref().ok_or_else(|| {
+                GfxError::Backend("DX12 index buffer has no native resource".to_string())
+            })?;
+            let size_in_bytes = buffer
+                .desc
+                .size
+                .checked_sub(binding.offset)
+                .ok_or_else(|| {
+                    GfxError::InvalidInput("index buffer offset is out of bounds".to_string())
+                })
+                .and_then(|size| {
+                    u32::try_from(size).map_err(|error| {
+                        GfxError::InvalidInput(format!("index buffer view size overflow: {error}"))
+                    })
+                })?;
+            // SAFETY: Resource is a live D3D12 buffer created by this backend.
+            let address = unsafe { resource.GetGPUVirtualAddress() }
+                .checked_add(binding.offset)
+                .ok_or_else(|| {
+                    GfxError::InvalidInput("index buffer address overflow".to_string())
+                })?;
+            Ok(D3D12_INDEX_BUFFER_VIEW {
+                BufferLocation: address,
+                SizeInBytes: size_in_bytes,
+                Format: index_format_to_dxgi(binding.format),
+            })
         }
 
         fn signal_frame(&mut self) -> Result<u64> {
@@ -2087,6 +2317,49 @@ mod platform {
         // SAFETY: Output interface is initialized by DXGI when the call succeeds.
         unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS::default()) }
             .map_err(|error| GfxError::Backend(error.to_string()))
+    }
+
+    /// Enumerates Direct3D 12 adapters visible through DXGI.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] if the DXGI factory cannot be created or adapter
+    /// descriptors cannot be read.
+    pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
+        let factory = create_factory()?;
+        let mut adapters = Vec::new();
+        let mut adapter_index = 0;
+        loop {
+            // SAFETY: Factory is valid and adapter_index is advanced monotonically.
+            let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+                Ok(adapter) => adapter,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(GfxError::Backend(error.to_string())),
+            };
+            adapter_index += 1;
+
+            // SAFETY: Adapter is valid and DXGI initializes the descriptor.
+            let desc = unsafe { adapter.GetDesc1() }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            if (desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32)) != 0 {
+                continue;
+            }
+            let name = String::from_utf16_lossy(&desc.Description)
+                .trim_end_matches('\0')
+                .to_string();
+            adapters.push(AdapterInfo {
+                backend: BackendKind::Dx12,
+                name,
+                vendor_id: desc.VendorId,
+                device_id: desc.DeviceId,
+                capabilities: BackendCapabilities {
+                    surface: true,
+                    cpu_visible_memory: true,
+                    gpu_only_memory: true,
+                },
+            });
+        }
+        Ok(adapters)
     }
 
     fn pick_adapter(factory: &IDXGIFactory4) -> Result<IDXGIAdapter1> {
@@ -2656,19 +2929,55 @@ mod platform {
         where
             Self: GfxSubmissionDevice,
         {
-            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
-            let result = self
-                .record_resource_steps_frame(encoder, swapchain, render_pass, steps, clear_color)
-                .and_then(|()| Self::submit_deferred(self, encoder));
-            let submission = match result {
-                Ok(submission) => submission,
-                Err(error) => {
-                    let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
-                    return Err(error);
-                }
-            };
-            self.present(swapchain, 0)?;
-            Ok(submission)
+            Self::render_step_list_and_present_deferred(
+                self,
+                swapchain,
+                render_pass,
+                RenderStepList::from_draw_steps(steps),
+                clear_color,
+            )
+        }
+
+        fn render_steps_and_present_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)
+        }
+
+        fn render_steps_to_texture_compat(
+            &mut self,
+            texture_view: TextureViewId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            color_load_op: LoadOp<ClearColor>,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            Self::render_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
+        }
+
+        fn render_steps_and_present_deferred_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<SubmissionId>
+        where
+            Self: GfxSubmissionDevice,
+        {
+            Self::render_steps_and_present_deferred(
+                self,
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+            )
         }
     }
 
@@ -3029,11 +3338,13 @@ mod platform {
             Type: D3D12_HEAP_TYPE_DEFAULT,
             ..Default::default()
         };
-        let resource_flags = if desc.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
-            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
-        } else {
-            D3D12_RESOURCE_FLAG_NONE
-        };
+        let mut resource_flags = D3D12_RESOURCE_FLAG_NONE;
+        if desc.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
+            resource_flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        }
+        if desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
+            resource_flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        }
         let resource_desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
             Alignment: 0,
@@ -3191,7 +3502,8 @@ mod platform {
             Format::Bgra8Unorm
             | Format::Bgra8UnormSrgb
             | Format::Rgba8Unorm
-            | Format::Rgba8UnormSrgb => 4,
+            | Format::Rgba8UnormSrgb
+            | Format::Depth32Float => 4,
         }
     }
 
@@ -3388,11 +3700,65 @@ mod platform {
         }
     }
 
+    fn validate_index_buffer_range(
+        usage: BufferUsage,
+        buffer_size: u64,
+        binding: IndexBufferBinding,
+        first_index: u32,
+        index_count: u32,
+    ) -> Result<()> {
+        if !usage.contains(BufferUsage::INDEX) {
+            return Err(GfxError::InvalidInput(
+                "index buffer must include INDEX usage".to_string(),
+            ));
+        }
+        let stride = index_format_size(binding.format);
+        if binding.offset % stride != 0 {
+            return Err(GfxError::InvalidInput(
+                "index buffer offset must be aligned to the index format size".to_string(),
+            ));
+        }
+        let first_index_byte = u64::from(first_index).checked_mul(stride).ok_or_else(|| {
+            GfxError::InvalidInput("first index byte offset overflow".to_string())
+        })?;
+        let index_bytes = u64::from(index_count)
+            .checked_mul(stride)
+            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+        let byte_end = binding
+            .offset
+            .checked_add(first_index_byte)
+            .and_then(|start| start.checked_add(index_bytes))
+            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+        if byte_end > buffer_size {
+            return Err(GfxError::InvalidInput(
+                "index buffer range is out of bounds".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn index_format_size(format: IndexFormat) -> u64 {
+        match format {
+            IndexFormat::Uint16 => 2,
+            IndexFormat::Uint32 => 4,
+        }
+    }
+
+    fn index_format_to_dxgi(
+        format: IndexFormat,
+    ) -> windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT {
+        use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R32_UINT};
+        match format {
+            IndexFormat::Uint16 => DXGI_FORMAT_R16_UINT,
+            IndexFormat::Uint32 => DXGI_FORMAT_R32_UINT,
+        }
+    }
+
     pub(crate) fn format_to_dxgi(
         format: Format,
     ) -> windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT {
         use windows::Win32::Graphics::Dxgi::Common::{
-            DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+            DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_D32_FLOAT,
             DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         };
         match format {
@@ -3400,6 +3766,7 @@ mod platform {
             Format::Bgra8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
             Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
             Format::Rgba8UnormSrgb => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
         }
     }
 
@@ -3755,13 +4122,13 @@ mod platform {
 mod platform {
     use super::*;
     use gfx_core::{
-        BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc, CommandEncoderId,
-        DrawDesc, DrawStepDesc, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice,
-        GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-        GfxSurfaceDevice, LoadOp, PipelineLayoutDesc, PipelineLayoutId, RenderPassDesc,
-        RenderPassId, RenderPipelineDesc, RenderPipelineId, ResourceSetDesc, ResourceSetId,
-        ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, SamplerDesc, SamplerId,
-        ShaderModuleDesc, ShaderModuleId, SubmissionId, SubmissionStatus, SurfaceConfig,
+        AdapterInfo, BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc,
+        CommandEncoderId, DeviceDesc, DrawDesc, DrawStepDesc, GfxBackend, GfxCommandDevice,
+        GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
+        GfxSubmissionDevice, GfxSurfaceDevice, LoadOp, PipelineLayoutDesc, PipelineLayoutId,
+        RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, ResourceSetDesc,
+        ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, SamplerDesc,
+        SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId, SubmissionStatus, SurfaceConfig,
         SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId, TextureViewDesc,
         TextureViewId, TextureWriteDesc,
     };
@@ -3780,6 +4147,15 @@ mod platform {
                 "Direct3D 12 backend is only available on Windows".to_string(),
             ))
         }
+    }
+
+    /// Returns no Direct3D 12 adapters on non-Windows targets.
+    ///
+    /// # Errors
+    ///
+    /// This stub does not fail.
+    pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
+        Ok(Vec::new())
     }
 
     fn unavailable<T>() -> Result<T> {

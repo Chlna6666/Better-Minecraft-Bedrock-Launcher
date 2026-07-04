@@ -56,6 +56,7 @@ mod mod_tab;
 mod screenshots_tab;
 mod servers_tab;
 mod shared;
+mod skin_pack_data;
 pub mod state;
 mod version_settings;
 mod view;
@@ -70,6 +71,7 @@ use mod_tab::*;
 use screenshots_tab::*;
 use servers_tab::*;
 use shared::*;
+use skin_pack_data::*;
 
 pub use dialogs::render_manage_overlay;
 pub use view::ManagePageView;

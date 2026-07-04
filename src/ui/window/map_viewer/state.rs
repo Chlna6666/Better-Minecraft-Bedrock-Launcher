@@ -161,7 +161,7 @@ pub fn clamp_bottom_panel_height(height: f32, viewport_height: f32) -> f32 {
 pub fn chunk_tree_nodes_for_tile(
     dimension: Dimension,
     tile: (i32, i32),
-    chunks: Vec<ChunkPos>,
+    chunks: &[ChunkPos],
 ) -> Vec<DbTreeNode> {
     let mut nodes = Vec::new();
     nodes.push(DbTreeNode {
@@ -176,7 +176,7 @@ pub fn chunk_tree_nodes_for_tile(
         error: None,
     });
 
-    for chunk in chunks {
+    for chunk in chunks.iter().copied() {
         nodes.push(DbTreeNode {
             id: SharedString::from(format!(
                 "chunk:{}:{}:{}",
@@ -217,7 +217,7 @@ mod tests {
             z: -2,
             dimension: Dimension::Overworld,
         };
-        let nodes = chunk_tree_nodes_for_tile(Dimension::Overworld, (0, 0), vec![chunk]);
+        let nodes = chunk_tree_nodes_for_tile(Dimension::Overworld, (0, 0), &[chunk]);
         assert_eq!(nodes.len(), 2);
         assert!(matches!(nodes[0].kind, DbTreeNodeKind::Dimension(_)));
         assert!(matches!(nodes[1].kind, DbTreeNodeKind::Chunk(_)));

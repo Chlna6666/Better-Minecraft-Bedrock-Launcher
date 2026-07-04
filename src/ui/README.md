@@ -38,7 +38,7 @@
 - `src/ui/views/*` 不应继续增长出 `cache / decode / loader / prefetch` 这类实现词汇；一旦出现，优先判断是否应下沉到非 UI 层。
 - 已标记为越界的模块进入冻结状态，只允许拆分、外移或删除，不允许继续新增职责。
 - 不要用 `cx.refresh_windows()` 作为动画驱动或局部状态变化的重绘手段。
-- 需要动画下一帧时，优先让具体组件或具体实体调用 `window.request_animation_frame()`。
+- 需要动画下一帧时，优先通过 `src/ui/animation.rs` 的 helper 走 GPUI animation engine。
 - 需要局部刷新时，优先调用对应实体的 `cx.notify()` 或更新该实体的本地状态，不要整窗刷新。
 
 ### 4. 落点判断

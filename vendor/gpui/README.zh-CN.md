@@ -8,11 +8,11 @@ retained mode。它在一个 crate 中提供应用状态、窗口、基于实体
 
 当前分支仍保持 GPUI pre-1.0 定位，同时更新了渲染和平台方向：
 
-- Windows 使用基于 Nova GFX 的平台渲染路径。
-- 默认渲染方向是 Nova-first，并在 Windows 上支持 DX12 与 Vulkan 后端选择。
+- Windows 使用基于 WGPU 和 winit 的平台路径。
+- 默认渲染方向是 WGPU-first，并在 Windows 上支持 Vulkan 与 DX12 后端选择。
 - 默认合成器是事件驱动的。连续渲染只用于显式配置
   `RenderPolicy::Continuous` 的窗口。
-- 自定义 GPU 内容通过 GPUI scene primitive 进入渲染流程，例如 retained 3D mesh。
+- 自定义 WGPU surface 可以渲染应用自己的 GPU 内容，再绘制回 GPUI 场景。
 - WGSL shader 既可以作为内置渲染器 shader 在构建时校验，也可以在运行时由示例
   或应用加载。
 - 示例已更新到当前 `App`、`Context<T>`、`Window` 和 `Entity<T>` API 形态。
@@ -52,8 +52,8 @@ fn main() {
 - `App` 是根上下文，负责 globals、windows、entities、menus、key bindings、
   assets 和平台服务。
 - `Context<T>` 会在创建、更新、渲染或处理 `Entity<T>` 事件时提供。
-- `Window` 会显式传入需要输入、焦点、绘制、帧请求、actions 或自定义 GPU 内容
-  的 render 与事件代码。
+- `Window` 会显式传入需要输入、焦点、绘制、帧请求、actions 或自定义 WGPU
+  surface 的 render 与事件代码。
 - `Entity<T>` 保存由 GPUI 管理的状态。通过 `Entity::update` 或
   `Context<T>` listener 更新实体，并在渲染需要变化时调用 `cx.notify()`。
 - `Render` view 每帧构建元素树。`RenderOnce` component 是被消费式渲染的轻量
@@ -80,23 +80,19 @@ flowchart TD
     PlatformSelect --> Linux["Linux / FreeBSD platform"]
     PlatformSelect --> Test["Headless test platform"]
 
-    Windows --> Win32["Win32 event loop"]
-    Windows --> Win32Surface["Win32 raw-window-handle"]
-    Windows --> NovaBackend{"Nova backend"}
-    NovaBackend --> Vulkan["Vulkan"]
-    NovaBackend --> Dx12["DX12"]
+    Windows --> Winit["winit event loop"]
+    Windows --> WgpuBackend{"WGPU backend"}
+    WgpuBackend --> Vulkan["Vulkan"]
+    WgpuBackend --> Dx12["DX12"]
 
     MacOS --> Metal["Metal renderer path"]
-    MacOS --> AppKitSurface["AppKit raw-window-handle"]
     Linux --> LinuxWindowing{"Windowing backend"}
     LinuxWindowing --> X11["X11"]
     LinuxWindowing --> Wayland["Wayland"]
-    Linux --> NovaVulkan["Nova Vulkan"]
-    X11 --> XcbSurface["XCB raw-window-handle"]
-    Wayland --> WaylandSurface["Wayland raw-window-handle"]
+    Linux --> WgpuVulkan["WGPU Vulkan"]
     Test --> Headless["Headless renderer"]
 
-    Win32 --> PlatformEvents["Platform events"]
+    Winit --> PlatformEvents["Platform events"]
     Metal --> PlatformEvents
     X11 --> PlatformEvents
     Wayland --> PlatformEvents
@@ -110,10 +106,6 @@ flowchart TD
     ElementTree --> Layout["Layout and prepaint"]
     Layout --> Scene["Scene primitives"]
     Scene --> Renderer["Renderer backend"]
-    Win32Surface --> Renderer
-    AppKitSurface --> Renderer
-    XcbSurface --> Renderer
-    WaylandSurface --> Renderer
     Renderer --> Present["Present frame"]
     Present --> PlatformEvents
 ```
@@ -143,45 +135,53 @@ sequenceDiagram
     Renderer->>Window: present or presentation-only frame
 ```
 
-### 自定义 GPU 内容流程
+### 自定义 WGPU Surface 流程
 
-自定义 GPU 内容通过 GPUI scene primitive 提交。应用不直接持有后端 device、queue、
-command buffer 或 swapchain handle；具体 Nova GFX 后端资源由 platform renderer
-管理。
+自定义 GPU 内容使用 GPUI 的 WGPU device 和 queue，同时让应用渲染与 GPUI element
+renderer 保持隔离。
 
 ```mermaid
 flowchart LR
-    Element["Custom element paint"] --> Mesh["Window::paint_gpu_mesh_3d"]
-    Mesh --> Scene["GPUI scene primitive"]
-    Scene --> Adapter["Nova scene adapter"]
-    Adapter --> Resources["Nova buffers, textures, resource sets, pipelines"]
-    Resources --> Present["Renderer present"]
+    Element["Custom element paint"] --> Create["Window::create_wgpu_surface"]
+    Create --> Surface["WgpuSurfaceHandle"]
+    Surface --> Device["device / queue"]
+    Device --> Resources["Application buffers, textures, bind groups, pipelines"]
+    Resources --> WGSL["Runtime WGSL validation"]
+    WGSL --> BackBuffer["back_buffer_view"]
+    BackBuffer --> Submit["queue.submit"]
+    Submit --> SwapOrPresent{"Render path"}
+    SwapOrPresent --> Swap["swap_buffers inside current paint"]
+    SwapOrPresent --> PresentSurface["present outside current paint"]
+    Swap --> Paint["Window::paint_wgpu_surface"]
+    PresentSurface --> Paint
+    Paint --> Scene["GPUI scene primitive"]
 ```
 
 ### 原版 GPUI 架构对比
 
 | 领域 | 原版 GPUI 方向 | 当前分支 |
 | --- | --- | --- |
-| Windows platform | DirectX-oriented Windows renderer path | 基于 Nova GFX 的 Windows platform path |
-| Windows backend selection | Platform-specific renderer implementation | `RendererBackend` 可选择 Nova Vulkan 或 Nova DX12 |
-| Renderer default | Platform renderer chosen internally | 在支持的平台上采用 Nova-first 方向，并暴露显式 renderer options |
+| Windows platform | DirectX-oriented Windows renderer path | 基于 WGPU 和 winit 的 Windows platform path |
+| Windows backend selection | Platform-specific renderer implementation | `RendererBackend` 可选择 WGPU Vulkan 或 WGPU DX12 |
+| Renderer default | Platform renderer chosen internally | 在支持的平台上采用 WGPU-first 方向，并暴露显式 renderer options |
 | Frame scheduling | Redraw behavior tied closely to platform renderer loops | 事件驱动 composition，并支持 presentation-only frames |
 | Shader model | Built-in renderer shaders owned by platform paths | 内置 WGSL validation，并提供 runtime WGSL helpers 给 custom surfaces |
-| Custom GPU content | 主要通过 framework rendering primitives 扩展 | 通过 retained GPU mesh 等 GPUI scene primitive 扩展 |
+| Custom GPU content | 主要通过 framework rendering primitives 扩展 | Application-owned WGPU surfaces 可绘制进 GPUI scene |
 | Example API style | 旧示例可能使用 previous context 和 view terminology | 示例使用 `App`、`Context<T>`、显式 `Window` 和 `Entity<T>` |
 
 ## 渲染说明
 
 `RendererOptions` 控制后端选择、GPU adapter 选择、present mode 偏好、render
 policy 和 frame metrics。`RendererBackend::Auto` 会选择平台默认值。Windows 上
-可以显式选择 `NovaVulkan` 或 `NovaDx12`。
+可以显式选择 `WgpuVulkan` 或 `WgpuDx12`。
 
 默认渲染策略是事件驱动。`RequestFrameOptions::force_render` 表示 layout 和
 paint 需要变脏；`RequestFrameOptions::require_presentation` 允许在已准备内容或
-GPU 内容需要可见时走 presentation-only 帧。
+WGPU surface 需要可见时走 presentation-only 帧。
 
-自定义 GPU 内容应通过 `Window::paint_gpu_mesh_3d` 这样的 scene primitive 进入
-GPUI。新的自定义渲染能力应先在 `nova-gfx` 中实现，再接到 GPUI scene adapter。
+自定义 GPU 内容可通过 `Window::create_wgpu_surface` 创建 `WgpuSurfaceHandle`，
+渲染到 `back_buffer_view`，根据渲染路径调用 `present` 或 `swap_buffers`，再用
+`Window::paint_wgpu_surface` 绘制。
 
 ## 文档
 
@@ -189,7 +189,7 @@ GPUI。新的自定义渲染能力应先在 `nova-gfx` 中实现，再接到 GPU
 - [开发指南](docs/development.zh-CN.md)
 - [上下文与实体](docs/contexts.zh-CN.md)
 - [运行时 WGSL shader](docs/runtime_wgsl_shaders.zh-CN.md)
-- [GPU surfaces](docs/gpu_surfaces.zh-CN.md)
+- [WGPU surfaces](docs/wgpu_surfaces.zh-CN.md)
 - [示例](docs/examples.zh-CN.md)
 - [验证](docs/validation.zh-CN.md)
 
@@ -201,9 +201,11 @@ GPUI。新的自定义渲染能力应先在 `nova-gfx` 中实现，再接到 GPU
 cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
 cargo run --manifest-path Cargo.toml --example hello_world
 cargo run --manifest-path Cargo.toml --example minimal_window
+cargo run --manifest-path Cargo.toml --example hatsune_miku_viewer
 ```
 
-部分示例是平台专用的，应使用显式 target guard。
+部分示例是平台专用的。自定义 WGPU surface viewer 目前只在 Windows 上启用完整
+实现。
 
 ## 验证
 

@@ -1,6 +1,6 @@
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
-use crate::ui::animation::request_animation_frame_if_active;
+use crate::ui::animation::request_animation_frame_if;
 use crate::ui::components::color_picker::normalize_hex_color;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{InputEvent, InputState};
@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 mod background;
 mod background_support;
@@ -42,10 +42,62 @@ use support::*;
 pub(crate) use background::startup_trace_elapsed_ms;
 pub(crate) use chrome::AppChromeState;
 
+pub(crate) const MAIN_WINDOW_INITIAL_SIZE: Size<Pixels> = size(px(972.), px(600.));
+
 const STARTUP_ROUTE_BOOTSTRAP_DELAY: Duration = Duration::from_millis(120);
 const STARTUP_UPDATE_CHECK_DELAY: Duration = Duration::from_millis(900);
 const STARTUP_INTERACTION_WARMUP_DELAY: Duration = Duration::from_millis(1500);
 const STARTUP_INTERACTION_WARMUP_STEP_DELAY: Duration = Duration::from_millis(80);
+
+pub(crate) fn preload_startup_background_bytes_from_values(
+    background_option: &str,
+    local_image_path: &str,
+    network_image_url: &str,
+    cx: &mut App,
+) -> usize {
+    let source = resolve_background_source_from_values(
+        background_option,
+        local_image_path,
+        network_image_url,
+        0,
+    );
+
+    background_resource(&source)
+        .map(|resource| cx.preload_compressed_image_resources([resource]).len())
+        .unwrap_or(0)
+}
+
+pub(crate) fn preload_startup_background_target_from_values(
+    background_option: &str,
+    local_image_path: &str,
+    network_image_url: &str,
+    window: &Window,
+    cx: &mut App,
+) -> usize {
+    let source = resolve_background_source_from_values(
+        background_option,
+        local_image_path,
+        network_image_url,
+        0,
+    );
+
+    background_resource(&source)
+        .and_then(|resource| {
+            cx.target_size_image_source(
+                resource,
+                window.viewport_size(),
+                window.scale_factor(),
+                ObjectFit::Cover,
+            )
+        })
+        .map(|target| {
+            let resource = target.resource().clone();
+            let _task = cx.preload_target_size_image(target);
+            cx.remove_compressed_image_resource(&resource);
+            1
+        })
+        .unwrap_or(0)
+}
 
 fn optional_page_view_element<T>(route_key: &str, view: Option<Entity<T>>) -> AnyElement
 where
@@ -82,11 +134,11 @@ struct TopbarRenderState {
     theme_animating: bool,
     theme_accent: Option<Hsla>,
     window_width: Pixels,
-    music_snapshot: crate::music::MusicSnapshot,
+    music_snapshot: crate::ui::state::music::MusicSnapshot,
     music_expanded_factor: f32,
     music_progress_ratio: f32,
     music_volume_ratio: f32,
-    music_drag_target: Option<crate::music::MusicDragTarget>,
+    music_drag_target: Option<crate::ui::state::music::MusicDragTarget>,
     music_popup_animating: bool,
     music_inline_factor: f32,
     music_inline_animating: bool,
@@ -175,7 +227,7 @@ impl MainWindowView {
         }
 
         self.music_library_load_started = true;
-        crate::music::spawn_library_load(cx);
+        crate::ui::state::music::spawn_library_load(cx);
     }
 
     fn ensure_chrome_view_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -233,7 +285,7 @@ impl MainWindowView {
             theme_k,
             theme_accent,
         );
-        let window_bounds = window.window_bounds().get_bounds();
+        let window_bounds = window.bounds();
         let window_width = window_bounds.size.width;
         let window_height = window_bounds.size.height;
         let agreement_render_state = self.read_agreement_render_state(cx);
@@ -1353,14 +1405,11 @@ impl Render for MainWindowView {
             self.ensure_route_controls(model.builtin_route, window, cx);
             self.ensure_music_library_load_started(cx);
         }
-        request_animation_frame_if_active(window, model.quit_animating);
-        request_animation_frame_if_active(window, model.update_modal_animating);
+        request_animation_frame_if(window, model.quit_animating);
+        request_animation_frame_if(window, model.update_modal_animating);
         {
             let launcher_state = cx.global::<LauncherState>();
-            request_animation_frame_if_active(
-                window,
-                launcher_state.is_modal_animating(render_started),
-            );
+            request_animation_frame_if(window, launcher_state.is_modal_animating(render_started));
         }
         if update_state_changed {
             cx.notify();
@@ -1390,7 +1439,7 @@ impl Render for MainWindowView {
                 "main window render slow"
             );
         } else {
-            debug!(
+            trace!(
                 route = ?model.route,
                 elapsed_ms = render_elapsed.as_millis(),
                 width = model.window_width_px,

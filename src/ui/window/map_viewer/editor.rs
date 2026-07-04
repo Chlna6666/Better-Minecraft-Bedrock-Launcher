@@ -4,7 +4,6 @@ use super::model::*;
 use super::panels::*;
 use super::players::*;
 use super::prelude::*;
-use super::tile_cache::*;
 use super::tile_state::*;
 
 impl MapViewerWindowView {
@@ -346,16 +345,6 @@ impl MapViewerWindowView {
             return;
         }
         for coord in &affected_tiles {
-            remove_ui_decoded_tile_cache_file_for_tile(
-                &self.world_path,
-                self.render_backend,
-                self.render_gpu_backend,
-                self.current_render_mode(),
-                self.dimension,
-                self.active_layout,
-                *coord,
-                "map_edit_invalidation",
-            );
             if reuse_known_tile_index {
                 merge_chunks_into_tile_index(
                     &mut self.tile_chunk_index,
@@ -363,15 +352,13 @@ impl MapViewerWindowView {
                     chunks,
                     self.active_layout,
                 );
-            } else {
-                self.tile_chunk_index.remove(coord);
             }
             self.available_tiles.remove(coord);
             if !reuse_known_tile_index {
                 self.manifest_scanned_tiles.remove(coord);
             }
             if !reuse_known_tile_index {
-                self.tile_manager.remove_tile(*coord);
+                Self::drop_render_image(self.tile_manager.remove_tile(*coord), cx);
             }
         }
         if !reuse_known_tile_index {
@@ -1966,30 +1953,23 @@ pub(super) fn copy_chunks_blocking(
     let total = chunks.len();
     let mut copied_chunks = Vec::with_capacity(total);
     for (index, chunk) in chunks.into_iter().enumerate() {
-        let records = editor
+        let records = copy_safe_chunk_records(editor.world().get_chunk_blocking(chunk)?.records);
+        let parsed_chunk = editor
             .world()
-            .get_chunk_blocking(chunk)?
-            .records
-            .into_iter()
-            .filter(|record| chunk_record_tag_is_copy_safe(record.key.tag))
-            .collect::<Vec<_>>();
-        let block_entities = editor
-            .world()
-            .block_entities_in_chunk_blocking(chunk)?
-            .into_iter()
-            .map(|record| record.entity)
-            .collect::<Vec<_>>();
-        let hardcoded_spawn_areas = editor
-            .world()
-            .parse_chunk_with_options_blocking(chunk, copy_chunk_parse_options())?
-            .records
-            .into_iter()
-            .filter_map(|record| match record.value {
-                bedrock_world::ParsedChunkRecordValue::HardcodedSpawnAreas(areas) => Some(areas),
-                _ => None,
-            })
-            .flatten()
-            .collect::<Vec<_>>();
+            .parse_chunk_with_options_blocking(chunk, copy_chunk_parse_options())?;
+        let mut block_entities = Vec::new();
+        let mut hardcoded_spawn_areas = Vec::new();
+        for record in parsed_chunk.records {
+            match record.value {
+                bedrock_world::ParsedChunkRecordValue::BlockEntities(entities) => {
+                    block_entities.extend(entities);
+                }
+                bedrock_world::ParsedChunkRecordValue::HardcodedSpawnAreas(areas) => {
+                    hardcoded_spawn_areas.extend(areas);
+                }
+                _ => {}
+            }
+        }
 
         copied_chunks.push(CopiedChunkSnapshot {
             chunk,
@@ -2019,6 +1999,18 @@ pub(super) fn paste_copied_chunk_blocking(
     guard: &WriteGuard,
     progress: &mut impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+    if !transform.is_default() {
+        return paste_transformed_copied_chunks_blocking(
+            world,
+            copied_chunk,
+            source_anchor,
+            target_anchor,
+            transform,
+            guard,
+            progress,
+        );
+    }
+
     let total = copied_chunk.chunks.len();
     let mut affected_chunks = BTreeSet::new();
 
@@ -2066,14 +2058,13 @@ pub(super) fn paste_copied_chunk_blocking(
             .hardcoded_spawn_areas
             .iter()
             .cloned()
-            .map(|mut area| {
-                let delta_x = (target_chunk.x - snapshot.chunk.x) * 16;
-                let delta_z = (target_chunk.z - snapshot.chunk.z) * 16;
-                area.min[0] += delta_x;
-                area.max[0] += delta_x;
-                area.min[2] += delta_z;
-                area.max[2] += delta_z;
-                area
+            .map(|area| {
+                pasted_hardcoded_spawn_area_for_target(
+                    area,
+                    snapshot.chunk,
+                    target_chunk,
+                    transform,
+                )
             })
             .collect::<Vec<_>>();
         if !shifted_hsa.is_empty() {
@@ -2097,6 +2088,247 @@ pub(super) fn paste_copied_chunk_blocking(
     ))
 }
 
+pub(super) struct CopiedChunkStructurePlacement {
+    pub(super) structure: bedrock_world::McStructureFile,
+    pub(super) source_anchor: ChunkPos,
+    pub(super) target_anchor: ChunkPos,
+    pub(super) origin_y: i32,
+}
+
+pub(super) fn copied_chunk_snapshot_structure_placement(
+    snapshot: &CopiedChunkSnapshot,
+    target_chunk: ChunkPos,
+) -> bedrock_world::Result<CopiedChunkStructurePlacement> {
+    let (min_y, max_y) = snapshot.chunk.y_range(ChunkVersion::New);
+    let height = max_y.saturating_sub(min_y).saturating_add(1);
+    let size = bedrock_world::McStructureSize::new(16, height, 16)?;
+    let source_origin_x = snapshot.chunk.x.saturating_mul(16);
+    let source_origin_z = snapshot.chunk.z.saturating_mul(16);
+    let mut structure =
+        bedrock_world::McStructureFile::new_air(size, [source_origin_x, min_y, source_origin_z])?;
+    let mut palette_indices = HashMap::new();
+    let air_key = mcstructure_palette_key(&structure.palette[0]);
+    palette_indices.insert(air_key, 0_i32);
+    let chunk = bedrock_world::Chunk {
+        pos: snapshot.chunk,
+        version: None,
+        records: snapshot.records.clone(),
+    };
+
+    for x in 0..size.x {
+        let local_x = u8::try_from(x).map_err(|_| {
+            bedrock_world::BedrockWorldError::Validation(format!(
+                "chunk copy source x has invalid local value: {x}"
+            ))
+        })?;
+        for z in 0..size.z {
+            let local_z = u8::try_from(z).map_err(|_| {
+                bedrock_world::BedrockWorldError::Validation(format!(
+                    "chunk copy source z has invalid local value: {z}"
+                ))
+            })?;
+            for y in 0..size.y {
+                let world_y = min_y.saturating_add(y);
+                let entry = match chunk.get_block(
+                    local_x,
+                    i16::try_from(world_y).map_err(|_| {
+                        bedrock_world::BedrockWorldError::Validation(format!(
+                            "chunk copy source y={world_y} cannot be represented as i16"
+                        ))
+                    })?,
+                    local_z,
+                ) {
+                    Ok(state) => bedrock_world::McStructurePaletteEntry::from_block_state(&state),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            bedrock_world::BedrockWorldErrorKind::UnsupportedChunkFormat
+                        ) =>
+                    {
+                        bedrock_world::McStructurePaletteEntry::air()
+                    }
+                    Err(error) => return Err(error),
+                };
+                let palette_key = mcstructure_palette_key(&entry);
+                let palette_index = if let Some(index) = palette_indices.get(&palette_key) {
+                    *index
+                } else {
+                    let index = i32::try_from(structure.palette.len()).map_err(|_| {
+                        bedrock_world::BedrockWorldError::Validation(
+                            "结构 palette 超过 i32 上限".to_string(),
+                        )
+                    })?;
+                    structure.palette.push(entry);
+                    palette_indices.insert(palette_key, index);
+                    index
+                };
+                let block_index = size.index(x, y, z)?;
+                structure.primary_indices[block_index] = palette_index;
+            }
+        }
+    }
+
+    for entity in &snapshot.block_entities {
+        insert_copied_block_entity_into_structure(
+            &mut structure,
+            entity,
+            source_origin_x,
+            min_y,
+            source_origin_z,
+        )?;
+    }
+
+    Ok(CopiedChunkStructurePlacement {
+        structure,
+        source_anchor: snapshot.chunk,
+        target_anchor: target_chunk,
+        origin_y: min_y,
+    })
+}
+
+fn paste_transformed_copied_chunks_blocking(
+    world: &BedrockWorld,
+    copied_chunk: &CopiedChunkData,
+    source_anchor: ChunkPos,
+    target_anchor: ChunkPos,
+    transform: PasteTransform,
+    guard: &WriteGuard,
+    progress: &mut impl FnMut(ChunkTransferProgress),
+) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+    let targets = pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform);
+    let total = targets.len().max(1);
+    let mut affected_chunks = BTreeSet::new();
+
+    for (index, (snapshot, target_chunk)) in copied_chunk
+        .chunks
+        .iter()
+        .zip(targets.iter().copied())
+        .enumerate()
+    {
+        delete_chunks_blocking(
+            world,
+            SlimeChunkBounds {
+                dimension: target_chunk.dimension,
+                min_chunk_x: target_chunk.x,
+                max_chunk_x: target_chunk.x,
+                min_chunk_z: target_chunk.z,
+                max_chunk_z: target_chunk.z,
+            },
+            guard,
+        )?;
+        progress(ChunkTransferProgress {
+            phase: SharedString::from("清空目标区块"),
+            completed: index + 1,
+            total,
+        });
+
+        let structure_placement =
+            copied_chunk_snapshot_structure_placement(snapshot, target_chunk)?;
+        let result = structure_placement.structure.write_to_world_blocking(
+            world,
+            bedrock_world::McStructurePlacement {
+                source_anchor: structure_placement.source_anchor,
+                target_anchor: structure_placement.target_anchor,
+                origin_y: structure_placement.origin_y,
+                rotation: mcstructure_rotation_for_paste(transform.rotation),
+                mirror_x: transform.mirror_x,
+                mirror_z: transform.mirror_z,
+            },
+            guard,
+            |write_progress| {
+                progress(ChunkTransferProgress {
+                    phase: SharedString::from(match write_progress.phase {
+                        bedrock_world::McStructureWritePhase::Prepare => "准备变换区块",
+                        bedrock_world::McStructureWritePhase::WriteChunks => "写入变换区块",
+                    }),
+                    completed: write_progress.completed,
+                    total: write_progress.total,
+                });
+            },
+        )?;
+        let shifted_hsa = snapshot
+            .hardcoded_spawn_areas
+            .iter()
+            .cloned()
+            .map(|area| {
+                pasted_hardcoded_spawn_area_for_target(
+                    area,
+                    snapshot.chunk,
+                    target_chunk,
+                    transform,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !shifted_hsa.is_empty() {
+            world.put_hsa_for_chunk_blocking(target_chunk, &shifted_hsa)?;
+        }
+
+        affected_chunks.extend(result.affected_chunks);
+        affected_chunks.insert(target_chunk);
+    }
+
+    Ok((
+        format!(
+            "已粘贴 {} 个 chunk（{},{} -> {},{}，{}）",
+            copied_chunk.chunks.len(),
+            source_anchor.x,
+            source_anchor.z,
+            target_anchor.x,
+            target_anchor.z,
+            transform.label()
+        ),
+        MapEditInvalidation::chunks(affected_chunks).with_metadata(),
+    ))
+}
+
+const fn mcstructure_rotation_for_paste(
+    rotation: PasteRotation,
+) -> bedrock_world::McStructureRotation {
+    match rotation {
+        PasteRotation::NoRotation => bedrock_world::McStructureRotation::None,
+        PasteRotation::Clockwise90 => bedrock_world::McStructureRotation::Clockwise90,
+        PasteRotation::Rotate180 => bedrock_world::McStructureRotation::Rotate180,
+        PasteRotation::CounterClockwise90 => bedrock_world::McStructureRotation::CounterClockwise90,
+    }
+}
+
+fn mcstructure_palette_key(entry: &bedrock_world::McStructurePaletteEntry) -> String {
+    let states = entry
+        .states
+        .iter()
+        .map(|(key, value)| format!("{key}={value:?}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}|{}|{:?}", entry.name, states, entry.version)
+}
+
+fn insert_copied_block_entity_into_structure(
+    structure: &mut bedrock_world::McStructureFile,
+    entity: &ParsedBlockEntity,
+    source_origin_x: i32,
+    origin_y: i32,
+    source_origin_z: i32,
+) -> bedrock_world::Result<()> {
+    let Some([world_x, world_y, world_z]) = entity.position else {
+        return Ok(());
+    };
+    let local_x = world_x.saturating_sub(source_origin_x);
+    let local_y = world_y.saturating_sub(origin_y);
+    let local_z = world_z.saturating_sub(source_origin_z);
+    let block_index = structure.size.index(local_x, local_y, local_z)?;
+    let NbtTag::Compound(block_entity_data) = &entity.nbt else {
+        return Ok(());
+    };
+    structure.block_position_data.insert(
+        block_index.to_string(),
+        NbtTag::Compound(indexmap::IndexMap::from([(
+            "block_entity_data".to_string(),
+            NbtTag::Compound(block_entity_data.clone()),
+        )])),
+    );
+    Ok(())
+}
+
 pub(super) fn pasted_block_entity_for_target(
     entity: &ParsedBlockEntity,
     source_chunk: ChunkPos,
@@ -2116,6 +2348,39 @@ pub(super) fn pasted_block_entity_for_target(
     pasted
 }
 
+pub(super) fn pasted_hardcoded_spawn_area_for_target(
+    area: ParsedHardcodedSpawnArea,
+    source_chunk: ChunkPos,
+    target_chunk: ChunkPos,
+    transform: PasteTransform,
+) -> ParsedHardcodedSpawnArea {
+    let corners = [
+        [area.min[0], area.min[1], area.min[2]],
+        [area.min[0], area.min[1], area.max[2]],
+        [area.min[0], area.max[1], area.min[2]],
+        [area.min[0], area.max[1], area.max[2]],
+        [area.max[0], area.min[1], area.min[2]],
+        [area.max[0], area.min[1], area.max[2]],
+        [area.max[0], area.max[1], area.min[2]],
+        [area.max[0], area.max[1], area.max[2]],
+    ];
+    let mut min = [i32::MAX; 3];
+    let mut max = [i32::MIN; 3];
+    for corner in corners {
+        let position =
+            transform_chunk_block_position(corner, source_chunk, target_chunk, transform);
+        for axis in 0..3 {
+            min[axis] = min[axis].min(position[axis]);
+            max[axis] = max[axis].max(position[axis]);
+        }
+    }
+    ParsedHardcodedSpawnArea {
+        kind: area.kind,
+        min,
+        max,
+    }
+}
+
 fn set_block_entity_nbt_position(nbt: &mut NbtTag, position: [i32; 3]) {
     let NbtTag::Compound(root) = nbt else {
         return;
@@ -2125,15 +2390,37 @@ fn set_block_entity_nbt_position(nbt: &mut NbtTag, position: [i32; 3]) {
     root.insert("z".to_string(), NbtTag::Int(position[2]));
 }
 
+fn transform_chunk_block_position(
+    position: [i32; 3],
+    source_chunk: ChunkPos,
+    target_chunk: ChunkPos,
+    transform: PasteTransform,
+) -> [i32; 3] {
+    let source_origin_x = source_chunk.x.saturating_mul(16);
+    let source_origin_z = source_chunk.z.saturating_mul(16);
+    let relative_x = position[0].saturating_sub(source_origin_x);
+    let relative_z = position[2].saturating_sub(source_origin_z);
+    let (relative_x, relative_z) =
+        transform.transform_chunk_delta(relative_x.div_euclid(16), relative_z.div_euclid(16));
+    let local_x = relative_x
+        .saturating_mul(16)
+        .saturating_add(position[0].rem_euclid(16));
+    let local_z = relative_z
+        .saturating_mul(16)
+        .saturating_add(position[2].rem_euclid(16));
+    [
+        target_chunk.x.saturating_mul(16).saturating_add(local_x),
+        position[1],
+        target_chunk.z.saturating_mul(16).saturating_add(local_z),
+    ]
+}
+
 pub(super) fn pasted_chunk_targets(
     copied_chunk: &CopiedChunkData,
     source_anchor: ChunkPos,
     target_anchor: ChunkPos,
     transform: PasteTransform,
 ) -> Vec<ChunkPos> {
-    let delta_bounds = copied_chunk
-        .chunk_delta_bounds(source_anchor)
-        .unwrap_or((0, 0, 0, 0));
     copied_chunk
         .chunks
         .iter()
@@ -2141,7 +2428,7 @@ pub(super) fn pasted_chunk_targets(
             let delta_chunk_x = snapshot.chunk.x.saturating_sub(source_anchor.x);
             let delta_chunk_z = snapshot.chunk.z.saturating_sub(source_anchor.z);
             let (delta_chunk_x, delta_chunk_z) =
-                transform.transform_delta_in_bounds(delta_chunk_x, delta_chunk_z, delta_bounds);
+                transform.transform_chunk_delta(delta_chunk_x, delta_chunk_z);
             ChunkPos {
                 x: target_anchor.x.saturating_add(delta_chunk_x),
                 z: target_anchor.z.saturating_add(delta_chunk_z),
@@ -2175,6 +2462,13 @@ pub(super) fn chunk_record_tag_is_copy_safe(tag: ChunkRecordTag) -> bool {
             | ChunkRecordTag::VersionOld
             | ChunkRecordTag::LegacyVersion
     )
+}
+
+pub(super) fn copy_safe_chunk_records(records: Vec<ChunkRecord>) -> Vec<ChunkRecord> {
+    records
+        .into_iter()
+        .filter(|record| chunk_record_tag_is_copy_safe(record.key.tag))
+        .collect()
 }
 
 fn copy_chunk_parse_options() -> bedrock_world::WorldParseOptions {
@@ -2410,7 +2704,7 @@ pub(super) fn tile_coords_for_chunks(
 }
 
 pub(super) fn merge_chunks_into_tile_index(
-    tile_chunk_index: &mut BTreeMap<(i32, i32), Vec<ChunkPos>>,
+    tile_chunk_index: &mut TileChunkIndex,
     tile_coord: (i32, i32),
     chunks: &BTreeSet<ChunkPos>,
     layout: RenderLayout,
@@ -2421,7 +2715,8 @@ pub(super) fn merge_chunks_into_tile_index(
     let mut positions = tile_chunk_index
         .remove(&tile_coord)
         .unwrap_or_default()
-        .into_iter()
+        .iter()
+        .copied()
         .collect::<BTreeSet<_>>();
     positions.extend(chunks.iter().copied().filter(|chunk| {
         (
@@ -2432,7 +2727,8 @@ pub(super) fn merge_chunks_into_tile_index(
     if positions.is_empty() {
         tile_chunk_index.remove(&tile_coord);
     } else {
-        tile_chunk_index.insert(tile_coord, positions.into_iter().collect());
+        let positions = positions.into_iter().collect::<Vec<_>>();
+        tile_chunk_index.insert(tile_coord, TileChunkPositions::from(positions));
     }
 }
 

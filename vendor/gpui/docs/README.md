@@ -21,15 +21,15 @@ directory.
   cache providers, and texture lifetime.
 - [Image cache](image_cache.md): scoped image cache behavior and custom cache
   providers.
+- [Animation engine](animation_engine.md): timing, easing, transition metadata,
+  drivers, window scheduling, and scene/nova animation data paths.
 - [Renderer backend](renderer_backend.md): backend options, frame scheduling,
-  Windows Nova GPU startup, and metrics.
-- [Windows renderer backend](windows_renderer_backend.md): Windows Nova backend
-  selection, native Win32 event loop, and raw-window-handle surfaces.
-- [GPU surfaces](gpu_surfaces.md): custom Nova GPU rendering inside GPUI windows.
+  nova-gfx startup, and metrics.
+- [Windows renderer backend](windows_renderer_backend.md): Windows nova-gfx
+  backend selection and frame delivery.
 - [Runtime WGSL shaders](runtime_wgsl_shaders.md): runtime shader validation
-  and custom Nova shader modules.
-- [Backdrop blur](backdrop_blur.md): Nova GPU backdrop blur pipeline behavior.
-- [GPU mesh 3D](gpu_mesh_3d.md): direct 3D mesh painting in GPUI scenes.
+  and custom shader modules.
+- [Backdrop blur](backdrop_blur.md): backdrop blur pipeline behavior.
 - [Default fonts](default_fonts.md): font setup boundaries and platform
   defaults.
 - [Performance pipeline](performance_pipeline.md): frame metrics and retained

@@ -15,8 +15,7 @@ use std::{
 };
 
 use anyhow::{Context as _, anyhow};
-use async_task::Runnable;
-use calloop::{LoopSignal, channel::Channel};
+use calloop::{LoopHandle, LoopSignal, channel::Channel};
 use futures::channel::oneshot;
 use util::ResultExt as _;
 #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -24,9 +23,9 @@ use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId,
-    ForegroundExecutor, Keymap, LinuxDispatcher, Menu, MenuItem, OwnedMenu, PathPromptOptions,
-    Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper,
-    PlatformTextSystem, PlatformWindow, Point, PriorityQueueReceiver, Result, Task,
+    ForegroundExecutor, ForegroundTaskQueue, Keymap, LinuxDispatcher, Menu, MenuItem, OwnedMenu,
+    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, Result, Task,
     WindowAppearance, WindowParams, px,
 };
 
@@ -102,19 +101,23 @@ pub(crate) struct LinuxCommon {
     pub(crate) auto_hide_scrollbars: bool,
     pub(crate) callbacks: PlatformHandlers,
     pub(crate) signal: LoopSignal,
+    pub(crate) foreground_task_queue: Arc<ForegroundTaskQueue>,
     pub(crate) menus: Vec<OwnedMenu>,
 }
 
 impl LinuxCommon {
-    pub fn new(signal: LoopSignal) -> (Self, Channel<()>, PriorityQueueReceiver<Runnable>) {
+    pub fn new(signal: LoopSignal) -> (Self, Channel<()>) {
         let (main_sender, main_receiver) = calloop::channel::channel::<()>();
-        let (main_queue_sender, main_queue_receiver) = PriorityQueueReceiver::new();
+        let foreground_task_queue = Arc::new(ForegroundTaskQueue::new());
 
         let text_system = Arc::new(crate::CosmicTextSystem::new());
 
         let callbacks = PlatformHandlers::default();
 
-        let dispatcher = Arc::new(LinuxDispatcher::new(main_sender, main_queue_sender));
+        let dispatcher = Arc::new(LinuxDispatcher::new(
+            main_sender,
+            foreground_task_queue.clone(),
+        ));
 
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
 
@@ -126,11 +129,25 @@ impl LinuxCommon {
             auto_hide_scrollbars: false,
             callbacks,
             signal,
+            foreground_task_queue,
             menus: Vec::new(),
         };
 
-        (common, main_receiver, main_queue_receiver)
+        (common, main_receiver)
     }
+}
+
+pub(crate) fn insert_foreground_task_idle<T: 'static>(
+    handle: &LoopHandle<'static, T>,
+    foreground_task_queue: Arc<ForegroundTaskQueue>,
+) {
+    let idle_handle = handle.clone();
+    let reschedule_handle = handle.clone();
+    idle_handle.insert_idle(move |_| {
+        if foreground_task_queue.drain() {
+            insert_foreground_task_idle(&reschedule_handle, foreground_task_queue.clone());
+        }
+    });
 }
 
 impl<P: LinuxClient + 'static> Platform for P {
@@ -476,7 +493,7 @@ impl<P: LinuxClient + 'static> Platform for P {
         })
     }
 
-    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
+    fn menus(&self) -> Option<Vec<OwnedMenu>> {
         self.with_common(|common| Some(common.menus.clone()))
     }
 
@@ -663,7 +680,7 @@ pub(super) fn is_within_click_distance(a: Point<Pixels>, b: Point<Pixels>) -> bo
 }
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
-pub(super) fn get_xkb_compose_state(cx: &xkb::Context) -> Option<xkb::compose::State> {
+pub(super) fn xkb_compose_state(cx: &xkb::Context) -> Option<xkb::compose::State> {
     let mut locales = Vec::default();
     if let Some(locale) = env::var_os("LC_CTYPE") {
         locales.push(locale);

@@ -12,9 +12,9 @@ Elements that request backdrop blur insert blur primitives into the scene. The
 renderer batches these primitives with the rest of the frame and records
 diagnostic counts for performance metrics.
 
-## Nova GPU Pipeline
+## GPU Pipeline
 
-The Nova renderer uses dedicated WGSL for backdrop blur. It separates the base
+The nova-gfx renderer uses dedicated WGSL for backdrop blur. It separates the base
 shader from blur-specific shader modules so feature pipelines can be created on
 demand and released during retained resource trimming.
 

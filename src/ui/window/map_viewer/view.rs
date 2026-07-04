@@ -53,9 +53,10 @@ impl Render for MapViewerWindowView {
         }
         self.frame_stats.record_frame();
         self.sync_input_values(window, cx);
-        if preview_3d_motion_active || paste_preview_auto_pan_active {
-            window.request_animation_frame();
-        }
+        request_animation_frame_if(
+            window,
+            preview_3d_motion_active || paste_preview_auto_pan_active,
+        );
         let colors = self.theme_colors(cx);
         let top_bar_snapshot = self.top_bar_snapshot();
         let tool_stripe_snapshot = self.tool_stripe_snapshot();
@@ -70,7 +71,9 @@ impl Render for MapViewerWindowView {
         menu_overlay_view.update(cx, |view, cx| {
             view.set_snapshot(menu_overlay_snapshot, cx);
         });
-        self.sync_canvas_snapshot(colors, cx);
+        if self.drag.is_none() {
+            self.sync_canvas_snapshot(colors, cx);
+        }
 
         let mut root = div()
             .relative()
@@ -245,7 +248,7 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
     let title = format!("地图预览 - {}", init.asset.display_name);
     let options = map_viewer_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
-        window.set_window_title(&title);
+        window.set_title(&title);
         window.on_window_should_close(cx, |window, _cx| {
             window.remove_window();
             true

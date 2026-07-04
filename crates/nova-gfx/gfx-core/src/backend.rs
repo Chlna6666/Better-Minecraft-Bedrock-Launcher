@@ -8,12 +8,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc, CommandEncoderId, DrawDesc,
-    DrawStepDesc, GfxAsyncCapabilities, GfxError, GfxFuture, GfxThreadingMode, LoadOp,
-    PipelineLayoutDesc, PipelineLayoutId, RenderPassDesc, RenderPassId, RenderPipelineDesc,
-    RenderPipelineId, ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId,
-    ResourceStats, Result, SamplerDesc, SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId,
+    DrawStepDesc, GfxAsyncCapabilities, GfxError, GfxFuture, GfxMemoryTrimLevel, GfxThreadingMode,
+    LoadOp, PipelineLayoutDesc, PipelineLayoutId, RenderPassDepthAttachment, RenderPassDesc,
+    RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor, RenderStepList,
+    ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
+    Result, SamplerDesc, SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId,
     SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId,
-    TextureViewDesc, TextureViewId, TextureWriteDesc,
+    TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
 };
 
 /// Identifies the graphics API implemented by a backend type.
@@ -143,6 +144,55 @@ pub trait GfxSurfaceDevice {
     fn destroy_surface(&mut self, surface: SurfaceId) -> Result<()>;
 }
 
+/// Compatibility name for the surface capability trait.
+pub trait BackendSurface: GfxSurfaceDevice {
+    /// Creates a backend surface through the compatibility trait name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] from [`GfxSurfaceDevice::create_surface`].
+    fn create_surface(
+        &mut self,
+        target: &Self::SurfaceTarget,
+        desc: &SurfaceDesc,
+    ) -> Result<SurfaceId> {
+        GfxSurfaceDevice::create_surface(self, target, desc)
+    }
+
+    /// Creates a swapchain through the compatibility trait name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] from [`GfxSurfaceDevice::create_swapchain`].
+    fn create_swapchain(
+        &mut self,
+        surface: SurfaceId,
+        config: SurfaceConfig,
+    ) -> Result<SwapchainId> {
+        GfxSurfaceDevice::create_swapchain(self, surface, config)
+    }
+
+    /// Destroys a swapchain through the compatibility trait name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] from [`GfxSurfaceDevice::destroy_swapchain`].
+    fn destroy_swapchain(&mut self, swapchain: SwapchainId) -> Result<()> {
+        GfxSurfaceDevice::destroy_swapchain(self, swapchain)
+    }
+
+    /// Destroys a surface through the compatibility trait name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] from [`GfxSurfaceDevice::destroy_surface`].
+    fn destroy_surface(&mut self, surface: SurfaceId) -> Result<()> {
+        GfxSurfaceDevice::destroy_surface(self, surface)
+    }
+}
+
+impl<T> BackendSurface for T where T: GfxSurfaceDevice {}
+
 /// Creates, updates, and destroys GPU resource objects.
 ///
 /// All handles passed to these methods must belong to the same device. Backends
@@ -266,6 +316,26 @@ pub trait GfxResourceDevice {
     fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()>;
 }
 
+/// Compatibility name for the resource capability trait.
+pub trait BackendResources: GfxResourceDevice {
+    /// Writes a batch of texture uploads in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`GfxError`] reported by [`GfxResourceDevice::write_texture`].
+    fn write_texture_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = TextureWrite<'a>>,
+    ) -> Result<()> {
+        for write in writes {
+            self.write_texture(write.descriptor, write.data)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T> BackendResources for T where T: GfxResourceDevice {}
+
 /// Creates and destroys shader and pipeline objects.
 ///
 /// Pipeline handles and layout handles are device-local. Callers must keep
@@ -338,6 +408,11 @@ pub trait GfxPipelineDevice {
     /// Returns [`GfxError`] if the handle is stale or invalid.
     fn destroy_render_pipeline(&mut self, pipeline: RenderPipelineId) -> Result<()>;
 }
+
+/// Compatibility name for the pipeline capability trait.
+pub trait BackendPipelines: GfxPipelineDevice {}
+
+impl<T> BackendPipelines for T where T: GfxPipelineDevice {}
 
 /// Records and submits explicit command encoder work.
 pub trait GfxCommandDevice {
@@ -431,6 +506,35 @@ pub trait GfxSubmissionDevice {
     }
 }
 
+/// Compatibility name for queue and deferred-submission capabilities.
+pub trait BackendQueue: GfxCommandDevice + GfxSubmissionDevice {
+    /// Returns async and threading capabilities through the compatibility trait name.
+    #[must_use]
+    fn async_capabilities(&self) -> GfxAsyncCapabilities {
+        GfxSubmissionDevice::async_capabilities(self)
+    }
+
+    /// Polls a submission through the compatibility trait name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] from [`GfxSubmissionDevice::poll_submission`].
+    fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
+        GfxSubmissionDevice::poll_submission(self, submission)
+    }
+
+    /// Waits for a submission through the compatibility trait name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] from [`GfxSubmissionDevice::wait_submission`].
+    fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
+        GfxSubmissionDevice::wait_submission(self, submission)
+    }
+}
+
+impl<T> BackendQueue for T where T: GfxCommandDevice + GfxSubmissionDevice {}
+
 /// Provides frame presentation and offscreen draw helpers.
 ///
 /// These helpers are the normalized high-level presentation API. Backend-specific
@@ -464,6 +568,100 @@ pub trait GfxPresentationDevice {
         steps: &[DrawStepDesc],
         color_load_op: LoadOp<ClearColor>,
     ) -> Result<()>;
+
+    /// Renders compatibility render steps into a swapchain and presents them.
+    ///
+    /// Backend implementations should override this when they support render
+    /// step variants that cannot be represented as [`DrawStepDesc`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend cannot render the steps or present.
+    fn render_steps_and_present_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        _depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        let draw_steps = compatible_draw_steps(steps)?;
+        self.draw_steps_and_present(swapchain, render_pass, &draw_steps, clear_color)
+    }
+
+    /// Renders compatibility render steps into a texture target.
+    ///
+    /// Backend implementations should override this when they support render
+    /// step variants that cannot be represented as [`DrawStepDesc`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend cannot render the steps.
+    fn render_steps_to_texture_compat(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        color_load_op: LoadOp<ClearColor>,
+        _depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        let draw_steps = compatible_draw_steps(steps)?;
+        self.draw_steps_to_texture(texture_view, render_pass, &draw_steps, color_load_op)
+    }
+
+    /// Renders borrowed render-step lists into a swapchain and presents them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing or presentation fails.
+    fn render_step_list_and_present_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        match steps {
+            RenderStepList::Draw(steps) => {
+                self.draw_steps_and_present(swapchain, render_pass, steps, clear_color)
+            }
+            RenderStepList::Render(steps) => self.render_steps_and_present_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            ),
+        }
+    }
+
+    /// Renders borrowed render-step lists into a texture target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing or render target validation fails.
+    fn render_step_list_to_texture_compat(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        match steps {
+            RenderStepList::Draw(steps) => {
+                self.draw_steps_to_texture(texture_view, render_pass, steps, color_load_op)
+            }
+            RenderStepList::Render(steps) => self.render_steps_to_texture_compat(
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                depth_attachment,
+            ),
+        }
+    }
 
     /// Draws one non-indexed pipeline with no resource sets and presents it.
     ///
@@ -504,7 +702,7 @@ pub trait GfxPresentationDevice {
             render_pass,
             &[DrawStepDesc {
                 pipeline,
-                resource_sets: resource_sets.to_vec(),
+                resource_sets: resource_set_list(resource_sets.iter().copied()),
                 vertex_count,
                 first_vertex: 0,
                 instance_count: 1,
@@ -534,6 +732,215 @@ pub trait GfxPresentationDevice {
         self.draw_steps_and_present(swapchain, render_pass, steps, clear_color)?;
         Ok(SubmissionId::from_parts(0, 0))
     }
+
+    /// Renders and presents compatibility render steps using deferred submission.
+    ///
+    /// Backend implementations should override this when they support render
+    /// step variants that cannot be represented as [`DrawStepDesc`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing, presentation, or submission fails.
+    fn render_steps_and_present_deferred_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        _depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        let draw_steps = compatible_draw_steps(steps)?;
+        self.draw_steps_and_present_deferred(swapchain, render_pass, &draw_steps, clear_color)
+    }
+
+    /// Renders and presents borrowed render-step lists using deferred submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing, presentation, or submission fails.
+    fn render_step_list_and_present_deferred_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        match steps {
+            RenderStepList::Draw(steps) => {
+                self.draw_steps_and_present_deferred(swapchain, render_pass, steps, clear_color)
+            }
+            RenderStepList::Render(steps) => self.render_steps_and_present_deferred_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            ),
+        }
+    }
+}
+
+/// Compatibility presentation API used by the GPUI nova renderer.
+pub trait BackendPresentationCompat: GfxPresentationDevice + GfxSubmissionDevice {
+    /// Renders compatibility render steps into a swapchain and presents them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend cannot render the steps or present.
+    fn render_steps_and_present(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        self.render_step_list_and_present(
+            swapchain,
+            render_pass,
+            RenderStepList::from_render_steps(steps),
+            clear_color,
+            depth_attachment,
+        )
+    }
+
+    /// Renders borrowed render-step lists into a swapchain and presents them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend cannot render the steps or present.
+    fn render_step_list_and_present(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        self.render_step_list_and_present_compat(
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+        )
+    }
+
+    /// Renders compatibility render steps into a texture target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend cannot render the steps.
+    fn render_steps_to_texture(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        self.render_step_list_to_texture(
+            texture_view,
+            render_pass,
+            RenderStepList::from_render_steps(steps),
+            color_load_op,
+            depth_attachment,
+        )
+    }
+
+    /// Renders borrowed render-step lists into a texture target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the backend cannot render the steps.
+    fn render_step_list_to_texture(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        self.render_step_list_to_texture_compat(
+            texture_view,
+            render_pass,
+            steps,
+            color_load_op,
+            depth_attachment,
+        )
+    }
+
+    /// Renders and presents compatibility render steps using deferred submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing, presentation, or submission fails.
+    fn render_steps_and_present_deferred(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId> {
+        self.render_step_list_and_present_deferred(
+            swapchain,
+            render_pass,
+            RenderStepList::from_render_steps(steps),
+            clear_color,
+            depth_attachment,
+        )
+    }
+
+    /// Renders and presents borrowed render-step lists using deferred submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing, presentation, or submission fails.
+    fn render_step_list_and_present_deferred(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId> {
+        self.render_step_list_and_present_deferred_compat(
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+        )
+    }
+}
+
+impl<T> BackendPresentationCompat for T where T: GfxPresentationDevice + GfxSubmissionDevice {}
+
+fn compatible_draw_steps(steps: &[RenderStepDescriptor]) -> Result<Vec<DrawStepDesc>> {
+    if steps
+        .iter()
+        .any(|step| matches!(step, RenderStepDescriptor::DrawIndexed(_)))
+    {
+        return Err(GfxError::Unavailable(
+            "indexed render steps are not implemented by this backend compatibility path"
+                .to_string(),
+        ));
+    }
+    let mut draw_steps = Vec::with_capacity(steps.len());
+    for step in steps {
+        if let RenderStepDescriptor::Draw(step) = step {
+            draw_steps.push(step.clone());
+        }
+    }
+    Ok(draw_steps)
 }
 
 /// Provides backend resource diagnostics.
@@ -542,6 +949,20 @@ pub trait GfxDiagnosticsDevice {
     #[must_use]
     fn resource_stats(&self) -> ResourceStats;
 }
+
+/// Compatibility name for backend diagnostics and memory-pressure hooks.
+pub trait BackendDiagnostics: GfxDiagnosticsDevice {
+    /// Asks the backend to release caches or transient memory for a pressure level.
+    ///
+    /// # Errors
+    ///
+    /// Backends may return [`GfxError`] when memory trimming fails.
+    fn trim_memory(&mut self, _level: GfxMemoryTrimLevel) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<T> BackendDiagnostics for T where T: GfxDiagnosticsDevice {}
 
 /// Async surface API. Default methods delegate to the synchronous trait.
 pub trait GfxAsyncSurfaceDevice: GfxSurfaceDevice + Send {
@@ -821,6 +1242,126 @@ pub trait GfxAsyncPresentationDevice: GfxPresentationDevice + GfxSubmissionDevic
     ) -> GfxFuture<'a, SubmissionId> {
         Box::pin(async move {
             self.draw_steps_and_present_deferred(swapchain, render_pass, steps, clear_color)
+        })
+    }
+
+    /// Renders compatibility render steps and presents through the async API.
+    fn render_steps_and_present_async<'a>(
+        &'a mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &'a [RenderStepDescriptor],
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> GfxFuture<'a, ()> {
+        Box::pin(async move {
+            self.render_steps_and_present_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
+        })
+    }
+
+    /// Renders borrowed render-step lists and presents through the async API.
+    fn render_step_list_and_present_async<'a>(
+        &'a mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'a>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> GfxFuture<'a, ()> {
+        Box::pin(async move {
+            self.render_step_list_and_present_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
+        })
+    }
+
+    /// Renders compatibility render steps into a texture through the async API.
+    fn render_steps_to_texture_async<'a>(
+        &'a mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: &'a [RenderStepDescriptor],
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> GfxFuture<'a, ()> {
+        Box::pin(async move {
+            self.render_steps_to_texture_compat(
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                depth_attachment,
+            )
+        })
+    }
+
+    /// Renders borrowed render-step lists into a texture through the async API.
+    fn render_step_list_to_texture_async<'a>(
+        &'a mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'a>,
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> GfxFuture<'a, ()> {
+        Box::pin(async move {
+            self.render_step_list_to_texture_compat(
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                depth_attachment,
+            )
+        })
+    }
+
+    /// Renders compatibility render steps, presents, and returns a deferred submission.
+    fn render_steps_and_present_deferred_async<'a>(
+        &'a mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &'a [RenderStepDescriptor],
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> GfxFuture<'a, SubmissionId> {
+        Box::pin(async move {
+            self.render_steps_and_present_deferred_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
+        })
+    }
+
+    /// Renders borrowed render-step lists, presents, and returns a deferred submission.
+    fn render_step_list_and_present_deferred_async<'a>(
+        &'a mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'a>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> GfxFuture<'a, SubmissionId> {
+        Box::pin(async move {
+            self.render_step_list_and_present_deferred_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
         })
     }
 }
@@ -1123,6 +1664,66 @@ where
     {
         self.with_device(|device| {
             device.draw_steps_and_present_deferred(swapchain, render_pass, steps, clear_color)
+        })
+    }
+
+    fn render_steps_and_present_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        self.with_device(|device| {
+            device.render_steps_and_present_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
+        })
+    }
+
+    fn render_steps_to_texture_compat(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        self.with_device(|device| {
+            device.render_steps_to_texture_compat(
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                depth_attachment,
+            )
+        })
+    }
+
+    fn render_steps_and_present_deferred_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        self.with_device(|device| {
+            device.render_steps_and_present_deferred_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
         })
     }
 }

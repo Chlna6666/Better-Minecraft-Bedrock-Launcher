@@ -4,7 +4,7 @@ use gpui::{
     App, Application, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, Keystroke,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, WindowBounds,
+    ShapedLine, SharedString, Style, TextRun, UnderlineStyle, Utf16Selection, Window, WindowBounds,
     WindowOptions, actions, black, div, fill, hsla, opaque_grey, point, prelude::*, px, relative,
     rgb, rgba, size, white, yellow,
 };
@@ -276,8 +276,8 @@ impl EntityInputHandler for TextInput {
         _ignore_disabled_input: bool,
         _window: &mut Window,
         _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
+    ) -> Option<Utf16Selection> {
+        Some(Utf16Selection {
             range: self.range_to_utf16(&self.selected_range),
             reversed: self.selection_reversed,
         })

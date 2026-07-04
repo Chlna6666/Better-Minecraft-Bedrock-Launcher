@@ -36,13 +36,16 @@ use std::{
 };
 
 use bitflags::bitflags;
+use smallvec::SmallVec;
 use thiserror::Error;
 
 pub use backend::{
-    GfxAsyncCommandDevice, GfxAsyncDevice, GfxAsyncDiagnosticsDevice, GfxAsyncPipelineDevice,
-    GfxAsyncPresentationDevice, GfxAsyncResourceDevice, GfxAsyncSurfaceDevice, GfxBackend,
-    GfxCommandDevice, GfxDevice, GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice,
-    GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, SharedGfxDevice,
+    BackendDiagnostics, BackendPipelines, BackendPresentationCompat, BackendQueue,
+    BackendResources, BackendSurface, GfxAsyncCommandDevice, GfxAsyncDevice,
+    GfxAsyncDiagnosticsDevice, GfxAsyncPipelineDevice, GfxAsyncPresentationDevice,
+    GfxAsyncResourceDevice, GfxAsyncSurfaceDevice, GfxBackend, GfxCommandDevice, GfxDevice,
+    GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
+    GfxSubmissionDevice, GfxSurfaceDevice, SharedGfxDevice,
 };
 
 /// Convenience result type used by nova-gfx crates.
@@ -364,6 +367,10 @@ pub enum BackendKind {
     Dx12,
     /// Metal backend.
     Metal,
+    /// OpenGL backend.
+    OpenGl,
+    /// WebGL backend.
+    WebGl,
 }
 
 /// Backend feature limits used for adapter selection and diagnostics.
@@ -377,20 +384,41 @@ pub struct BackendCapabilities {
     pub gpu_only_memory: bool,
 }
 
+/// Preferred GPU power class when a backend can choose between adapters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PowerPreference {
+    /// Prefer integrated or low-power adapters.
+    #[default]
+    LowPower,
+    /// Prefer the highest-performance adapter.
+    HighPerformance,
+}
+
 /// Logical device creation descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceDesc {
     /// Application name reported to backends.
     pub application_name: String,
+    /// Optional adapter name requested by the platform layer.
+    pub adapter_name: Option<String>,
+    /// Preferred GPU power class.
+    pub power_preference: PowerPreference,
 }
 
 impl Default for DeviceDesc {
     fn default() -> Self {
         Self {
             application_name: "nova-gfx".to_string(),
+            adapter_name: None,
+            power_preference: PowerPreference::LowPower,
         }
     }
 }
+
+/// Compatibility alias for the pre-namespaced async capabilities name.
+pub type BackendAsyncCapabilities = GfxAsyncCapabilities;
+/// Compatibility alias for the device creation descriptor name.
+pub type DeviceDescriptor = DeviceDesc;
 
 /// Backend adapter information.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -436,6 +464,8 @@ pub enum Format {
     Rgba8Unorm,
     /// 8-bit RGBA unsigned normalized sRGB format.
     Rgba8UnormSrgb,
+    /// 32-bit floating-point depth format.
+    Depth32Float,
 }
 
 impl Format {
@@ -508,6 +538,30 @@ impl SurfaceConfig {
 
 /// Compatibility alias for the swapchain descriptor name.
 pub type SwapchainDesc = SurfaceConfig;
+/// Compatibility alias for the surface descriptor name.
+pub type SurfaceDescriptor = SurfaceDesc;
+/// Compatibility alias for the buffer descriptor name.
+pub type BufferDescriptor = BufferDesc;
+/// Compatibility alias for the texture descriptor name.
+pub type TextureDescriptor = TextureDesc;
+/// Compatibility alias for the texture view descriptor name.
+pub type TextureViewDescriptor = TextureViewDesc;
+/// Compatibility alias for the sampler descriptor name.
+pub type SamplerDescriptor = SamplerDesc;
+/// Compatibility alias for the shader module descriptor name.
+pub type ShaderModuleDescriptor = ShaderModuleDesc;
+/// Compatibility alias for the resource set layout descriptor name.
+pub type ResourceSetLayoutDescriptor = ResourceSetLayoutDesc;
+/// Compatibility alias for the resource set descriptor name.
+pub type ResourceSetDescriptor = ResourceSetDesc;
+/// Compatibility alias for the pipeline layout descriptor name.
+pub type PipelineLayoutResourceDescriptor = PipelineLayoutDesc;
+/// Compatibility alias for the color attachment descriptor name.
+pub type ColorAttachmentDescriptor = ColorAttachmentDesc;
+/// Compatibility alias for the non-indexed draw step descriptor name.
+pub type DrawStepDescriptor = DrawStepDesc;
+/// Compatibility alias for the texture write descriptor name.
+pub type TextureWriteDescriptor = TextureWriteDesc;
 
 bitflags! {
     /// Buffer usage flags.
@@ -1141,6 +1195,13 @@ pub struct ColorAttachmentDesc {
     pub format: Format,
 }
 
+/// Depth attachment format for a render pass compatibility descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DepthAttachmentDescriptor {
+    /// Attachment format.
+    pub format: Format,
+}
+
 /// Render pass descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderPassDesc {
@@ -1148,7 +1209,16 @@ pub struct RenderPassDesc {
     pub label: ResourceLabel,
     /// Color attachment.
     pub color_attachment: ColorAttachmentDesc,
+    /// Optional depth attachment.
+    pub depth_attachment: Option<DepthAttachmentDescriptor>,
 }
+
+/// Compatibility alias for the render pass descriptor name.
+pub type RenderPassCompatibilityDescriptor = RenderPassDesc;
+
+/// Optional depth state for a render pipeline compatibility descriptor.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DepthState;
 
 /// Render pipeline descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1175,7 +1245,12 @@ pub struct RenderPipelineDesc {
     pub blend_mode: BlendMode,
     /// Primitive topology.
     pub primitive_topology: PrimitiveTopology,
+    /// Optional depth state.
+    pub depth_state: Option<DepthState>,
 }
+
+/// Compatibility alias for the render pipeline descriptor name.
+pub type RenderPipelineDescriptor = RenderPipelineDesc;
 
 impl RenderPipelineDesc {
     /// Validates a render pipeline descriptor.
@@ -1278,7 +1353,7 @@ pub struct DrawDesc {
     /// Render pipeline.
     pub pipeline: RenderPipelineId,
     /// Resource sets bound before drawing.
-    pub resource_sets: Vec<ResourceSetId>,
+    pub resource_sets: ResourceSetList,
     /// Vertex count.
     pub vertex_count: u32,
     /// First vertex.
@@ -1291,13 +1366,34 @@ pub struct DrawDesc {
     pub scissor: Option<ScissorRect>,
 }
 
+/// Resource sets bound by one draw step.
+///
+/// Most GPUI nova draw steps bind zero or one resource set. Keeping four inline
+/// slots avoids heap allocation on the hot path while still supporting larger
+/// binding groups.
+pub type ResourceSetList = SmallVec<[ResourceSetId; 4]>;
+
+/// Builds a resource-set list without heap allocation for up to four entries.
+#[must_use]
+pub fn resource_set_list(
+    resource_sets: impl IntoIterator<Item = ResourceSetId>,
+) -> ResourceSetList {
+    resource_sets.into_iter().collect()
+}
+
+/// Builds an empty resource-set list.
+#[must_use]
+pub fn resource_set_list_empty() -> ResourceSetList {
+    ResourceSetList::new()
+}
+
 /// One draw step inside a render pass.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawStepDesc {
     /// Render pipeline.
     pub pipeline: RenderPipelineId,
     /// Resource sets bound before drawing.
-    pub resource_sets: Vec<ResourceSetId>,
+    pub resource_sets: ResourceSetList,
     /// Vertex count.
     pub vertex_count: u32,
     /// First vertex.
@@ -1309,6 +1405,190 @@ pub struct DrawStepDesc {
     /// Optional scissor rectangle in target pixels.
     pub scissor: Option<ScissorRect>,
 }
+
+/// Index buffer element format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexFormat {
+    /// 16-bit unsigned integer indices.
+    Uint16,
+    /// 32-bit unsigned integer indices.
+    Uint32,
+}
+
+/// Index buffer binding for indexed render steps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IndexBufferBinding {
+    /// Index buffer resource.
+    pub buffer: BufferId,
+    /// Index element format.
+    pub format: IndexFormat,
+    /// Byte offset into the index buffer.
+    pub offset: u64,
+}
+
+/// One indexed draw step inside a render pass.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawIndexedStepDescriptor {
+    /// Render pipeline.
+    pub pipeline: RenderPipelineId,
+    /// Resource sets bound before drawing.
+    pub resource_sets: ResourceSetList,
+    /// Index buffer binding.
+    pub index_buffer: IndexBufferBinding,
+    /// Index count.
+    pub index_count: u32,
+    /// First index.
+    pub first_index: u32,
+    /// Base vertex offset.
+    pub base_vertex: i32,
+    /// Instance count.
+    pub instance_count: u32,
+    /// First instance.
+    pub first_instance: u32,
+    /// Optional scissor rectangle in target pixels.
+    pub scissor: Option<ScissorRect>,
+}
+
+/// Render step accepted by the GPUI nova compatibility layer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderStepDescriptor {
+    /// Non-indexed draw.
+    Draw(DrawStepDesc),
+    /// Indexed draw.
+    DrawIndexed(DrawIndexedStepDescriptor),
+}
+
+/// Borrowed render step accepted by backend hot paths.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RenderStepRef<'a> {
+    /// Non-indexed draw.
+    Draw(&'a DrawStepDesc),
+    /// Indexed draw.
+    DrawIndexed(&'a DrawIndexedStepDescriptor),
+}
+
+impl<'a> RenderStepRef<'a> {
+    /// Returns the pipeline used by this step.
+    #[must_use]
+    pub fn pipeline(self) -> RenderPipelineId {
+        match self {
+            Self::Draw(step) => step.pipeline,
+            Self::DrawIndexed(step) => step.pipeline,
+        }
+    }
+
+    /// Returns the resource sets bound by this step.
+    #[must_use]
+    pub fn resource_sets(self) -> &'a [ResourceSetId] {
+        match self {
+            Self::Draw(step) => step.resource_sets.as_slice(),
+            Self::DrawIndexed(step) => step.resource_sets.as_slice(),
+        }
+    }
+
+    /// Returns the optional scissor rectangle.
+    #[must_use]
+    pub fn scissor(self) -> Option<ScissorRect> {
+        match self {
+            Self::Draw(step) => step.scissor,
+            Self::DrawIndexed(step) => step.scissor,
+        }
+    }
+}
+
+impl<'a> From<&'a DrawStepDesc> for RenderStepRef<'a> {
+    fn from(step: &'a DrawStepDesc) -> Self {
+        Self::Draw(step)
+    }
+}
+
+impl<'a> From<&'a RenderStepDescriptor> for RenderStepRef<'a> {
+    fn from(step: &'a RenderStepDescriptor) -> Self {
+        match step {
+            RenderStepDescriptor::Draw(step) => Self::Draw(step),
+            RenderStepDescriptor::DrawIndexed(step) => Self::DrawIndexed(step),
+        }
+    }
+}
+
+/// Borrowed list of render steps used to avoid compatibility allocations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RenderStepList<'a> {
+    /// Non-indexed draw descriptors.
+    Draw(&'a [DrawStepDesc]),
+    /// Full render-step descriptors.
+    Render(&'a [RenderStepDescriptor]),
+}
+
+impl<'a> RenderStepList<'a> {
+    /// Creates a borrowed list from legacy draw steps.
+    #[must_use]
+    pub const fn from_draw_steps(steps: &'a [DrawStepDesc]) -> Self {
+        Self::Draw(steps)
+    }
+
+    /// Creates a borrowed list from render steps.
+    #[must_use]
+    pub const fn from_render_steps(steps: &'a [RenderStepDescriptor]) -> Self {
+        Self::Render(steps)
+    }
+
+    /// Returns true when the list is empty.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        match self {
+            Self::Draw(steps) => steps.is_empty(),
+            Self::Render(steps) => steps.is_empty(),
+        }
+    }
+
+    /// Returns the first step.
+    #[must_use]
+    pub fn first(self) -> Option<RenderStepRef<'a>> {
+        match self {
+            Self::Draw(steps) => steps.first().map(RenderStepRef::from),
+            Self::Render(steps) => steps.first().map(RenderStepRef::from),
+        }
+    }
+
+    /// Iterates over borrowed render steps.
+    #[must_use]
+    pub fn iter(self) -> RenderStepListIter<'a> {
+        match self {
+            Self::Draw(steps) => RenderStepListIter::Draw(steps.iter()),
+            Self::Render(steps) => RenderStepListIter::Render(steps.iter()),
+        }
+    }
+}
+
+/// Iterator over a borrowed render-step list.
+#[derive(Clone, Debug)]
+pub enum RenderStepListIter<'a> {
+    /// Non-indexed draw descriptor iterator.
+    Draw(std::slice::Iter<'a, DrawStepDesc>),
+    /// Full render-step descriptor iterator.
+    Render(std::slice::Iter<'a, RenderStepDescriptor>),
+}
+
+impl<'a> Iterator for RenderStepListIter<'a> {
+    type Item = RenderStepRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Draw(steps) => steps.next().map(RenderStepRef::from),
+            Self::Render(steps) => steps.next().map(RenderStepRef::from),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Draw(steps) => steps.size_hint(),
+            Self::Render(steps) => steps.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for RenderStepListIter<'_> {}
 
 /// Integer scissor rectangle in render target coordinates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1351,6 +1631,35 @@ pub struct TextureWriteDesc {
     pub origin: Origin2d,
     /// Target size.
     pub size: Extent2d,
+}
+
+/// Borrowed texture upload used by the batch upload compatibility API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextureWrite<'a> {
+    /// Texture upload descriptor.
+    pub descriptor: TextureWriteDesc,
+    /// Pixel bytes for this upload.
+    pub data: &'a [u8],
+}
+
+/// Memory pressure level reported by upper layers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GfxMemoryTrimLevel {
+    /// Light memory pressure.
+    Light,
+    /// Moderate memory pressure.
+    Moderate,
+    /// Aggressive memory pressure.
+    Aggressive,
+}
+
+/// Depth attachment used for render submission compatibility methods.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderPassDepthAttachment {
+    /// Depth texture view target.
+    pub target: TextureViewId,
+    /// Depth load operation.
+    pub depth_load_op: LoadOp<f32>,
 }
 
 /// Backend resource statistics.
@@ -1478,6 +1787,7 @@ mod tests {
             color_format: Format::Bgra8Unorm,
             blend_mode: BlendMode::Replace,
             primitive_topology: PrimitiveTopology::TriangleList,
+            depth_state: None,
         };
 
         assert!(descriptor.validate().is_err());

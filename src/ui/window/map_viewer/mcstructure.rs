@@ -10,8 +10,6 @@ use std::sync::Arc;
 
 pub(super) const MCSTRUCTURE_EXTENSION: &str = "mcstructure";
 
-const DEFAULT_EXPORT_HEIGHT: i32 = 64;
-
 pub(super) struct McStructureImport {
     pub(super) copied_chunk: CopiedChunkData,
     pub(super) imported_structure: ImportedStructureData,
@@ -99,26 +97,13 @@ pub(super) fn export_selection_mcstructure_blocking(
     Ok(output_path.to_path_buf())
 }
 
-pub(super) fn export_y_range(dimension: Dimension, center_y: i32) -> (i32, i32) {
-    let (world_min_y, world_max_y) = ChunkPos {
+pub(super) fn export_y_range(dimension: Dimension, _center_y: i32) -> (i32, i32) {
+    ChunkPos {
         x: 0,
         z: 0,
         dimension,
     }
-    .y_range(bedrock_world::ChunkVersion::New);
-    let clamped_center = center_y.clamp(world_min_y, world_max_y);
-    let half = DEFAULT_EXPORT_HEIGHT / 2;
-    let mut min_y = clamped_center.saturating_sub(half);
-    let mut max_y = min_y.saturating_add(DEFAULT_EXPORT_HEIGHT.saturating_sub(1));
-    if min_y < world_min_y {
-        max_y = max_y.saturating_add(world_min_y.saturating_sub(min_y));
-        min_y = world_min_y;
-    }
-    if max_y > world_max_y {
-        min_y = min_y.saturating_sub(max_y.saturating_sub(world_max_y));
-        max_y = world_max_y;
-    }
-    (min_y.max(world_min_y), max_y.min(world_max_y))
+    .y_range(bedrock_world::ChunkVersion::New)
 }
 
 pub(super) fn read_mcstructure_as_copied_chunk(

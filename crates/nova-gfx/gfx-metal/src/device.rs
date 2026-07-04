@@ -35,13 +35,14 @@ use gfx_core::{
     ClearColor, CommandEncoderDesc, CommandEncoderId, DeviceDesc, DrawDesc, DrawStepDesc,
     FilterMode, Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxError,
     GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-    GfxSurfaceDevice, GfxThreadingMode, LoadOp, MemoryLocation, PipelineLayoutDesc,
-    PipelineLayoutId, PrimitiveTopology, RenderPassDesc, RenderPassId, RenderPipelineDesc,
-    RenderPipelineId, RenderTarget, ResourceBindingResource, ResourceSetDesc, ResourceSetId,
-    ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId,
-    ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, SubmissionId, SubmissionStatus,
-    SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureDimension, TextureId,
-    TextureUsage, TextureViewDesc, TextureViewId, TextureWriteDesc,
+    GfxSurfaceDevice, GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
+    PipelineLayoutDesc, PipelineLayoutId, PrimitiveTopology, RenderPassDepthAttachment,
+    RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor,
+    RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource, ResourceSetDesc,
+    ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, Result, SamplerDesc,
+    SamplerId, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, SubmissionId,
+    SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc,
+    TextureDimension, TextureId, TextureUsage, TextureViewDesc, TextureViewId, TextureWriteDesc,
 };
 
 #[cfg(target_vendor = "apple")]
@@ -54,13 +55,13 @@ mod platform {
     use objc2::{ClassType, rc::Retained, runtime::ProtocolObject};
     use objc2_app_kit::NSView;
     use objc2_core_foundation::CGSize;
-    use objc2_foundation::{NSError, NSString};
+    use objc2_foundation::{NSError, NSInteger, NSString};
     use objc2_metal::{
-        MTLBlendFactor, MTLBlendOperation, MTLClearColor, MTLCommandBuffer, MTLCommandQueue,
-        MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction, MTLLibrary, MTLLoadAction,
-        MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-        MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource, MTLScissorRect,
-        MTLStoreAction, MTLTexture, MTLViewport,
+        MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
+        MTLCommandQueue, MTLCompileOptions, MTLDevice, MTLDrawable, MTLFunction, MTLIndexType,
+        MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder,
+        MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState,
+        MTLResourceOptions, MTLScissorRect, MTLStoreAction, MTLTexture, MTLViewport,
     };
     use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
@@ -197,16 +198,18 @@ mod platform {
         /// Creates a buffer record.
         fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferId> {
             desc.validate()?;
+            let length = usize::try_from(desc.size).map_err(|error| {
+                GfxError::InvalidInput(format!("buffer size overflow: {error}"))
+            })?;
+            let resource = self
+                .device
+                .newBufferWithLength_options(length, MTLResourceOptions::StorageModeShared)
+                .ok_or_else(|| GfxError::Backend("failed to create Metal buffer".to_string()))?;
             Ok(self.buffers.insert(MetalBuffer {
                 desc: desc.clone(),
-                resource: None,
+                resource: Some(resource),
                 data: if desc.memory_location == MemoryLocation::CpuToGpu {
-                    Some(vec![
-                        0;
-                        usize::try_from(desc.size).map_err(|error| {
-                            GfxError::InvalidInput(format!("buffer size overflow: {error}"))
-                        })?
-                    ])
+                    Some(vec![0; length])
                 } else {
                     None
                 },
@@ -230,6 +233,14 @@ mod platform {
                 GfxError::InvalidInput("buffer write range is out of bounds".to_string())
             })?;
             target.copy_from_slice(data);
+            if let Some(resource) = &buffer.resource {
+                // SAFETY: The Metal buffer was allocated with shared storage and is at least
+                // `buffer.desc.size` bytes; the checked range above is within that allocation.
+                unsafe {
+                    let destination = resource.contents().as_ptr().cast::<u8>().add(offset);
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len());
+                }
+            }
             Ok(())
         }
 
@@ -433,19 +444,26 @@ mod platform {
             steps: &[DrawStepDesc],
             clear_color: gfx_core::ClearColor,
         ) -> Result<()> {
-            let first_step = steps.first().ok_or_else(|| {
-                GfxError::InvalidInput("Metal draw step list must not be empty".to_string())
-            })?;
             self.draw_internal(
                 swapchain,
                 render_pass,
-                first_step.pipeline,
-                &first_step.resource_sets,
+                RenderStepList::from_draw_steps(steps),
                 clear_color,
-                first_step
-                    .vertex_count
-                    .saturating_mul(first_step.instance_count),
-                first_step.scissor,
+            )
+        }
+
+        fn render_steps_and_present(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: gfx_core::ClearColor,
+        ) -> Result<()> {
+            self.draw_internal(
+                swapchain,
+                render_pass,
+                RenderStepList::from_render_steps(steps),
+                clear_color,
             )
         }
 
@@ -465,25 +483,20 @@ mod platform {
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            pipeline: RenderPipelineId,
-            resource_sets: &[ResourceSetId],
+            steps: RenderStepList<'_>,
             clear_color: gfx_core::ClearColor,
-            vertex_count: u32,
-            scissor: Option<gfx_core::ScissorRect>,
         ) -> Result<()> {
-            let swapchain = self.swapchains.get(swapchain)?;
-            let render_pass = self.render_passes.get(render_pass)?;
-            let pipeline = self.render_pipelines.get(pipeline)?;
-            let resources = resource_sets
-                .iter()
-                .copied()
-                .map(|resource_set| Ok(self.resource_sets.get(resource_set)?.clone()))
-                .collect::<Result<Vec<_>>>()?;
-            if render_pass.color_format != pipeline.color_format {
+            if steps.is_empty() {
                 return Err(GfxError::InvalidInput(
-                    "render pass and pipeline color formats do not match".to_string(),
+                    "Metal draw step list must not be empty".to_string(),
                 ));
             }
+            let swapchain = self.swapchains.get(swapchain)?;
+            let render_pass = self.render_passes.get(render_pass)?;
+            let render_steps = steps
+                .iter()
+                .map(|step| self.prepare_render_step(render_pass, step))
+                .collect::<Result<Vec<_>>>()?;
 
             objc2::rc::autoreleasepool(|_| {
                 let drawable = swapchain.layer.nextDrawable().ok_or_else(|| {
@@ -512,14 +525,7 @@ mod platform {
                     .ok_or_else(|| {
                         GfxError::Backend("failed to create Metal render encoder".to_string())
                     })?;
-                encode_draw(
-                    &encoder,
-                    pipeline,
-                    &resources,
-                    swapchain.config,
-                    vertex_count,
-                    scissor,
-                );
+                encode_draw_steps(&encoder, &render_steps, swapchain.config);
                 encoder.endEncoding();
                 command_buffer.presentDrawable(drawable.as_ref());
                 command_buffer.commit();
@@ -527,6 +533,77 @@ mod platform {
             })?;
             self.submitted_frames = self.submitted_frames.saturating_add(1);
             Ok(())
+        }
+
+        fn prepare_render_step(
+            &self,
+            render_pass: &MetalRenderPass,
+            step: RenderStepRef<'_>,
+        ) -> Result<PreparedMetalRenderStep> {
+            let pipeline = self.render_pipelines.get(step.pipeline())?.clone();
+            if render_pass.color_format != pipeline.color_format {
+                return Err(GfxError::InvalidInput(
+                    "render pass and pipeline color formats do not match".to_string(),
+                ));
+            }
+            let resource_sets = step
+                .resource_sets()
+                .iter()
+                .copied()
+                .map(|resource_set| Ok(self.resource_sets.get(resource_set)?.clone()))
+                .collect::<Result<Vec<_>>>()?;
+            let draw = match step {
+                RenderStepRef::Draw(step) => PreparedMetalDraw::NonIndexed {
+                    vertex_start: step.first_vertex,
+                    vertex_count: step.vertex_count,
+                    instance_count: step.instance_count,
+                    base_instance: step.first_instance,
+                },
+                RenderStepRef::DrawIndexed(step) => {
+                    let buffer = self.buffers.get(step.index_buffer.buffer)?;
+                    validate_index_buffer_range(
+                        buffer.desc.usage,
+                        buffer.desc.size,
+                        step.index_buffer,
+                        step.first_index,
+                        step.index_count,
+                    )?;
+                    let resource = buffer.resource.clone().ok_or_else(|| {
+                        GfxError::Backend("Metal index buffer has no native resource".to_string())
+                    })?;
+                    let first_index_offset = u64::from(step.first_index)
+                        .checked_mul(index_format_size(step.index_buffer.format))
+                        .ok_or_else(|| {
+                            GfxError::InvalidInput(
+                                "Metal index buffer first index offset overflow".to_string(),
+                            )
+                        })?;
+                    let index_buffer_offset = step
+                        .index_buffer
+                        .offset
+                        .checked_add(first_index_offset)
+                        .ok_or_else(|| {
+                            GfxError::InvalidInput(
+                                "Metal index buffer byte offset overflow".to_string(),
+                            )
+                        })?;
+                    PreparedMetalDraw::Indexed {
+                        index_buffer: resource,
+                        index_buffer_offset,
+                        index_type: index_format_to_metal(step.index_buffer.format),
+                        index_count: step.index_count,
+                        base_vertex: step.base_vertex,
+                        instance_count: step.instance_count,
+                        base_instance: step.first_instance,
+                    }
+                }
+            };
+            Ok(PreparedMetalRenderStep {
+                pipeline,
+                resource_sets,
+                draw,
+                scissor: step.scissor(),
+            })
         }
 
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
@@ -849,6 +926,45 @@ mod platform {
         ) -> Result<()> {
             Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
         }
+
+        fn render_steps_and_present_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)
+        }
+
+        fn render_steps_to_texture_compat(
+            &mut self,
+            _texture_view: TextureViewId,
+            _render_pass: RenderPassId,
+            _steps: &[RenderStepDescriptor],
+            _color_load_op: LoadOp<ClearColor>,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            Err(GfxError::Unavailable(
+                "Metal offscreen render target is not implemented yet".to_string(),
+            ))
+        }
+
+        fn render_steps_and_present_deferred_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<SubmissionId>
+        where
+            Self: GfxSubmissionDevice,
+        {
+            Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)?;
+            Ok(SubmissionId::from_parts(0, 0))
+        }
     }
 
     impl GfxDiagnosticsDevice for MetalDevice {
@@ -860,7 +976,7 @@ mod platform {
     #[derive(Clone)]
     struct MetalBuffer {
         desc: BufferDesc,
-        resource: Option<Retained<ProtocolObject<dyn MTLResource>>>,
+        resource: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
         data: Option<Vec<u8>>,
     }
 
@@ -1064,16 +1180,36 @@ mod platform {
             .map_err(|error| GfxError::Shader(nserror_message(&error)))
     }
 
-    fn encode_draw(
-        encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
-        pipeline: &MetalRenderPipeline,
-        resource_sets: &[MetalResourceSet],
-        config: SurfaceConfig,
-        vertex_count: u32,
+    struct PreparedMetalRenderStep {
+        pipeline: MetalRenderPipeline,
+        resource_sets: Vec<MetalResourceSet>,
+        draw: PreparedMetalDraw,
         scissor: Option<gfx_core::ScissorRect>,
+    }
+
+    enum PreparedMetalDraw {
+        NonIndexed {
+            vertex_start: u32,
+            vertex_count: u32,
+            instance_count: u32,
+            base_instance: u32,
+        },
+        Indexed {
+            index_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+            index_buffer_offset: u64,
+            index_type: MTLIndexType,
+            index_count: u32,
+            base_vertex: i32,
+            instance_count: u32,
+            base_instance: u32,
+        },
+    }
+
+    fn encode_draw_steps(
+        encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+        steps: &[PreparedMetalRenderStep],
+        config: SurfaceConfig,
     ) {
-        let _ = (pipeline.blend_mode, pipeline.pipeline_layout);
-        encoder.setRenderPipelineState(&pipeline.pipeline_state);
         encoder.setViewport(MTLViewport {
             originX: 0.0,
             originY: 0.0,
@@ -1082,18 +1218,58 @@ mod platform {
             znear: 0.0,
             zfar: 1.0,
         });
-        encoder.setScissorRect(metal_scissor_rect(scissor, config.size));
-        for resource_set in resource_sets {
-            let _ = (resource_set.layout, resource_set.bindings.len());
-        }
-        // SAFETY: The shader uses vertex_index and bound resources are managed by Metal objects.
-        unsafe {
-            encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(
-                primitive_topology_to_metal(pipeline.primitive_topology),
-                0,
-                usize::try_from(vertex_count).unwrap_or(usize::MAX),
-                1,
-            );
+        for step in steps {
+            let pipeline = &step.pipeline;
+            let _ = (pipeline.blend_mode, pipeline.pipeline_layout);
+            encoder.setRenderPipelineState(&pipeline.pipeline_state);
+            encoder.setScissorRect(metal_scissor_rect(step.scissor, config.size));
+            for resource_set in &step.resource_sets {
+                let _ = (resource_set.layout, resource_set.bindings.len());
+            }
+            let primitive_type = primitive_topology_to_metal(pipeline.primitive_topology);
+            match &step.draw {
+                PreparedMetalDraw::NonIndexed {
+                    vertex_start,
+                    vertex_count,
+                    instance_count,
+                    base_instance,
+                } => {
+                    // SAFETY: The shader uses vertex_index and bound resources are managed by Metal objects.
+                    unsafe {
+                        encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
+                            primitive_type,
+                            usize::try_from(*vertex_start).unwrap_or(usize::MAX),
+                            usize::try_from(*vertex_count).unwrap_or(usize::MAX),
+                            usize::try_from(*instance_count).unwrap_or(usize::MAX),
+                            usize::try_from(*base_instance).unwrap_or(usize::MAX),
+                        );
+                    }
+                }
+                PreparedMetalDraw::Indexed {
+                    index_buffer,
+                    index_buffer_offset,
+                    index_type,
+                    index_count,
+                    base_vertex,
+                    instance_count,
+                    base_instance,
+                } => {
+                    // SAFETY: The index buffer is retained by the prepared draw step and the
+                    // checked index range is within that buffer.
+                    unsafe {
+                        encoder.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount_baseVertex_baseInstance(
+                            primitive_type,
+                            usize::try_from(*index_count).unwrap_or(usize::MAX),
+                            *index_type,
+                            index_buffer.as_ref(),
+                            usize::try_from(*index_buffer_offset).unwrap_or(usize::MAX),
+                            usize::try_from(*instance_count).unwrap_or(usize::MAX),
+                            *base_vertex as NSInteger,
+                            usize::try_from(*base_instance).unwrap_or(usize::MAX),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1101,6 +1277,57 @@ mod platform {
         match topology {
             PrimitiveTopology::TriangleList => MTLPrimitiveType::Triangle,
             PrimitiveTopology::TriangleStrip => MTLPrimitiveType::TriangleStrip,
+        }
+    }
+
+    fn validate_index_buffer_range(
+        usage: BufferUsage,
+        buffer_size: u64,
+        binding: IndexBufferBinding,
+        first_index: u32,
+        index_count: u32,
+    ) -> Result<()> {
+        if !usage.contains(BufferUsage::INDEX) {
+            return Err(GfxError::InvalidInput(
+                "index buffer must include INDEX usage".to_string(),
+            ));
+        }
+        let stride = index_format_size(binding.format);
+        if binding.offset % stride != 0 {
+            return Err(GfxError::InvalidInput(
+                "index buffer offset must be aligned to the index format size".to_string(),
+            ));
+        }
+        let first_index_byte = u64::from(first_index).checked_mul(stride).ok_or_else(|| {
+            GfxError::InvalidInput("first index byte offset overflow".to_string())
+        })?;
+        let index_bytes = u64::from(index_count)
+            .checked_mul(stride)
+            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+        let byte_end = binding
+            .offset
+            .checked_add(first_index_byte)
+            .and_then(|start| start.checked_add(index_bytes))
+            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+        if byte_end > buffer_size {
+            return Err(GfxError::InvalidInput(
+                "index buffer range is out of bounds".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn index_format_size(format: IndexFormat) -> u64 {
+        match format {
+            IndexFormat::Uint16 => 2,
+            IndexFormat::Uint32 => 4,
+        }
+    }
+
+    fn index_format_to_metal(format: IndexFormat) -> MTLIndexType {
+        match format {
+            IndexFormat::Uint16 => MTLIndexType::UInt16,
+            IndexFormat::Uint32 => MTLIndexType::UInt32,
         }
     }
 
@@ -1145,6 +1372,7 @@ mod platform {
             Format::Bgra8UnormSrgb => MTLPixelFormat::BGRA8Unorm_sRGB,
             Format::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
             Format::Rgba8UnormSrgb => MTLPixelFormat::RGBA8Unorm_sRGB,
+            Format::Depth32Float => MTLPixelFormat::Depth32Float,
         }
     }
 
@@ -1187,12 +1415,12 @@ mod platform {
         BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc, CommandEncoderId,
         DeviceDesc, DrawDesc, DrawStepDesc, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice,
         GfxError, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-        GfxSurfaceDevice, LoadOp, PipelineLayoutDesc, PipelineLayoutId, RenderPassDesc,
-        RenderPassId, RenderPipelineDesc, RenderPipelineId, ResourceSetDesc, ResourceSetId,
-        ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId,
-        ShaderModuleDesc, ShaderModuleId, SubmissionId, SubmissionStatus, SurfaceConfig,
-        SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId, TextureViewDesc,
-        TextureViewId, TextureWriteDesc,
+        GfxSurfaceDevice, LoadOp, PipelineLayoutDesc, PipelineLayoutId, RenderPassDepthAttachment,
+        RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor,
+        ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
+        Result, SamplerDesc, SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId,
+        SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc,
+        TextureId, TextureViewDesc, TextureViewId, TextureWriteDesc,
     };
 
     /// Stub Metal device for non-Apple targets.
@@ -1404,6 +1632,42 @@ mod platform {
             _steps: &[DrawStepDesc],
             _color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
+            unavailable()
+        }
+
+        fn render_steps_and_present_compat(
+            &mut self,
+            _swapchain: SwapchainId,
+            _render_pass: RenderPassId,
+            _steps: &[RenderStepDescriptor],
+            _clear_color: ClearColor,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            unavailable()
+        }
+
+        fn render_steps_to_texture_compat(
+            &mut self,
+            _texture_view: TextureViewId,
+            _render_pass: RenderPassId,
+            _steps: &[RenderStepDescriptor],
+            _color_load_op: LoadOp<ClearColor>,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            unavailable()
+        }
+
+        fn render_steps_and_present_deferred_compat(
+            &mut self,
+            _swapchain: SwapchainId,
+            _render_pass: RenderPassId,
+            _steps: &[RenderStepDescriptor],
+            _clear_color: ClearColor,
+            _depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<SubmissionId>
+        where
+            Self: GfxSubmissionDevice,
+        {
             unavailable()
         }
     }

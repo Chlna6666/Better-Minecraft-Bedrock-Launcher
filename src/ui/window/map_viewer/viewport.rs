@@ -391,9 +391,10 @@ pub(super) fn clamp_tile_span(min_value: &mut i32, max_value: &mut i32, center: 
     if span <= MAX_TILE_SPAN_PER_AXIS {
         return;
     }
-    let half = MAX_TILE_SPAN_PER_AXIS / 2;
-    *min_value = center.saturating_sub(half);
-    *max_value = center.saturating_add(half);
+    let left = (MAX_TILE_SPAN_PER_AXIS - 1) / 2;
+    let right = MAX_TILE_SPAN_PER_AXIS - 1 - left;
+    *min_value = center.saturating_sub(left);
+    *max_value = center.saturating_add(right);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -415,6 +416,7 @@ impl TileBounds {
     }
 }
 
+#[cfg(test)]
 pub(super) fn visible_tile_bounds_for_render_range(
     render_range: MapRenderRange,
     center: (i32, i32),
@@ -483,6 +485,7 @@ pub(super) fn tile_bounds_from_coords(coords: &[(i32, i32)]) -> Option<TileBound
     Some(bounds)
 }
 
+#[cfg(test)]
 pub(super) fn tile_coords_from_bounds(bounds: TileBounds) -> Vec<(i32, i32)> {
     if bounds.min_x > bounds.max_x || bounds.min_z > bounds.max_z {
         return Vec::new();

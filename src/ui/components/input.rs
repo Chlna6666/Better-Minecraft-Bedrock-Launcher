@@ -5,8 +5,8 @@ use gpui::{
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     GlobalElementId, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels,
-    Point, Render, RenderOnce, ShapedLine, SharedString, Style, Styled, TextRun, UTF16Selection,
-    UnderlineStyle, Window, actions, div, fill, hsla, point, px, relative, size,
+    Point, Render, RenderOnce, ShapedLine, SharedString, Style, Styled, TextRun, UnderlineStyle,
+    Utf16Selection, Window, actions, div, fill, hsla, point, px, relative, size,
 };
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -76,28 +76,31 @@ struct InputMetrics {
     clear_slot: f32,
     clear_button: f32,
     clear_text_size: f32,
+    text_size: f32,
 }
 
 impl InputSize {
     fn metrics(self) -> InputMetrics {
         match self {
             Self::Small => InputMetrics {
-                height: 32.0,
-                radius: 10.0,
+                height: 28.0,
+                radius: 4.0,
                 gap: 2.0,
-                padding_x: 4.0,
+                padding_x: 6.0,
                 clear_slot: 14.0,
                 clear_button: 14.0,
                 clear_text_size: 11.5,
+                text_size: 13.0,
             },
             Self::Medium => InputMetrics {
                 height: 38.0,
-                radius: 12.0,
+                radius: 6.0,
                 gap: 3.0,
-                padding_x: 5.0,
+                padding_x: 6.0,
                 clear_slot: 16.0,
                 clear_button: 14.0,
                 clear_text_size: 12.5,
+                text_size: 14.0,
             },
         }
     }
@@ -171,6 +174,23 @@ impl InputState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let value = value.into();
+        let end = value.len();
+        if self.value == value
+            && self.selected_range == (end..end)
+            && !self.selection_reversed
+            && self.marked_range.is_none()
+        {
+            return;
+        }
+        self.value = value;
+        self.selected_range = end..end;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.notify();
+    }
+
+    pub fn set_text(&mut self, value: impl Into<SharedString>, cx: &mut Context<Self>) {
         let value = value.into();
         let end = value.len();
         if self.value == value
@@ -543,8 +563,8 @@ impl EntityInputHandler for InputState {
         _ignore_disabled_input: bool,
         _window: &mut Window,
         _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
+    ) -> Option<Utf16Selection> {
+        Some(Utf16Selection {
             range: self.range_to_utf16(&self.selected_range),
             reversed: self.selection_reversed,
         })
@@ -846,7 +866,7 @@ impl Element for TextElement {
                     point(text_bounds.left() + cursor_pos, text_bounds.top()),
                     size(px(1.5), text_bounds.size.height),
                 ),
-                text_color,
+                theme_colors.accent,
             ));
             (None, cursor)
         } else {
@@ -898,7 +918,7 @@ impl Element for TextElement {
         cx: &mut App,
     ) {
         let focus_handle = self.input.read(cx).focus_handle.clone();
-        window.handle_input(
+        window.set_input_handler(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
@@ -1050,25 +1070,32 @@ impl RenderOnce for Input {
         );
         let dark_mode = theme_colors.bg.l < 0.5;
         let shell_background = if dark_mode {
-            hsla(222.0, 0.24, 0.14, 0.86)
+            Hsla {
+                a: 0.85,
+                ..theme_colors.settings_field_bg
+            }
         } else {
-            hsla(0.0, 0.0, 1.0, 0.92)
+            Hsla {
+                a: 0.95,
+                ..theme_colors.settings_field_bg
+            }
         };
         let shell_hover_background = if dark_mode {
-            hsla(220.0, 0.24, 0.17, 0.92)
+            Hsla {
+                a: 0.95,
+                ..theme_colors.settings_field_bg
+            }
         } else {
-            hsla(210.0, 0.40, 0.98, 0.98)
+            Hsla {
+                a: 1.0,
+                ..theme_colors.settings_field_bg
+            }
         };
-        let shell_border = if dark_mode {
-            hsla(218.0, 0.20, 0.32, 0.95)
-        } else {
-            hsla(214.0, 0.22, 0.84, 1.0)
+        let shell_border = Hsla {
+            a: 0.15,
+            ..theme_colors.border
         };
-        let focus_border = if dark_mode {
-            hsla(214.0, 0.92, 0.68, 1.0)
-        } else {
-            hsla(214.0, 0.92, 0.56, 1.0)
-        };
+        let focus_border = theme_colors.accent;
         let clear_button_text = if dark_mode {
             hsla(0.0, 0.0, 1.0, 0.64)
         } else {
@@ -1089,6 +1116,7 @@ impl RenderOnce for Input {
             .items_center()
             .gap(px(metrics.gap))
             .min_w(px(0.0))
+            .text_size(px(metrics.text_size))
             .overflow_hidden();
 
         if self.cleanable {
@@ -1101,6 +1129,30 @@ impl RenderOnce for Input {
             } else {
                 0.0
             };
+
+            let mut shadows = vec![BoxShadow {
+                color: if dark_mode {
+                    hsla(0.0, 0.0, 0.0, 0.16)
+                } else {
+                    hsla(220.0, 0.30, 0.24, 0.06)
+                },
+                blur_radius: px(14.0),
+                spread_radius: px(-10.0),
+                offset: point(px(0.0), px(3.0)),
+            }];
+
+            if is_focused && self.focus_bordered {
+                shadows.push(BoxShadow {
+                    color: Hsla {
+                        a: if dark_mode { 0.22 } else { 0.15 },
+                        ..focus_border
+                    },
+                    blur_radius: px(8.0),
+                    spread_radius: px(0.0),
+                    offset: point(px(0.0), px(0.0)),
+                });
+            }
+
             input = input
                 .min_h(px(metrics.height))
                 .px(px(metrics.padding_x))
@@ -1109,16 +1161,7 @@ impl RenderOnce for Input {
                 .rounded(px(metrics.radius))
                 .bg(shell_background)
                 .hover(|style| style.bg(shell_hover_background))
-                .shadow(vec![BoxShadow {
-                    color: if dark_mode {
-                        hsla(0.0, 0.0, 0.0, 0.16)
-                    } else {
-                        hsla(220.0, 0.30, 0.24, 0.06)
-                    },
-                    blur_radius: px(14.0),
-                    spread_radius: px(-10.0),
-                    offset: point(px(0.0), px(3.0)),
-                }]);
+                .shadow(shadows);
         } else if show_shell {
             input = input.rounded(px(metrics.radius));
         }

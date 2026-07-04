@@ -134,7 +134,10 @@ impl ManagePageView {
                     state.asset_sort_key = ManageAssetSortKey::Date;
                     state.asset_sort_desc = true;
                 }
-                ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Server => {
+                ManageTab::Mod
+                | ManageTab::ResourcePack
+                | ManageTab::SkinPack
+                | ManageTab::Server => {
                     state.asset_sort_key = ManageAssetSortKey::Name;
                     state.asset_sort_desc = false;
                 }
@@ -148,6 +151,7 @@ impl ManagePageView {
         self.reset_server_list_view();
         cx.notify();
     }
+
     pub(super) fn import_version_package(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.defer(cx, move |_window, cx| {
             cx.spawn(async move |cx| {

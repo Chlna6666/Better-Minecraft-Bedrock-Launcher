@@ -1,0 +1,300 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: pwsh
+    working-directory: BMCBL
+
+jobs:
+  nightly:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout BMCBL
+        uses: actions/checkout@v4
+        with:
+          path: BMCBL
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch || 'master' }}
+          persist-credentials: true
+
+      - name: Resolve default branch
+        id: default_branch
+        run: |
+          $default = "${{ github.event.repository.default_branch }}"
+          if ([string]::IsNullOrWhiteSpace($default)) {
+            $default = "master"
+          }
+
+          git fetch origin $default --tags
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "NAME=$default"
+          Write-Host "Default branch: $default"
+
+      - name: Check for commits since the latest nightly tag
+        id: check_commits
+        run: |
+          $ErrorActionPreference = "Stop"
+          $default = "${{ steps.default_branch.outputs.NAME }}"
+
+          git fetch origin $default --tags
+          $latest = git tag -l "v*-nightly.*" --sort=-creatordate | Select-Object -First 1
+          if (-not $latest) {
+            Write-Host "No previous nightly tag found."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=true"
+            exit 0
+          }
+
+          Write-Host "Latest nightly tag: $latest"
+          $commitCount = git rev-list "$latest..origin/$default" --count
+          if ([int]$commitCount -gt 0) {
+            Write-Host "$commitCount commit(s) found since $latest."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=true"
+          } else {
+            Write-Host "No new commits since $latest."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=false"
+          }
+
+      - name: Checkout BE-Community-Dev path dependencies
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BE_COMMUNITY_DEV_REPOSITORY || 'Chlna6666/BE-Community-Dev' }}
+          token: ${{ secrets.BE_COMMUNITY_DEV_TOKEN || github.token }}
+          path: BE-Community-Dev
+
+      - name: Read package version
+        id: package_version
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: |
+          $content = Get-Content -Path "Cargo.toml" -Raw -Encoding UTF8
+          $match = [regex]::Match($content, '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
+          if (-not $match.Success) {
+            Write-Error "Failed to parse [package].version from Cargo.toml."
+            exit 1
+          }
+
+          $version = $match.Groups[1].Value
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "VERSION=$version"
+          Write-Host "Package version: $version"
+
+      - name: Create nightly tag
+        id: nightly_tag
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.package_version.outputs.VERSION }}"
+          $default = "${{ steps.default_branch.outputs.NAME }}"
+          $date = (Get-Date).ToUniversalTime().ToString("yyyyMMdd")
+          $tag = "v$version-nightly.$date.${{ github.run_number }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin $default --tags
+
+          $headCommit = git rev-parse "origin/$default"
+          git tag -a $tag $headCommit -m "Nightly build for $tag"
+          git push origin $tag
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "HEAD_COMMIT=$headCommit"
+          Write-Host "Created nightly tag: $tag -> $headCommit"
+
+      - name: Setup Rust
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure LLVM is available
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "libclang.dll")) -and -not (Test-Path (Join-Path $llvmBin "clang.dll"))) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              choco install llvm -y --no-progress
+            } else {
+              winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements
+            }
+          }
+
+          if (-not (Test-Path (Join-Path $llvmBin "libclang.dll")) -and -not (Test-Path (Join-Path $llvmBin "clang.dll"))) {
+            throw "LLVM installed but libclang.dll/clang.dll was not found under $llvmBin"
+          }
+
+          Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
+          Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
+
+      - name: Ensure 7-Zip is available
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Get-Command 7z -ErrorAction SilentlyContinue) {
+            & 7z -h | Out-Null
+            exit 0
+          }
+
+          $defaultExe = Join-Path $env:ProgramFiles "7-Zip\7z.exe"
+          if (Test-Path $defaultExe) {
+            Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $defaultExe -Parent)
+            & $defaultExe -h | Out-Null
+            exit 0
+          }
+
+          choco install 7zip -y --no-progress
+          $sevenZipDir = Join-Path $env:ProgramFiles "7-Zip"
+          Add-Content -Path $env:GITHUB_PATH -Value $sevenZipDir
+          & (Join-Path $sevenZipDir "7z.exe") -h | Out-Null
+
+      - name: Cache VC-LTL and YY-Thunks
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\thunk-cache\VC-LTL-5.2.2
+            ${{ runner.temp }}\thunk-cache\YY-Thunks-1.1.7
+          key: ${{ runner.os }}-thunk-cache-vc-ltl-5.2.2-yy-thunks-1.1.7-v1
+
+      - name: Prepare VC-LTL and YY-Thunks
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $cacheRoot = Join-Path $env:RUNNER_TEMP "thunk-cache"
+          $vcRoot = Join-Path $cacheRoot "VC-LTL-5.2.2"
+          $yyRoot = Join-Path $cacheRoot "YY-Thunks-1.1.7"
+          New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+
+          $vcUrl = "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.2.2/VC-LTL-Binary.7z"
+          $vcArchive = Join-Path $cacheRoot "VC-LTL-Binary.7z"
+          if (-not (Test-Path (Join-Path $vcRoot "TargetPlatform"))) {
+            curl.exe -L --retry 8 --retry-all-errors --retry-delay 2 -o $vcArchive $vcUrl
+            & 7z x -aoa $vcArchive "-o$vcRoot" | Out-Null
+          }
+          $vcPath = $vcRoot
+          if (-not (Test-Path (Join-Path $vcPath "TargetPlatform"))) {
+            $child = Get-ChildItem -Directory $vcRoot -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($child -and (Test-Path (Join-Path $child.FullName "TargetPlatform"))) {
+              $vcPath = $child.FullName
+            }
+          }
+
+          $yyUrl = "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.1.7/YY-Thunks-Objs.zip"
+          $yyArchive = Join-Path $cacheRoot "YY-Thunks-Objs.zip"
+          if (-not (Test-Path (Join-Path $yyRoot "objs"))) {
+            curl.exe -L --retry 8 --retry-all-errors --retry-delay 2 -o $yyArchive $yyUrl
+            & 7z x -aoa $yyArchive "-o$yyRoot" | Out-Null
+          }
+          $yyPath = $yyRoot
+          if (-not (Test-Path (Join-Path $yyPath "objs"))) {
+            $child = Get-ChildItem -Directory $yyRoot -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($child -and (Test-Path (Join-Path $child.FullName "objs"))) {
+              $yyPath = $child.FullName
+            }
+          }
+
+          if (-not (Test-Path (Join-Path $vcPath "TargetPlatform"))) { throw "VC_LTL path invalid: $vcPath" }
+          if (-not (Test-Path (Join-Path $yyPath "objs"))) { throw "YY_THUNKS path invalid: $yyPath" }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "VC_LTL=$vcPath"
+          Add-Content -Path $env:GITHUB_ENV -Value "YY_THUNKS=$yyPath"
+
+      - name: Cache cargo
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            BMCBL/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('BMCBL/Cargo.lock') }}-v1
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build BMCBL
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        env:
+          GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
+          GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
+        run: cargo build --release --bin BMCBL --locked
+
+      - name: Prepare release asset
+        id: asset
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: |
+          $source = "target\release\BMCBL.exe"
+          if (-not (Test-Path $source)) {
+            Write-Error "Expected executable was not found: $source"
+            exit 1
+          }
+
+          $tag = "${{ steps.nightly_tag.outputs.TAG_NAME }}"
+          $asset = "target\release\BMCBL-windows-x86_64-$tag.exe"
+          Copy-Item -Path $source -Destination $asset -Force
+
+          $assetPath = (Resolve-Path $asset).Path.Replace('\', '/')
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "PATH=$assetPath"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "NAME=$(Split-Path $assetPath -Leaf)"
+
+      - name: Publish nightly release
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ steps.nightly_tag.outputs.TAG_NAME }}"
+          $assetPath = "${{ steps.asset.outputs.PATH }}"
+          $notesPath = Join-Path $env:RUNNER_TEMP "nightly-notes.md"
+
+          @"
+          This is an automated nightly pre-release build.
+
+          It may contain unstable changes and is intended for testing only.
+          "@ | Set-Content -Path $notesPath -Encoding UTF8
+
+          gh release create $tag $assetPath `
+            --repo $env:GITHUB_REPOSITORY `
+            --title "Nightly $tag" `
+            --notes-file $notesPath `
+            --prerelease `
+            --target "${{ steps.nightly_tag.outputs.HEAD_COMMIT }}"
+
+      - name: Clean old nightly releases and tags
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $currentTag = "${{ steps.nightly_tag.outputs.TAG_NAME }}"
+          git fetch --tags origin
+
+          $tags = git tag -l "v*-nightly.*" --sort=-creatordate
+          foreach ($tag in $tags) {
+            if ($tag -eq $currentTag) {
+              continue
+            }
+
+            gh release delete $tag --repo $env:GITHUB_REPOSITORY --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) {
+              git push origin --delete $tag
+            }
+          }
+
+      - name: No changes since last nightly
+        if: ${{ steps.check_commits.outputs.changed != 'true' }}
+        run: Write-Host "Nightly build skipped because no new commits were found."

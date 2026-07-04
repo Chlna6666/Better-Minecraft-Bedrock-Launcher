@@ -14,7 +14,13 @@ pub(super) const UI_PIXELS_PER_BLOCK: u32 = 4;
 pub(super) const DEFAULT_TILE_SIZE: f32 = 512.0;
 pub(super) const PREFETCH_RADIUS: i32 = 0;
 pub(super) const RETAIN_RADIUS: i32 = 1;
-pub(super) const MAX_TILE_SPAN_PER_AXIS: i32 = 32;
+pub(super) const DRAG_RETAIN_RADIUS: i32 = 3;
+pub(super) const DRAG_PREFETCH_RADIUS: i32 = 1;
+pub(super) const DRAG_CANVAS_SYNC_INTERVAL: Duration = Duration::from_millis(8);
+pub(super) const DRAG_VIEWPORT_TILE_SYNC_INTERVAL: Duration = Duration::from_millis(16);
+pub(super) const DRAG_RENDER_IMAGE_EVICTION_DELAY: Duration = Duration::from_millis(400);
+pub(super) const DRAG_RENDER_IMAGE_EVICTION_FLUSH_LIMIT: usize = 8;
+pub(super) const MAX_TILE_SPAN_PER_AXIS: i32 = 64;
 pub(super) const DEFAULT_CPU_PERCENT: u8 = 60;
 pub(super) const MIN_CPU_PERCENT: u8 = 10;
 pub(super) const MAX_CPU_PERCENT: u8 = 90;
@@ -28,39 +34,31 @@ pub(super) const MIN_RENDER_STAGING_POOL_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_RENDER_STAGING_POOL_BYTES: usize = 128 * 1024 * 1024;
 pub(super) const RENDER_CPU_ENCODE_WORKERS: usize = 1;
 pub(super) const RENDER_UI_BATCH_TILES: usize = 8;
+pub(super) const MAX_CONCURRENT_RENDER_BATCHES: usize = 2;
 pub(super) const RENDER_STREAM_GROUP_TILES: usize = 4;
-pub(super) const RENDER_PRESET_CACHE_VERSION: &str = "gpui-tile-8c-1bpp-4ppb-v1";
-pub(super) const TILE_MANIFEST_VERSION: u32 = 1;
 pub(super) const TILE_MANIFEST_PROBE_BATCH_TILES: usize = 16;
-pub(super) const MIN_VIEWPORT_SCALE: f32 = 0.125;
+pub(super) const MIN_VIEWPORT_SCALE: f32 = 0.03125;
 pub(super) const MAX_VIEWPORT_SCALE: f32 = 8.0;
-pub(super) const TILE_SEAM_BLEED_PX: f32 = 1.0;
+pub(super) const TILE_SEAM_BLEED_PX: f32 = 0.0;
 pub(super) const TILE_READY_BATCH_LIMIT: usize = 16;
 pub(super) const TILE_READY_BATCH_INTERVAL: Duration = Duration::from_millis(33);
+pub(super) const CACHE_READY_BATCH_LIMIT: usize = 4;
+pub(super) const CACHE_READY_BATCH_INTERVAL: Duration = Duration::from_millis(8);
 pub(super) const FIRST_REVEAL_READY_BATCH_LIMIT: usize = 4;
 pub(super) const FIRST_REVEAL_READY_BATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub(super) const FIRST_VISIBLE_BATCH_LIMIT: usize = 4;
-pub(super) const DRAG_VISIBLE_BATCH_LIMIT: usize = 2;
+pub(super) const OVERVIEW_VISIBLE_TILE_THRESHOLD: usize = 256;
+pub(super) const OVERVIEW_VISIBLE_BATCH_LIMIT: usize = 24;
+pub(super) const OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT: usize = 16;
+
+pub(super) type TileChunkPositions = Arc<[ChunkPos]>;
+pub(super) type TileChunkIndex = BTreeMap<(i32, i32), TileChunkPositions>;
+pub(super) const DRAG_VISIBLE_BATCH_LIMIT: usize = 4;
 pub(super) const VIEWPORT_TILE_SYNC_INTERVAL: Duration = Duration::from_millis(80);
 pub(super) const VISIBLE_TILE_LOG_INTERVAL: Duration = Duration::from_millis(250);
 pub(super) const TILE_MEMORY_TRIM_INTERVAL: Duration = Duration::from_millis(250);
 pub(super) const CHUNK_TRANSFER_FINISHED_RETENTION: Duration = Duration::from_secs(6);
 pub(super) const MAP_CLICK_DRAG_THRESHOLD_PX: f32 = 4.0;
-pub(super) const UI_DECODED_TILE_CACHE_MAGIC: [u8; 8] = *b"BMCBTILE";
-pub(super) const UI_DECODED_TILE_CACHE_VERSION: u32 = 1;
-pub(super) const UI_DECODED_TILE_CACHE_HEADER_LEN: usize = 48;
-pub(super) const UI_DECODED_TILE_CACHE_PIXEL_FORMAT_RGBA8: u32 = 1;
-#[cfg(test)]
-pub(super) const UI_DECODED_TILE_CACHE_PIXEL_FORMAT_BGRA8: u32 = 2;
-pub(super) const UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE: u32 = 1;
-pub(super) const UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY: u32 = 1;
-pub(super) const UI_DECODED_TILE_CACHE_FLAG_EMPTY_NEGATIVE: u32 = 1 << 1;
-pub(super) const UI_DECODED_TILE_CACHE_KNOWN_FLAGS: u32 =
-    UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY | UI_DECODED_TILE_CACHE_FLAG_EMPTY_NEGATIVE;
-pub(super) const UI_DECODED_TILE_CACHE_EXTENSION: &str = "bmcbl-rgba-v1";
-pub(super) const UI_DECODED_TILE_CACHE_FILE_EXTENSION: &str = "rgbatile.zst";
-pub(super) const UI_DECODED_TILE_CACHE_ZSTD_LEVEL: i32 = 1;
-pub(super) const UI_DECODED_TILE_CACHE_SHARD_WIDTH: i32 = 64;
 
 #[derive(Clone)]
 pub struct MapViewerWindowInit {
@@ -162,7 +160,7 @@ impl RenderCpuBudget {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct MapViewport {
     pub(super) offset_x: f32,
     pub(super) offset_y: f32,
@@ -273,6 +271,9 @@ pub(super) struct DragState {
     pub(super) offset_x: f32,
     pub(super) offset_y: f32,
     pub(super) moved: bool,
+    pub(super) last_position: Point<Pixels>,
+    pub(super) last_movement_x: f32,
+    pub(super) last_movement_y: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -311,14 +312,14 @@ pub(super) struct ContextMenuState {
     pub(super) block_z: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Marker {
     pub(super) x: i32,
     pub(super) z: i32,
     pub(super) label: SharedString,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct OverlayOptions {
     pub(super) axis: bool,
     pub(super) dense_grid: bool,
@@ -565,24 +566,14 @@ impl PasteTransform {
         self.rotation.is_default() && !self.mirror_x && !self.mirror_z
     }
 
-    pub(super) fn transform_delta_in_bounds(
-        self,
-        delta_x: i32,
-        delta_z: i32,
-        bounds: (i32, i32, i32, i32),
-    ) -> (i32, i32) {
-        let (min_delta_x, max_delta_x, min_delta_z, max_delta_z) = bounds;
+    pub(super) const fn transform_chunk_delta(self, delta_x: i32, delta_z: i32) -> (i32, i32) {
         let delta_x = if self.mirror_x {
-            min_delta_x
-                .saturating_add(max_delta_x)
-                .saturating_sub(delta_x)
+            delta_x.saturating_neg()
         } else {
             delta_x
         };
         let delta_z = if self.mirror_z {
-            min_delta_z
-                .saturating_add(max_delta_z)
-                .saturating_sub(delta_z)
+            delta_z.saturating_neg()
         } else {
             delta_z
         };
@@ -835,13 +826,7 @@ impl QuickWriteAction {
     pub(super) const fn reuses_known_tile_index_after_write(&self) -> bool {
         matches!(
             self,
-            Self::DeleteCurrentChunk(_)
-                | Self::ResetCurrentChunk(_)
-                | Self::DeleteCurrentChunkBlockEntities(_)
-                | Self::DeleteCurrentChunkActors(_)
-                | Self::PasteCopiedChunk { .. }
-                | Self::PasteCopiedChunks { .. }
-                | Self::PasteImportedStructure { .. }
+            Self::DeleteCurrentChunkBlockEntities(_) | Self::DeleteCurrentChunkActors(_)
         )
     }
 }
@@ -905,27 +890,6 @@ impl CopiedChunkData {
     pub(super) fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
-
-    pub(super) fn chunk_delta_bounds(
-        &self,
-        source_anchor: ChunkPos,
-    ) -> Option<(i32, i32, i32, i32)> {
-        let mut chunks = self.chunks.iter().map(|chunk| {
-            (
-                chunk.chunk.x.saturating_sub(source_anchor.x),
-                chunk.chunk.z.saturating_sub(source_anchor.z),
-            )
-        });
-        let (first_x, first_z) = chunks.next()?;
-        let (mut min_x, mut max_x, mut min_z, mut max_z) = (first_x, first_x, first_z, first_z);
-        for (chunk_x, chunk_z) in chunks {
-            min_x = min_x.min(chunk_x);
-            max_x = max_x.max(chunk_x);
-            min_z = min_z.min(chunk_z);
-            max_z = max_z.max(chunk_z);
-        }
-        Some((min_x, max_x, min_z, max_z))
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -935,7 +899,7 @@ pub(super) struct ImportedStructureData {
     pub(super) origin_y: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct PastePreview {
     pub(super) source_anchor: ChunkPos,
     pub(super) target_anchor: ChunkPos,
@@ -953,34 +917,31 @@ pub(super) enum PastePreviewDrag {
     Move,
 }
 
-impl PastePreview {
-    pub(super) fn hash_stable(&self, state: &mut impl Hasher) {
-        self.source_anchor.hash(state);
-        self.target_anchor.hash(state);
-        self.rotation.hash(state);
-        self.transform.hash(state);
-        self.display_degrees.to_bits().hash(state);
-        self.drag.hash(state);
-        self.targets.hash(state);
-        self.tools_expanded.hash(state);
-    }
-}
-
 #[derive(Clone)]
 pub(super) struct PastePreviewImage {
     pub(super) target: ChunkPos,
     pub(super) image: Arc<RenderImage>,
-    pub(super) pixels: Arc<[u8]>,
     pub(super) width: u32,
     pub(super) height: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct CopiedChunkPreviewImage {
     pub(super) chunk: ChunkPos,
-    pub(super) pixels: Arc<[u8]>,
+    pub(super) image: Arc<RenderImage>,
     pub(super) width: u32,
     pub(super) height: u32,
+}
+
+impl std::fmt::Debug for CopiedChunkPreviewImage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CopiedChunkPreviewImage")
+            .field("chunk", &self.chunk)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1370,106 +1331,23 @@ impl FrameStats {
 
 pub(super) struct TileManifestProbeResult {
     pub(super) requested_tiles: Vec<(i32, i32)>,
-    pub(super) tile_chunk_index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
-    pub(super) bounds: Option<ChunkBounds>,
-}
-
-pub(super) struct TileManifestDiskResult {
-    pub(super) tile_chunk_index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
+    pub(super) tile_chunk_index: TileChunkIndex,
     pub(super) bounds: Option<ChunkBounds>,
     pub(super) center_block_x: Option<i32>,
     pub(super) center_block_z: Option<i32>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct TileManifestDisk {
-    pub(super) version: u32,
-    pub(super) world_signature: String,
-    pub(super) renderer_signature: String,
-    pub(super) dimension_id: i32,
-    pub(super) mode: String,
-    pub(super) chunks_per_tile: u32,
-    pub(super) blocks_per_pixel: u32,
-    pub(super) pixels_per_block: u32,
-    pub(super) center_block_x: Option<i32>,
-    pub(super) center_block_z: Option<i32>,
-    pub(super) tiles: Vec<TileManifestEntryDisk>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct TileManifestEntryDisk {
-    pub(super) tile_x: i32,
-    pub(super) tile_z: i32,
-    pub(super) validation_value: u64,
-    pub(super) chunks: Vec<TileManifestChunkDisk>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct TileManifestChunkDisk {
-    pub(super) x: i32,
-    pub(super) z: i32,
-    pub(super) dimension_id: i32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UiDecodedTileCacheHeader {
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) pixel_format: u32,
-    pub(super) flags: u32,
-    pub(super) validation_kind: u32,
-    pub(super) validation_value: u64,
-    pub(super) raw_len: u64,
-}
-
-impl UiDecodedTileCacheHeader {
-    pub(super) const fn is_non_empty(self) -> bool {
-        self.flags & UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY != 0
-    }
-
-    pub(super) const fn is_empty_negative(self) -> bool {
-        self.flags & UI_DECODED_TILE_CACHE_FLAG_EMPTY_NEGATIVE != 0
-    }
-}
-
-pub(super) struct UiDecodedTileCacheProbe {
-    pub(super) decision: UiDecodedTileCacheProbeDecision,
-    pub(super) read_ms: u128,
-    pub(super) decode_ms: u128,
-    pub(super) exact_validation: Option<TileCacheValidationOutcome>,
-}
-
-pub(super) enum UiDecodedTileCacheProbeDecision {
-    Ready(UiDecodedTileCacheReady),
-    EmptyNegative,
-    Miss,
-}
-
-pub(super) struct UiDecodedTileCacheWrite {
-    pub(super) path: PathBuf,
-    pub(super) header: UiDecodedTileCacheHeader,
-    pub(super) pixels: Option<Arc<[u8]>>,
-}
-
-pub(super) struct UiDecodedTileCacheReady {
-    pub(super) coord: TileCoord,
-    pub(super) path: PathBuf,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) raw_len: usize,
 }
 
 pub(super) enum TileRenderEvent {
     ReadyBatch {
         tiles: Vec<ReadyTile>,
     },
-    Failed {
+    Empty {
         coord: (i32, i32),
         message: String,
     },
-    CacheValidation {
+    Failed {
         coord: (i32, i32),
-        outcome: TileCacheValidationOutcome,
+        message: String,
     },
     Complete {
         requested_tiles: Vec<(i32, i32)>,
@@ -1484,6 +1362,35 @@ pub(super) enum Preview3dLoadEvent {
         status: Preview3dBuildStatus,
     },
     Complete(Result<Arc<Preview3dMesh>, String>),
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct MapCanvasSnapshotKey {
+    pub(super) viewport: MapViewport,
+    pub(super) layout: RenderLayout,
+    pub(super) colors: ThemeColors,
+    pub(super) dragging: bool,
+    pub(super) overlays: OverlayOptions,
+    pub(super) tile_generation: u64,
+    pub(super) overlay_generation: u64,
+    pub(super) overlay_paint_ptr: Option<usize>,
+    pub(super) slime_runs_ptr: Option<usize>,
+    pub(super) selection: Option<ChunkSelection>,
+    pub(super) paste_preview: Option<PastePreview>,
+    pub(super) paste_preview_images_generation: u64,
+    pub(super) highlighted_window: Option<SlimeChunkWindow>,
+    pub(super) markers_generation: u64,
+    pub(super) hover_block_x: i32,
+    pub(super) hover_block_z: i32,
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct TileLayerSnapshotKey {
+    pub(super) viewport: MapViewport,
+    pub(super) layout: RenderLayout,
+    pub(super) colors: ThemeColors,
+    pub(super) dragging: bool,
+    pub(super) tile_generation: u64,
 }
 
 pub struct MapViewerWindowView {
@@ -1525,15 +1432,18 @@ pub struct MapViewerWindowView {
     pub(super) frame_stats: FrameStats,
     pub(super) tile_reveal_state: TileRevealState,
     pub(super) available_tiles: BTreeSet<(i32, i32)>,
-    pub(super) tile_chunk_index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
+    pub(super) tile_chunk_index: TileChunkIndex,
     pub(super) chunk_bounds: Option<ChunkBounds>,
     pub(super) tile_manager: RegionManager,
     pub(super) canvas_tile_snapshot: Arc<TilePaintSnapshot>,
     pub(super) canvas_tile_generation: u64,
     pub(super) paste_preview_images: Arc<Vec<PastePreviewImage>>,
-    pub(super) last_synced_canvas_snapshot_id: Option<u64>,
+    pub(super) paste_preview_images_generation: u64,
+    pub(super) last_synced_canvas_snapshot_key: Option<MapCanvasSnapshotKey>,
+    pub(super) last_synced_tile_layer_snapshot_key: Option<TileLayerSnapshotKey>,
     pub(super) render_session: Option<Arc<MapRenderSession>>,
     pub(super) markers: BTreeMap<Dimension, Vec<Marker>>,
+    pub(super) markers_generation: u64,
     pub(super) context_menu: Option<ContextMenuState>,
     pub(super) drag: Option<DragState>,
     pub(super) right_selection_drag: Option<RightSelectionDrag>,
@@ -1555,23 +1465,22 @@ pub struct MapViewerWindowView {
     pub(super) render_generation: u64,
     pub(super) metadata_cancel: Option<RenderTaskControl>,
     pub(super) manifest_probe_cancel: Option<RenderTaskControl>,
-    pub(super) render_cancel: Option<RenderCancelFlag>,
+    pub(super) render_cancels: BTreeMap<u64, RenderCancelFlag>,
     pub(super) active_render_tiles: BTreeSet<(i32, i32)>,
     pub(super) active_render_center_tile: Option<(i32, i32)>,
     pub(super) pending_viewport_refresh: bool,
     pub(super) viewport_idle_generation: u64,
     pub(super) last_viewport_tile_sync: Option<Instant>,
+    pub(super) last_drag_canvas_snapshot_sync: Option<Instant>,
     pub(super) last_visible_tile_log: Option<Instant>,
     pub(super) last_tile_memory_trim: Option<Instant>,
+    pub(super) pending_render_image_evictions: Vec<(Instant, Arc<RenderImage>)>,
+    pub(super) pending_render_image_eviction_generation: u64,
     pub(super) last_visible_tile_signature: Option<ViewportTileSignature>,
     pub(super) last_ready_status_update: Option<Instant>,
     pub(super) status: SharedString,
     pub(super) diagnostics: RenderDiagnostics,
     pub(super) render_stats: RenderPipelineStats,
-    pub(super) cache_displayed_tiles: usize,
-    pub(super) cache_verified_tiles: usize,
-    pub(super) legacy_stale_cache_tiles: usize,
-    pub(super) cache_validation_mismatches: usize,
     pub(super) refresh_rendered_tiles: usize,
     pub(super) partial_refreshed_chunks: usize,
     pub(super) cold_rendered_tiles: usize,
@@ -1588,4 +1497,13 @@ pub(super) struct ViewportTileSignature {
     pub(super) center: (i32, i32),
     pub(super) metadata_loading: bool,
     pub(super) metadata_index_ready: bool,
+}
+
+pub(super) struct ViewportTilePlan {
+    pub(super) visible: Vec<(i32, i32)>,
+    pub(super) prefetch: Vec<(i32, i32)>,
+    pub(super) retain: BTreeSet<(i32, i32)>,
+    pub(super) center: (i32, i32),
+    pub(super) is_dragging: bool,
+    pub(super) prefetch_radius: i32,
 }

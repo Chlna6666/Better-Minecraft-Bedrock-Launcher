@@ -120,12 +120,12 @@ fn append_system_fallbacks(fallback_array: CFMutableArrayRef, font_ref: CTFontRe
         let default_fallbacks: CFArray<CTFontDescriptor> =
             CFArray::wrap_under_create_rule(default_fallbacks);
 
-        for desc in default_fallbacks
+        default_fallbacks
             .iter()
-            .filter(|desc| desc.font_path().is_some())
-        {
-            CFArrayAppendValue(fallback_array, desc.as_concrete_TypeRef() as _);
-        }
+            .filter(|descriptor| descriptor.font_path().is_some())
+            .for_each(|descriptor| {
+                CFArrayAppendValue(fallback_array, descriptor.as_concrete_TypeRef() as _);
+            });
     }
 }
 

@@ -1,6 +1,7 @@
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
+use super::preview_3d::preview_3d_draw_parameters;
 
 impl MapViewerWindowView {
     pub(super) fn render_preview_3d_panel(
@@ -21,111 +22,113 @@ impl MapViewerWindowView {
             .min_h(px(0.0))
             .p(px(10.0))
             .child(
-                div()
-                    .size_full()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(Hsla {
-                        a: 0.24,
-                        ..colors.border
-                    })
-                    .bg(Hsla {
-                        a: 0.38,
-                        ..colors.surface_hover
-                    })
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.0))
-                    .overflow_hidden()
-                    .text_size(px(12.0))
-                    .text_color(colors.text_secondary)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(8.0))
-                            .px(px(10.0))
-                            .pt(px(10.0))
-                            .min_w(px(0.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .gap(px(3.0))
-                                    .child(panel_title(colors, "3D 预览"))
-                                    .child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .line_clamp(2)
-                                            .text_color(colors.text_muted)
-                                            .child(selection),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .flex_wrap()
-                                    .gap(px(6.0))
-                                    .child(toolbar_button(colors, "加载/刷新").on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.refresh_preview_3d(cx)
-                                        }),
-                                    ))
-                                    .child(toolbar_button(colors, "重置视角").on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.reset_preview_3d_camera(cx)
-                                        }),
-                                    ))
-                                    .child(toolbar_button(colors, "收起").on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_right_panel(cx)
-                                        }),
-                                    )),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_start()
-                            .gap(px(8.0))
-                            .px(px(10.0))
-                            .min_w(px(0.0))
-                            .child(status_badge(colors, status))
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .line_clamp(3)
-                                    .text_color(colors.text_muted)
-                                    .child(stats),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .px(px(10.0))
-                            .min_w(px(0.0))
-                            .text_color(colors.text_muted)
-                            .child("左键拖动旋转模型，WASD / Space / Shift 移动视角，允许穿透模型"),
-                    )
-                    .child(self.render_preview_3d_canvas(
-                        colors,
-                        mesh,
-                        camera,
-                        model_rotation,
-                        view,
-                        cx,
-                    )),
-            )
+            div()
+                .size_full()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(Hsla {
+                    a: 0.24,
+                    ..colors.border
+                })
+                .bg(Hsla {
+                    a: 0.38,
+                    ..colors.surface_hover
+                })
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .overflow_hidden()
+                .text_size(px(12.0))
+                .text_color(colors.text_secondary)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .px(px(10.0))
+                        .pt(px(10.0))
+                        .min_w(px(0.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .gap(px(3.0))
+                                .child(panel_title(colors, "3D 预览"))
+                                .child(
+                                    div()
+                                        .min_w(px(0.0))
+                                        .line_clamp(2)
+                                        .text_color(colors.text_muted)
+                                        .child(selection),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .flex_wrap()
+                                .gap(px(6.0))
+                                .child(toolbar_button(colors, "加载/刷新").on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.refresh_preview_3d(cx)
+                                    }),
+                                ))
+                                .child(toolbar_button(colors, "重置视角").on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.reset_preview_3d_camera(cx)
+                                    }),
+                                ))
+                                .child(toolbar_button(colors, "收起").on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.toggle_right_panel(cx)
+                                    }),
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(8.0))
+                        .px(px(10.0))
+                        .min_w(px(0.0))
+                        .child(status_badge(colors, status))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .line_clamp(3)
+                                .text_color(colors.text_muted)
+                                .child(stats),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(10.0))
+                        .min_w(px(0.0))
+                        .text_color(colors.text_muted)
+                        .child(
+                            "左键拖动模型，右键拖动镜头，WASD / 方向键 / Space / Shift 移动视角",
+                        ),
+                )
+                .child(self.render_preview_3d_canvas(
+                    colors,
+                    mesh,
+                    camera,
+                    model_rotation,
+                    view,
+                    cx,
+                )),
+        )
     }
 
     pub(super) fn render_preview_3d_canvas(
@@ -158,7 +161,7 @@ impl MapViewerWindowView {
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.preview_3d_focus_handle.focus(window);
                     this.cancel_pointer_captures_for_panel_interaction("preview_3d mouse down", cx);
-                    this.preview_3d_begin_drag(event.position, cx);
+                    this.preview_3d_begin_drag(Preview3dDragMode::RotateModel, event.position, cx);
                     cx.stop_propagation();
                 }),
             )
@@ -170,7 +173,7 @@ impl MapViewerWindowView {
                         "preview_3d right mouse down",
                         cx,
                     );
-                    this.preview_3d_begin_drag(event.position, cx);
+                    this.preview_3d_begin_drag(Preview3dDragMode::OrbitCamera, event.position, cx);
                     cx.stop_propagation();
                 }),
             )
@@ -211,14 +214,14 @@ impl MapViewerWindowView {
                     cx.stop_propagation();
                     return;
                 }
-                if this.preview_3d.drag_origin.is_none() {
+                if this.preview_3d.drag.is_none() {
                     this.release_pointer_captures("preview_3d mouse move without preview drag", cx);
                     cx.stop_propagation();
                     return;
                 }
                 match event.pressed_button {
-                    Some(MouseButton::Left) => this.preview_3d_drag_to(event.position, cx),
-                    Some(MouseButton::Right) => this.preview_3d_rotate_model_to(event.position, cx),
+                    Some(MouseButton::Left) => this.preview_3d_rotate_model_to(event.position, cx),
+                    Some(MouseButton::Right) => this.preview_3d_orbit_camera_to(event.position, cx),
                     _ => {
                         this.release_pointer_captures(
                             "preview_3d mouse move with unsupported button",
@@ -236,7 +239,7 @@ impl MapViewerWindowView {
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
-                if matches!(key, "w" | "a" | "s" | "d" | "space" | "shift") {
+                if is_preview_3d_navigation_key(key) {
                     this.preview_3d_press_navigation_key(
                         key,
                         event.keystroke.modifiers,
@@ -248,7 +251,7 @@ impl MapViewerWindowView {
             }))
             .on_key_up(cx.listener(|this, event: &KeyUpEvent, _window, cx| {
                 let key = event.keystroke.key.as_str();
-                if matches!(key, "w" | "a" | "s" | "d" | "space" | "shift") {
+                if is_preview_3d_navigation_key(key) {
                     this.preview_3d_release_navigation_key(key, cx);
                     cx.stop_propagation();
                 }
@@ -270,12 +273,21 @@ impl MapViewerWindowView {
                         canvas(
                             move |bounds, _window, _cx| bounds,
                             move |bounds, _prepaint, window, _cx| {
-                                let _ = (&view_for_paint, model_rotation);
+                                let _ = &view_for_paint;
+                                let width = f32::from(bounds.size.width);
+                                let height = f32::from(bounds.size.height);
+                                let aspect = if height <= 0.0 { 1.0 } else { width / height };
                                 for chunk_mesh in &mesh.chunk_meshes {
+                                    let parameters = preview_3d_draw_parameters(
+                                        aspect,
+                                        &chunk_mesh.gpu_mesh,
+                                        camera,
+                                        model_rotation,
+                                    );
                                     window.paint_gpu_mesh_3d(
                                         bounds,
                                         chunk_mesh.gpu_mesh.clone(),
-                                        camera.gpu_camera(),
+                                        parameters,
                                     );
                                 }
                             },
@@ -296,6 +308,13 @@ impl MapViewerWindowView {
         }
         panel
     }
+}
+
+fn is_preview_3d_navigation_key(key: &str) -> bool {
+    matches!(
+        key,
+        "w" | "a" | "s" | "d" | "up" | "left" | "down" | "right" | "space" | "shift"
+    )
 }
 
 fn preview_3d_axis_overlay(

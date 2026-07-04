@@ -1,0 +1,210 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build, for example v1.2.3"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: pwsh
+    working-directory: BMCBL
+
+jobs:
+  release:
+    runs-on: windows-latest
+    concurrency:
+      group: release-${{ github.event.inputs.tag || github.ref_name }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Resolve release tag
+        id: release_tag
+        shell: pwsh
+        working-directory: .
+        run: |
+          $tag = "${{ github.event.inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            if ("${{ github.ref_type }}" -eq "tag") {
+              $tag = "${{ github.ref_name }}"
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            Write-Error "Manual release runs require an existing tag input, unless the workflow is run from a tag."
+            exit 1
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
+          Write-Host "Release tag: $tag"
+
+      - name: Checkout BMCBL
+        uses: actions/checkout@v4
+        with:
+          path: BMCBL
+          fetch-depth: 0
+          ref: ${{ steps.release_tag.outputs.TAG_NAME }}
+
+      - name: Checkout BE-Community-Dev path dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BE_COMMUNITY_DEV_REPOSITORY || 'Chlna6666/BE-Community-Dev' }}
+          token: ${{ secrets.BE_COMMUNITY_DEV_TOKEN || github.token }}
+          path: BE-Community-Dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure LLVM is available
+        run: |
+          $ErrorActionPreference = "Stop"
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "libclang.dll")) -and -not (Test-Path (Join-Path $llvmBin "clang.dll"))) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              choco install llvm -y --no-progress
+            } else {
+              winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements
+            }
+          }
+
+          if (-not (Test-Path (Join-Path $llvmBin "libclang.dll")) -and -not (Test-Path (Join-Path $llvmBin "clang.dll"))) {
+            throw "LLVM installed but libclang.dll/clang.dll was not found under $llvmBin"
+          }
+
+          Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
+          Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
+
+      - name: Ensure 7-Zip is available
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Get-Command 7z -ErrorAction SilentlyContinue) {
+            & 7z -h | Out-Null
+            exit 0
+          }
+
+          $defaultExe = Join-Path $env:ProgramFiles "7-Zip\7z.exe"
+          if (Test-Path $defaultExe) {
+            Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $defaultExe -Parent)
+            & $defaultExe -h | Out-Null
+            exit 0
+          }
+
+          choco install 7zip -y --no-progress
+          $sevenZipDir = Join-Path $env:ProgramFiles "7-Zip"
+          Add-Content -Path $env:GITHUB_PATH -Value $sevenZipDir
+          & (Join-Path $sevenZipDir "7z.exe") -h | Out-Null
+
+      - name: Cache VC-LTL and YY-Thunks
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\thunk-cache\VC-LTL-5.2.2
+            ${{ runner.temp }}\thunk-cache\YY-Thunks-1.1.7
+          key: ${{ runner.os }}-thunk-cache-vc-ltl-5.2.2-yy-thunks-1.1.7-v1
+
+      - name: Prepare VC-LTL and YY-Thunks
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $cacheRoot = Join-Path $env:RUNNER_TEMP "thunk-cache"
+          $vcRoot = Join-Path $cacheRoot "VC-LTL-5.2.2"
+          $yyRoot = Join-Path $cacheRoot "YY-Thunks-1.1.7"
+          New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+
+          $vcUrl = "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.2.2/VC-LTL-Binary.7z"
+          $vcArchive = Join-Path $cacheRoot "VC-LTL-Binary.7z"
+          if (-not (Test-Path (Join-Path $vcRoot "TargetPlatform"))) {
+            curl.exe -L --retry 8 --retry-all-errors --retry-delay 2 -o $vcArchive $vcUrl
+            & 7z x -aoa $vcArchive "-o$vcRoot" | Out-Null
+          }
+          $vcPath = $vcRoot
+          if (-not (Test-Path (Join-Path $vcPath "TargetPlatform"))) {
+            $child = Get-ChildItem -Directory $vcRoot -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($child -and (Test-Path (Join-Path $child.FullName "TargetPlatform"))) {
+              $vcPath = $child.FullName
+            }
+          }
+
+          $yyUrl = "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.1.7/YY-Thunks-Objs.zip"
+          $yyArchive = Join-Path $cacheRoot "YY-Thunks-Objs.zip"
+          if (-not (Test-Path (Join-Path $yyRoot "objs"))) {
+            curl.exe -L --retry 8 --retry-all-errors --retry-delay 2 -o $yyArchive $yyUrl
+            & 7z x -aoa $yyArchive "-o$yyRoot" | Out-Null
+          }
+          $yyPath = $yyRoot
+          if (-not (Test-Path (Join-Path $yyPath "objs"))) {
+            $child = Get-ChildItem -Directory $yyRoot -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($child -and (Test-Path (Join-Path $child.FullName "objs"))) {
+              $yyPath = $child.FullName
+            }
+          }
+
+          if (-not (Test-Path (Join-Path $vcPath "TargetPlatform"))) { throw "VC_LTL path invalid: $vcPath" }
+          if (-not (Test-Path (Join-Path $yyPath "objs"))) { throw "YY_THUNKS path invalid: $yyPath" }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "VC_LTL=$vcPath"
+          Add-Content -Path $env:GITHUB_ENV -Value "YY_THUNKS=$yyPath"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            BMCBL/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('BMCBL/Cargo.lock') }}-v1
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build BMCBL
+        env:
+          GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
+          GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
+        run: cargo build --release --bin BMCBL --locked
+
+      - name: Prepare release asset
+        id: asset
+        run: |
+          $source = "target\release\BMCBL.exe"
+          if (-not (Test-Path $source)) {
+            Write-Error "Expected executable was not found: $source"
+            exit 1
+          }
+
+          $tag = "${{ steps.release_tag.outputs.TAG_NAME }}"
+          $asset = "target\release\BMCBL-windows-x86_64-$tag.exe"
+          Copy-Item -Path $source -Destination $asset -Force
+
+          $assetPath = (Resolve-Path $asset).Path.Replace('\', '/')
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "PATH=$assetPath"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ steps.release_tag.outputs.TAG_NAME }}"
+          $assetPath = "${{ steps.asset.outputs.PATH }}"
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $assetPath --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag $assetPath `
+              --repo $env:GITHUB_REPOSITORY `
+              --title "Release $tag" `
+              --notes "Automated release for $tag" `
+              --verify-tag
+          }

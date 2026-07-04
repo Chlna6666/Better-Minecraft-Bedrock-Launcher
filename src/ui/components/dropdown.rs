@@ -487,6 +487,7 @@ pub struct Dropdown {
     selected_index: usize,
     trigger_builder: DropdownTriggerBuilder,
     on_select: Rc<dyn Fn(usize, &mut Window, &mut App)>,
+    rounded: Option<Pixels>,
 }
 
 impl Dropdown {
@@ -511,6 +512,7 @@ impl Dropdown {
             selected_index,
             trigger_builder: Rc::new(default_dropdown_trigger),
             on_select: Rc::new(on_select),
+            rounded: None,
         }
     }
 
@@ -538,7 +540,18 @@ impl Dropdown {
             selected_index,
             trigger_builder: Rc::new(trigger_builder),
             on_select: Rc::new(on_select),
+            rounded: None,
         }
+    }
+
+    pub fn rounded(mut self, rounded: Pixels) -> Self {
+        self.rounded = Some(rounded);
+        self
+    }
+
+    pub fn with_height(mut self, trigger_height: Pixels) -> Self {
+        self.trigger_height = trigger_height;
+        self
     }
 }
 
@@ -555,6 +568,7 @@ impl RenderOnce for Dropdown {
             selected_index,
             trigger_builder,
             on_select,
+            rounded,
         } = self;
 
         let options = Rc::new(options);
@@ -604,7 +618,7 @@ impl RenderOnce for Dropdown {
             .id(id.clone())
             .w(width)
             .h(trigger_height)
-            .rounded(px(12.))
+            .rounded(rounded.unwrap_or(px(12.)))
             .relative()
             .text_color(if enabled {
                 colors.text_primary
@@ -613,7 +627,7 @@ impl RenderOnce for Dropdown {
             })
             .bg(Hsla {
                 a: 0.84,
-                ..colors.settings_field_bg
+                ..colors.settings_card_bg
             })
             .border_1()
             .border_color(Hsla {
@@ -736,7 +750,7 @@ impl RenderOnce for Dropdown {
             origin: bounds.origin + element_offset,
             size: bounds.size,
         });
-        let window_size = window.window_bounds().get_bounds().size;
+        let window_size = window.bounds().size;
         let row_h = px(MENU_ROW_HEIGHT);
         let menu_width =
             desired_dropdown_menu_width(window, width, options.as_ref(), window_size.width);

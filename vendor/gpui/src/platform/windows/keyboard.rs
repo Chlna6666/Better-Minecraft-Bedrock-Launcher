@@ -42,7 +42,7 @@ impl PlatformKeyboardMapper for WindowsKeyboardMapper {
         mut keystroke: Keystroke,
         use_key_equivalents: bool,
     ) -> KeybindingKeystroke {
-        let Some((vkey, shifted_key)) = self.get_vkey_from_key(&keystroke.key, use_key_equivalents)
+        let Some((vkey, shifted_key)) = self.vkey_from_key(&keystroke.key, use_key_equivalents)
         else {
             return KeybindingKeystroke::from_keystroke(keystroke);
         };
@@ -86,7 +86,7 @@ impl PlatformKeyboardMapper for WindowsKeyboardMapper {
         KeybindingKeystroke::new(keystroke, modifiers, key)
     }
 
-    fn get_key_equivalents(&self) -> Option<&HashMap<char, char>> {
+    fn key_equivalents(&self) -> Option<&HashMap<char, char>> {
         None
     }
 }
@@ -111,6 +111,7 @@ impl WindowsKeyboardLayout {
         }
     }
 
+    #[expect(dead_code, reason = "kept for layout-specific AltGr handling")]
     pub(crate) fn uses_altgr(&self) -> bool {
         // Check if this is a known AltGr layout by examining the layout ID
         // The layout ID is a hex string like "00000409" (US) or "00000407" (German)
@@ -150,7 +151,7 @@ impl WindowsKeyboardMapper {
         let mut vkey_to_key = HashMap::default();
         let mut vkey_to_shifted = HashMap::default();
         for vkey in CANDIDATE_VKEYS {
-            if let Some(key) = get_key_from_vkey(*vkey) {
+            if let Some(key) = key_from_vkey(*vkey) {
                 key_to_vkey.insert(key.clone(), (vkey.0, false));
                 vkey_to_key.insert(vkey.0, key);
             }
@@ -158,7 +159,7 @@ impl WindowsKeyboardMapper {
             if scan_code == 0 {
                 continue;
             }
-            if let Some(shifted_key) = get_shifted_key(*vkey, scan_code) {
+            if let Some(shifted_key) = shifted_key(*vkey, scan_code) {
                 key_to_vkey.insert(shifted_key.clone(), (vkey.0, true));
                 vkey_to_shifted.insert(vkey.0, shifted_key);
             }
@@ -170,30 +171,34 @@ impl WindowsKeyboardMapper {
         }
     }
 
-    fn get_vkey_from_key(&self, key: &str, use_key_equivalents: bool) -> Option<(u16, bool)> {
+    fn vkey_from_key(&self, key: &str, use_key_equivalents: bool) -> Option<(u16, bool)> {
         if use_key_equivalents {
-            get_vkey_from_key_with_us_layout(key)
+            vkey_from_key_with_us_layout(key)
         } else {
             self.key_to_vkey.get(key).cloned()
         }
     }
 }
 
-pub(crate) fn get_keystroke_key(
+#[expect(
+    dead_code,
+    reason = "kept for native virtual-key based keyboard mapping"
+)]
+pub(crate) fn keystroke_key(
     vkey: VIRTUAL_KEY,
     scan_code: u32,
     modifiers: &mut Modifiers,
 ) -> Option<String> {
     if modifiers.shift && need_to_convert_to_shifted_key(vkey) {
-        get_shifted_key(vkey, scan_code).inspect(|_| {
+        shifted_key(vkey, scan_code).inspect(|_| {
             modifiers.shift = false;
         })
     } else {
-        get_key_from_vkey(vkey)
+        key_from_vkey(vkey)
     }
 }
 
-fn get_key_from_vkey(vkey: VIRTUAL_KEY) -> Option<String> {
+fn key_from_vkey(vkey: VIRTUAL_KEY) -> Option<String> {
     let key_data = unsafe { MapVirtualKeyW(vkey.0 as u32, MAPVK_VK_TO_CHAR) };
     if key_data == 0 {
         return None;
@@ -236,7 +241,7 @@ fn need_to_convert_to_shifted_key(vkey: VIRTUAL_KEY) -> bool {
     )
 }
 
-fn get_shifted_key(vkey: VIRTUAL_KEY, scan_code: u32) -> Option<String> {
+fn shifted_key(vkey: VIRTUAL_KEY, scan_code: u32) -> Option<String> {
     generate_key_char(vkey, scan_code, false, true, false)
 }
 
@@ -272,7 +277,7 @@ pub(crate) fn generate_key_char(
     }
 }
 
-fn get_vkey_from_key_with_us_layout(key: &str) -> Option<(u16, bool)> {
+fn vkey_from_key_with_us_layout(key: &str) -> Option<(u16, bool)> {
     match key {
         // ` => VK_OEM_3
         "`" => Some((VK_OEM_3.0, false)),

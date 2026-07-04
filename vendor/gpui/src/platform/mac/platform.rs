@@ -302,8 +302,6 @@ impl MacPlatform {
         actions: &mut Vec<Box<dyn Action>>,
         keymap: &Keymap,
     ) -> id {
-        static DEFAULT_CONTEXT: OnceLock<Vec<KeyContext>> = OnceLock::new();
-
         unsafe {
             match item {
                 MenuItem::Separator => NSMenuItem::separatorItem(nil),
@@ -318,20 +316,9 @@ impl MacPlatform {
                     let keystrokes = keymap
                         .bindings_for_action(action.as_ref())
                         .find_or_first(|binding| {
-                            binding.predicate().is_none_or(|predicate| {
-                                predicate.eval(DEFAULT_CONTEXT.get_or_init(|| {
-                                    let mut workspace_context = KeyContext::new_with_defaults();
-                                    workspace_context.add("Workspace");
-                                    let mut pane_context = KeyContext::new_with_defaults();
-                                    pane_context.add("Pane");
-                                    let mut editor_context = KeyContext::new_with_defaults();
-                                    editor_context.add("Editor");
-
-                                    pane_context.extend(&editor_context);
-                                    workspace_context.extend(&pane_context);
-                                    vec![workspace_context]
-                                }))
-                            })
+                            binding
+                                .predicate()
+                                .is_none_or(|predicate| predicate.eval(default_key_context()))
                         })
                         .map(|binding| binding.keystrokes());
 
@@ -605,7 +592,7 @@ impl Platform for MacPlatform {
     fn screen_capture_sources(
         &self,
     ) -> oneshot::Receiver<Result<Vec<Rc<dyn crate::ScreenCaptureSource>>>> {
-        super::screen_capture::get_sources()
+        super::screen_capture::sources()
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
@@ -919,7 +906,7 @@ impl Platform for MacPlatform {
         self.0.lock().menus = Some(menus.into_iter().map(|menu| menu.owned()).collect());
     }
 
-    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
+    fn menus(&self) -> Option<Vec<OwnedMenu>> {
         self.0.lock().menus.clone()
     }
 
@@ -1355,7 +1342,28 @@ unsafe fn path_from_objc(path: id) -> PathBuf {
     PathBuf::from(path)
 }
 
-unsafe fn get_mac_platform(object: &mut Object) -> &MacPlatform {
+fn default_key_context() -> &'static Vec<KeyContext> {
+    static DEFAULT_CONTEXT: OnceLock<Vec<KeyContext>> = OnceLock::new();
+    if let Some(context) = DEFAULT_CONTEXT.get() {
+        return context;
+    }
+
+    let mut workspace_context = KeyContext::new_with_defaults();
+    workspace_context.add("Workspace");
+    let mut pane_context = KeyContext::new_with_defaults();
+    pane_context.add("Pane");
+    let mut editor_context = KeyContext::new_with_defaults();
+    editor_context.add("Editor");
+
+    pane_context.extend(&editor_context);
+    workspace_context.extend(&pane_context);
+    let _ = DEFAULT_CONTEXT.set(vec![workspace_context]);
+    DEFAULT_CONTEXT
+        .get()
+        .expect("default key context should be initialized")
+}
+
+unsafe fn mac_platform(object: &mut Object) -> &MacPlatform {
     unsafe {
         let platform_ptr: *mut c_void = *object.get_ivar(MAC_PLATFORM_IVAR);
         assert!(!platform_ptr.is_null());
@@ -1394,7 +1402,7 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
             object: nil
         ];
 
-        let platform = get_mac_platform(this);
+        let platform = mac_platform(this);
         let callback = platform.0.lock().finish_launching.take();
         if let Some(callback) = callback {
             callback();
@@ -1404,39 +1412,44 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
 
 extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_windows: bool) {
     if !has_open_windows {
-        let platform = unsafe { get_mac_platform(this) };
+        let platform = unsafe { mac_platform(this) };
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.reopen.take() {
             drop(lock);
             callback();
-            platform.0.lock().reopen.get_or_insert(callback);
+            let mut lock = platform.0.lock();
+            restore_callback(&mut lock.reopen, callback);
         }
     }
 }
 
+fn restore_callback<T>(slot: &mut Option<T>, callback: T) {
+    if slot.is_none() {
+        *slot = Some(callback);
+    }
+}
+
 extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
-    let platform = unsafe { get_mac_platform(this) };
+    let platform = unsafe { mac_platform(this) };
     let mut lock = platform.0.lock();
     if let Some(mut callback) = lock.quit.take() {
         drop(lock);
         callback();
-        platform.0.lock().quit.get_or_insert(callback);
+        let mut lock = platform.0.lock();
+        restore_callback(&mut lock.quit, callback);
     }
 }
 
 extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
-    let platform = unsafe { get_mac_platform(this) };
+    let platform = unsafe { mac_platform(this) };
     let mut lock = platform.0.lock();
     let keyboard_layout = MacKeyboardLayout::new();
     lock.keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
     if let Some(mut callback) = lock.on_keyboard_layout_change.take() {
         drop(lock);
         callback();
-        platform
-            .0
-            .lock()
-            .on_keyboard_layout_change
-            .get_or_insert(callback);
+        let mut lock = platform.0.lock();
+        restore_callback(&mut lock.on_keyboard_layout_change, callback);
     }
 }
 
@@ -1455,28 +1468,33 @@ extern "C" fn open_urls(this: &mut Object, _: Sel, _: id, urls: id) {
             })
             .collect::<Vec<_>>()
     };
-    let platform = unsafe { get_mac_platform(this) };
+    let platform = unsafe { mac_platform(this) };
     let mut lock = platform.0.lock();
     if let Some(mut callback) = lock.open_urls.take() {
         drop(lock);
         callback(urls);
-        platform.0.lock().open_urls.get_or_insert(callback);
+        let mut lock = platform.0.lock();
+        restore_callback(&mut lock.open_urls, callback);
     }
 }
 
 extern "C" fn handle_menu_item(this: &mut Object, _: Sel, item: id) {
     unsafe {
-        let platform = get_mac_platform(this);
+        let platform = mac_platform(this);
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.menu_command.take() {
             let tag: NSInteger = msg_send![item, tag];
             let index = tag as usize;
-            if let Some(action) = lock.menu_actions.get(index) {
-                let action = action.boxed_clone();
-                drop(lock);
+            let action = lock
+                .menu_actions
+                .get(index)
+                .map(|action| action.boxed_clone());
+            drop(lock);
+            if let Some(action) = action {
                 callback(&*action);
             }
-            platform.0.lock().menu_command.get_or_insert(callback);
+            let mut lock = platform.0.lock();
+            restore_callback(&mut lock.menu_command, callback);
         }
     }
 }
@@ -1484,21 +1502,21 @@ extern "C" fn handle_menu_item(this: &mut Object, _: Sel, item: id) {
 extern "C" fn validate_menu_item(this: &mut Object, _: Sel, item: id) -> bool {
     unsafe {
         let mut result = false;
-        let platform = get_mac_platform(this);
+        let platform = mac_platform(this);
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.validate_menu_command.take() {
             let tag: NSInteger = msg_send![item, tag];
             let index = tag as usize;
-            if let Some(action) = lock.menu_actions.get(index) {
-                let action = action.boxed_clone();
-                drop(lock);
+            let action = lock
+                .menu_actions
+                .get(index)
+                .map(|action| action.boxed_clone());
+            drop(lock);
+            if let Some(action) = action {
                 result = callback(action.as_ref());
             }
-            platform
-                .0
-                .lock()
-                .validate_menu_command
-                .get_or_insert(callback);
+            let mut lock = platform.0.lock();
+            restore_callback(&mut lock.validate_menu_command, callback);
         }
         result
     }
@@ -1506,19 +1524,20 @@ extern "C" fn validate_menu_item(this: &mut Object, _: Sel, item: id) -> bool {
 
 extern "C" fn menu_will_open(this: &mut Object, _: Sel, _: id) {
     unsafe {
-        let platform = get_mac_platform(this);
+        let platform = mac_platform(this);
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.will_open_menu.take() {
             drop(lock);
             callback();
-            platform.0.lock().will_open_menu.get_or_insert(callback);
+            let mut lock = platform.0.lock();
+            restore_callback(&mut lock.will_open_menu, callback);
         }
     }
 }
 
 extern "C" fn handle_dock_menu(this: &mut Object, _: Sel, _: id) -> id {
     unsafe {
-        let platform = get_mac_platform(this);
+        let platform = mac_platform(this);
         let mut state = platform.0.lock();
         if let Some(id) = state.dock_menu {
             id

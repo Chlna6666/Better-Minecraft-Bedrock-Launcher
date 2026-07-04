@@ -302,7 +302,7 @@ fn paint_paste_preview_images(
     images: &[PastePreviewImage],
     window: &mut Window,
 ) {
-    for image in images {
+    let requests = images.iter().filter_map(|image| {
         let left = screen_x_for_block(bounds, viewport, layout, image.target.x.saturating_mul(16));
         let top = screen_y_for_block(bounds, viewport, layout, image.target.z.saturating_mul(16));
         let right = screen_x_for_block(
@@ -318,21 +318,16 @@ fn paint_paste_preview_images(
             image.target.z.saturating_add(1).saturating_mul(16),
         );
         if right <= left || bottom <= top {
-            continue;
+            return None;
         }
         let image_bounds = Bounds {
             origin: point(px(left.floor()), px(top.floor())),
             size: size(px((right - left).ceil()), px((bottom - top).ceil())),
         };
-        if let Err(error) = window.paint_image(
-            image_bounds,
-            Corners::all(px(0.0)),
-            image.image.clone(),
-            0,
-            false,
-        ) {
-            tracing::debug!(?error, "failed to paint paste preview chunk image");
-        }
+        Some(ImagePaintRequest::new(image_bounds, image.image.as_ref()))
+    });
+    if let Err(error) = window.paint_images(requests) {
+        tracing::debug!(?error, "failed to paint paste preview chunk images");
     }
 }
 

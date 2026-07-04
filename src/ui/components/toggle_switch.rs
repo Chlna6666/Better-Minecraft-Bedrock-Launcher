@@ -1,7 +1,8 @@
+use crate::ui::animation::{ease_out_cubic, raw_progress, request_animation_frame_if};
 use crate::ui::theme::colors::ThemeColors;
 use gpui::*;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const TRACK_W: f32 = 44.0;
 const TRACK_H: f32 = 26.0;
@@ -13,7 +14,7 @@ const KNOB_INSET_X: f32 = 2.0;
 const KNOB_INSET_Y: f32 = 2.0;
 const KNOB_TRAVEL: f32 = 18.0; // 44 - 22 - 2*2 = 18
 
-const ANIM_DURATION: f32 = 0.16;
+const ANIM_DURATION: Duration = Duration::from_millis(160);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TogglePhase {
@@ -30,10 +31,6 @@ struct ToggleAnimState {
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
-}
-
-fn ease_out_cubic(t: f32) -> f32 {
-    1.0 - (1.0 - t).powi(3)
 }
 
 fn lerp_hsla(a: Hsla, b: Hsla, t: f32) -> Hsla {
@@ -103,27 +100,27 @@ impl RenderOnce for ToggleSwitch {
                 }
             }
             TogglePhase::Opening { at } => {
-                let t = (Instant::now().duration_since(at).as_secs_f32() / ANIM_DURATION)
-                    .clamp(0.0, 1.0);
+                let now = Instant::now();
+                let t = raw_progress(now, at, ANIM_DURATION);
                 let eased = ease_out_cubic(t);
 
                 if t >= 1.0 {
                     state.update(cx, |s, _| s.phase = TogglePhase::Stable);
                 } else {
-                    window.request_animation_frame();
+                    request_animation_frame_if(window, true);
                 }
 
                 eased
             }
             TogglePhase::Closing { at } => {
-                let t = (Instant::now().duration_since(at).as_secs_f32() / ANIM_DURATION)
-                    .clamp(0.0, 1.0);
+                let now = Instant::now();
+                let t = raw_progress(now, at, ANIM_DURATION);
                 let eased = ease_out_cubic(t);
 
                 if t >= 1.0 {
                     state.update(cx, |s, _| s.phase = TogglePhase::Stable);
                 } else {
-                    window.request_animation_frame();
+                    request_animation_frame_if(window, true);
                 }
 
                 1.0 - eased

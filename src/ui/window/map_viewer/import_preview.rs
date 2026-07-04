@@ -1,6 +1,5 @@
 use super::model::{CopiedChunkData, CopiedChunkPreviewImage};
 use super::prelude::*;
-use gpui::{RenderImage, RenderImagePixelFormat};
 
 pub(super) const PREVIEW_IMAGE_CHUNK_LIMIT: usize = 192;
 
@@ -82,7 +81,7 @@ fn copied_chunk_preview_image_from_snapshot(
     };
     Ok(Some(CopiedChunkPreviewImage {
         chunk: snapshot.chunk,
-        pixels: Arc::<[u8]>::from(pixels),
+        image: render_image_from_preview_pixels(pixels)?,
         width: 16,
         height: 16,
     }))
@@ -214,7 +213,7 @@ fn preview_images_from_columns(
             chunk,
             CopiedChunkPreviewImage {
                 chunk,
-                pixels: Arc::<[u8]>::from(pixels),
+                image: render_image_from_preview_pixels(pixels)?,
                 width: 16,
                 height: 16,
             },
@@ -237,17 +236,10 @@ fn preview_pixels_from_chunk_columns(columns: &[Option<ImportPreviewColumn>]) ->
     has_pixels.then_some(pixels)
 }
 
-pub(super) fn copied_preview_image_to_render_image(
-    image: &CopiedChunkPreviewImage,
-) -> Option<Arc<RenderImage>> {
-    RenderImage::from_raw_pixels(
-        image.width,
-        image.height,
-        RenderImagePixelFormat::Rgba8,
-        image.pixels.as_ref().to_vec(),
-    )
-    .ok()
-    .map(Arc::new)
+fn render_image_from_preview_pixels(pixels: Vec<u8>) -> Result<Arc<RenderImage>, String> {
+    RenderImage::from_raw_pixels(16, 16, RenderImagePixelFormat::Rgba8, pixels)
+        .map(Arc::new)
+        .map_err(|error| format!("导入预览图片无效：{error}"))
 }
 
 fn import_preview_parse_options() -> bedrock_world::WorldParseOptions {

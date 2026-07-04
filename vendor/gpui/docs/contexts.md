@@ -48,7 +48,7 @@ Common operations:
 - frame requests and next-frame callbacks;
 - layout, paint, and custom element state;
 - image cache scoping;
-- GPU surface creation and painting.
+- image and GPU resource lifetime coordination.
 
 The conventional parameter order is `window` before `cx` when both are present.
 

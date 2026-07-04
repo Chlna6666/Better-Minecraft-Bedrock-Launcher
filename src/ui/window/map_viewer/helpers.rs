@@ -1,286 +1,20 @@
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
-use super::tile_render::*;
 
 pub(super) fn render_io_error(message: impl Into<String>) -> bedrock_render::BedrockRenderError {
     let message = message.into();
     bedrock_render::BedrockRenderError::io(message.clone(), std::io::Error::other(message))
 }
 
-pub(super) fn world_cache_id(world_path: &std::path::Path) -> String {
-    let mut hasher = RenderFingerprint::new();
-    world_path.to_string_lossy().hash(&mut hasher);
-    let hash = hasher.value();
-    let folder = world_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("world")
-        .chars()
-        .map(|value| match value {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => value,
-            _ => '_',
-        })
-        .collect::<String>();
-    format!("{folder}-{hash:016x}")
-}
-
-pub(super) fn world_cache_signature(world_path: &std::path::Path) -> String {
-    let mut hasher = RenderFingerprint::new();
-    hash_path_metadata(world_path, "level.dat", &mut hasher);
-    hash_leveldb_current_state(world_path, &mut hasher);
-    hasher.hex()
-}
-
-fn hash_leveldb_current_state(world_path: &std::path::Path, hasher: &mut RenderFingerprint) {
-    hash_path_metadata(world_path, "db/CURRENT", hasher);
-    let db_path = world_path.join("db");
-    let current_path = db_path.join("CURRENT");
-    let Ok(current) = std::fs::read_to_string(&current_path) else {
-        return;
-    };
-    let manifest_name = current.trim();
-    manifest_name.hash(hasher);
-    if !manifest_name.is_empty() {
-        let manifest_relative = format!("db/{manifest_name}");
-        hash_path_metadata(world_path, &manifest_relative, hasher);
+pub(super) fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
     }
-
-    let Ok(entries) = std::fs::read_dir(&db_path) else {
-        return;
-    };
-    let mut storage_file_names = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let extension = path.extension()?.to_str()?;
-            matches!(extension, "log" | "ldb" | "sst")
-                .then(|| path.file_name()?.to_str().map(str::to_string))
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    storage_file_names.sort();
-    for file_name in storage_file_names {
-        hash_path_metadata(world_path, &format!("db/{file_name}"), hasher);
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
     }
-}
-
-fn hash_path_metadata(
-    world_path: &std::path::Path,
-    relative: &str,
-    hasher: &mut RenderFingerprint,
-) {
-    let path = world_path.join(relative);
-    relative.hash(hasher);
-    if let Ok(metadata) = std::fs::metadata(&path) {
-        metadata.len().hash(hasher);
-        if let Ok(modified) = metadata.modified()
-            && let Ok(duration) = modified.duration_since(UNIX_EPOCH)
-        {
-            duration.as_secs().hash(hasher);
-            duration.subsec_nanos().hash(hasher);
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct RenderCacheIdentity {
-    pub(super) world_id: String,
-    pub(super) renderer_signature: String,
-    pub(super) validation_seed: u64,
-}
-
-pub(super) fn decoded_cache_identity(
-    world_path: &std::path::Path,
-    backend: RenderBackend,
-    gpu_backend: RenderGpuBackend,
-) -> RenderCacheIdentity {
-    let renderer_signature = decoded_cache_signature(backend, gpu_backend);
-    RenderCacheIdentity {
-        world_id: world_cache_id(world_path),
-        validation_seed: render_cache_validation_seed_from_signature(&renderer_signature),
-        renderer_signature,
-    }
-}
-
-pub(super) fn decoded_cache_signature(
-    backend: RenderBackend,
-    gpu_backend: RenderGpuBackend,
-) -> String {
-    let mut hasher = RenderFingerprint::new();
-    RENDER_PRESET_CACHE_VERSION.hash(&mut hasher);
-    backend.cache_slug().hash(&mut hasher);
-    gpu_backend.cache_slug().hash(&mut hasher);
-    "brtile".hash(&mut hasher);
-    UI_DECODED_TILE_CACHE_EXTENSION.hash(&mut hasher);
-    "gpui-render-image-rgba-v1".hash(&mut hasher);
-    "dynamic-memory-budget-v1".hash(&mut hasher);
-    RENDER_PIPELINE_DEPTH.hash(&mut hasher);
-
-    let layout = web_relief_render_layout();
-    layout.chunks_per_tile.hash(&mut hasher);
-    layout.blocks_per_pixel.hash(&mut hasher);
-    layout.pixels_per_block.hash(&mut hasher);
-
-    let region_layout = web_relief_region_layout();
-    region_layout.chunks_per_region.hash(&mut hasher);
-
-    hash_surface_options(web_relief_surface_options(), &mut hasher);
-    hasher.hex()
-}
-
-pub(super) fn render_preset_cache_signature(
-    world_path: &std::path::Path,
-    backend: RenderBackend,
-    gpu_backend: RenderGpuBackend,
-) -> String {
-    let mut hasher = RenderFingerprint::new();
-    world_cache_signature(world_path).hash(&mut hasher);
-    decoded_cache_signature(backend, gpu_backend).hash(&mut hasher);
-    hasher.hex()
-}
-
-#[cfg(test)]
-pub(super) fn render_preset_cache_validation_seed(
-    world_path: &std::path::Path,
-    render_backend: RenderBackend,
-    render_gpu_backend: RenderGpuBackend,
-) -> u64 {
-    let signature = render_preset_cache_signature(world_path, render_backend, render_gpu_backend);
-    render_cache_validation_seed_from_signature(&signature)
-}
-
-pub(super) fn render_cache_validation_seed_from_signature(signature: &str) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in signature.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    if hash == 0 {
-        0xcbf2_9ce4_8422_2325
-    } else {
-        hash
-    }
-}
-
-pub(super) fn tile_manifest_cache_path(
-    world_path: &std::path::Path,
-    render_backend: RenderBackend,
-    render_gpu_backend: RenderGpuBackend,
-    mode: RenderMode,
-    dimension: Dimension,
-    layout: RenderLayout,
-) -> PathBuf {
-    file_ops::cache_subdir("bedrock-render")
-        .join("ui-manifest")
-        .join(world_cache_id(world_path))
-        .join(render_preset_cache_signature(
-            world_path,
-            render_backend,
-            render_gpu_backend,
-        ))
-        .join(format!("dimension-{}", dimension.id()))
-        .join(render_mode_cache_slug(mode))
-        .join(format!(
-            "{}c-{}bpp-{}ppb.brmanifest.zst",
-            layout.chunks_per_tile, layout.blocks_per_pixel, layout.pixels_per_block
-        ))
-}
-
-pub(super) fn render_mode_cache_slug(mode: RenderMode) -> String {
-    match mode {
-        RenderMode::Biome { y } => format!("biome-y{y}"),
-        RenderMode::RawBiomeLayer { y } => format!("raw-biome-y{y}"),
-        RenderMode::SurfaceBlocks => "surface".to_string(),
-        RenderMode::LayerBlocks { y } => format!("layer-y{y}"),
-        RenderMode::HeightMap => "heightmap".to_string(),
-        RenderMode::RawHeightMap => "raw-heightmap".to_string(),
-        RenderMode::CaveSlice { y } => format!("cave-y{y}"),
-    }
-}
-
-pub(super) fn hash_surface_options<H: Hasher>(surface: SurfaceRenderOptions, hasher: &mut H) {
-    surface.transparent_water.hash(hasher);
-    surface.biome_tint.hash(hasher);
-    surface.height_shading.hash(hasher);
-    surface.skip_air.hash(hasher);
-    surface.render_unknown_blocks.hash(hasher);
-    hash_lighting_options(surface.lighting, hasher);
-    hash_block_boundary_options(surface.block_boundaries, hasher);
-    hash_block_volume_options(surface.block_volume, hasher);
-    hash_atlas_options(surface.atlas, hasher);
-}
-
-pub(super) fn hash_block_boundary_options<H: Hasher>(
-    block_boundaries: BlockBoundaryRenderOptions,
-    hasher: &mut H,
-) {
-    block_boundaries.enabled.hash(hasher);
-    hash_f32(block_boundaries.strength, hasher);
-    hash_f32(block_boundaries.flat_strength, hasher);
-    hash_f32(block_boundaries.height_threshold, hasher);
-    hash_f32(block_boundaries.max_shadow, hasher);
-    hash_f32(block_boundaries.highlight_strength, hasher);
-    hash_f32(block_boundaries.softness, hasher);
-    hash_f32(block_boundaries.line_width_pixels, hasher);
-}
-
-pub(super) fn hash_block_volume_options<H: Hasher>(
-    block_volume: BlockVolumeRenderOptions,
-    hasher: &mut H,
-) {
-    block_volume.enabled.hash(hasher);
-    hash_f32(block_volume.face_width_pixels, hasher);
-    hash_f32(block_volume.face_shadow_strength, hasher);
-    hash_f32(block_volume.contact_shadow_strength, hasher);
-    hash_f32(block_volume.cast_shadow_strength, hasher);
-    block_volume.cast_shadow_max_blocks.hash(hasher);
-    hash_f32(block_volume.cast_shadow_height_scale, hasher);
-    hash_f32(block_volume.highlight_strength, hasher);
-    hash_f32(block_volume.max_shadow, hasher);
-    hash_f32(block_volume.max_highlight, hasher);
-    hash_f32(block_volume.height_threshold, hasher);
-    hash_f32(block_volume.softness, hasher);
-}
-
-pub(super) fn hash_atlas_options<H: Hasher>(atlas: AtlasRenderOptions, hasher: &mut H) {
-    atlas.enabled.hash(hasher);
-    hash_f32(atlas.texture_detail_strength, hasher);
-    atlas.height_contour_interval.hash(hasher);
-    hash_f32(atlas.height_contour_strength, hasher);
-    hash_f32(atlas.slope_hatching_strength, hasher);
-    hash_f32(atlas.forest_canopy_strength, hasher);
-    hash_f32(atlas.snow_ridge_strength, hasher);
-    hash_f32(atlas.water_grid_strength, hasher);
-    hash_f32(atlas.shoreline_shadow_strength, hasher);
-    hash_f32(atlas.chunk_grid_strength, hasher);
-    hash_f32(atlas.material_edge_strength, hasher);
-    hash_f32(atlas.cast_shadow_strength, hasher);
-    hash_f32(atlas.ambient_occlusion_strength, hasher);
-}
-
-pub(super) fn hash_lighting_options<H: Hasher>(lighting: TerrainLightingOptions, hasher: &mut H) {
-    lighting.enabled.hash(hasher);
-    hash_f32(lighting.light_azimuth_degrees, hasher);
-    hash_f32(lighting.light_elevation_degrees, hasher);
-    hash_f32(lighting.normal_strength, hasher);
-    hash_f32(lighting.shadow_strength, hasher);
-    hash_f32(lighting.highlight_strength, hasher);
-    hash_f32(lighting.ambient_occlusion, hasher);
-    hash_f32(lighting.max_shadow, hasher);
-    hash_f32(lighting.land_slope_softness, hasher);
-    hash_f32(lighting.edge_relief_strength, hasher);
-    hash_f32(lighting.edge_relief_threshold, hasher);
-    hash_f32(lighting.edge_relief_max_shadow, hasher);
-    hash_f32(lighting.edge_relief_highlight, hasher);
-    lighting.underwater_relief_enabled.hash(hasher);
-    hash_f32(lighting.underwater_relief_strength, hasher);
-    hash_f32(lighting.underwater_depth_fade, hasher);
-    hash_f32(lighting.underwater_min_light, hasher);
-}
-
-pub(super) fn hash_f32<H: Hasher>(value: f32, hasher: &mut H) {
-    value.to_bits().hash(hasher);
+    "unknown panic payload".to_string()
 }
 
 pub(super) fn render_backend_label(
@@ -307,7 +41,37 @@ pub(super) const fn default_interactive_render_gpu_backend() -> RenderGpuBackend
     RenderGpuBackend::Auto
 }
 
+const SYSTEM_MEMORY_CACHE_TTL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SystemMemoryCache {
+    last_refresh: Option<Instant>,
+    available_bytes: u64,
+}
+
+impl SystemMemoryCache {
+    fn available_bytes(&mut self) -> u64 {
+        let now = Instant::now();
+        if self.last_refresh.is_none_or(|last_refresh| {
+            now.saturating_duration_since(last_refresh) >= SYSTEM_MEMORY_CACHE_TTL
+        }) {
+            self.available_bytes = refresh_available_system_memory_bytes();
+            self.last_refresh = Some(now);
+        }
+        self.available_bytes
+    }
+}
+
 pub(super) fn available_system_memory_bytes() -> u64 {
+    static CACHE: OnceLock<Mutex<SystemMemoryCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(SystemMemoryCache::default()));
+    match cache.lock() {
+        Ok(mut cache) => cache.available_bytes(),
+        Err(poisoned) => poisoned.into_inner().available_bytes(),
+    }
+}
+
+fn refresh_available_system_memory_bytes() -> u64 {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
     system.available_memory()
@@ -349,6 +113,30 @@ pub(super) fn tile_count_for_viewport(viewport: MapViewport, radius: i32) -> Opt
             .saturating_add(radius_tiles.saturating_mul(2))
             .saturating_mul(height_tiles.saturating_add(radius_tiles.saturating_mul(2))),
     )
+}
+
+pub(super) fn visible_render_batch_size(
+    base_batch_size: usize,
+    visible_tile_count: usize,
+    is_dragging: bool,
+    is_initial_load: bool,
+) -> usize {
+    let mut batch_size = base_batch_size.max(1);
+    if visible_tile_count >= OVERVIEW_VISIBLE_TILE_THRESHOLD {
+        batch_size = batch_size.max(OVERVIEW_VISIBLE_BATCH_LIMIT);
+    }
+    if is_dragging {
+        batch_size = batch_size.max(DRAG_VISIBLE_BATCH_LIMIT);
+    }
+    if is_initial_load {
+        let first_limit = if visible_tile_count >= OVERVIEW_VISIBLE_TILE_THRESHOLD {
+            OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT
+        } else {
+            FIRST_VISIBLE_BATCH_LIMIT
+        };
+        batch_size = batch_size.min(first_limit.max(1));
+    }
+    batch_size
 }
 
 pub(super) fn render_memory_budget_bytes(work_items: usize, cpu_budget: RenderCpuBudget) -> u64 {

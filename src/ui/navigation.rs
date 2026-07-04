@@ -1,5 +1,6 @@
 use crate::ui::state::navigation::NavState;
 use gpui::BorrowAppContext;
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppRoute {
@@ -183,10 +184,6 @@ pub fn current_route_target(cx: &gpui::App) -> RouteTarget {
 }
 
 pub fn set_route(cx: &mut gpui::App, route: AppRoute) {
-    let now = std::time::Instant::now();
-    cx.update_global(|nav: &mut NavState, _cx| {
-        nav.start_pill_animation(route.index(), now);
-    });
     navigate_to(cx, route);
 }
 
@@ -201,7 +198,7 @@ pub fn navigate_plugin(cx: &mut gpui::App, plugin_id: String, page_id: String) {
 pub fn navigate_target(cx: &mut gpui::App, target: RouteTarget) {
     let path = target.pathname();
     let visual_index = target.visual_index(cx);
-    let now = std::time::Instant::now();
+    let now = Instant::now();
     cx.update_global(|nav: &mut NavState, _cx| {
         nav.start_pill_animation(visual_index, now);
     });

@@ -15,6 +15,10 @@ pub(super) fn refresh_gpu_adapters_if_needed(cx: &mut App) {
     let renderer_backend = cx.read_global(|state: &SettingsPageState, _cx| {
         crate::config::config::normalize_renderer_backend(state.renderer_backend.as_ref())
     });
+    refresh_gpu_adapters_for_backend(renderer_backend, cx);
+}
+
+pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mut App) {
     cx.spawn(async move |cx| {
         let requested_renderer_backend = renderer_backend.clone();
         let adapters = tokio::task::spawn_blocking(move || {

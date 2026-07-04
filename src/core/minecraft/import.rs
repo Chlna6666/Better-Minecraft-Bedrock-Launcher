@@ -147,6 +147,15 @@ impl ImportTargetType {
     }
 }
 
+fn is_shared_pack_type(target_type: &ImportTargetType) -> bool {
+    matches!(
+        target_type,
+        ImportTargetType::ResourcePack
+            | ImportTargetType::BehaviorPack
+            | ImportTargetType::SkinPack
+    )
+}
+
 fn primary_world_root(scan: &ArchiveScanResult) -> Option<&str> {
     if scan.level_roots.iter().any(|root| root.is_empty()) {
         return Some("");
@@ -798,10 +807,7 @@ pub fn check_import_file(file_path: &Path, options: &GamePathOptions) -> Result<
         None => sanitize_filename(&strip_minecraft_formatting(&internal_name)),
     };
     let target_dir_name = target_type.to_dir_name();
-    let is_shared_preferred = matches!(
-        target_type,
-        ImportTargetType::ResourcePack | ImportTargetType::BehaviorPack
-    );
+    let is_shared_preferred = is_shared_pack_type(&target_type);
 
     let parent_dir = match resolve_target_parent(options, target_dir_name, is_shared_preferred) {
         Some(p) => p,
@@ -1046,10 +1052,7 @@ fn process_single_archive(
     };
     let target_dir_name = target_type.to_dir_name();
 
-    let is_shared_preferred = matches!(
-        target_type,
-        ImportTargetType::ResourcePack | ImportTargetType::BehaviorPack
-    );
+    let is_shared_preferred = is_shared_pack_type(&target_type);
 
     let parent_dir = resolve_target_parent(options, target_dir_name, is_shared_preferred)
         .ok_or_else(|| anyhow::anyhow!("无法解析目标安装路径"))?;
@@ -1478,7 +1481,12 @@ fn process_compound_archive(
 
                 debug!("Compound import (cache): pack_dirs={}", pack_dirs.len());
                 let res = import_from_cache_dirs(&pack_dirs, options, overwrite);
-                let _ = fs::remove_dir_all(&work_dir);
+                if let Err(error) = fs::remove_dir_all(&work_dir) {
+                    warn!(
+                        "Failed to remove compound cache dir {:?}: {error}",
+                        work_dir
+                    );
+                }
                 return res;
             }
         }
@@ -1493,7 +1501,12 @@ fn process_compound_archive(
         pack_dirs.len()
     );
     let res = import_from_cache_dirs(&pack_dirs, options, overwrite);
-    let _ = fs::remove_dir_all(&work_dir);
+    if let Err(error) = fs::remove_dir_all(&work_dir) {
+        warn!(
+            "Failed to remove compound cache dir {:?}: {error}",
+            work_dir
+        );
+    }
     res
 }
 
@@ -1971,21 +1984,31 @@ fn import_from_cache_dirs(
     options: &GamePathOptions,
     overwrite: bool,
 ) -> Result<()> {
-    // IO 密集：并行导入目录包（每个 pack 独立）
-    pack_dirs.par_iter().for_each(|dir| {
-        let res = if dir.join("manifest.json").is_file() {
-            import_pack_dir(dir, options, overwrite)
-        } else if dir.join("level.dat").is_file() {
-            import_world_dir(dir, options, overwrite)
-        } else {
-            Ok(())
-        };
+    let failures: Vec<String> = pack_dirs
+        .par_iter()
+        .filter_map(|dir| {
+            let result = if dir.join("manifest.json").is_file() {
+                import_pack_dir(dir, options, overwrite)
+            } else if dir.join("level.dat").is_file() {
+                import_world_dir(dir, options, overwrite)
+            } else {
+                Ok(())
+            };
 
-        if let Err(e) = res {
-            warn!("Failed to import from cache dir {:?}: {:?}", dir, e);
-        }
-    });
+            result.err().map(|error| {
+                warn!("Failed to import from cache dir {:?}: {:?}", dir, error);
+                format!("{}: {error}", dir.display())
+            })
+        })
+        .collect();
 
+    if !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "复合包中有 {} 个子包导入失败: {}",
+            failures.len(),
+            failures.join("; ")
+        ));
+    }
     Ok(())
 }
 
@@ -2305,10 +2328,7 @@ fn import_pack_dir(dir: &Path, options: &GamePathOptions, overwrite: bool) -> Re
     };
     let target_dir_name = target_type.to_dir_name();
 
-    let is_shared_preferred = matches!(
-        target_type,
-        ImportTargetType::ResourcePack | ImportTargetType::BehaviorPack
-    );
+    let is_shared_preferred = is_shared_pack_type(&target_type);
 
     let parent_dir = resolve_target_parent(options, target_dir_name, is_shared_preferred)
         .ok_or_else(|| anyhow::anyhow!("无法解析目标安装路径"))?;
@@ -3251,10 +3271,7 @@ pub fn import_archive_optimized(
 
     for (pack_type, packs) in groups {
         let dir_name = pack_type.to_dir_name();
-        let is_shared = matches!(
-            pack_type,
-            ImportTargetType::ResourcePack | ImportTargetType::BehaviorPack
-        );
+        let is_shared = is_shared_pack_type(&pack_type);
 
         let parent = resolve_target_parent(options, dir_name, is_shared)
             .ok_or_else(|| anyhow::anyhow!("Target dir not found"))?;

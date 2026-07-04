@@ -33,8 +33,12 @@ pub(super) fn interactive_map_render_session_config(
 ) -> MapRenderSessionConfig {
     let mut config = MapRenderSessionConfig::max_speed(
         file_ops::cache_subdir("bedrock-render"),
-        world_cache_id(&world_path),
-        render_preset_cache_signature(&world_path, render_backend, render_gpu_backend),
+        bedrock_render::world_cache_id(world_path),
+        bedrock_render::render_preset_cache_signature(
+            world_path,
+            render_backend,
+            render_gpu_backend,
+        ),
     );
     config.tile_cache_memory_limit = tile_cache_memory_limit(RenderCpuBudget::default());
     config.renderer_version = RENDERER_CACHE_VERSION;
@@ -56,7 +60,7 @@ impl RenderTilePlan {
         mode: RenderMode,
         layout: RenderLayout,
         coord: (i32, i32),
-        chunk_positions: Vec<ChunkPos>,
+        chunk_positions: TileChunkPositions,
     ) -> Result<Self, String> {
         if chunk_positions.is_empty() {
             return Err(format!("瓦片 {}, {} 没有可渲染区块", coord.0, coord.1));
@@ -66,7 +70,7 @@ impl RenderTilePlan {
             coord.0,
             coord.1,
             layout,
-            Some(&chunk_positions),
+            Some(chunk_positions.as_ref()),
         )?
         .ok_or_else(|| format!("瓦片 {}, {} 尚未完成索引", coord.0, coord.1))?;
         if chunk_positions.is_empty() {
@@ -89,7 +93,7 @@ impl RenderTilePlan {
                 job,
                 region,
                 layout,
-                chunk_positions: Some(chunk_positions),
+                chunk_positions: Some(TileChunkPositions::from(chunk_positions)),
             },
         })
     }
@@ -97,8 +101,6 @@ impl RenderTilePlan {
 
 pub(super) struct TileBatchRequest {
     pub(super) render_session: Arc<MapRenderSession>,
-    pub(super) world_path: PathBuf,
-    pub(super) mode: RenderMode,
     pub(super) dimension: Dimension,
     pub(super) layout: RenderLayout,
     pub(super) center_tile: (i32, i32),
@@ -107,7 +109,6 @@ pub(super) struct TileBatchRequest {
     pub(super) cpu_budget: RenderCpuBudget,
     pub(super) render_backend: RenderBackend,
     pub(super) render_gpu_backend: RenderGpuBackend,
-    pub(super) cache_identity: RenderCacheIdentity,
     pub(super) tile_cache_validation_seed: u64,
     pub(super) quick_reveal: bool,
     pub(super) render_cancel: RenderCancelFlag,
@@ -116,12 +117,9 @@ pub(super) struct TileBatchRequest {
 #[derive(Clone)]
 pub(super) struct ChunkPatchRenderRequest {
     pub(super) render_session: Arc<MapRenderSession>,
-    pub(super) cache_identity: RenderCacheIdentity,
-    pub(super) tile_cache_validation_seed: u64,
     pub(super) mode: RenderMode,
     pub(super) layout: RenderLayout,
     pub(super) tile_coord: (i32, i32),
-    pub(super) tile_chunk_positions: Vec<ChunkPos>,
     pub(super) chunks: Vec<ChunkPos>,
     pub(super) base_tile: ViewerTile,
     pub(super) cpu_budget: RenderCpuBudget,
@@ -134,7 +132,6 @@ pub(super) struct ChunkPatchRenderRequest {
 pub(super) struct ChunkPatchRefreshPlan {
     pub(super) coord: (i32, i32),
     pub(super) chunks: Vec<ChunkPos>,
-    pub(super) tile_chunk_positions: Vec<ChunkPos>,
     pub(super) base_tile: ViewerTile,
 }
 
@@ -147,306 +144,12 @@ pub(super) struct ChunkPatchRenderResult {
     pub(super) stats: RenderPipelineStats,
 }
 
-pub(super) fn sorted_ui_decoded_cache_probe_tiles(
-    planned_tiles: &[PlannedTile],
-    center_tile: (i32, i32),
-) -> Vec<(usize, PlannedTile)> {
-    let mut ordered = planned_tiles
-        .iter()
-        .cloned()
-        .enumerate()
-        .map(|(ordinal, planned)| {
-            let (ring, distance_squared, manhattan, z, x) =
-                tile_distance_sort_key((planned.job.coord.x, planned.job.coord.z), center_tile);
-            (ring, distance_squared, manhattan, z, x, ordinal, planned)
-        })
-        .collect::<Vec<_>>();
-    ordered.sort_by_key(|(ring, distance_squared, manhattan, z, x, ordinal, _)| {
-        (*ring, *distance_squared, *manhattan, *z, *x, *ordinal)
-    });
-    ordered
-        .into_iter()
-        .map(|(_, _, _, _, _, ordinal, planned)| (ordinal, planned))
-        .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn probe_ui_decoded_tile_caches(
-    cache_identity: &RenderCacheIdentity,
-    mode: RenderMode,
-    layout: RenderLayout,
-    center_tile: (i32, i32),
-    validation_seed: u64,
-    cpu_budget: RenderCpuBudget,
-    cancel: &RenderCancelFlag,
-    planned_tiles: &[PlannedTile],
-) -> Vec<(usize, UiDecodedTileCacheProbe)> {
-    if planned_tiles.is_empty() {
-        return Vec::new();
-    }
-    let work = sorted_ui_decoded_cache_probe_tiles(planned_tiles, center_tile);
-    let mut probes = Vec::with_capacity(work.len());
-    for (ordinal, planned) in work {
-        if cancel.is_cancelled() {
-            break;
-        }
-        probes.push((
-            ordinal,
-            probe_ui_decoded_tile_cache(cache_identity, mode, layout, validation_seed, &planned),
-        ));
-    }
-    probes
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn probe_ui_decoded_tile_cache(
-    cache_identity: &RenderCacheIdentity,
-    mode: RenderMode,
-    layout: RenderLayout,
-    validation_seed: u64,
-    planned: &PlannedTile,
-) -> UiDecodedTileCacheProbe {
-    let mut read_ms = 0;
-    let mut decode_ms = 0;
-    let Some(chunk_positions) = planned.chunk_positions.as_deref() else {
-        return UiDecodedTileCacheProbe {
-            decision: UiDecodedTileCacheProbeDecision::Miss,
-            read_ms,
-            decode_ms,
-            exact_validation: None,
-        };
-    };
-    if validation_seed == 0 {
-        return UiDecodedTileCacheProbe {
-            decision: UiDecodedTileCacheProbeDecision::Miss,
-            read_ms,
-            decode_ms,
-            exact_validation: None,
-        };
-    }
-
-    let key = ui_decoded_tile_cache_key_with_identity(cache_identity, mode, layout, planned);
-    let path = ui_decoded_tile_cache_path_with_identity(cache_identity, &key);
-    let started = Instant::now();
-    let mut file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(error) => {
-            if error.kind() != ErrorKind::NotFound {
-                tracing::debug!(
-                    path = %path.display(),
-                    %error,
-                    "map_viewer decoded_tile_cache_open_failed"
-                );
-            }
-            read_ms = started.elapsed().as_millis();
-            return UiDecodedTileCacheProbe {
-                decision: UiDecodedTileCacheProbeDecision::Miss,
-                read_ms,
-                decode_ms,
-                exact_validation: None,
-            };
-        }
-    };
-
-    let mut header_bytes = [0_u8; UI_DECODED_TILE_CACHE_HEADER_LEN];
-    if let Err(error) = file.read_exact(&mut header_bytes) {
-        read_ms = started.elapsed().as_millis();
-        tracing::debug!(
-            path = %path.display(),
-            %error,
-            "map_viewer decoded_tile_cache_header_read_failed"
-        );
-        drop(file);
-        remove_stale_ui_decoded_tile_cache_file(&path, "header_read_failed");
-        return UiDecodedTileCacheProbe {
-            decision: UiDecodedTileCacheProbeDecision::Miss,
-            read_ms,
-            decode_ms,
-            exact_validation: None,
-        };
-    }
-    read_ms = started.elapsed().as_millis();
-
-    let header = match decode_ui_decoded_tile_cache_header(&header_bytes) {
-        Ok(header) => header,
-        Err(error) => {
-            tracing::debug!(
-                tile = ?(planned.job.coord.x, planned.job.coord.z),
-                path = %path.display(),
-                %error,
-                "map_viewer decoded_tile_cache_header_rejected"
-            );
-            drop(file);
-            remove_stale_ui_decoded_tile_cache_file(&path, "header_rejected");
-            return UiDecodedTileCacheProbe {
-                decision: UiDecodedTileCacheProbeDecision::Miss,
-                read_ms,
-                decode_ms,
-                exact_validation: None,
-            };
-        }
-    };
-
-    let expected_len = match decoded_tile_byte_len(header.width, header.height) {
-        Ok(expected_len) => expected_len,
-        Err(error) => {
-            tracing::debug!(%error, "map_viewer decoded_tile_cache_size_rejected");
-            drop(file);
-            remove_stale_ui_decoded_tile_cache_file(&path, "size_rejected");
-            return UiDecodedTileCacheProbe {
-                decision: UiDecodedTileCacheProbeDecision::Miss,
-                read_ms,
-                decode_ms,
-                exact_validation: None,
-            };
-        }
-    };
-    let size_matches = header.width == planned.job.tile_size
-        && header.height == planned.job.tile_size
-        && usize::try_from(header.raw_len).ok() == Some(expected_len);
-    if !size_matches
-        || header.pixel_format != UI_DECODED_TILE_CACHE_PIXEL_FORMAT_RGBA8
-        || header.validation_kind != UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE
-    {
-        drop(file);
-        remove_stale_ui_decoded_tile_cache_file(&path, "header_mismatch");
-        return UiDecodedTileCacheProbe {
-            decision: UiDecodedTileCacheProbeDecision::Miss,
-            read_ms,
-            decode_ms,
-            exact_validation: None,
-        };
-    }
-
-    let expected_validation = bedrock_render::tile_cache_validation_value(
-        &key,
-        &planned.region,
-        chunk_positions,
-        validation_seed,
-    );
-    if header.validation_value != expected_validation {
-        drop(file);
-        remove_stale_ui_decoded_tile_cache_file(&path, "validation_mismatch");
-        return UiDecodedTileCacheProbe {
-            decision: UiDecodedTileCacheProbeDecision::Miss,
-            read_ms,
-            decode_ms,
-            exact_validation: Some(TileCacheValidationOutcome::Mismatch),
-        };
-    }
-
-    if header.is_empty_negative() {
-        if !chunk_positions.is_empty() {
-            drop(file);
-            remove_stale_ui_decoded_tile_cache_file(&path, "empty_negative_mismatch");
-        }
-        return UiDecodedTileCacheProbe {
-            decision: if chunk_positions.is_empty() {
-                UiDecodedTileCacheProbeDecision::EmptyNegative
-            } else {
-                UiDecodedTileCacheProbeDecision::Miss
-            },
-            read_ms,
-            decode_ms,
-            exact_validation: Some(TileCacheValidationOutcome::Valid),
-        };
-    }
-    if !header.is_non_empty() {
-        drop(file);
-        remove_stale_ui_decoded_tile_cache_file(&path, "missing_non_empty_flag");
-        return UiDecodedTileCacheProbe {
-            decision: UiDecodedTileCacheProbeDecision::Miss,
-            read_ms,
-            decode_ms,
-            exact_validation: None,
-        };
-    }
-
-    UiDecodedTileCacheProbe {
-        decision: UiDecodedTileCacheProbeDecision::Ready(UiDecodedTileCacheReady {
-            coord: planned.job.coord,
-            path,
-            width: header.width,
-            height: header.height,
-            raw_len: expected_len,
-        }),
-        read_ms,
-        decode_ms,
-        exact_validation: Some(TileCacheValidationOutcome::Valid),
-    }
-}
-
-pub(super) fn load_ui_decoded_tile_cache_ready(
-    ready: UiDecodedTileCacheReady,
-) -> Result<(DecodedTileImage, u128, u128), String> {
-    let mut file = std::fs::File::open(&ready.path)
-        .map_err(|error| format!("打开地图瓦片缓存失败: {} ({error})", ready.path.display()))?;
-    let mut header_bytes = [0_u8; UI_DECODED_TILE_CACHE_HEADER_LEN];
-    let read_started = Instant::now();
-    file.read_exact(&mut header_bytes).map_err(|error| {
-        remove_stale_ui_decoded_tile_cache_file(&ready.path, "ready_header_read_failed");
-        format!("读取地图瓦片缓存头失败: {} ({error})", ready.path.display())
-    })?;
-    let header = decode_ui_decoded_tile_cache_header(&header_bytes).map_err(|error| {
-        remove_stale_ui_decoded_tile_cache_file(&ready.path, "ready_header_rejected");
-        format!("地图瓦片缓存头无效: {} ({error})", ready.path.display())
-    })?;
-    if header.width != ready.width
-        || header.height != ready.height
-        || usize::try_from(header.raw_len).ok() != Some(ready.raw_len)
-        || !header.is_non_empty()
-    {
-        remove_stale_ui_decoded_tile_cache_file(&ready.path, "ready_header_mismatch");
-        return Err(format!("地图瓦片缓存头已变化: {}", ready.path.display()));
-    }
-
-    let read_ms = read_started.elapsed().as_millis();
-    let decode_started = Instant::now();
-    let decoder = zstd::stream::Decoder::new(file).map_err(|error| {
-        remove_stale_ui_decoded_tile_cache_file(&ready.path, "ready_payload_decode_failed");
-        format!(
-            "打开地图瓦片缓存解压器失败: {} ({error})",
-            ready.path.display()
-        )
-    })?;
-    let decoded_limit = u64::try_from(ready.raw_len)
-        .map_err(|_| format!("地图瓦片缓存尺寸过大: {}", ready.path.display()))?
-        .saturating_add(1);
-    let mut pixels = Vec::with_capacity(ready.raw_len);
-    decoder
-        .take(decoded_limit)
-        .read_to_end(&mut pixels)
-        .map_err(|error| {
-            remove_stale_ui_decoded_tile_cache_file(&ready.path, "ready_payload_decode_failed");
-            format!("解压地图瓦片缓存失败: {} ({error})", ready.path.display())
-        })?;
-    let decode_ms = decode_started.elapsed().as_millis();
-    if pixels.len() != ready.raw_len || pixels.chunks_exact(4).all(|pixel| pixel[3] == 0) {
-        remove_stale_ui_decoded_tile_cache_file(&ready.path, "ready_payload_pixels_rejected");
-        return Err(format!("地图瓦片缓存像素无效: {}", ready.path.display()));
-    }
-
-    Ok((
-        DecodedTileImage {
-            coord: ready.coord,
-            width: ready.width,
-            height: ready.height,
-            pixels,
-            pixel_format: TilePixelFormat::Rgba8,
-        },
-        read_ms,
-        decode_ms,
-    ))
-}
-
 pub(super) fn render_tile_batch_stream(
     request: TileBatchRequest,
     event_sender: UnboundedSender<TileRenderEvent>,
 ) -> Result<(), String> {
     let TileBatchRequest {
         render_session,
-        world_path,
-        mode,
         dimension,
         layout,
         center_tile,
@@ -455,7 +158,6 @@ pub(super) fn render_tile_batch_stream(
         cpu_budget,
         render_backend,
         render_gpu_backend,
-        cache_identity,
         tile_cache_validation_seed,
         quick_reveal,
         render_cancel,
@@ -511,123 +213,10 @@ pub(super) fn render_tile_batch_stream(
         pixel_format: TilePixelFormat::Rgba8,
     };
 
-    let mut cache_diagnostics = RenderDiagnostics::default();
-    let mut cache_stats = RenderPipelineStats {
-        planned_tiles: planned_tiles.len(),
-        ..RenderPipelineStats::default()
-    };
-    let mut render_planned_tiles = planned_tiles.clone();
-    if cache_policy == RenderCachePolicy::Use {
-        let probes = probe_ui_decoded_tile_caches(
-            &cache_identity,
-            mode,
-            layout,
-            center_tile,
-            tile_cache_validation_seed,
-            cpu_budget,
-            &stream_cancel,
-            &planned_tiles,
-        );
-        let mut misses = Vec::new();
-        for (ordinal, probe) in probes {
-            let planned = &planned_tiles[ordinal];
-            let coord = (planned.job.coord.x, planned.job.coord.z);
-            cache_stats.cache_probes = cache_stats.cache_probes.saturating_add(1);
-            cache_stats.cache_read_ms = cache_stats.cache_read_ms.saturating_add(probe.read_ms);
-            cache_stats.cache_decode_ms =
-                cache_stats.cache_decode_ms.saturating_add(probe.decode_ms);
-            if let Some(outcome) = probe.exact_validation {
-                send_tile_event_or_cancel(
-                    &event_sender,
-                    &stream_cancel,
-                    TileRenderEvent::CacheValidation { coord, outcome },
-                )
-                .map_err(|error| error.to_string())?;
-                if outcome == TileCacheValidationOutcome::Mismatch {
-                    cache_stats.cache_validation_mismatches =
-                        cache_stats.cache_validation_mismatches.saturating_add(1);
-                }
-            }
-            match probe.decision {
-                UiDecodedTileCacheProbeDecision::Ready(ready) => {
-                    match load_ui_decoded_tile_cache_ready(ready) {
-                        Ok((tile, read_ms, decode_ms)) => {
-                            cache_diagnostics.cache_hits =
-                                cache_diagnostics.cache_hits.saturating_add(1);
-                            cache_stats.cache_hits = cache_stats.cache_hits.saturating_add(1);
-                            cache_stats.cache_disk_fresh_hits =
-                                cache_stats.cache_disk_fresh_hits.saturating_add(1);
-                            cache_stats.cache_read_ms =
-                                cache_stats.cache_read_ms.saturating_add(read_ms);
-                            cache_stats.cache_decode_ms =
-                                cache_stats.cache_decode_ms.saturating_add(decode_ms);
-                            let (image, pixels, pixel_format, width, height, estimated_bytes) =
-                                render_image_from_decoded_tile(tile)?;
-                            if !ready_batcher
-                                .lock()
-                                .map_err(|_| "渲染瓦片批处理状态锁已损坏".to_string())?
-                                .push(
-                                    &event_sender,
-                                    ReadyTile {
-                                        coord,
-                                        tile: ViewerTile {
-                                            image,
-                                            pixels: Some(pixels),
-                                            pixel_format: Some(pixel_format),
-                                            width,
-                                            height,
-                                            estimated_bytes,
-                                        },
-                                        source: TileReadySource::DiskCacheFresh,
-                                    },
-                                )
-                            {
-                                return cancel_render_stream(&stream_cancel)
-                                    .map_err(|error| error.to_string());
-                            }
-                        }
-                        Err(error) => {
-                            tracing::debug!(
-                                tile = ?coord,
-                                %error,
-                                "map_viewer decoded_tile_cache_ready_load_failed"
-                            );
-                            cache_diagnostics.cache_misses =
-                                cache_diagnostics.cache_misses.saturating_add(1);
-                            cache_stats.cache_misses = cache_stats.cache_misses.saturating_add(1);
-                            misses.push((ordinal, planned.clone()));
-                        }
-                    }
-                }
-                UiDecodedTileCacheProbeDecision::EmptyNegative => {
-                    cache_diagnostics.cache_hits = cache_diagnostics.cache_hits.saturating_add(1);
-                    cache_stats.cache_hits = cache_stats.cache_hits.saturating_add(1);
-                    cache_stats.cache_empty_negative_hits =
-                        cache_stats.cache_empty_negative_hits.saturating_add(1);
-                    send_tile_event_or_cancel(
-                        &event_sender,
-                        &stream_cancel,
-                        TileRenderEvent::Failed {
-                            coord,
-                            message: "瓦片没有可渲染区块".to_string(),
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-                }
-                UiDecodedTileCacheProbeDecision::Miss => {
-                    cache_diagnostics.cache_misses =
-                        cache_diagnostics.cache_misses.saturating_add(1);
-                    cache_stats.cache_misses = cache_stats.cache_misses.saturating_add(1);
-                    misses.push((ordinal, planned.clone()));
-                }
-            }
-        }
-        misses.sort_by_key(|(ordinal, _)| *ordinal);
-        render_planned_tiles = misses.into_iter().map(|(_, planned)| planned).collect();
-    }
+    let render_planned_tiles = planned_tiles.clone();
 
-    let render_result = render_session
-        .render_web_tiles_streaming_blocking_v2(
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        render_session.render_web_tiles_streaming_blocking_v2(
             &render_planned_tiles,
             render_options,
             output_options,
@@ -635,10 +224,6 @@ pub(super) fn render_tile_batch_stream(
                 let event_sender = Arc::clone(&event_sender);
                 let ready_batcher = Arc::clone(&ready_batcher);
                 let requested_tiles = requested_tiles.clone();
-                let cache_diagnostics = cache_diagnostics.clone();
-                let cache_stats = cache_stats.clone();
-                let cache_identity = cache_identity.clone();
-                let write_decoded_cache = decoded_cache_write_enabled(cache_policy);
                 move |event| {
                     if stream_cancel.is_cancelled() {
                         return Err(bedrock_render::BedrockRenderError::Cancelled);
@@ -653,7 +238,6 @@ pub(super) fn render_tile_batch_stream(
                             let tile_width = tile.width;
                             let tile_height = tile.height;
                             let tile_pixel_format = tile.pixel_format;
-                            let tile_pixels = Arc::<[u8]>::from(tile.pixels);
                             tracing::trace!(
                                 tile = ?coord,
                                 width = tile_width,
@@ -662,12 +246,12 @@ pub(super) fn render_tile_batch_stream(
                                 ?source,
                                 "map_viewer tile_ready"
                             );
-                            let (image, pixels, pixel_format, width, height, estimated_bytes) =
-                                match render_image_from_decoded_tile_shared(
+                            let (image, pixel_format, width, height, estimated_bytes) =
+                                match render_image_from_decoded_tile_parts(
                                     tile_width,
                                     tile_height,
                                     tile_pixel_format,
-                                    Arc::clone(&tile_pixels),
+                                    tile.pixels,
                                 ) {
                                     Ok(rendered) => rendered,
                                     Err(error) => {
@@ -684,19 +268,6 @@ pub(super) fn render_tile_batch_stream(
                                         );
                                     }
                                 };
-                            if write_decoded_cache {
-                                queue_ui_decoded_tile_cache_write_for_ready_tile_with_identity(
-                                    &cache_identity,
-                                    mode,
-                                    layout,
-                                    tile_cache_validation_seed,
-                                    &planned,
-                                    tile_width,
-                                    tile_height,
-                                    tile_pixel_format,
-                                    Arc::clone(&tile_pixels),
-                                );
-                            }
                             if !ready_batcher
                                 .lock()
                                 .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?
@@ -706,7 +277,6 @@ pub(super) fn render_tile_batch_stream(
                                         coord,
                                         tile: ViewerTile {
                                             image,
-                                            pixels: Some(pixels),
                                             pixel_format: Some(pixel_format),
                                             width,
                                             height,
@@ -718,6 +288,18 @@ pub(super) fn render_tile_batch_stream(
                             {
                                 return cancel_render_stream(&stream_cancel);
                             }
+                        }
+                        TileStreamEventV2::Empty { planned } => {
+                            let coord = (planned.job.coord.x, planned.job.coord.z);
+                            tracing::trace!(tile = ?coord, "map_viewer tile_empty");
+                            send_tile_event_or_cancel(
+                                &event_sender,
+                                &stream_cancel,
+                                TileRenderEvent::Empty {
+                                    coord,
+                                    message: "tile has no renderable chunks".to_string(),
+                                },
+                            )?;
                         }
                         TileStreamEventV2::Failed { planned, error } => {
                             tracing::warn!(
@@ -746,16 +328,13 @@ pub(super) fn render_tile_batch_stream(
                             {
                                 return cancel_render_stream(&stream_cancel);
                             }
-                            let mut merged_diagnostics = cache_diagnostics.clone();
-                            merged_diagnostics.add(diagnostics);
-                            merge_ui_cache_stats(&mut stats, &cache_stats);
                             stats.planned_tiles = requested_tile_count;
                             send_tile_event_or_cancel(
                                 &event_sender,
                                 &stream_cancel,
                                 TileRenderEvent::Complete {
                                     requested_tiles: requested_tiles.clone(),
-                                    diagnostics: merged_diagnostics,
+                                    diagnostics,
                                     stats,
                                 },
                             )?;
@@ -765,7 +344,9 @@ pub(super) fn render_tile_batch_stream(
                 }
             },
         )
-        .map_err(|error| format!("渲染瓦片失败: {error}"));
+    }))
+    .map_err(|payload| format!("渲染瓦片任务崩溃: {}", panic_payload_message(payload)))?
+    .map_err(|error| format!("渲染瓦片失败: {error}"));
     render_result?;
     Ok(())
 }
@@ -775,12 +356,9 @@ pub(super) fn render_chunk_patches_blocking(
 ) -> Result<ChunkPatchRenderResult, String> {
     let ChunkPatchRenderRequest {
         render_session,
-        cache_identity,
-        tile_cache_validation_seed,
         mode,
         layout,
         tile_coord,
-        tile_chunk_positions,
         chunks,
         base_tile,
         cpu_budget,
@@ -795,27 +373,26 @@ pub(super) fn render_chunk_patches_blocking(
     let tile_size = layout
         .tile_size()
         .ok_or_else(|| "UI 地图瓦片布局尺寸无效".to_string())?;
-    let Some(base_pixels) = base_tile.pixels.as_ref() else {
-        return Err("旧瓦片缺少可合并的像素缓存".to_string());
-    };
-    if base_tile.pixel_format != Some(TilePixelFormat::Rgba8)
-        || base_tile.width != tile_size
-        || base_tile.height != tile_size
-    {
+    if base_tile.width != tile_size || base_tile.height != tile_size {
         return Err(format!(
             "旧瓦片格式不支持局部合并: {:?} {}x{}",
             base_tile.pixel_format, base_tile.width, base_tile.height
         ));
     }
-    let expected_len = decoded_tile_byte_len(tile_size, tile_size)?;
-    if base_pixels.len() != expected_len {
+    let (base_pixels, base_pixel_format) = render_image_pixels(
+        base_tile.image.as_ref(),
+        base_tile.pixel_format,
+        base_tile.width,
+        base_tile.height,
+    )?;
+    if base_pixel_format != TilePixelFormat::Rgba8 {
         return Err(format!(
-            "旧瓦片像素长度不匹配: expected {expected_len}, got {}",
-            base_pixels.len()
+            "旧瓦片格式不支持局部合并: {:?} {}x{}",
+            base_tile.pixel_format, base_tile.width, base_tile.height
         ));
     }
 
-    let mut merged_pixels = Vec::from(base_pixels.as_ref());
+    let mut merged_pixels = Vec::from(base_pixels);
     let mut diagnostics = RenderDiagnostics::default();
     let mut stats = RenderPipelineStats {
         planned_tiles: chunks.len(),
@@ -879,36 +456,17 @@ pub(super) fn render_chunk_patches_blocking(
         merge_chunk_patch_into_tile_pixels(&mut merged_pixels, tile_size, layout, chunk, patch)?;
     }
 
-    let merged_pixels = Arc::<[u8]>::from(merged_pixels);
-    let (image, pixels, pixel_format, width, height, estimated_bytes) =
-        render_image_from_decoded_tile_shared(
+    let (image, pixel_format, width, height, estimated_bytes) =
+        render_image_from_decoded_tile_parts(
             tile_size,
             tile_size,
             TilePixelFormat::Rgba8,
-            merged_pixels,
+            Arc::from(merged_pixels),
         )?;
-    if let Some(dimension) = tile_chunk_positions.first().map(|chunk| chunk.dimension) {
-        if let Ok(planned) =
-            RenderTilePlan::new(dimension, mode, layout, tile_coord, tile_chunk_positions)
-        {
-            queue_ui_decoded_tile_cache_write_for_ready_tile_with_identity(
-                &cache_identity,
-                mode,
-                layout,
-                tile_cache_validation_seed,
-                &planned.planned,
-                width,
-                height,
-                pixel_format,
-                Arc::clone(&pixels),
-            );
-        }
-    }
     Ok(ChunkPatchRenderResult {
         coord: tile_coord,
         tile: ViewerTile {
             image,
-            pixels: Some(pixels),
             pixel_format: Some(pixel_format),
             width,
             height,
@@ -948,10 +506,11 @@ pub(super) fn merge_chunk_patch_into_tile_pixels(
         ));
     }
     let expected_patch_len = decoded_tile_byte_len(patch.width, patch.height)?;
-    if patch.pixels.len() != expected_patch_len {
+    let patch_pixels = patch.pixels.as_ref();
+    if patch_pixels.len() != expected_patch_len {
         return Err(format!(
             "局部 chunk 像素长度不匹配: expected {expected_patch_len}, got {}",
-            patch.pixels.len()
+            patch_pixels.len()
         ));
     }
     let expected_tile_len = decoded_tile_byte_len(tile_size, tile_size)?;
@@ -1016,8 +575,7 @@ pub(super) fn merge_chunk_patch_into_tile_pixels(
             .get_mut(dest_start..dest_end)
             .ok_or_else(|| "目标瓦片局部区域越界".to_string())?
             .copy_from_slice(
-                patch
-                    .pixels
+                patch_pixels
                     .get(source_start..source_end)
                     .ok_or_else(|| "局部 chunk 源区域越界".to_string())?,
             );
@@ -1043,13 +601,6 @@ pub(super) fn chunks_for_tile(
             ) == tile_coord
         })
         .collect()
-}
-
-pub(super) const fn decoded_cache_write_enabled(cache_policy: RenderCachePolicy) -> bool {
-    matches!(
-        cache_policy,
-        RenderCachePolicy::Use | RenderCachePolicy::Refresh
-    )
 }
 
 pub(super) fn send_tile_event(
@@ -1192,32 +743,10 @@ pub(super) fn resolve_interactive_tile_batch_size(
         .max(1)
 }
 
-pub(super) fn estimated_tile_region_keys(
-    coord: (i32, i32),
-    chunks_per_tile: i32,
-    chunks_per_region: i32,
-) -> BTreeSet<(i32, i32)> {
-    let min_chunk_x = coord.0.saturating_mul(chunks_per_tile);
-    let min_chunk_z = coord.1.saturating_mul(chunks_per_tile);
-    let max_chunk_x = min_chunk_x.saturating_add(chunks_per_tile.saturating_sub(1));
-    let max_chunk_z = min_chunk_z.saturating_add(chunks_per_tile.saturating_sub(1));
-    let mut regions = BTreeSet::new();
-    for region_z in
-        min_chunk_z.div_euclid(chunks_per_region)..=max_chunk_z.div_euclid(chunks_per_region)
-    {
-        for region_x in
-            min_chunk_x.div_euclid(chunks_per_region)..=max_chunk_x.div_euclid(chunks_per_region)
-        {
-            regions.insert((region_x, region_z));
-        }
-    }
-    regions
-}
-
 pub(super) fn selected_tile_chunk_count(
     selected_tiles: &[(i32, i32)],
     layout: RenderLayout,
-    tile_chunk_index: &BTreeMap<(i32, i32), Vec<ChunkPos>>,
+    tile_chunk_index: &TileChunkIndex,
 ) -> usize {
     let mut estimated_chunks = 0usize;
     for coord in selected_tiles {
@@ -1232,19 +761,16 @@ pub(super) fn selected_tile_chunk_count(
 
 pub(super) fn selected_tile_region_count(
     selected_tiles: &[(i32, i32)],
-    layout: RenderLayout,
-    tile_chunk_index: &BTreeMap<(i32, i32), Vec<ChunkPos>>,
+    _layout: RenderLayout,
+    tile_chunk_index: &TileChunkIndex,
 ) -> usize {
     let chunks_per_region = i32::try_from(CHUNKS_PER_REGION).unwrap_or(32).max(1);
-    let chunks_per_tile = i32::try_from(layout.chunks_per_tile)
-        .unwrap_or(CHUNKS_PER_TILE as i32)
-        .max(1);
     let mut regions = BTreeSet::new();
     for coord in selected_tiles {
         match tile_chunk_index.get(coord) {
             Some(positions) if positions.is_empty() => {}
             Some(positions) => {
-                for position in positions {
+                for position in positions.iter() {
                     regions.insert((
                         position.x.div_euclid(chunks_per_region),
                         position.z.div_euclid(chunks_per_region),

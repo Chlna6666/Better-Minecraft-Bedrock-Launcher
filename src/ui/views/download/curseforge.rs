@@ -1,4 +1,5 @@
 use crate::tasks::task_manager::TaskSnapshot;
+use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::html_renderer::render_html_document;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputState, Paste};
@@ -360,7 +361,7 @@ impl CurseForgeContentView {
 }
 
 impl Render for CurseForgeContentView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = std::time::Instant::now();
         let theme = cx.global::<crate::ui::state::theme::ThemeState>();
         let colors = crate::ui::theme::colors::lerp_theme_colors(
@@ -369,8 +370,7 @@ impl Render for CurseForgeContentView {
             theme.factor(now),
             theme.accent,
         );
-        let state = cx.global::<DownloadPageState>();
-        content::render_curseforge_content(&colors, state, &self.curseforge_results_list, now)
+        content::render_curseforge_content(window, cx, &colors, &self.curseforge_results_list, now)
     }
 }
 
@@ -797,7 +797,7 @@ fn render_curseforge_detail_files_panel(
 ) -> Div {
     let Some(mod_entry) = state.curseforge_mod_page_mod.as_ref().cloned() else {
         return div()
-            .rounded(px(20.))
+            .rounded(px(12.))
             .child(status_card(colors, "未选择资源", None));
     };
 
@@ -813,7 +813,7 @@ fn render_curseforge_detail_files_panel(
     let default_target = modals::default_install_target(selected_folder, local_versions);
 
     div()
-        .rounded(px(20.))
+        .rounded(px(12.))
         .bg(Hsla {
             a: 0.72,
             ..colors.surface
@@ -946,7 +946,7 @@ fn render_curseforge_detail_description_panel(
     let description_empty = description_document.blocks.is_empty();
 
     div()
-        .rounded(px(20.))
+        .rounded(px(12.))
         .bg(Hsla {
             a: 0.72,
             ..colors.surface
@@ -1399,11 +1399,13 @@ fn render_curseforge_sidebar(colors: &ThemeColors, state: &DownloadPageState) ->
 }
 
 fn render_curseforge_content(
+    window: &mut Window,
+    cx: &mut App,
     colors: &ThemeColors,
-    state: &DownloadPageState,
     curseforge_results_list: &Entity<CurseForgeResultsListView>,
     _now: Instant,
 ) -> Div {
+    let state = cx.global::<DownloadPageState>();
     let skeleton_bar = |width: Pixels, height: Pixels| {
         div().w(width).h(height).rounded(px(999.)).bg(Hsla {
             a: 0.08,
@@ -1423,7 +1425,7 @@ fn render_curseforge_content(
             })
             .with_animation(
                 "curseforge-skeleton-shimmer",
-                Animation::new(Duration::from_millis(1400)).repeat(),
+                repeating_linear_motion(Duration::from_millis(1400)),
                 |this, t| this.left(px(-180.0 + t * 440.0)),
             )
             .into_any_element()
@@ -1432,7 +1434,7 @@ fn render_curseforge_content(
     let skeleton_card = || {
         div()
             .w_full()
-            .rounded(px(14.))
+            .rounded(px(8.))
             .bg(Hsla {
                 a: 0.90,
                 ..colors.surface
@@ -1596,7 +1598,7 @@ fn render_curseforge_content(
     let topbar = div()
         .flex_none()
         .m(px(12.))
-        .rounded(px(14.))
+        .rounded(px(8.))
         .bg(Hsla {
             a: 0.78,
             ..colors.surface
@@ -1801,17 +1803,7 @@ fn render_curseforge_content(
             a: 0.30,
             ..colors.surface
         })
-        .child(render_curseforge_pager(
-            colors,
-            state
-                .curseforge_page_index
-                .min(total_pages.saturating_sub(1)),
-            total_pages,
-            state.page_jump_input.as_ref(),
-            state.curseforge_results_loading
-                || state.curseforge_page_commit_task.is_some()
-                || state.curseforge_pending_page_index.is_some(),
-        ));
+        .child(render_curseforge_pager(window, cx, colors));
 
     shell(div())
         .flex()
@@ -2065,6 +2057,30 @@ fn render_curseforge_result_card(
     visible_index: usize,
 ) -> AnyElement {
     let colors = *colors;
+    let dark_mode = colors.bg.l < 0.5;
+    let card_bg = if dark_mode {
+        Hsla {
+            a: 0.80,
+            ..colors.surface
+        }
+    } else {
+        Hsla {
+            a: 0.95,
+            ..colors.surface
+        }
+    };
+    let card_hover_bg = if dark_mode {
+        Hsla {
+            a: 0.95,
+            ..colors.surface
+        }
+    } else {
+        Hsla {
+            a: 1.0,
+            ..colors.surface
+        }
+    };
+
     let result_element_id = u64::try_from(props.mod_id).ok().unwrap_or_default();
     let reveal_progress = if should_animate_curseforge_result_cards() {
         transition_started_at.map_or(1.0, |started_at| {
@@ -2104,16 +2120,8 @@ fn render_curseforge_result_card(
         .w_full()
         .min_w(px(0.))
         .h(px(78.))
-        .rounded(px(14.))
-        .bg(Hsla {
-            a: 0.90,
-            ..colors.surface
-        })
-        .border_1()
-        .border_color(Hsla {
-            a: 0.10,
-            ..colors.border
-        })
+        .rounded(px(8.))
+        .hover(move |s| s.bg(card_hover_bg))
         .opacity(reveal_opacity)
         .relative()
         .top(reveal_translate_y)
@@ -2276,37 +2284,68 @@ fn render_curseforge_result_card(
                 .w(px(92.))
                 .flex_none()
                 .flex_shrink_0()
-                .h(px(32.))
-                .rounded(px(10.))
+                .h(px(30.))
+                .rounded(px(6.))
                 .bg(Hsla {
-                    a: 0.10,
+                    a: 0.18,
                     ..colors.accent
                 })
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(colors.text_secondary)
+                .text_color(colors.accent)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(6.))
                         .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
                         .child("安装"),
                 ),
         )
         .into_any_element()
 }
 
-fn render_curseforge_pager(
-    colors: &ThemeColors,
-    page_index: usize,
-    total_pages: usize,
-    page_jump_input: Option<&Entity<InputState>>,
-    results_loading: bool,
-) -> Div {
+fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
+    let state = cx.global::<DownloadPageState>();
+
+    let page_index = state.curseforge_page_index;
+    let results_loading = state.curseforge_results_loading
+        || state.curseforge_page_commit_task.is_some()
+        || state.curseforge_pending_page_index.is_some();
+    let showing = state.curseforge_mods.len();
+
+    let page_size = state.curseforge_page_size.max(1) as usize;
+    let total = state
+        .curseforge_total_count
+        .map(|v| v as usize)
+        .unwrap_or_else(|| state.curseforge_mods.len());
+
+    let total_pages = state
+        .curseforge_total_count
+        .map(|tot| ((tot as usize) + page_size - 1) / page_size)
+        .unwrap_or_else(|| {
+            if state.curseforge_has_more {
+                state.curseforge_page_index + 2
+            } else {
+                state.curseforge_page_index + 1
+            }
+        });
+
+    let page_jump_input = state.page_jump_input.clone();
+    let page_index = page_index.min(total_pages.saturating_sub(1));
+
     if total_pages <= 1 {
         return div().w_full().h(px(0.));
+    }
+
+    let total_pages = total_pages.max(1);
+    if let Some(input) = &page_jump_input {
+        let placeholder = format!("{}/{}", page_index + 1, total_pages);
+        let _ = input.update(cx, |st, cx| {
+            st.set_placeholder(SharedString::from(placeholder), window, cx);
+        });
     }
 
     let prev_enabled = page_index > 0;
@@ -2346,12 +2385,12 @@ fn render_curseforge_pager(
     let nav_btn = |icon: &'static str,
                    enabled: bool,
                    on_click_cb: Box<dyn Fn(&mut DownloadPageState)>,
-                   source: &'static str| {
+                   _source: &'static str| {
         let enabled = enabled && !results_loading;
         div()
             .min_w(px(32.))
             .h(px(32.))
-            .rounded(px(8.))
+            .rounded(px(6.))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -2371,28 +2410,26 @@ fn render_curseforge_pager(
                     colors.text_muted
                 },
             ))
-            .hover(|s| {
-                s.bg(Hsla {
-                    a: 0.05,
-                    ..colors.text_secondary
-                })
+            .hover(move |s| {
+                if enabled {
+                    s.bg(Hsla {
+                        a: if colors.bg.l < 0.5 { 0.12 } else { 0.08 },
+                        ..colors.text_primary
+                    })
+                } else {
+                    s
+                }
             })
-            .on_mouse_up(MouseButton::Left, move |_ev, window, cx| {
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                 if !enabled {
                     return;
                 }
-                let target_page = cx.read_global(|state: &DownloadPageState, _cx| {
-                    let mut snapshot = DownloadPageState {
-                        curseforge_page_index: state.curseforge_page_index,
-                        ..Default::default()
-                    };
-                    on_click_cb(&mut snapshot);
-                    snapshot
-                        .curseforge_page_index
-                        .min(total_pages.saturating_sub(1))
+                cx.update_global(|s: &mut DownloadPageState, _cx| {
+                    on_click_cb(s);
                 });
+                let target_page =
+                    cx.read_global(|state: &DownloadPageState, _cx| state.curseforge_page_index);
                 request_page_change(target_page, cx);
-                cx.stop_propagation();
             })
     };
 
@@ -2400,7 +2437,7 @@ fn render_curseforge_pager(
         div()
             .min_w(px(32.))
             .h(px(32.))
-            .rounded(px(8.))
+            .rounded(px(6.))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -2424,16 +2461,18 @@ fn render_curseforge_pager(
                     .font_weight(FontWeight::MEDIUM)
                     .child(label),
             )
-            .hover(|s| {
-                s.bg(Hsla {
-                    a: 0.05,
-                    ..colors.text_secondary
-                })
+            .hover(move |s| {
+                if active {
+                    s
+                } else {
+                    s.bg(Hsla {
+                        a: if colors.bg.l < 0.5 { 0.12 } else { 0.08 },
+                        ..colors.text_primary
+                    })
+                }
             })
-            .on_mouse_up(MouseButton::Left, move |_ev, window, cx| {
-                let _ = active;
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
                 request_page_change(page, cx);
-                cx.stop_propagation();
             })
     };
 
@@ -2483,20 +2522,10 @@ fn render_curseforge_pager(
 
     let jump = page_jump_input.map(|input| {
         let input_entity = input.clone();
-        let total_pages = total_pages;
-        let current = page_index + 1;
-
         div()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .ml(px(8.))
-            .pl(px(10.))
-            .border_l_1()
-            .border_color(Hsla {
-                a: 0.08,
-                ..colors.border
-            })
+            .gap(px(6.))
             .child(
                 div()
                     .text_size(px(12.))
@@ -2505,75 +2534,15 @@ fn render_curseforge_pager(
             )
             .child(
                 Input::new(&input_entity)
-                    .appearance(false)
-                    .bordered(false)
-                    .focus_bordered(false)
-                    .w(px(72.))
-                    .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(10.))
-                    .bg(Hsla {
-                        a: 0.55,
-                        ..colors.surface
-                    })
-                    .border_1()
-                    .border_color(Hsla {
-                        a: 0.12,
-                        ..colors.border
-                    }),
+                    .w(px(56.))
+                    .px(px(4.))
+                    .with_size(crate::ui::components::input::InputSize::Small),
             )
             .child(
                 div()
-                    .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(10.))
-                    .bg(Hsla {
-                        a: 0.05,
-                        ..colors.text_secondary
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
                     .text_size(px(12.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(colors.text_secondary)
-                    .child(format!("{current}/{total_pages}")),
-            )
-            .child(
-                div()
-                    .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(10.))
-                    .bg(Hsla {
-                        a: 0.05,
-                        ..colors.text_secondary
-                    })
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(colors.text_secondary)
-                    .child("跳转")
-                    .hover(|s| {
-                        s.bg(Hsla {
-                            a: 0.10,
-                            ..colors.text_secondary
-                        })
-                    })
-                    .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
-                        let raw = input_entity.read(cx).value().to_string();
-                        let parsed = raw.trim().parse::<usize>().ok();
-                        let Some(n) = parsed else {
-                            return;
-                        };
-                        let target = n.clamp(1, total_pages);
-                        request_page_change(target.saturating_sub(1), cx);
-                        let _ = input_entity.update(cx, |st, cx| {
-                            st.set_value(SharedString::from(""), window, cx);
-                        });
-                    }),
+                    .text_color(colors.text_muted)
+                    .child("页"),
             )
     });
 
@@ -2581,23 +2550,45 @@ fn render_curseforge_pager(
         .w_full()
         .flex()
         .items_center()
-        .justify_center()
-        .gap(px(8.))
-        .flex_wrap()
-        .child(nav_btn(
-            lucide_icons::icon_chevron_left(),
-            prev_enabled,
-            Box::new(|s| s.curseforge_page_index = s.curseforge_page_index.saturating_sub(1)),
-            "prev",
-        ))
-        .child(page_row)
-        .child(nav_btn(
-            lucide_icons::icon_chevron_right(),
-            next_enabled,
-            Box::new(|s| s.curseforge_page_index = s.curseforge_page_index.saturating_add(1)),
-            "next",
-        ))
-        .when_some(jump, |this, jump| this.child(jump))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .justify_start()
+                .text_size(px(12.))
+                .text_color(colors.text_muted)
+                .child(format!("结果: {showing} / {total}")),
+        )
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(nav_btn(
+                    lucide_icons::icon_chevron_left(),
+                    prev_enabled,
+                    Box::new(|s| {
+                        s.curseforge_page_index = s.curseforge_page_index.saturating_sub(1)
+                    }),
+                    "prev",
+                ))
+                .child(page_row)
+                .child(nav_btn(
+                    lucide_icons::icon_chevron_right(),
+                    next_enabled,
+                    Box::new(|s| {
+                        s.curseforge_page_index = s.curseforge_page_index.saturating_add(1)
+                    }),
+                    "next",
+                )),
+        )
+        .child(
+            div().flex_1().flex().justify_end().child(
+                jump.map(IntoElement::into_any_element)
+                    .unwrap_or_else(|| div().into_any_element()),
+            ),
+        )
 }
 
 fn render_curseforge_install_modal(
@@ -3115,7 +3106,7 @@ fn render_curseforge_install_modal(
         .child(
             div()
                 .w(px(220.))
-                .rounded(px(14.))
+                .rounded(px(8.))
                 .bg(Hsla {
                     a: 0.55,
                     ..colors.surface
@@ -3147,7 +3138,7 @@ fn render_curseforge_install_modal(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .rounded(px(14.))
+                .rounded(px(8.))
                 .bg(Hsla {
                     a: 0.55,
                     ..colors.surface
@@ -3228,7 +3219,7 @@ fn render_curseforge_mod_page_modal(
         div()
             .h(px(42.))
             .px(px(16.))
-            .rounded(px(14.))
+            .rounded(px(8.))
             .bg(if primary {
                 colors.accent
             } else {
@@ -3269,7 +3260,7 @@ fn render_curseforge_mod_page_modal(
     let icon_button = |icon_path: &'static str| {
         div()
             .size(px(42.))
-            .rounded(px(14.))
+            .rounded(px(8.))
             .bg(Hsla {
                 a: 0.62,
                 ..colors.surface
@@ -3290,7 +3281,7 @@ fn render_curseforge_mod_page_modal(
         div()
             .flex_1()
             .min_w(px(0.))
-            .rounded(px(16.))
+            .rounded(px(10.))
             .bg(Hsla {
                 a: 0.58,
                 ..colors.surface
@@ -3328,7 +3319,7 @@ fn render_curseforge_mod_page_modal(
     let detail_row = |label: &'static str, value: SharedString| {
         div()
             .w_full()
-            .rounded(px(14.))
+            .rounded(px(8.))
             .bg(Hsla {
                 a: 0.42,
                 ..colors.surface
@@ -3609,7 +3600,7 @@ fn render_curseforge_mod_page_modal(
                                             .relative()
                                             .w_full()
                                             .h(px(280.))
-                                            .rounded(px(22.))
+                                            .rounded(px(12.))
                                             .overflow_hidden()
                                             .bg(Hsla {
                                                 a: 0.18,
@@ -3764,7 +3755,7 @@ fn render_curseforge_mod_page_modal(
                                     .gap(px(16.))
                                     .child(
                                         div()
-                                            .rounded(px(20.))
+                                            .rounded(px(12.))
                                             .bg(Hsla {
                                                 a: 0.72,
                                                 ..colors.surface

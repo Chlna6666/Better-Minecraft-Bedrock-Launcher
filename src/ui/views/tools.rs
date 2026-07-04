@@ -47,7 +47,7 @@ impl Render for ToolsPageView {
             theme.factor(now),
             theme.accent,
         );
-        let window_size = window.window_bounds().get_bounds().size;
+        let window_size = window.bounds().size;
         render_tools_page(
             colors,
             window_size.width,

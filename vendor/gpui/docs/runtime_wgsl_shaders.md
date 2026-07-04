@@ -16,42 +16,37 @@ Use `WgslShaderSource` when validated shader source should be retained:
 
 ```rust
 let source = gpui::WgslShaderSource::from_path("examples/viewer.wgsl")?;
-let shader = source.compile(surface.device());
 ```
 
 For one-shot compilation, use the helper functions:
 
 ```rust
-let shader = gpui::compile_wgsl_shader_module_from_path(
-    surface.device(),
-    "examples/viewer.wgsl",
-)?;
+let shader = gpui::compile_wgsl_shader_module_from_path("examples/viewer.wgsl")?;
 ```
 
 Generated or embedded shader strings can use a source label:
 
 ```rust
 let shader = gpui::compile_wgsl_shader_module(
-    surface.device(),
     "generated-material-shader",
     generated_wgsl,
 )?;
 ```
 
-The loader validates WGSL with `naga` before creating the Nova shader module.
-File read errors include the path. Parse and validation errors include the
-provided label or path and a formatted WGSL diagnostic.
+The loader validates WGSL with `naga` before application rendering code creates
+backend shader modules. File read errors include the path. Parse and validation
+errors include the provided label or path and a formatted WGSL diagnostic.
 
-## Integration With GPU Surfaces
+## Integration With Application Rendering
 
-Runtime WGSL is normally paired with `Window::paint_gpu_mesh_3d`:
+Runtime WGSL belongs to the application-owned renderer:
 
-1. Create a GPUI-managed GPU surface.
-2. Compile the shader with the surface device.
-3. Build bind groups, pipelines, buffers, and textures from the same device.
-4. Render into `GpuSurfaceHandle::back_buffer_view`.
-5. Present or swap the rendered buffer and paint the surface into the GPUI
-   scene.
+1. Load and validate WGSL with `WgslShaderSource`.
+2. Cross-compile or translate it for the selected backend.
+3. Build bind groups, pipelines, buffers, and textures from the renderer device.
+4. Render into an application-owned render target or surface.
+5. Composite the rendered output into the GPUI scene through the application's
+   integration point.
 
 The custom render pipeline's color target must match the surface texture
 format.

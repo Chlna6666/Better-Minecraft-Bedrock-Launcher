@@ -172,12 +172,12 @@ fn write_string_to_clipboard(item: &ClipboardString) -> Result<()> {
     set_data_to_clipboard(&encode_wide, CF_UNICODETEXT.0 as u32)?;
 
     if let Some(metadata) = item.metadata.as_ref() {
-        let hash_result = {
+        let hash_bytes = {
             let hash = ClipboardString::text_hash(&item.text);
             hash.to_ne_bytes()
         };
         let encode_wide =
-            unsafe { std::slice::from_raw_parts(hash_result.as_ptr().cast::<u16>(), 4) };
+            unsafe { std::slice::from_raw_parts(hash_bytes.as_ptr().cast::<u16>(), 4) };
         set_data_to_clipboard(encode_wide, *CLIPBOARD_HASH_FORMAT)?;
 
         let metadata_wide = metadata.encode_utf16().chain(Some(0)).collect_vec();

@@ -1,11 +1,11 @@
 use crate::{
     Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
     FontStyle, FontWeight, GlyphId, GlyphRasterization, LineLayout, Pixels, PlatformTextSystem,
-    Point, RenderFingerprint, RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
-    ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode, point, size,
+    Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun,
+    SharedString, Size, point, size,
 };
 use anyhow::{Context as _, Ok, Result};
-use collections::{FxHashSet, HashMap};
+use collections::HashMap;
 use cosmic_text::{
     Attrs, AttrsList, CacheKey, CacheKeyFlags, Ellipsize, Family, Font as CosmicTextFont,
     FontFeatures as CosmicFontFeatures, FontSystem, Hinting, ShapeBuffer, ShapeLine, SwashCache,
@@ -15,7 +15,16 @@ use cosmic_text::{
 
 use parking_lot::RwLock;
 use smallvec::SmallVec;
-use std::{borrow::Cow, collections::hash_map::Entry, hash::Hash, path::PathBuf, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{
+        HashSet,
+        hash_map::{DefaultHasher, Entry},
+    },
+    hash::{Hash, Hasher},
+    path::PathBuf,
+    sync::Arc,
+};
 use unicode_segmentation::UnicodeSegmentation;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
@@ -91,8 +100,8 @@ struct CosmicTextSystemState {
     /// Caches the `FontId`s associated with a specific family to avoid iterating the font database
     /// for every font face in a family.
     font_ids_by_family_cache: HashMap<FontKey, SmallVec<[FontId; 4]>>,
-    loaded_font_paths: FxHashSet<PathBuf>,
-    loaded_embedded_font_hashes: FxHashSet<u64>,
+    loaded_font_paths: HashSet<PathBuf>,
+    loaded_embedded_font_hashes: HashSet<u64>,
 }
 
 struct LoadedFont {
@@ -139,8 +148,8 @@ impl CosmicTextSystem {
             scratch: ShapeBuffer::default(),
             loaded_fonts: Vec::new(),
             font_ids_by_family_cache: HashMap::default(),
-            loaded_font_paths: FxHashSet::default(),
-            loaded_embedded_font_hashes: FxHashSet::default(),
+            loaded_font_paths: HashSet::default(),
+            loaded_embedded_font_hashes: HashSet::default(),
         }))
     }
 }
@@ -162,10 +171,6 @@ impl PlatformTextSystem for CosmicTextSystem {
 
     fn set_application_font_family(&self, family: SharedString) {
         self.0.write().set_application_font_family(family);
-    }
-
-    fn warm_up_background(&self) {
-        self.0.write().warm_up_background();
     }
 
     fn platform_font_family(&self) -> SharedString {
@@ -276,58 +281,9 @@ impl PlatformTextSystem for CosmicTextSystem {
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
         self.0.write().layout_line(text, font_size, runs)
     }
-
-    fn recommended_rendering_mode(
-        &self,
-        _font_id: FontId,
-        _font_size: Pixels,
-    ) -> TextRenderingMode {
-        TextRenderingMode::Subpixel
-    }
 }
 
 impl CosmicTextSystemState {
-    fn warm_up_background(&mut self) {
-        #[cfg(target_os = "windows")]
-        self.load_windows_preferred_fallback_font_files();
-
-        if !self.system_fonts_loaded {
-            for family in preferred_system_text_fallback_families() {
-                if font_family_exists(&self.font_system, family) {
-                    _ = self.load_system_fallback_family(family, &FontFeatures::default());
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn load_windows_preferred_fallback_font_files(&mut self) {
-        let mut loaded_any = false;
-        let db = self.font_system.db_mut();
-        for path in windows_preferred_fallback_font_paths() {
-            let path = PathBuf::from(path);
-            if self.loaded_font_paths.contains(&path) {
-                continue;
-            }
-            if db.load_font_file(&path).is_ok() {
-                self.loaded_font_paths.insert(path);
-                loaded_any = true;
-            }
-        }
-
-        if loaded_any {
-            self.font_ids_by_family_cache.clear();
-            self.swash_cache = SwashCache::new();
-            self.cjk_frame_bounds_cache.clear();
-            self.system_coverage_fallback_face = None;
-            self.system_coverage_fallback_computed = false;
-            self.coverage_best_fallback_logged = false;
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    fn load_windows_preferred_fallback_font_files(&mut self) {}
-
     fn ensure_system_fonts_loaded(&mut self) {
         if self.system_fonts_loaded {
             return;
@@ -377,23 +333,6 @@ impl CosmicTextSystemState {
                 != 0
         {
             return Arc::from(vec![fallback]);
-        }
-
-        for fallback_family in preferred_system_text_fallback_families() {
-            if fallback_family.eq_ignore_ascii_case(primary_family) {
-                continue;
-            }
-            if let Some(fallback) = self.load_system_fallback_family(fallback_family, features)
-                && self
-                    .loaded_font(fallback.0)
-                    .font
-                    .as_swash()
-                    .charmap()
-                    .map('图')
-                    != 0
-            {
-                return Arc::from(vec![fallback]);
-            }
         }
 
         if let Some(best_face) = self.system_coverage_fallback_face()
@@ -496,12 +435,8 @@ impl CosmicTextSystemState {
             return self.system_coverage_fallback_face.clone();
         }
 
-        self.system_coverage_fallback_face = best_system_text_fallback_face(&self.font_system);
-        if self.system_coverage_fallback_face.is_none() && !self.system_fonts_loaded {
-            self.ensure_system_fonts_loaded();
-            self.system_coverage_fallback_face = best_system_text_fallback_face(&self.font_system);
-        }
         self.system_coverage_fallback_computed = true;
+        self.system_coverage_fallback_face = best_system_text_fallback_face(&self.font_system);
         self.system_coverage_fallback_face.clone()
     }
 
@@ -563,21 +498,19 @@ impl CosmicTextSystemState {
         automatic_fallbacks: bool,
         source_selection: FontSourceSelection,
     ) -> Result<SmallVec<[FontId; 4]>> {
-        let user_fallback_chain: Arc<[(FontId, SharedString)]> = {
-            let mut chain = match fallbacks {
-                Some(fallbacks) if !fallbacks.fallback_list().is_empty() => {
-                    let mut chain = Vec::new();
-                    for fallback_name in fallbacks.fallback_list() {
-                        let fallback_key = FontKey::new(
-                            SharedString::from(fallback_name.clone()),
-                            features.clone(),
-                            None,
-                            false,
-                            FontSourceSelection::Any,
-                        );
-                        let fallback_ids = if let Some(cached) =
-                            self.font_ids_by_family_cache.get(&fallback_key)
-                        {
+        let user_fallback_chain: Arc<[(FontId, SharedString)]> = match fallbacks {
+            Some(fallbacks) if !fallbacks.fallback_list().is_empty() => {
+                let mut chain = Vec::new();
+                for fallback_name in fallbacks.fallback_list() {
+                    let fallback_key = FontKey::new(
+                        SharedString::from(fallback_name.clone()),
+                        features.clone(),
+                        None,
+                        false,
+                        FontSourceSelection::Any,
+                    );
+                    let fallback_ids =
+                        if let Some(cached) = self.font_ids_by_family_cache.get(&fallback_key) {
                             cached.clone()
                         } else {
                             let loaded = self.load_family(
@@ -591,33 +524,20 @@ impl CosmicTextSystemState {
                                 .insert(fallback_key.clone(), loaded.clone());
                             loaded
                         };
-                        let Some(&fallback_id) = fallback_ids.first() else {
-                            continue;
-                        };
-                        let database_id = self.loaded_fonts[fallback_id.0].font.id();
-                        if let Some(face) = self.font_system.db().face(database_id)
-                            && let Some(family) = face.families.first()
-                        {
-                            chain.push((fallback_id, SharedString::from(family.0.clone())));
-                        }
-                    }
-                    chain
-                }
-                _ => Vec::new(),
-            };
-
-            if automatic_fallbacks {
-                for fallback in self.automatic_system_fallback_chain(features, name).iter() {
-                    if !chain
-                        .iter()
-                        .any(|(font_id, family)| font_id == &fallback.0 || family == &fallback.1)
+                    let Some(&fallback_id) = fallback_ids.first() else {
+                        continue;
+                    };
+                    let database_id = self.loaded_fonts[fallback_id.0].font.id();
+                    if let Some(face) = self.font_system.db().face(database_id)
+                        && let Some(family) = face.families.first()
                     {
-                        chain.push((fallback.0, fallback.1.clone()));
+                        chain.push((fallback_id, SharedString::from(family.0.clone())));
                     }
                 }
+                Arc::from(chain)
             }
-
-            Arc::from(chain)
+            _ if automatic_fallbacks => self.automatic_system_fallback_chain(features, name),
+            _ => Arc::from(Vec::new()),
         };
 
         let name =
@@ -726,15 +646,15 @@ impl CosmicTextSystemState {
         };
 
         if let Some(database_id) = self.font_system.db().query(&query)
-            && let Some(font_id) = candidates
+            && candidates
                 .iter()
                 .copied()
-                .find(|font_id| self.loaded_font(*font_id).font.id() == database_id)
+                .any(|font_id| self.loaded_font(font_id).font.id() == database_id)
         {
-            return Ok(font_id);
+            return self.font_id_for_database_id(database_id, &font.features);
         }
 
-        candidates
+        let closest = candidates
             .iter()
             .copied()
             .min_by_key(|font_id| {
@@ -744,7 +664,10 @@ impl CosmicTextSystemState {
                     face.weight.0.abs_diff(font.weight.0 as u16)
                 })
             })
-            .context("requested font family contains no font matching the other parameters")
+            .context("requested font family contains no font matching the other parameters")?;
+
+        let database_id = self.loaded_font(closest).font.id();
+        self.font_id_for_database_id(database_id, &font.features)
     }
 
     fn font_id_for_database_id(
@@ -912,13 +835,8 @@ impl CosmicTextSystemState {
             })?;
             let bytes = if params.is_emoji {
                 swash_image_to_polychrome_bitmap(image, bitmap_size)?
-            } else if params.subpixel_rendering && params.is_cjk {
-                let mask = swash_image_to_cjk_monochrome_mask(image, glyph_bounds)?;
-                alpha_mask_to_subpixel_bitmap(mask, bitmap_size)?
             } else if params.is_cjk {
                 swash_image_to_cjk_monochrome_mask(image, glyph_bounds)?
-            } else if params.subpixel_rendering {
-                swash_image_to_subpixel_bitmap(image, bitmap_size)?
             } else {
                 swash_image_to_monochrome_mask(image, bitmap_size)?
             };
@@ -1235,9 +1153,9 @@ fn default_cache_key_flags() -> CacheKeyFlags {
 }
 
 fn font_bytes_hash(bytes: &[u8]) -> u64 {
-    let mut hasher = RenderFingerprint::new();
+    let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
-    hasher.value()
+    hasher.finish()
 }
 
 const CJK_FRAME_SAMPLE_CHARS: &[char] = &[
@@ -1477,14 +1395,12 @@ fn system_text_coverage_score(
             };
             let charmap = font.charmap();
             let mut score = 0;
-            let mut covers_non_ascii = false;
             for (character, weight) in SYSTEM_FALLBACK_COVERAGE_SAMPLE {
                 if charmap.map(*character) != 0 {
-                    covers_non_ascii |= !character.is_ascii();
                     score += *weight;
                 }
             }
-            if covers_non_ascii { score } else { 0 }
+            score
         })
         .unwrap_or(0)
 }
@@ -1628,17 +1544,6 @@ fn swash_image_to_polychrome_bitmap(
     }
 }
 
-fn swash_image_to_subpixel_bitmap(
-    image: SwashImage,
-    bitmap_size: Size<DevicePixels>,
-) -> Result<Vec<u8>> {
-    let pixel_count = glyph_pixel_count(bitmap_size)?;
-    match image.content {
-        SwashContent::SubpixelMask | SwashContent::Color => rgba_to_bgra(image.data, pixel_count),
-        SwashContent::Mask => alpha_mask_to_subpixel_bitmap(image.data, bitmap_size),
-    }
-}
-
 fn glyph_pixel_count(bitmap_size: Size<DevicePixels>) -> Result<usize> {
     let width = usize::try_from(bitmap_size.width.0).context("invalid glyph bitmap width")?;
     let height = usize::try_from(bitmap_size.height.0).context("invalid glyph bitmap height")?;
@@ -1678,24 +1583,6 @@ fn alpha_mask_to_bgra(bytes: Vec<u8>, pixel_count: usize) -> Result<Vec<u8>> {
     let mut output = Vec::with_capacity(pixel_count.saturating_mul(4));
     for alpha in bytes {
         output.extend_from_slice(&[0, 0, 0, alpha]);
-    }
-    Ok(output)
-}
-
-fn alpha_mask_to_subpixel_bitmap(
-    bytes: Vec<u8>,
-    bitmap_size: Size<DevicePixels>,
-) -> Result<Vec<u8>> {
-    let pixel_count = glyph_pixel_count(bitmap_size)?;
-    anyhow::ensure!(
-        bytes.len() == pixel_count,
-        "glyph alpha mask has {} bytes for {} pixels",
-        bytes.len(),
-        pixel_count
-    );
-    let mut output = Vec::with_capacity(pixel_count.saturating_mul(4));
-    for alpha in bytes {
-        output.extend_from_slice(&[alpha, alpha, alpha, alpha]);
     }
     Ok(output)
 }
@@ -1789,11 +1676,6 @@ fn platform_font_fallbacks() -> &'static [&'static str] {
 }
 
 #[cfg(target_os = "windows")]
-fn preferred_system_text_fallback_families() -> &'static [&'static str] {
-    &["Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "NSimSun"]
-}
-
-#[cfg(target_os = "windows")]
 fn windows_startup_font_paths() -> &'static [&'static str] {
     &[
         "C:\\Windows\\Fonts\\segoeui.ttf",
@@ -1807,23 +1689,9 @@ fn windows_startup_font_paths() -> &'static [&'static str] {
     ]
 }
 
-#[cfg(target_os = "windows")]
-fn windows_preferred_fallback_font_paths() -> &'static [&'static str] {
-    &[
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "C:\\Windows\\Fonts\\msyhbd.ttc",
-        "C:\\Windows\\Fonts\\simsun.ttc",
-    ]
-}
-
 #[cfg(target_os = "macos")]
 fn platform_font_fallbacks() -> &'static [&'static str] {
     &[".AppleSystemUIFont", "Helvetica Neue", "Arial"]
-}
-
-#[cfg(target_os = "macos")]
-fn preferred_system_text_fallback_families() -> &'static [&'static str] {
-    &[]
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -1838,14 +1706,9 @@ fn platform_font_fallbacks() -> &'static [&'static str] {
     ]
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn preferred_system_text_fallback_families() -> &'static [&'static str] {
-    &["Noto Sans CJK SC", "Noto Sans CJK", "Source Han Sans SC"]
-}
-
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use std::hash::Hash;
+    use std::hash::{Hash, Hasher};
 
     use super::*;
     use crate::{FontWeight, Point, RenderGlyphParams, font, px};
@@ -1875,7 +1738,10 @@ mod tests {
                     for glyph in &run.glyphs {
                         glyph_count += 1;
                         let glyph_baseline = glyph.position.y + glyph.render_offset.y;
-                        let expected_baseline = *baseline.get_or_insert(glyph_baseline);
+                        let expected_baseline = match baseline {
+                            Some(expected_baseline) => expected_baseline,
+                            None => *baseline.insert(glyph_baseline),
+                        };
                         assert_eq!(
                             glyph_baseline, expected_baseline,
                             "glyph {:?} drifted from the common baseline at size {:?} and weight {:?}",
@@ -1930,8 +1796,6 @@ mod tests {
                             scale_factor: 1.0,
                             is_emoji: false,
                             is_cjk: glyph.is_cjk,
-                            subpixel_rendering: false,
-                            dilation: 0,
                         };
                         let bounds = text_system
                             .glyph_raster_bounds(&params)
@@ -1984,14 +1848,18 @@ mod tests {
                             scale_factor: 1.0,
                             is_emoji: false,
                             is_cjk: true,
-                            subpixel_rendering: false,
-                            dilation: 0,
                         };
                         let bounds = text_system
                             .glyph_raster_bounds(&params)
                             .expect("glyph raster bounds");
-                        let origin_y = *expected_origin_y.get_or_insert(bounds.origin.y);
-                        let height = *expected_height.get_or_insert(bounds.size.height);
+                        let origin_y = match expected_origin_y {
+                            Some(origin_y) => origin_y,
+                            None => *expected_origin_y.insert(bounds.origin.y),
+                        };
+                        let height = match expected_height {
+                            Some(height) => height,
+                            None => *expected_height.insert(bounds.size.height),
+                        };
 
                         assert_eq!(
                             bounds.origin.y, origin_y,
@@ -2037,8 +1905,6 @@ mod tests {
                     scale_factor: 1.0,
                     is_emoji: false,
                     is_cjk: true,
-                    subpixel_rendering: false,
-                    dilation: 0,
                 };
                 let exact_params = RenderGlyphParams {
                     is_cjk: false,
@@ -2072,55 +1938,6 @@ mod tests {
     }
 
     #[test]
-    fn mixed_fallback_line_metrics_cover_each_shaped_font() {
-        let text_system = CosmicTextSystem::new();
-        let mut font = font("Arial");
-        font.fallbacks = Some(FontFallbacks::from_fonts(vec![
-            "Microsoft YaHei".to_string(),
-        ]));
-        let font_id = text_system.font_id(&font).expect("font loads");
-        let text = "abc\u{4e2d}\u{6587}123";
-        let font_size = px(13.);
-        let layout = text_system.layout_line(
-            text,
-            font_size,
-            &[FontRun {
-                len: text.len(),
-                font_id,
-            }],
-        );
-
-        assert!(
-            layout.runs.len() >= 2,
-            "expected mixed primary and fallback font runs, got {:?}",
-            layout.runs
-        );
-
-        for run in &layout.runs {
-            for glyph in &run.glyphs {
-                let metrics = text_system.font_metrics(run.font_id);
-                let expected_ascent = metrics.ascent(glyph.font_size);
-                let expected_descent = metrics.descent(glyph.font_size).abs();
-
-                assert!(
-                    layout.ascent >= expected_ascent,
-                    "line ascent {:?} does not cover glyph {:?} ascent {:?}",
-                    layout.ascent,
-                    glyph.id,
-                    expected_ascent
-                );
-                assert!(
-                    layout.descent >= expected_descent,
-                    "line descent {:?} does not cover glyph {:?} descent {:?}",
-                    layout.descent,
-                    glyph.id,
-                    expected_descent
-                );
-            }
-        }
-    }
-
-    #[test]
     fn cjk_raster_key_is_distinct_from_non_cjk_key() {
         let mut non_cjk = RenderGlyphParams {
             font_id: FontId(0),
@@ -2130,8 +1947,6 @@ mod tests {
             scale_factor: 1.0,
             is_emoji: false,
             is_cjk: false,
-            subpixel_rendering: false,
-            dilation: 0,
         };
         let cjk = {
             non_cjk.is_cjk = true;
@@ -2140,11 +1955,11 @@ mod tests {
         non_cjk.is_cjk = false;
 
         assert_ne!(non_cjk, cjk);
-        let mut non_cjk_hasher = RenderFingerprint::new();
-        let mut cjk_hasher = RenderFingerprint::new();
+        let mut non_cjk_hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut cjk_hasher = std::collections::hash_map::DefaultHasher::new();
         non_cjk.hash(&mut non_cjk_hasher);
         cjk.hash(&mut cjk_hasher);
-        assert_ne!(non_cjk_hasher.value(), cjk_hasher.value());
+        assert_ne!(non_cjk_hasher.finish(), cjk_hasher.finish());
     }
 
     #[test]
@@ -2214,70 +2029,6 @@ mod tests {
     }
 
     #[test]
-    fn run_spans_return_cjk_adjacent_digits_and_punctuation_to_primary() {
-        let primary = FontId(0);
-        let fallback = FontId(1);
-        let fallbacks = [(fallback, SharedString::from("Fallback"))];
-        let text = "\u{7248}\u{672c}1.20.4-alpha";
-        let covers = |font_id: FontId, character: char| {
-            font_id == primary && character.is_ascii()
-                || font_id == fallback && matches!(character, '\u{7248}' | '\u{672c}')
-        };
-
-        let spans = compute_run_spans(text, 0, text.len(), primary, &fallbacks, &covers);
-
-        assert_eq!(
-            spans.as_slice(),
-            &[
-                RunSpan {
-                    start: 0,
-                    end: "\u{7248}\u{672c}".len(),
-                    slot: Some(0),
-                    font_id: fallback,
-                },
-                RunSpan {
-                    start: "\u{7248}\u{672c}".len(),
-                    end: text.len(),
-                    slot: None,
-                    font_id: primary,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn run_spans_return_latin_letters_to_primary_after_cjk_fallback() {
-        let primary = FontId(0);
-        let fallback = FontId(1);
-        let fallbacks = [(fallback, SharedString::from("Fallback"))];
-        let text = "\u{56fe}\u{8d44}abc";
-        let covers = |font_id: FontId, character: char| {
-            font_id == primary && character.is_ascii()
-                || font_id == fallback && matches!(character, '\u{56fe}' | '\u{8d44}')
-        };
-
-        let spans = compute_run_spans(text, 0, text.len(), primary, &fallbacks, &covers);
-
-        assert_eq!(
-            spans.as_slice(),
-            &[
-                RunSpan {
-                    start: 0,
-                    end: "\u{56fe}\u{8d44}".len(),
-                    slot: Some(0),
-                    font_id: fallback,
-                },
-                RunSpan {
-                    start: "\u{56fe}\u{8d44}".len(),
-                    end: text.len(),
-                    slot: None,
-                    font_id: primary,
-                },
-            ]
-        );
-    }
-
-    #[test]
     fn run_spans_keep_combining_marks_with_base() {
         let primary = FontId(0);
         let fallback = FontId(1);
@@ -2326,15 +2077,9 @@ mod tests {
         let text_system = CosmicTextSystem::new();
         let mut primary = font("Segoe UI");
         primary.fallbacks = Some(FontFallbacks::from_fonts(vec!["Microsoft YaHei UI".into()]));
+        let fallback = font("Microsoft YaHei UI");
         let primary_id = text_system.font_id(&primary).expect("primary font loads");
-        let fallback_id = {
-            let state = text_system.0.read();
-            let Some((fallback_id, _)) = state.loaded_font(primary_id).user_fallback_chain.first()
-            else {
-                return;
-            };
-            *fallback_id
-        };
+        let fallback_id = text_system.font_id(&fallback).expect("fallback font loads");
 
         if text_system.glyph_for_char(primary_id, '\u{56fe}').is_some()
             || text_system
@@ -2366,6 +2111,9 @@ mod tests {
         let mut primary = font("Segoe UI");
         primary.fallbacks = Some(FontFallbacks::from_fonts(vec!["Microsoft YaHei UI".into()]));
         let primary_id = text_system.font_id(&primary).expect("primary font loads");
+        let fallback_id = text_system
+            .font_id(&font("Microsoft YaHei UI"))
+            .expect("fallback font loads");
 
         let state = text_system.0.read();
         let loaded = state.loaded_font(primary_id);
@@ -2374,83 +2122,8 @@ mod tests {
         }
 
         assert_eq!(
-            loaded.user_fallback_chain.first().map(|(_, family)| family),
-            Some(&SharedString::from("Microsoft YaHei UI"))
-        );
-    }
-
-    #[test]
-    fn explicit_fallback_chain_keeps_system_fallback_after_user_fallbacks() {
-        let text_system = CosmicTextSystem::new();
-        let mut primary = font("Segoe UI");
-        primary.fallbacks = Some(FontFallbacks::from_fonts(vec!["Arial".into()]));
-        let primary_id = text_system.font_id(&primary).expect("primary font loads");
-
-        let state = text_system.0.read();
-        let loaded = state.loaded_font(primary_id);
-        if loaded.font.as_swash().charmap().map('图') != 0 {
-            return;
-        }
-        if loaded.user_fallback_chain.len() < 2 {
-            return;
-        }
-
-        assert_eq!(
-            loaded
-                .user_fallback_chain
-                .first()
-                .map(|(_, family)| family.as_ref()),
-            Some("Arial")
-        );
-        assert!(
-            loaded
-                .user_fallback_chain
-                .iter()
-                .skip(1)
-                .any(|(font_id, _)| state
-                    .loaded_font(*font_id)
-                    .font
-                    .as_swash()
-                    .charmap()
-                    .map('图')
-                    != 0)
-        );
-    }
-
-    #[test]
-    fn configured_fallback_font_is_preserved_after_plain_font_is_cached() {
-        let text_system = CosmicTextSystem::new();
-        let _plain_id = text_system
-            .font_id(&font("Segoe UI"))
-            .expect("plain font loads");
-
-        let mut primary = font("Segoe UI");
-        primary.fallbacks = Some(FontFallbacks::from_fonts(vec!["Microsoft YaHei UI".into()]));
-        let configured_id = text_system
-            .font_id(&primary)
-            .expect("configured font loads");
-
-        let state = text_system.0.read();
-        assert_eq!(
-            state
-                .loaded_font(configured_id)
-                .user_fallback_chain
-                .first()
-                .map(|(_, family)| family),
-            Some(&SharedString::from("Microsoft YaHei UI"))
-        );
-        assert!(
-            state
-                .loaded_font(configured_id)
-                .user_fallback_chain
-                .first()
-                .is_some_and(|(font_id, _)| state
-                    .loaded_font(*font_id)
-                    .font
-                    .as_swash()
-                    .charmap()
-                    .map('图')
-                    != 0)
+            loaded.user_fallback_chain.as_ref(),
+            &[(fallback_id, SharedString::from("Microsoft YaHei UI"))]
         );
     }
 
@@ -2557,45 +2230,6 @@ mod tests {
     }
 
     #[test]
-    fn preferred_windows_ui_cjk_fallback_is_chosen_before_coverage_scoring() {
-        let mut text_system = CosmicTextSystem::new();
-        {
-            let mut state = text_system.0.write();
-            state.platform_font_family = "Segoe UI".into();
-            state.font_system.db_mut().set_sans_serif_family("Segoe UI");
-            state.font_ids_by_family_cache.clear();
-            state.loaded_fonts.clear();
-            state.system_coverage_fallback_face = None;
-            state.system_coverage_fallback_computed = false;
-            state.coverage_best_fallback_logged = false;
-        }
-
-        let primary_id = text_system
-            .font_id(&font("Segoe UI"))
-            .expect("primary font loads");
-        let state = text_system.0.read();
-        let loaded = state.loaded_font(primary_id);
-        let chain = loaded
-            .user_fallback_chain
-            .iter()
-            .map(|(_, family)| family.as_ref().to_owned())
-            .collect::<Vec<_>>();
-
-        if chain.is_empty() {
-            return;
-        }
-
-        assert!(
-            chain.iter().any(|family| matches!(
-                family.as_str(),
-                "Microsoft YaHei UI" | "Microsoft YaHei" | "SimSun" | "NSimSun"
-            )),
-            "preferred Windows UI CJK fallback was not selected; chain={:?}",
-            chain
-        );
-    }
-
-    #[test]
     fn automatic_system_fallback_returns_single_system_font() {
         let text_system = CosmicTextSystem::new();
         let primary_id = text_system
@@ -2669,8 +2303,6 @@ mod tests {
             scale_factor: 1.0,
             is_emoji: false,
             is_cjk: glyph.is_cjk,
-            subpixel_rendering: false,
-            dilation: 0,
         };
         let mut state = text_system.0.write();
         let image = state.glyph_image(&params).expect("glyph image");

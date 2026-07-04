@@ -1,14 +1,14 @@
-use gpui::Window;
+use gpui::{Animation, AnimationDriver, AnimationSpec, Easing, RepeatMode, Window};
 use std::time::{Duration, Instant};
 
+const MIN_ANIMATION_DURATION: Duration = Duration::from_millis(1);
+
 pub fn ease_out_cubic(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
+    Easing::OutCubic.sample(t)
 }
 
 pub fn ease_in_cubic(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t.powi(3)
+    Easing::InCubic.sample(t)
 }
 
 pub fn ease_out_back(t: f32, overshoot: f32) -> f32 {
@@ -17,36 +17,92 @@ pub fn ease_out_back(t: f32, overshoot: f32) -> f32 {
     1.0 + (overshoot + 1.0) * p.powi(3) + overshoot * p.powi(2)
 }
 
+pub fn ease_in_back(t: f32, overshoot: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * ((overshoot + 1.0) * t - overshoot)
+}
+
+pub fn ease_out_elastic(t: f32) -> f32 {
+    Easing::OutElastic.sample(t)
+}
+
+pub fn raw_progress(now: Instant, started_at: Instant, duration: Duration) -> f32 {
+    let elapsed = now.saturating_duration_since(started_at);
+    AnimationSpec::new(duration.max(MIN_ANIMATION_DURATION))
+        .sample_elapsed(elapsed)
+        .raw_progress
+}
+
 pub fn eased_progress(now: Instant, started_at: Instant, duration: Duration) -> f32 {
     let elapsed = now.saturating_duration_since(started_at);
-    let duration = duration.max(Duration::from_millis(1));
-    (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+    AnimationSpec::new(duration.max(MIN_ANIMATION_DURATION))
+        .sample_elapsed(elapsed)
+        .raw_progress
 }
 
 pub fn is_running(now: Instant, started_at: Option<Instant>, duration: Duration) -> bool {
     started_at.is_some_and(|t0| now.saturating_duration_since(t0) < duration)
 }
 
+pub fn motion(duration: Duration, easing: Easing) -> Animation {
+    element_motion_from_spec(AnimationSpec::new(duration).ease(easing))
+}
+
+pub fn repeating_motion(duration: Duration, easing: Easing) -> Animation {
+    element_motion_from_spec(
+        AnimationSpec::new(duration)
+            .ease(easing)
+            .repeat(RepeatMode::Forever),
+    )
+}
+
+pub fn ease_out_cubic_motion(duration: Duration) -> Animation {
+    motion(duration, Easing::OutCubic)
+}
+
+pub fn ease_in_cubic_motion(duration: Duration) -> Animation {
+    motion(duration, Easing::InCubic)
+}
+
+pub fn repeating_linear_motion(duration: Duration) -> Animation {
+    repeating_motion(duration, Easing::Linear)
+}
+
+#[track_caller]
 pub fn request_animation_frame_if(window: &mut Window, animating: bool) {
     if animating {
-        window.request_animation_frame();
+        window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
+#[track_caller]
 pub fn request_animation_frame_if_active(window: &mut Window, animating: bool) {
     if animating && window.is_window_active() {
-        window.request_animation_frame();
+        window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
+#[track_caller]
 pub fn request_animation_frame_until(window: &mut Window, deadline: Option<Instant>) {
     if deadline.is_some_and(|deadline| Instant::now() < deadline) {
-        window.request_animation_frame();
+        window.request_animation_engine_frame(AnimationDriver::Layout);
     }
 }
 
+#[track_caller]
 pub fn request_animation_frame_until_active(window: &mut Window, deadline: Option<Instant>) {
     if window.is_window_active() {
         request_animation_frame_until(window, deadline);
     }
+}
+
+fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
+    let duration = spec.duration.max(MIN_ANIMATION_DURATION);
+    let repeat_forever = matches!(spec.repeat, RepeatMode::Forever);
+    let easing = spec.easing;
+    let mut animation = Animation::new(duration).with_easing(move |t| easing.sample(t));
+    if repeat_forever {
+        animation = animation.repeat();
+    }
+    animation
 }

@@ -21,17 +21,17 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, strengthen_black_overlay
         background
     };
 
-    div()
-        .absolute()
-        .inset_0()
-        .occlude()
-        .bg(overlay)
-        .backdrop_blur(
+    let backdrop = div().absolute().inset_0().occlude().bg(overlay);
+    if DEFAULT_MODAL_BACKDROP_BLUR_PX >= 0.5 {
+        backdrop.backdrop_blur(
             BackdropBlurStyle::new(px(DEFAULT_MODAL_BACKDROP_BLUR_PX))
                 .downsample(2)
                 .levels(3)
                 .saturation(1.08),
         )
+    } else {
+        backdrop
+    }
 }
 
 /// Fullscreen backdrop that intercepts mouse interaction "outside" a modal.

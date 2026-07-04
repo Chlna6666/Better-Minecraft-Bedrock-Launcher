@@ -42,7 +42,6 @@ fn test_tile(color: [u8; 4]) -> ViewerTile {
     let image = gpui::image::RgbaImage::from_raw(1, 1, color.to_vec()).expect("test tile image");
     ViewerTile {
         image: Arc::new(RenderImage::new(vec![gpui::image::Frame::new(image)])),
-        pixels: Some(Arc::<[u8]>::from(color.to_vec())),
         pixel_format: Some(TilePixelFormat::Rgba8),
         width: 1,
         height: 1,
@@ -59,7 +58,6 @@ fn test_paste_preview_image(color: [u8; 4], chunk_x: i32) -> PastePreviewImage {
             dimension: Dimension::Overworld,
         },
         image: Arc::new(RenderImage::new(vec![gpui::image::Frame::new(image)])),
-        pixels: Arc::<[u8]>::from(color.to_vec()),
         width: 1,
         height: 1,
     }
@@ -76,11 +74,17 @@ fn decoded_rgba_tile_wraps_without_channel_swap() {
         },
         width: 1,
         height: 1,
-        pixels: pixels.clone(),
+        pixels: Arc::from(pixels.clone()),
         pixel_format: TilePixelFormat::Rgba8,
     };
-    let (image, _pixels, _pixel_format, _width, _height, estimated_bytes) =
-        render_image_from_decoded_tile(tile).expect("render decoded tile");
+    let (image, _pixel_format, _width, _height, estimated_bytes) =
+        render_image_from_decoded_tile_parts(
+            tile.width,
+            tile.height,
+            tile.pixel_format,
+            tile.pixels,
+        )
+        .expect("render decoded tile");
 
     assert_eq!(estimated_bytes, pixels.len());
     assert_eq!(image.as_bytes(0).expect("resident image bytes"), pixels);
@@ -88,6 +92,37 @@ fn decoded_rgba_tile_wraps_without_channel_swap() {
         image.pixel_format(0),
         Some(gpui::RenderImagePixelFormat::Rgba8)
     );
+}
+
+#[::core::prelude::v1::test]
+fn decoded_shared_rgba_tile_reuses_pixel_storage() {
+    let pixels: Arc<[u8]> = Arc::<[u8]>::from([1, 2, 3, 255]);
+    let tile = DecodedTileImage {
+        coord: TileCoord {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        },
+        width: 1,
+        height: 1,
+        pixels: pixels.clone(),
+        pixel_format: TilePixelFormat::Rgba8,
+    };
+
+    let (image, _pixel_format, _width, _height, estimated_bytes) =
+        render_image_from_decoded_tile_parts(
+            tile.width,
+            tile.height,
+            tile.pixel_format,
+            tile.pixels,
+        )
+        .expect("render decoded tile");
+
+    assert_eq!(estimated_bytes, pixels.len());
+    assert!(std::ptr::eq(
+        image.as_bytes(0).expect("resident image bytes").as_ptr(),
+        pixels.as_ptr(),
+    ));
 }
 
 #[::core::prelude::v1::test]
@@ -124,13 +159,6 @@ fn interactive_render_defaults_request_gpu_with_cpu_fallback() {
 }
 
 #[::core::prelude::v1::test]
-fn edit_refresh_writes_decoded_cache_after_bypassing_probe() {
-    assert!(decoded_cache_write_enabled(RenderCachePolicy::Use));
-    assert!(decoded_cache_write_enabled(RenderCachePolicy::Refresh));
-    assert!(!decoded_cache_write_enabled(RenderCachePolicy::Bypass));
-}
-
-#[::core::prelude::v1::test]
 fn gpu_status_text_reports_chinese_states() {
     let cpu_default = RenderPipelineStats::default();
     let cpu_default_text = gpu_status_text(&cpu_default);
@@ -157,369 +185,6 @@ fn gpu_status_text_reports_chinese_states() {
     let fallback_text = gpu_status_text(&fallback);
     assert!(fallback_text.contains("GPU 已回退 CPU"));
     assert!(fallback_text.contains("GPU 后端未编译"));
-}
-
-#[::core::prelude::v1::test]
-fn ui_decoded_tile_cache_header_round_trips() {
-    let header = UiDecodedTileCacheHeader {
-        width: 2,
-        height: 2,
-        pixel_format: UI_DECODED_TILE_CACHE_PIXEL_FORMAT_RGBA8,
-        flags: UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY,
-        validation_kind: UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE,
-        validation_value: 0x1234,
-        raw_len: 16,
-    };
-    let encoded = encode_ui_decoded_tile_cache_header(header).expect("encode header");
-    let decoded = decode_ui_decoded_tile_cache_header(&encoded).expect("decode header");
-
-    assert_eq!(decoded, header);
-}
-
-#[::core::prelude::v1::test]
-fn ui_decoded_tile_cache_rejects_header_before_payload_decode() {
-    let mut encoded = encode_ui_decoded_tile_cache_header(UiDecodedTileCacheHeader {
-        width: 2,
-        height: 2,
-        pixel_format: UI_DECODED_TILE_CACHE_PIXEL_FORMAT_RGBA8,
-        flags: UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY,
-        validation_kind: UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE,
-        validation_value: 0x1234,
-        raw_len: 16,
-    })
-    .expect("encode header");
-    encoded.extend_from_slice(b"not-zstd");
-    encoded[20..24].copy_from_slice(&99_u32.to_le_bytes());
-
-    assert!(decode_ui_decoded_tile_cache_header(&encoded).is_err());
-}
-
-#[::core::prelude::v1::test]
-fn ui_decoded_tile_cache_rejects_legacy_bgra_header() {
-    let header = UiDecodedTileCacheHeader {
-        width: 2,
-        height: 2,
-        pixel_format: UI_DECODED_TILE_CACHE_PIXEL_FORMAT_BGRA8,
-        flags: UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY,
-        validation_kind: UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE,
-        validation_value: 0x1234,
-        raw_len: 16,
-    };
-
-    assert!(encode_ui_decoded_tile_cache_header(header).is_err());
-}
-
-#[::core::prelude::v1::test]
-fn ui_decoded_tile_cache_removes_legacy_bgra_header_file() {
-    let world_path = unique_map_viewer_test_dir("decoded-tile-cache-legacy-bgra");
-    let (render_backend, render_gpu_backend, mode, layout, planned) = test_cache_probe_inputs();
-    let cache_key = ui_decoded_tile_cache_key(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        layout,
-        &planned,
-    );
-    let cache_path =
-        ui_decoded_tile_cache_path(&world_path, render_backend, render_gpu_backend, &cache_key);
-    let mut bytes = encode_ui_decoded_tile_cache_header(UiDecodedTileCacheHeader {
-        width: 1,
-        height: 1,
-        pixel_format: UI_DECODED_TILE_CACHE_PIXEL_FORMAT_RGBA8,
-        flags: UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY,
-        validation_kind: UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE,
-        validation_value: 1,
-        raw_len: 4,
-    })
-    .expect("encode rgba header");
-    bytes[20..24].copy_from_slice(&UI_DECODED_TILE_CACHE_PIXEL_FORMAT_BGRA8.to_le_bytes());
-    bytes.extend_from_slice(b"legacy-bgra-payload");
-    write_ui_decoded_tile_cache_bytes(&cache_path, &bytes).expect("write legacy cache");
-    let cache_identity = decoded_cache_identity(&world_path, render_backend, render_gpu_backend);
-
-    let probe = probe_ui_decoded_tile_cache(&cache_identity, mode, layout, 42, &planned);
-
-    assert!(matches!(
-        probe.decision,
-        UiDecodedTileCacheProbeDecision::Miss
-    ));
-    assert!(!cache_path.exists());
-
-    let _ = std::fs::remove_dir_all(world_path);
-}
-
-#[::core::prelude::v1::test]
-fn ui_decoded_tile_cache_validation_mismatch_skips_payload_decode() {
-    let world_path = unique_map_viewer_test_dir("decoded-tile-cache-validation-mismatch");
-    let (render_backend, render_gpu_backend, mode, layout, planned) = test_cache_probe_inputs();
-    let cache_key = ui_decoded_tile_cache_key(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        layout,
-        &planned,
-    );
-    let cache_path =
-        ui_decoded_tile_cache_path(&world_path, render_backend, render_gpu_backend, &cache_key);
-    let mut bytes = encode_ui_decoded_tile_cache_header(UiDecodedTileCacheHeader {
-        width: 1,
-        height: 1,
-        pixel_format: UI_DECODED_TILE_CACHE_PIXEL_FORMAT_RGBA8,
-        flags: UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY,
-        validation_kind: UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE,
-        validation_value: 1,
-        raw_len: 4,
-    })
-    .expect("encode stale header");
-    bytes.extend_from_slice(b"not-zstd");
-    write_ui_decoded_tile_cache_bytes(&cache_path, &bytes).expect("write stale cache");
-    let cache_identity = decoded_cache_identity(&world_path, render_backend, render_gpu_backend);
-
-    let probe = probe_ui_decoded_tile_cache(&cache_identity, mode, layout, 42, &planned);
-
-    assert!(matches!(
-        probe.decision,
-        UiDecodedTileCacheProbeDecision::Miss
-    ));
-    assert_eq!(
-        probe.exact_validation,
-        Some(TileCacheValidationOutcome::Mismatch)
-    );
-    assert_eq!(probe.decode_ms, 0);
-    assert!(!cache_path.exists());
-
-    let _ = std::fs::remove_dir_all(world_path);
-}
-
-#[::core::prelude::v1::test]
-fn ui_decoded_tile_cache_fresh_probe_defers_payload_decode_and_loads_rgba() {
-    let world_path = unique_map_viewer_test_dir("decoded-tile-cache-fresh-rgba");
-    let (render_backend, render_gpu_backend, mode, layout, planned) = test_cache_probe_inputs();
-    let cache_key = ui_decoded_tile_cache_key(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        layout,
-        &planned,
-    );
-    let cache_path =
-        ui_decoded_tile_cache_path(&world_path, render_backend, render_gpu_backend, &cache_key);
-    let chunk_positions = planned
-        .chunk_positions
-        .as_deref()
-        .expect("test planned tile chunk positions");
-    let validation_seed = 42;
-    let validation_value = bedrock_render::tile_cache_validation_value(
-        &cache_key,
-        &planned.region,
-        chunk_positions,
-        validation_seed,
-    );
-    let pixels = vec![10, 20, 30, 255];
-    write_ui_decoded_tile_cache_entry(UiDecodedTileCacheWrite {
-        path: cache_path.clone(),
-        header: UiDecodedTileCacheHeader {
-            width: 1,
-            height: 1,
-            pixel_format: UI_DECODED_TILE_CACHE_PIXEL_FORMAT_RGBA8,
-            flags: UI_DECODED_TILE_CACHE_FLAG_NON_EMPTY,
-            validation_kind: UI_DECODED_TILE_CACHE_VALIDATION_KIND_SIMPLE_TILE,
-            validation_value,
-            raw_len: 4,
-        },
-        pixels: Some(Arc::<[u8]>::from(pixels.clone())),
-    })
-    .expect("write rgba cache");
-    let cache_identity = decoded_cache_identity(&world_path, render_backend, render_gpu_backend);
-
-    let probe =
-        probe_ui_decoded_tile_cache(&cache_identity, mode, layout, validation_seed, &planned);
-    let ready = match probe.decision {
-        UiDecodedTileCacheProbeDecision::Ready(ready) => ready,
-        UiDecodedTileCacheProbeDecision::EmptyNegative | UiDecodedTileCacheProbeDecision::Miss => {
-            panic!("expected fresh decoded tile cache")
-        }
-    };
-    assert_eq!(probe.decode_ms, 0);
-    assert_eq!(
-        probe.exact_validation,
-        Some(TileCacheValidationOutcome::Valid)
-    );
-
-    let (tile, _, _) = load_ui_decoded_tile_cache_ready(ready).expect("load fresh cache");
-    assert_eq!(tile.pixel_format, TilePixelFormat::Rgba8);
-    assert_eq!(tile.pixels, pixels);
-
-    let _ = std::fs::remove_dir_all(world_path);
-}
-
-#[::core::prelude::v1::test]
-fn ui_decoded_tile_cache_identity_matches_wrapped_key_and_path() {
-    let world_path = unique_map_viewer_test_dir("decoded-tile-cache-identity");
-    let (render_backend, render_gpu_backend, mode, layout, planned) = test_cache_probe_inputs();
-    let identity = decoded_cache_identity(&world_path, render_backend, render_gpu_backend);
-    let wrapped_key = ui_decoded_tile_cache_key(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        layout,
-        &planned,
-    );
-    let identity_key = ui_decoded_tile_cache_key_with_identity(&identity, mode, layout, &planned);
-
-    assert_eq!(identity_key, wrapped_key);
-    assert_eq!(
-        ui_decoded_tile_cache_path_with_identity(&identity, &identity_key),
-        ui_decoded_tile_cache_path(
-            &world_path,
-            render_backend,
-            render_gpu_backend,
-            &wrapped_key
-        )
-    );
-
-    let _ = std::fs::remove_dir_all(world_path);
-}
-
-#[::core::prelude::v1::test]
-fn removing_decoded_tile_cache_is_limited_to_target_tile() {
-    let world_path = unique_map_viewer_test_dir("decoded-tile-cache-remove-one");
-    let (render_backend, render_gpu_backend, mode, layout, planned) = test_cache_probe_inputs();
-    let target_key = ui_decoded_tile_cache_key(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        layout,
-        &planned,
-    );
-    let target_path =
-        ui_decoded_tile_cache_path(&world_path, render_backend, render_gpu_backend, &target_key);
-    let mut sibling = planned.clone();
-    sibling.job.coord.x = 1;
-    let sibling_key = ui_decoded_tile_cache_key(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        layout,
-        &sibling,
-    );
-    let sibling_path = ui_decoded_tile_cache_path(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        &sibling_key,
-    );
-    write_ui_decoded_tile_cache_bytes(&target_path, b"target").expect("write target cache");
-    write_ui_decoded_tile_cache_bytes(&sibling_path, b"sibling").expect("write sibling cache");
-
-    remove_ui_decoded_tile_cache_file_for_tile(
-        &world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        Dimension::Overworld,
-        layout,
-        (0, 0),
-        "test_remove_one",
-    );
-
-    assert!(!target_path.exists());
-    assert!(sibling_path.exists());
-
-    let _ = std::fs::remove_dir_all(world_path);
-}
-
-fn test_cache_probe_inputs() -> (
-    RenderBackend,
-    RenderGpuBackend,
-    RenderMode,
-    RenderLayout,
-    PlannedTile,
-) {
-    let render_backend = RenderBackend::Auto;
-    let render_gpu_backend = RenderGpuBackend::Auto;
-    let mode = RenderMode::SurfaceBlocks;
-    let layout = RenderLayout {
-        chunks_per_tile: 1,
-        blocks_per_pixel: 16,
-        pixels_per_block: 1,
-    };
-    let planned = PlannedTile {
-        job: RenderJob {
-            coord: TileCoord {
-                x: 0,
-                z: 0,
-                dimension: Dimension::Overworld,
-            },
-            mode,
-            tile_size: 1,
-            scale: layout.blocks_per_pixel,
-            pixels_per_block: layout.pixels_per_block,
-        },
-        region: ChunkRegion::new(Dimension::Overworld, 0, 0, 0, 0),
-        layout,
-        chunk_positions: Some(vec![ChunkPos {
-            x: 0,
-            z: 0,
-            dimension: Dimension::Overworld,
-        }]),
-    };
-    (render_backend, render_gpu_backend, mode, layout, planned)
-}
-
-fn unique_map_viewer_test_dir(prefix: &str) -> PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!("{prefix}-{nonce}"))
-}
-
-#[::core::prelude::v1::test]
-fn world_cache_signature_changes_when_leveldb_wal_changes() {
-    let world_path = unique_map_viewer_test_dir("world-cache-signature-wal");
-    let db_path = world_path.join("db");
-    std::fs::create_dir_all(&db_path).expect("create db");
-    std::fs::write(world_path.join("level.dat"), b"level").expect("write level");
-    std::fs::write(db_path.join("CURRENT"), b"MANIFEST-000001\n").expect("write current");
-    let mut manifest = Vec::new();
-    manifest.extend_from_slice(b"BWLDBMAN1");
-    manifest.extend_from_slice(&2_u64.to_le_bytes());
-    manifest.extend_from_slice(&1_u64.to_le_bytes());
-    manifest.extend_from_slice(&0_u64.to_le_bytes());
-    std::fs::write(db_path.join("MANIFEST-000001"), manifest).expect("write manifest");
-    std::fs::write(db_path.join("000001.log"), b"first").expect("write log");
-
-    let signature_before = world_cache_signature(&world_path);
-    let seed_before = render_preset_cache_validation_seed(
-        &world_path,
-        RenderBackend::Cpu,
-        RenderGpuBackend::Auto,
-    );
-    let decoded_identity_before =
-        decoded_cache_identity(&world_path, RenderBackend::Cpu, RenderGpuBackend::Auto);
-    std::fs::write(db_path.join("000001.log"), b"first-second").expect("append log");
-
-    assert_ne!(world_cache_signature(&world_path), signature_before);
-    assert_ne!(
-        render_preset_cache_validation_seed(
-            &world_path,
-            RenderBackend::Cpu,
-            RenderGpuBackend::Auto,
-        ),
-        seed_before
-    );
-    assert_eq!(
-        decoded_cache_identity(&world_path, RenderBackend::Cpu, RenderGpuBackend::Auto),
-        decoded_identity_before
-    );
-    let _ = std::fs::remove_dir_all(world_path);
 }
 
 fn test_viewport(offset_x: f32, offset_y: f32, width: f32, height: f32) -> MapViewport {
@@ -623,6 +288,28 @@ fn precise_visible_tile_bounds_do_not_include_chunk_alignment_padding() {
 }
 
 #[::core::prelude::v1::test]
+fn minimum_zoom_allows_wider_tile_overview() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(4096.0, 4096.0, 1920.0, 1080.0);
+    viewport.scale = MIN_VIEWPORT_SCALE;
+    let center = viewport.center_tile(layout);
+    let bounds = visible_tile_bounds_for_viewport(viewport, layout, center).expect("bounds");
+    let width = bounds.max_x - bounds.min_x + 1;
+    let height = bounds.max_z - bounds.min_z + 1;
+
+    assert!(width > 32, "expected wider overview than old 32-tile cap");
+    assert!(width <= MAX_TILE_SPAN_PER_AXIS);
+    assert!(height <= MAX_TILE_SPAN_PER_AXIS);
+}
+
+#[::core::prelude::v1::test]
+fn zoom_input_clamps_to_expanded_minimum_scale() {
+    let scale = parse_zoom_scale("1").expect("zoom scale");
+
+    assert_eq!(scale, MIN_VIEWPORT_SCALE);
+}
+
+#[::core::prelude::v1::test]
 fn tile_rect_uses_chunk_aligned_render_origin() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 128.0, 128.0);
@@ -711,6 +398,184 @@ fn tile_paint_snapshot_only_keeps_visible_tiles() {
 
     assert_eq!(snapshot.tiles.len(), 1);
     assert_eq!(snapshot.tiles[0].coord, (0, 0));
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_records_current_paint_bounds() {
+    let layout = web_relief_render_layout();
+    let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    let manager = RegionManager::default();
+
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+
+    assert_eq!(
+        snapshot.paint_bounds,
+        visible_tile_bounds_for_viewport(viewport, layout, viewport.center_tile(layout))
+    );
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_uses_precise_visible_bounds() {
+    let layout = web_relief_render_layout();
+    let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    let mut manager = RegionManager::default();
+    manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
+    manager.mark_loaded((1, 0), test_tile([2, 2, 2, 255]));
+
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+
+    assert_eq!(
+        snapshot
+            .tiles
+            .iter()
+            .map(|tile| tile.coord)
+            .collect::<Vec<_>>(),
+        vec![(0, 0)]
+    );
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_patch_replaces_visible_tile() {
+    let layout = web_relief_render_layout();
+    let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    let mut manager = RegionManager::default();
+    manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    manager.mark_loaded((0, 0), test_tile([2, 2, 2, 255]));
+    let source_image = manager
+        .entries
+        .get(&(0, 0))
+        .and_then(|entry| entry.image.as_ref())
+        .map(|tile| tile.image.clone())
+        .expect("replacement test tile");
+
+    let patched =
+        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(0, 0)], 2);
+
+    let TilePaintSnapshotPatch::Patched(patched) = patched else {
+        panic!("visible replacement should patch snapshot");
+    };
+    assert_eq!(patched.generation, 2);
+    assert_eq!(patched.tiles.len(), 1);
+    assert!(Arc::ptr_eq(&patched.tiles[0].image, &source_image));
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_patch_inserts_visible_tile_in_paint_order() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    viewport.scale = 0.5;
+    let mut manager = RegionManager::default();
+    manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    manager.mark_loaded((1, 0), test_tile([2, 2, 2, 255]));
+
+    let patched =
+        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(1, 0)], 2);
+
+    let TilePaintSnapshotPatch::Patched(patched) = patched else {
+        panic!("new visible tile should patch snapshot");
+    };
+    assert_eq!(
+        patched
+            .tiles
+            .iter()
+            .map(|tile| tile.coord)
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0)]
+    );
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_patch_rebuilds_when_viewport_bounds_change() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    viewport.scale = 0.5;
+    let mut manager = RegionManager::default();
+    manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    viewport.offset_x = -512.0;
+    manager.mark_loaded((2, 0), test_tile([2, 2, 2, 255]));
+
+    let patched =
+        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(2, 0)], 2);
+
+    assert!(matches!(patched, TilePaintSnapshotPatch::Rebuild));
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_patch_replaces_existing_coord_without_duplicate() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    viewport.scale = 0.5;
+    let mut manager = RegionManager::default();
+    manager.mark_loaded((0, 0), test_tile([3, 3, 3, 255]));
+    manager.mark_loaded((1, 0), test_tile([4, 4, 4, 255]));
+    let paint_bounds =
+        visible_tile_bounds_for_viewport(viewport, layout, viewport.center_tile(layout));
+    let old_tile = test_tile([1, 1, 1, 255]);
+    let one_tile = manager
+        .entries
+        .get(&(1, 0))
+        .and_then(|entry| entry.image.as_ref())
+        .expect("second visible tile");
+    let snapshot = TilePaintSnapshot {
+        tiles: Arc::new(vec![
+            PaintTile {
+                coord: (1, 0),
+                image: one_tile.image.clone(),
+                pixel_format: one_tile.pixel_format,
+                width: one_tile.width,
+                height: one_tile.height,
+                estimated_bytes: one_tile.estimated_bytes,
+            },
+            PaintTile {
+                coord: (0, 0),
+                image: old_tile.image,
+                pixel_format: old_tile.pixel_format,
+                width: old_tile.width,
+                height: old_tile.height,
+                estimated_bytes: old_tile.estimated_bytes,
+            },
+        ]),
+        debug_overlays: Arc::new(Vec::new()),
+        generation: 1,
+        estimated_bytes: 8,
+        paint_bounds,
+    };
+
+    let patched =
+        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(0, 0)], 2);
+
+    let TilePaintSnapshotPatch::Patched(patched) = patched else {
+        panic!("existing coord replacement should patch snapshot");
+    };
+    let coords = patched
+        .tiles
+        .iter()
+        .map(|tile| tile.coord)
+        .collect::<Vec<_>>();
+    assert_eq!(coords, vec![(0, 0), (1, 0)]);
+    assert_eq!(coords.iter().filter(|coord| **coord == (0, 0)).count(), 1);
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_patch_removes_invalid_tile() {
+    let layout = web_relief_render_layout();
+    let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    let mut manager = RegionManager::default();
+    manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    manager.mark_invalid((0, 0), SharedString::from("empty"));
+
+    let patched =
+        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(0, 0)], 2);
+
+    let TilePaintSnapshotPatch::Patched(patched) = patched else {
+        panic!("invalid visible tile should patch snapshot");
+    };
+    assert!(patched.tiles.is_empty());
+    assert!(patched.debug_overlays.is_empty());
 }
 
 #[::core::prelude::v1::test]
@@ -820,6 +685,10 @@ fn canvas_pointer_move_action_releases_stale_captures_without_matching_button() 
         CanvasPointerMoveAction::Ignore
     );
     assert_eq!(
+        canvas_pointer_move_action(Some(MouseButton::Right), false, false, true, false),
+        CanvasPointerMoveAction::Ignore
+    );
+    assert_eq!(
         canvas_pointer_move_action(None, false, false, false, true),
         CanvasPointerMoveAction::ReleaseStaleCaptures
     );
@@ -871,6 +740,9 @@ fn pointer_capture_release_clears_all_drag_state() {
         offset_x: 3.0,
         offset_y: 4.0,
         moved: true,
+        last_position: point(px(1.0), px(2.0)),
+        last_movement_x: 0.0,
+        last_movement_y: 0.0,
     });
     let chunk = ChunkPos {
         x: 1,
@@ -878,7 +750,10 @@ fn pointer_capture_release_clears_all_drag_state() {
         dimension: Dimension::Overworld,
     };
     let mut right_selection = Some(RightSelectionDrag::new(point(px(0.0), px(0.0)), chunk));
-    let mut preview_drag = Some(point(px(5.0), px(6.0)));
+    let mut preview_drag = Some(Preview3dDragState {
+        mode: Preview3dDragMode::RotateModel,
+        position: point(px(5.0), px(6.0)),
+    });
     let mut dock_drag = Some(DockDragState {
         drag: DockDrag::RightPanel,
         start_x: 10.0,
@@ -1154,7 +1029,8 @@ fn tile_chunk_region_uses_eight_by_eight_tile_bounds() {
 fn region_cache_identity_uses_eight_chunk_tile_layout() {
     let layout = web_relief_render_layout();
     let world_path = PathBuf::from("test-world");
-    let manifest_path = tile_manifest_cache_path(
+    let manifest_path = bedrock_render::tile_manifest_cache_path(
+        &file_ops::cache_subdir("bedrock-render"),
         &world_path,
         RenderBackend::Cpu,
         RenderGpuBackend::Auto,
@@ -1167,50 +1043,9 @@ fn region_cache_identity_uses_eight_chunk_tile_layout() {
     assert_eq!(layout.chunks_per_tile, 8);
     assert_eq!(layout.blocks_per_pixel, 1);
     assert_eq!(layout.pixels_per_block, 4);
-    assert!(manifest_path.contains("8c-1bpp-4ppb.brmanifest.zst"));
-    assert!(!manifest_path.contains("32c-1bpp-4ppb.brmanifest.zst"));
-}
-
-#[::core::prelude::v1::test]
-fn surface_hash_changes_with_block_boundary_strength() {
-    let mut base_hasher = RenderFingerprint::new();
-    let base = web_relief_surface_options();
-    hash_surface_options(base, &mut base_hasher);
-
-    let mut changed = base;
-    changed.block_boundaries.strength += 0.1;
-    let mut changed_hasher = RenderFingerprint::new();
-    hash_surface_options(changed, &mut changed_hasher);
-
-    assert_ne!(base_hasher.value(), changed_hasher.value());
-}
-
-#[::core::prelude::v1::test]
-fn surface_hash_changes_with_block_volume_strength() {
-    let mut base_hasher = RenderFingerprint::new();
-    let base = web_relief_surface_options();
-    hash_surface_options(base, &mut base_hasher);
-
-    let mut changed = base;
-    changed.block_volume.cast_shadow_strength += 0.1;
-    let mut changed_hasher = RenderFingerprint::new();
-    hash_surface_options(changed, &mut changed_hasher);
-
-    assert_ne!(base_hasher.value(), changed_hasher.value());
-}
-
-#[::core::prelude::v1::test]
-fn surface_hash_changes_with_atlas_texture_detail() {
-    let mut base_hasher = RenderFingerprint::new();
-    let base = web_relief_surface_options();
-    hash_surface_options(base, &mut base_hasher);
-
-    let mut changed = base;
-    changed.atlas.texture_detail_strength += 0.1;
-    let mut changed_hasher = RenderFingerprint::new();
-    hash_surface_options(changed, &mut changed_hasher);
-
-    assert_ne!(base_hasher.value(), changed_hasher.value());
+    assert!(manifest_path.contains("map-manifest-index"));
+    assert!(manifest_path.contains("8c-1bpp-4ppb.bridx"));
+    assert!(!manifest_path.contains("32c-1bpp-4ppb"));
 }
 
 #[::core::prelude::v1::test]
@@ -1317,39 +1152,74 @@ fn edit_refresh_pending_manifest_keeps_refresh_priority_after_probe() {
 }
 
 #[::core::prelude::v1::test]
+fn mark_loaded_preserves_visible_priority_after_ready_return() {
+    let mut manager = RegionManager::default();
+    let coord = (4, -3);
+    manager.ensure_tiles(&[coord], TilePriority::Visible);
+
+    manager.mark_loaded(coord, test_tile([1, 2, 3, 255]));
+
+    let entry = manager.entries.get(&coord).expect("loaded tile");
+    assert_eq!(entry.state, TileLoadState::Loaded);
+    assert_eq!(entry.priority, TilePriority::Visible);
+}
+
+#[::core::prelude::v1::test]
 fn force_refresh_tiles_requeues_loaded_tile_and_releases_memory() {
     let mut manager = RegionManager::default();
     let coord = (2, -1);
     manager.ensure_tiles(&[coord], TilePriority::Visible);
-    manager.mark_loaded(coord, test_tile([1, 2, 3, 255]));
+    let tile = test_tile([1, 2, 3, 255]);
+    let image = tile.image.clone();
+    manager.mark_loaded(coord, tile);
 
-    manager.force_refresh_tiles(&[coord], TilePriority::EditRefresh);
+    let dropped_images = manager.force_refresh_tiles(&[coord], TilePriority::EditRefresh);
 
     let entry = manager.entries.get(&coord).expect("forced refresh tile");
     assert_eq!(entry.state, TileLoadState::Queued);
     assert_eq!(entry.priority, TilePriority::EditRefresh);
     assert!(entry.image.is_none());
     assert_eq!(manager.loaded_estimated_bytes, 0);
+    assert_eq!(dropped_images.len(), 1);
+    assert!(Arc::ptr_eq(&dropped_images[0], &image));
 }
 
 #[::core::prelude::v1::test]
 fn clear_removes_loaded_tiles_and_releases_estimated_memory() {
     let mut manager = RegionManager::default();
-    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
-    manager.mark_loaded((1, 0), test_tile([4, 5, 6, 255]));
+    let first = test_tile([1, 2, 3, 255]);
+    let first_image = first.image.clone();
+    let second = test_tile([4, 5, 6, 255]);
+    let second_image = second.image.clone();
+    manager.mark_loaded((0, 0), first);
+    manager.mark_loaded((1, 0), second);
 
-    manager.clear();
+    let dropped_images = manager.clear();
 
     assert!(manager.entries.is_empty());
     assert_eq!(manager.loaded_estimated_bytes(), 0);
+    assert_eq!(dropped_images.len(), 2);
+    assert!(
+        dropped_images
+            .iter()
+            .any(|image| Arc::ptr_eq(image, &first_image))
+    );
+    assert!(
+        dropped_images
+            .iter()
+            .any(|image| Arc::ptr_eq(image, &second_image))
+    );
 }
 
 #[::core::prelude::v1::test]
 fn mark_invalid_removes_loaded_tile_and_releases_estimated_memory() {
     let mut manager = RegionManager::default();
-    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
+    let tile = test_tile([1, 2, 3, 255]);
+    let image = tile.image.clone();
+    manager.mark_loaded((0, 0), tile);
 
-    manager.mark_invalid((0, 0), SharedString::from("索引确认该瓦片没有可渲染区块"));
+    let dropped_image =
+        manager.mark_invalid((0, 0), SharedString::from("索引确认该瓦片没有可渲染区块"));
 
     assert!(
         manager
@@ -1358,6 +1228,7 @@ fn mark_invalid_removes_loaded_tile_and_releases_estimated_memory() {
             .is_some_and(|entry| entry.image.is_none())
     );
     assert_eq!(manager.loaded_estimated_bytes(), 0);
+    assert!(dropped_image.is_some_and(|dropped_image| Arc::ptr_eq(&dropped_image, &image)));
 }
 
 #[::core::prelude::v1::test]
@@ -1389,7 +1260,7 @@ fn render_tile_plan_rejects_empty_chunk_positions() {
         RenderMode::SurfaceBlocks,
         web_relief_render_layout(),
         (0, 0),
-        Vec::new(),
+        TileChunkPositions::from(Vec::new()),
     );
 
     assert!(plan.is_err());
@@ -1403,7 +1274,7 @@ fn render_tile_plan_keeps_only_indexed_tile_chunks() {
         RenderMode::SurfaceBlocks,
         layout,
         (1, -1),
-        vec![
+        TileChunkPositions::from(vec![
             ChunkPos {
                 x: 8,
                 z: -8,
@@ -1414,7 +1285,7 @@ fn render_tile_plan_keeps_only_indexed_tile_chunks() {
                 z: 0,
                 dimension: Dimension::Overworld,
             },
-        ],
+        ]),
     )
     .expect("non-empty render tile plan");
 
@@ -1447,7 +1318,7 @@ fn interactive_session_config_culls_missing_chunks() {
 fn interactive_tile_batch_defaults_are_conservative() {
     assert_eq!(RENDER_UI_BATCH_TILES, 8);
     assert_eq!(FIRST_VISIBLE_BATCH_LIMIT, 4);
-    assert_eq!(DRAG_VISIBLE_BATCH_LIMIT, 2);
+    assert_eq!(DRAG_VISIBLE_BATCH_LIMIT, 4);
     assert_eq!(RENDER_STREAM_GROUP_TILES, 4);
     assert_eq!(
         resolve_interactive_tile_batch_size(RenderBackend::Auto, RenderCpuBudget::default(), 8),
@@ -1458,6 +1329,22 @@ fn interactive_tile_batch_defaults_are_conservative() {
             .render_cpu_pipeline(16)
             .chunk_batch_size
             <= 4
+    );
+}
+
+#[::core::prelude::v1::test]
+fn visible_render_batch_size_expands_for_large_overviews() {
+    assert_eq!(
+        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, false, true),
+        FIRST_VISIBLE_BATCH_LIMIT
+    );
+    assert_eq!(
+        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, true),
+        OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT
+    );
+    assert_eq!(
+        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, false),
+        OVERVIEW_VISIBLE_BATCH_LIMIT
     );
 }
 
@@ -1559,32 +1446,29 @@ fn queued_tiles_can_preserve_sequence_when_center_priority_is_disabled() {
 }
 
 #[::core::prelude::v1::test]
-fn decoded_cache_probe_order_uses_center_ring_sort_key() {
-    let (_, _, mode, layout, planned) = test_cache_probe_inputs();
-    let make_plan = |coord: (i32, i32)| {
-        let mut planned = planned.clone();
-        planned.job.coord.x = coord.0;
-        planned.job.coord.z = coord.1;
-        planned
+fn queued_tiles_limited_matches_full_queue_prefix() {
+    let mut manager = RegionManager::default();
+    let bounds = TileBounds {
+        min_x: -3,
+        max_x: 3,
+        min_z: -3,
+        max_z: 3,
     };
-    let plans = vec![
-        make_plan((2, 0)),
-        make_plan((1, 1)),
-        make_plan((0, 1)),
-        make_plan((0, 0)),
-        make_plan((1, 0)),
-    ];
-    let order = sorted_ui_decoded_cache_probe_tiles(&plans, (0, 0))
-        .into_iter()
-        .map(|(_, planned)| (planned.job.coord.x, planned.job.coord.z))
-        .collect::<Vec<_>>();
+    let visible_tiles = tile_coords_from_bounds(bounds);
+    manager.ensure_tiles(&visible_tiles, TilePriority::Visible);
 
-    assert_eq!(order, vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 0)]);
-    assert_eq!(order, {
-        let mut coords = vec![(2, 0), (1, 1), (0, 1), (0, 0), (1, 0)];
-        sort_tiles_center_first(&mut coords, (0, 0));
-        coords
-    });
+    let full_queue = manager.queued_coords((0, 0), Some(bounds), false, true);
+    let limited_queue = manager.queued_coords_limited((0, 0), Some(bounds), false, true, 12);
+
+    assert_eq!(limited_queue, full_queue[..12]);
+}
+
+#[::core::prelude::v1::test]
+fn tile_order_uses_center_ring_sort_key() {
+    let mut coords = vec![(2, 0), (1, 1), (0, 1), (0, 0), (1, 0)];
+    sort_tiles_center_first(&mut coords, (0, 0));
+
+    assert_eq!(coords, vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 0)]);
 }
 
 #[::core::prelude::v1::test]
@@ -1655,6 +1539,20 @@ fn visible_region_growth_does_not_cancel_loading_regions() {
 }
 
 #[::core::prelude::v1::test]
+fn retain_tiles_removes_loading_tiles_outside_retained_region() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0), (1, 0)], TilePriority::Visible);
+    manager.mark_loading(&[(0, 0), (1, 0)]);
+
+    let dropped_images = manager.retain_tiles(&BTreeSet::from([(0, 0)]));
+
+    assert!(dropped_images.is_empty());
+    assert!(manager.entries.contains_key(&(0, 0)));
+    assert!(!manager.entries.contains_key(&(1, 0)));
+    assert_eq!(manager.loading_count(), 1);
+}
+
+#[::core::prelude::v1::test]
 fn subsequent_visible_region_batches_keep_camera_center_priority() {
     let mut manager = RegionManager::default();
     let bounds = TileBounds {
@@ -1689,12 +1587,12 @@ fn stale_cache_hit_is_replaced_by_render_and_late_cache_does_not_overwrite_fresh
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
 
-    let load_result = manager.mark_loaded_from_cache(
+    let accepted = manager.mark_loaded_from_cache(
         (0, 0),
         test_tile([1, 2, 3, 255]),
         TileSourceFreshness::Stale,
     );
-    assert!(load_result.accepted);
+    assert!(accepted);
     assert_eq!(
         manager
             .entries
@@ -1714,12 +1612,12 @@ fn stale_cache_hit_is_replaced_by_render_and_late_cache_does_not_overwrite_fresh
         Some(TileSourceStatus::Fresh)
     );
 
-    let load_result = manager.mark_loaded_from_cache(
+    let accepted = manager.mark_loaded_from_cache(
         (0, 0),
         test_tile([7, 8, 9, 255]),
         TileSourceFreshness::Stale,
     );
-    assert!(!load_result.accepted);
+    assert!(!accepted);
     let current = manager
         .entries
         .get(&(0, 0))
@@ -1733,12 +1631,12 @@ fn fresh_cache_hit_does_not_need_validation_render() {
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
 
-    let load_result = manager.mark_loaded_from_cache(
+    let accepted = manager.mark_loaded_from_cache(
         (0, 0),
         test_tile([1, 2, 3, 255]),
         TileSourceFreshness::Fresh,
     );
-    assert!(load_result.accepted);
+    assert!(accepted);
 
     assert_eq!(
         manager
@@ -1756,10 +1654,12 @@ fn byte_budget_trim_preserves_visible_tiles() {
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
     manager.ensure_tiles(&[(2, 0)], TilePriority::Prefetch);
     manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
-    manager.mark_loaded((2, 0), test_tile([4, 5, 6, 255]));
+    let prefetch = test_tile([4, 5, 6, 255]);
+    let prefetch_image = prefetch.image.clone();
+    manager.mark_loaded((2, 0), prefetch);
 
     let visible_tiles = BTreeSet::from([(0, 0)]);
-    manager.trim_loaded_tiles_to_budget(&visible_tiles, 4);
+    let dropped_images = manager.trim_loaded_tiles_to_budget(&visible_tiles, 4);
 
     assert_eq!(
         manager.entries.get(&(0, 0)).map(|entry| entry.state),
@@ -1775,6 +1675,8 @@ fn byte_budget_trim_preserves_visible_tiles() {
             .get(&(2, 0))
             .is_some_and(|entry| entry.image.is_none())
     );
+    assert_eq!(dropped_images.len(), 1);
+    assert!(Arc::ptr_eq(&dropped_images[0], &prefetch_image));
 }
 
 #[::core::prelude::v1::test]
@@ -1850,8 +1752,8 @@ fn merge_chunks_into_tile_index_preserves_existing_tile_chunks() {
         dimension: Dimension::Overworld,
     };
     let mut tile_chunk_index = BTreeMap::from([
-        ((1, -1), vec![existing_chunk]),
-        ((0, 0), vec![unrelated_chunk]),
+        ((1, -1), TileChunkPositions::from(vec![existing_chunk])),
+        ((0, 0), TileChunkPositions::from(vec![unrelated_chunk])),
     ]);
     let chunks = [inserted_chunk, ignored_chunk]
         .into_iter()
@@ -1860,12 +1762,16 @@ fn merge_chunks_into_tile_index_preserves_existing_tile_chunks() {
     merge_chunks_into_tile_index(&mut tile_chunk_index, (1, -1), &chunks, layout);
 
     assert_eq!(
-        tile_chunk_index.get(&(1, -1)).cloned(),
-        Some(vec![existing_chunk, inserted_chunk])
+        tile_chunk_index
+            .get(&(1, -1))
+            .map(|positions| positions.as_ref()),
+        Some([existing_chunk, inserted_chunk].as_slice())
     );
     assert_eq!(
-        tile_chunk_index.get(&(0, 0)).cloned(),
-        Some(vec![unrelated_chunk])
+        tile_chunk_index
+            .get(&(0, 0))
+            .map(|positions| positions.as_ref()),
+        Some([unrelated_chunk].as_slice())
     );
 }
 
@@ -1885,7 +1791,7 @@ fn chunk_patch_merge_only_replaces_matching_chunk_pixels() {
         },
         width: 1,
         height: 1,
-        pixels: vec![9, 8, 7, 255],
+        pixels: Arc::from(vec![9, 8, 7, 255]),
         pixel_format: TilePixelFormat::Rgba8,
     };
 
@@ -1977,6 +1883,44 @@ fn delete_and_reset_chunk_actions_have_distinct_user_semantics() {
 }
 
 #[::core::prelude::v1::test]
+fn copy_safe_chunk_records_excludes_coordinate_sensitive_records() {
+    let chunk = ChunkPos {
+        x: 8,
+        z: -3,
+        dimension: Dimension::Overworld,
+    };
+    let records = vec![
+        test_chunk_record(chunk, ChunkRecordTag::Data3D),
+        test_chunk_record(chunk, ChunkRecordTag::SubChunkPrefix),
+        test_chunk_record(chunk, ChunkRecordTag::BlockEntity),
+        test_chunk_record(chunk, ChunkRecordTag::Entity),
+        test_chunk_record(chunk, ChunkRecordTag::HardcodedSpawners),
+        test_chunk_record(chunk, ChunkRecordTag::Version),
+    ];
+
+    let copied_tags = copy_safe_chunk_records(records)
+        .into_iter()
+        .map(|record| record.key.tag)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        copied_tags,
+        vec![
+            ChunkRecordTag::Data3D,
+            ChunkRecordTag::SubChunkPrefix,
+            ChunkRecordTag::Version,
+        ]
+    );
+}
+
+fn test_chunk_record(chunk: ChunkPos, tag: ChunkRecordTag) -> ChunkRecord {
+    ChunkRecord {
+        key: ChunkKey::new(chunk, tag),
+        value: Vec::new().into(),
+    }
+}
+
+#[::core::prelude::v1::test]
 fn chunk_image_export_composes_multiple_chunks_to_png() {
     let chunks = vec![
         ChunkImageExportChunk {
@@ -1985,7 +1929,7 @@ fn chunk_image_export_composes_multiple_chunks_to_png() {
                 z: 0,
                 dimension: Dimension::Overworld,
             },
-            pixels: Arc::<[u8]>::from(vec![255, 0, 0, 255]),
+            pixels: vec![255, 0, 0, 255],
             width: 1,
             height: 1,
         },
@@ -1995,7 +1939,7 @@ fn chunk_image_export_composes_multiple_chunks_to_png() {
                 z: 0,
                 dimension: Dimension::Overworld,
             },
-            pixels: Arc::<[u8]>::from(vec![0, 255, 0, 255]),
+            pixels: vec![0, 255, 0, 255],
             width: 1,
             height: 1,
         },
@@ -2013,7 +1957,7 @@ fn chunk_image_export_composes_multiple_chunks_to_png() {
 }
 
 #[::core::prelude::v1::test]
-fn quick_write_actions_that_keep_tile_index_use_local_refresh() {
+fn quick_write_actions_that_change_map_pixels_force_tile_refresh() {
     let source = ChunkPos {
         x: 1,
         z: 2,
@@ -2025,8 +1969,8 @@ fn quick_write_actions_that_keep_tile_index_use_local_refresh() {
         dimension: Dimension::Overworld,
     };
 
-    assert!(QuickWriteAction::DeleteCurrentChunk(target).reuses_known_tile_index_after_write());
-    assert!(QuickWriteAction::ResetCurrentChunk(target).reuses_known_tile_index_after_write());
+    assert!(!QuickWriteAction::DeleteCurrentChunk(target).reuses_known_tile_index_after_write());
+    assert!(!QuickWriteAction::ResetCurrentChunk(target).reuses_known_tile_index_after_write());
     assert!(
         QuickWriteAction::DeleteCurrentChunkBlockEntities(target)
             .reuses_known_tile_index_after_write()
@@ -2044,7 +1988,7 @@ fn quick_write_actions_that_keep_tile_index_use_local_refresh() {
         .prioritizes_tile_refresh()
     );
     assert!(
-        QuickWriteAction::PasteCopiedChunks {
+        !QuickWriteAction::PasteCopiedChunks {
             source_anchor: source,
             target_anchor: target,
             chunk_count: 4,
@@ -2062,7 +2006,7 @@ fn quick_write_actions_that_keep_tile_index_use_local_refresh() {
         .prioritizes_tile_refresh()
     );
     assert!(
-        QuickWriteAction::PasteImportedStructure {
+        !QuickWriteAction::PasteImportedStructure {
             source_anchor: source,
             target_anchor: target,
             chunk_count: 4,
@@ -2334,17 +2278,17 @@ fn pasted_chunk_targets_mirror_relative_offsets() {
         ),
         vec![
             ChunkPos {
-                x: -18,
-                z: 30,
-                dimension: Dimension::End,
-            },
-            ChunkPos {
                 x: -20,
                 z: 30,
                 dimension: Dimension::End,
             },
             ChunkPos {
-                x: -18,
+                x: -22,
+                z: 30,
+                dimension: Dimension::End,
+            },
+            ChunkPos {
+                x: -20,
                 z: 33,
                 dimension: Dimension::End,
             },
@@ -2364,21 +2308,95 @@ fn pasted_chunk_targets_mirror_relative_offsets() {
         vec![
             ChunkPos {
                 x: -20,
-                z: 33,
+                z: 30,
                 dimension: Dimension::End,
             },
             ChunkPos {
                 x: -18,
-                z: 33,
+                z: 30,
                 dimension: Dimension::End,
             },
             ChunkPos {
                 x: -20,
-                z: 30,
+                z: 27,
                 dimension: Dimension::End,
             },
         ]
     );
+}
+
+#[::core::prelude::v1::test]
+fn copied_chunk_snapshot_structure_placement_uses_full_height_and_single_target() {
+    let source_anchor = ChunkPos {
+        x: 4,
+        z: 10,
+        dimension: Dimension::Overworld,
+    };
+    let target_anchor = ChunkPos {
+        x: -20,
+        z: 30,
+        dimension: Dimension::Overworld,
+    };
+    let copied_chunk = CopiedChunkData {
+        source: source_anchor,
+        chunks: vec![
+            CopiedChunkSnapshot {
+                chunk: ChunkPos {
+                    x: 3,
+                    z: 10,
+                    dimension: Dimension::Overworld,
+                },
+                records: Vec::new(),
+                block_entities: Vec::new(),
+                hardcoded_spawn_areas: Vec::new(),
+            },
+            CopiedChunkSnapshot {
+                chunk: source_anchor,
+                records: Vec::new(),
+                block_entities: Vec::new(),
+                hardcoded_spawn_areas: Vec::new(),
+            },
+            CopiedChunkSnapshot {
+                chunk: ChunkPos {
+                    x: 5,
+                    z: 12,
+                    dimension: Dimension::Overworld,
+                },
+                records: Vec::new(),
+                block_entities: Vec::new(),
+                hardcoded_spawn_areas: Vec::new(),
+            },
+        ],
+    };
+    let transform = PasteTransform {
+        rotation: PasteRotation::Clockwise90,
+        mirror_x: true,
+        mirror_z: false,
+    };
+    let targets = pasted_chunk_targets(&copied_chunk, source_anchor, target_anchor, transform);
+
+    for (snapshot, target_chunk) in copied_chunk.chunks.iter().zip(targets) {
+        let placement = copied_chunk_snapshot_structure_placement(snapshot, target_chunk)
+            .expect("copied chunk structure placement");
+        let target_chunks = placement
+            .structure
+            .target_chunks(bedrock_world::McStructurePlacement {
+                source_anchor: placement.source_anchor,
+                target_anchor: placement.target_anchor,
+                origin_y: placement.origin_y,
+                rotation: bedrock_world::McStructureRotation::Clockwise90,
+                mirror_x: true,
+                mirror_z: false,
+            })
+            .expect("target chunks");
+        let expected_targets = [target_chunk].into_iter().collect::<BTreeSet<_>>();
+
+        assert_eq!(placement.structure.size.x, 16);
+        assert_eq!(placement.structure.size.y, 384);
+        assert_eq!(placement.structure.size.z, 16);
+        assert_eq!(placement.origin_y, -64);
+        assert_eq!(target_chunks, expected_targets);
+    }
 }
 
 #[::core::prelude::v1::test]
@@ -2577,19 +2595,20 @@ fn player_quick_edit_clear_inventory_does_not_drop_other_nbt() {
 }
 
 #[::core::prelude::v1::test]
-fn mcstructure_export_y_range_limits_default_height() {
+fn mcstructure_export_y_range_uses_dimension_build_height() {
     assert_eq!(
         mcstructure::export_y_range(Dimension::Overworld, 64),
-        (32, 95)
+        (-64, 319)
     );
     assert_eq!(
         mcstructure::export_y_range(Dimension::Overworld, -64),
-        (-64, -1)
+        (-64, 319)
     );
     assert_eq!(
         mcstructure::export_y_range(Dimension::Nether, 127),
-        (64, 127)
+        (0, 127)
     );
+    assert_eq!(mcstructure::export_y_range(Dimension::End, 64), (0, 255));
 }
 
 #[::core::prelude::v1::test]

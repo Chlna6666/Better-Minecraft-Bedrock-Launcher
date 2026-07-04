@@ -12,25 +12,30 @@
     reason = "Vulkan FFI requires unsafe calls; each unsafe block documents its safety invariant"
 )]
 
-use std::{ffi::CString, sync::Arc, time::Instant};
+use std::{
+    ffi::{CStr, CString},
+    sync::Arc,
+    time::Instant,
+};
 
 use crate::error::VulkanError;
 use crate::registry::ResourceRegistry;
 use ash::{Entry, Instance, khr, vk};
 use gfx_core::{
-    AddressMode, BackendKind, BeginRenderPassDesc, BlendMode, BufferDesc, BufferId, BufferUsage,
-    ClearColor, ColorAttachmentDesc, CommandEncoderDesc, CommandEncoderId, CompositeAlphaMode,
-    DeviceDesc, DrawDesc, DrawStepDesc, DrawTriangleDesc, FilterMode, Format, GfxBackend,
-    GfxCommandDevice, GfxDiagnosticsDevice, GfxError, GfxPipelineDevice, GfxPresentationDevice,
-    GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxThreadingMode, LoadOp,
-    MemoryLocation, PipelineLayoutDesc, PipelineLayoutId, PresentMode, PrimitiveTopology,
-    RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderTarget,
-    ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
-    ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId,
-    ShaderBinary, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages,
-    SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, TextureDataLayout,
-    TextureDesc, TextureDimension, TextureId, TextureUsage, TextureViewDesc, TextureViewId,
-    TextureWriteDesc, VertexFormat,
+    AdapterInfo, AddressMode, BackendCapabilities, BackendKind, BeginRenderPassDesc, BlendMode,
+    BufferDesc, BufferId, BufferUsage, ClearColor, ColorAttachmentDesc, CommandEncoderDesc,
+    CommandEncoderId, CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, DrawTriangleDesc,
+    FilterMode, Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxError,
+    GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
+    GfxSurfaceDevice, GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
+    PipelineLayoutDesc, PipelineLayoutId, PresentMode, PrimitiveTopology,
+    RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId,
+    RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource,
+    ResourceBindingType, ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc,
+    ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId, ShaderBinary, ShaderCode,
+    ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus,
+    SurfaceConfig, SurfaceDesc, SurfaceId, TextureDataLayout, TextureDesc, TextureDimension,
+    TextureId, TextureUsage, TextureViewDesc, TextureViewId, TextureWriteDesc, VertexFormat,
 };
 use gfx_memory::{
     DeferredFreeQueue, MemoryAllocation, MemoryAllocator, UploadAllocation, UploadRingAllocator,
@@ -54,6 +59,43 @@ pub struct BaselineMetrics {
     pub first_frame_time: Option<std::time::Duration>,
     /// Number of submitted frames.
     pub submitted_frames: u64,
+}
+
+/// Enumerates Vulkan physical devices visible through the loader.
+///
+/// # Errors
+///
+/// Returns [`GfxError`] if the Vulkan loader, instance creation, or physical
+/// device enumeration fails.
+pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
+    let entry = load_entry()?;
+    let instance = create_instance(&entry, "nova-gfx adapter enumeration")?;
+    let devices = unsafe { instance.enumerate_physical_devices() }.map_err(VulkanError::from)?;
+    let mut adapters = Vec::with_capacity(devices.len());
+    for physical_device in devices {
+        // SAFETY: Physical device belongs to this instance.
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        // SAFETY: Vulkan guarantees device_name is a null-terminated C string.
+        let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        adapters.push(AdapterInfo {
+            backend: BackendKind::Vulkan,
+            name,
+            vendor_id: properties.vendor_id,
+            device_id: properties.device_id,
+            capabilities: BackendCapabilities {
+                surface: true,
+                cpu_visible_memory: true,
+                gpu_only_memory: true,
+            },
+        });
+    }
+    // SAFETY: Instance is no longer used after enumeration.
+    unsafe {
+        instance.destroy_instance(None);
+    }
+    Ok(adapters)
 }
 
 /// Generic Vulkan device and resource owner.
@@ -442,7 +484,12 @@ impl VulkanDevice {
     /// Returns [`GfxError`] when the texture is invalid or view creation fails.
     fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
         let image = self.textures.get(desc.texture)?.image;
-        let view = create_image_view(&self.device, image, format_to_vk(desc.format))?;
+        let view = create_image_view(
+            &self.device,
+            image,
+            format_to_vk(desc.format),
+            image_aspect_for_format(desc.format),
+        )?;
         Ok(self.texture_views.insert(VulkanTextureView {
             view,
             texture: desc.texture,
@@ -778,6 +825,15 @@ impl VulkanDevice {
         pass: BeginRenderPassDesc,
         steps: &[DrawStepDesc],
     ) -> Result<()> {
+        self.record_render_step_list_desc(encoder_id, pass, RenderStepList::from_draw_steps(steps))
+    }
+
+    fn record_render_step_list_desc(
+        &mut self,
+        encoder_id: CommandEncoderId,
+        pass: BeginRenderPassDesc,
+        steps: RenderStepList<'_>,
+    ) -> Result<()> {
         let command_buffer = self.command_encoders.get(encoder_id)?.command_buffer;
         let mut transient_framebuffer = None;
         let mut render_target_texture = None;
@@ -831,22 +887,47 @@ impl VulkanDevice {
         let draw_steps = steps
             .iter()
             .map(|step| {
-                let pipeline_record = self.render_pipelines.get(step.pipeline)?;
+                let pipeline_record = self.render_pipelines.get(step.pipeline())?;
                 let descriptor_sets = step
-                    .resource_sets
+                    .resource_sets()
                     .iter()
                     .copied()
                     .map(|resource_set| Ok(self.resource_sets.get(resource_set)?.descriptor_set))
                     .collect::<Result<Vec<_>>>()?;
+                let draw = match step {
+                    RenderStepRef::Draw(step) => CommandDrawStepKind::NonIndexed {
+                        vertex_count: step.vertex_count,
+                        first_vertex: step.first_vertex,
+                        instance_count: step.instance_count,
+                        first_instance: step.first_instance,
+                    },
+                    RenderStepRef::DrawIndexed(step) => {
+                        let index_buffer = self.buffers.get(step.index_buffer.buffer)?;
+                        validate_index_buffer_range(
+                            index_buffer.desc.usage,
+                            index_buffer.desc.size,
+                            step.index_buffer,
+                            step.first_index,
+                            step.index_count,
+                        )?;
+                        CommandDrawStepKind::Indexed {
+                            buffer: index_buffer.buffer,
+                            offset: step.index_buffer.offset,
+                            index_type: index_format_to_vk(step.index_buffer.format),
+                            index_count: step.index_count,
+                            first_index: step.first_index,
+                            base_vertex: step.base_vertex,
+                            instance_count: step.instance_count,
+                            first_instance: step.first_instance,
+                        }
+                    }
+                };
                 Ok(CommandDrawStepInfo {
                     pipeline: pipeline_record.pipeline,
                     pipeline_layout: pipeline_record.pipeline_layout,
                     descriptor_sets,
-                    vertex_count: step.vertex_count,
-                    first_vertex: step.first_vertex,
-                    instance_count: step.instance_count,
-                    first_instance: step.first_instance,
-                    scissor: step.scissor,
+                    draw,
+                    scissor: step.scissor(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -897,6 +978,36 @@ impl VulkanDevice {
         steps: &[DrawStepDesc],
         clear_color: ClearColor,
     ) -> Result<()> {
+        self.render_step_list_and_present(
+            swapchain_id,
+            render_pass_id,
+            RenderStepList::from_draw_steps(steps),
+            clear_color,
+        )
+    }
+
+    fn render_steps_and_present(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+        render_pass_id: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+    ) -> Result<()> {
+        self.render_step_list_and_present(
+            swapchain_id,
+            render_pass_id,
+            RenderStepList::from_render_steps(steps),
+            clear_color,
+        )
+    }
+
+    fn render_step_list_and_present(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+        render_pass_id: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+    ) -> Result<()> {
         let (image_index, frame_index, image_available, render_finished, fence) = {
             let swapchain = self.swapchains.get_mut(swapchain_id)?;
             let fence = swapchain.in_flight_fences[swapchain.frame_index];
@@ -934,7 +1045,7 @@ impl VulkanDevice {
         };
 
         let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
-        self.record_draw_steps_desc(
+        self.record_render_step_list_desc(
             encoder,
             BeginRenderPassDesc {
                 render_pass: render_pass_id,
@@ -980,8 +1091,38 @@ impl VulkanDevice {
         steps: &[DrawStepDesc],
         color_load_op: LoadOp<ClearColor>,
     ) -> Result<()> {
+        self.render_step_list_to_texture(
+            texture_view,
+            render_pass_id,
+            RenderStepList::from_draw_steps(steps),
+            color_load_op,
+        )
+    }
+
+    fn render_steps_to_texture(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass_id: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        color_load_op: LoadOp<ClearColor>,
+    ) -> Result<()> {
+        self.render_step_list_to_texture(
+            texture_view,
+            render_pass_id,
+            RenderStepList::from_render_steps(steps),
+            color_load_op,
+        )
+    }
+
+    fn render_step_list_to_texture(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass_id: RenderPassId,
+        steps: RenderStepList<'_>,
+        color_load_op: LoadOp<ClearColor>,
+    ) -> Result<()> {
         let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
-        self.record_draw_steps_desc(
+        self.record_render_step_list_desc(
             encoder,
             BeginRenderPassDesc {
                 render_pass: render_pass_id,
@@ -1331,7 +1472,14 @@ impl VulkanDevice {
         let image_views = images
             .iter()
             .copied()
-            .map(|image| create_image_view(&self.device, image, surface_format.format))
+            .map(|image| {
+                create_image_view(
+                    &self.device,
+                    image,
+                    surface_format.format,
+                    vk::ImageAspectFlags::COLOR,
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
         let render_pass = create_render_pass(&self.device, surface_format.format)?;
         let framebuffers = image_views
@@ -1929,6 +2077,43 @@ impl GfxPresentationDevice for VulkanDevice {
     ) -> Result<()> {
         Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
     }
+
+    fn render_steps_and_present_compat(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        _depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)
+    }
+
+    fn render_steps_to_texture_compat(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        color_load_op: LoadOp<ClearColor>,
+        _depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        Self::render_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
+    }
+
+    fn render_steps_and_present_deferred_compat(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[RenderStepDescriptor],
+        clear_color: ClearColor,
+        _depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)?;
+        Ok(SubmissionId::from_parts(0, 0))
+    }
 }
 
 impl GfxDiagnosticsDevice for VulkanDevice {
@@ -2048,6 +2233,7 @@ impl VulkanTriangle {
         let metrics_started_at = Instant::now();
         let mut device = VulkanDevice::new(&DeviceDesc {
             application_name: config.application_name.clone(),
+            ..DeviceDesc::default()
         })?;
         let surface = device.create_surface(window, &SurfaceDesc { label: None })?;
         let swapchain = device.create_swapchain(surface, config.surface_config)?;
@@ -2064,6 +2250,7 @@ impl VulkanTriangle {
             color_attachment: ColorAttachmentDesc {
                 format: config.surface_config.format,
             },
+            depth_attachment: None,
         })?;
         let pipeline = device.create_render_pipeline(
             &RenderPipelineDesc {
@@ -2078,6 +2265,7 @@ impl VulkanTriangle {
                 color_format: config.surface_config.format,
                 blend_mode: BlendMode::Replace,
                 primitive_topology: PrimitiveTopology::TriangleList,
+                depth_state: None,
             },
             config.surface_config.size,
         )?;
@@ -2506,9 +2694,10 @@ fn create_image_view(
     device: &ash::Device,
     image: vk::Image,
     format: vk::Format,
+    aspect_mask: vk::ImageAspectFlags,
 ) -> Result<vk::ImageView> {
     let subresource_range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .aspect_mask(aspect_mask)
         .base_mip_level(0)
         .level_count(1)
         .base_array_layer(0)
@@ -2849,11 +3038,78 @@ struct CommandDrawStepInfo {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    vertex_count: u32,
-    first_vertex: u32,
-    instance_count: u32,
-    first_instance: u32,
+    draw: CommandDrawStepKind,
     scissor: Option<gfx_core::ScissorRect>,
+}
+
+enum CommandDrawStepKind {
+    NonIndexed {
+        vertex_count: u32,
+        first_vertex: u32,
+        instance_count: u32,
+        first_instance: u32,
+    },
+    Indexed {
+        buffer: vk::Buffer,
+        offset: u64,
+        index_type: vk::IndexType,
+        index_count: u32,
+        first_index: u32,
+        base_vertex: i32,
+        instance_count: u32,
+        first_instance: u32,
+    },
+}
+
+fn validate_index_buffer_range(
+    usage: BufferUsage,
+    buffer_size: u64,
+    binding: IndexBufferBinding,
+    first_index: u32,
+    index_count: u32,
+) -> Result<()> {
+    if !usage.contains(BufferUsage::INDEX) {
+        return Err(GfxError::InvalidInput(
+            "index buffer must include INDEX usage".to_string(),
+        ));
+    }
+    let stride = index_format_size(binding.format);
+    if binding.offset % stride != 0 {
+        return Err(GfxError::InvalidInput(
+            "index buffer offset must be aligned to the index format size".to_string(),
+        ));
+    }
+    let first_index_byte = u64::from(first_index)
+        .checked_mul(stride)
+        .ok_or_else(|| GfxError::InvalidInput("first index byte offset overflow".to_string()))?;
+    let index_bytes = u64::from(index_count)
+        .checked_mul(stride)
+        .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+    let byte_end = binding
+        .offset
+        .checked_add(first_index_byte)
+        .and_then(|start| start.checked_add(index_bytes))
+        .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+    if byte_end > buffer_size {
+        return Err(GfxError::InvalidInput(
+            "index buffer range is out of bounds".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn index_format_size(format: IndexFormat) -> u64 {
+    match format {
+        IndexFormat::Uint16 => 2,
+        IndexFormat::Uint32 => 4,
+    }
+}
+
+fn index_format_to_vk(format: IndexFormat) -> vk::IndexType {
+    match format {
+        IndexFormat::Uint16 => vk::IndexType::UINT16,
+        IndexFormat::Uint32 => vk::IndexType::UINT32,
+    }
 }
 
 #[expect(
@@ -2960,13 +3216,47 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                     &[],
                 );
             }
-            info.device.cmd_draw(
-                info.command_buffer,
-                step.vertex_count,
-                step.instance_count,
-                step.first_vertex,
-                step.first_instance,
-            );
+            match step.draw {
+                CommandDrawStepKind::NonIndexed {
+                    vertex_count,
+                    first_vertex,
+                    instance_count,
+                    first_instance,
+                } => {
+                    info.device.cmd_draw(
+                        info.command_buffer,
+                        vertex_count,
+                        instance_count,
+                        first_vertex,
+                        first_instance,
+                    );
+                }
+                CommandDrawStepKind::Indexed {
+                    buffer,
+                    offset,
+                    index_type,
+                    index_count,
+                    first_index,
+                    base_vertex,
+                    instance_count,
+                    first_instance,
+                } => {
+                    info.device.cmd_bind_index_buffer(
+                        info.command_buffer,
+                        buffer,
+                        offset,
+                        index_type,
+                    );
+                    info.device.cmd_draw_indexed(
+                        info.command_buffer,
+                        index_count,
+                        instance_count,
+                        first_index,
+                        base_vertex,
+                        first_instance,
+                    );
+                }
+            }
         }
         info.device.cmd_end_render_pass(info.command_buffer);
         if let Some(transition) = info.render_target_transition {
@@ -3124,6 +3414,17 @@ fn format_to_vk(format: Format) -> vk::Format {
         Format::Bgra8UnormSrgb => vk::Format::B8G8R8A8_SRGB,
         Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
         Format::Rgba8UnormSrgb => vk::Format::R8G8B8A8_SRGB,
+        Format::Depth32Float => vk::Format::D32_SFLOAT,
+    }
+}
+
+fn image_aspect_for_format(format: Format) -> vk::ImageAspectFlags {
+    match format {
+        Format::Depth32Float => vk::ImageAspectFlags::DEPTH,
+        Format::Bgra8Unorm
+        | Format::Bgra8UnormSrgb
+        | Format::Rgba8Unorm
+        | Format::Rgba8UnormSrgb => vk::ImageAspectFlags::COLOR,
     }
 }
 
@@ -3163,6 +3464,9 @@ fn texture_usage_to_vk(usage: TextureUsage) -> vk::ImageUsageFlags {
     }
     if usage.contains(TextureUsage::COLOR_ATTACHMENT) {
         flags |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    }
+    if usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
+        flags |= vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
     }
     flags
 }

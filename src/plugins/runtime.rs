@@ -14,7 +14,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tinywasm::engine::{Config as TinyConfig, FuelPolicy, MemoryBackend, StackConfig};
 use tinywasm::types::{MemoryArch, MemoryType, WasmType, WasmValue};
@@ -222,6 +226,7 @@ struct HttpRefreshResult {
 #[derive(Clone, Debug)]
 struct PluginHttpFetchCache {
     state: Arc<Mutex<PluginHttpFetchCacheState>>,
+    finished_refresh_pending: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -240,6 +245,7 @@ impl Default for PluginHttpFetchCache {
                 sender,
                 receiver: Arc::new(Mutex::new(receiver)),
             })),
+            finished_refresh_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -1585,6 +1591,10 @@ impl PluginRegistry {
         true
     }
 
+    fn has_finished_http_refreshes(&self) -> bool {
+        self.http_cache.has_finished_refreshes()
+    }
+
     pub fn set_watcher(
         &mut self,
         sender: crate::plugins::watcher::PluginWatcherSender,
@@ -2874,7 +2884,12 @@ impl PluginHttpFetchCache {
         let should_refresh = !is_fresh && !entry.refreshing;
         if should_refresh {
             entry.refreshing = true;
-            spawn_http_refresh(url.to_string(), max_bytes, sender);
+            spawn_http_refresh(
+                url.to_string(),
+                max_bytes,
+                sender,
+                self.finished_refresh_pending.clone(),
+            );
         }
 
         let state = if is_fresh {
@@ -2895,8 +2910,13 @@ impl PluginHttpFetchCache {
     }
 
     fn drain_finished(&self) -> Vec<HttpInvalidationTarget> {
+        if !self.finished_refresh_pending.swap(false, Ordering::AcqRel) {
+            return Vec::new();
+        }
+
         let receiver = {
             let Ok(state) = self.state.lock() else {
+                self.finished_refresh_pending.store(true, Ordering::Release);
                 return Vec::new();
             };
             state.receiver.clone()
@@ -2904,6 +2924,7 @@ impl PluginHttpFetchCache {
 
         let mut results = Vec::new();
         let Ok(receiver) = receiver.lock() else {
+            self.finished_refresh_pending.store(true, Ordering::Release);
             return Vec::new();
         };
         while let Ok(result) = receiver.try_recv() {
@@ -2952,6 +2973,10 @@ impl PluginHttpFetchCache {
         invalidations.into_iter().collect()
     }
 
+    fn has_finished_refreshes(&self) -> bool {
+        self.finished_refresh_pending.load(Ordering::Acquire)
+    }
+
     fn memory_snapshot_for_plugin(&self, plugin_id: &str) -> PluginHttpCacheMemory {
         let Ok(state) = self.state.lock() else {
             return PluginHttpCacheMemory::default();
@@ -2995,12 +3020,19 @@ fn plugin_log_memory(slices: Option<(&[PluginLogEntry], &[PluginLogEntry])>) -> 
     memory
 }
 
-fn spawn_http_refresh(url: String, max_bytes: usize, sender: mpsc::Sender<HttpRefreshResult>) {
+fn spawn_http_refresh(
+    url: String,
+    max_bytes: usize,
+    sender: mpsc::Sender<HttpRefreshResult>,
+    finished_refresh_pending: Arc<AtomicBool>,
+) {
     tokio::spawn(async move {
         let result = fetch_http_text(&url, max_bytes).await;
         if let Err(error) = sender.send(HttpRefreshResult { url, result }) {
             warn!(error = ?error, "plugin HTTP refresh result receiver dropped");
+            return;
         }
+        finished_refresh_pending.store(true, Ordering::Release);
         notify_http_refresh_finished();
     });
 }
@@ -3391,7 +3423,11 @@ fn notify_http_refresh_finished() {
     let Some(sender) = current.as_ref() else {
         return;
     };
-    let _ = sender.unbounded_send(crate::plugins::watcher::PluginWatcherMessage::HttpRefresh);
+    if let Err(error) =
+        sender.unbounded_send(crate::plugins::watcher::PluginWatcherMessage::HttpRefresh)
+    {
+        warn!(error = ?error, "plugin HTTP refresh notification receiver dropped");
+    }
 }
 
 pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<ViewTree>> {
@@ -3456,6 +3492,10 @@ pub fn injection_registrations(
 }
 
 pub(crate) fn drain_http_refreshes(cx: &mut App) -> bool {
+    if !cx.global::<PluginRegistry>().has_finished_http_refreshes() {
+        return false;
+    }
+
     cx.update_global(|registry: &mut PluginRegistry, _cx| registry.apply_http_refreshes())
 }
 
@@ -4005,6 +4045,54 @@ max_resource_bytes = 16
             report.total_estimated_bytes,
             report.module_cache_estimated_bytes
         );
+    }
+
+    #[test]
+    fn http_refresh_drain_is_idle_without_finished_marker() {
+        let cache = PluginHttpFetchCache::default();
+
+        assert!(!cache.has_finished_refreshes());
+        assert!(cache.drain_finished().is_empty());
+        assert!(!cache.has_finished_refreshes());
+    }
+
+    #[test]
+    fn http_refresh_drain_consumes_finished_result() {
+        let cache = PluginHttpFetchCache::default();
+        let invalidation = HttpInvalidationTarget::Page {
+            plugin_id: "hello-plugin".to_string(),
+            page_id: "main".to_string(),
+        };
+        {
+            let mut state = cache
+                .state
+                .lock()
+                .expect("HTTP cache state lock should not be poisoned");
+            state.entries.insert(
+                "https://example.com/data.json".to_string(),
+                HttpCacheEntry {
+                    body: None,
+                    error: None,
+                    fetched_at: None,
+                    fetched_at_unix_ms: None,
+                    refreshing: true,
+                    subscribers: BTreeSet::from([invalidation.clone()]),
+                },
+            );
+            state
+                .sender
+                .send(HttpRefreshResult {
+                    url: "https://example.com/data.json".to_string(),
+                    result: Ok(("{\"ok\":true}".to_string(), 42)),
+                })
+                .expect("HTTP refresh result should be queued");
+        }
+        cache
+            .finished_refresh_pending
+            .store(true, Ordering::Release);
+
+        assert_eq!(cache.drain_finished(), vec![invalidation]);
+        assert!(!cache.has_finished_refreshes());
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

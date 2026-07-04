@@ -282,7 +282,7 @@ impl Inner {
     /// format of the return value.
     fn read(&self, formats: &[Atom], selection: ClipboardKind) -> Result<ClipboardData> {
         // if we are the current owner, we can get the current clipboard ourselves
-        if self.is_owner(selection)? {
+        if self.owner_status(selection)? {
             let data = self.selection_of(selection).data.read();
             if let Some(data_list) = &*data {
                 for data in data_list {
@@ -486,7 +486,7 @@ impl Inner {
         }
     }
 
-    fn is_owner(&self, selection: ClipboardKind) -> Result<bool> {
+    fn owner_status(&self, selection: ClipboardKind) -> Result<bool> {
         let current = self
             .server
             .conn
@@ -772,7 +772,7 @@ impl Inner {
             return Ok(());
         }
 
-        if !self.is_owner(ClipboardKind::Clipboard)? {
+        if !self.owner_status(ClipboardKind::Clipboard)? {
             // We are not owning the clipboard, nothing to do.
             return Ok(());
         }
@@ -1011,7 +1011,7 @@ impl Clipboard {
         self.inner.write(data, selection, wait)
     }
 
-    pub(crate) fn get_any(&self, selection: ClipboardKind) -> Result<ClipboardItem> {
+    pub(crate) fn read_any(&self, selection: ClipboardKind) -> Result<ClipboardItem> {
         const IMAGE_FORMAT_COUNT: usize = 7;
         let image_format_atoms: [Atom; IMAGE_FORMAT_COUNT] = [
             self.inner.atoms.PNG__MIME,
@@ -1084,7 +1084,7 @@ impl Clipboard {
     }
 
     pub fn is_owner(&self, selection: ClipboardKind) -> bool {
-        self.inner.is_owner(selection).unwrap_or(false)
+        self.inner.owner_status(selection).unwrap_or(false)
     }
 }
 

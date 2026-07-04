@@ -13,5 +13,6 @@ mod registry;
 
 pub use device::{
     BaselineMetrics, VulkanDevice, VulkanSurfaceTarget, VulkanTriangle, VulkanTriangleConfig,
+    enumerate_adapter_info,
 };
 pub use error::VulkanError;

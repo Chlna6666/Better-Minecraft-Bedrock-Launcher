@@ -315,6 +315,53 @@ impl Default for DownloadPageState {
 impl Global for DownloadPageState {}
 
 impl DownloadPageState {
+    pub fn has_releasable_route_state(&self) -> bool {
+        self.tab != DownloadTab::Game
+            || self.tab_anim_at.is_some()
+            || self.force_refresh_next
+            || self.search_input.is_some()
+            || self.page_jump_input.is_some()
+            || self.curseforge_results_abort_handle.is_some()
+            || self.curseforge_invalidate_task.is_some()
+            || self.curseforge_page_commit_task.is_some()
+            || self.curseforge_search_commit_task.is_some()
+            || self.curseforge_pending_page_index.is_some()
+            || self.curseforge_loaded
+            || self.curseforge_loading
+            || self.curseforge_error.is_some()
+            || !self.curseforge_categories.is_empty()
+            || !self.curseforge_versions.is_empty()
+            || self.curseforge_selected_root_id.is_some()
+            || self.curseforge_selected_sub_id.is_some()
+            || !self.curseforge_selected_game_version.as_ref().is_empty()
+            || self.curseforge_results_loading
+            || self.curseforge_results_error.is_some()
+            || !self.curseforge_mods.is_empty()
+            || self.curseforge_total_count.is_some()
+            || self.curseforge_has_more
+            || self.curseforge_sub_collapsed
+            || !self.curseforge_last_query_key.as_ref().is_empty()
+            || self.curseforge_results_transition_at.is_some()
+            || self.curseforge_disable_result_logos
+            || self.curseforge_pending_scroll_reset_to_top
+            || self.curseforge_mod_page_open
+            || self.curseforge_mod_page_loading
+            || self.curseforge_mod_page_error.is_some()
+            || self.curseforge_mod_page_mod_id.is_some()
+            || self.curseforge_mod_page_mod.is_some()
+            || !self.curseforge_mod_page_description.as_ref().is_empty()
+            || self.curseforge_install_open
+            || self.curseforge_install_stage != CurseForgeInstallStage::Idle
+            || self.curseforge_install_error.is_some()
+            || self.curseforge_install_mod.is_some()
+            || !self.curseforge_install_files.is_empty()
+            || self.curseforge_install_selected_file_id.is_some()
+            || self.curseforge_install_target_folder.is_some()
+            || self.curseforge_install_task_id.is_some()
+            || self.curseforge_install_downloaded_path.is_some()
+            || self.curseforge_install_conflict_message.is_some()
+    }
+
     pub fn release_route_state(&mut self, cx: &mut App) {
         self.release_game_tab_state();
         self.release_curseforge_tab_state(cx);
@@ -414,5 +461,35 @@ impl DownloadPageState {
 
     pub fn bump_curseforge_results_list_seq(&mut self) {
         self.curseforge_results_list_seq = self.curseforge_results_list_seq.wrapping_add(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_game_versions_do_not_force_route_release() {
+        let mut state = DownloadPageState::default();
+        state.versions.push(DownloadRemoteVersion {
+            version: SharedString::from("1.21.0"),
+            package_id: SharedString::from("package"),
+            version_type: 0,
+            build_type: SharedString::from("release"),
+            archival_status: None,
+            meta_present: true,
+            md5: None,
+            is_gdk: false,
+        });
+
+        assert!(!state.has_releasable_route_state());
+    }
+
+    #[test]
+    fn curseforge_runtime_state_forces_route_release() {
+        let mut state = DownloadPageState::default();
+        state.curseforge_loaded = true;
+
+        assert!(state.has_releasable_route_state());
     }
 }

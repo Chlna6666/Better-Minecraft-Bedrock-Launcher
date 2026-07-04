@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::animation::repeating_linear_motion;
 use gpui::{BoundedImageCache, BoundedImageCacheConfig, Task};
 use std::collections::HashSet;
 
@@ -280,16 +281,7 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors) -> Div {
         .w_full()
         .h(px(78.))
         .min_h(px(78.))
-        .rounded(px(14.))
-        .bg(Hsla {
-            a: 0.98,
-            ..colors.surface
-        })
-        .border_1()
-        .border_color(Hsla {
-            a: 0.10,
-            ..colors.border
-        })
+        .rounded(px(8.))
         .px(px(12.))
         .py(px(9.))
         .flex()
@@ -321,7 +313,7 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors) -> Div {
                         .child(curseforge_results_skeleton_bar(colors, px(92.), px(10.))),
                 ),
         )
-        .child(div().w(px(92.)).h(px(32.)).rounded(px(10.)).bg(Hsla {
+        .child(div().w(px(92.)).h(px(30.)).rounded(px(6.)).bg(Hsla {
             a: 0.10,
             ..colors.accent
         }))
@@ -357,7 +349,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
             })
             .with_animation(
                 "curseforge-skeleton-shimmer",
-                Animation::new(Duration::from_millis(1400)).repeat(),
+                repeating_linear_motion(Duration::from_millis(1400)),
                 |this, t| this.left(px(-180.0 + t * 440.0)),
             )
             .into_any_element()
@@ -366,16 +358,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
     let skeleton_card = || {
         div()
             .w_full()
-            .rounded(px(14.))
-            .bg(Hsla {
-                a: 0.90,
-                ..colors.surface
-            })
-            .border_1()
-            .border_color(Hsla {
-                a: 0.10,
-                ..colors.border
-            })
+            .rounded(px(8.))
             .px(px(12.))
             .py(px(10.))
             .relative()
@@ -418,7 +401,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
                             .child(skeleton_bar(px(90.), px(10.))),
                     ),
             )
-            .child(div().w(px(92.)).h(px(32.)).rounded(px(10.)).bg(Hsla {
+            .child(div().w(px(92.)).h(px(30.)).rounded(px(6.)).bg(Hsla {
                 a: 0.10,
                 ..colors.accent
             }))
@@ -511,16 +494,7 @@ pub(crate) fn render_curseforge_results_list_placeholder(colors: &ThemeColors) -
     let skeleton_card = || {
         div()
             .w_full()
-            .rounded(px(14.))
-            .bg(Hsla {
-                a: 0.90,
-                ..colors.surface
-            })
-            .border_1()
-            .border_color(Hsla {
-                a: 0.10,
-                ..colors.border
-            })
+            .rounded(px(8.))
             .px(px(12.))
             .py(px(10.))
             .relative()

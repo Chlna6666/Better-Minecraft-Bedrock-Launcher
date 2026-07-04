@@ -1,5 +1,6 @@
-use crate::music::{MusicDragTarget, MusicSnapshot};
+use crate::ui::animation::{ease_in_back, ease_out_back, is_running, raw_progress};
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
+use crate::ui::state::music::{MusicDragTarget, MusicSnapshot};
 use crate::ui::state::quit::QuitState;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
@@ -62,15 +63,6 @@ impl Default for AppChromeState {
 }
 
 impl AppChromeState {
-    fn ease_out_back(t: f32, overshoot: f32) -> f32 {
-        let p = t - 1.0;
-        1.0 + (overshoot + 1.0) * p.powi(3) + overshoot * p.powi(2)
-    }
-
-    fn ease_in_back(t: f32, overshoot: f32) -> f32 {
-        t * t * ((overshoot + 1.0) * t - overshoot)
-    }
-
     pub fn set_music_inline_expanded(&mut self, expanded: bool, now: Instant) {
         // 目标态未变化时直接返回，避免重复重启动画。
         if self.music_inline_target_expanded == expanded {
@@ -97,24 +89,24 @@ impl AppChromeState {
             };
         };
 
-        let elapsed = now.saturating_duration_since(started_at);
-        let duration = self.music_inline_duration.max(Duration::from_millis(1));
-        let t = (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
+        let t = raw_progress(now, started_at, self.music_inline_duration);
         // 展开与收起都增加回弹感，收起更快一些以降低“慢触发”体感。
         let eased = if self.music_inline_to > self.music_inline_from {
-            Self::ease_out_back(t, 0.48).clamp(0.0, 1.12)
+            ease_out_back(t, 0.48).clamp(0.0, 1.12)
         } else {
             // 先轻微反向再收回，形成“回收回弹”观感。
-            (1.0 - Self::ease_in_back(1.0 - t, 0.34)).clamp(-0.08, 1.0)
+            (1.0 - ease_in_back(1.0 - t, 0.34)).clamp(-0.08, 1.0)
         };
         (self.music_inline_from + (self.music_inline_to - self.music_inline_from) * eased)
             .clamp(-0.06, 1.12)
     }
 
     pub fn music_inline_animating(&self, now: Instant) -> bool {
-        self.music_inline_started_at.is_some_and(|started_at| {
-            now.saturating_duration_since(started_at) < self.music_inline_duration
-        })
+        is_running(
+            now,
+            self.music_inline_started_at,
+            self.music_inline_duration,
+        )
     }
 
     pub fn music_inline_target_expanded(&self) -> bool {
@@ -147,12 +139,12 @@ pub fn render_app_chrome(
     glass_effect_enabled: bool,
     plugin_pages: Vec<crate::plugins::runtime::PluginPage>,
 ) -> AnyElement {
-    let topbar_top = px(6.);
+    let topbar_top = px(0.);
     let topbar_h = px(60.);
-    let topbar_radius = px(30.);
+    let topbar_radius = px(0.);
 
     let ww = window_width / px(1.);
-    let inset_x = px((ww * 0.03).clamp(16.0, 28.0)); // width: 94%
+    let inset_x = px(0.); // Full width
     let layout_k = labels_layout_factor.clamp(0.0, 1.0);
     let label_k = labels_opacity_factor.clamp(0.0, 1.0);
 
@@ -388,6 +380,7 @@ pub fn render_app_chrome(
             .w(px(40.))
             .h(px(40.))
             .rounded(px(12.))
+            .relative()
             .flex()
             .items_center()
             .justify_center()
@@ -401,7 +394,7 @@ pub fn render_app_chrome(
                     style.bg(icon_hover_bg).opacity(1.0)
                 }
             })
-            .active(|style| style.opacity(1.0))
+            .active(|style| style.opacity(1.0).top(px(1.5)))
             .child(
                 icon_path(icon_path_value)
                     .size(px(16.0))
@@ -605,17 +598,15 @@ pub fn render_app_chrome(
                         .into_any_element();
 
                     div()
+                        .id(SharedString::from(format!("nav-tab-{}", idx)))
                         .w(item_w)
                         .h(item_h)
                         .rounded(tab_radius)
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .justify_center()
-                        .opacity(if active { 1.0 } else { inactive_opacity })
+                        .relative()
                         .cursor_pointer()
                         .occlude()
                         .hover(|s| s.opacity(1.0))
+                        .active(|s| s.top(px(1.5)))
                         .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
                             cx.stop_propagation();
                             navigation::navigate_target(cx, item.target.clone());
@@ -630,15 +621,8 @@ pub fn render_app_chrome(
             .flex()
             .items_center()
             .gap(px(4.))
-            .bg(capsule_shell_bg)
             .px(capsule_pad_x)
             .py(capsule_pad_y)
-            // 胶囊容器圆角必须与内部 tab 圆角 (px(18.)) 加上 capsule_pad 对齐
-            // rounded = tab_rounded + capsule_pad = 18 + 5 = 23，近似为 px(22.)
-            .rounded(px((tab_radius / px(1.) + capsule_pad_y / px(1.)).max(14.0)))
-            .border_1()
-            .border_color(capsule_shell_border.opacity(0.72))
-            .overflow_hidden()
             .child(links)
     };
 
@@ -820,7 +804,7 @@ pub fn render_app_chrome(
     // - 按下后必须发生位移才开始拖拽，避免普通点击被误判为拖窗
     let titlebar_mouse_down = {
         move |e: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-            let window_size = window.window_bounds().get_bounds().size;
+            let window_size = window.bounds().size;
             if is_interactive_zone(e.position, window_size) {
                 return;
             }
@@ -860,7 +844,7 @@ pub fn render_app_chrome(
         .rounded(topbar_radius)
         .bg(nav_bg)
         .overflow_hidden()
-        .border_1()
+        .border_b_1()
         .border_color(border_color.opacity(lerp_f32(0.06, 0.10, theme_k)))
         .child(
             div()

@@ -469,7 +469,9 @@ impl ManagePageView {
         let filtered_screenshots = self.screenshot_list_cache.filtered_indices();
         let filtered_servers = self.server_list_cache.filtered_indices();
         let active_count = match state.tab {
-            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => filtered_assets.len(),
+            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+                filtered_assets.len()
+            }
             ManageTab::Screenshot => filtered_screenshots.len(),
             ManageTab::Server => filtered_servers.len(),
         };
@@ -621,6 +623,7 @@ impl ManagePageView {
                                         match state.tab {
                                             ManageTab::Mod
                                             | ManageTab::ResourcePack
+                                            | ManageTab::SkinPack
                                             | ManageTab::Map => self.asset_search_input.as_ref(),
                                             ManageTab::Screenshot => {
                                                 self.screenshot_search_input.as_ref()
@@ -655,6 +658,15 @@ impl ManagePageView {
                                 cx,
                             )
                         }
+                        ManageTab::SkinPack => render_skin_pack_management(
+                            colors,
+                            version,
+                            state,
+                            filtered_assets,
+                            &self.asset_scroll_handle,
+                            window,
+                            cx,
+                        ),
                         ManageTab::Screenshot => render_screenshot_list(
                             colors,
                             version,

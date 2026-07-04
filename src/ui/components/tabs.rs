@@ -1,4 +1,4 @@
-use crate::ui::animation::ease_out_cubic;
+use crate::ui::animation::{ease_out_cubic, raw_progress, request_animation_frame_if};
 use crate::ui::theme::colors::ThemeColors;
 use gpui::*;
 use std::rc::Rc;
@@ -207,11 +207,7 @@ impl RenderOnce for AnimatedSegmentTabs {
 
         let snapshot = *state.read(cx);
         let indicator_slot = if let Some(started_at) = snapshot.started_at {
-            let progress = (Instant::now()
-                .saturating_duration_since(started_at)
-                .as_secs_f32()
-                / ANIMATED_TAB_DURATION.as_secs_f32())
-            .clamp(0.0, 1.0);
+            let progress = raw_progress(Instant::now(), started_at, ANIMATED_TAB_DURATION);
             let eased = ease_out_cubic(progress);
 
             if progress >= 1.0 {
@@ -220,7 +216,7 @@ impl RenderOnce for AnimatedSegmentTabs {
                     tab_state.started_at = None;
                 });
             } else {
-                window.request_animation_frame();
+                request_animation_frame_if(window, true);
             }
 
             snapshot.previous_index as f32
