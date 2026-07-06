@@ -113,6 +113,32 @@ fn monochrome_sprite(order: DrawOrder, pad: u32) -> MonochromeSprite {
 }
 
 #[test]
+fn backdrop_blur_does_not_force_scene_full_redraw_fallback() {
+    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
+    let mut scene = Scene::default();
+
+    scene.insert_primitive(PaintBackdropBlur {
+        order: 0,
+        animation_id: None,
+        bounds,
+        content_mask: ContentMask { bounds },
+        corner_radii: Default::default(),
+        radius: ScaledPixels(8.0),
+        downsample: 2,
+        levels: 3,
+        saturation: 1.0,
+        tint: None,
+    });
+
+    assert!(scene.has_backdrop_blurs());
+    assert_eq!(
+        scene.backdrop_blur_bounds().collect::<Vec<_>>(),
+        vec![bounds]
+    );
+    assert!(!scene.requires_full_redraw_fallback());
+}
+
+#[test]
 fn monochrome_sprite_batches_split_by_sampling() {
     let mut scene = Scene::default();
     scene.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));

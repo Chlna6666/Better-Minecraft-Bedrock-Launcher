@@ -1137,6 +1137,74 @@ fn frame_upload_lists_repeated_custom_gpu_mesh_once() {
 }
 
 #[test]
+fn frame_upload_skips_custom_gpu_mesh_with_out_of_bounds_index() {
+    let mesh = Arc::new(GpuMesh3d::new(
+        vec![
+            GpuMesh3dVertex {
+                position: [0.0, 0.0, 0.0],
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            GpuMesh3dVertex {
+                position: [1.0, 0.0, 0.0],
+                color: [0.0, 1.0, 0.0, 1.0],
+            },
+            GpuMesh3dVertex {
+                position: [0.0, 1.0, 0.0],
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ],
+        vec![0, 1, 99],
+        GpuMesh3dDrawRanges {
+            opaque: GpuMesh3dRange { start: 0, count: 3 },
+            glass: GpuMesh3dRange::default(),
+            water: GpuMesh3dRange::default(),
+        },
+        [0.5, 0.5, 0.0],
+        1.0,
+        1.0,
+        test_gpu_mesh_3d_shader(),
+    ));
+    let bounds = Bounds::new(
+        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+    );
+    let content_mask = crate::ContentMask { bounds };
+    let mut scene = crate::Scene::default();
+    scene.insert_primitive(PaintGpuMesh3d {
+        order: 0,
+        bounds,
+        content_mask,
+        mesh,
+        parameters: GpuMesh3dDrawParameters {
+            view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
+        },
+    });
+    scene.finish();
+
+    let mut upload = NovaFrameUpload::default();
+    let summary = upload.encode(
+        &scene,
+        DrawableSize {
+            width: 640,
+            height: 480,
+        },
+        &NovaRenderingParameters::from_env(),
+        true,
+        NovaBackdropBlurQuality::Full,
+    );
+
+    assert_eq!(summary.unsupported_batches.gpu_meshes_3d, 1);
+    assert!(upload.custom_mesh_3d_meshes.is_empty());
+    assert!(upload.custom_mesh_3d_parameters.is_empty());
+    assert!(
+        !upload
+            .batches
+            .iter()
+            .any(|batch| matches!(batch, NovaUploadedBatch::CustomMesh3d { .. }))
+    );
+}
+
+#[test]
 fn draw_steps_preserve_supported_batch_order_and_resources() {
     let mut upload = NovaFrameUpload::default();
     upload
@@ -1694,6 +1762,59 @@ fn partial_render_plan_produces_dirty_region_scissor() {
 }
 
 #[test]
+fn backdrop_blur_does_not_disable_partial_present_scissor() {
+    let scene = backdrop_blur_scene(None);
+    let mut dirty_region = crate::DirtyRegion::empty();
+    dirty_region.push(crate::bounds(
+        Point {
+            x: crate::ScaledPixels(8.5),
+            y: crate::ScaledPixels(9.25),
+        },
+        size(crate::ScaledPixels(20.0), crate::ScaledPixels(30.0)),
+    ));
+    let render_plan = FrameRenderPlan {
+        scene: &scene,
+        dirty_region: &dirty_region,
+        partial_present_mode: PartialPresentMode::Partial,
+        trim_policy: Default::default(),
+        visual_effect_quality: FrameVisualEffectQuality::Full,
+    };
+
+    assert_eq!(
+        partial_present_scissor(
+            render_plan,
+            DrawableSize {
+                width: 100,
+                height: 100,
+            },
+            UnsupportedBatchSummary::default(),
+            true,
+        ),
+        Some(ScissorRect {
+            x: 8,
+            y: 9,
+            width: 21,
+            height: 31,
+        })
+    );
+    assert_eq!(
+        partial_present_scissor(
+            render_plan,
+            DrawableSize {
+                width: 100,
+                height: 100,
+            },
+            UnsupportedBatchSummary {
+                surfaces: 1,
+                ..Default::default()
+            },
+            true,
+        ),
+        None
+    );
+}
+
+#[test]
 fn full_render_plan_does_not_produce_scissor() {
     let scene = crate::Scene::default();
     let dirty_region = crate::DirtyRegion::full(crate::bounds(
@@ -1748,6 +1869,13 @@ fn surface_resize_forces_full_redraw_plan() {
         resolve_surface_render_plan(partial_plan, false).partial_present_mode,
         PartialPresentMode::Partial
     );
+}
+
+#[test]
+fn retained_cache_copy_is_disabled_after_surface_resize() {
+    assert!(can_present_retained_cache_only(true, false));
+    assert!(!can_present_retained_cache_only(true, true));
+    assert!(!can_present_retained_cache_only(false, false));
 }
 
 #[test]
@@ -2832,7 +2960,9 @@ fn nova_sprite_hlsl_bindings_match_dx12_resource_sets() {
         "unexpected mono sprite HLSL:\n{mono_hlsl}"
     );
     assert!(
-        mono_hlsl.contains("StructuredBuffer<uint> nagaGroup0SamplerIndexArray"),
+        mono_hlsl.contains(
+            "StructuredBuffer<uint> nagaGroup0SamplerIndexArray : register(t0, space255)"
+        ),
         "unexpected mono sprite HLSL:\n{mono_hlsl}"
     );
 

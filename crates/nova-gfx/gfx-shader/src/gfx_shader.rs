@@ -401,7 +401,9 @@ mod tests {
             "unexpected HLSL output:\n{source}"
         );
         assert!(
-            source.contains("StructuredBuffer<uint> nagaGroup0SamplerIndexArray"),
+            source.contains(
+                "StructuredBuffer<uint> nagaGroup0SamplerIndexArray : register(t0, space255)"
+            ),
             "unexpected HLSL output:\n{source}"
         );
     }

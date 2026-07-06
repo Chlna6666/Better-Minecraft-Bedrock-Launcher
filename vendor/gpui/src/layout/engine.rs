@@ -45,6 +45,7 @@ pub struct TaffyLayoutEngine {
     pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
     pub(super) computed_root_keys: Vec<(LayoutRootCacheKey, LayoutId)>,
     pub(super) retained_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
+    pub(super) subtree_scratch: Vec<LayoutId>,
     pub(super) nodes_requested: usize,
     pub(super) measured_nodes_requested: usize,
     pub(super) roots_computed: usize,
@@ -69,6 +70,7 @@ impl TaffyLayoutEngine {
             previous_layout_roots: FxHashMap::default(),
             computed_root_keys: Vec::new(),
             retained_layout_bounds: FxHashMap::default(),
+            subtree_scratch: Vec::new(),
             nodes_requested: 0,
             measured_nodes_requested: 0,
             roots_computed: 0,
@@ -336,7 +338,11 @@ impl TaffyLayoutEngine {
     }
 
     fn replay_impure_measurements(&mut self, root_id: LayoutId, window: &mut Window, cx: &mut App) {
-        for layout_id in self.subtree_nodes(root_id) {
+        let mut subtree_nodes = std::mem::take(&mut self.subtree_scratch);
+        subtree_nodes.clear();
+        self.collect_subtree_nodes_into(root_id, &mut subtree_nodes);
+
+        for layout_id in subtree_nodes.iter().copied() {
             let Some(node_context) = self.taffy.get_node_context_mut(layout_id.into()) else {
                 continue;
             };
@@ -348,6 +354,9 @@ impl TaffyLayoutEngine {
             };
             (node_context.measure)(known_dimensions, available_space, window, cx);
         }
+
+        subtree_nodes.clear();
+        self.subtree_scratch = subtree_nodes;
     }
 
     pub fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels> {

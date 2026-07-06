@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber, debug, error, info, warn};
-use tracing_log::LogTracer;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::fmt::format::Writer;
@@ -442,8 +441,6 @@ pub fn init_logging(debug_enabled: bool) {
         .with_target(true) // 显示目标模块
         .with_writer(latest_log_writer); // 明确指定文件输出
 
-    // 初始化日志订阅器
-    let _ = LogTracer::init();
     let default_filter = default_log_filter(debug_enabled);
     let filter = EnvFilter::new(default_filter);
 

@@ -103,13 +103,13 @@ where
     Ok(())
 }
 
-fn partial_present_scissor(
+pub(in crate::platform::nova) fn partial_present_scissor(
     render_plan: FrameRenderPlan<'_>,
     current_size: DrawableSize,
     unsupported_batches: UnsupportedBatchSummary,
-    has_backdrop_blurs: bool,
+    _has_backdrop_blurs: bool,
 ) -> Option<ScissorRect> {
-    if unsupported_batches.total() != 0 || has_backdrop_blurs {
+    if unsupported_batches.total() != 0 {
         return None;
     }
     partial_scissor_for_plan(render_plan, current_size)
@@ -247,7 +247,97 @@ where
     Ok(())
 }
 
+struct RetainedPresentDescriptor<'a> {
+    submission_mode: GpuSubmissionMode,
+    async_capabilities: BackendAsyncCapabilities,
+    pending_submissions: &'a mut Vec<SubmissionId>,
+    swapchain: SwapchainId,
+    render_pass: RenderPassId,
+    present_copy_sprite_buffer: BufferId,
+    current_size: DrawableSize,
+    depth_attachment: RenderPassDepthAttachment,
+}
+
+fn present_retained_cache<D>(
+    device: &mut D,
+    descriptor: RetainedPresentDescriptor<'_>,
+    present_copy_steps: &[RenderStepDescriptor],
+) -> Result<()>
+where
+    D: BackendPresentationCompat + BackendQueue + BackendResources,
+{
+    write_present_copy_sprite_buffer(
+        device,
+        descriptor.present_copy_sprite_buffer,
+        descriptor.current_size,
+    )?;
+    NovaRenderer::submit_present_frame(
+        descriptor.submission_mode,
+        descriptor.async_capabilities,
+        descriptor.pending_submissions,
+        device,
+        descriptor.swapchain,
+        descriptor.render_pass,
+        present_copy_steps,
+        clear_color(),
+        Some(descriptor.depth_attachment),
+    )
+}
+
+impl NovaBackend {
+    fn present_retained_cache(
+        &mut self,
+        descriptor: RetainedPresentDescriptor<'_>,
+        present_copy_steps: &[RenderStepDescriptor],
+    ) -> Result<()> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => present_retained_cache(device, descriptor, present_copy_steps),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(device) => present_retained_cache(device, descriptor, present_copy_steps),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => present_retained_cache(device, descriptor, present_copy_steps),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            Self::Unavailable => {
+                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+            }
+        }
+    }
+}
+
 impl NovaRenderer {
+    pub(super) fn present_retained_cache_only(&mut self) -> Result<()> {
+        self.prepare_for_frame_submission()?;
+        self.prepare_present_copy_steps(true);
+        crate::diagnostics::performance_metrics::record_gpu_pass_metrics(0, 1, 0);
+        let depth_attachment = self.depth_attachment();
+        let descriptor = RetainedPresentDescriptor {
+            submission_mode: self.presentation_submission_mode(),
+            async_capabilities: self.backend.async_capabilities(),
+            pending_submissions: &mut self.pending_submissions,
+            swapchain: self.swapchain,
+            render_pass: self.render_pass,
+            present_copy_sprite_buffer: self.present_copy_sprite_buffer,
+            current_size: self.current_size,
+            depth_attachment,
+        };
+        self.backend
+            .present_retained_cache(descriptor, &self.draw_step_scratch.present_copy_steps)?;
+        crate::diagnostics::performance_metrics::record_present();
+        self.submitted_frames = self.submitted_frames.saturating_add(1);
+        Ok(())
+    }
+
     pub(super) fn draw_present(
         &mut self,
         upload: FrameUploadSummary,
@@ -273,6 +363,13 @@ impl NovaRenderer {
         } else {
             None
         };
+        if partial_scissor.is_some() {
+            crate::diagnostics::performance_metrics::record_partial_redraw();
+        } else if render_plan.partial_present_mode == PartialPresentMode::Partial
+            && requested_partial_scissor.is_none()
+        {
+            crate::diagnostics::performance_metrics::record_full_redraw_fallback();
+        }
         self.prepare_draw_steps(partial_scissor);
         self.prepare_present_copy_steps(use_retained_present);
         self.prepare_path_mask_draw_steps();

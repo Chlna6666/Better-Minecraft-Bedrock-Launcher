@@ -185,8 +185,9 @@ impl AppChromeView {
         );
         subscriptions.push(cx.observe_window_bounds(window, |this, window, cx| {
             let window_width_px = window.bounds().size.width / px(1.0);
-            this.sync_layout_targets(window_width_px, Instant::now(), cx);
-            cx.notify();
+            if this.sync_layout_targets(window_width_px, Instant::now(), cx) {
+                cx.notify();
+            }
         }));
         // 创建封面解码请求 channel (使用 mpsc 保证可靠传递)
         let (cover_req_tx, mut cover_req_rx) =
@@ -490,7 +491,12 @@ impl AppChromeView {
         this
     }
 
-    fn sync_layout_targets(&mut self, window_width_px: f32, now: Instant, cx: &mut Context<Self>) {
+    fn sync_layout_targets(
+        &mut self,
+        window_width_px: f32,
+        now: Instant,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let music_available = cx.global::<MusicState>().snapshot.available;
         let update_available = cx.global::<UpdateState>().available.is_some();
         let (
@@ -519,7 +525,7 @@ impl AppChromeView {
 
         self.last_window_width_px = window_width_px;
         if !window_width_changed && !music_available_changed && !update_available_changed {
-            return;
+            return false;
         }
 
         self.last_window_width_bucket = Some(current_width_bucket);
@@ -552,23 +558,23 @@ impl AppChromeView {
         };
         let show_labels_target = width_wants_labels;
 
+        let mut layout_target_changed = false;
         if labels_target_visible != show_labels_target {
+            layout_target_changed = true;
             cx.update_global(|nav: &mut NavState, _cx| {
                 nav.set_labels_target_immediate(show_labels_target);
             });
         }
-        cx.update_global(
-            |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
-                topbar.set_music_inline_expanded(
-                    if !width_wants_labels {
-                        false
-                    } else {
-                        music_should_expand
-                    },
-                    now,
-                );
-            },
-        );
+        let music_inline_target = width_wants_labels && music_should_expand;
+        if music_inline_target_expanded != music_inline_target {
+            layout_target_changed = true;
+            cx.update_global(
+                |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
+                    topbar.set_music_inline_expanded(music_inline_target, now);
+                },
+            );
+        }
+        layout_target_changed
     }
 
     fn prepare_render_state(

@@ -1,6 +1,6 @@
 use image::{DynamicImage, GenericImageView as _, Rgba};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Face {
     Top,
     Bottom,
@@ -10,21 +10,10 @@ pub(super) enum Face {
     Back,
 }
 
-pub(super) fn sample_skin_color(
-    image: &DynamicImage,
-    unit: u32,
-    skin_x: u32,
-    skin_y: u32,
-) -> [f32; 4] {
+pub(super) fn sample_image_color(image: &DynamicImage, image_x: u32, image_y: u32) -> [f32; 4] {
     let (width, height) = image.dimensions();
-    let x = skin_x
-        .saturating_mul(unit)
-        .saturating_add(unit / 2)
-        .min(width.saturating_sub(1));
-    let y = skin_y
-        .saturating_mul(unit)
-        .saturating_add(unit / 2)
-        .min(height.saturating_sub(1));
+    let x = image_x.min(width.saturating_sub(1));
+    let y = image_y.min(height.saturating_sub(1));
     rgba_to_color(image.get_pixel(x, y))
 }
 

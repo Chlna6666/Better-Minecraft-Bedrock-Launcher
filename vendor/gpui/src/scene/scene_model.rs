@@ -112,9 +112,15 @@ impl Scene {
     }
 
     pub(crate) fn requires_full_redraw_fallback(&self) -> bool {
-        !self.surfaces.is_empty()
-            || !self.backdrop_blurs.is_empty()
-            || !self.gpu_meshes_3d.is_empty()
+        !self.surfaces.is_empty() || !self.gpu_meshes_3d.is_empty()
+    }
+
+    pub(crate) fn has_backdrop_blurs(&self) -> bool {
+        !self.backdrop_blurs.is_empty()
+    }
+
+    pub(crate) fn backdrop_blur_bounds(&self) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
+        self.backdrop_blurs.iter().map(|blur| blur.bounds)
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {

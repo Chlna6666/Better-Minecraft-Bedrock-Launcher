@@ -11,6 +11,8 @@ use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, game_target_
 use crate::core::minecraft::resource_packs::{Header, Module, load_lang_map_for_pack};
 use crate::core::minecraft::skin_pack_preview::generate_skin_preview;
 
+mod fallback;
+
 const PARALLEL_SKIN_PREVIEW_THRESHOLD: usize = 12;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -141,16 +143,34 @@ fn read_skin_pack_folder(
     let skins_path = folder_path.join("skins.json");
 
     let manifest_raw = read_lossy_text(&manifest_path, "皮肤包 manifest")?;
-    let skins_raw = read_lossy_text(&skins_path, "skins.json")?;
+    let skins_raw = match read_lossy_text(&skins_path, "skins.json") {
+        Ok(raw) => Some(raw),
+        Err(error) => {
+            debug!(
+                "read skins.json failed {}, falling back to PNG scan: {error:?}",
+                skins_path.display()
+            );
+            None
+        }
+    };
 
     let clean_manifest = strip_json_comments(manifest_raw.trim_start_matches('\u{feff}'));
     let mut manifest_value: Value = serde_json::from_str(&clean_manifest)
         .with_context(|| format!("解析皮肤包 manifest 失败: {}", manifest_path.display()))?;
     let manifest_parsed = serde_json::from_value::<SkinPackManifest>(manifest_value.clone()).ok();
-    let skins_json: SkinsJson = serde_json::from_str(&strip_json_comments(
-        skins_raw.trim_start_matches('\u{feff}'),
-    ))
-    .with_context(|| format!("解析 skins.json 失败: {}", skins_path.display()))?;
+    let skins_json = skins_raw
+        .as_deref()
+        .and_then(|raw| match parse_skins_json(raw, &skins_path) {
+            Ok(skins_json) => Some(skins_json),
+            Err(error) => {
+                debug!(
+                    "parse skins.json failed {}, falling back to PNG scan: {error:?}",
+                    skins_path.display()
+                );
+                None
+            }
+        })
+        .unwrap_or_else(empty_skins_json);
 
     let lang_map = load_lang_map_for_pack(&folder_path.to_path_buf(), lang).unwrap_or_default();
     localize_manifest_header(&mut manifest_value, &lang_map);
@@ -177,7 +197,10 @@ fn read_skin_pack_folder(
         folder_path,
         &["pack_icon.png", "pack_icon.jpg", "pack_icon.jpeg"],
     );
-    let skins = skin_infos_from_json(folder_path, &skins_json, &lang_map);
+    let mut skins = skin_infos_from_json(folder_path, &skins_json, &lang_map);
+    if skins.is_empty() {
+        skins = fallback::skin_infos_from_pngs(folder_path);
+    }
     let first_skin = skins.iter().find(|skin| skin.full_texture_path.is_some());
     let first_full_skin_texture_path = first_skin.and_then(|skin| skin.full_texture_path.clone());
     let preview_path = first_skin.and_then(|skin| skin.preview_path.clone());
@@ -223,6 +246,19 @@ fn skin_infos_from_json(
         .par_iter()
         .map(|skin| skin_info_from_json(folder_path, skins_json, skin, lang_map))
         .collect()
+}
+
+fn parse_skins_json(raw: &str, skins_path: &Path) -> Result<SkinsJson> {
+    serde_json::from_str(&strip_json_comments(raw.trim_start_matches('\u{feff}')))
+        .with_context(|| format!("解析 skins.json 失败: {}", skins_path.display()))
+}
+
+fn empty_skins_json() -> SkinsJson {
+    SkinsJson {
+        serialize_name: None,
+        localization_name: None,
+        skins: Vec::new(),
+    }
 }
 
 fn skin_info_from_json(
@@ -429,79 +465,4 @@ fn strip_json_comments(input: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn skin_display_name_uses_pack_scoped_localization() {
-        let skins_json = SkinsJson {
-            serialize_name: None,
-            localization_name: Some("alleis".to_string()),
-            skins: Vec::new(),
-        };
-        let skin = SkinJsonEntry {
-            localization_name: Some("birthday".to_string()),
-            geometry: Some("geometry.humanoid.custom".to_string()),
-            texture: Some("birthday.png".to_string()),
-            skin_type: Some("free".to_string()),
-            cape: None,
-            extra: serde_json::Map::new(),
-        };
-        let lang_map = HashMap::from([(
-            "skin.alleis.birthday".to_string(),
-            "Birthday Skin".to_string(),
-        )]);
-
-        assert_eq!(
-            skin_display_name(&skins_json, &skin, &lang_map),
-            "Birthday Skin"
-        );
-    }
-
-    #[test]
-    fn full_texture_path_is_separate_from_head_preview_path() {
-        let skin = McSkinPackSkinInfo {
-            display_name: "Alex".to_string(),
-            localization_name: None,
-            full_texture_path: Some("packs/alex.png".to_string()),
-            preview_path: Some("cache/skin_previews/head.png".to_string()),
-            model_label: "Alex".to_string(),
-        };
-        let pack = McSkinPackInfo {
-            folder_name: "pack".to_string(),
-            folder_path: "packs".to_string(),
-            display_name: "Pack".to_string(),
-            description: None,
-            version: None,
-            icon_path: None,
-            preview_path: skin.preview_path.clone(),
-            first_full_skin_texture_path: None,
-            skin_count: 1,
-            slim_skin_count: 1,
-            source: None,
-            edition: None,
-            source_root: None,
-            gdk_user: None,
-            skins: vec![skin],
-        };
-
-        assert_eq!(pack.first_full_skin_texture_path(), Some("packs/alex.png"));
-        assert_ne!(
-            pack.first_full_skin_texture_path(),
-            pack.preview_path.as_deref()
-        );
-    }
-
-    #[test]
-    fn skins_json_accepts_lossy_utf8_in_strings() {
-        let raw = b"{\"skins\":[{\"localization_name\":\"bad\xffname\",\"texture\":\"a.png\"}]}";
-        let parsed: SkinsJson = serde_json::from_str(&lossy_text(raw))
-            .unwrap_or_else(|error| panic!("lossy skins json should parse: {error}"));
-
-        assert_eq!(parsed.skins.len(), 1);
-        assert_eq!(
-            parsed.skins[0].localization_name.as_deref(),
-            Some("bad\u{fffd}name")
-        );
-    }
-}
+mod tests;

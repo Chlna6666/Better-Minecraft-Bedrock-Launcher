@@ -46,6 +46,8 @@ use draw::*;
 use frame_upload::*;
 use limits::*;
 pub(crate) use nova_renderer::NovaRenderer;
+#[cfg(test)]
+use nova_renderer::partial_present_scissor;
 use nova_renderer::{DrawableSize, NovaMeshCacheEntry, nova_present_mode_for_backend};
 use pipeline::*;
 use prelude::*;

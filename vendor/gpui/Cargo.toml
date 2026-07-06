@@ -39,6 +39,7 @@ default = [
     "wayland",
     "x11",
     "windows-manifest",
+    "nova-gfx-dx12",
     "build-shader-validation",
 ]
 build-shader-validation = []

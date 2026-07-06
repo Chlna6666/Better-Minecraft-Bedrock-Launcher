@@ -8,6 +8,9 @@ mod present;
 mod submission;
 mod surface_lifecycle;
 
+#[cfg(test)]
+pub(in crate::platform::nova) use present::partial_present_scissor;
+
 pub(super) fn nova_present_mode_for_backend(
     backend: RendererBackend,
     renderer_options: &RendererOptions,
@@ -221,6 +224,13 @@ impl NovaRenderer {
         render_plan: FrameRenderPlan<'_>,
     ) -> Result<()> {
         self.observe_render_plan(render_plan);
+        if can_present_retained_cache_only(
+            self.present_cache_valid,
+            self.needs_full_redraw_after_resize,
+        ) {
+            self.present_retained_cache_only()?;
+            return Ok(());
+        }
         let render_plan =
             resolve_surface_render_plan(render_plan, self.needs_full_redraw_after_resize);
         let render_plan = render_plan.with_full_redraw();

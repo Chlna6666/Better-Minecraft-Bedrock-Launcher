@@ -25,14 +25,17 @@ use gfx_core::{GfxError, Result};
 
 #[cfg(windows)]
 mod platform {
-    use std::{ptr, str};
+    use std::{
+        ptr, str,
+        time::{Duration, Instant},
+    };
 
     use super::{GfxError, Result};
     use crate::error::Dx12Error;
     use crate::registry::ResourceRegistry;
     use gfx_core::{
-        AdapterInfo, AddressMode, BackendCapabilities, BackendKind, BlendMode, BufferDesc,
-        BufferId, BufferUsage, ClearColor, CommandEncoderDesc, CommandEncoderId,
+        AdapterInfo, AddressMode, BackendCapabilities, BackendKind, BlendMode, BufferBinding,
+        BufferDesc, BufferId, BufferUsage, ClearColor, CommandEncoderDesc, CommandEncoderId,
         CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, FilterMode, Format, GfxBackend,
         GfxCommandDevice, GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice,
         GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxThreadingMode,
@@ -44,7 +47,7 @@ mod platform {
         SamplerDesc, SamplerId, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage,
         ShaderStages, SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId,
         SwapchainId, TextureDesc, TextureDimension, TextureId, TextureUsage, TextureViewDesc,
-        TextureViewId, TextureWriteDesc, resource_set_list,
+        TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
     };
     use gfx_memory::{UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc};
     use log::log;
@@ -60,14 +63,15 @@ mod platform {
             Direct3D12::{
                 D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA,
                 D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO,
-                D3D12_CACHED_PIPELINE_STATE, D3D12_COLOR_WRITE_ENABLE_ALL,
+                D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH, D3D12_COLOR_WRITE_ENABLE_ALL,
                 D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
                 D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC,
-                D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CPU_DESCRIPTOR_HANDLE,
-                D3D12_CULL_MODE_NONE, D3D12_DEFAULT_DEPTH_BIAS, D3D12_DEFAULT_DEPTH_BIAS_CLAMP,
-                D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS, D3D12_DEPTH_STENCIL_DESC,
-                D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+                D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_DEPTH_BIAS,
+                D3D12_DEFAULT_DEPTH_BIAS_CLAMP, D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
+                D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DESCRIPTOR_HEAP_DESC,
+                D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
                 D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
                 D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
                 D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -84,11 +88,12 @@ mod platform {
                 D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
                 D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
                 D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PRESENT,
-                D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATES,
-                D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_PARAMETER,
-                D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_ROOT_CONSTANTS,
+                D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+                D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
                 D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
                 D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SAMPLER_DESC,
                 D3D12_SHADER_BYTECODE, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_VISIBILITY,
@@ -119,18 +124,22 @@ mod platform {
             },
         },
         Win32::{
-            Foundation::{CloseHandle, HANDLE, HWND, WAIT_OBJECT_0},
-            System::Threading::{CreateEventW, INFINITE, WaitForSingleObject},
+            Foundation::{CloseHandle, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT},
+            System::Threading::{CreateEventW, WaitForSingleObject},
         },
         core::{Error as WindowsError, Interface, PCSTR, PCWSTR},
     };
 
     const BACK_BUFFER_COUNT: u32 = 2;
+    const DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT: u64 = 512;
+    const DX12_TEXTURE_DATA_PITCH_ALIGNMENT: u64 = 256;
     const NAGA_HLSL_SAMPLER_HEAP_SIZE: u32 = 2048;
     const NAGA_HLSL_SAMPLER_INDEX_SPACE: u32 = 255;
     const PHASE1_RESOURCE_SET_SPACE: u32 = 0;
     const NAGA_HLSL_SPECIAL_CONSTANTS_REGISTER: u32 = 0;
     const NAGA_HLSL_SPECIAL_CONSTANTS_SPACE: u32 = 254;
+    const DX12_FENCE_WAIT_POLL_MILLIS: u32 = 50;
+    const DX12_FENCE_WAIT_WARNING_TIMEOUT: Duration = Duration::from_secs(2);
 
     /// Native presentation target accepted by the Direct3D 12 backend.
     pub trait Dx12SurfaceTarget: HasDisplayHandle + HasWindowHandle {}
@@ -162,6 +171,8 @@ mod platform {
         swapchains: ResourceRegistry<Dx12Swapchain>,
         resource_heap: DescriptorHeapAllocator,
         sampler_heap: DescriptorHeapAllocator,
+        rtv_heap: DescriptorHeapAllocator,
+        dsv_heap: DescriptorHeapAllocator,
         upload_ring: UploadRingAllocator,
         upload_pages: Vec<Option<Dx12UploadPage>>,
         deferred_command_encoders: Vec<DeferredDx12CommandEncoder>,
@@ -192,7 +203,14 @@ mod platform {
                 256,
                 true,
             )?;
-            let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())?;
+            let rtv_heap =
+                DescriptorHeapAllocator::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 256, false)?;
+            let dsv_heap =
+                DescriptorHeapAllocator::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 256, false)?;
+            let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
+                alignment: DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+                ..UploadRingAllocatorDesc::default()
+            })?;
             Ok(Self {
                 fence: create_fence(&device)?,
                 fence_event: FenceEvent::new()?,
@@ -217,6 +235,8 @@ mod platform {
                 swapchains: ResourceRegistry::new("swapchain"),
                 resource_heap,
                 sampler_heap,
+                rtv_heap,
+                dsv_heap,
                 upload_ring,
                 upload_pages: Vec::new(),
                 deferred_command_encoders: Vec::new(),
@@ -390,6 +410,12 @@ mod platform {
             ))
         }
 
+        fn commit_composition(composition: &Dx12Composition) -> Result<()> {
+            // SAFETY: The composition device remains alive through Dx12Composition.
+            unsafe { composition._device.Commit() }
+                .map_err(|error| GfxError::Backend(error.to_string()))
+        }
+
         fn build_hwnd_swapchain(
             &self,
             hwnd: HWND,
@@ -472,8 +498,26 @@ mod platform {
             swapchain: SwapchainId,
             config: SurfaceConfig,
         ) -> Result<SwapchainId> {
-            self.reconfigure_swapchain_in_place(swapchain, config)?;
+            self.recreate_swapchain_in_place(swapchain, config)?;
             Ok(swapchain)
+        }
+
+        fn recreate_swapchain_in_place(
+            &mut self,
+            swapchain: SwapchainId,
+            config: SurfaceConfig,
+        ) -> Result<()> {
+            self.wait_for_pending_work()?;
+            let (surface, hwnd) = {
+                let swapchain_record = self.swapchains.get(swapchain)?;
+                let surface = swapchain_record.surface;
+                let hwnd = self.surfaces.get(surface)?.hwnd;
+                (surface, hwnd)
+            };
+
+            let next_swapchain = self.build_swapchain(surface, hwnd, config)?;
+            let _old_swapchain = self.swapchains.replace_live(swapchain, next_swapchain)?;
+            Ok(())
         }
 
         fn reconfigure_swapchain_in_place(
@@ -481,7 +525,7 @@ mod platform {
             swapchain: SwapchainId,
             config: SurfaceConfig,
         ) -> Result<()> {
-            self.wait_for_gpu()?;
+            self.wait_for_pending_work()?;
             let device = self.device.clone();
             let previous_config = self.swapchains.get(swapchain)?.config;
             if previous_config.alpha_mode != config.alpha_mode {
@@ -543,7 +587,23 @@ mod platform {
                 return Err(error);
             }
 
+            if let Some(composition) = swapchain._composition.as_ref() {
+                Self::commit_composition(composition)?;
+            }
+
             Ok(())
+        }
+
+        fn release_resource_set_descriptors(&mut self, resource_set: &Dx12ResourceSet) {
+            for table in &resource_set.resource_tables {
+                self.resource_heap.free_index(table.descriptor_index);
+            }
+            if let Some(table) = resource_set.sampler_index_table {
+                self.resource_heap.free_index(table.descriptor_index);
+            }
+            for table in &resource_set.sampler_tables {
+                self.sampler_heap.free_index(table.descriptor_index);
+            }
         }
 
         /// Creates a buffer record.
@@ -614,7 +674,7 @@ mod platform {
             Ok(self.textures.insert(Dx12Texture {
                 desc: desc.clone(),
                 resource: Some(resource),
-                state: D3D12_RESOURCE_STATE_COPY_DEST,
+                state: initial_texture_state(desc),
             }))
         }
 
@@ -624,31 +684,82 @@ mod platform {
         ///
         /// Returns [`GfxError`] when upload resources or command recording fail.
         fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
-            let (texture_resource, old_state, texture_format) = {
+            let copy = self.prepare_texture_copy(desc, data)?;
+            let fence_value = self.upload_textures_2d(std::slice::from_ref(&copy))?;
+            self.complete_synchronous_upload(fence_value);
+            self.textures.get_mut(desc.texture)?.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            Ok(())
+        }
+
+        fn write_texture_batch<'a>(
+            &mut self,
+            writes: impl IntoIterator<Item = TextureWrite<'a>>,
+        ) -> Result<()> {
+            let writes = writes.into_iter().collect::<Vec<_>>();
+            let (copies, uploaded_textures) = match self.prepare_texture_copies(&writes) {
+                Ok(batch) => batch,
+                Err(error) if !is_invalid_input(&error) => {
+                    for write in writes {
+                        self.write_texture(write.descriptor, write.data)?;
+                    }
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            if copies.is_empty() {
+                return Ok(());
+            }
+            let fence_value = self.upload_textures_2d(&copies)?;
+            self.complete_synchronous_upload(fence_value);
+            for texture_id in uploaded_textures {
+                self.textures.get_mut(texture_id)?.state =
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
+            Ok(())
+        }
+
+        fn prepare_texture_copies<'a>(
+            &mut self,
+            writes: &[TextureWrite<'a>],
+        ) -> Result<(Vec<Dx12TextureCopyOwned>, Vec<TextureId>)> {
+            let mut copies = Vec::with_capacity(writes.len());
+            let mut uploaded_textures = Vec::new();
+            for write in writes {
+                let desc = write.descriptor;
+                copies.push(self.prepare_texture_copy(desc, write.data)?);
+                if !uploaded_textures.contains(&desc.texture) {
+                    uploaded_textures.push(desc.texture);
+                }
+            }
+            Ok((copies, uploaded_textures))
+        }
+
+        fn prepare_texture_copy(
+            &mut self,
+            desc: TextureWriteDesc,
+            data: &[u8],
+        ) -> Result<Dx12TextureCopyOwned> {
+            let (texture_resource, old_state, texture_desc) = {
                 let texture = self.textures.get(desc.texture)?;
+                desc.validate_against(&texture.desc, data.len())?;
                 let resource = texture.resource.clone().ok_or_else(|| {
                     GfxError::Backend("DX12 texture has no native resource".to_string())
                 })?;
-                (resource, texture.state, texture.desc.format)
+                (resource, texture.state, texture.desc.clone())
             };
+            let texture_format = texture_desc.format;
             let upload = self.write_texture_upload_data(desc, texture_format, data)?;
             let upload_resource = self.upload_page_resource(upload.allocation.page_index)?;
-            upload_texture_2d(
-                &self.device,
-                &self.graphics_queue,
-                &Dx12TextureCopy {
-                    upload: &upload_resource,
-                    texture: &texture_resource,
-                    old_state,
-                    desc,
-                    format: texture_format,
-                    upload_offset: upload.allocation.offset,
-                    row_pitch: upload.row_pitch,
-                },
-            )?;
-            self.complete_synchronous_upload();
-            self.textures.get_mut(desc.texture)?.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            Ok(())
+            Ok(Dx12TextureCopyOwned {
+                texture_id: desc.texture,
+                upload: upload_resource,
+                texture: texture_resource,
+                old_state,
+                desc,
+                format: texture_format,
+                upload_offset: upload.allocation.offset,
+                row_pitch: upload.row_pitch,
+            })
         }
 
         /// Creates a texture view record.
@@ -657,10 +768,51 @@ mod platform {
         ///
         /// Returns [`GfxError`] when the texture handle is invalid.
         fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
-            let _texture = self.textures.get(desc.texture)?;
+            let (usage, resource) = {
+                let texture = self.textures.get(desc.texture)?;
+                let resource = texture.resource.clone().ok_or_else(|| {
+                    GfxError::Backend("DX12 texture has no native resource".to_string())
+                })?;
+                (texture.desc.usage, resource)
+            };
+
+            let rtv_slot = if usage.contains(TextureUsage::COLOR_ATTACHMENT) {
+                let slot = self.rtv_heap.allocate()?;
+                // SAFETY: Texture was created by this device with color attachment usage and RTV handle is valid.
+                unsafe {
+                    self.device
+                        .CreateRenderTargetView(&resource, None, slot.cpu_handle);
+                }
+                Some(slot)
+            } else {
+                None
+            };
+
+            let dsv_slot = if usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
+                let slot = match self.dsv_heap.allocate() {
+                    Ok(slot) => slot,
+                    Err(error) => {
+                        if let Some(slot) = rtv_slot {
+                            self.rtv_heap.free(slot);
+                        }
+                        return Err(error);
+                    }
+                };
+                // SAFETY: Texture was created by this device with depth usage and DSV handle is valid.
+                unsafe {
+                    self.device
+                        .CreateDepthStencilView(&resource, None, slot.cpu_handle);
+                }
+                Some(slot)
+            } else {
+                None
+            };
+
             Ok(self.texture_views.insert(Dx12TextureView {
                 texture: desc.texture,
                 format: desc.format,
+                rtv_slot,
+                dsv_slot,
             }))
         }
 
@@ -725,6 +877,7 @@ mod platform {
                 match binding.resource {
                     ResourceBindingResource::Buffer(buffer_binding) => {
                         let buffer = self.buffers.get(buffer_binding.buffer)?;
+                        buffer_binding.validate_against(buffer.desc.size)?;
                         let entry = layout
                             .entries
                             .iter()
@@ -738,6 +891,20 @@ mod platform {
                         let resource = buffer.resource.as_ref().ok_or_else(|| {
                             GfxError::Backend("DX12 buffer has no native resource".to_string())
                         })?;
+                        match entry.binding_type {
+                            ResourceBindingType::UniformBuffer => {
+                                validate_uniform_buffer_binding(buffer_binding, buffer.desc.size)?;
+                            }
+                            ResourceBindingType::StorageBuffer => {
+                                validate_storage_buffer_binding(buffer_binding)?;
+                            }
+                            ResourceBindingType::SampledTexture | ResourceBindingType::Sampler => {
+                                return Err(GfxError::InvalidInput(format!(
+                                    "unexpected buffer binding type {:?}",
+                                    entry.binding_type
+                                )));
+                            }
+                        }
                         let slot = self.resource_heap.allocate()?;
                         match entry.binding_type {
                             ResourceBindingType::UniformBuffer => {
@@ -759,12 +926,6 @@ mod platform {
                             ResourceBindingType::StorageBuffer => {
                                 let byte_offset = buffer_binding.offset;
                                 let byte_size = buffer_binding.size;
-                                if byte_offset % 4 != 0 || byte_size % 4 != 0 {
-                                    return Err(GfxError::InvalidInput(
-                                        "storage buffer offset and size must align to 4 bytes"
-                                            .to_string(),
-                                    ));
-                                }
                                 let num_elements =
                                     u32::try_from(byte_size / 4).map_err(|error| {
                                         GfxError::InvalidInput(format!(
@@ -797,10 +958,9 @@ mod platform {
                                 }
                             }
                             ResourceBindingType::SampledTexture | ResourceBindingType::Sampler => {
-                                return Err(GfxError::InvalidInput(format!(
-                                    "unexpected buffer binding type {:?}",
-                                    entry.binding_type
-                                )));
+                                unreachable!(
+                                    "unexpected buffer binding type was validated earlier"
+                                );
                             }
                         }
                         resource_tables.push(Dx12DescriptorTable {
@@ -944,6 +1104,10 @@ mod platform {
         fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
             Ok(self.render_passes.insert(Dx12RenderPass {
                 color_format: desc.color_attachment.format,
+                depth_format: desc
+                    .depth_attachment
+                    .as_ref()
+                    .map(|attachment| attachment.format),
             }))
         }
 
@@ -970,23 +1134,23 @@ mod platform {
                     "fragment shader module must use ShaderStage::Fragment".to_string(),
                 ));
             }
-            let _render_pass = self.render_passes.get(desc.render_pass)?;
-            let root_signature = if let Some(pipeline_layout) = desc.pipeline_layout {
-                self.pipeline_layouts
-                    .get(pipeline_layout)?
-                    .root_signature
-                    .clone()
-            } else {
-                create_empty_root_signature(&self.device)?
-            };
-            let draw_step_constants_root_index = if let Some(pipeline_layout) = desc.pipeline_layout
-            {
-                self.pipeline_layouts
-                    .get(pipeline_layout)?
-                    .draw_step_constants_root_index
-            } else {
-                0
-            };
+            let render_pass = self.render_passes.get(desc.render_pass)?;
+            if desc.depth_state.is_some() && render_pass.depth_format.is_none() {
+                return Err(GfxError::InvalidInput(
+                    "DX12 depth pipeline requires a render pass depth attachment".to_string(),
+                ));
+            }
+            let (root_signature, draw_step_constants_root_index, resource_set_layouts) =
+                if let Some(pipeline_layout) = desc.pipeline_layout {
+                    let pipeline_layout = self.pipeline_layouts.get(pipeline_layout)?;
+                    (
+                        pipeline_layout.root_signature.clone(),
+                        pipeline_layout.draw_step_constants_root_index,
+                        pipeline_layout.resource_set_layouts.clone(),
+                    )
+                } else {
+                    (create_empty_root_signature(&self.device)?, 0, Vec::new())
+                };
             let pipeline_state = create_pipeline_state(
                 &self.device,
                 &root_signature,
@@ -994,6 +1158,8 @@ mod platform {
                 fragment_shader,
                 desc.color_format,
                 desc.blend_mode,
+                render_pass.depth_format,
+                desc.depth_state.is_some(),
             )?;
             Ok(self.render_pipelines.insert(Dx12RenderPipeline {
                 color_format: desc.color_format,
@@ -1001,6 +1167,7 @@ mod platform {
                 primitive_topology: desc.primitive_topology,
                 pipeline_state: Some(pipeline_state),
                 root_signature: Some(root_signature),
+                resource_set_layouts,
                 draw_step_constants_root_index,
             }))
         }
@@ -1052,6 +1219,7 @@ mod platform {
         }
 
         fn submit_without_wait(&mut self, encoder: CommandEncoderId) -> Result<u64> {
+            self.check_device_removed("DX12 submit preflight")?;
             let command_list = {
                 let encoder = self.command_encoders.get(encoder)?;
                 encoder.command_list.clone().ok_or_else(|| {
@@ -1067,6 +1235,7 @@ mod platform {
                     .ExecuteCommandLists(&[Some(command_list)]);
             };
             let fence_value = self.signal_frame()?;
+            self.check_device_removed("DX12 submit")?;
             Ok(fence_value)
         }
 
@@ -1086,11 +1255,19 @@ mod platform {
         fn poll_submission(&mut self, submission_id: SubmissionId) -> Result<SubmissionStatus> {
             self.poll_cleanup();
             let submission = self.submissions.get(submission_id)?;
-            // SAFETY: Fence is valid for the lifetime of the device.
-            let completed = unsafe { self.fence.GetCompletedValue() };
+            let completed = match self.completed_fence_value("ID3D12Fence::GetCompletedValue") {
+                Ok(completed) => completed,
+                Err(error) => {
+                    let _completed = self.submissions.take(submission_id)?;
+                    return Ok(SubmissionStatus::Failed(error.to_string()));
+                }
+            };
             if completed >= submission.fence_value {
                 let _completed = self.submissions.take(submission_id)?;
                 Ok(SubmissionStatus::Complete)
+            } else if let Err(error) = self.check_device_removed("DX12 submission poll") {
+                let _failed = self.submissions.take(submission_id)?;
+                Ok(SubmissionStatus::Failed(error.to_string()))
             } else {
                 Ok(SubmissionStatus::Pending)
             }
@@ -1098,10 +1275,18 @@ mod platform {
 
         fn wait_submission(&mut self, submission_id: SubmissionId) -> Result<()> {
             let fence_value = self.submissions.get(submission_id)?.fence_value;
-            self.wait_for_fence_value(fence_value)?;
-            let _completed = self.submissions.take(submission_id)?;
-            self.poll_cleanup();
-            Ok(())
+            match self.wait_for_fence_value(fence_value) {
+                Ok(()) => {
+                    let _completed = self.submissions.take(submission_id)?;
+                    self.poll_cleanup();
+                    Ok(())
+                }
+                Err(error) => {
+                    let _failed = self.submissions.take(submission_id)?;
+                    self.deferred_command_encoders.clear();
+                    Err(error)
+                }
+            }
         }
 
         /// Draws and presents one frame with multiple draw steps.
@@ -1127,9 +1312,50 @@ mod platform {
             steps: &[RenderStepDescriptor],
             clear_color: ClearColor,
         ) -> Result<()> {
+            self.render_steps_and_present_with_depth(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                None,
+            )
+        }
+
+        fn render_steps_and_present_with_depth(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            self.render_step_list_and_present_with_depth(
+                swapchain,
+                render_pass,
+                RenderStepList::from_render_steps(steps),
+                clear_color,
+                depth_attachment,
+            )
+        }
+
+        fn render_step_list_and_present_with_depth(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
-                .record_render_steps_frame(encoder, swapchain, render_pass, steps, clear_color)
+                .record_render_step_list_frame(
+                    encoder,
+                    swapchain,
+                    render_pass,
+                    steps,
+                    clear_color,
+                    depth_attachment,
+                )
                 .and_then(|()| self.submit(encoder));
             self.finish_temporary_command_encoder(encoder, result)?;
             self.present(swapchain, 0)
@@ -1167,14 +1393,49 @@ mod platform {
             steps: &[RenderStepDescriptor],
             color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
+            self.render_steps_to_texture_with_depth(
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                None,
+            )
+        }
+
+        fn render_steps_to_texture_with_depth(
+            &mut self,
+            texture_view: TextureViewId,
+            render_pass: RenderPassId,
+            steps: &[RenderStepDescriptor],
+            color_load_op: LoadOp<ClearColor>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            self.render_step_list_to_texture_with_depth(
+                texture_view,
+                render_pass,
+                RenderStepList::from_render_steps(steps),
+                color_load_op,
+                depth_attachment,
+            )
+        }
+
+        fn render_step_list_to_texture_with_depth(
+            &mut self,
+            texture_view: TextureViewId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            color_load_op: LoadOp<ClearColor>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
-                .record_render_steps_texture(
+                .record_render_step_list_texture(
                     encoder,
                     texture_view,
                     render_pass,
                     steps,
                     color_load_op,
+                    depth_attachment,
                 )
                 .and_then(|()| self.submit_temporary_command_encoder_deferred(encoder));
             self.finish_temporary_command_encoder_after_result(encoder, result)
@@ -1192,6 +1453,7 @@ mod platform {
                 render_pass,
                 RenderStepList::from_render_steps(steps),
                 clear_color,
+                None,
             )
         }
 
@@ -1201,10 +1463,18 @@ mod platform {
             render_pass: RenderPassId,
             steps: RenderStepList<'_>,
             clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId> {
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
-                .record_render_step_list_frame(encoder, swapchain, render_pass, steps, clear_color)
+                .record_render_step_list_frame(
+                    encoder,
+                    swapchain,
+                    render_pass,
+                    steps,
+                    clear_color,
+                    depth_attachment,
+                )
                 .and_then(|()| Self::submit_deferred(self, encoder));
             let submission = match result {
                 Ok(submission) => submission,
@@ -1273,6 +1543,7 @@ mod platform {
         ///
         /// Returns [`GfxError::Unavailable`] until the DXGI present path is enabled.
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
+            self.check_device_removed("DX12 present preflight")?;
             {
                 let swapchain = self.swapchains.get_mut(swapchain)?;
                 let (sync_interval, flags) = present_mode_to_dxgi(swapchain.config.present_mode);
@@ -1305,7 +1576,13 @@ mod platform {
         /// Destroys a texture view.
         fn destroy_texture_view(&mut self, view: TextureViewId) -> Result<()> {
             self.wait_for_pending_work()?;
-            let _view = self.texture_views.take(view)?;
+            let view = self.texture_views.take(view)?;
+            if let Some(slot) = view.rtv_slot {
+                self.rtv_heap.free(slot);
+            }
+            if let Some(slot) = view.dsv_slot {
+                self.dsv_heap.free(slot);
+            }
             Ok(())
         }
 
@@ -1323,7 +1600,9 @@ mod platform {
 
         /// Destroys a resource set.
         fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()> {
-            let _resource_set = self.resource_sets.take(resource_set)?;
+            self.wait_for_pending_work()?;
+            let resource_set = self.resource_sets.take(resource_set)?;
+            self.release_resource_set_descriptors(&resource_set);
             Ok(())
         }
 
@@ -1373,8 +1652,18 @@ mod platform {
 
         /// Polls and releases deferred resources.
         pub fn poll_cleanup(&mut self) {
-            // SAFETY: Fence is valid for the lifetime of the device.
-            let completed_fence = unsafe { self.fence.GetCompletedValue() };
+            let completed_fence = match self.completed_fence_value("ID3D12Fence::GetCompletedValue")
+            {
+                Ok(completed_fence) => completed_fence,
+                Err(error) => {
+                    log!(
+                        log::Level::Warn,
+                        "DX12 deferred cleanup observed device removal: {error}"
+                    );
+                    self.deferred_command_encoders.clear();
+                    return;
+                }
+            };
             self.deferred_command_encoders
                 .retain(|encoder| encoder.fence_value > completed_fence);
         }
@@ -1431,7 +1720,10 @@ mod platform {
                     "texture upload bytes_per_row ({source_row_pitch}) is smaller than row data ({row_bytes})"
                 )));
             }
-            let row_pitch = align_to_u32(u64::from(desc.layout.bytes_per_row.get()), 256)?;
+            let row_pitch = align_to_u32(
+                u64::from(desc.layout.bytes_per_row.get()),
+                DX12_TEXTURE_DATA_PITCH_ALIGNMENT,
+            )?;
             let row_pitch_usize = usize::try_from(row_pitch).map_err(|error| {
                 GfxError::InvalidInput(format!("aligned row pitch overflow: {error}"))
             })?;
@@ -1506,19 +1798,18 @@ mod platform {
         }
 
         fn ensure_upload_page(&mut self, page_index: usize) -> Result<()> {
-            if self
-                .upload_pages
-                .get(page_index)
-                .is_some_and(Option::is_some)
-            {
-                return Ok(());
-            }
             let size = self.upload_ring.page_size(page_index).ok_or_else(|| {
                 GfxError::Backend(format!("upload ring page {page_index} has no size"))
             })?;
             while self.upload_pages.len() <= page_index {
                 self.upload_pages.push(None);
             }
+            if let Some(page) = self.upload_pages[page_index].as_ref() {
+                if page.size >= size {
+                    return Ok(());
+                }
+            }
+            self.upload_pages[page_index] = None;
             let desc = BufferDesc {
                 label: Some(format!("nova-gfx dx12 upload page {page_index}")),
                 size,
@@ -1604,13 +1895,12 @@ mod platform {
             // SAFETY: Command list belongs to this device and is reset with a valid allocator/PSO.
             unsafe { command_list.Reset(&allocator, &pipeline_state) }
                 .map_err(|error| GfxError::Backend(error.to_string()))?;
-            let to_render = transition_barrier(
+            record_transition_barrier(
+                &command_list,
                 render_target,
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             );
-            // SAFETY: Command list is open and barrier references the current backbuffer.
-            unsafe { command_list.ResourceBarrier(&[to_render]) };
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "D3D12 viewport dimensions are f32 by API contract"
@@ -1650,17 +1940,15 @@ mod platform {
                 command_list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 command_list.DrawInstanced(3, 1, 0, 0);
             }
-            let to_present = transition_barrier(
+            record_transition_barrier(
+                &command_list,
                 render_target,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             );
-            // SAFETY: Command list is open and barrier references the current backbuffer.
-            unsafe {
-                command_list.ResourceBarrier(&[to_present]);
-                command_list.Close()
-            }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
+            // SAFETY: Command list is open and can be closed after recording.
+            unsafe { command_list.Close() }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
             let _ = blend_mode;
             Ok(())
         }
@@ -1710,6 +1998,7 @@ mod platform {
                 render_pass_id,
                 RenderStepList::from_draw_steps(steps),
                 clear_color,
+                None,
             )
         }
 
@@ -1720,6 +2009,7 @@ mod platform {
             render_pass_id: RenderPassId,
             steps: &[RenderStepDescriptor],
             clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
             self.record_render_step_list_frame(
                 encoder_id,
@@ -1727,6 +2017,7 @@ mod platform {
                 render_pass_id,
                 RenderStepList::from_render_steps(steps),
                 clear_color,
+                depth_attachment,
             )
         }
 
@@ -1741,6 +2032,7 @@ mod platform {
             render_pass_id: RenderPassId,
             steps: RenderStepList<'_>,
             clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
@@ -1754,6 +2046,8 @@ mod platform {
             };
             let swapchain = self.swapchains.get(swapchain_id)?;
             let render_pass = self.render_passes.get(render_pass_id)?;
+            let depth_handle =
+                self.depth_stencil_view_for_attachment(render_pass, depth_attachment)?;
             let first_step = steps.first().ok_or_else(|| {
                 GfxError::InvalidInput("DX12 draw step list must not be empty".to_string())
             })?;
@@ -1799,13 +2093,12 @@ mod platform {
             // SAFETY: Command list belongs to this device and is reset with a valid allocator/PSO.
             unsafe { command_list.Reset(&allocator, &pipeline_state) }
                 .map_err(|error| GfxError::Backend(error.to_string()))?;
-            let to_render = transition_barrier(
+            record_transition_barrier(
+                &command_list,
                 render_target,
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
             );
-            // SAFETY: Command list is open and barrier references the current backbuffer.
-            unsafe { command_list.ResourceBarrier(&[to_render]) };
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "D3D12 viewport dimensions are f32 by API contract"
@@ -1841,6 +2134,9 @@ mod platform {
                 clear_color.alpha,
             ];
             let rtv_handle_pointer = &raw const rtv_handle;
+            let dsv_handle_pointer = depth_handle
+                .as_ref()
+                .map(|(handle, _)| handle as *const D3D12_CPU_DESCRIPTOR_HANDLE);
             let heaps = [
                 Some(self.resource_heap.heap.clone()),
                 Some(self.sampler_heap.heap.clone()),
@@ -1851,8 +2147,24 @@ mod platform {
                 command_list.SetDescriptorHeaps(&heaps);
                 command_list.RSSetViewports(&[viewport]);
                 command_list.RSSetScissorRects(&[scissor]);
-                command_list.OMSetRenderTargets(1, Some(rtv_handle_pointer), false, None);
+                command_list.OMSetRenderTargets(
+                    1,
+                    Some(rtv_handle_pointer),
+                    false,
+                    dsv_handle_pointer,
+                );
                 command_list.ClearRenderTargetView(rtv_handle, &clear, clear_rects.as_deref());
+                if let Some((dsv_handle, depth_load_op)) = depth_handle {
+                    if let LoadOp::Clear(depth) = depth_load_op {
+                        command_list.ClearDepthStencilView(
+                            dsv_handle,
+                            D3D12_CLEAR_FLAG_DEPTH,
+                            depth,
+                            0,
+                            None,
+                        );
+                    }
+                }
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
             }
             for step in steps.iter() {
@@ -1864,6 +2176,7 @@ mod platform {
                     pipeline_state,
                     root_signature,
                     primitive_topology,
+                    resource_set_layouts,
                     draw_step_constants_root_index,
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
@@ -1882,6 +2195,7 @@ mod platform {
                         pipeline_state,
                         root_signature,
                         pipeline.primitive_topology,
+                        pipeline.resource_set_layouts.clone(),
                         pipeline.draw_step_constants_root_index,
                     )
                 };
@@ -1893,20 +2207,23 @@ mod platform {
                     command_list
                         .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
                 }
-                bind_resource_sets(&command_list, self, step.resource_sets())?;
+                bind_resource_sets(
+                    &command_list,
+                    self,
+                    &resource_set_layouts,
+                    step.resource_sets(),
+                )?;
                 self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
             }
-            let to_present = transition_barrier(
+            record_transition_barrier(
+                &command_list,
                 render_target,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             );
-            // SAFETY: Command list is open and barrier references the current backbuffer.
-            unsafe {
-                command_list.ResourceBarrier(&[to_present]);
-                command_list.Close()
-            }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
+            // SAFETY: Command list is open and can be closed after recording.
+            unsafe { command_list.Close() }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
             Ok(())
         }
 
@@ -1924,6 +2241,7 @@ mod platform {
                 render_pass_id,
                 RenderStepList::from_draw_steps(steps),
                 color_load_op,
+                None,
             )
         }
 
@@ -1934,6 +2252,7 @@ mod platform {
             render_pass_id: RenderPassId,
             steps: &[RenderStepDescriptor],
             color_load_op: LoadOp<ClearColor>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
             self.record_render_step_list_texture(
                 encoder_id,
@@ -1941,6 +2260,7 @@ mod platform {
                 render_pass_id,
                 RenderStepList::from_render_steps(steps),
                 color_load_op,
+                depth_attachment,
             )
         }
 
@@ -1955,6 +2275,7 @@ mod platform {
             render_pass_id: RenderPassId,
             steps: RenderStepList<'_>,
             color_load_op: LoadOp<ClearColor>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
             let first_step = steps.first().ok_or_else(|| {
                 GfxError::InvalidInput("DX12 draw step list must not be empty".to_string())
@@ -1971,6 +2292,8 @@ mod platform {
             };
             let texture_view = *self.texture_views.get(texture_view_id)?;
             let render_pass = self.render_passes.get(render_pass_id)?;
+            let depth_handle =
+                self.depth_stencil_view_for_attachment(render_pass, depth_attachment)?;
             let (texture_resource, texture_state, texture_desc) = {
                 let texture = self.textures.get(texture_view.texture)?;
                 let resource = texture.resource.clone().ok_or_else(|| {
@@ -2008,24 +2331,12 @@ mod platform {
                     "render pass and pipeline color formats differ".to_string(),
                 ));
             }
-
-            let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                NumDescriptors: 1,
-                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-                NodeMask: 0,
-            };
-            // SAFETY: Device is valid and descriptor heap desc is self-contained.
-            let rtv_heap: ID3D12DescriptorHeap =
-                unsafe { self.device.CreateDescriptorHeap(&raw const heap_desc) }
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
-            // SAFETY: Descriptor heap is valid and owns CPU descriptors.
-            let rtv_handle = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
-            // SAFETY: Texture was created by this device with render-target usage and RTV handle is valid.
-            unsafe {
-                self.device
-                    .CreateRenderTargetView(&texture_resource, None, rtv_handle);
-            }
+            let rtv_handle = texture_view
+                .rtv_slot
+                .map(|slot| slot.cpu_handle)
+                .ok_or_else(|| {
+                    GfxError::Backend("DX12 color texture view has no RTV handle".to_string())
+                })?;
 
             // SAFETY: Command allocator belongs to this device and is not in use after wait_for_gpu.
             unsafe { allocator.Reset() }.map_err(|error| GfxError::Backend(error.to_string()))?;
@@ -2033,13 +2344,12 @@ mod platform {
             unsafe { command_list.Reset(&allocator, &first_pipeline_state) }
                 .map_err(|error| GfxError::Backend(error.to_string()))?;
             if texture_state != D3D12_RESOURCE_STATE_RENDER_TARGET {
-                let to_render = transition_barrier(
+                record_transition_barrier(
+                    &command_list,
                     &texture_resource,
                     texture_state,
                     D3D12_RESOURCE_STATE_RENDER_TARGET,
                 );
-                // SAFETY: Command list is open and barrier references the target texture.
-                unsafe { command_list.ResourceBarrier(&[to_render]) };
             }
             #[expect(
                 clippy::cast_precision_loss,
@@ -2064,6 +2374,9 @@ mod platform {
                 })?,
             };
             let rtv_handle_pointer = &raw const rtv_handle;
+            let dsv_handle_pointer = depth_handle
+                .as_ref()
+                .map(|(handle, _)| handle as *const D3D12_CPU_DESCRIPTOR_HANDLE);
             let heaps = [
                 Some(self.resource_heap.heap.clone()),
                 Some(self.sampler_heap.heap.clone()),
@@ -2074,7 +2387,12 @@ mod platform {
                 command_list.SetDescriptorHeaps(&heaps);
                 command_list.RSSetViewports(&[viewport]);
                 command_list.RSSetScissorRects(&[scissor]);
-                command_list.OMSetRenderTargets(1, Some(rtv_handle_pointer), false, None);
+                command_list.OMSetRenderTargets(
+                    1,
+                    Some(rtv_handle_pointer),
+                    false,
+                    dsv_handle_pointer,
+                );
                 if let LoadOp::Clear(clear_color) = color_load_op {
                     let clear = [
                         clear_color.red,
@@ -2084,6 +2402,17 @@ mod platform {
                     ];
                     command_list.ClearRenderTargetView(rtv_handle, &clear, None);
                 }
+                if let Some((dsv_handle, depth_load_op)) = depth_handle {
+                    if let LoadOp::Clear(depth) = depth_load_op {
+                        command_list.ClearDepthStencilView(
+                            dsv_handle,
+                            D3D12_CLEAR_FLAG_DEPTH,
+                            depth,
+                            0,
+                            None,
+                        );
+                    }
+                }
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(first_topology));
             }
             for step in steps.iter() {
@@ -2091,6 +2420,7 @@ mod platform {
                     pipeline_state,
                     root_signature,
                     primitive_topology,
+                    resource_set_layouts,
                     draw_step_constants_root_index,
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
@@ -2109,6 +2439,7 @@ mod platform {
                         pipeline_state,
                         root_signature,
                         pipeline.primitive_topology,
+                        pipeline.resource_set_layouts.clone(),
                         pipeline.draw_step_constants_root_index,
                     )
                 };
@@ -2119,23 +2450,65 @@ mod platform {
                     command_list
                         .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
                 }
-                bind_resource_sets(&command_list, self, step.resource_sets())?;
+                bind_resource_sets(
+                    &command_list,
+                    self,
+                    &resource_set_layouts,
+                    step.resource_sets(),
+                )?;
                 self.record_render_step_draw(&command_list, draw_step_constants_root_index, step)?;
             }
-            let to_shader_read = transition_barrier(
+            record_transition_barrier(
+                &command_list,
                 &texture_resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             );
-            // SAFETY: Command list is open and barrier references the target texture.
-            unsafe {
-                command_list.ResourceBarrier(&[to_shader_read]);
-                command_list.Close()
-            }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
+            // SAFETY: Command list is open and can be closed after recording.
+            unsafe { command_list.Close() }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
             self.textures.get_mut(texture_view.texture)?.state =
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             Ok(())
+        }
+
+        fn depth_stencil_view_for_attachment(
+            &self,
+            render_pass: &Dx12RenderPass,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<Option<(D3D12_CPU_DESCRIPTOR_HANDLE, LoadOp<f32>)>> {
+            let Some(depth_attachment) = depth_attachment else {
+                if render_pass.depth_format.is_some() {
+                    return Err(GfxError::InvalidInput(
+                        "DX12 render pass expects a depth attachment".to_string(),
+                    ));
+                }
+                return Ok(None);
+            };
+            let Some(depth_format) = render_pass.depth_format else {
+                return Err(GfxError::InvalidInput(
+                    "DX12 depth attachment was provided for a color-only render pass".to_string(),
+                ));
+            };
+            let texture_view = self.texture_views.get(depth_attachment.target)?;
+            if texture_view.format != depth_format {
+                return Err(GfxError::InvalidInput(
+                    "DX12 depth attachment format does not match render pass".to_string(),
+                ));
+            }
+            let texture = self.textures.get(texture_view.texture)?;
+            if !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
+                return Err(GfxError::InvalidInput(
+                    "DX12 depth attachment texture must include DEPTH_ATTACHMENT usage".to_string(),
+                ));
+            }
+            let dsv_handle = texture_view
+                .dsv_slot
+                .map(|slot| slot.cpu_handle)
+                .ok_or_else(|| {
+                    GfxError::Backend("DX12 depth texture view has no DSV handle".to_string())
+                })?;
+            Ok(Some((dsv_handle, depth_attachment.depth_load_op)))
         }
 
         fn record_render_step_draw(
@@ -2146,20 +2519,21 @@ mod platform {
         ) -> Result<()> {
             match step {
                 RenderStepRef::Draw(step) => {
+                    let offsets = non_indexed_draw_offsets(step.first_vertex, step.first_instance);
                     // SAFETY: Command list is open and pipeline/root signature are bound.
                     unsafe {
                         bind_draw_step_constants(
                             command_list,
                             draw_step_constants_root_index,
-                            step.first_vertex,
-                            step.first_instance,
+                            offsets.shader_first_vertex,
+                            offsets.shader_first_instance,
                             0,
                         );
                         command_list.DrawInstanced(
                             step.vertex_count,
                             step.instance_count,
-                            step.first_vertex,
-                            step.first_instance,
+                            offsets.start_vertex_location,
+                            offsets.start_instance_location,
                         );
                     }
                     Ok(())
@@ -2170,19 +2544,15 @@ mod platform {
                         step.first_index,
                         step.index_count,
                     )?;
-                    let first_vertex_constant = u32::try_from(step.base_vertex).map_err(|error| {
-                        GfxError::InvalidInput(format!(
-                            "negative DX12 indexed draw base vertex is unsupported by HLSL vertex_index constants: {error}"
-                        ))
-                    })?;
+                    let offsets = indexed_draw_offsets(step.base_vertex, step.first_instance)?;
                     // SAFETY: Command list is open, the index buffer view references a live
                     // D3D12 buffer, and pipeline/root signature are bound.
                     unsafe {
                         bind_draw_step_constants(
                             command_list,
                             draw_step_constants_root_index,
-                            first_vertex_constant,
-                            step.first_instance,
+                            offsets.shader_first_vertex,
+                            offsets.shader_first_instance,
                             0,
                         );
                         command_list.IASetIndexBuffer(Some(&raw const index_buffer_view));
@@ -2190,8 +2560,8 @@ mod platform {
                             step.index_count,
                             step.instance_count,
                             step.first_index,
-                            step.base_vertex,
-                            step.first_instance,
+                            offsets.base_vertex_location,
+                            offsets.start_instance_location,
                         );
                     }
                     Ok(())
@@ -2262,16 +2632,34 @@ mod platform {
             Ok(())
         }
 
-        fn complete_synchronous_upload(&mut self) {
-            let fence_value = self.next_fence_value;
+        fn complete_synchronous_upload(&mut self, fence_value: u64) {
             self.upload_ring.retire_used_pages(fence_value);
             self.upload_ring.complete_fence(fence_value);
             self.upload_ring.trim_idle_pages();
         }
 
-        fn wait_for_fence_value(&self, fence_value: u64) -> Result<()> {
+        fn completed_fence_value(&self, operation: &str) -> Result<u64> {
             // SAFETY: Fence is valid.
             let completed = unsafe { self.fence.GetCompletedValue() };
+            if completed == u64::MAX {
+                return Err(GfxError::Backend(format!(
+                    "{operation} reported device removal; device_removed_reason={}",
+                    self.device_removed_reason()
+                )));
+            }
+            Ok(completed)
+        }
+
+        fn check_device_removed(&self, operation: &str) -> Result<()> {
+            // SAFETY: The D3D12 device is a live COM object owned by this backend.
+            match unsafe { self.device.GetDeviceRemovedReason() } {
+                Ok(()) => Ok(()),
+                Err(error) => Err(self.backend_error_with_device_reason(operation, &error)),
+            }
+        }
+
+        fn wait_for_fence_value(&self, fence_value: u64) -> Result<()> {
+            let completed = self.completed_fence_value("ID3D12Fence::GetCompletedValue")?;
             if completed >= fence_value {
                 return Ok(());
             }
@@ -2283,14 +2671,49 @@ mod platform {
             .map_err(|error| {
                 self.backend_error_with_device_reason("ID3D12Fence::SetEventOnCompletion", &error)
             })?;
-            // SAFETY: Event handle is valid and owned by FenceEvent.
-            let wait_result = unsafe { WaitForSingleObject(self.fence_event.0, INFINITE) };
-            if wait_result != WAIT_OBJECT_0 {
+            let started_at = Instant::now();
+            let mut warned_slow_wait = false;
+            loop {
+                let completed = self.completed_fence_value("ID3D12Fence::GetCompletedValue")?;
+                if completed >= fence_value {
+                    return Ok(());
+                }
+                self.check_device_removed("DX12 fence wait")?;
+
+                // SAFETY: Event handle is valid and owned by FenceEvent.
+                let wait_result =
+                    unsafe { WaitForSingleObject(self.fence_event.0, DX12_FENCE_WAIT_POLL_MILLIS) };
+                if wait_result == WAIT_OBJECT_0 {
+                    continue;
+                }
+                if wait_result == WAIT_TIMEOUT {
+                    if !warned_slow_wait && started_at.elapsed() >= DX12_FENCE_WAIT_WARNING_TIMEOUT
+                    {
+                        log!(
+                            log::Level::Warn,
+                            "DX12 fence wait exceeded {DX12_FENCE_WAIT_WARNING_TIMEOUT:?}: \
+                             target_fence={fence_value} completed_fence={completed}; \
+                             device_removed_reason={}",
+                            self.device_removed_reason()
+                        );
+                        warned_slow_wait = true;
+                    }
+                    continue;
+                }
                 return Err(GfxError::Backend(format!(
-                    "WaitForSingleObject failed: {wait_result:?}"
+                    "WaitForSingleObject failed while waiting for DX12 fence {fence_value}: \
+                     {wait_result:?}"
                 )));
             }
-            Ok(())
+        }
+
+        fn upload_textures_2d(&mut self, copies: &[Dx12TextureCopyOwned]) -> Result<u64> {
+            let upload_commands = upload_textures_2d(&self.device, &self.graphics_queue, copies)?;
+            let fence_value = self.signal_frame()?;
+            let wait_result = self.wait_for_fence_value(fence_value);
+            drop(upload_commands);
+            wait_result?;
+            Ok(fence_value)
         }
 
         fn backend_error_with_device_reason(
@@ -2480,6 +2903,8 @@ mod platform {
         fragment_shader: &Dx12ShaderModule,
         color_format: Format,
         blend_mode: BlendMode,
+        depth_format: Option<Format>,
+        depth_enabled: bool,
     ) -> Result<ID3D12PipelineState> {
         let blend_desc = D3D12_BLEND_DESC {
             AlphaToCoverageEnable: false.into(),
@@ -2507,7 +2932,16 @@ mod platform {
         desc.BlendState = blend_desc;
         desc.SampleMask = u32::MAX;
         desc.RasterizerState = rasterizer_desc;
-        desc.DepthStencilState = D3D12_DEPTH_STENCIL_DESC::default();
+        desc.DepthStencilState = if depth_enabled {
+            D3D12_DEPTH_STENCIL_DESC {
+                DepthEnable: true.into(),
+                DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
+                ..Default::default()
+            }
+        } else {
+            D3D12_DEPTH_STENCIL_DESC::default()
+        };
         desc.InputLayout = D3D12_INPUT_LAYOUT_DESC {
             pInputElementDescs: ptr::null(),
             NumElements: 0,
@@ -2516,7 +2950,7 @@ mod platform {
         desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         desc.NumRenderTargets = 1;
         desc.RTVFormats[0] = format_to_dxgi(color_format);
-        desc.DSVFormat = windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
+        desc.DSVFormat = depth_format.map_or(DXGI_FORMAT_UNKNOWN, format_to_dxgi);
         desc.SampleDesc = DXGI_SAMPLE_DESC {
             Count: 1,
             Quality: 0,
@@ -2526,7 +2960,12 @@ mod platform {
         desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
         clear_d3d12_messages(device);
         // SAFETY: Pipeline state description points to live root signature and shader blobs.
-        unsafe { device.CreateGraphicsPipelineState(&raw const desc) }.map_err(|error| {
+        let pipeline_state = unsafe { device.CreateGraphicsPipelineState(&raw const desc) };
+        // SAFETY: The descriptor owns one temporary cloned COM reference for the call above.
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut desc.pRootSignature);
+        }
+        pipeline_state.map_err(|error| {
             let messages = d3d12_messages(device);
             let suffix = if messages.is_empty() {
                 String::new()
@@ -2693,6 +3132,36 @@ mod platform {
         }
     }
 
+    fn record_transition_barrier(
+        command_list: &ID3D12GraphicsCommandList,
+        resource: &ID3D12Resource,
+        before: D3D12_RESOURCE_STATES,
+        after: D3D12_RESOURCE_STATES,
+    ) {
+        let mut barrier = transition_barrier(resource, before, after);
+        // SAFETY: Command list is open and the barrier references a live resource for this call.
+        unsafe { command_list.ResourceBarrier(std::slice::from_ref(&barrier)) };
+        release_transition_barrier_resource(&mut barrier);
+    }
+
+    fn release_transition_barrier_resource(barrier: &mut D3D12_RESOURCE_BARRIER) {
+        // SAFETY: `transition_barrier` always constructs the Transition variant and owns exactly
+        // one cloned COM reference in pResource. Dropping it after ResourceBarrier releases only
+        // the temporary reference, not the original resource held by the registry.
+        unsafe {
+            let transition = &mut *barrier.Anonymous.Transition;
+            core::mem::ManuallyDrop::drop(&mut transition.pResource);
+        }
+    }
+
+    fn release_texture_copy_location_resource(location: &mut D3D12_TEXTURE_COPY_LOCATION) {
+        // SAFETY: The copy location owns exactly one cloned COM reference in pResource. The D3D12
+        // call has already copied the location data into the command stream.
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut location.pResource);
+        }
+    }
+
     fn present_mode_to_dxgi(mode: PresentMode) -> (u32, DXGI_PRESENT) {
         match mode {
             PresentMode::Immediate => (0, DXGI_PRESENT::default()),
@@ -2766,6 +3235,13 @@ mod platform {
 
         fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
             Self::write_texture(self, desc, data)
+        }
+
+        fn write_texture_batch<'a>(
+            &mut self,
+            writes: impl IntoIterator<Item = TextureWrite<'a>>,
+        ) -> Result<()> {
+            Self::write_texture_batch(self, writes)
         }
 
         fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
@@ -2935,6 +3411,7 @@ mod platform {
                 render_pass,
                 RenderStepList::from_draw_steps(steps),
                 clear_color,
+                None,
             )
         }
 
@@ -2944,9 +3421,34 @@ mod platform {
             render_pass: RenderPassId,
             steps: &[RenderStepDescriptor],
             clear_color: ClearColor,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
-            Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)
+            Self::render_steps_and_present_with_depth(
+                self,
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
+        }
+
+        fn render_step_list_and_present_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            Self::render_step_list_and_present_with_depth(
+                self,
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+            )
         }
 
         fn render_steps_to_texture_compat(
@@ -2955,9 +3457,34 @@ mod platform {
             render_pass: RenderPassId,
             steps: &[RenderStepDescriptor],
             color_load_op: LoadOp<ClearColor>,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
-            Self::render_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
+            Self::render_steps_to_texture_with_depth(
+                self,
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                depth_attachment,
+            )
+        }
+
+        fn render_step_list_to_texture_compat(
+            &mut self,
+            texture_view: TextureViewId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            color_load_op: LoadOp<ClearColor>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<()> {
+            Self::render_step_list_to_texture_with_depth(
+                self,
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                depth_attachment,
+            )
         }
 
         fn render_steps_and_present_deferred_compat(
@@ -2966,17 +3493,39 @@ mod platform {
             render_pass: RenderPassId,
             steps: &[RenderStepDescriptor],
             clear_color: ClearColor,
-            _depth_attachment: Option<RenderPassDepthAttachment>,
+            depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId>
         where
             Self: GfxSubmissionDevice,
         {
-            Self::render_steps_and_present_deferred(
+            Self::render_step_list_and_present_deferred(
+                self,
+                swapchain,
+                render_pass,
+                RenderStepList::from_render_steps(steps),
+                clear_color,
+                depth_attachment,
+            )
+        }
+
+        fn render_step_list_and_present_deferred_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+        ) -> Result<SubmissionId>
+        where
+            Self: GfxSubmissionDevice,
+        {
+            Self::render_step_list_and_present_deferred(
                 self,
                 swapchain,
                 render_pass,
                 steps,
                 clear_color,
+                depth_attachment,
             )
         }
     }
@@ -3042,8 +3591,9 @@ mod platform {
         layouts: &[ResourceSetLayoutDesc],
     ) -> Result<ID3D12RootSignature> {
         let mut ranges = Vec::new();
-        for layout in layouts {
+        for (group_index, layout) in layouts.iter().enumerate() {
             for entry in &layout.entries {
+                let sampler_index_register = sampler_index_buffer_register(group_index)?;
                 let range_type = match entry.binding_type {
                     ResourceBindingType::UniformBuffer => D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
                     ResourceBindingType::StorageBuffer | ResourceBindingType::SampledTexture => {
@@ -3074,7 +3624,7 @@ mod platform {
                     ranges.push(D3D12_DESCRIPTOR_RANGE {
                         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
                         NumDescriptors: 1,
-                        BaseShaderRegister: PHASE1_RESOURCE_SET_SPACE,
+                        BaseShaderRegister: sampler_index_register,
                         RegisterSpace: NAGA_HLSL_SAMPLER_INDEX_SPACE,
                         OffsetInDescriptorsFromTableStart: 0,
                     });
@@ -3115,6 +3665,12 @@ mod platform {
         }
         parameters.push(draw_step_constants_parameter());
         serialize_root_signature(device, &parameters)
+    }
+
+    fn sampler_index_buffer_register(group_index: usize) -> Result<u32> {
+        u32::try_from(group_index).map_err(|error| {
+            GfxError::InvalidInput(format!("resource set group index overflow: {error}"))
+        })
     }
 
     fn draw_step_constants_root_index(layouts: &[ResourceSetLayoutDesc]) -> Result<u32> {
@@ -3367,7 +3923,7 @@ mod platform {
                 &raw const heap_properties,
                 D3D12_HEAP_FLAG_NONE,
                 &raw const resource_desc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
+                initial_texture_state(desc),
                 None,
                 &raw mut resource,
             )
@@ -3376,6 +3932,14 @@ mod platform {
         resource.ok_or_else(|| {
             GfxError::Backend("CreateCommittedResource returned no texture".to_string())
         })
+    }
+
+    fn initial_texture_state(desc: &TextureDesc) -> D3D12_RESOURCE_STATES {
+        if desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
+            D3D12_RESOURCE_STATE_DEPTH_WRITE
+        } else {
+            D3D12_RESOURCE_STATE_COPY_DEST
+        }
     }
 
     fn upload_to_mapped_buffer(
@@ -3395,90 +3959,117 @@ mod platform {
         Ok(())
     }
 
-    fn upload_texture_2d(
+    fn upload_textures_2d(
         device: &ID3D12Device,
         queue: &ID3D12CommandQueue,
-        copy: &Dx12TextureCopy<'_>,
-    ) -> Result<()> {
+        copies: &[Dx12TextureCopyOwned],
+    ) -> Result<Option<Dx12SubmittedCommandList>> {
+        if copies.is_empty() {
+            return Ok(None);
+        }
+        for copy in copies {
+            validate_dx12_texture_copy(copy.upload_offset, copy.row_pitch)?;
+        }
         let allocator = create_command_allocator(device)?;
         let command_list = create_command_list(device, &allocator)?;
-        let footprint = windows::Win32::Graphics::Direct3D12::D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
-            Offset: copy.upload_offset,
-            Footprint: windows::Win32::Graphics::Direct3D12::D3D12_SUBRESOURCE_FOOTPRINT {
-                Format: format_to_dxgi(copy.format),
-                Width: copy.desc.size.width(),
-                Height: copy.desc.size.height(),
-                Depth: 1,
-                RowPitch: copy.row_pitch,
-            },
-        };
-        let source = D3D12_TEXTURE_COPY_LOCATION {
-            pResource: core::mem::ManuallyDrop::new(Some(copy.upload.clone())),
-            Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                PlacedFootprint: footprint,
-            },
-        };
-        let destination = D3D12_TEXTURE_COPY_LOCATION {
-            pResource: core::mem::ManuallyDrop::new(Some(copy.texture.clone())),
-            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                SubresourceIndex: 0,
-            },
-        };
-        // SAFETY: Command list is open and copy locations reference live resources.
-        unsafe {
-            if copy.old_state != D3D12_RESOURCE_STATE_COPY_DEST {
-                let barrier = transition_barrier(
-                    copy.texture,
-                    copy.old_state,
-                    D3D12_RESOURCE_STATE_COPY_DEST,
-                );
-                command_list.ResourceBarrier(&[barrier]);
+        let mut transitioned_textures = Vec::new();
+        for copy in copies {
+            if !transitioned_textures.contains(&copy.texture_id) {
+                if copy.old_state != D3D12_RESOURCE_STATE_COPY_DEST {
+                    record_transition_barrier(
+                        &command_list,
+                        &copy.texture,
+                        copy.old_state,
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                    );
+                }
+                transitioned_textures.push(copy.texture_id);
             }
-            command_list.CopyTextureRegion(
-                &raw const destination,
-                copy.desc.origin.x,
-                copy.desc.origin.y,
-                0,
-                &raw const source,
-                None,
-            );
-            let barrier = transition_barrier(
-                copy.texture,
+            let footprint =
+                windows::Win32::Graphics::Direct3D12::D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                    Offset: copy.upload_offset,
+                    Footprint: windows::Win32::Graphics::Direct3D12::D3D12_SUBRESOURCE_FOOTPRINT {
+                        Format: format_to_dxgi(copy.format),
+                        Width: copy.desc.size.width(),
+                        Height: copy.desc.size.height(),
+                        Depth: 1,
+                        RowPitch: copy.row_pitch,
+                    },
+                };
+            let mut source = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: core::mem::ManuallyDrop::new(Some(copy.upload.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: footprint,
+                },
+            };
+            let mut destination = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: core::mem::ManuallyDrop::new(Some(copy.texture.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
+            };
+            // SAFETY: Command list is open and copy locations reference live resources.
+            unsafe {
+                command_list.CopyTextureRegion(
+                    &raw const destination,
+                    copy.desc.origin.x,
+                    copy.desc.origin.y,
+                    0,
+                    &raw const source,
+                    None,
+                );
+            }
+            release_texture_copy_location_resource(&mut source);
+            release_texture_copy_location_resource(&mut destination);
+        }
+        let mut restored_textures = Vec::new();
+        for copy in copies {
+            if restored_textures.contains(&copy.texture_id) {
+                continue;
+            }
+            record_transition_barrier(
+                &command_list,
+                &copy.texture,
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             );
-            command_list.ResourceBarrier(&[barrier]);
-            command_list.Close()
+            restored_textures.push(copy.texture_id);
         }
-        .map_err(|error| GfxError::Backend(error.to_string()))?;
-        let command_list: ID3D12CommandList = command_list
+        // SAFETY: Command list was opened by create_command_list and is ready to close.
+        unsafe { command_list.Close() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+        let graphics_command_list = command_list;
+        let command_list: ID3D12CommandList = graphics_command_list
             .cast()
             .map_err(|error| GfxError::Backend(error.to_string()))?;
         // SAFETY: Command list is closed and ready to execute.
         unsafe {
-            queue.ExecuteCommandLists(&[Some(command_list)]);
+            queue.ExecuteCommandLists(&[Some(command_list.clone())]);
         }
-        wait_for_queue(queue, device)
+        Ok(Some(Dx12SubmittedCommandList {
+            _allocator: allocator,
+            _graphics_command_list: graphics_command_list,
+            _command_list: command_list,
+        }))
     }
 
-    fn wait_for_queue(queue: &ID3D12CommandQueue, device: &ID3D12Device) -> Result<()> {
-        let fence = create_fence(device)?;
-        let event = FenceEvent::new()?;
-        // SAFETY: Queue and fence are valid and owned by this process.
-        unsafe { queue.Signal(&fence, 1) }.map_err(|error| GfxError::Backend(error.to_string()))?;
-        // SAFETY: Fence and event are valid until wait completes.
-        unsafe { fence.SetEventOnCompletion(1, event.0) }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
-        // SAFETY: Event handle is valid and owned by FenceEvent.
-        let wait_result = unsafe { WaitForSingleObject(event.0, INFINITE) };
-        if wait_result != WAIT_OBJECT_0 {
-            return Err(GfxError::Backend(format!(
-                "WaitForSingleObject failed: {wait_result:?}"
+    fn validate_dx12_texture_copy(upload_offset: u64, row_pitch: u32) -> Result<()> {
+        if upload_offset % DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT != 0 {
+            return Err(GfxError::InvalidInput(format!(
+                "DX12 texture upload offset {upload_offset} is not aligned to {DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT} bytes"
+            )));
+        }
+        if u64::from(row_pitch) % DX12_TEXTURE_DATA_PITCH_ALIGNMENT != 0 {
+            return Err(GfxError::InvalidInput(format!(
+                "DX12 texture upload row pitch {row_pitch} is not aligned to {DX12_TEXTURE_DATA_PITCH_ALIGNMENT} bytes"
             )));
         }
         Ok(())
+    }
+
+    const fn is_invalid_input(error: &GfxError) -> bool {
+        matches!(error, GfxError::InvalidInput(_))
     }
 
     fn align_to(value: u64, alignment: u64) -> u64 {
@@ -3488,6 +4079,52 @@ mod platform {
     fn align_to_u32(value: u64, alignment: u64) -> Result<u32> {
         u32::try_from(align_to(value, alignment))
             .map_err(|error| GfxError::InvalidInput(format!("aligned size overflow: {error}")))
+    }
+
+    fn validate_uniform_buffer_binding(binding: BufferBinding, buffer_size: u64) -> Result<()> {
+        const CONSTANT_BUFFER_ALIGNMENT: u64 = 256;
+        if binding.offset % CONSTANT_BUFFER_ALIGNMENT != 0 {
+            return Err(GfxError::InvalidInput(
+                "DX12 constant buffer offset must be aligned to 256 bytes".to_string(),
+            ));
+        }
+        let aligned_size = checked_align_to(
+            binding.size,
+            CONSTANT_BUFFER_ALIGNMENT,
+            "constant buffer size",
+        )?;
+        let physical_buffer_size = checked_align_to(
+            buffer_size,
+            CONSTANT_BUFFER_ALIGNMENT,
+            "constant buffer resource",
+        )?;
+        let end = binding.offset.checked_add(aligned_size).ok_or_else(|| {
+            GfxError::InvalidInput("DX12 constant buffer binding range overflow".to_string())
+        })?;
+        if end > physical_buffer_size {
+            return Err(GfxError::InvalidInput(format!(
+                "DX12 constant buffer aligned range {}..{} exceeds physical buffer size {}",
+                binding.offset, end, physical_buffer_size
+            )));
+        }
+        Ok(())
+    }
+
+    fn checked_align_to(value: u64, alignment: u64, label: &str) -> Result<u64> {
+        value
+            .checked_add(alignment.saturating_sub(1))
+            .map(|value| value / alignment)
+            .and_then(|value| value.checked_mul(alignment))
+            .ok_or_else(|| GfxError::InvalidInput(format!("DX12 {label} alignment overflow")))
+    }
+
+    fn validate_storage_buffer_binding(binding: BufferBinding) -> Result<()> {
+        if binding.offset % 4 != 0 || binding.size % 4 != 0 {
+            return Err(GfxError::InvalidInput(
+                "DX12 storage buffer offset and size must align to 4 bytes".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn texture_upload_row_bytes(width: u32, format: Format) -> Result<usize> {
@@ -3619,15 +4256,42 @@ mod platform {
         }
     }
 
+    fn validate_resource_set_layout_count(expected: usize, actual: usize) -> Result<()> {
+        if expected != actual {
+            return Err(GfxError::InvalidInput(format!(
+                "DX12 pipeline expects {expected} resource sets, got {actual}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_resource_set_layout_id(
+        set_index: usize,
+        expected: ResourceSetLayoutId,
+        actual: ResourceSetLayoutId,
+    ) -> Result<()> {
+        if expected != actual {
+            return Err(GfxError::InvalidInput(format!(
+                "DX12 resource set {set_index} layout does not match pipeline layout"
+            )));
+        }
+        Ok(())
+    }
+
     fn bind_resource_sets(
         command_list: &ID3D12GraphicsCommandList,
         device: &Dx12Device,
+        expected_layouts: &[ResourceSetLayoutId],
         resource_sets: &[ResourceSetId],
     ) -> Result<()> {
+        validate_resource_set_layout_count(expected_layouts.len(), resource_sets.len())?;
         let mut root_index = 0;
-        for resource_set in resource_sets {
+        for (set_index, (resource_set, expected_layout)) in
+            resource_sets.iter().zip(expected_layouts).enumerate()
+        {
             let set = device.resource_sets.get(*resource_set)?;
-            let layout = device.resource_set_layouts.get(set.layout)?;
+            validate_resource_set_layout_id(set_index, *expected_layout, set.layout)?;
+            let layout = device.resource_set_layouts.get(*expected_layout)?;
             for entry in &layout.desc.entries {
                 match entry.binding_type {
                     ResourceBindingType::UniformBuffer
@@ -3698,6 +4362,51 @@ mod platform {
         unsafe {
             command_list.SetGraphicsRoot32BitConstants(root_index, 3, constants.as_ptr().cast(), 0);
         }
+    }
+
+    // Naga lowers WGSL vertex_index/instance_index offsets into root constants for HLSL.
+    // Nova feeds vertices from shader resources instead of IA vertex buffers, so the IA
+    // offsets stay zero and the shader-visible offsets carry the WebGPU/Vulkan semantics.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct NonIndexedDrawOffsets {
+        shader_first_vertex: u32,
+        shader_first_instance: u32,
+        start_vertex_location: u32,
+        start_instance_location: u32,
+    }
+
+    const fn non_indexed_draw_offsets(
+        first_vertex: u32,
+        first_instance: u32,
+    ) -> NonIndexedDrawOffsets {
+        NonIndexedDrawOffsets {
+            shader_first_vertex: first_vertex,
+            shader_first_instance: first_instance,
+            start_vertex_location: 0,
+            start_instance_location: 0,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct IndexedDrawOffsets {
+        shader_first_vertex: u32,
+        shader_first_instance: u32,
+        base_vertex_location: i32,
+        start_instance_location: u32,
+    }
+
+    fn indexed_draw_offsets(base_vertex: i32, first_instance: u32) -> Result<IndexedDrawOffsets> {
+        let shader_first_vertex = u32::try_from(base_vertex).map_err(|error| {
+            GfxError::InvalidInput(format!(
+                "negative DX12 indexed draw base vertex is unsupported by HLSL vertex_index constants: {error}"
+            ))
+        })?;
+        Ok(IndexedDrawOffsets {
+            shader_first_vertex,
+            shader_first_instance: first_instance,
+            base_vertex_location: 0,
+            start_instance_location: 0,
+        })
     }
 
     fn validate_index_buffer_range(
@@ -3794,9 +4503,10 @@ mod platform {
         row_pitch: u32,
     }
 
-    struct Dx12TextureCopy<'a> {
-        upload: &'a ID3D12Resource,
-        texture: &'a ID3D12Resource,
+    struct Dx12TextureCopyOwned {
+        texture_id: TextureId,
+        upload: ID3D12Resource,
+        texture: ID3D12Resource,
         old_state: D3D12_RESOURCE_STATES,
         desc: TextureWriteDesc,
         format: Format,
@@ -3804,10 +4514,18 @@ mod platform {
         row_pitch: u32,
     }
 
+    struct Dx12SubmittedCommandList {
+        _allocator: ID3D12CommandAllocator,
+        _graphics_command_list: ID3D12GraphicsCommandList,
+        _command_list: ID3D12CommandList,
+    }
+
     #[derive(Clone, Copy)]
     struct Dx12TextureView {
         texture: TextureId,
         format: Format,
+        rtv_slot: Option<DescriptorSlot>,
+        dsv_slot: Option<DescriptorSlot>,
     }
 
     #[derive(Clone, Copy)]
@@ -3846,6 +4564,7 @@ mod platform {
         descriptor_index: u32,
     }
 
+    #[derive(Clone, Copy)]
     struct DescriptorSlot {
         cpu_handle: D3D12_CPU_DESCRIPTOR_HANDLE,
         gpu_handle: D3D12_GPU_DESCRIPTOR_HANDLE,
@@ -3857,6 +4576,7 @@ mod platform {
         increment: u32,
         capacity: u32,
         next: u32,
+        free_indices: Vec<u32>,
     }
 
     impl DescriptorHeapAllocator {
@@ -3886,17 +4606,23 @@ mod platform {
                 increment,
                 capacity,
                 next: 0,
+                free_indices: Vec::new(),
             })
         }
 
         fn allocate(&mut self) -> Result<DescriptorSlot> {
-            if self.next >= self.capacity {
-                return Err(GfxError::Unavailable(
-                    "DX12 descriptor heap capacity exhausted".to_string(),
-                ));
-            }
-            let index = self.next;
-            self.next = self.next.saturating_add(1);
+            let index = if let Some(index) = self.free_indices.pop() {
+                index
+            } else {
+                if self.next >= self.capacity {
+                    return Err(GfxError::Unavailable(
+                        "DX12 descriptor heap capacity exhausted".to_string(),
+                    ));
+                }
+                let index = self.next;
+                self.next = self.next.saturating_add(1);
+                index
+            };
             // SAFETY: Heap is valid and shader-visible when GPU handles are requested.
             let cpu_start = unsafe { self.heap.GetCPUDescriptorHandleForHeapStart() };
             // SAFETY: Heap is valid and shader-visible.
@@ -3927,6 +4653,16 @@ mod platform {
             })
         }
 
+        fn free(&mut self, slot: DescriptorSlot) {
+            self.free_index(slot.index);
+        }
+
+        fn free_index(&mut self, index: u32) {
+            if index < self.capacity && !self.free_indices.contains(&index) {
+                self.free_indices.push(index);
+            }
+        }
+
         fn gpu_start(&self) -> D3D12_GPU_DESCRIPTOR_HANDLE {
             // SAFETY: Heap is live for the lifetime of the allocator.
             unsafe { self.heap.GetGPUDescriptorHandleForHeapStart() }
@@ -3943,6 +4679,7 @@ mod platform {
     #[derive(Clone, Copy)]
     struct Dx12RenderPass {
         color_format: Format,
+        depth_format: Option<Format>,
     }
 
     #[derive(Clone)]
@@ -3952,6 +4689,7 @@ mod platform {
         primitive_topology: PrimitiveTopology,
         pipeline_state: Option<ID3D12PipelineState>,
         root_signature: Option<ID3D12RootSignature>,
+        resource_set_layouts: Vec<ResourceSetLayoutId>,
         draw_step_constants_root_index: u32,
     }
 
@@ -4085,6 +4823,92 @@ mod platform {
         }
 
         #[test]
+        fn sampler_index_buffer_register_follows_naga_group_index() {
+            assert_eq!(sampler_index_buffer_register(0).expect("group 0 fits"), 0);
+            assert_eq!(sampler_index_buffer_register(1).expect("group 1 fits"), 1);
+            assert_eq!(
+                sampler_index_buffer_register(255).expect("group 255 fits"),
+                255
+            );
+        }
+
+        #[test]
+        fn resource_set_layout_validation_rejects_wrong_count_or_layout() {
+            let first = ResourceSetLayoutId::from_parts(1, 1);
+            let second = ResourceSetLayoutId::from_parts(2, 1);
+
+            assert!(validate_resource_set_layout_count(1, 1).is_ok());
+            assert!(validate_resource_set_layout_count(1, 2).is_err());
+            assert!(validate_resource_set_layout_id(0, first, first).is_ok());
+            assert!(validate_resource_set_layout_id(0, first, second).is_err());
+        }
+
+        #[test]
+        fn dx12_non_indexed_draw_offsets_use_shader_constants_only() {
+            let offsets = non_indexed_draw_offsets(7, 11);
+
+            assert_eq!(offsets.shader_first_vertex, 7);
+            assert_eq!(offsets.shader_first_instance, 11);
+            assert_eq!(offsets.start_vertex_location, 0);
+            assert_eq!(offsets.start_instance_location, 0);
+        }
+
+        #[test]
+        fn dx12_indexed_draw_offsets_use_shader_constants_only() {
+            let offsets =
+                indexed_draw_offsets(7, 11).expect("positive base vertex should be supported");
+
+            assert_eq!(offsets.shader_first_vertex, 7);
+            assert_eq!(offsets.shader_first_instance, 11);
+            assert_eq!(offsets.base_vertex_location, 0);
+            assert_eq!(offsets.start_instance_location, 0);
+        }
+
+        #[test]
+        fn dx12_indexed_draw_offsets_reject_negative_base_vertex() {
+            let error = indexed_draw_offsets(-1, 0)
+                .expect_err("negative base vertex cannot be represented as a WGSL vertex_index");
+
+            assert!(error.to_string().contains("negative DX12 indexed draw"));
+        }
+
+        #[test]
+        fn dx12_uniform_buffer_binding_validation_rejects_misaligned_offset() {
+            let binding = BufferBinding {
+                buffer: BufferId::from_parts(1, 1),
+                offset: 16,
+                size: 16,
+                stride: None,
+            };
+
+            assert!(validate_uniform_buffer_binding(binding, 512).is_err());
+        }
+
+        #[test]
+        fn dx12_uniform_buffer_binding_validation_allows_aligned_physical_range() {
+            let binding = BufferBinding {
+                buffer: BufferId::from_parts(1, 1),
+                offset: 256,
+                size: 16,
+                stride: None,
+            };
+
+            assert!(validate_uniform_buffer_binding(binding, 300).is_ok());
+        }
+
+        #[test]
+        fn dx12_storage_buffer_binding_validation_rejects_unaligned_range() {
+            let binding = BufferBinding {
+                buffer: BufferId::from_parts(1, 1),
+                offset: 2,
+                size: 16,
+                stride: None,
+            };
+
+            assert!(validate_storage_buffer_binding(binding).is_err());
+        }
+
+        #[test]
         fn texture_upload_required_len_allows_compact_rows() {
             let row_bytes =
                 texture_upload_row_bytes(8, Format::Rgba8Unorm).expect("row size should be valid");
@@ -4114,6 +4938,37 @@ mod platform {
                 .expect("required len should be valid");
 
             assert!(required > 64);
+        }
+
+        #[test]
+        fn dx12_texture_upload_ring_uses_placement_alignment() {
+            let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
+                alignment: DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+                ..UploadRingAllocatorDesc::default()
+            })
+            .expect("ring descriptor should be valid");
+
+            let first = ring.allocate(1).expect("first allocation should succeed");
+            let second = ring.allocate(1).expect("second allocation should succeed");
+
+            assert_eq!(first.offset, 0);
+            assert_eq!(second.offset, DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+        }
+
+        #[test]
+        fn dx12_texture_copy_validation_rejects_misaligned_offset() {
+            let error = validate_dx12_texture_copy(256, 256)
+                .expect_err("misaligned placement should be rejected");
+
+            assert!(error.to_string().contains("not aligned"));
+        }
+
+        #[test]
+        fn dx12_texture_copy_validation_rejects_misaligned_row_pitch() {
+            let error = validate_dx12_texture_copy(512, 128)
+                .expect_err("misaligned row pitch should be rejected");
+
+            assert!(error.to_string().contains("row pitch"));
         }
     }
 }

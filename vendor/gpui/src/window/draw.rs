@@ -225,10 +225,13 @@ impl Window {
         let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
         let mut dirty_region = DirtyRegion::empty();
 
-        let requires_full_redraw =
-            force_full_redraw || self.next_frame.scene.requires_full_redraw_fallback();
+        let scene_requires_full_redraw = self.next_frame.scene.requires_full_redraw_fallback();
+        let requires_full_redraw = force_full_redraw || scene_requires_full_redraw;
 
         if requires_full_redraw {
+            if scene_requires_full_redraw {
+                crate::diagnostics::performance_metrics::record_full_redraw_fallback();
+            }
             dirty_region.mark_full(viewport);
         } else {
             for segment in &self.next_frame.retained_scene_segments {
@@ -238,6 +241,12 @@ impl Window {
             }
             for rect in self.animation_dirty_region.rects() {
                 dirty_region.push(rect.bounds);
+            }
+
+            if !dirty_region.is_empty() && self.next_frame.scene.has_backdrop_blurs() {
+                for bounds in self.next_frame.scene.backdrop_blur_bounds() {
+                    dirty_region.push(bounds);
+                }
             }
 
             if dirty_region.is_empty() && self.next_frame.retained_scene_segments.is_empty() {

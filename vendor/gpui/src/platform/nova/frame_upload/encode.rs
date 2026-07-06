@@ -357,6 +357,46 @@ impl NovaFrameUpload {
                                 summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
                             continue;
                         }
+                        let validated_ranges = [
+                            mesh_range_within_vertices(
+                                painted.mesh.ranges.opaque,
+                                &painted.mesh.indices,
+                                painted.mesh.vertices.len(),
+                            ),
+                            mesh_range_within_vertices(
+                                painted.mesh.ranges.glass,
+                                &painted.mesh.indices,
+                                painted.mesh.vertices.len(),
+                            ),
+                            mesh_range_within_vertices(
+                                painted.mesh.ranges.water,
+                                &painted.mesh.indices,
+                                painted.mesh.vertices.len(),
+                            ),
+                        ];
+                        let requested_range_count = [
+                            painted.mesh.ranges.opaque,
+                            painted.mesh.ranges.glass,
+                            painted.mesh.ranges.water,
+                        ]
+                        .into_iter()
+                        .filter(|range| range.count > 0)
+                        .count();
+                        let valid_range_count = validated_ranges
+                            .iter()
+                            .filter(|range| range.is_some())
+                            .count();
+                        if valid_range_count == 0 {
+                            if requested_range_count > 0 {
+                                summary.unsupported_batches.gpu_meshes_3d =
+                                    summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
+                            }
+                            continue;
+                        }
+                        if valid_range_count < requested_range_count {
+                            summary.unsupported_batches.gpu_meshes_3d =
+                                summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
+                        }
                         let mesh_already_listed = self
                             .custom_mesh_3d_meshes
                             .iter()
@@ -402,22 +442,14 @@ impl NovaFrameUpload {
                             &mut self.custom_mesh_3d_parameters,
                             painted,
                         );
-                        for range in [
-                            painted.mesh.ranges.opaque,
-                            painted.mesh.ranges.glass,
-                            painted.mesh.ranges.water,
-                        ] {
-                            if let Some(range) =
-                                mesh_range_within_indices(range, painted.mesh.indices.len())
-                            {
-                                self.batches.push(NovaUploadedBatch::CustomMesh3d {
-                                    mesh_id: painted.mesh.id,
-                                    generation: painted.mesh.generation,
-                                    shader_id: painted.mesh.shader.id,
-                                    range,
-                                    first_parameter_index,
-                                });
-                            }
+                        for range in validated_ranges.into_iter().flatten() {
+                            self.batches.push(NovaUploadedBatch::CustomMesh3d {
+                                mesh_id: painted.mesh.id,
+                                generation: painted.mesh.generation,
+                                shader_id: painted.mesh.shader.id,
+                                range,
+                                first_parameter_index,
+                            });
                         }
                     }
                 }
@@ -497,6 +529,23 @@ fn mesh_range_within_indices(
     let index_count = u32::try_from(index_count).ok()?;
     let end = range.start.checked_add(range.count)?;
     if end > index_count {
+        return None;
+    }
+    Some(range)
+}
+
+fn mesh_range_within_vertices(
+    range: crate::GpuMesh3dRange,
+    indices: &[u32],
+    vertex_count: usize,
+) -> Option<crate::GpuMesh3dRange> {
+    let range = mesh_range_within_indices(range, indices.len())?;
+    let vertex_count = u32::try_from(vertex_count).ok()?;
+    let start = usize::try_from(range.start).ok()?;
+    let count = usize::try_from(range.count).ok()?;
+    let end = start.checked_add(count)?;
+    let indices = indices.get(start..end)?;
+    if indices.iter().any(|index| *index >= vertex_count) {
         return None;
     }
     Some(range)

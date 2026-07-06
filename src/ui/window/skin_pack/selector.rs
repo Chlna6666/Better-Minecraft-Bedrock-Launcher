@@ -1,12 +1,30 @@
 use super::preview::{SkinPreviewWindowSkin, SkinPreviewWindowView};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::path::PathBuf;
 
 const CURRENT_PREVIEW_SIZE: f32 = 38.0;
-const SELECTOR_ITEM_SIZE: f32 = 58.0;
-const SELECTOR_IMAGE_SIZE: f32 = 50.0;
+const SELECTOR_COLLAPSED_ITEM_SIZE: f32 = 58.0;
+const SELECTOR_COLLAPSED_IMAGE_SIZE: f32 = 50.0;
+const SELECTOR_EXPANDED_ITEM_SIZE: f32 = 46.0;
+const SELECTOR_EXPANDED_IMAGE_SIZE: f32 = 40.0;
+const SELECTOR_EXPANDED_MAX_HEIGHT: f32 = 180.0;
+const SELECTOR_MAX_WIDTH: f32 = 584.0;
+const SELECTOR_PAGE_SIZE: usize = 30;
+
+pub(super) fn skin_selector_page_count(skin_count: usize) -> usize {
+    if skin_count == 0 {
+        0
+    } else {
+        (skin_count - 1) / SELECTOR_PAGE_SIZE + 1
+    }
+}
+
+pub(super) fn skin_selector_page_for_index(index: usize) -> usize {
+    index / SELECTOR_PAGE_SIZE
+}
 
 pub(super) fn render_current_preview(
     skin: Option<&SkinPreviewWindowSkin>,
@@ -24,33 +42,228 @@ pub(super) fn render_current_preview(
 pub(super) fn render_skin_selector(
     skins: &[SkinPreviewWindowSkin],
     selected_index: usize,
+    expanded: bool,
+    page_index: usize,
     colors: &ThemeColors,
     cx: &mut Context<SkinPreviewWindowView>,
 ) -> Div {
-    let mut row = div().flex().items_center().gap(px(8.0)).py(px(1.0));
-    for (index, skin) in skins.iter().enumerate() {
-        row = row.child(render_skin_selector_item(
+    let page_count = skin_selector_page_count(skins.len());
+    let page_index = page_index.min(page_count.saturating_sub(1));
+    let page_start = page_index
+        .saturating_mul(SELECTOR_PAGE_SIZE)
+        .min(skins.len());
+    let page_end = page_start
+        .saturating_add(SELECTOR_PAGE_SIZE)
+        .min(skins.len());
+    let item_size = if expanded {
+        SELECTOR_EXPANDED_ITEM_SIZE
+    } else {
+        SELECTOR_COLLAPSED_ITEM_SIZE
+    };
+    let image_size = if expanded {
+        SELECTOR_EXPANDED_IMAGE_SIZE
+    } else {
+        SELECTOR_COLLAPSED_IMAGE_SIZE
+    };
+    let item_radius = if expanded { 9.0 } else { 10.0 };
+    let image_radius = if expanded { 6.0 } else { 7.0 };
+    let mut list = div()
+        .flex()
+        .items_center()
+        .gap(px(if expanded { 6.0 } else { 8.0 }))
+        .py(px(1.0));
+    if expanded {
+        list = list.flex_wrap().content_start().items_start();
+    }
+    for (offset, skin) in skins[page_start..page_end].iter().enumerate() {
+        let index = page_start + offset;
+        list = list.child(render_skin_selector_item(
             index,
             skin,
             index == selected_index,
             colors,
+            item_size,
+            image_size,
+            item_radius,
+            image_radius,
             cx,
         ));
     }
+
+    let scroller = if expanded {
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .w_full()
+            .max_h(px(SELECTOR_EXPANDED_MAX_HEIGHT))
+            .overflow_y_scrollbar()
+            .scrollbar_width(px(4.0))
+            .child(list)
+    } else {
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .max_w(px(SELECTOR_MAX_WIDTH))
+            .overflow_x_scrollbar()
+            .scrollbar_width(px(4.0))
+            .child(list)
+    };
+
+    let content = div()
+        .flex_1()
+        .min_w(px(0.0))
+        .max_w(px(SELECTOR_MAX_WIDTH))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .when(expanded, |this| {
+            this.child(render_selector_summary(
+                skins,
+                selected_index,
+                page_index,
+                page_count,
+                colors,
+            ))
+        })
+        .child(scroller);
 
     div()
         .border_t_1()
         .border_color(colors.border)
         .bg(colors.settings_panel_bg)
         .px(px(16.0))
-        .py(px(10.0))
+        .py(px(8.0))
+        .flex()
+        .items_start()
+        .justify_center()
+        .gap(px(10.0))
+        .child(content)
+        .when(page_count > 1, |this| {
+            this.child(
+                selector_icon_button(
+                    colors,
+                    "skin-preview-selector-page-previous",
+                    lucide_gpui::icons::icon_chevron_left(),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.select_previous_selector_page(cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+            )
+            .child(
+                selector_icon_button(
+                    colors,
+                    "skin-preview-selector-page-next",
+                    lucide_gpui::icons::icon_chevron_right(),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.select_next_selector_page(cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+            )
+        })
+        .child(selector_toggle_button(colors, expanded).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.toggle_selector_expanded(cx);
+                cx.stop_propagation();
+            }),
+        ))
+}
+
+fn render_selector_summary(
+    skins: &[SkinPreviewWindowSkin],
+    selected_index: usize,
+    page_index: usize,
+    page_count: usize,
+    colors: &ThemeColors,
+) -> Div {
+    let selected_name = skins
+        .get(selected_index)
+        .map(|skin| skin.display_name.clone())
+        .unwrap_or_else(|| SharedString::from("皮肤"));
+    let count = if skins.is_empty() {
+        SharedString::from("0/0")
+    } else {
+        SharedString::from(format!(
+            "{}/{} · {}/{}",
+            selected_index + 1,
+            skins.len(),
+            page_index + 1,
+            page_count.max(1)
+        ))
+    };
+
+    div()
+        .h(px(18.0))
+        .min_w(px(0.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(10.0))
         .child(
             div()
-                .w_full()
-                .overflow_x_scrollbar()
-                .scrollbar_width(px(4.0))
-                .child(row),
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(colors.text_secondary)
+                .child(selected_name),
         )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.0))
+                .text_color(colors.text_secondary)
+                .child(count),
+        )
+}
+
+fn selector_icon_button(
+    colors: &ThemeColors,
+    id: &'static str,
+    icon: &'static str,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(px(34.0))
+        .h(px(34.0))
+        .flex_none()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.surface)
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .child(
+            svg()
+                .path(icon)
+                .w(px(15.0))
+                .h(px(15.0))
+                .text_color(colors.text_secondary),
+        )
+}
+
+fn selector_toggle_button(colors: &ThemeColors, expanded: bool) -> Stateful<Div> {
+    selector_icon_button(
+        colors,
+        "skin-preview-selector-toggle",
+        if expanded {
+            lucide_gpui::icons::icon_chevron_down()
+        } else {
+            lucide_gpui::icons::icon_chevron_up()
+        },
+    )
 }
 
 fn render_skin_selector_item(
@@ -58,6 +271,10 @@ fn render_skin_selector_item(
     skin: &SkinPreviewWindowSkin,
     selected: bool,
     colors: &ThemeColors,
+    item_size: f32,
+    image_size: f32,
+    item_radius: f32,
+    image_radius: f32,
     cx: &mut Context<SkinPreviewWindowView>,
 ) -> Div {
     let border_color = if selected {
@@ -79,20 +296,24 @@ fn render_skin_selector_item(
 
     div()
         .relative()
-        .w(px(SELECTOR_ITEM_SIZE))
-        .h(px(SELECTOR_ITEM_SIZE))
+        .w(px(item_size))
+        .h(px(item_size))
+        .min_w(px(item_size))
+        .max_w(px(item_size))
+        .min_h(px(item_size))
+        .max_h(px(item_size))
         .flex_none()
-        .rounded(px(10.0))
+        .rounded(px(item_radius))
         .border_1()
         .border_color(border_color)
         .bg(background)
-        .p(px(3.0))
+        .p(px(((item_size - image_size) * 0.5 - 1.0).max(2.0)))
         .cursor_pointer()
         .child(render_skin_image_frame(
             skin.preview_path.as_ref(),
             colors,
-            SELECTOR_IMAGE_SIZE,
-            7.0,
+            image_size,
+            image_radius,
             selected,
         ))
         .on_mouse_down(
@@ -127,6 +348,10 @@ fn render_skin_image_frame(
         .relative()
         .w(px(size_px))
         .h(px(size_px))
+        .min_w(px(size_px))
+        .max_w(px(size_px))
+        .min_h(px(size_px))
+        .max_h(px(size_px))
         .flex_none()
         .rounded(radius)
         .bg(colors.surface)
@@ -139,7 +364,7 @@ fn render_skin_image_frame(
                 .inset_0()
                 .size_full()
                 .rounded(radius)
-                .object_fit(ObjectFit::Cover)
+                .object_fit(ObjectFit::Contain)
                 .decode_to_bounds()
                 .with_fallback({
                     let colors = colors.clone();

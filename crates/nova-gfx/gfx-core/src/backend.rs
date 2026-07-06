@@ -237,6 +237,22 @@ pub trait GfxResourceDevice {
     /// data slice is too short, or the backend cannot stage the upload.
     fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()>;
 
+    /// Writes a batch of texture uploads in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`GfxError`] reported by [`Self::write_texture`], or a
+    /// backend-specific batch upload error.
+    fn write_texture_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = TextureWrite<'a>>,
+    ) -> Result<()> {
+        for write in writes {
+            self.write_texture(write.descriptor, write.data)?;
+        }
+        Ok(())
+    }
+
     /// Creates a texture view.
     ///
     /// # Errors
@@ -327,10 +343,7 @@ pub trait BackendResources: GfxResourceDevice {
         &mut self,
         writes: impl IntoIterator<Item = TextureWrite<'a>>,
     ) -> Result<()> {
-        for write in writes {
-            self.write_texture(write.descriptor, write.data)?;
-        }
-        Ok(())
+        GfxResourceDevice::write_texture_batch(self, writes)
     }
 }
 

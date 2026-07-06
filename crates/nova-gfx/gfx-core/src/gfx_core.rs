@@ -474,6 +474,18 @@ impl Format {
     pub const fn is_srgb(self) -> bool {
         matches!(self, Self::Bgra8UnormSrgb | Self::Rgba8UnormSrgb)
     }
+
+    /// Returns the number of bytes occupied by one pixel.
+    #[must_use]
+    pub const fn bytes_per_pixel(self) -> u32 {
+        match self {
+            Self::Bgra8Unorm
+            | Self::Bgra8UnormSrgb
+            | Self::Rgba8Unorm
+            | Self::Rgba8UnormSrgb
+            | Self::Depth32Float => 4,
+        }
+    }
 }
 
 /// Surface presentation mode preference.
@@ -619,6 +631,33 @@ pub struct BufferBinding {
     pub size: u64,
     /// Structured element stride for storage-buffer views.
     pub stride: Option<u32>,
+}
+
+impl BufferBinding {
+    /// Validates that the binding range is contained within a buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError::InvalidInput`] when the range is empty, overflows, or
+    /// exceeds the target buffer size.
+    pub fn validate_against(self, buffer_size: u64) -> Result<()> {
+        if self.size == 0 {
+            return Err(GfxError::InvalidInput(
+                "buffer binding size must be non-zero".to_string(),
+            ));
+        }
+        let end = self
+            .offset
+            .checked_add(self.size)
+            .ok_or_else(|| GfxError::InvalidInput("buffer binding range overflow".to_string()))?;
+        if end > buffer_size {
+            return Err(GfxError::InvalidInput(format!(
+                "buffer binding range {}..{} exceeds buffer size {}",
+                self.offset, end, buffer_size
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// A typed texture binding.
@@ -1633,6 +1672,99 @@ pub struct TextureWriteDesc {
     pub size: Extent2d,
 }
 
+impl TextureWriteDesc {
+    /// Validates this write against a texture descriptor and source byte length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError::InvalidInput`] when the write rectangle exceeds the
+    /// texture bounds or the source layout cannot cover the requested rows.
+    pub fn validate_against(&self, texture: &TextureDesc, data_len: usize) -> Result<()> {
+        texture.validate()?;
+        let end_x = self
+            .origin
+            .x
+            .checked_add(self.size.width())
+            .ok_or_else(|| GfxError::InvalidInput("texture write x range overflow".to_string()))?;
+        let end_y = self
+            .origin
+            .y
+            .checked_add(self.size.height())
+            .ok_or_else(|| GfxError::InvalidInput("texture write y range overflow".to_string()))?;
+        if end_x > texture.size.width() || end_y > texture.size.height() {
+            return Err(GfxError::InvalidInput(format!(
+                "texture write rectangle {}x{} at {},{} exceeds texture bounds {}x{}",
+                self.size.width(),
+                self.size.height(),
+                self.origin.x,
+                self.origin.y,
+                texture.size.width(),
+                texture.size.height()
+            )));
+        }
+        let row_bytes = self
+            .size
+            .width()
+            .checked_mul(texture.format.bytes_per_pixel())
+            .ok_or_else(|| GfxError::InvalidInput("texture write row size overflow".to_string()))?;
+        let bytes_per_row = self.layout.bytes_per_row.get();
+        if bytes_per_row < row_bytes {
+            return Err(GfxError::InvalidInput(format!(
+                "texture write bytes_per_row ({bytes_per_row}) is smaller than row data ({row_bytes})"
+            )));
+        }
+        if self.layout.rows_per_image.get() < self.size.height() {
+            return Err(GfxError::InvalidInput(format!(
+                "texture write rows_per_image ({}) is smaller than upload height ({})",
+                self.layout.rows_per_image.get(),
+                self.size.height()
+            )));
+        }
+        let source_offset = usize::try_from(self.layout.offset).map_err(|error| {
+            GfxError::InvalidInput(format!("texture write offset overflow: {error}"))
+        })?;
+        let source_row_pitch = usize::try_from(bytes_per_row).map_err(|error| {
+            GfxError::InvalidInput(format!("texture write row pitch overflow: {error}"))
+        })?;
+        let row_bytes = usize::try_from(row_bytes).map_err(|error| {
+            GfxError::InvalidInput(format!("texture write row size overflow: {error}"))
+        })?;
+        let height = usize::try_from(self.size.height()).map_err(|error| {
+            GfxError::InvalidInput(format!("texture write height overflow: {error}"))
+        })?;
+        let required_len =
+            required_texture_write_len(source_offset, source_row_pitch, row_bytes, height)?;
+        if data_len < required_len {
+            return Err(GfxError::InvalidInput(format!(
+                "texture write data is smaller than layout: required {required_len} bytes, got {data_len}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn required_texture_write_len(
+    offset: usize,
+    source_row_pitch: usize,
+    row_bytes: usize,
+    height: usize,
+) -> Result<usize> {
+    if height == 0 {
+        return Ok(offset);
+    }
+    offset
+        .checked_add(
+            height
+                .saturating_sub(1)
+                .checked_mul(source_row_pitch)
+                .ok_or_else(|| {
+                    GfxError::InvalidInput("texture write required size overflow".to_string())
+                })?,
+        )
+        .and_then(|value| value.checked_add(row_bytes))
+        .ok_or_else(|| GfxError::InvalidInput("texture write required size overflow".to_string()))
+}
+
 /// Borrowed texture upload used by the batch upload compatibility API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextureWrite<'a> {
@@ -1774,6 +1906,39 @@ mod tests {
     }
 
     #[test]
+    fn texture_write_rejects_out_of_bounds_rectangle() {
+        let texture = texture_desc(16, 16);
+        let descriptor = texture_write_desc(12, 0, 8, 8, 32, 8, 0);
+
+        assert!(descriptor.validate_against(&texture, 256).is_err());
+    }
+
+    #[test]
+    fn texture_write_rejects_short_source_data() {
+        let texture = texture_desc(16, 16);
+        let descriptor = texture_write_desc(0, 0, 4, 4, 32, 4, 8);
+
+        assert!(descriptor.validate_against(&texture, 119).is_err());
+        assert!(descriptor.validate_against(&texture, 120).is_ok());
+    }
+
+    #[test]
+    fn texture_write_rejects_short_row_layout() {
+        let texture = texture_desc(16, 16);
+        let descriptor = texture_write_desc(0, 0, 4, 4, 15, 4, 0);
+
+        assert!(descriptor.validate_against(&texture, 64).is_err());
+    }
+
+    #[test]
+    fn texture_write_rejects_short_rows_per_image() {
+        let texture = texture_desc(16, 16);
+        let descriptor = texture_write_desc(0, 0, 4, 4, 16, 3, 0);
+
+        assert!(descriptor.validate_against(&texture, 64).is_err());
+    }
+
+    #[test]
     fn pipeline_desc_rejects_empty_entry_points() {
         let descriptor = RenderPipelineDesc {
             label: None,
@@ -1878,5 +2043,81 @@ mod tests {
         };
 
         assert!(descriptor.validate_against(&layout).is_ok());
+    }
+
+    #[test]
+    fn buffer_binding_accepts_range_inside_buffer() {
+        let binding = BufferBinding {
+            buffer: BufferId::from_parts(1, 1),
+            offset: 16,
+            size: 48,
+            stride: None,
+        };
+
+        assert!(binding.validate_against(64).is_ok());
+    }
+
+    #[test]
+    fn buffer_binding_rejects_empty_or_out_of_bounds_range() {
+        let buffer = BufferId::from_parts(1, 1);
+        assert!(
+            BufferBinding {
+                buffer,
+                offset: 0,
+                size: 0,
+                stride: None,
+            }
+            .validate_against(64)
+            .is_err()
+        );
+        assert!(
+            BufferBinding {
+                buffer,
+                offset: 32,
+                size: 64,
+                stride: None,
+            }
+            .validate_against(64)
+            .is_err()
+        );
+        assert!(
+            BufferBinding {
+                buffer,
+                offset: u64::MAX,
+                size: 1,
+                stride: None,
+            }
+            .validate_against(u64::MAX)
+            .is_err()
+        );
+    }
+
+    fn texture_desc(width: u32, height: u32) -> TextureDesc {
+        TextureDesc {
+            label: None,
+            size: Extent2d::new(width, height).expect("test dimensions are non-zero"),
+            format: Format::Rgba8Unorm,
+            usage: TextureUsage::SAMPLED,
+            memory_location: MemoryLocation::GpuOnly,
+            dimension: TextureDimension::D2,
+        }
+    }
+
+    fn texture_write_desc(
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+        offset: u64,
+    ) -> TextureWriteDesc {
+        TextureWriteDesc {
+            texture: TextureId::from_parts(1, 1),
+            layout: TextureDataLayout::new(offset, bytes_per_row, rows_per_image)
+                .expect("test layout should be valid"),
+            origin: Origin2d { x, y },
+            size: Extent2d::new(width, height).expect("test dimensions are non-zero"),
+        }
     }
 }

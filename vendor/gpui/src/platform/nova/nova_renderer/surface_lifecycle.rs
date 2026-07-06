@@ -2,13 +2,13 @@ use super::*;
 
 impl NovaRenderer {
     pub(crate) fn resize(&mut self, size: Size<DevicePixels>) -> Result<()> {
-        self.prepare_for_resize()?;
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         let next_size = DrawableSize { width, height };
         if next_size == self.current_size {
             return Ok(());
         }
+        self.prepare_for_resize()?;
         let target_size = Extent2d::new(width, height)?;
         let surface_config = SurfaceConfig {
             size: target_size,
@@ -167,6 +167,12 @@ impl NovaRenderer {
         self.needs_full_redraw_after_resize = true;
         self.present_cache_valid = false;
         Ok(())
+    }
+
+    pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        if let Err(error) = self.resize(size) {
+            log::warn!("failed to resize nova-gfx drawable: {error:#}");
+        }
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]

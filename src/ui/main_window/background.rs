@@ -3,6 +3,9 @@ use tracing::{info, instrument};
 
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
+const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = false;
+const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
+const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
 
 pub(crate) fn startup_trace_origin() -> Instant {
     static STARTUP_TRACE_ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -140,16 +143,19 @@ impl AppBackgroundView {
             None => container,
         };
 
-        if blur > 0.0 {
-            container.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(gpui::transparent_black())
-                    .backdrop_blur(px(blur)),
-            )
+        if blur <= 0.0 {
+            return container;
+        }
+
+        let overlay = div()
+            .absolute()
+            .inset_0()
+            .bg(background_blur_overlay_color(blur));
+
+        if BACKGROUND_GPU_BACKDROP_BLUR_ENABLED {
+            container.child(overlay.backdrop_blur(px(blur)))
         } else {
-            container
+            container.child(overlay)
         }
     }
 
@@ -222,6 +228,15 @@ impl AppBackgroundView {
             self.preloaded_background_target = Some(target);
             self.preloaded_background_task = Some(task);
         }
+    }
+}
+
+fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
+    let alpha = (blur / BACKGROUND_BLUR_OVERLAY_REFERENCE_PX).clamp(0.0, 1.0)
+        * BACKGROUND_BLUR_OVERLAY_MAX_ALPHA;
+    gpui::Hsla {
+        a: alpha,
+        ..gpui::transparent_black()
     }
 }
 
@@ -315,7 +330,9 @@ impl Render for AppBackgroundView {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKGROUND_ANIMATION_MAX_FPS, animation_suppression_changed, background_animation_policy,
+        BACKGROUND_ANIMATION_MAX_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
+        BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, animation_suppression_changed,
+        background_animation_policy, background_blur_overlay_color,
     };
 
     #[test]
@@ -344,5 +361,15 @@ mod tests {
     fn background_animation_suppression_change_reports_dirty() {
         assert!(animation_suppression_changed(true, false));
         assert!(!animation_suppression_changed(false, false));
+    }
+
+    #[test]
+    fn background_blur_uses_static_overlay_by_default() {
+        assert!(!BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
+        assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
+        assert_eq!(
+            background_blur_overlay_color(f32::MAX).a,
+            BACKGROUND_BLUR_OVERLAY_MAX_ALPHA
+        );
     }
 }

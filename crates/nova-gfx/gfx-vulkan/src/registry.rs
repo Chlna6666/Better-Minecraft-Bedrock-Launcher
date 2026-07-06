@@ -95,6 +95,21 @@ impl<T> ResourceRegistry<T> {
         values
     }
 
+    pub(crate) fn remove_where(&mut self, mut predicate: impl FnMut(&T) -> bool) -> usize {
+        let mut removed = 0;
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let should_remove = slot.value.as_ref().is_some_and(&mut predicate);
+            if should_remove {
+                slot.value = None;
+                slot.generation = slot.generation.wrapping_add(1).max(1);
+                self.free_indices
+                    .push(u32::try_from(index).unwrap_or(u32::MAX));
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     fn valid_slot<R>(&self, id: ResourceId<R>) -> Result<&ResourceSlot<T>> {
         let slot = self
             .slots

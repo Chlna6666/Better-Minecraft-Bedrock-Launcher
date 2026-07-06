@@ -1,5 +1,8 @@
-use super::mesh::{SkinPreviewMeshes, skin_player_mesh, skin_preview_draw_parameters};
-use super::selector::{render_current_preview, render_skin_selector};
+use super::mesh::{SkinPreviewMeshes, skin_player_mesh, skin_preview_paint_meshes};
+use super::selector::{
+    render_current_preview, render_skin_selector, skin_selector_page_count,
+    skin_selector_page_for_index,
+};
 use crate::ui::animation::request_animation_frame_if;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
@@ -8,6 +11,11 @@ use gpui::*;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+
+const SKIN_PREVIEW_WINDOW_WIDTH: f32 = 640.0;
+const SKIN_PREVIEW_WINDOW_HEIGHT: f32 = 600.0;
+const SKIN_PREVIEW_STAGE_MAX_WIDTH: f32 = 608.0;
+const SKIN_PREVIEW_STAGE_MAX_HEIGHT: f32 = 360.0;
 
 #[derive(Clone)]
 pub struct SkinPreviewWindowSkin {
@@ -35,6 +43,8 @@ pub struct SkinPreviewWindowView {
     view_yaw: f32,
     view_pitch: f32,
     drag_position: Option<Point<Pixels>>,
+    selector_expanded: bool,
+    selector_page: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -44,6 +54,7 @@ impl SkinPreviewWindowView {
             cx.notify();
         })];
         let selected_index = init.selected_index.min(init.skins.len().saturating_sub(1));
+        let selector_page = skin_selector_page_for_index(selected_index);
         let mut this = Self {
             title: init.title,
             skins: init.skins,
@@ -55,6 +66,8 @@ impl SkinPreviewWindowView {
             view_yaw: 0.42,
             view_pitch: -0.18,
             drag_position: None,
+            selector_expanded: false,
+            selector_page,
             _subscriptions: subscriptions,
         };
         this.load_mesh(cx);
@@ -131,6 +144,7 @@ impl SkinPreviewWindowView {
         }
 
         self.selected_index = index;
+        self.selector_page = skin_selector_page_for_index(index);
         self.walk_started_at = Instant::now();
         self.load_mesh(cx);
     }
@@ -167,6 +181,34 @@ impl SkinPreviewWindowView {
     fn toggle_walking(&mut self, cx: &mut Context<Self>) {
         self.walking = !self.walking;
         self.walk_started_at = Instant::now();
+        cx.notify();
+    }
+
+    pub(super) fn toggle_selector_expanded(&mut self, cx: &mut Context<Self>) {
+        self.selector_page = skin_selector_page_for_index(self.selected_index);
+        self.selector_expanded = !self.selector_expanded;
+        cx.notify();
+    }
+
+    pub(super) fn select_previous_selector_page(&mut self, cx: &mut Context<Self>) {
+        let page_count = skin_selector_page_count(self.skins.len());
+        if page_count < 2 {
+            return;
+        }
+        self.selector_page = if self.selector_page == 0 {
+            page_count - 1
+        } else {
+            self.selector_page - 1
+        };
+        cx.notify();
+    }
+
+    pub(super) fn select_next_selector_page(&mut self, cx: &mut Context<Self>) {
+        let page_count = skin_selector_page_count(self.skins.len());
+        if page_count < 2 {
+            return;
+        }
+        self.selector_page = (self.selector_page + 1) % page_count;
         cx.notify();
     }
 
@@ -248,14 +290,13 @@ impl SkinPreviewWindowView {
                             move |bounds, _prepaint, window, _cx| {
                                 let height = f32::from(bounds.size.height).max(1.0);
                                 let aspect = f32::from(bounds.size.width).max(1.0) / height;
-                                for part in mesh.parts.iter() {
+                                for paint_mesh in skin_preview_paint_meshes(
+                                    &mesh, aspect, view_yaw, view_pitch, walk_phase, walking,
+                                ) {
                                     window.paint_gpu_mesh_3d(
                                         bounds,
-                                        part.mesh.clone(),
-                                        skin_preview_draw_parameters(
-                                            aspect, part.part, view_yaw, view_pitch, walk_phase,
-                                            walking,
-                                        ),
+                                        paint_mesh.mesh,
+                                        paint_mesh.parameters,
                                     );
                                 }
                             },
@@ -431,20 +472,32 @@ impl Render for SkinPreviewWindowView {
                     ),
             )
             .child(
-                div().flex_1().min_h(px(0.)).p(px(16.)).child(
-                    div()
-                        .size_full()
-                        .rounded(px(10.))
-                        .border_1()
-                        .border_color(colors.border)
-                        .overflow_hidden()
-                        .child(self.render_canvas(&colors, now, cx)),
-                ),
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .p(px(16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w_full()
+                            .h_full()
+                            .max_w(px(SKIN_PREVIEW_STAGE_MAX_WIDTH))
+                            .max_h(px(SKIN_PREVIEW_STAGE_MAX_HEIGHT))
+                            .rounded(px(10.))
+                            .border_1()
+                            .border_color(colors.border)
+                            .overflow_hidden()
+                            .child(self.render_canvas(&colors, now, cx)),
+                    ),
             )
             .when(self.skins.len() > 1, |this| {
                 this.child(render_skin_selector(
                     &self.skins,
                     self.selected_index,
+                    self.selector_expanded,
+                    self.selector_page,
                     &colors,
                     cx,
                 ))
@@ -474,9 +527,13 @@ pub fn open_skin_preview_window(init: SkinPreviewWindowInit, cx: &mut App) {
 
 fn skin_preview_window_options(cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
-    options.window_bounds = Some(WindowBounds::centered(size(px(560.), px(520.)), cx));
-    options.window_min_size = Some(size(px(420.), px(380.)));
-    options.is_resizable = true;
+    let fixed_size = size(
+        px(SKIN_PREVIEW_WINDOW_WIDTH),
+        px(SKIN_PREVIEW_WINDOW_HEIGHT),
+    );
+    options.window_bounds = Some(WindowBounds::centered(fixed_size, cx));
+    options.window_min_size = Some(fixed_size);
+    options.is_resizable = false;
     options.is_minimizable = true;
     options.is_movable = true;
 

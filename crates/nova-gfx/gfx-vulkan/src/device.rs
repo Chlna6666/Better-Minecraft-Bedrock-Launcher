@@ -35,7 +35,8 @@ use gfx_core::{
     ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId, ShaderBinary, ShaderCode,
     ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus,
     SurfaceConfig, SurfaceDesc, SurfaceId, TextureDataLayout, TextureDesc, TextureDimension,
-    TextureId, TextureUsage, TextureViewDesc, TextureViewId, TextureWriteDesc, VertexFormat,
+    TextureId, TextureUsage, TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc,
+    VertexFormat,
 };
 use gfx_memory::{
     DeferredFreeQueue, MemoryAllocation, MemoryAllocator, UploadAllocation, UploadRingAllocator,
@@ -129,6 +130,7 @@ pub struct VulkanDevice {
     upload_ring: UploadRingAllocator,
     upload_pages: Vec<Option<VulkanBuffer>>,
     deferred_destroys: DeferredFreeQueue<DeferredResource>,
+    next_upload_fence_value: u64,
     submitted_frames: u64,
 }
 
@@ -186,6 +188,7 @@ impl VulkanDevice {
             upload_ring,
             upload_pages: Vec::new(),
             deferred_destroys: DeferredFreeQueue::new(),
+            next_upload_fence_value: 1,
             submitted_frames: 0,
         })
     }
@@ -453,13 +456,15 @@ impl VulkanDevice {
     ///
     /// Returns [`GfxError`] when upload fails.
     fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
-        let upload = self.write_upload_data(data)?;
-        let staging_buffer = self.upload_page_buffer(upload.page_index)?;
         let (image, old_layout) = {
             let texture = self.textures.get(desc.texture)?;
+            desc.validate_against(&texture.desc, data.len())?;
             (texture.image, texture.layout)
         };
-        self.copy_buffer_to_texture_once(
+        let upload = self.write_upload_data(data)?;
+        let staging_buffer = self.upload_page_buffer(upload.page_index)?;
+        self.copy_buffer_to_texture(
+            desc.texture,
             staging_buffer,
             image,
             old_layout,
@@ -471,9 +476,60 @@ impl VulkanDevice {
             desc.origin,
             desc.size,
         )?;
-        self.complete_synchronous_upload();
         self.textures.get_mut(desc.texture)?.layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
         let _ = self.textures.get(desc.texture)?.desc.format;
+        Ok(())
+    }
+
+    fn write_texture_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = TextureWrite<'a>>,
+    ) -> Result<()> {
+        let mut uploads = Vec::new();
+        let mut texture_layouts = Vec::new();
+        for write in writes {
+            let descriptor = write.descriptor;
+            let (image, old_layout) = {
+                let texture = self.textures.get(descriptor.texture)?;
+                descriptor.validate_against(&texture.desc, write.data.len())?;
+                (texture.image, texture.layout)
+            };
+            let upload = self.write_upload_data(write.data)?;
+            let staging_buffer = self.upload_page_buffer(upload.page_index)?;
+            let layout = TextureDataLayout::new(
+                upload.offset,
+                descriptor.layout.bytes_per_row.get(),
+                descriptor.layout.rows_per_image.get(),
+            )?;
+            uploads.push(VulkanTextureUpload {
+                texture: descriptor.texture,
+                source: staging_buffer,
+                image,
+                old_layout,
+                layout,
+                origin: descriptor.origin,
+                size: descriptor.size,
+            });
+            if let Some((_, layout)) = texture_layouts
+                .iter_mut()
+                .find(|(texture_id, _)| *texture_id == descriptor.texture)
+            {
+                *layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            } else {
+                texture_layouts.push((
+                    descriptor.texture,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                ));
+            }
+        }
+        if uploads.is_empty() {
+            return Ok(());
+        }
+        self.copy_buffers_to_textures(&uploads)?;
+        for (texture_id, layout) in texture_layouts {
+            self.textures.get_mut(texture_id)?.layout = layout;
+            let _ = self.textures.get(texture_id)?.desc.format;
+        }
         Ok(())
     }
 
@@ -600,6 +656,7 @@ impl VulkanDevice {
             match binding.resource {
                 ResourceBindingResource::Buffer(buffer_binding) => {
                     let buffer = self.buffers.get(buffer_binding.buffer)?;
+                    buffer_binding.validate_against(buffer.desc.size)?;
                     let binding_type = layout_desc
                         .entries
                         .iter()
@@ -719,11 +776,19 @@ impl VulkanDevice {
     ///
     /// Returns [`GfxError`] when Vulkan render pass creation fails.
     fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
-        let render_pass =
-            create_render_pass(&self.device, format_to_vk(desc.color_attachment.format))?;
+        let depth_format = desc
+            .depth_attachment
+            .as_ref()
+            .map(|attachment| attachment.format);
+        let render_pass = create_render_pass(
+            &self.device,
+            format_to_vk(desc.color_attachment.format),
+            depth_format.map(format_to_vk),
+        )?;
         Ok(self.render_passes.insert(VulkanRenderPass {
             render_pass,
             color_format: desc.color_attachment.format,
+            depth_format,
         }))
     }
 
@@ -738,7 +803,13 @@ impl VulkanDevice {
         _viewport_extent: gfx_core::Extent2d,
     ) -> Result<RenderPipelineId> {
         desc.validate()?;
-        let render_pass = self.render_passes.get(desc.render_pass)?.render_pass;
+        let render_pass_record = self.render_passes.get(desc.render_pass)?;
+        if desc.depth_state.is_some() && render_pass_record.depth_format.is_none() {
+            return Err(GfxError::InvalidInput(
+                "Vulkan depth pipeline requires a render pass depth attachment".to_string(),
+            ));
+        }
+        let render_pass = render_pass_record.render_pass;
         let vertex_shader = self.shader_modules.get(desc.vertex_shader)?;
         let fragment_shader = self.shader_modules.get(desc.fragment_shader)?;
         if vertex_shader.stage != ShaderStage::Vertex {
@@ -790,6 +861,7 @@ impl VulkanDevice {
             command_buffer,
             transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
+            owns_fence: false,
         }))
     }
 
@@ -825,7 +897,12 @@ impl VulkanDevice {
         pass: BeginRenderPassDesc,
         steps: &[DrawStepDesc],
     ) -> Result<()> {
-        self.record_render_step_list_desc(encoder_id, pass, RenderStepList::from_draw_steps(steps))
+        self.record_render_step_list_desc(
+            encoder_id,
+            pass,
+            RenderStepList::from_draw_steps(steps),
+            None,
+        )
     }
 
     fn record_render_step_list_desc(
@@ -833,11 +910,15 @@ impl VulkanDevice {
         encoder_id: CommandEncoderId,
         pass: BeginRenderPassDesc,
         steps: RenderStepList<'_>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
         let command_buffer = self.command_encoders.get(encoder_id)?.command_buffer;
         let mut transient_framebuffer = None;
         let mut render_target_texture = None;
         let mut render_target_transition = None;
+        let render_pass_record = *self.render_passes.get(pass.render_pass)?;
+        let depth_view =
+            self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
         let (framebuffer, extent) = match pass.target {
             RenderTarget::Swapchain {
                 swapchain,
@@ -847,13 +928,31 @@ impl VulkanDevice {
                 let image_index = usize::try_from(image_index).map_err(|error| {
                     GfxError::InvalidInput(format!("image index overflow: {error}"))
                 })?;
-                let framebuffer =
+                let image_view =
+                    *swapchain_record
+                        .image_views
+                        .get(image_index)
+                        .ok_or_else(|| {
+                            GfxError::InvalidInput("swapchain image index out of range".to_string())
+                        })?;
+                let framebuffer = if let Some((depth_view, _)) = depth_view {
+                    let framebuffer = create_framebuffer(
+                        &self.device,
+                        render_pass_record.render_pass,
+                        image_view,
+                        Some(depth_view),
+                        swapchain_record.extent,
+                    )?;
+                    transient_framebuffer = Some(framebuffer);
+                    framebuffer
+                } else {
                     *swapchain_record
                         .framebuffers
                         .get(image_index)
                         .ok_or_else(|| {
                             GfxError::InvalidInput("swapchain image index out of range".to_string())
-                        })?;
+                        })?
+                };
                 (framebuffer, swapchain_record.extent)
             }
             RenderTarget::TextureView(texture_view_id) => {
@@ -861,8 +960,9 @@ impl VulkanDevice {
                 let texture = self.textures.get(texture_view.texture)?;
                 let framebuffer = create_framebuffer(
                     &self.device,
-                    self.render_passes.get(pass.render_pass)?.render_pass,
+                    render_pass_record.render_pass,
                     texture_view.view,
+                    depth_view.map(|(view, _)| view),
                     vk::Extent2D {
                         width: texture.desc.size.width(),
                         height: texture.desc.size.height(),
@@ -883,7 +983,6 @@ impl VulkanDevice {
                 )
             }
         };
-        let render_pass = self.render_passes.get(pass.render_pass)?.render_pass;
         let draw_steps = steps
             .iter()
             .map(|step| {
@@ -934,11 +1033,12 @@ impl VulkanDevice {
         let result = record_command_buffer(&CommandRecordInfo {
             device: &self.device,
             command_buffer,
-            render_pass,
+            render_pass: render_pass_record.render_pass,
             framebuffer,
             steps: &draw_steps,
             extent,
             color_load_op: pass.color_load_op,
+            depth_load_op: depth_view.map(|(_, load_op)| load_op),
             render_target_transition,
         });
         if let Some(texture_id) = render_target_texture {
@@ -951,6 +1051,39 @@ impl VulkanDevice {
                 .push(framebuffer);
         }
         result
+    }
+
+    fn depth_attachment_view_for_render_pass(
+        &self,
+        render_pass: &VulkanRenderPass,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<Option<(vk::ImageView, LoadOp<f32>)>> {
+        let Some(depth_attachment) = depth_attachment else {
+            if render_pass.depth_format.is_some() {
+                return Err(GfxError::InvalidInput(
+                    "Vulkan render pass expects a depth attachment".to_string(),
+                ));
+            }
+            return Ok(None);
+        };
+        let Some(depth_format) = render_pass.depth_format else {
+            return Err(GfxError::InvalidInput(
+                "Vulkan depth attachment was provided for a color-only render pass".to_string(),
+            ));
+        };
+        let texture_view = self.texture_views.get(depth_attachment.target)?;
+        let texture = self.textures.get(texture_view.texture)?;
+        if texture.desc.format != depth_format {
+            return Err(GfxError::InvalidInput(
+                "Vulkan depth attachment format does not match render pass".to_string(),
+            ));
+        }
+        if !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
+            return Err(GfxError::InvalidInput(
+                "Vulkan depth attachment texture must include DEPTH_ATTACHMENT usage".to_string(),
+            ));
+        }
+        Ok(Some((texture_view.view, depth_attachment.depth_load_op)))
     }
 
     /// Submits a command buffer.
@@ -983,6 +1116,7 @@ impl VulkanDevice {
             render_pass_id,
             RenderStepList::from_draw_steps(steps),
             clear_color,
+            None,
         )
     }
 
@@ -998,6 +1132,7 @@ impl VulkanDevice {
             render_pass_id,
             RenderStepList::from_render_steps(steps),
             clear_color,
+            None,
         )
     }
 
@@ -1007,76 +1142,105 @@ impl VulkanDevice {
         render_pass_id: RenderPassId,
         steps: RenderStepList<'_>,
         clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
-        let (image_index, frame_index, image_available, render_finished, fence) = {
-            let swapchain = self.swapchains.get_mut(swapchain_id)?;
-            let fence = swapchain.in_flight_fences[swapchain.frame_index];
-            // SAFETY: Fence belongs to this device and is not destroyed until swapchain destroy.
-            unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
-                .map_err(VulkanError::from)?;
-            // SAFETY: Swapchain and semaphore belong to this device and are valid here.
-            let acquire_result = unsafe {
-                self.swapchain_loader.acquire_next_image(
-                    swapchain.swapchain,
-                    u64::MAX,
-                    swapchain.image_available_semaphores[swapchain.frame_index],
-                    vk::Fence::null(),
-                )
-            };
-            let image_index = match acquire_result {
-                Ok((image_index, suboptimal)) => {
-                    if suboptimal {
-                        return Err(VulkanError::Vk(vk::Result::SUBOPTIMAL_KHR).into());
-                    }
-                    image_index
-                }
-                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(()),
-                Err(error) => return Err(VulkanError::from(error).into()),
-            };
-            // SAFETY: Fence belongs to this device and was waited above.
-            unsafe { self.device.reset_fences(&[fence]) }.map_err(VulkanError::from)?;
-            (
-                image_index,
-                swapchain.frame_index,
-                swapchain.image_available_semaphores[swapchain.frame_index],
-                swapchain.render_finished_semaphores[swapchain.frame_index],
-                fence,
-            )
+        let Some(submission) = self.render_step_list_and_present_tracked(
+            swapchain_id,
+            render_pass_id,
+            steps,
+            clear_color,
+            depth_attachment,
+        )?
+        else {
+            return Ok(());
         };
+        self.wait_submission(submission)?;
+        Ok(())
+    }
 
+    fn render_step_list_and_present_deferred(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+        render_pass_id: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId> {
+        Ok(self
+            .render_step_list_and_present_tracked(
+                swapchain_id,
+                render_pass_id,
+                steps,
+                clear_color,
+                depth_attachment,
+            )?
+            .unwrap_or_else(|| SubmissionId::from_parts(0, 0)))
+    }
+
+    fn render_step_list_and_present_tracked(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+        render_pass_id: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<Option<SubmissionId>> {
+        let Some(present_frame) = self.acquire_present_frame(swapchain_id)? else {
+            return Ok(None);
+        };
         let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
-        self.record_render_step_list_desc(
+        let record_result = self.record_render_step_list_desc(
             encoder,
             BeginRenderPassDesc {
                 render_pass: render_pass_id,
                 target: RenderTarget::Swapchain {
                     swapchain: swapchain_id,
-                    image_index,
+                    image_index: present_frame.image_index,
                 },
                 color_load_op: LoadOp::Clear(clear_color),
             },
             steps,
-        )?;
+            depth_attachment,
+        );
+        if let Err(error) = record_result {
+            let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
+            return Err(error);
+        }
+
         let command_buffer = self.command_encoders.get(encoder)?.command_buffer;
-        self.submit_command_buffer(
+        // SAFETY: The frame fence was waited before acquire and is about to be used by queue_submit.
+        unsafe { self.device.reset_fences(&[present_frame.fence]) }.map_err(VulkanError::from)?;
+        let submit_result = self.submit_command_buffer(
             command_buffer,
-            &[image_available],
-            &[render_finished],
-            fence,
+            &[present_frame.image_available],
+            &[present_frame.render_finished],
+            present_frame.fence,
+        );
+        if let Err(error) = submit_result {
+            let _signal_result = self.signal_frame_fence_after_submit_failure(present_frame.fence);
+            let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
+            return Err(error);
+        }
+
+        let mut encoder_resource = self.command_encoders.take(encoder)?;
+        encoder_resource.fence = present_frame.fence;
+        encoder_resource.owns_fence = false;
+        self.deferred_destroys
+            .retire(0, DeferredResource::CommandEncoder(encoder_resource));
+
+        self.present(
+            swapchain_id,
+            present_frame.image_index,
+            present_frame.render_finished,
         )?;
-        let present_result = self.present(swapchain_id, image_index, render_finished);
-        // SAFETY: Fence was passed to queue_submit above and is valid until swapchain destruction.
-        let wait_result = unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
-            .map_err(VulkanError::from);
-        let encoder_resource = self.command_encoders.take(encoder)?;
-        self.destroy_command_encoder_now(&encoder_resource);
-        present_result?;
-        wait_result?;
         let swapchain = self.swapchains.get_mut(swapchain_id)?;
-        swapchain.frame_index = (frame_index + 1) % FRAMES_IN_FLIGHT;
+        swapchain.frame_index = (present_frame.frame_index + 1) % FRAMES_IN_FLIGHT;
         self.submitted_frames = self.submitted_frames.saturating_add(1);
+        let submission = self.submissions.insert(VulkanSubmission {
+            fence: present_frame.fence,
+        });
         self.poll_cleanup();
-        Ok(())
+        Ok(Some(submission))
     }
 
     /// Records and submits draw steps into a regular texture view.
@@ -1096,6 +1260,7 @@ impl VulkanDevice {
             render_pass_id,
             RenderStepList::from_draw_steps(steps),
             color_load_op,
+            None,
         )
     }
 
@@ -1111,6 +1276,7 @@ impl VulkanDevice {
             render_pass_id,
             RenderStepList::from_render_steps(steps),
             color_load_op,
+            None,
         )
     }
 
@@ -1120,6 +1286,7 @@ impl VulkanDevice {
         render_pass_id: RenderPassId,
         steps: RenderStepList<'_>,
         color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
         let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
         self.record_render_step_list_desc(
@@ -1130,6 +1297,7 @@ impl VulkanDevice {
                 color_load_op,
             },
             steps,
+            depth_attachment,
         )?;
         self.submit_command_encoder_deferred(encoder)?;
         self.poll_cleanup();
@@ -1150,6 +1318,7 @@ impl VulkanDevice {
         let fence = create_fence(&self.device, false)?;
         self.submit_command_buffer(command_buffer, &[], &[], fence)?;
         encoder_resource.fence = fence;
+        encoder_resource.owns_fence = true;
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         self.submitted_frames = self.submitted_frames.saturating_add(1);
@@ -1173,11 +1342,72 @@ impl VulkanDevice {
 
     fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
         let fence = self.submissions.get(submission)?.fence;
-        // SAFETY: Fence belongs to this device and is retained by the deferred command encoder.
+        // SAFETY: Fence belongs to this device and remains live until its owning resource is destroyed.
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
             .map_err(VulkanError::from)?;
         let _completed = self.submissions.take(submission)?;
         self.poll_cleanup();
+        Ok(())
+    }
+
+    fn acquire_present_frame(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+    ) -> Result<Option<VulkanPresentFrame>> {
+        let (swapchain, frame_index, image_available, render_finished, fence) = {
+            let swapchain = self.swapchains.get(swapchain_id)?;
+            let frame_index = swapchain.frame_index;
+            (
+                swapchain.swapchain,
+                frame_index,
+                swapchain.image_available_semaphores[frame_index],
+                swapchain.render_finished_semaphores[frame_index],
+                swapchain.in_flight_fences[frame_index],
+            )
+        };
+        // SAFETY: Fence belongs to this device and is not destroyed until swapchain destroy.
+        unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
+            .map_err(VulkanError::from)?;
+        self.submissions
+            .remove_where(|submission| submission.fence == fence);
+        // SAFETY: Swapchain and semaphore belong to this device and are valid here.
+        let acquire_result = unsafe {
+            self.swapchain_loader.acquire_next_image(
+                swapchain,
+                u64::MAX,
+                image_available,
+                vk::Fence::null(),
+            )
+        };
+        let image_index = match acquire_result {
+            Ok((image_index, _suboptimal)) => image_index,
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(None),
+            Err(error) => return Err(VulkanError::from(error).into()),
+        };
+        Ok(Some(VulkanPresentFrame {
+            image_index,
+            frame_index,
+            image_available,
+            render_finished,
+            fence,
+        }))
+    }
+
+    fn destroy_temporary_command_encoder_now(&mut self, encoder: CommandEncoderId) -> Result<()> {
+        let encoder = self.command_encoders.take(encoder)?;
+        self.destroy_command_encoder_now(&encoder);
+        Ok(())
+    }
+
+    fn signal_frame_fence_after_submit_failure(&self, fence: vk::Fence) -> Result<()> {
+        let submit_info = vk::SubmitInfo::default();
+        // SAFETY: Queue and fence are owned by this device. The empty submit prevents the
+        // per-frame fence from staying unsignaled if queue_submit rejects the real frame.
+        unsafe {
+            self.device
+                .queue_submit(self.graphics_queue, &[submit_info], fence)
+        }
+        .map_err(VulkanError::from)?;
         Ok(())
     }
 
@@ -1206,7 +1436,7 @@ impl VulkanDevice {
                 .queue_present(self.present_queue, &present_info)
         };
         match present_result {
-            Ok(_) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => Ok(()),
+            Ok(_) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => Ok(()),
             Err(error) => Err(VulkanError::from(error).into()),
         }
     }
@@ -1481,11 +1711,13 @@ impl VulkanDevice {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
-        let render_pass = create_render_pass(&self.device, surface_format.format)?;
+        let render_pass = create_render_pass(&self.device, surface_format.format, None)?;
         let framebuffers = image_views
             .iter()
             .copied()
-            .map(|image_view| create_framebuffer(&self.device, render_pass, image_view, extent))
+            .map(|image_view| {
+                create_framebuffer(&self.device, render_pass, image_view, None, extent)
+            })
             .collect::<Result<Vec<_>>>()?;
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_objects(&self.device)?;
@@ -1531,9 +1763,26 @@ impl VulkanDevice {
     }
 
     fn complete_synchronous_upload(&mut self) {
-        self.upload_ring.retire_used_pages(self.submitted_frames);
-        self.upload_ring.complete_fence(self.submitted_frames);
+        let fence_value = self.next_upload_fence_value;
+        self.next_upload_fence_value = self.next_upload_fence_value.saturating_add(1);
+        self.upload_ring.retire_used_pages(fence_value);
+        self.upload_ring.complete_fence(fence_value);
         self.upload_ring.trim_idle_pages();
+    }
+
+    fn retire_deferred_upload(&mut self, command_pool: vk::CommandPool, fence: vk::Fence) {
+        let fence_value = self.next_upload_fence_value;
+        self.next_upload_fence_value = self.next_upload_fence_value.saturating_add(1);
+        self.upload_ring.retire_used_pages(fence_value);
+        self.deferred_destroys.retire(
+            0,
+            DeferredResource::Upload {
+                fence,
+                fence_value,
+                command_pool,
+            },
+        );
+        self.poll_cleanup();
     }
 
     fn signal_cleanup_fence(&self) -> Result<vk::Fence> {
@@ -1575,18 +1824,19 @@ impl VulkanDevice {
     }
 
     fn ensure_upload_page(&mut self, page_index: usize) -> Result<()> {
-        if self
-            .upload_pages
-            .get(page_index)
-            .is_some_and(Option::is_some)
-        {
-            return Ok(());
-        }
         let size = self.upload_ring.page_size(page_index).ok_or_else(|| {
             GfxError::Backend(format!("upload ring page {page_index} has no size"))
         })?;
         while self.upload_pages.len() <= page_index {
             self.upload_pages.push(None);
+        }
+        if let Some(page) = self.upload_pages[page_index].as_ref() {
+            if page.desc.size >= size {
+                return Ok(());
+            }
+        }
+        if let Some(page) = self.upload_pages[page_index].take() {
+            self.destroy_buffer_now(page)?;
         }
         let desc = BufferDesc {
             label: Some(format!("nova-gfx vulkan upload page {page_index}")),
@@ -1668,8 +1918,9 @@ impl VulkanDevice {
         )
     }
 
-    fn copy_buffer_to_texture_once(
-        &self,
+    fn copy_buffer_to_texture(
+        &mut self,
+        texture: TextureId,
         source: vk::Buffer,
         image: vk::Image,
         old_layout: vk::ImageLayout,
@@ -1677,23 +1928,81 @@ impl VulkanDevice {
         origin: gfx_core::Origin2d,
         size: gfx_core::Extent2d,
     ) -> Result<()> {
+        self.copy_buffers_to_textures(&[VulkanTextureUpload {
+            texture,
+            source,
+            image,
+            old_layout,
+            layout,
+            origin,
+            size,
+        }])
+    }
+
+    fn copy_buffers_to_textures(&mut self, uploads: &[VulkanTextureUpload]) -> Result<()> {
+        if uploads.is_empty() {
+            return Ok(());
+        }
         let command_pool = create_command_pool(&self.device, self.graphics_queue_family_index)?;
         let command_buffer = allocate_command_buffers(&self.device, command_pool, 1)?
             .into_iter()
             .next()
             .ok_or_else(|| GfxError::Backend("failed to allocate command buffer".to_string()))?;
         begin_one_time_commands(&self.device, command_buffer)?;
+        let groups = texture_upload_groups(uploads);
+        for group in groups {
+            if let Err(error) = self.record_texture_upload_group(command_buffer, &group) {
+                // SAFETY: Command pool was created in this function and owns command_buffer.
+                unsafe { self.device.destroy_command_pool(command_pool, None) };
+                return Err(error);
+            }
+        }
+        let fence = match end_submit_deferred(&self.device, self.graphics_queue, command_buffer) {
+            Ok(fence) => fence,
+            Err(error) => {
+                // SAFETY: Command pool was created in this function and owns command_buffer.
+                unsafe { self.device.destroy_command_pool(command_pool, None) };
+                return Err(error);
+            }
+        };
+        self.retire_deferred_upload(command_pool, fence);
+        Ok(())
+    }
+
+    fn record_texture_upload_group(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        group: &VulkanTextureUploadGroup<'_>,
+    ) -> Result<()> {
         transition_image_layout(
             &self.device,
             command_buffer,
-            image,
-            old_layout,
+            group.image,
+            group.old_layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         );
+        for upload in &group.uploads {
+            self.record_buffer_to_texture_copy(command_buffer, upload)?;
+        }
+        transition_image_layout(
+            &self.device,
+            command_buffer,
+            group.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        );
+        Ok(())
+    }
+
+    fn record_buffer_to_texture_copy(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        upload: &VulkanTextureUpload,
+    ) -> Result<()> {
         let region = vk::BufferImageCopy::default()
-            .buffer_offset(layout.offset)
-            .buffer_row_length(layout.bytes_per_row.get() / 4)
-            .buffer_image_height(layout.rows_per_image.get())
+            .buffer_offset(upload.layout.offset)
+            .buffer_row_length(upload.layout.bytes_per_row.get() / 4)
+            .buffer_image_height(upload.layout.rows_per_image.get())
             .image_subresource(
                 vk::ImageSubresourceLayers::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1702,17 +2011,17 @@ impl VulkanDevice {
                     .layer_count(1),
             )
             .image_offset(vk::Offset3D {
-                x: i32::try_from(origin.x).map_err(|error| {
+                x: i32::try_from(upload.origin.x).map_err(|error| {
                     GfxError::InvalidInput(format!("texture upload origin x overflow: {error}"))
                 })?,
-                y: i32::try_from(origin.y).map_err(|error| {
+                y: i32::try_from(upload.origin.y).map_err(|error| {
                     GfxError::InvalidInput(format!("texture upload origin y overflow: {error}"))
                 })?,
                 z: 0,
             })
             .image_extent(vk::Extent3D {
-                width: size.width(),
-                height: size.height(),
+                width: upload.size.width(),
+                height: upload.size.height(),
                 depth: 1,
             });
         // SAFETY: Command buffer is recording, image is in transfer dst layout, and source
@@ -1720,25 +2029,13 @@ impl VulkanDevice {
         unsafe {
             self.device.cmd_copy_buffer_to_image(
                 command_buffer,
-                source,
-                image,
+                upload.source,
+                upload.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[region],
             );
         }
-        transition_image_layout(
-            &self.device,
-            command_buffer,
-            image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        );
-        end_submit_wait_destroy(
-            &self.device,
-            self.graphics_queue,
-            command_pool,
-            command_buffer,
-        )
+        Ok(())
     }
 
     fn destroy_deferred_now(&mut self, resource: DeferredResource) -> Result<()> {
@@ -1750,6 +2047,19 @@ impl VulkanDevice {
             DeferredResource::Texture { fence, texture } => {
                 destroy_fence_if_needed(&self.device, fence);
                 self.destroy_texture_now(texture)
+            }
+            DeferredResource::Upload {
+                fence,
+                fence_value,
+                command_pool,
+            } => {
+                destroy_fence_if_needed(&self.device, fence);
+                // SAFETY: Command pool was created for a one-time upload command buffer and is
+                // not destroyed until its submission fence has completed.
+                unsafe { self.device.destroy_command_pool(command_pool, None) };
+                self.upload_ring.complete_fence(fence_value);
+                self.upload_ring.trim_idle_pages();
+                Ok(())
             }
             DeferredResource::CommandEncoder(encoder) => {
                 self.destroy_command_encoder_now(&encoder);
@@ -1844,7 +2154,7 @@ impl VulkanDevice {
             // SAFETY: Framebuffer was created for this command encoder and is destroyed once here.
             unsafe { self.device.destroy_framebuffer(*framebuffer, None) };
         }
-        if encoder.fence != vk::Fence::null() {
+        if encoder.owns_fence && encoder.fence != vk::Fence::null() {
             // SAFETY: Fence was created for this command encoder and is destroyed once here.
             unsafe { self.device.destroy_fence(encoder.fence, None) };
         }
@@ -1931,6 +2241,13 @@ impl GfxResourceDevice for VulkanDevice {
 
     fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
         Self::write_texture(self, desc, data)
+    }
+
+    fn write_texture_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = TextureWrite<'a>>,
+    ) -> Result<()> {
+        Self::write_texture_batch(self, writes)
     }
 
     fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
@@ -2039,7 +2356,7 @@ impl GfxSubmissionDevice for VulkanDevice {
             threading_mode: GfxThreadingMode::MultiThreadDeviceProxy,
             async_submission: true,
             async_wait: true,
-            async_presentation: false,
+            async_presentation: true,
             partial_presentation: false,
         }
     }
@@ -2078,15 +2395,60 @@ impl GfxPresentationDevice for VulkanDevice {
         Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
     }
 
+    fn draw_steps_and_present_deferred(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: &[DrawStepDesc],
+        clear_color: ClearColor,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        Self::render_step_list_and_present_deferred(
+            self,
+            swapchain,
+            render_pass,
+            RenderStepList::from_draw_steps(steps),
+            clear_color,
+            None,
+        )
+    }
+
     fn render_steps_and_present_compat(
         &mut self,
         swapchain: gfx_core::SwapchainId,
         render_pass: RenderPassId,
         steps: &[RenderStepDescriptor],
         clear_color: ClearColor,
-        _depth_attachment: Option<RenderPassDepthAttachment>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
-        Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)
+        Self::render_step_list_and_present(
+            self,
+            swapchain,
+            render_pass,
+            RenderStepList::from_render_steps(steps),
+            clear_color,
+            depth_attachment,
+        )
+    }
+
+    fn render_step_list_and_present_compat(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        Self::render_step_list_and_present(
+            self,
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+        )
     }
 
     fn render_steps_to_texture_compat(
@@ -2095,9 +2457,34 @@ impl GfxPresentationDevice for VulkanDevice {
         render_pass: RenderPassId,
         steps: &[RenderStepDescriptor],
         color_load_op: LoadOp<ClearColor>,
-        _depth_attachment: Option<RenderPassDepthAttachment>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
-        Self::render_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
+        Self::render_step_list_to_texture(
+            self,
+            texture_view,
+            render_pass,
+            RenderStepList::from_render_steps(steps),
+            color_load_op,
+            depth_attachment,
+        )
+    }
+
+    fn render_step_list_to_texture_compat(
+        &mut self,
+        texture_view: TextureViewId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        color_load_op: LoadOp<ClearColor>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
+        Self::render_step_list_to_texture(
+            self,
+            texture_view,
+            render_pass,
+            steps,
+            color_load_op,
+            depth_attachment,
+        )
     }
 
     fn render_steps_and_present_deferred_compat(
@@ -2106,13 +2493,40 @@ impl GfxPresentationDevice for VulkanDevice {
         render_pass: RenderPassId,
         steps: &[RenderStepDescriptor],
         clear_color: ClearColor,
-        _depth_attachment: Option<RenderPassDepthAttachment>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<SubmissionId>
     where
         Self: GfxSubmissionDevice,
     {
-        Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)?;
-        Ok(SubmissionId::from_parts(0, 0))
+        Self::render_step_list_and_present_deferred(
+            self,
+            swapchain,
+            render_pass,
+            RenderStepList::from_render_steps(steps),
+            clear_color,
+            depth_attachment,
+        )
+    }
+
+    fn render_step_list_and_present_deferred_compat(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        Self::render_step_list_and_present_deferred(
+            self,
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+        )
     }
 }
 
@@ -2355,6 +2769,47 @@ struct VulkanTexture {
     layout: vk::ImageLayout,
 }
 
+struct VulkanTextureUpload {
+    texture: TextureId,
+    source: vk::Buffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    layout: TextureDataLayout,
+    origin: gfx_core::Origin2d,
+    size: gfx_core::Extent2d,
+}
+
+struct VulkanTextureUploadGroup<'a> {
+    texture: TextureId,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    uploads: Vec<&'a VulkanTextureUpload>,
+}
+
+fn texture_upload_groups(uploads: &[VulkanTextureUpload]) -> Vec<VulkanTextureUploadGroup<'_>> {
+    let mut groups: Vec<VulkanTextureUploadGroup<'_>> = Vec::new();
+    for upload in uploads {
+        let mut group_index = None;
+        for (index, group) in groups.iter().enumerate() {
+            if group.texture == upload.texture {
+                group_index = Some(index);
+                break;
+            }
+        }
+        if let Some(index) = group_index {
+            groups[index].uploads.push(upload);
+        } else {
+            groups.push(VulkanTextureUploadGroup {
+                texture: upload.texture,
+                image: upload.image,
+                old_layout: upload.old_layout,
+                uploads: vec![upload],
+            });
+        }
+    }
+    groups
+}
+
 #[derive(Clone, Copy)]
 struct VulkanTextureView {
     view: vk::ImageView,
@@ -2395,6 +2850,7 @@ struct VulkanShaderModule {
 struct VulkanRenderPass {
     render_pass: vk::RenderPass,
     color_format: Format,
+    depth_format: Option<Format>,
 }
 
 #[derive(Clone, Copy)]
@@ -2410,10 +2866,20 @@ struct VulkanCommandEncoder {
     command_buffer: vk::CommandBuffer,
     transient_framebuffers: Vec<vk::Framebuffer>,
     fence: vk::Fence,
+    owns_fence: bool,
 }
 
 #[derive(Clone, Copy)]
 struct VulkanSubmission {
+    fence: vk::Fence,
+}
+
+#[derive(Clone, Copy)]
+struct VulkanPresentFrame {
+    image_index: u32,
+    frame_index: usize,
+    image_available: vk::Semaphore,
+    render_finished: vk::Semaphore,
     fence: vk::Fence,
 }
 
@@ -2447,6 +2913,11 @@ enum DeferredResource {
         fence: vk::Fence,
         texture: VulkanTexture,
     },
+    Upload {
+        fence: vk::Fence,
+        fence_value: u64,
+        command_pool: vk::CommandPool,
+    },
     CommandEncoder(VulkanCommandEncoder),
 }
 
@@ -2454,6 +2925,7 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
     let fence = match resource {
         DeferredResource::Buffer { fence, .. }
         | DeferredResource::Texture { fence, .. }
+        | DeferredResource::Upload { fence, .. }
         | DeferredResource::CommandEncoder(VulkanCommandEncoder { fence, .. }) => *fence,
     };
     fence == vk::Fence::null() || fence_is_complete(device, fence)
@@ -2712,7 +3184,11 @@ fn create_image_view(
         .map_err(|error| VulkanError::from(error).into())
 }
 
-fn create_render_pass(device: &ash::Device, format: vk::Format) -> Result<vk::RenderPass> {
+fn create_render_pass(
+    device: &ash::Device,
+    format: vk::Format,
+    depth_format: Option<vk::Format>,
+) -> Result<vk::RenderPass> {
     let color_attachment = vk::AttachmentDescription::default()
         .format(format)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -2726,16 +3202,40 @@ fn create_render_pass(device: &ash::Device, format: vk::Format) -> Result<vk::Re
         .attachment(0)
         .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
     let color_attachments = [color_attachment_ref];
-    let subpass = vk::SubpassDescription::default()
+    let depth_attachment = depth_format.map(|depth_format| {
+        vk::AttachmentDescription::default()
+            .format(depth_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    });
+    let depth_attachment_ref = vk::AttachmentReference::default()
+        .attachment(1)
+        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    let mut subpass = vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
         .color_attachments(&color_attachments);
+    if depth_attachment.is_some() {
+        subpass = subpass.depth_stencil_attachment(&depth_attachment_ref);
+    }
+    let dependency_stage_mask = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS;
+    let dependency_access_mask =
+        vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
-        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
-    let attachments = [color_attachment];
+        .src_stage_mask(dependency_stage_mask)
+        .dst_stage_mask(dependency_stage_mask)
+        .dst_access_mask(dependency_access_mask);
+    let mut attachments = vec![color_attachment];
+    if let Some(depth_attachment) = depth_attachment {
+        attachments.push(depth_attachment);
+    }
     let subpasses = [subpass];
     let dependencies = [dependency];
     let render_pass_info = vk::RenderPassCreateInfo::default()
@@ -2914,6 +3414,13 @@ fn create_graphics_pipeline(
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&color_blend_attachments);
+    let depth_enabled = build.desc.depth_state.is_some();
+    let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(depth_enabled)
+        .depth_write_enable(depth_enabled)
+        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false);
     let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
         .stages(&shader_stages)
         .vertex_input_state(&vertex_input)
@@ -2921,6 +3428,7 @@ fn create_graphics_pipeline(
         .viewport_state(&viewport_state)
         .rasterization_state(&rasterizer)
         .multisample_state(&multisampling)
+        .depth_stencil_state(&depth_stencil)
         .color_blend_state(&color_blending)
         .dynamic_state(&dynamic_state)
         .layout(build.pipeline_layout)
@@ -2940,9 +3448,13 @@ fn create_framebuffer(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     image_view: vk::ImageView,
+    depth_view: Option<vk::ImageView>,
     extent: vk::Extent2D,
 ) -> Result<vk::Framebuffer> {
-    let attachments = [image_view];
+    let mut attachments = vec![image_view];
+    if let Some(depth_view) = depth_view {
+        attachments.push(depth_view);
+    }
     let framebuffer_info = vk::FramebufferCreateInfo::default()
         .render_pass(render_pass)
         .attachments(&attachments)
@@ -3025,6 +3537,7 @@ struct CommandRecordInfo<'a> {
     steps: &'a [CommandDrawStepInfo],
     extent: vk::Extent2D,
     color_load_op: LoadOp<ClearColor>,
+    depth_load_op: Option<LoadOp<f32>>,
     render_target_transition: Option<CommandRenderTargetTransition>,
 }
 
@@ -3144,7 +3657,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         LoadOp::Clear(color) => color,
         LoadOp::Load => ClearColor::default(),
     };
-    let clear_values = [vk::ClearValue {
+    let mut clear_values = vec![vk::ClearValue {
         color: vk::ClearColorValue {
             float32: [
                 clear_color.red,
@@ -3154,6 +3667,15 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             ],
         },
     }];
+    if let Some(depth_load_op) = info.depth_load_op {
+        let depth = match depth_load_op {
+            LoadOp::Clear(depth) => depth,
+            LoadOp::Load => 1.0,
+        };
+        clear_values.push(vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
+        });
+    }
     let render_area = info
         .steps
         .iter()
@@ -3320,6 +3842,24 @@ fn end_submit_wait_destroy(
     // SAFETY: Command pool belongs to this device and owns command_buffer.
     unsafe { device.destroy_command_pool(command_pool, None) };
     Ok(())
+}
+
+fn end_submit_deferred(
+    device: &ash::Device,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+) -> Result<vk::Fence> {
+    // SAFETY: Command buffer is recording and can be ended.
+    unsafe { device.end_command_buffer(command_buffer) }.map_err(VulkanError::from)?;
+    let fence = create_fence(device, false)?;
+    let command_buffers = [command_buffer];
+    let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+    // SAFETY: Queue, command buffer, and fence belong to the same device.
+    if let Err(error) = unsafe { device.queue_submit(queue, &[submit_info], fence) } {
+        destroy_fence_if_needed(device, fence);
+        return Err(VulkanError::from(error).into());
+    }
+    Ok(fence)
 }
 
 fn transition_image_layout(

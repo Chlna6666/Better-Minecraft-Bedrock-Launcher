@@ -30,9 +30,8 @@ impl Window {
         let viewport_size = self.platform_window.content_size();
         let display_id = self.platform_window.display().map(|display| display.id());
 
-        let text_rasterization_changed = self.scale_factor != scale_factor
-            || self.viewport_size != viewport_size
-            || self.display_id != display_id;
+        let text_rasterization_changed =
+            self.scale_factor != scale_factor || self.display_id != display_id;
 
         if self.scale_factor == scale_factor
             && self.viewport_size == viewport_size

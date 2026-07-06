@@ -10,7 +10,10 @@ where
 {
     let started_at = Instant::now();
     let stats = atlas.upload_pending_rgba_pixels(resolve_texture, |writes| {
-        Ok(device.write_texture_batch(writes.iter().copied())?)
+        Ok(gfx_core::GfxResourceDevice::write_texture_batch(
+            device,
+            writes.iter().copied(),
+        )?)
     })?;
     if stats.upload_count > 0 {
         crate::diagnostics::performance_metrics::record_atlas_upload_metrics(
