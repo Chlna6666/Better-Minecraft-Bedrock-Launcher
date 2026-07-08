@@ -37,6 +37,8 @@ impl ManagePageView {
                         texture_path: skin.full_texture_path.clone(),
                         model_label: Some(skin.model_label.clone()),
                         preview_path: skin.preview_path.clone(),
+                        geometry_path: skin.geometry_path.clone(),
+                        geometry_identifier: skin.geometry_identifier.clone(),
                     })
                     .collect::<Vec<_>>()
             })
@@ -51,6 +53,8 @@ impl ManagePageView {
                             texture_path,
                             model_label: asset.first_skin_model_label.clone(),
                             preview_path: asset.icon_path.clone(),
+                            geometry_path: None,
+                            geometry_identifier: None,
                         }]
                     })
             });
@@ -250,8 +254,39 @@ fn append_skin_pack_asset_actions(
     colors: &ThemeColors,
     asset: &ManageAssetEntry,
     action_key: &SharedString,
+    is_default: bool,
     cx: &mut Context<ManagePageView>,
 ) -> Div {
+    let actions = if is_default {
+        actions.child(
+            skin_default_action_button(
+                colors,
+                SharedString::from(format!("manage-clear-default-skin-{}", asset.key)),
+                true,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.clear_vanilla_skin_pack_redirect(cx);
+                }),
+            ),
+        )
+    } else {
+        actions.child(
+            skin_default_action_button(
+                colors,
+                SharedString::from(format!("manage-set-default-skin-{}", asset.key)),
+                false,
+            )
+            .on_mouse_down(MouseButton::Left, {
+                let key = action_key.clone();
+                cx.listener(move |this, _, _, cx| {
+                    this.set_skin_pack_as_default(key.clone(), cx);
+                })
+            }),
+        )
+    };
+
     actions.child(
         compact_icon_button(
             colors,
@@ -268,6 +303,68 @@ fn append_skin_pack_asset_actions(
             })
         }),
     )
+}
+
+fn skin_default_action_button(
+    colors: &ThemeColors,
+    id: impl Into<ElementId>,
+    active: bool,
+) -> Stateful<Div> {
+    let icon_color = if active {
+        colors.accent
+    } else {
+        colors.text_secondary
+    };
+
+    div()
+        .id(id)
+        .w(px(28.))
+        .h(px(28.))
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(if active {
+            Hsla {
+                a: 0.12,
+                ..colors.accent
+            }
+        } else {
+            colors.surface
+        })
+        .border_1()
+        .border_color(if active {
+            Hsla {
+                a: 0.20,
+                ..colors.accent
+            }
+        } else {
+            colors.border
+        })
+        .cursor_pointer()
+        .child(
+            svg()
+                .path(lucide_icons::icon_star())
+                .w(px(13.))
+                .h(px(13.))
+                .text_color(icon_color),
+        )
+}
+
+fn is_default_skin_pack_asset(state: &ManagePageState, asset: &ManageAssetEntry) -> bool {
+    state
+        .version_config
+        .vanilla_skin_pack_redirect
+        .as_ref()
+        .is_some_and(|target| asset_path_matches(&asset.open_path, target))
+}
+
+fn asset_path_matches(left: &SharedString, right: &SharedString) -> bool {
+    normalize_asset_path(left.as_ref()) == normalize_asset_path(right.as_ref())
+}
+
+fn normalize_asset_path(path: &str) -> String {
+    path.trim().replace('/', "\\").to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -722,7 +819,7 @@ pub(super) fn render_asset_list(
 }
 pub(super) fn render_asset_row(
     colors: &ThemeColors,
-    _state: &ManagePageState,
+    state: &ManagePageState,
     version: &ManagedVersionEntry,
     asset: &ManageAssetEntry,
     is_selected: bool,
@@ -808,6 +905,8 @@ pub(super) fn render_asset_row(
             .child(asset.display_name.clone())
             .into_any_element()
     };
+    let is_default_skin_pack = matches!(asset.kind, state::ManageAssetKind::SkinPack)
+        && is_default_skin_pack_asset(state, asset);
 
     let mut meta = div().flex().items_center().gap(px(8.)).overflow_hidden();
     if render_heavy && let Some(description) = asset.description.clone() {
@@ -896,9 +995,14 @@ pub(super) fn render_asset_row(
             append_mod_asset_actions(actions, colors, asset, &action_key, cx)
         }
         state::ManageAssetKind::ResourcePack => actions,
-        state::ManageAssetKind::SkinPack => {
-            append_skin_pack_asset_actions(actions, colors, asset, &action_key, cx)
-        }
+        state::ManageAssetKind::SkinPack => append_skin_pack_asset_actions(
+            actions,
+            colors,
+            asset,
+            &action_key,
+            is_default_skin_pack,
+            cx,
+        ),
         state::ManageAssetKind::Map => {
             append_map_asset_actions(actions, colors, version, asset, &action_key, cx)
         }
@@ -991,7 +1095,8 @@ pub(super) fn render_asset_row(
                                         .flex()
                                         .items_center()
                                         .gap(px(6.))
-                                        .child(title)
+                                        .min_w(px(0.))
+                                        .child(div().flex_1().min_w(px(0.)).child(title))
                                         .when_some(asset.enabled, |this, enabled| {
                                             this.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(
                                                 if enabled {

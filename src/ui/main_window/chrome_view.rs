@@ -211,9 +211,7 @@ impl AppChromeView {
                     let decoded_cover = match tokio::time::timeout(
                         COVER_DECODE_TIMEOUT,
                         tokio::task::spawn_blocking(move || {
-                            crate::music::MusicController::decode_cover_thumbnail(
-                                &request_clone.track_path,
-                            )
+                            crate::music::MusicController::decode_cover_thumbnail(&request_clone)
                         }),
                     )
                     .await

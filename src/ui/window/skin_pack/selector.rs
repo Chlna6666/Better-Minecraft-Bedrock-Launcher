@@ -3,6 +3,7 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::ops::Range;
 use std::path::PathBuf;
 
 const CURRENT_PREVIEW_SIZE: f32 = 38.0;
@@ -24,6 +25,26 @@ pub(super) fn skin_selector_page_count(skin_count: usize) -> usize {
 
 pub(super) fn skin_selector_page_for_index(index: usize) -> usize {
     index / SELECTOR_PAGE_SIZE
+}
+
+pub(super) fn skin_selector_range(
+    skin_count: usize,
+    expanded: bool,
+    page_index: usize,
+) -> Range<usize> {
+    if expanded {
+        return 0..skin_count;
+    }
+
+    let page_count = skin_selector_page_count(skin_count);
+    let page_index = page_index.min(page_count.saturating_sub(1));
+    let page_start = page_index
+        .saturating_mul(SELECTOR_PAGE_SIZE)
+        .min(skin_count);
+    let page_end = page_start
+        .saturating_add(SELECTOR_PAGE_SIZE)
+        .min(skin_count);
+    page_start..page_end
 }
 
 pub(super) fn render_current_preview(
@@ -49,12 +70,7 @@ pub(super) fn render_skin_selector(
 ) -> Div {
     let page_count = skin_selector_page_count(skins.len());
     let page_index = page_index.min(page_count.saturating_sub(1));
-    let page_start = page_index
-        .saturating_mul(SELECTOR_PAGE_SIZE)
-        .min(skins.len());
-    let page_end = page_start
-        .saturating_add(SELECTOR_PAGE_SIZE)
-        .min(skins.len());
+    let selector_range = skin_selector_range(skins.len(), expanded, page_index);
     let item_size = if expanded {
         SELECTOR_EXPANDED_ITEM_SIZE
     } else {
@@ -75,8 +91,8 @@ pub(super) fn render_skin_selector(
     if expanded {
         list = list.flex_wrap().content_start().items_start();
     }
-    for (offset, skin) in skins[page_start..page_end].iter().enumerate() {
-        let index = page_start + offset;
+    for (offset, skin) in skins[selector_range.clone()].iter().enumerate() {
+        let index = selector_range.start + offset;
         list = list.child(render_skin_selector_item(
             index,
             skin,
@@ -120,6 +136,7 @@ pub(super) fn render_skin_selector(
             this.child(render_selector_summary(
                 skins,
                 selected_index,
+                expanded,
                 page_index,
                 page_count,
                 colors,
@@ -138,7 +155,7 @@ pub(super) fn render_skin_selector(
         .justify_center()
         .gap(px(10.0))
         .child(content)
-        .when(page_count > 1, |this| {
+        .when(!expanded && page_count > 1, |this| {
             this.child(
                 selector_icon_button(
                     colors,
@@ -180,6 +197,7 @@ pub(super) fn render_skin_selector(
 fn render_selector_summary(
     skins: &[SkinPreviewWindowSkin],
     selected_index: usize,
+    expanded: bool,
     page_index: usize,
     page_count: usize,
     colors: &ThemeColors,
@@ -191,13 +209,16 @@ fn render_selector_summary(
     let count = if skins.is_empty() {
         SharedString::from("0/0")
     } else {
-        SharedString::from(format!(
-            "{}/{} · {}/{}",
-            selected_index + 1,
-            skins.len(),
-            page_index + 1,
-            page_count.max(1)
-        ))
+        let selected_counter = format!("{}/{}", selected_index + 1, skins.len());
+        if expanded {
+            SharedString::from(selected_counter)
+        } else {
+            SharedString::from(format!(
+                "{selected_counter} · {}/{}",
+                page_index + 1,
+                page_count.max(1)
+            ))
+        }
     };
 
     div()
@@ -400,3 +421,7 @@ fn skin_preview_placeholder(colors: &ThemeColors) -> Div {
                 .text_color(colors.text_secondary),
         )
 }
+
+#[cfg(test)]
+#[path = "selector_tests.rs"]
+mod tests;

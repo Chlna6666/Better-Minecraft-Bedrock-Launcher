@@ -24,7 +24,9 @@ use crate::core::minecraft::nbt::{
 use crate::core::minecraft::paths::{GamePathOptions, get_game_root};
 use crate::core::minecraft::resource_packs::{Header, McPackInfo};
 use crate::core::minecraft::skin_packs::McSkinPackInfo;
-use crate::core::version::settings::{VersionConfig, get_version_config, save_version_config};
+use crate::core::version::settings::{
+    VANILLA_SKIN_PACK_REDIRECTION_SOURCE, VersionConfig, get_version_config, save_version_config,
+};
 use crate::ui::views::manage::state::{
     ManageAssetEntry, ManageAssetKind, ManageGdkUser, ManagePackSubtype, ManageScreenshotEntry,
     ManageServerEntry, ManageServerMotd, ManageServerMotdStatus, ManageServerMotdTarget,
@@ -60,19 +62,24 @@ pub async fn save_manage_version_config(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
 ) -> Result<(), String> {
-    save_version_config(
-        version.folder.to_string(),
-        VersionConfig {
-            enable_debug_console: config.enable_debug_console,
-            enable_redirection: config.enable_redirection,
-            editor_mode: config.editor_mode,
-            disable_mod_loading: config.disable_mod_loading,
-            lock_mouse_on_launch: config.lock_mouse_on_launch,
-            unlock_mouse_hotkey: config.unlock_mouse_hotkey.to_string(),
-            reduce_pixels: config.reduce_pixels,
-        },
-    )
-    .await
+    let mut core_config = get_version_config(version.folder.to_string())
+        .await
+        .unwrap_or_default();
+    core_config.enable_debug_console = config.enable_debug_console;
+    core_config.enable_redirection = config.enable_redirection;
+    core_config.editor_mode = config.editor_mode;
+    core_config.disable_mod_loading = config.disable_mod_loading;
+    core_config.lock_mouse_on_launch = config.lock_mouse_on_launch;
+    core_config.unlock_mouse_hotkey = config.unlock_mouse_hotkey.to_string();
+    core_config.reduce_pixels = config.reduce_pixels;
+    core_config.set_vanilla_skin_pack_redirect(
+        config
+            .vanilla_skin_pack_redirect
+            .as_ref()
+            .map(|path| path.to_string()),
+    );
+
+    save_version_config(version.folder.to_string(), core_config).await
 }
 
 pub fn load_gdk_users(
@@ -474,6 +481,54 @@ pub async fn set_mod_inject_delay(
     Ok(())
 }
 
+pub async fn set_vanilla_skin_pack_redirect(
+    version: &ManagedVersionEntry,
+    config: &ManageVersionConfig,
+    asset: Option<&ManageAssetEntry>,
+) -> Result<ManageVersionConfig, String> {
+    let mut next_config = config.clone();
+
+    if let Some(asset) = asset {
+        validate_vanilla_skin_pack_source(version)?;
+        validate_skin_pack_redirect_target(asset)?;
+        next_config.vanilla_skin_pack_redirect = Some(asset.open_path.clone());
+    } else {
+        next_config.vanilla_skin_pack_redirect = None;
+    }
+
+    save_manage_version_config(version, &next_config).await?;
+    Ok(next_config)
+}
+
+fn validate_vanilla_skin_pack_source(version: &ManagedVersionEntry) -> Result<(), String> {
+    let source_path =
+        PathBuf::from(version.path.as_ref()).join(VANILLA_SKIN_PACK_REDIRECTION_SOURCE);
+    if source_path.is_dir() {
+        Ok(())
+    } else {
+        Err(format!(
+            "当前游戏缺少默认皮肤目录: {}",
+            source_path.display()
+        ))
+    }
+}
+
+fn validate_skin_pack_redirect_target(asset: &ManageAssetEntry) -> Result<(), String> {
+    if asset.kind != ManageAssetKind::SkinPack {
+        return Err("请选择一个皮肤包".to_string());
+    }
+
+    let target_path = PathBuf::from(asset.open_path.as_ref());
+    if !target_path.is_dir() {
+        return Err(format!("皮肤包目录不存在: {}", target_path.display()));
+    }
+    if !target_path.join("skins.json").is_file() && !target_path.join("manifest.json").is_file() {
+        return Err("所选目录不是有效皮肤包".to_string());
+    }
+
+    Ok(())
+}
+
 pub async fn import_mod_files(version_folder: &str, paths: &[String]) -> Result<(), String> {
     let mods_dir = version_mods_dir(version_folder);
     fs::create_dir_all(&mods_dir)
@@ -638,6 +693,7 @@ fn manage_version_config_from_core(config: VersionConfig) -> ManageVersionConfig
         lock_mouse_on_launch: config.lock_mouse_on_launch,
         unlock_mouse_hotkey: config.unlock_mouse_hotkey.into(),
         reduce_pixels: config.reduce_pixels,
+        vanilla_skin_pack_redirect: config.vanilla_skin_pack_redirect.map(SharedString::from),
     }
 }
 
@@ -958,6 +1014,8 @@ fn skin_previews_from_pack(pack: &McSkinPackInfo) -> Option<Arc<[ManageSkinPrevi
                 full_texture_path: SharedString::from(full_texture_path.to_string()),
                 preview_path: skin.preview_path.clone().map(SharedString::from),
                 model_label: SharedString::from(skin.model_label.clone()),
+                geometry_path: skin.geometry_path.clone().map(SharedString::from),
+                geometry_identifier: skin.geometry_identifier.clone().map(SharedString::from),
             })
         })
         .collect::<Vec<_>>();

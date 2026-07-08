@@ -28,12 +28,26 @@ pub fn spawn_library_load(cx: &mut App) {
 
         match result {
             Ok(Ok((tracks, music_config))) => {
-                match cx.update_global(|state: &mut MusicState, cx| {
+                let preload_items =
+                    MusicController::cover_preload_items(&tracks, &music_config.last_track_path);
+                let installed = match cx.update_global(|state: &mut MusicState, cx| {
                     state.install_tracks_with_config(tracks, &music_config, cx);
                 }) {
-                    Ok(()) => {}
+                    Ok(()) => true,
                     Err(error) => {
                         tracing::warn!("music: failed to install startup library: {error:?}");
+                        false
+                    }
+                };
+
+                if installed && !preload_items.is_empty() {
+                    match tokio::task::spawn_blocking(move || {
+                        MusicController::preload_cover_cache(preload_items);
+                    })
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(error) => tracing::warn!("music: cover cache preload failed: {error}"),
                     }
                 }
             }

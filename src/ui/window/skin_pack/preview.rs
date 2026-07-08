@@ -1,4 +1,7 @@
-use super::mesh::{SkinPreviewMeshes, skin_player_mesh, skin_preview_paint_meshes};
+use super::mesh::{
+    SkinLayerMode, SkinPreviewGeometrySource, SkinPreviewMeshes, skin_player_mesh,
+    skin_preview_paint_meshes,
+};
 use super::selector::{
     render_current_preview, render_skin_selector, skin_selector_page_count,
     skin_selector_page_for_index,
@@ -16,6 +19,9 @@ const SKIN_PREVIEW_WINDOW_WIDTH: f32 = 640.0;
 const SKIN_PREVIEW_WINDOW_HEIGHT: f32 = 600.0;
 const SKIN_PREVIEW_STAGE_MAX_WIDTH: f32 = 608.0;
 const SKIN_PREVIEW_STAGE_MAX_HEIGHT: f32 = 360.0;
+const SKIN_PREVIEW_MIN_ZOOM: f32 = 0.72;
+const SKIN_PREVIEW_MAX_ZOOM: f32 = 1.65;
+const SKIN_PREVIEW_DEFAULT_ZOOM: f32 = 1.0;
 
 #[derive(Clone)]
 pub struct SkinPreviewWindowSkin {
@@ -23,6 +29,8 @@ pub struct SkinPreviewWindowSkin {
     pub texture_path: SharedString,
     pub model_label: Option<SharedString>,
     pub preview_path: Option<SharedString>,
+    pub geometry_path: Option<SharedString>,
+    pub geometry_identifier: Option<SharedString>,
 }
 
 #[derive(Clone)]
@@ -42,7 +50,9 @@ pub struct SkinPreviewWindowView {
     walk_started_at: Instant,
     view_yaw: f32,
     view_pitch: f32,
+    view_zoom: f32,
     drag_position: Option<Point<Pixels>>,
+    layer_mode: SkinLayerMode,
     selector_expanded: bool,
     selector_page: usize,
     _subscriptions: Vec<Subscription>,
@@ -65,7 +75,9 @@ impl SkinPreviewWindowView {
             walk_started_at: Instant::now(),
             view_yaw: 0.42,
             view_pitch: -0.18,
+            view_zoom: SKIN_PREVIEW_DEFAULT_ZOOM,
             drag_position: None,
+            layer_mode: SkinLayerMode::Extruded,
             selector_expanded: false,
             selector_page,
             _subscriptions: subscriptions,
@@ -88,12 +100,26 @@ impl SkinPreviewWindowView {
             .model_label
             .as_ref()
             .is_some_and(|label| label.as_ref().eq_ignore_ascii_case("Alex"));
+        let layer_mode = self.layer_mode;
+        let geometry_source = skin
+            .geometry_path
+            .as_ref()
+            .zip(skin.geometry_identifier.as_ref())
+            .map(|(path, identifier)| SkinPreviewGeometrySource {
+                path: path.to_string(),
+                identifier: identifier.to_string(),
+            });
         cx.notify();
         cx.spawn(async move |handle, cx| {
             let result = cx
-                .background_spawn(
-                    async move { skin_player_mesh(Path::new(&texture_path), slim_arms) },
-                )
+                .background_spawn(async move {
+                    skin_player_mesh(
+                        Path::new(&texture_path),
+                        slim_arms,
+                        layer_mode,
+                        geometry_source,
+                    )
+                })
                 .await
                 .map_err(SharedString::from);
 
@@ -184,6 +210,25 @@ impl SkinPreviewWindowView {
         cx.notify();
     }
 
+    fn toggle_layer_mode(&mut self, cx: &mut Context<Self>) {
+        self.layer_mode = if self.layer_mode.is_extruded() {
+            SkinLayerMode::Flat
+        } else {
+            SkinLayerMode::Extruded
+        };
+        self.load_mesh(cx);
+    }
+
+    fn zoom_preview_by(&mut self, factor: f32, cx: &mut Context<Self>) {
+        let next_zoom =
+            (self.view_zoom * factor).clamp(SKIN_PREVIEW_MIN_ZOOM, SKIN_PREVIEW_MAX_ZOOM);
+        if (next_zoom - self.view_zoom).abs() <= f32::EPSILON {
+            return;
+        }
+        self.view_zoom = next_zoom;
+        cx.notify();
+    }
+
     pub(super) fn toggle_selector_expanded(&mut self, cx: &mut Context<Self>) {
         self.selector_page = skin_selector_page_for_index(self.selected_index);
         self.selector_expanded = !self.selector_expanded;
@@ -243,6 +288,7 @@ impl SkinPreviewWindowView {
         colors: &ThemeColors,
         id: &'static str,
         icon: &'static str,
+        active: bool,
     ) -> Stateful<Div> {
         div()
             .id(id)
@@ -250,8 +296,15 @@ impl SkinPreviewWindowView {
             .h(px(34.))
             .rounded(px(8.))
             .border_1()
-            .border_color(colors.border)
-            .bg(colors.surface)
+            .border_color(if active { colors.accent } else { colors.border })
+            .bg(if active {
+                Hsla {
+                    a: 0.12,
+                    ..colors.accent
+                }
+            } else {
+                colors.surface
+            })
             .flex()
             .items_center()
             .justify_center()
@@ -261,7 +314,11 @@ impl SkinPreviewWindowView {
                     .path(icon)
                     .w(px(15.))
                     .h(px(15.))
-                    .text_color(colors.text_secondary),
+                    .text_color(if active {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    }),
             )
     }
 
@@ -276,6 +333,7 @@ impl SkinPreviewWindowView {
                 let mesh = mesh.clone();
                 let view_yaw = self.view_yaw;
                 let view_pitch = self.view_pitch;
+                let view_zoom = self.view_zoom;
                 let walk_phase = self.walk_phase(now);
                 let walking = self.walking;
                 div()
@@ -291,7 +349,8 @@ impl SkinPreviewWindowView {
                                 let height = f32::from(bounds.size.height).max(1.0);
                                 let aspect = f32::from(bounds.size.width).max(1.0) / height;
                                 for paint_mesh in skin_preview_paint_meshes(
-                                    &mesh, aspect, view_yaw, view_pitch, walk_phase, walking,
+                                    &mesh, aspect, view_yaw, view_pitch, view_zoom, walk_phase,
+                                    walking,
                                 ) {
                                     window.paint_gpu_mesh_3d(
                                         bounds,
@@ -329,6 +388,14 @@ impl SkinPreviewWindowView {
                             cx.stop_propagation();
                         }),
                     )
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                        let delta = event.delta.pixel_delta(px(48.0));
+                        if delta.y != Pixels::ZERO {
+                            let factor = if delta.y > px(0.0) { 1.12 } else { 0.90 };
+                            this.zoom_preview_by(factor, cx);
+                        }
+                        cx.stop_propagation();
+                    }))
                     .into_any_element()
             }
             Some(Err(error)) => centered_status(colors, error.clone()),
@@ -347,6 +414,11 @@ impl Render for SkinPreviewWindowView {
         let colors = self.theme_colors(cx);
         let model_label = self.current_model_label();
         let skin_label = self.current_skin_label();
+        let layer_label = if self.layer_mode.is_extruded() {
+            "3D 层次"
+        } else {
+            "平面层"
+        };
         let skin_counter = if self.skins.is_empty() {
             "0/0".to_string()
         } else {
@@ -399,7 +471,7 @@ impl Render for SkinPreviewWindowView {
                                             .text_size(px(11.))
                                             .text_color(colors.text_secondary)
                                             .child(format!(
-                                                "3D 皮肤预览 · {} · {skin_counter} · {}",
+                                                "3D 皮肤预览 · {layer_label} · {} · {skin_counter} · {}",
                                                 skin_label.as_ref(),
                                                 model_label.as_ref()
                                             )),
@@ -417,6 +489,7 @@ impl Render for SkinPreviewWindowView {
                                         &colors,
                                         "skin-preview-previous",
                                         lucide_gpui::icons::icon_chevron_left(),
+                                        false,
                                     )
                                     .on_mouse_down(
                                         MouseButton::Left,
@@ -430,6 +503,7 @@ impl Render for SkinPreviewWindowView {
                                         &colors,
                                         "skin-preview-next",
                                         lucide_gpui::icons::icon_chevron_right(),
+                                        false,
                                     )
                                     .on_mouse_down(
                                         MouseButton::Left,
@@ -442,12 +516,27 @@ impl Render for SkinPreviewWindowView {
                             .child(
                                 self.render_button(
                                     &colors,
+                                    "skin-preview-toggle-layer-mode",
+                                    lucide_gpui::icons::icon_layers_2(),
+                                    self.layer_mode.is_extruded(),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.toggle_layer_mode(cx);
+                                    }),
+                                ),
+                            )
+                            .child(
+                                self.render_button(
+                                    &colors,
                                     "skin-preview-toggle-motion",
                                     if self.walking {
                                         lucide_gpui::icons::icon_pause()
                                     } else {
                                         lucide_gpui::icons::icon_play()
                                     },
+                                    self.walking,
                                 )
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -461,6 +550,7 @@ impl Render for SkinPreviewWindowView {
                                     &colors,
                                     "skin-preview-close",
                                     lucide_gpui::icons::icon_x(),
+                                    false,
                                 )
                                 .on_mouse_down(
                                     MouseButton::Left,

@@ -33,6 +33,29 @@ pub(super) fn shade_face_color(color: [f32; 4], face: Face) -> [f32; 4] {
     ]
 }
 
+pub(super) fn shade_layer_edge_color(color: [f32; 4], normal: [f32; 3]) -> [f32; 4] {
+    let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    let normal_y = if length <= f32::EPSILON {
+        0.0
+    } else {
+        normal[1] / length
+    };
+    let factor = if normal_y > 0.45 {
+        0.94
+    } else if normal_y < -0.45 {
+        0.52
+    } else {
+        0.70
+    };
+
+    [
+        (color[0] * factor).min(1.0),
+        (color[1] * factor).min(1.0),
+        (color[2] * factor).min(1.0),
+        color[3],
+    ]
+}
+
 fn rgba_to_color(pixel: Rgba<u8>) -> [f32; 4] {
     [
         f32::from(pixel[0]) / 255.0,

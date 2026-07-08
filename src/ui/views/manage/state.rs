@@ -45,6 +45,7 @@ pub struct ManageVersionConfig {
     pub lock_mouse_on_launch: bool,
     pub unlock_mouse_hotkey: SharedString,
     pub reduce_pixels: i32,
+    pub vanilla_skin_pack_redirect: Option<SharedString>,
 }
 
 impl Default for ManageVersionConfig {
@@ -57,6 +58,7 @@ impl Default for ManageVersionConfig {
             lock_mouse_on_launch: false,
             unlock_mouse_hotkey: SharedString::from("ALT"),
             reduce_pixels: 20,
+            vanilla_skin_pack_redirect: None,
         }
     }
 }
@@ -72,6 +74,8 @@ pub struct ManageSkinPreviewEntry {
     pub full_texture_path: SharedString,
     pub preview_path: Option<SharedString>,
     pub model_label: SharedString,
+    pub geometry_path: Option<SharedString>,
+    pub geometry_identifier: Option<SharedString>,
 }
 
 #[derive(Clone, Debug)]

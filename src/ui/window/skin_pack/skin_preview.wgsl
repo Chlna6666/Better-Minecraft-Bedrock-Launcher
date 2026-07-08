@@ -26,6 +26,8 @@ struct SkinPreviewVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) color: vec4<f32>,
     @location(1) clip_distances: vec4<f32>,
+    @location(2) barycentric: vec3<f32>,
+    @location(3) @interpolate(flat) edge_mask: u32,
 };
 
 @group(0) @binding(0) var<uniform> globals: GlobalParams;
@@ -39,8 +41,18 @@ fn vs_skin_preview(
 ) -> SkinPreviewVarying {
     let vertex = skin_preview_vertices[vertex_index];
     let draw_parameters = skin_preview_draw_parameters[instance_index];
+    let encoded_view_proj_model = draw_parameters.view_proj_model;
+    let opacity = clamp(encoded_view_proj_model[0].w, 0.0, 1.0);
+    let pixel_offset = vec2<f32>(encoded_view_proj_model[1].w, encoded_view_proj_model[2].w);
+    let depth_bias = clamp(encoded_view_proj_model[3].w - 1.0, 0.0, 0.01);
+    let view_proj_model = mat4x4<f32>(
+        vec4<f32>(encoded_view_proj_model[0].xyz, 0.0),
+        vec4<f32>(encoded_view_proj_model[1].xyz, 0.0),
+        vec4<f32>(encoded_view_proj_model[2].xyz, 0.0),
+        vec4<f32>(encoded_view_proj_model[3].xyz, 1.0),
+    );
     let model_position = vec4<f32>(vertex.position_x, vertex.position_y, vertex.position_z, 1.0);
-    let clip_position = draw_parameters.view_proj_model * model_position;
+    let clip_position = view_proj_model * model_position;
     let ndc = clip_position.xyz / max(clip_position.w, 0.0001);
 
     let edge_inset = min(vec2<f32>(6.0, 6.0), draw_parameters.bounds_size * vec2<f32>(0.08, 0.08));
@@ -56,18 +68,47 @@ fn vs_skin_preview(
     let square_origin = draw_origin + square_offset;
     let draw_size = vec2<f32>(square_size, square_size);
     let unit = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
-    let pixel_position = square_origin + unit * draw_size;
+    let pixel_position = square_origin + unit * draw_size + pixel_offset;
     let viewport_size = max(globals.viewport_size, vec2<f32>(1.0));
     let device_position = pixel_position / viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
 
+    let encoded_alpha = vertex.color_a;
+    let edge_mask = u32(floor(encoded_alpha * 0.5));
+    let vertex_alpha = encoded_alpha - f32(edge_mask) * 2.0;
+    let triangle_vertex = vertex_index % 3u;
+    var barycentric = vec3<f32>(0.0, 0.0, 1.0);
+    if (triangle_vertex == 0u) {
+        barycentric = vec3<f32>(1.0, 0.0, 0.0);
+    } else if (triangle_vertex == 1u) {
+        barycentric = vec3<f32>(0.0, 1.0, 0.0);
+    }
+
     var out: SkinPreviewVarying;
-    let depth = clamp(0.5 - ndc.z * 0.5, 0.0, 1.0);
+    let depth = clamp(0.5 - ndc.z * 0.5 + depth_bias, 0.0, 1.0);
     out.position = vec4<f32>(device_position, depth, 1.0);
-    out.color = vec4<f32>(vertex.color_r, vertex.color_g, vertex.color_b, vertex.color_a);
+    out.color = vec4<f32>(vertex.color_r, vertex.color_g, vertex.color_b, vertex_alpha * opacity);
     let top_left = pixel_position - square_origin;
     let bottom_right = square_origin + draw_size - pixel_position;
     out.clip_distances = vec4<f32>(top_left.x, bottom_right.x, top_left.y, bottom_right.y);
+    out.barycentric = barycentric;
+    out.edge_mask = edge_mask;
     return out;
+}
+
+fn skin_preview_edge_alpha(barycentric: vec3<f32>, edge_mask: u32) -> f32 {
+    let edge_width = max(fwidth(barycentric) * vec3<f32>(1.25), vec3<f32>(0.00001));
+    let edge_alpha = smoothstep(vec3<f32>(0.0), edge_width, barycentric);
+    var alpha = 1.0;
+    if ((edge_mask & 1u) != 0u) {
+        alpha = min(alpha, edge_alpha.x);
+    }
+    if ((edge_mask & 2u) != 0u) {
+        alpha = min(alpha, edge_alpha.y);
+    }
+    if ((edge_mask & 4u) != 0u) {
+        alpha = min(alpha, edge_alpha.z);
+    }
+    return alpha;
 }
 
 @fragment
@@ -78,7 +119,8 @@ fn fs_skin_preview(
         discard;
     }
     let edge_alpha = clamp(min(min(input.clip_distances.x, input.clip_distances.y), min(input.clip_distances.z, input.clip_distances.w)), 0.0, 1.0);
-    let alpha = input.color.a * edge_alpha;
+    let mesh_edge_alpha = skin_preview_edge_alpha(input.barycentric, input.edge_mask);
+    let alpha = input.color.a * edge_alpha * mesh_edge_alpha;
     if (alpha <= 0.0) {
         discard;
     }
@@ -89,5 +131,9 @@ fn fs_skin_preview(
 fn fs_skin_preview_unclipped(
     input: SkinPreviewVarying,
 ) -> @location(0) vec4<f32> {
-    return input.color;
+    let alpha = input.color.a * skin_preview_edge_alpha(input.barycentric, input.edge_mask);
+    if (alpha <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(input.color.rgb * alpha, alpha);
 }

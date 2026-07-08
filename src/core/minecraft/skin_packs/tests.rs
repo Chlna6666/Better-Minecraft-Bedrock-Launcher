@@ -34,6 +34,8 @@ fn full_texture_path_is_separate_from_head_preview_path() {
         full_texture_path: Some("packs/alex.png".to_string()),
         preview_path: Some("cache/skin_previews/head.png".to_string()),
         model_label: "Alex".to_string(),
+        geometry_path: None,
+        geometry_identifier: None,
     };
     let pack = McSkinPackInfo {
         folder_name: "pack".to_string(),
@@ -70,5 +72,18 @@ fn skins_json_accepts_lossy_utf8_in_strings() {
     assert_eq!(
         parsed.skins[0].localization_name.as_deref(),
         Some("bad\u{fffd}name")
+    );
+}
+
+#[test]
+fn custom_geometry_labels_as_custom_model() {
+    assert_eq!(model_label_from_geometry("geometry.n0"), "自定义");
+    assert_eq!(
+        model_label_from_geometry("geometry.humanoid.custom"),
+        "自定义"
+    );
+    assert_eq!(
+        model_label_from_geometry("geometry.humanoid.customSlim"),
+        "Alex"
     );
 }

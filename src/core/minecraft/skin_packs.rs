@@ -52,6 +52,8 @@ pub struct McSkinPackSkinInfo {
     pub full_texture_path: Option<String>,
     pub preview_path: Option<String>,
     pub model_label: String,
+    pub geometry_path: Option<String>,
+    pub geometry_identifier: Option<String>,
 }
 
 impl McSkinPackSkinInfo {
@@ -278,6 +280,15 @@ fn skin_info_from_json(
         .as_deref()
         .map(model_label_from_geometry)
         .unwrap_or_else(|| "Steve".to_string());
+    let geometry_identifier = skin
+        .geometry
+        .as_deref()
+        .map(str::trim)
+        .filter(|geometry| !geometry.is_empty())
+        .map(ToString::to_string);
+    let geometry_path = geometry_identifier
+        .as_ref()
+        .and_then(|_| skin_geometry_path(folder_path));
     let preview_path = texture_path
         .as_ref()
         .and_then(|path| match generate_skin_preview(path) {
@@ -296,6 +307,8 @@ fn skin_info_from_json(
             .map(|path| path.to_string_lossy().to_string()),
         preview_path,
         model_label,
+        geometry_path,
+        geometry_identifier,
     }
 }
 
@@ -339,11 +352,23 @@ fn skin_display_name(
 }
 
 fn model_label_from_geometry(geometry: &str) -> String {
-    if geometry.to_ascii_lowercase().contains("slim") {
+    let geometry = geometry.to_ascii_lowercase();
+    if geometry.contains("slim") {
         "Alex".to_string()
+    } else if geometry.contains("custom")
+        || (!geometry.contains("humanoid") && !geometry.contains("player"))
+    {
+        "自定义".to_string()
     } else {
         "Steve".to_string()
     }
+}
+
+fn skin_geometry_path(folder_path: &Path) -> Option<String> {
+    let geometry_path = folder_path.join("geometry.json");
+    geometry_path
+        .is_file()
+        .then(|| geometry_path.to_string_lossy().to_string())
 }
 
 fn version_label(version: Option<&[u32]>) -> Option<String> {

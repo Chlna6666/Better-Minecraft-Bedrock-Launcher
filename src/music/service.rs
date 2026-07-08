@@ -1,7 +1,6 @@
 use crate::config::config::{MusicConfig, clamp_music_volume};
-use crate::music::cover::decode_cover_thumbnail as decode_cover_thumbnail_data;
 use crate::music::library::{self, MusicTrack};
-use crate::music::types::{DecodedCoverImage, MusicPlaybackMode, MusicPlaybackSnapshot};
+use crate::music::types::{MusicPlaybackMode, MusicPlaybackSnapshot};
 use anyhow::{Context, Result};
 use rand::RngExt;
 use rand::SeedableRng;
@@ -12,6 +11,10 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{debug, error, warn};
+
+mod cover;
+
+pub use cover::CoverPreloadItem;
 
 #[derive(Clone, Debug)]
 pub struct CoverDecodeRequest {
@@ -161,59 +164,6 @@ impl MusicController {
                 error!("music: no default audio output device available");
             }
         }
-    }
-
-    pub fn decode_cover_thumbnail(track_path: &Path) -> Option<DecodedCoverImage> {
-        decode_cover_thumbnail_data(track_path)
-    }
-
-    pub fn current_cover_request(&self) -> Option<CoverDecodeRequest> {
-        let track = self.tracks.get(self.current_index)?;
-        let cover_cache_key = track.cover_key?;
-        if self
-            .current_cover_path
-            .as_ref()
-            .is_some_and(|path| path == track.path.as_ref())
-            && self.current_cover_cache_key == Some(cover_cache_key)
-        {
-            return None;
-        }
-
-        Some(CoverDecodeRequest {
-            generation: self.generation,
-            track_path: track.path.as_ref().clone(),
-            cover_cache_key: Some(cover_cache_key),
-        })
-    }
-
-    pub fn apply_decoded_cover_if_current(
-        &mut self,
-        request: &CoverDecodeRequest,
-        decoded: bool,
-    ) -> bool {
-        if self.generation != request.generation {
-            return false;
-        }
-
-        let Some(current_track) = self.tracks.get(self.current_index) else {
-            return false;
-        };
-        if current_track.path.as_ref() != &request.track_path {
-            return false;
-        }
-
-        self.current_cover_path = Some(request.track_path.clone());
-        self.current_cover_cache_key = request.cover_cache_key;
-        if decoded {
-            self.cover_generation = self.cover_generation.wrapping_add(1);
-        }
-
-        true
-    }
-
-    fn clear_current_cover_tracking(&mut self) {
-        self.current_cover_path = None;
-        self.current_cover_cache_key = None;
     }
 
     fn release_sink(&mut self) {

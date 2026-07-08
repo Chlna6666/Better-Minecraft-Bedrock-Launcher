@@ -1,4 +1,5 @@
 mod cover;
+mod cover_cache;
 mod library;
 pub mod service;
 pub mod types;

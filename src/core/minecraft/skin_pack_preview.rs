@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use image::imageops::{self, FilterType};
-use image::{DynamicImage, GenericImageView as _, ImageFormat, RgbaImage};
+use image::{DynamicImage, GenericImageView as _, ImageFormat, ImageReader, RgbaImage};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -17,8 +17,7 @@ pub(crate) fn generate_skin_preview(texture_path: &Path) -> Result<PathBuf> {
         return Ok(output_path);
     }
 
-    let image = image::open(texture_path)
-        .with_context(|| format!("读取皮肤纹理失败: {}", texture_path.display()))?;
+    let image = open_skin_texture(texture_path)?;
     let preview = build_skin_preview_image(&image)?;
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
@@ -26,6 +25,24 @@ pub(crate) fn generate_skin_preview(texture_path: &Path) -> Result<PathBuf> {
     let mut file = fs::File::create(&output_path)?;
     DynamicImage::ImageRgba8(preview).write_to(&mut file, ImageFormat::Png)?;
     Ok(output_path)
+}
+
+pub(crate) fn open_skin_texture(texture_path: &Path) -> Result<DynamicImage> {
+    ImageReader::open(texture_path)
+        .with_context(|| format!("读取皮肤纹理失败: {}", texture_path.display()))?
+        .with_guessed_format()
+        .with_context(|| format!("识别皮肤纹理格式失败: {}", texture_path.display()))?
+        .decode()
+        .with_context(|| format!("解码皮肤纹理失败: {}", texture_path.display()))
+}
+
+pub(crate) fn skin_texture_dimensions(texture_path: &Path) -> Result<(u32, u32)> {
+    ImageReader::open(texture_path)
+        .with_context(|| format!("读取皮肤纹理失败: {}", texture_path.display()))?
+        .with_guessed_format()
+        .with_context(|| format!("识别皮肤纹理格式失败: {}", texture_path.display()))?
+        .into_dimensions()
+        .with_context(|| format!("读取皮肤纹理尺寸失败: {}", texture_path.display()))
 }
 
 fn preview_cache_path(texture_path: &Path, variant: &str) -> Result<PathBuf> {
@@ -146,7 +163,8 @@ fn draw_part(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageBuffer, Rgba};
+    use image::{GenericImageView as _, ImageBuffer, Rgb, Rgba};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn build_skin_preview_accepts_classic_skin_size() {
@@ -160,5 +178,32 @@ mod tests {
             preview.dimensions(),
             (SKIN_PREVIEW_CANVAS_SIZE, SKIN_PREVIEW_CANVAS_SIZE)
         );
+    }
+
+    #[test]
+    fn open_skin_texture_uses_file_signature_before_extension() {
+        let source = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(64, 32, Rgb([128, 64, 32])));
+        let path = std::env::temp_dir().join(format!(
+            "bmcbl-skin-texture-{}-{}.png",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let mut file = fs::File::create(&path)
+            .unwrap_or_else(|error| panic!("test texture should be created: {error}"));
+        source
+            .write_to(&mut file, ImageFormat::Jpeg)
+            .unwrap_or_else(|error| panic!("jpeg test texture should be written: {error}"));
+        drop(file);
+
+        let decoded = open_skin_texture(&path).unwrap_or_else(|error| {
+            panic!("jpeg content with png extension should decode: {error}")
+        });
+
+        assert_eq!(decoded.dimensions(), (64, 32));
+        fs::remove_file(&path)
+            .unwrap_or_else(|error| panic!("test texture should be removed: {error}"));
     }
 }

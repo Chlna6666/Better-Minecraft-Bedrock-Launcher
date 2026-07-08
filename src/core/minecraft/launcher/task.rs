@@ -19,7 +19,7 @@ use crate::tasks::task_manager::{
     update_progress,
 };
 use pelite::pe64::{Pe, PeFile};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,6 +35,7 @@ use crate::utils::file_ops;
 
 const INJECTOR_BYTES: &[u8] = include_bytes!("../../../../assets/bin/BLoader.dll");
 const LAUNCH_TOTAL_STEPS: u64 = 5;
+const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
 
 #[repr(C)]
 #[allow(non_snake_case)]
@@ -205,6 +206,52 @@ fn ensure_file_in_dir(dir: &Path, filename: &str, content: &[u8]) -> Result<Path
     fs::write(&target, content).map_err(|error| format!("写入 {filename} 失败: {error}"))?;
     let _ = grant_all_application_packages_access(&target);
     Ok(target)
+}
+
+fn write_bloader_config(
+    dir: &Path,
+    disable_mod_loading: bool,
+    enable_redirection: bool,
+    file_redirections: Value,
+    mods: Value,
+) -> Result<PathBuf, String> {
+    let config_path = dir.join("config.json");
+    let mut config = fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    config.insert(
+        "disable_mod_loading".to_string(),
+        json!(disable_mod_loading),
+    );
+    config.insert("enable_redirection".to_string(), json!(enable_redirection));
+    config.insert(
+        "redirection_root".to_string(),
+        json!(BLOADER_DEFAULT_REDIRECTION_ROOT),
+    );
+    config.insert("file_redirections".to_string(), file_redirections);
+    config.insert("mods".to_string(), mods);
+
+    let config_content = serde_json::to_string_pretty(&Value::Object(config))
+        .map_err(|error| format!("写入 BLoader 配置失败: {error}"))?;
+    ensure_file_in_dir(dir, "config.json", config_content.as_bytes())
+}
+
+fn remove_legacy_preloader_config(dir: &Path) {
+    let legacy_path = dir.join("preloader.json");
+    if !legacy_path.exists() {
+        return;
+    }
+
+    remove_readonly(&legacy_path);
+    if let Err(error) = fs::remove_file(&legacy_path) {
+        warn!(
+            "无法删除旧 BLoader preloader.json 配置 {}: {error}",
+            legacy_path.display()
+        );
+    }
 }
 
 fn remove_appx_signature_if_present(package_folder: &str) -> Result<bool, String> {
@@ -454,7 +501,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             "已定位游戏可执行文件"
         );
         let exe_dir = exe_path.parent().ok_or("无效的游戏目录".to_string())?;
-        let local_data_root = exe_dir.join("Minecraft Bedrock");
+        let local_data_root = exe_dir.join(BLOADER_DEFAULT_REDIRECTION_ROOT);
         if !local_data_root.exists() {
             fs::create_dir_all(&local_data_root)
                 .map_err(|error| format!("创建重定向目录失败: {error}"))?;
@@ -475,13 +522,23 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             ensure_file_in_dir(exe_dir, injector_name, INJECTOR_BYTES)?;
         }
 
-        let config_json = json!({
-            "disable_mod_loading": version_config.disable_mod_loading,
-            "mods": startup_mods_relative_paths
-        });
-        let config_content = serde_json::to_string_pretty(&config_json)
-            .map_err(|error| format!("写入预加载配置失败: {error}"))?;
-        let _ = ensure_file_in_dir(exe_dir, "preloader.json", config_content.as_bytes())?;
+        let file_redirections =
+            version_config.effective_file_redirections(Path::new(package_folder));
+        if !file_redirections.is_empty() {
+            append_log(
+                task_id,
+                format!("已配置 {} 条文件重定向", file_redirections.len()),
+            );
+        }
+
+        let _ = write_bloader_config(
+            exe_dir,
+            version_config.disable_mod_loading,
+            version_config.enable_redirection,
+            json!(file_redirections),
+            json!(startup_mods_relative_paths),
+        )?;
+        remove_legacy_preloader_config(exe_dir);
 
         if let Err(error) = ensure_backup(&exe_path) {
             warn!("无法创建 EXE 备份，将继续使用自标记还原机制: {error}");

@@ -13,6 +13,6 @@ pub mod remote_versions;
 pub mod resource_packs;
 pub mod screenshots;
 pub mod servers;
-mod skin_pack_preview;
+pub(crate) mod skin_pack_preview;
 pub mod skin_packs;
 pub mod uwp_minimize_fix;

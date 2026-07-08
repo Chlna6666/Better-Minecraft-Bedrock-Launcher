@@ -1,4 +1,4 @@
-use crate::music::cover::cover_fingerprint;
+use crate::music::cover::{cover_fingerprint, has_embedded_cover};
 use crate::utils::file_ops;
 use anyhow::{Context, Result};
 use lofty::file::{AudioFile, TaggedFileExt};
@@ -110,9 +110,7 @@ fn read_track(path: &Path) -> MusicTrack {
                 .unwrap_or_else(|| file_stem.clone());
             let artist = sanitize_metadata(tag.and_then(|tag| tag.artist()).as_deref())
                 .unwrap_or_else(|| "Unknown Artist".to_string());
-            let cover_key = tag
-                .and_then(|tag| tag.pictures().first())
-                .map(|_| cover_fingerprint(path));
+            let cover_key = has_embedded_cover(tagged_file).then(|| cover_fingerprint(path));
             (title, artist, cover_key)
         })
         .unwrap_or_else(|| (file_stem.clone(), "Unknown Artist".to_string(), None));

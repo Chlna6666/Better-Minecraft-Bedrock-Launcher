@@ -33,7 +33,7 @@ gpui = { path = "vendor/gpui", default-features = false, features = ["mimalloc-c
 gpui-router = { version = "0.3.0", default-features = false, features = [] }
 gpui_hooks = { path = "crates/gpui-hooks" }
 lucide-gpui = { path = "crates/lucide-gpui" }
-image = { version = "0.25.9", default-features = false, features = ["png", "tga"] }
+image = { version = "0.25.9", default-features = false, features = ["png", "tga", "jpeg"] }
 mc-motd = { path = "../BE-Community-Dev/mc-motd" }
 bedrock-world = { path = "../BE-Community-Dev/bedrock-world" }
 bedrock-block-model = { path = "../BE-Community-Dev/bedrock-block-model" }

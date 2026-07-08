@@ -45,7 +45,7 @@ pub(super) fn leg_uv(left: bool, overlay: bool) -> CuboidUv {
     uv_box(x, y, 4, 12, 4)
 }
 
-fn uv_box(x: u32, y: u32, width: u32, height: u32, depth: u32) -> CuboidUv {
+pub(super) fn uv_box(x: u32, y: u32, width: u32, height: u32, depth: u32) -> CuboidUv {
     CuboidUv {
         top: TextureRegion {
             x: x + depth,

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use super::McSkinPackSkinInfo;
-use crate::core::minecraft::skin_pack_preview::generate_skin_preview;
+use crate::core::minecraft::skin_pack_preview::{generate_skin_preview, skin_texture_dimensions};
 
 const SKIN_MIN_TEXTURE_WIDTH: u32 = 64;
 const SKIN_MIN_TEXTURE_HEIGHT: u32 = 32;
@@ -64,6 +64,8 @@ fn skin_info_from_texture_path(texture_path: &Path) -> McSkinPackSkinInfo {
         full_texture_path: Some(texture_path.to_string_lossy().to_string()),
         preview_path,
         model_label: model_label_from_texture_path(texture_path),
+        geometry_path: None,
+        geometry_identifier: None,
     }
 }
 
@@ -82,7 +84,7 @@ fn is_pack_artwork(path: &Path) -> bool {
 }
 
 fn is_probable_skin_texture(path: &Path) -> bool {
-    image::image_dimensions(path)
+    skin_texture_dimensions(path)
         .map(|(width, height)| is_skin_texture_size(width, height))
         .unwrap_or(false)
 }
