@@ -57,6 +57,7 @@ fn task_was_cancelled(task_id: &str) -> bool {
 }
 
 pub async fn import_appx(source_path: String, file_name: Option<String>) -> Result<String, String> {
+    crate::archive::register_archive_task_stage_labels();
     debug!(
         "import_appx: source_path='{}', file_name='{:?}'",
         source_path, file_name
@@ -184,6 +185,7 @@ pub async fn extract_zip_appx(
     force_replace: bool,
     delete_signature: bool,
 ) -> Result<String, String> {
+    crate::archive::register_archive_task_stage_labels();
     debug!(
         "extract_zip_appx: file_name='{}', destination='{}', force_replace={}, delete_signature={}",
         file_name, destination, force_replace, delete_signature

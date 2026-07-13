@@ -270,20 +270,12 @@ impl Window {
     }
 
     fn render_plan(&self) -> FrameRenderPlan<'_> {
-        let visual_effect_quality = if !self.active.get() {
-            FrameVisualEffectQuality::Disabled
-        } else if self.frame_throttle.should_delay(Instant::now()) {
-            FrameVisualEffectQuality::Reduced
-        } else {
-            FrameVisualEffectQuality::Full
-        };
-
         FrameRenderPlan {
             scene: &self.rendered_frame.scene,
             dirty_region: &self.render_dirty_region,
             partial_present_mode: self.render_present_mode,
             trim_policy: self.render_trim_policy,
-            visual_effect_quality,
+            visual_effect_quality: FrameVisualEffectQuality::Full,
         }
     }
 

@@ -432,6 +432,39 @@ fn image_atlas_insert_returns_tile_for_rgba_and_bgra() {
 }
 
 #[test]
+fn image_atlas_packs_large_tile_images_into_one_default_page() {
+    let atlas = NovaAtlas::new();
+    atlas.clear_pending_uploads_for_test();
+    let pixels = vec![255; 512 * 512 * NOVA_ATLAS_BYTES_PER_PIXEL];
+    let mut texture_ids = Vec::new();
+
+    for image_id in 0..4 {
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(100 + image_id),
+            frame_slot: 0,
+            pixel_format: RenderImagePixelFormat::Rgba8,
+        });
+        let tile = atlas
+            .ensure_tile_with(&key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(512), DevicePixels(512)),
+                    Cow::Borrowed(pixels.as_slice()),
+                )))
+            })
+            .expect("large image insert should succeed")
+            .expect("large image should allocate a tile");
+        texture_ids.push(tile.texture_id);
+    }
+
+    assert!(
+        texture_ids
+            .windows(2)
+            .all(|ids| ids[0] == ids[1] && ids[0].kind == AtlasTextureKind::Rgba),
+        "512px images should share one default atlas texture"
+    );
+}
+
+#[test]
 fn pending_atlas_upload_borrows_pixels_without_repeating_clean_upload() {
     let atlas = NovaAtlas::new();
     atlas.clear_pending_uploads_for_test();
@@ -1762,7 +1795,7 @@ fn partial_render_plan_produces_dirty_region_scissor() {
 }
 
 #[test]
-fn backdrop_blur_does_not_disable_partial_present_scissor() {
+fn backdrop_blur_disables_partial_present_scissor() {
     let scene = backdrop_blur_scene(None);
     let mut dirty_region = crate::DirtyRegion::empty();
     dirty_region.push(crate::bounds(
@@ -1790,12 +1823,7 @@ fn backdrop_blur_does_not_disable_partial_present_scissor() {
             UnsupportedBatchSummary::default(),
             true,
         ),
-        Some(ScissorRect {
-            x: 8,
-            y: 9,
-            width: 21,
-            height: 31,
-        })
+        None
     );
     assert_eq!(
         partial_present_scissor(
@@ -1811,6 +1839,23 @@ fn backdrop_blur_does_not_disable_partial_present_scissor() {
             true,
         ),
         None
+    );
+    assert_eq!(
+        partial_present_scissor(
+            render_plan,
+            DrawableSize {
+                width: 100,
+                height: 100,
+            },
+            UnsupportedBatchSummary::default(),
+            false,
+        ),
+        Some(ScissorRect {
+            x: 8,
+            y: 9,
+            width: 21,
+            height: 31,
+        })
     );
 }
 
@@ -1891,24 +1936,24 @@ fn backdrop_blur_render_passes_downsample_then_upsample_levels() {
             NovaBackdropBlurLevelTarget {
                 texture: test_texture_id(2),
                 texture_view: test_texture_view_id(2),
-                pass_resource_set: test_resource_set_id(12),
+                pass_resource_sets: vec![test_resource_set_id(12)],
             },
             NovaBackdropBlurLevelTarget {
                 texture: test_texture_id(3),
                 texture_view: test_texture_view_id(3),
-                pass_resource_set: test_resource_set_id(13),
+                pass_resource_sets: vec![test_resource_set_id(13)],
             },
             NovaBackdropBlurLevelTarget {
                 texture: test_texture_id(4),
                 texture_view: test_texture_view_id(4),
-                pass_resource_set: test_resource_set_id(14),
+                pass_resource_sets: vec![test_resource_set_id(14)],
             },
         ],
-        source_pass_resource_set: test_resource_set_id(11),
-        target_resource_set: test_resource_set_id(15),
+        source_pass_resource_sets: vec![test_resource_set_id(11)],
+        target_resource_sets: vec![test_resource_set_id(15)],
     };
 
-    let passes = backdrop_blur_render_passes_for_targets(&pipelines, &targets, 3);
+    let passes = backdrop_blur_render_passes_for_targets(&pipelines, &targets, 0, 3);
 
     assert_eq!(passes.len(), 5);
     assert_eq!(
@@ -1962,11 +2007,11 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
             texture_view: test_texture_view_id(1),
         },
         levels: Vec::new(),
-        source_pass_resource_set: test_resource_set_id(11),
-        target_resource_set: test_resource_set_id(15),
+        source_pass_resource_sets: vec![test_resource_set_id(11)],
+        target_resource_sets: vec![test_resource_set_id(15)],
     };
 
-    assert!(backdrop_blur_render_passes_for_targets(&pipelines, &targets, 3).is_empty());
+    assert!(backdrop_blur_render_passes_for_targets(&pipelines, &targets, 0, 3).is_empty());
 }
 
 #[test]

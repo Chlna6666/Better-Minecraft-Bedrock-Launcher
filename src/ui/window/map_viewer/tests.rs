@@ -1,7 +1,9 @@
+use super::canvas::*;
 use super::editor::*;
 use super::helpers::*;
 use super::interactions::*;
 use super::layout::{hud_stack_rects, top_toolbar_layout};
+use super::lifecycle::*;
 use super::mcstructure;
 use super::model::*;
 use super::overlays::*;
@@ -11,6 +13,7 @@ use super::players::*;
 use super::prelude::*;
 use super::tile_cache::*;
 use super::tile_manifest::*;
+use super::tile_plan::*;
 use super::tile_render::*;
 use super::tile_state::*;
 use super::view::{MapLayerKind, map_render_layer_order};
@@ -46,6 +49,15 @@ fn test_tile(color: [u8; 4]) -> ViewerTile {
         width: 1,
         height: 1,
         estimated_bytes: 4,
+    }
+}
+
+fn test_ready_tile(coord: (i32, i32), source: TileReadySource) -> ReadyTile {
+    ReadyTile {
+        coord,
+        tile: test_tile([coord.0 as u8, coord.1 as u8, 3, 255]),
+        source,
+        chunk_positions: None,
     }
 }
 
@@ -123,6 +135,175 @@ fn decoded_shared_rgba_tile_reuses_pixel_storage() {
         image.as_bytes(0).expect("resident image bytes").as_ptr(),
         pixels.as_ptr(),
     ));
+}
+
+#[::core::prelude::v1::test]
+fn empty_viewport_composite_frame_is_transparent_rgba() {
+    let viewport = MapViewport::new(size(px(200.0), px(100.0)));
+    let frame = empty_viewport_composite_frame(viewport).expect("empty composite frame");
+
+    assert_eq!(frame.width, 200);
+    assert_eq!(frame.height, 100);
+    assert_eq!(frame.estimated_bytes, 200 * 100 * 4);
+    assert_eq!(frame.rendered_tiles, 0);
+    assert_eq!(frame.source_viewport, viewport);
+    assert_eq!(
+        frame.image.pixel_format(0),
+        Some(gpui::RenderImagePixelFormat::Rgba8)
+    );
+    assert!(
+        frame
+            .image
+            .as_bytes(0)
+            .expect("empty composite image bytes")
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+}
+
+#[::core::prelude::v1::test]
+fn viewport_composite_is_disabled_to_stream_cold_cache_tiles() {
+    assert!(!VIEWPORT_COMPOSITE_ENABLED);
+}
+
+#[::core::prelude::v1::test]
+fn screen_image_bounds_tracks_current_viewport_drag() {
+    let source_viewport = MapViewport::new(size(px(400.0), px(300.0)));
+    let mut current_viewport = source_viewport;
+    current_viewport.offset_x += 32.0;
+    current_viewport.offset_y -= 16.0;
+    let screen_image = ScreenPaintImage {
+        image: test_tile([1, 2, 3, 255]).image,
+        source_viewport,
+        left: 0.0,
+        top: 0.0,
+        width: source_viewport.width,
+        height: source_viewport.height,
+        estimated_bytes: 400 * 300 * 4,
+    };
+
+    let bounds = super::canvas::screen_image_bounds(
+        Bounds::new(point(px(0.0), px(0.0)), size(px(400.0), px(300.0))),
+        current_viewport,
+        &screen_image,
+    )
+    .expect("screen image bounds");
+
+    assert_eq!(bounds.left() / px(1.0), 32.0);
+    assert_eq!(bounds.top() / px(1.0), -16.0);
+    assert_eq!(bounds.size.width / px(1.0), 400.0);
+    assert_eq!(bounds.size.height / px(1.0), 300.0);
+}
+
+#[::core::prelude::v1::test]
+fn viewport_composite_overscan_covers_bounded_drag() {
+    let viewport = MapViewport::new(size(px(1000.0), px(600.0)));
+    let source_viewport = viewport_with_composite_overscan(viewport);
+    let overscan_x = source_viewport.offset_x - viewport.offset_x;
+    let overscan_y = source_viewport.offset_y - viewport.offset_y;
+
+    assert!(
+        (MIN_VIEWPORT_COMPOSITE_OVERSCAN_PX..=MAX_VIEWPORT_COMPOSITE_OVERSCAN_PX)
+            .contains(&overscan_x)
+    );
+    assert!(
+        (MIN_VIEWPORT_COMPOSITE_OVERSCAN_PX..=MAX_VIEWPORT_COMPOSITE_OVERSCAN_PX)
+            .contains(&overscan_y)
+    );
+    assert_eq!(source_viewport.width, viewport.width + overscan_x * 2.0);
+    assert_eq!(source_viewport.height, viewport.height + overscan_y * 2.0);
+}
+
+#[::core::prelude::v1::test]
+fn viewport_composite_cancel_error_is_control_flow() {
+    assert!(viewport_composite_error_is_cancelled(
+        "视口合成失败: render was cancelled"
+    ));
+    assert!(!viewport_composite_error_is_cancelled(
+        "视口合成失败: LevelDB checksum mismatch"
+    ));
+}
+
+#[::core::prelude::v1::test]
+fn screen_image_bounds_projects_zoomed_viewport() {
+    let source_viewport = MapViewport::new(size(px(400.0), px(300.0)));
+    let mut current_viewport = source_viewport;
+    current_viewport.scale *= 1.25;
+    let screen_image = ScreenPaintImage {
+        image: test_tile([1, 2, 3, 255]).image,
+        source_viewport,
+        left: 0.0,
+        top: 0.0,
+        width: source_viewport.width,
+        height: source_viewport.height,
+        estimated_bytes: 400 * 300 * 4,
+    };
+
+    let bounds = super::canvas::screen_image_bounds(
+        Bounds::new(point(px(0.0), px(0.0)), size(px(400.0), px(300.0))),
+        current_viewport,
+        &screen_image,
+    )
+    .expect("screen image bounds");
+
+    assert_eq!(bounds.left() / px(1.0), -50.0);
+    assert_eq!(bounds.top() / px(1.0), -37.5);
+    assert_eq!(bounds.size.width / px(1.0), 500.0);
+    assert_eq!(bounds.size.height / px(1.0), 375.0);
+}
+
+#[::core::prelude::v1::test]
+fn screen_image_bounds_projects_resized_viewport() {
+    let source_viewport = MapViewport::new(size(px(400.0), px(300.0)));
+    let mut current_viewport = source_viewport;
+    assert!(current_viewport.set_size(size(px(480.0), px(300.0))));
+    let screen_image = ScreenPaintImage {
+        image: test_tile([1, 2, 3, 255]).image,
+        source_viewport,
+        left: 0.0,
+        top: 0.0,
+        width: source_viewport.width,
+        height: source_viewport.height,
+        estimated_bytes: 400 * 300 * 4,
+    };
+
+    let bounds = super::canvas::screen_image_bounds(
+        Bounds::new(point(px(0.0), px(0.0)), size(px(480.0), px(300.0))),
+        current_viewport,
+        &screen_image,
+    )
+    .expect("screen image bounds");
+
+    assert_eq!(bounds.left() / px(1.0), 40.0);
+    assert_eq!(bounds.top() / px(1.0), 0.0);
+    assert_eq!(bounds.size.width / px(1.0), 400.0);
+    assert_eq!(bounds.size.height / px(1.0), 300.0);
+}
+
+#[::core::prelude::v1::test]
+fn chunk_transfer_task_progress_sync_resets_on_phase_change() {
+    let mut progress_sync = ChunkTransferTaskProgressSync::default();
+
+    let first = progress_sync.next_delta(&ChunkTransferProgress {
+        phase: SharedString::from("读取区块"),
+        completed: 2,
+        total: 4,
+    });
+    assert_eq!(first, (true, 2, Some(4)));
+
+    let same_phase = progress_sync.next_delta(&ChunkTransferProgress {
+        phase: SharedString::from("读取区块"),
+        completed: 3,
+        total: 4,
+    });
+    assert_eq!(same_phase, (false, 1, Some(4)));
+
+    let next_phase = progress_sync.next_delta(&ChunkTransferProgress {
+        phase: SharedString::from("写入文件"),
+        completed: 1,
+        total: 2,
+    });
+    assert_eq!(next_phase, (true, 1, Some(2)));
 }
 
 #[::core::prelude::v1::test]
@@ -288,7 +469,7 @@ fn precise_visible_tile_bounds_do_not_include_chunk_alignment_padding() {
 }
 
 #[::core::prelude::v1::test]
-fn minimum_zoom_allows_wider_tile_overview() {
+fn minimum_zoom_visible_bounds_cover_full_viewport() {
     let layout = web_relief_render_layout();
     let mut viewport = test_viewport(4096.0, 4096.0, 1920.0, 1080.0);
     viewport.scale = MIN_VIEWPORT_SCALE;
@@ -296,10 +477,92 @@ fn minimum_zoom_allows_wider_tile_overview() {
     let bounds = visible_tile_bounds_for_viewport(viewport, layout, center).expect("bounds");
     let width = bounds.max_x - bounds.min_x + 1;
     let height = bounds.max_z - bounds.min_z + 1;
+    let visible_count = tile_bounds_area(bounds);
 
-    assert!(width > 32, "expected wider overview than old 32-tile cap");
-    assert!(width <= MAX_TILE_SPAN_PER_AXIS);
-    assert!(height <= MAX_TILE_SPAN_PER_AXIS);
+    assert!(width > MAX_TILE_SPAN_PER_AXIS);
+    assert!(height > MAX_TILE_SPAN_PER_AXIS);
+    assert!(visible_count > 64);
+}
+
+#[::core::prelude::v1::test]
+fn physical_render_batch_budget_holds_capacity_until_permit_drop() {
+    let budget = PhysicalRenderBatchBudget::default();
+    let permit = budget.try_acquire(1).expect("first permit");
+
+    assert_eq!(budget.active(), 1);
+    assert!(budget.try_acquire(1).is_none());
+    drop(permit);
+    assert_eq!(budget.active(), 0);
+    assert!(budget.try_acquire(1).is_some());
+}
+
+#[::core::prelude::v1::test]
+fn low_zoom_paint_bounds_remain_span_limited_when_visible_bounds_are_large() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(4096.0, 4096.0, 1920.0, 1080.0);
+    viewport.scale = MIN_VIEWPORT_SCALE;
+    let center = viewport.center_tile(layout);
+    let visible = visible_tile_bounds_for_viewport(viewport, layout, center).expect("visible");
+    let paint_bounds =
+        paint_tile_bounds_for_viewport(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
+
+    assert!(tile_bounds_area(paint_bounds) < tile_bounds_area(visible.expand(DRAG_RETAIN_RADIUS)));
+    assert!(tile_bounds_contains(paint_bounds, center));
+}
+
+#[::core::prelude::v1::test]
+fn low_zoom_paint_bounds_are_not_capped_by_canvas_image_limit() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(4096.0, 4096.0, 520.0, 342.0);
+    viewport.scale = MIN_VIEWPORT_SCALE;
+    let center = viewport.center_tile(layout);
+    let visible = visible_tile_bounds_for_viewport(viewport, layout, center).expect("visible");
+    let canvas_budget = canvas_tile_image_budget(viewport, layout);
+
+    let paint_bounds =
+        paint_tile_bounds_for_viewport(viewport, layout, DRAG_RETAIN_RADIUS).expect("paint bounds");
+    let retained = retained_tile_filter_for_viewport(viewport, layout, true).expect("retained");
+
+    assert_eq!(canvas_budget, usize::MAX);
+    assert_eq!(paint_bounds, visible.expand(DRAG_RETAIN_RADIUS));
+    assert!(tile_bounds_contains(paint_bounds, center));
+    assert!(retained.contains(center));
+}
+
+#[::core::prelude::v1::test]
+fn canvas_tile_budget_has_no_image_limit_for_normal_zoom() {
+    let layout = web_relief_render_layout();
+    let viewport = test_viewport(0.0, 0.0, 1920.0, 1080.0);
+
+    assert_eq!(canvas_tile_image_budget(viewport, layout), usize::MAX);
+}
+
+#[::core::prelude::v1::test]
+fn canvas_tile_budget_has_no_image_limit_for_low_zoom_viewport_size() {
+    let layout = web_relief_render_layout();
+    let mut small_viewport = test_viewport(4096.0, 4096.0, 520.0, 342.0);
+    small_viewport.scale = MIN_VIEWPORT_SCALE;
+    let mut large_viewport = test_viewport(4096.0, 4096.0, 1920.0, 1080.0);
+    large_viewport.scale = MIN_VIEWPORT_SCALE;
+
+    let small_budget = canvas_tile_image_budget(small_viewport, layout);
+    let large_budget = canvas_tile_image_budget(large_viewport, layout);
+
+    assert_eq!(small_budget, usize::MAX);
+    assert_eq!(large_budget, usize::MAX);
+}
+
+#[::core::prelude::v1::test]
+fn low_zoom_ui_tile_memory_budget_covers_all_retained_tiles() {
+    let mut viewport = test_viewport(4096.0, 4096.0, 1920.0, 1080.0);
+    viewport.scale = MIN_VIEWPORT_SCALE;
+    let retained_tiles = tile_count_for_viewport(viewport, RETAIN_RADIUS).expect("tile count");
+    let retained_bytes = retained_tiles
+        .saturating_mul(DEFAULT_TILE_SIZE as usize)
+        .saturating_mul(DEFAULT_TILE_SIZE as usize)
+        .saturating_mul(4);
+
+    assert!(ui_tile_memory_budget_bytes(viewport) >= retained_bytes);
 }
 
 #[::core::prelude::v1::test]
@@ -337,6 +600,94 @@ fn tile_rect_tracks_viewport_after_drag_without_rebuilding_tile_snapshot() {
 
     assert_ne!(initial_rect.left, dragged_rect.left);
     assert_ne!(initial_rect.top, dragged_rect.top);
+}
+
+#[::core::prelude::v1::test]
+fn dragged_tile_rect_edges_stay_bound_to_grid_lines() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(0.0, 0.0, 1024.0, 1024.0);
+    viewport.offset_x += 37.5;
+    viewport.offset_y -= 19.25;
+    let range = tile_render_range_for_viewport(viewport, layout).expect("render range");
+    let rect = tile_paint_rect(viewport, layout, range, 0, 0).expect("visible tile");
+    let next_x_rect = tile_paint_rect(viewport, layout, range, 1, 0).expect("next x tile");
+    let next_z_rect = tile_paint_rect(viewport, layout, range, 0, 1).expect("next z tile");
+    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1024.0), px(1024.0)));
+    let tile_blocks = i32::try_from(layout.chunks_per_tile)
+        .expect("chunks per tile should fit i32")
+        .saturating_mul(16);
+    let left_grid = screen_x_for_block(bounds, viewport, layout, 0).floor();
+    let top_grid = screen_y_for_block(bounds, viewport, layout, 0).floor();
+    let next_x_grid = screen_x_for_block(bounds, viewport, layout, tile_blocks).floor();
+    let next_z_grid = screen_y_for_block(bounds, viewport, layout, tile_blocks).floor();
+
+    assert!((rect.left + TILE_SEAM_BLEED_PX - left_grid).abs() < 0.001);
+    assert!((rect.top + TILE_SEAM_BLEED_PX - top_grid).abs() < 0.001);
+    assert!((next_x_rect.left + TILE_SEAM_BLEED_PX - next_x_grid).abs() < 0.001);
+    assert!((next_z_rect.top + TILE_SEAM_BLEED_PX - next_z_grid).abs() < 0.001);
+}
+
+#[::core::prelude::v1::test]
+fn grid_step_uses_largest_visible_axis_span() {
+    let block_bounds = (0, -50_000, 1_000, 50_000);
+    let step = grid_step_for_block_bounds(16, block_bounds, 280);
+
+    assert!(step > 16);
+    assert!(block_bounds.2.saturating_sub(block_bounds.0) / step <= 280);
+    assert!(block_bounds.3.saturating_sub(block_bounds.1) / step <= 280);
+}
+
+#[::core::prelude::v1::test]
+fn memory_snapshot_due_respects_throttle_interval() {
+    let now = Instant::now();
+    let recent = now
+        .checked_sub(MAP_MEMORY_SNAPSHOT_INTERVAL / 2)
+        .expect("recent instant");
+    let stale = now
+        .checked_sub(MAP_MEMORY_SNAPSHOT_INTERVAL + Duration::from_millis(1))
+        .expect("stale instant");
+
+    assert!(memory_snapshot_due(None, now));
+    assert!(!memory_snapshot_due(Some(recent), now));
+    assert!(memory_snapshot_due(Some(stale), now));
+}
+
+#[::core::prelude::v1::test]
+fn retained_tile_filter_matches_circular_retain_tiles() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(37.5, -19.25, 1536.0, 960.0);
+    viewport.scale = 0.75;
+    let center = viewport.center_tile(layout);
+    let visible = visible_tile_bounds_for_viewport(viewport, layout, center).expect("visible");
+    let mut expanded = visible.expand(DRAG_RETAIN_RADIUS);
+    clamp_tile_span(&mut expanded.min_x, &mut expanded.max_x, center.0);
+    clamp_tile_span(&mut expanded.min_z, &mut expanded.max_z, center.1);
+    let mut retained_bounds = expanded;
+    let max_tiles = canvas_tile_image_budget(viewport, layout);
+    if tile_bounds_count(retained_bounds) > max_tiles && tile_bounds_count(visible) <= max_tiles {
+        retained_bounds = visible;
+    } else {
+        clamp_tile_count(&mut retained_bounds, center, max_tiles);
+    }
+    let radius_squared =
+        i64::from(DRAG_RETAIN_RADIUS).saturating_mul(i64::from(DRAG_RETAIN_RADIUS));
+    let filter = retained_tile_filter_for_viewport(viewport, layout, true).expect("filter");
+
+    for z in expanded.min_z..=expanded.max_z {
+        for x in expanded.min_x..=expanded.max_x {
+            let expected = retained_bounds.contains((x, z))
+                && squared_distance_to_tile_bounds(x, z, visible) <= radius_squared;
+            assert_eq!(filter.contains((x, z)), expected);
+        }
+    }
+}
+
+fn tile_bounds_area(bounds: TileBounds) -> usize {
+    let width = usize::try_from(bounds.max_x.saturating_sub(bounds.min_x).saturating_add(1))
+        .expect("tile bounds width should fit usize");
+    let height = usize::try_from(bounds.max_z.saturating_sub(bounds.min_z).saturating_add(1))
+        .expect("tile bounds height should fit usize");
+    width.saturating_mul(height)
 }
 
 #[::core::prelude::v1::test]
@@ -380,24 +731,31 @@ fn tile_paint_snapshot_reuses_render_image_arc() {
         .map(|tile| tile.image.clone())
         .expect("loaded test tile");
 
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
 
     assert_eq!(snapshot.tiles.len(), 1);
     assert!(Arc::ptr_eq(&snapshot.tiles[0].image, &source_image));
 }
 
 #[::core::prelude::v1::test]
-fn tile_paint_snapshot_only_keeps_visible_tiles() {
+fn tile_paint_snapshot_keeps_retained_tiles_for_drag_headroom() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
+    manager.mark_loaded((1, 0), test_tile([2, 2, 2, 255]));
     manager.mark_loaded((64, 64), test_tile([2, 2, 2, 255]));
 
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
 
-    assert_eq!(snapshot.tiles.len(), 1);
-    assert_eq!(snapshot.tiles[0].coord, (0, 0));
+    assert_eq!(
+        snapshot
+            .tiles
+            .iter()
+            .map(|tile| tile.coord)
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0)]
+    );
 }
 
 #[::core::prelude::v1::test]
@@ -406,23 +764,23 @@ fn tile_paint_snapshot_records_current_paint_bounds() {
     let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
     let manager = RegionManager::default();
 
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
 
     assert_eq!(
         snapshot.paint_bounds,
-        visible_tile_bounds_for_viewport(viewport, layout, viewport.center_tile(layout))
+        paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS)
     );
 }
 
 #[::core::prelude::v1::test]
-fn tile_paint_snapshot_uses_precise_visible_bounds() {
+fn tile_paint_snapshot_excludes_tiles_outside_retained_bounds() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
-    manager.mark_loaded((1, 0), test_tile([2, 2, 2, 255]));
+    manager.mark_loaded((2, 0), test_tile([2, 2, 2, 255]));
 
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
 
     assert_eq!(
         snapshot
@@ -440,7 +798,7 @@ fn tile_paint_snapshot_patch_replaces_visible_tile() {
     let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
     manager.mark_loaded((0, 0), test_tile([2, 2, 2, 255]));
     let source_image = manager
         .entries
@@ -449,8 +807,16 @@ fn tile_paint_snapshot_patch_replaces_visible_tile() {
         .map(|tile| tile.image.clone())
         .expect("replacement test tile");
 
-    let patched =
-        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(0, 0)], 2);
+    let patched = patch_tile_paint_snapshot(
+        &snapshot,
+        &manager,
+        viewport,
+        layout,
+        false,
+        RETAIN_RADIUS,
+        &[(0, 0)],
+        2,
+    );
 
     let TilePaintSnapshotPatch::Patched(patched) = patched else {
         panic!("visible replacement should patch snapshot");
@@ -467,11 +833,19 @@ fn tile_paint_snapshot_patch_inserts_visible_tile_in_paint_order() {
     viewport.scale = 0.5;
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
     manager.mark_loaded((1, 0), test_tile([2, 2, 2, 255]));
 
-    let patched =
-        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(1, 0)], 2);
+    let patched = patch_tile_paint_snapshot(
+        &snapshot,
+        &manager,
+        viewport,
+        layout,
+        false,
+        RETAIN_RADIUS,
+        &[(1, 0)],
+        2,
+    );
 
     let TilePaintSnapshotPatch::Patched(patched) = patched else {
         panic!("new visible tile should patch snapshot");
@@ -493,14 +867,70 @@ fn tile_paint_snapshot_patch_rebuilds_when_viewport_bounds_change() {
     viewport.scale = 0.5;
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
     viewport.offset_x = -512.0;
     manager.mark_loaded((2, 0), test_tile([2, 2, 2, 255]));
 
-    let patched =
-        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(2, 0)], 2);
+    let patched = patch_tile_paint_snapshot(
+        &snapshot,
+        &manager,
+        viewport,
+        layout,
+        false,
+        RETAIN_RADIUS,
+        &[(2, 0)],
+        2,
+    );
 
     assert!(matches!(patched, TilePaintSnapshotPatch::Rebuild));
+}
+
+#[::core::prelude::v1::test]
+fn tile_paint_snapshot_patch_keeps_composite_underlay_across_drag_bounds() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    viewport.scale = 0.5;
+    let frame = empty_viewport_composite_frame(viewport).expect("composite frame");
+    let source_image = frame.image.clone();
+    let snapshot = TilePaintSnapshot {
+        tiles: Arc::new(Vec::new()),
+        screen_images: Arc::new(vec![ScreenPaintImage {
+            image: frame.image,
+            source_viewport: viewport,
+            left: 0.0,
+            top: 0.0,
+            width: viewport.width,
+            height: viewport.height,
+            estimated_bytes: frame.estimated_bytes,
+        }]),
+        debug_overlays: Arc::new(Vec::new()),
+        generation: 1,
+        estimated_bytes: frame.estimated_bytes,
+        paint_bounds: paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS),
+    };
+    viewport.offset_x = -512.0;
+    let coord = viewport.center_tile(layout);
+    let mut manager = RegionManager::default();
+    manager.mark_loaded(coord, test_tile([2, 2, 2, 255]));
+
+    let patched = patch_tile_paint_snapshot(
+        &snapshot,
+        &manager,
+        viewport,
+        layout,
+        false,
+        RETAIN_RADIUS,
+        &[coord],
+        2,
+    );
+
+    let TilePaintSnapshotPatch::Patched(patched) = patched else {
+        panic!("composite handoff should remain incremental");
+    };
+    assert_eq!(patched.screen_images.len(), 1);
+    assert!(Arc::ptr_eq(&patched.screen_images[0].image, &source_image));
+    assert_eq!(patched.tiles.len(), 1);
+    assert_eq!(patched.tiles[0].coord, coord);
 }
 
 #[::core::prelude::v1::test]
@@ -511,8 +941,7 @@ fn tile_paint_snapshot_patch_replaces_existing_coord_without_duplicate() {
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([3, 3, 3, 255]));
     manager.mark_loaded((1, 0), test_tile([4, 4, 4, 255]));
-    let paint_bounds =
-        visible_tile_bounds_for_viewport(viewport, layout, viewport.center_tile(layout));
+    let paint_bounds = paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS);
     let old_tile = test_tile([1, 1, 1, 255]);
     let one_tile = manager
         .entries
@@ -538,14 +967,23 @@ fn tile_paint_snapshot_patch_replaces_existing_coord_without_duplicate() {
                 estimated_bytes: old_tile.estimated_bytes,
             },
         ]),
+        screen_images: Arc::new(Vec::new()),
         debug_overlays: Arc::new(Vec::new()),
         generation: 1,
         estimated_bytes: 8,
         paint_bounds,
     };
 
-    let patched =
-        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(0, 0)], 2);
+    let patched = patch_tile_paint_snapshot(
+        &snapshot,
+        &manager,
+        viewport,
+        layout,
+        false,
+        RETAIN_RADIUS,
+        &[(0, 0)],
+        2,
+    );
 
     let TilePaintSnapshotPatch::Patched(patched) = patched else {
         panic!("existing coord replacement should patch snapshot");
@@ -565,11 +1003,19 @@ fn tile_paint_snapshot_patch_removes_invalid_tile() {
     let viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
     let mut manager = RegionManager::default();
     manager.mark_loaded((0, 0), test_tile([1, 1, 1, 255]));
-    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, 1);
+    let snapshot = build_tile_paint_snapshot(&manager, viewport, layout, false, RETAIN_RADIUS, 1);
     manager.mark_invalid((0, 0), SharedString::from("empty"));
 
-    let patched =
-        patch_tile_paint_snapshot(&snapshot, &manager, viewport, layout, false, &[(0, 0)], 2);
+    let patched = patch_tile_paint_snapshot(
+        &snapshot,
+        &manager,
+        viewport,
+        layout,
+        false,
+        RETAIN_RADIUS,
+        &[(0, 0)],
+        2,
+    );
 
     let TilePaintSnapshotPatch::Patched(patched) = patched else {
         panic!("invalid visible tile should patch snapshot");
@@ -963,12 +1409,45 @@ fn center_stage_layout_accounts_for_stripe_and_docks() {
 }
 
 #[::core::prelude::v1::test]
-fn hud_stack_rectangles_do_not_overlap() {
+fn hud_stack_is_anchored_away_from_the_bottom_ruler() {
     let (ruler, coord) = hud_stack_rects(640.0, 360.0, true);
     let ruler = ruler.expect("ruler visible");
     assert!(ruler.bottom() <= coord.top() - px(8.0));
     assert!(coord.right() <= px(640.0));
-    assert!(coord.bottom() <= px(360.0));
+    assert_eq!(ruler.right(), px(624.0));
+    assert_eq!(ruler.top(), px(16.0));
+    assert!(ruler.bottom() < px(120.0));
+}
+
+#[::core::prelude::v1::test]
+fn drag_tile_snapshot_sync_is_limited_to_display_refresh_rate() {
+    assert!(DRAG_CANVAS_SYNC_INTERVAL >= Duration::from_millis(16));
+}
+
+#[::core::prelude::v1::test]
+fn interaction_layer_policy_keeps_map_bound_content_without_refreshing_hud() {
+    let without_paste_preview = interaction_viewport_layer_policy(false);
+    assert!(without_paste_preview.overlay);
+    assert!(without_paste_preview.markers);
+    assert!(!without_paste_preview.hud);
+    assert!(!without_paste_preview.paste_controls);
+
+    let with_paste_preview = interaction_viewport_layer_policy(true);
+    assert!(with_paste_preview.overlay);
+    assert!(with_paste_preview.markers);
+    assert!(!with_paste_preview.hud);
+    assert!(with_paste_preview.paste_controls);
+}
+
+#[::core::prelude::v1::test]
+fn interaction_layer_sync_requests_an_immediate_parent_refresh() {
+    assert!(should_notify_parent_after_interaction_layer_sync());
+}
+
+#[::core::prelude::v1::test]
+fn map_tile_upload_budget_prioritizes_viewport_interaction() {
+    assert_eq!(map_tile_new_image_budget(true), 1);
+    assert_eq!(map_tile_new_image_budget(false), 8);
 }
 
 #[::core::prelude::v1::test]
@@ -1009,6 +1488,143 @@ fn metadata_cancel_flag_is_taken_and_cancelled() {
 }
 
 #[::core::prelude::v1::test]
+fn active_render_tiles_keep_shared_tile_until_last_batch_finishes() {
+    let mut active_tiles = ActiveRenderTiles::default();
+
+    track_active_render_tiles(&mut active_tiles, &[(0, 0), (1, 0)]);
+    track_active_render_tiles(&mut active_tiles, &[(1, 0), (2, 0)]);
+    finish_active_render_tiles(&mut active_tiles, &[(0, 0), (1, 0)]);
+
+    assert!(!active_tiles.contains_key(&(0, 0)));
+    assert_eq!(active_tiles.get(&(1, 0)), Some(&1));
+    assert_eq!(active_tiles.get(&(2, 0)), Some(&1));
+
+    finish_active_render_tiles(&mut active_tiles, &[(1, 0), (2, 0)]);
+
+    assert!(active_tiles.is_empty());
+}
+
+#[::core::prelude::v1::test]
+fn tile_event_sender_reports_receiver_drop_without_external_lock() {
+    let (sender, mut receiver) = unbounded::<TileRenderEvent>();
+
+    assert!(send_tile_event(
+        &sender,
+        TileRenderEvent::Empty {
+            coord: (0, 0),
+            message: "empty".to_string(),
+        },
+    ));
+    assert!(matches!(
+        receiver.try_next(),
+        Ok(Some(TileRenderEvent::Empty { coord: (0, 0), .. }))
+    ));
+    drop(receiver);
+
+    assert!(!send_tile_event(
+        &sender,
+        TileRenderEvent::Empty {
+            coord: (1, 0),
+            message: "dropped".to_string(),
+        },
+    ));
+}
+
+#[::core::prelude::v1::test]
+fn tile_ready_batcher_flushes_each_cache_hit_outside_quick_reveal() {
+    let mut batcher = TileReadyBatcher::default();
+
+    let memory_tiles = batcher
+        .push(test_ready_tile((0, 0), TileReadySource::MemoryCache))
+        .expect("memory cache hits should not wait for another UI image upload");
+    assert_eq!(memory_tiles.len(), 1);
+    assert_eq!(memory_tiles[0].coord, (0, 0));
+
+    let disk_tiles = batcher
+        .push(test_ready_tile((1, 0), TileReadySource::DiskCacheFresh))
+        .expect("disk cache hits should not wait for another UI image upload");
+    assert_eq!(disk_tiles.len(), 1);
+    assert_eq!(disk_tiles[0].coord, (1, 0));
+    assert!(batcher.pending.is_empty());
+}
+
+#[::core::prelude::v1::test]
+fn tile_ready_batcher_flushes_each_cache_hit_during_quick_reveal() {
+    let mut batcher = TileReadyBatcher::new(true);
+
+    let tiles = batcher
+        .push(test_ready_tile((0, 0), TileReadySource::DiskCacheFresh))
+        .expect("quick reveal cache hits should flush a single frame-sized upload");
+    assert_eq!(tiles.len(), 1);
+    assert_eq!(tiles[0].coord, (0, 0));
+    assert!(batcher.pending.is_empty());
+}
+
+#[::core::prelude::v1::test]
+fn cached_ready_batch_yields_after_quick_reveal_finishes() {
+    let event = TileRenderEvent::ReadyBatch {
+        tiles: vec![test_ready_tile((0, 0), TileReadySource::MemoryCache)],
+    };
+
+    assert!(should_yield_after_ready_batch(false, false, &event));
+}
+
+#[::core::prelude::v1::test]
+fn rendered_ready_batch_yields_while_interacting_or_quick_revealing() {
+    let event = TileRenderEvent::ReadyBatch {
+        tiles: vec![test_ready_tile((0, 0), TileReadySource::Render)],
+    };
+
+    assert!(!should_yield_after_ready_batch(false, false, &event));
+    assert!(should_yield_after_ready_batch(true, false, &event));
+    assert!(should_yield_after_ready_batch(false, true, &event));
+}
+
+#[::core::prelude::v1::test]
+fn ready_tile_events_request_a_window_refresh() {
+    let event = TileRenderEvent::ReadyBatch {
+        tiles: vec![test_ready_tile((0, 0), TileReadySource::Render)],
+    };
+
+    assert!(tile_event_needs_window_refresh(&event));
+}
+
+#[::core::prelude::v1::test]
+fn tile_ready_batcher_buffers_render_tiles_until_flush() {
+    let mut batcher = TileReadyBatcher::default();
+
+    assert!(
+        batcher
+            .push(test_ready_tile((1, 0), TileReadySource::Render))
+            .is_none()
+    );
+    assert_eq!(batcher.pending.len(), 1);
+
+    let tiles = batcher
+        .flush()
+        .expect("manual flush should return pending tile");
+
+    assert_eq!(tiles.len(), 1);
+    assert_eq!(tiles[0].coord, (1, 0));
+    assert!(batcher.pending.is_empty());
+}
+
+#[::core::prelude::v1::test]
+fn tile_ready_batcher_flushes_render_tiles_during_quick_reveal() {
+    let mut batcher = TileReadyBatcher::new(true);
+
+    assert!(
+        batcher
+            .push(test_ready_tile((1, 0), TileReadySource::Render))
+            .is_none()
+    );
+    let tiles = batcher
+        .flush()
+        .expect("completion should flush the first tile");
+    assert_eq!(tiles.len(), 1);
+}
+
+#[::core::prelude::v1::test]
 fn tile_chunk_region_uses_eight_by_eight_tile_bounds() {
     let layout = web_relief_render_layout();
     assert_eq!(layout.chunks_per_tile, 8);
@@ -1023,6 +1639,51 @@ fn tile_chunk_region_uses_eight_by_eight_tile_bounds() {
     assert_eq!(region.max_chunk_x, 15);
     assert_eq!(region.min_chunk_z, -8);
     assert_eq!(region.max_chunk_z, -1);
+}
+
+#[::core::prelude::v1::test]
+fn selected_tile_work_estimate_counts_chunks_and_unique_regions() {
+    let mut tile_chunk_index = TileChunkIndex::new();
+    tile_chunk_index.insert(
+        (0, 0),
+        TileChunkPositions::from(vec![
+            ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            ChunkPos {
+                x: 1,
+                z: 1,
+                dimension: Dimension::Overworld,
+            },
+        ]),
+    );
+    tile_chunk_index.insert(
+        (4, 0),
+        TileChunkPositions::from(vec![
+            ChunkPos {
+                x: 32,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            ChunkPos {
+                x: 33,
+                z: 1,
+                dimension: Dimension::Overworld,
+            },
+        ]),
+    );
+
+    let estimate = selected_tile_work_estimate(&[(0, 0), (4, 0), (8, 8)], &tile_chunk_index);
+
+    assert_eq!(
+        estimate,
+        SelectedTileWorkEstimate {
+            chunk_count: 4,
+            region_count: 2
+        }
+    );
 }
 
 #[::core::prelude::v1::test]
@@ -1075,6 +1736,93 @@ fn non_empty_tile_index_uses_exact_manifest_chunk_set() {
 }
 
 #[::core::prelude::v1::test]
+fn indexed_tile_chunks_are_normalized_before_render() {
+    let layout = web_relief_render_layout();
+    let valid_a = ChunkPos {
+        x: 8,
+        z: -8,
+        dimension: Dimension::Overworld,
+    };
+    let valid_b = ChunkPos {
+        x: 9,
+        z: -8,
+        dimension: Dimension::Overworld,
+    };
+    let indexed_positions = vec![
+        valid_b,
+        ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        },
+        valid_a,
+        valid_b,
+        ChunkPos {
+            x: 8,
+            z: -8,
+            dimension: Dimension::Nether,
+        },
+    ];
+
+    let render_positions = ui_tile_chunk_positions_for_render(
+        Dimension::Overworld,
+        1,
+        -1,
+        layout,
+        Some(indexed_positions.as_slice()),
+    )
+    .expect("render positions")
+    .expect("known non-empty tile");
+    let mut expected = vec![valid_a, valid_b];
+    expected.sort_unstable();
+    assert_eq!(render_positions, expected);
+}
+
+#[::core::prelude::v1::test]
+fn shared_tile_chunk_index_normalizes_cached_positions() {
+    let layout = web_relief_render_layout();
+    let valid_a = ChunkPos {
+        x: 8,
+        z: -8,
+        dimension: Dimension::Overworld,
+    };
+    let valid_b = ChunkPos {
+        x: 9,
+        z: -8,
+        dimension: Dimension::Overworld,
+    };
+    let mut cached_index = BTreeMap::new();
+    cached_index.insert(
+        (1, -1),
+        vec![
+            valid_b,
+            valid_a,
+            valid_b,
+            ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            ChunkPos {
+                x: 8,
+                z: -8,
+                dimension: Dimension::Nether,
+            },
+        ],
+    );
+
+    let normalized = shared_tile_chunk_index(Dimension::Overworld, layout, cached_index)
+        .expect("normalized tile index");
+
+    let mut expected = vec![valid_a, valid_b];
+    expected.sort_unstable();
+    assert_eq!(
+        normalized.get(&(1, -1)).map(|positions| positions.as_ref()),
+        Some(expected.as_slice())
+    );
+}
+
+#[::core::prelude::v1::test]
 fn empty_tile_index_remains_empty_for_negative_cache() {
     let layout = web_relief_render_layout();
     let indexed_positions = Vec::new();
@@ -1121,6 +1869,18 @@ fn pending_manifest_detection_is_limited_to_requested_tiles() {
 
     assert!(manager.has_pending_manifest_for_tiles(&[(0, 0)]));
     assert!(!manager.has_pending_manifest_for_tiles(&[(1, 0)]));
+}
+
+#[::core::prelude::v1::test]
+fn cancelled_probe_keeps_pending_manifest_tile_probeable() {
+    let mut manager = RegionManager::default();
+    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+
+    assert!(manager.is_pending_manifest((0, 0)));
+    assert!(manager.has_pending_manifest_for_tiles(&[(0, 0)]));
+    assert!(should_probe_manifest_tiles(
+        false, false, false, true, false, false
+    ));
 }
 
 #[::core::prelude::v1::test]
@@ -1232,6 +1992,79 @@ fn mark_invalid_removes_loaded_tile_and_releases_estimated_memory() {
 }
 
 #[::core::prelude::v1::test]
+fn region_manager_counts_track_state_transitions() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0), (1, 0)], TilePriority::Visible);
+
+    assert_eq!(manager.queued_count(), 2);
+    assert_eq!(manager.loading_count(), 0);
+    assert_eq!(manager.loaded_count(), 0);
+
+    manager.mark_loading(&[(0, 0)]);
+    assert_eq!(manager.queued_count(), 1);
+    assert_eq!(manager.loading_count(), 1);
+
+    manager.mark_failed((0, 0), SharedString::from("failed"));
+    assert_eq!(manager.queued_count(), 2);
+    assert_eq!(manager.loading_count(), 0);
+    assert_eq!(manager.failed_count(), 1);
+
+    manager.mark_invalid((1, 0), SharedString::from("empty"));
+    assert_eq!(manager.queued_count(), 1);
+    assert_eq!(manager.failed_count(), 1);
+    assert_eq!(manager.invalid_count(), 1);
+
+    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+    assert_eq!(manager.queued_count(), 0);
+    assert_eq!(manager.pending_manifest_count(), 1);
+    assert_eq!(manager.failed_count(), 0);
+
+    manager.mark_manifest_ready((0, 0), TilePriority::Visible);
+    assert_eq!(manager.queued_count(), 1);
+    assert_eq!(manager.pending_manifest_count(), 0);
+
+    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
+    assert_eq!(manager.loaded_count(), 1);
+    assert_eq!(manager.queued_count(), 0);
+
+    manager.remove_tile((0, 0));
+    assert_eq!(manager.loaded_count(), 0);
+    assert_eq!(manager.invalid_count(), 1);
+}
+
+#[::core::prelude::v1::test]
+fn cancelled_loading_tiles_return_to_queue_without_backoff() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
+    manager.mark_loading(&[(0, 0)]);
+
+    manager.requeue_cancelled_loading(&[(0, 0)]);
+
+    let entry = manager.entries.get(&(0, 0)).expect("queued tile");
+    assert_eq!(entry.state, TileLoadState::Queued);
+    assert_eq!(entry.priority, TilePriority::Visible);
+    assert_eq!(entry.retry_after, None);
+    assert_eq!(manager.loading_count(), 0);
+    assert_eq!(manager.queued_count(), 1);
+}
+
+#[::core::prelude::v1::test]
+fn cancelling_active_render_requeues_tiles_before_task_finishes() {
+    let mut manager = RegionManager::default();
+    let mut active_tiles = ActiveRenderTiles::default();
+    let coords = [(0, 0), (1, 0)];
+    manager.ensure_tiles(&coords, TilePriority::Visible);
+    manager.mark_loading(&coords);
+    track_active_render_tiles(&mut active_tiles, &coords);
+
+    requeue_active_render_tiles_after_cancel(&mut manager, &mut active_tiles);
+
+    assert_eq!(manager.queued_count(), coords.len());
+    assert_eq!(manager.loading_count(), 0);
+    assert!(active_tiles.is_empty());
+}
+
+#[::core::prelude::v1::test]
 fn pending_edit_refresh_manifest_coords_keep_queue_order() {
     let mut manager = RegionManager::default();
     manager.ensure_pending_manifest(&[(5, 0)], TilePriority::Visible);
@@ -1264,6 +2097,21 @@ fn render_tile_plan_rejects_empty_chunk_positions() {
     );
 
     assert!(plan.is_err());
+}
+
+#[::core::prelude::v1::test]
+fn render_tile_plan_allows_missing_chunk_index_for_unculled_render() {
+    let plan = RenderTilePlan::from_optional_chunk_positions(
+        Dimension::Overworld,
+        RenderMode::SurfaceBlocks,
+        web_relief_render_layout(),
+        (0, 0),
+        None,
+    )
+    .expect("missing tile index should render through renderer-side culling");
+
+    assert_eq!(plan.coord, (0, 0));
+    assert!(plan.planned.chunk_positions.is_none());
 }
 
 #[::core::prelude::v1::test]
@@ -1304,6 +2152,39 @@ fn render_tile_plan_keeps_only_indexed_tile_chunks() {
 }
 
 #[::core::prelude::v1::test]
+fn render_tile_plan_reuses_normalized_chunk_positions() {
+    let layout = web_relief_render_layout();
+    let chunk_positions = TileChunkPositions::from(vec![
+        ChunkPos {
+            x: 8,
+            z: -8,
+            dimension: Dimension::Overworld,
+        },
+        ChunkPos {
+            x: 9,
+            z: -8,
+            dimension: Dimension::Overworld,
+        },
+    ]);
+
+    let plan = RenderTilePlan::new(
+        Dimension::Overworld,
+        RenderMode::SurfaceBlocks,
+        layout,
+        (1, -1),
+        Arc::clone(&chunk_positions),
+    )
+    .expect("non-empty render tile plan");
+
+    let planned_positions = plan
+        .planned
+        .chunk_positions
+        .as_ref()
+        .expect("planned chunk positions");
+    assert!(Arc::ptr_eq(&chunk_positions, planned_positions));
+}
+
+#[::core::prelude::v1::test]
 fn interactive_session_config_culls_missing_chunks() {
     let config = interactive_map_render_session_config(
         std::path::Path::new("world"),
@@ -1312,14 +2193,25 @@ fn interactive_session_config_culls_missing_chunks() {
     );
 
     assert!(config.cull_missing_chunks);
+    assert_eq!(
+        config.region_bake_cache_memory_limit,
+        RENDER_REGION_CACHE_ENTRIES
+    );
 }
 
 #[::core::prelude::v1::test]
 fn interactive_tile_batch_defaults_are_conservative() {
     assert_eq!(RENDER_UI_BATCH_TILES, 8);
-    assert_eq!(FIRST_VISIBLE_BATCH_LIMIT, 4);
+    assert_eq!(FIRST_VISIBLE_BATCH_LIMIT, 1);
+    assert_eq!(FIRST_REVEAL_READY_BATCH_LIMIT, 4);
+    assert_eq!(FIRST_REVEAL_READY_BATCH_INTERVAL, Duration::from_millis(16));
+    assert_eq!(QUICK_REVEAL_TILE_FRAME_INTERVAL, Duration::from_millis(8));
     assert_eq!(DRAG_VISIBLE_BATCH_LIMIT, 4);
+    assert_eq!(VISIBLE_TILE_FOREGROUND_WORK_LIMIT, 192);
+    assert_eq!(INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT, 48);
+    assert_eq!(VIEWPORT_WORK_REFRESH_INTERVAL, Duration::from_millis(16));
     assert_eq!(RENDER_STREAM_GROUP_TILES, 4);
+    assert_eq!(MAX_CONCURRENT_RENDER_BATCHES, 1);
     assert_eq!(
         resolve_interactive_tile_batch_size(RenderBackend::Auto, RenderCpuBudget::default(), 8),
         RenderCpuBudget::default().tile_batch_size().min(8)
@@ -1330,21 +2222,110 @@ fn interactive_tile_batch_defaults_are_conservative() {
             .chunk_batch_size
             <= 4
     );
+    let cpu_budget = RenderCpuBudget::default();
+    let pipeline = cpu_budget.render_cpu_pipeline(16);
+    let worker_count = cpu_budget.thread_count().min(16);
+    assert_eq!(pipeline.max_db_workers, worker_count);
+    assert_eq!(pipeline.max_bake_workers, worker_count);
+    assert_eq!(pipeline.max_compose_workers, worker_count);
+    assert_eq!(pipeline.max_in_flight_regions, worker_count);
+}
+
+#[::core::prelude::v1::test]
+fn visible_tile_foreground_work_limit_reduces_work_during_interaction() {
+    assert_eq!(
+        visible_tile_foreground_work_limit(false),
+        VISIBLE_TILE_FOREGROUND_WORK_LIMIT
+    );
+    assert_eq!(
+        visible_tile_foreground_work_limit(true),
+        INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT
+    );
+    assert!(visible_tile_foreground_work_limit(false) > visible_tile_foreground_work_limit(true));
+}
+
+#[::core::prelude::v1::test]
+fn drag_manifest_probe_prioritizes_unknown_visible_tiles() {
+    assert!(drag_manifest_probe_needed(1, false));
+    assert!(!drag_manifest_probe_needed(0, false));
+    assert!(!drag_manifest_probe_needed(1, true));
+}
+
+#[::core::prelude::v1::test]
+fn render_image_eviction_waits_until_viewport_interaction_is_idle() {
+    assert!(should_defer_render_image_evictions(true));
+    assert!(!should_defer_render_image_evictions(false));
+}
+
+#[::core::prelude::v1::test]
+fn loaded_tile_without_manifest_is_requeued_for_verified_refresh() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
+    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
+
+    let needs_cache_bypass = manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+
+    let entry = manager
+        .entries
+        .get(&(0, 0))
+        .expect("loaded tile should remain available while verification runs");
+    assert!(needs_cache_bypass);
+    assert_eq!(entry.state, TileLoadState::PendingManifest);
+    assert_eq!(entry.source_status, TileSourceStatus::Miss);
+    assert!(entry.image.is_some());
+}
+
+#[::core::prelude::v1::test]
+fn stale_render_batch_yields_to_the_new_viewport_center() {
+    let visible_bounds = TileBounds {
+        min_x: 8,
+        max_x: 12,
+        min_z: 8,
+        max_z: 12,
+    };
+
+    assert!(render_batch_matches_current_viewport(
+        (10, 10),
+        (10, 10),
+        visible_bounds
+    ));
+    assert!(!render_batch_matches_current_viewport(
+        (9, 10),
+        (10, 10),
+        visible_bounds
+    ));
+    assert!(!render_batch_matches_current_viewport(
+        (3, 3),
+        (10, 10),
+        visible_bounds
+    ));
 }
 
 #[::core::prelude::v1::test]
 fn visible_render_batch_size_expands_for_large_overviews() {
     assert_eq!(
         visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, false, true),
-        FIRST_VISIBLE_BATCH_LIMIT
+        8
     );
     assert_eq!(
         visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, true),
-        OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT
+        OVERVIEW_VISIBLE_BATCH_LIMIT
     );
     assert_eq!(
         visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, false, false),
         OVERVIEW_VISIBLE_BATCH_LIMIT
+    );
+    assert_eq!(
+        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD, true, false),
+        DRAG_VISIBLE_BATCH_LIMIT
+    );
+}
+
+#[::core::prelude::v1::test]
+fn drag_render_batch_size_is_not_limited_by_first_reveal() {
+    assert_eq!(
+        visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, true, false),
+        DRAG_VISIBLE_BATCH_LIMIT
     );
 }
 
@@ -1354,12 +2335,27 @@ fn map_cpu_budget_defaults_to_sixty_percent_with_interactive_cap() {
     assert_eq!(budget.percent, 60);
     let threads = budget.thread_count();
     assert!(threads >= 1);
-    assert!(
-        threads
-            <= RenderCpuBudget::available_threads()
-                .saturating_sub(1)
-                .clamp(1, 8)
+    let available = RenderCpuBudget::available_threads();
+    let requested = available
+        .saturating_mul(usize::from(budget.percent))
+        .saturating_add(99)
+        / 100;
+    assert_eq!(
+        threads,
+        requested.clamp(1, available.saturating_sub(1).max(1))
     );
+}
+
+#[::core::prelude::v1::test]
+fn manifest_probe_worker_count_keeps_interaction_headroom() {
+    let mut budget = RenderCpuBudget::default();
+    budget.set_percent(MAX_CPU_PERCENT);
+
+    let workers = manifest_probe_worker_count(budget);
+
+    assert!(workers >= 1);
+    assert!(workers <= TILE_MANIFEST_PROBE_MAX_WORKERS);
+    assert!(workers <= budget.thread_count());
 }
 
 #[::core::prelude::v1::test]
@@ -1389,6 +2385,35 @@ fn circular_prefetch_keeps_axis_neighbors_and_excludes_outer_corners() {
     assert!(coords.contains(&(0, 1)));
     assert!(!coords.contains(&(-1, -1)));
     assert!(!coords.contains(&(1, 1)));
+}
+
+#[::core::prelude::v1::test]
+fn circular_tile_coords_are_generated_center_first() {
+    let visible = TileBounds {
+        min_x: -1,
+        max_x: 1,
+        min_z: -1,
+        max_z: 1,
+    };
+    let expanded = visible.expand(2);
+    let coords = collect_circular_tile_coords(visible, expanded, 2, (0, 0));
+    let mut sorted = coords.clone();
+    sort_tiles_center_first(&mut sorted, (0, 0));
+
+    assert_eq!(coords, sorted);
+    assert!(tiles_are_sorted_center_first(&coords, (0, 0)));
+}
+
+#[::core::prelude::v1::test]
+fn center_first_order_detection_rejects_unsorted_tiles() {
+    assert!(tiles_are_sorted_center_first(
+        &[(0, 0), (0, -1), (-1, 0), (1, 0)],
+        (0, 0)
+    ));
+    assert!(!tiles_are_sorted_center_first(
+        &[(1, 0), (0, 0), (0, -1)],
+        (0, 0)
+    ));
 }
 
 #[::core::prelude::v1::test]
@@ -1464,6 +2489,39 @@ fn queued_tiles_limited_matches_full_queue_prefix() {
 }
 
 #[::core::prelude::v1::test]
+fn queued_tiles_limited_drops_prefetch_candidates_when_visible_tile_appears_later() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(-10, 0)], TilePriority::Prefetch);
+    manager.ensure_tiles(&[(10, 0)], TilePriority::Visible);
+
+    let queued = manager.queued_coords_limited((0, 0), None, true, true, 8);
+
+    assert_eq!(queued, vec![(10, 0)]);
+}
+
+#[::core::prelude::v1::test]
+fn drag_visible_queue_only_considers_current_visible_tiles() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(-100, 0), (100, 0)], TilePriority::Visible);
+    manager.ensure_tiles(&[(2, 0), (0, 0), (1, 0)], TilePriority::Visible);
+
+    let queued = manager.queued_visible_coords_limited(&[(2, 0), (0, 0), (1, 0)], (0, 0), 2);
+
+    assert_eq!(queued, vec![(0, 0), (1, 0)]);
+}
+
+#[::core::prelude::v1::test]
+fn drag_visible_queue_keeps_edit_refresh_before_visible_tiles() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0), (1, 0)], TilePriority::Visible);
+    manager.ensure_tiles(&[(1, 0)], TilePriority::EditRefresh);
+
+    let queued = manager.queued_visible_coords_limited(&[(0, 0), (1, 0)], (0, 0), 2);
+
+    assert_eq!(queued, vec![(1, 0), (0, 0)]);
+}
+
+#[::core::prelude::v1::test]
 fn tile_order_uses_center_ring_sort_key() {
     let mut coords = vec![(2, 0), (1, 1), (0, 1), (0, 0), (1, 0)];
     sort_tiles_center_first(&mut coords, (0, 0));
@@ -1513,6 +2571,28 @@ fn manifest_probe_skips_scanned_center_and_batches_remaining_visible_tiles() {
 }
 
 #[::core::prelude::v1::test]
+fn manifest_probe_prioritizes_visible_pending_even_with_render_work() {
+    assert!(should_probe_manifest_tiles(
+        false, false, false, true, false, true
+    ));
+    assert!(!should_probe_manifest_tiles(
+        false, false, false, false, true, true
+    ));
+    assert!(should_probe_manifest_tiles(
+        false, false, false, false, true, false
+    ));
+    assert!(should_probe_manifest_tiles(
+        false, false, true, false, false, true
+    ));
+    assert!(!should_probe_manifest_tiles(
+        true, false, true, true, true, false
+    ));
+    assert!(!should_probe_manifest_tiles(
+        false, true, true, true, true, false
+    ));
+}
+
+#[::core::prelude::v1::test]
 fn renderer_cache_resolution_does_not_remove_tile_from_render_queue() {
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
@@ -1545,6 +2625,20 @@ fn retain_tiles_removes_loading_tiles_outside_retained_region() {
     manager.mark_loading(&[(0, 0), (1, 0)]);
 
     let dropped_images = manager.retain_tiles(&BTreeSet::from([(0, 0)]));
+
+    assert!(dropped_images.is_empty());
+    assert!(manager.entries.contains_key(&(0, 0)));
+    assert!(!manager.entries.contains_key(&(1, 0)));
+    assert_eq!(manager.loading_count(), 1);
+}
+
+#[::core::prelude::v1::test]
+fn retain_tiles_by_filter_removes_tiles_without_retained_set() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0), (1, 0)], TilePriority::Visible);
+    manager.mark_loading(&[(0, 0), (1, 0)]);
+
+    let dropped_images = manager.retain_tiles_by(|coord| coord == (0, 0));
 
     assert!(dropped_images.is_empty());
     assert!(manager.entries.contains_key(&(0, 0)));
@@ -1600,6 +2694,16 @@ fn stale_cache_hit_is_replaced_by_render_and_late_cache_does_not_overwrite_fresh
             .map(|entry| entry.source_status),
         Some(TileSourceStatus::DiskStale)
     );
+    assert!(manager.requeue_stale_cache_for_refresh((0, 0)));
+    let stale_entry = manager.entries.get(&(0, 0)).expect("stale cache entry");
+    assert_eq!(stale_entry.state, TileLoadState::Queued);
+    assert_eq!(stale_entry.source_status, TileSourceStatus::DiskStale);
+    assert!(stale_entry.image.is_some());
+    assert_eq!(
+        manager.queued_coords((0, 0), None, false, true),
+        vec![(0, 0)]
+    );
+    manager.mark_loading(&[(0, 0)]);
 
     let fresh = test_tile([4, 5, 6, 255]);
     let fresh_image = fresh.image.clone();
@@ -1674,6 +2778,30 @@ fn byte_budget_trim_preserves_visible_tiles() {
             .entries
             .get(&(2, 0))
             .is_some_and(|entry| entry.image.is_none())
+    );
+    assert_eq!(dropped_images.len(), 1);
+    assert!(Arc::ptr_eq(&dropped_images[0], &prefetch_image));
+}
+
+#[::core::prelude::v1::test]
+fn byte_budget_trim_by_filter_preserves_retained_tiles() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
+    manager.ensure_tiles(&[(2, 0)], TilePriority::Prefetch);
+    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
+    let prefetch = test_tile([4, 5, 6, 255]);
+    let prefetch_image = prefetch.image.clone();
+    manager.mark_loaded((2, 0), prefetch);
+
+    let dropped_images = manager.trim_loaded_tiles_to_budget_by(|coord| coord == (0, 0), 4);
+
+    assert_eq!(
+        manager.entries.get(&(0, 0)).map(|entry| entry.state),
+        Some(TileLoadState::Loaded)
+    );
+    assert_eq!(
+        manager.entries.get(&(2, 0)).map(|entry| entry.state),
+        Some(TileLoadState::Queued)
     );
     assert_eq!(dropped_images.len(), 1);
     assert!(Arc::ptr_eq(&dropped_images[0], &prefetch_image));
@@ -2396,6 +3524,107 @@ fn copied_chunk_snapshot_structure_placement_uses_full_height_and_single_target(
         assert_eq!(placement.structure.size.z, 16);
         assert_eq!(placement.origin_y, -64);
         assert_eq!(target_chunks, expected_targets);
+    }
+}
+
+#[::core::prelude::v1::test]
+fn copied_chunk_snapshot_structure_placement_preserves_secondary_layer() {
+    let source_chunk = ChunkPos {
+        x: 4,
+        z: 10,
+        dimension: Dimension::Overworld,
+    };
+    let snapshot = CopiedChunkSnapshot {
+        chunk: source_chunk,
+        records: vec![test_two_layer_subchunk_record(source_chunk, 0, (1, 2, 3))],
+        block_entities: Vec::new(),
+        hardcoded_spawn_areas: Vec::new(),
+    };
+
+    let placement = copied_chunk_snapshot_structure_placement(&snapshot, source_chunk)
+        .expect("copied chunk structure placement");
+    let block_index = placement
+        .structure
+        .size
+        .index(1, 66, 3)
+        .expect("structure block index");
+    let primary_index = placement.structure.primary_indices[block_index];
+    let secondary_index = placement.structure.secondary_indices[block_index];
+
+    assert_eq!(
+        placement.structure.palette[usize::try_from(primary_index).expect("primary index")].name,
+        "minecraft:stone"
+    );
+    assert_eq!(
+        placement.structure.palette[usize::try_from(secondary_index).expect("secondary index")]
+            .name,
+        "minecraft:water"
+    );
+    assert_eq!(
+        placement.structure.secondary_indices[placement
+            .structure
+            .size
+            .index(1, 67, 3)
+            .expect("air secondary index")],
+        -1
+    );
+}
+
+fn test_two_layer_subchunk_record(
+    chunk: ChunkPos,
+    subchunk_y: i8,
+    block: (u8, u8, u8),
+) -> ChunkRecord {
+    ChunkRecord {
+        key: ChunkKey::subchunk(chunk, subchunk_y),
+        value: Bytes::from(test_two_layer_subchunk_bytes(block)),
+    }
+}
+
+fn test_two_layer_subchunk_bytes(block: (u8, u8, u8)) -> Vec<u8> {
+    let mut bytes = vec![8, 2];
+    append_test_subchunk_palette_storage(&mut bytes, &["minecraft:air", "minecraft:stone"], block);
+    append_test_subchunk_palette_storage(&mut bytes, &["minecraft:air", "minecraft:water"], block);
+    bytes
+}
+
+fn append_test_subchunk_palette_storage(
+    bytes: &mut Vec<u8>,
+    palette: &[&str],
+    filled_block: (u8, u8, u8),
+) {
+    let bits_per_block = 1_u8;
+    let values_per_word = usize::from(32 / bits_per_block);
+    let mut words = vec![0_u32; 128];
+    let block_index =
+        bedrock_world::block_storage_index(filled_block.0, filled_block.1, filled_block.2);
+    let word_index = block_index / values_per_word;
+    let bit_offset = (block_index % values_per_word) * usize::from(bits_per_block);
+    words[word_index] |= 1_u32 << bit_offset;
+    bytes.push(bits_per_block << 1);
+    for word in words {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.extend_from_slice(
+        &i32::try_from(palette.len())
+            .expect("test palette length")
+            .to_le_bytes(),
+    );
+    for name in palette {
+        let tag = bedrock_world::NbtTag::Compound(indexmap::IndexMap::from([
+            (
+                "name".to_string(),
+                bedrock_world::NbtTag::String((*name).to_string()),
+            ),
+            (
+                "states".to_string(),
+                bedrock_world::NbtTag::Compound(indexmap::IndexMap::new()),
+            ),
+            ("version".to_string(), bedrock_world::NbtTag::Int(1)),
+        ]));
+        bytes.extend_from_slice(
+            &bedrock_world::NbtWriter::write_root(&tag).expect("serialize test palette"),
+        );
     }
 }
 

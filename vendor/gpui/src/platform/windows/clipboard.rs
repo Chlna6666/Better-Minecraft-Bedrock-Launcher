@@ -1,6 +1,6 @@
-use std::sync::LazyLock;
+use std::{sync::LazyLock, thread, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 use itertools::Itertools;
 use windows::Win32::{
@@ -14,14 +14,18 @@ use windows::Win32::{
         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
         Ole::{CF_HDROP, CF_UNICODETEXT},
     },
-    UI::Shell::{DragQueryFileW, HDROP},
+    UI::{
+        Input::KeyboardAndMouse::GetActiveWindow,
+        Shell::{DragQueryFileW, HDROP},
+    },
 };
-use windows_core::PCWSTR;
+use windows_core::{Free as _, PCWSTR};
 
 use crate::{ClipboardEntry, ClipboardItem, ClipboardString, Image, ImageFormat, hash};
 
 // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew
 const DRAGDROP_GET_FILES_COUNT: u32 = 0xFFFFFFFF;
+const CLIPBOARD_OPEN_ATTEMPTS: usize = 6;
 
 // Clipboard formats
 static CLIPBOARD_HASH_FORMAT: LazyLock<u32> =
@@ -74,19 +78,24 @@ enum ClipboardFormatType {
     Files,
 }
 
-pub(crate) fn write_to_clipboard(item: ClipboardItem) {
-    with_clipboard(|| write_to_clipboard_inner(item));
+pub(crate) fn write_to_clipboard(item: ClipboardItem) -> Result<()> {
+    with_clipboard(|| write_to_clipboard_inner(item))?
 }
 
 pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
-    with_clipboard(|| {
+    match with_clipboard(|| {
         with_best_match_format(|item_format| match format_to_type(item_format) {
             ClipboardFormatType::Text => read_string_from_clipboard(),
             ClipboardFormatType::Image => read_image_from_clipboard(item_format),
             ClipboardFormatType::Files => read_files_from_clipboard(),
         })
-    })
-    .flatten()
+    }) {
+        Ok(item) => item,
+        Err(error) => {
+            log::error!("Failed to read clipboard: {error:#}");
+            None
+        }
+    }
 }
 
 pub(crate) fn with_file_names<F>(hdrop: HDROP, mut f: F)
@@ -111,23 +120,44 @@ where
     }
 }
 
-fn with_clipboard<F, T>(f: F) -> Option<T>
+struct ClipboardGuard;
+
+impl ClipboardGuard {
+    fn open() -> Result<Self> {
+        let active_window = unsafe { GetActiveWindow() };
+        let owner = (!active_window.0.is_null()).then_some(active_window);
+        let mut last_error = None;
+
+        for attempt in 0..CLIPBOARD_OPEN_ATTEMPTS {
+            match unsafe { OpenClipboard(owner) } {
+                Ok(()) => return Ok(Self),
+                Err(error) => last_error = Some(error),
+            }
+            if attempt + 1 < CLIPBOARD_OPEN_ATTEMPTS {
+                thread::sleep(Duration::from_millis(1 << attempt));
+            }
+        }
+
+        Err(last_error
+            .context("OpenClipboard failed without a Windows error")?
+            .into())
+    }
+}
+
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        if let Err(error) = unsafe { CloseClipboard() } {
+            log::error!("Failed to close clipboard: {error}");
+        }
+    }
+}
+
+fn with_clipboard<F, T>(f: F) -> Result<T>
 where
     F: FnOnce() -> T,
 {
-    match unsafe { OpenClipboard(None) } {
-        Ok(()) => {
-            let result = f();
-            if let Err(e) = unsafe { CloseClipboard() } {
-                log::error!("Failed to close clipboard: {e}",);
-            }
-            Some(result)
-        }
-        Err(e) => {
-            log::error!("Failed to open clipboard: {e}",);
-            None
-        }
-    }
+    let _guard = ClipboardGuard::open()?;
+    Ok(f())
 }
 
 fn register_clipboard_format(format: PCWSTR) -> u32 {
@@ -169,32 +199,50 @@ fn write_to_clipboard_inner(item: ClipboardItem) -> Result<()> {
 
 fn write_string_to_clipboard(item: &ClipboardString) -> Result<()> {
     let encode_wide = item.text.encode_utf16().chain(Some(0)).collect_vec();
-    set_data_to_clipboard(&encode_wide, CF_UNICODETEXT.0 as u32)?;
+    set_data_to_clipboard(utf16_as_bytes(&encode_wide), CF_UNICODETEXT.0 as u32)?;
 
     if let Some(metadata) = item.metadata.as_ref() {
-        let hash_bytes = {
-            let hash = ClipboardString::text_hash(&item.text);
-            hash.to_ne_bytes()
-        };
-        let encode_wide =
-            unsafe { std::slice::from_raw_parts(hash_bytes.as_ptr().cast::<u16>(), 4) };
-        set_data_to_clipboard(encode_wide, *CLIPBOARD_HASH_FORMAT)?;
+        let hash_bytes = ClipboardString::text_hash(&item.text).to_ne_bytes();
+        set_data_to_clipboard(&hash_bytes, *CLIPBOARD_HASH_FORMAT)?;
 
         let metadata_wide = metadata.encode_utf16().chain(Some(0)).collect_vec();
-        set_data_to_clipboard(&metadata_wide, *CLIPBOARD_METADATA_FORMAT)?;
+        set_data_to_clipboard(utf16_as_bytes(&metadata_wide), *CLIPBOARD_METADATA_FORMAT)?;
     }
     Ok(())
 }
 
-fn set_data_to_clipboard<T>(data: &[T], format: u32) -> Result<()> {
+fn utf16_as_bytes(data: &[u16]) -> &[u8] {
+    // SAFETY: A byte slice has alignment one and remains within the initialized UTF-16 slice.
+    unsafe { std::slice::from_raw_parts(data.as_ptr().cast(), std::mem::size_of_val(data)) }
+}
+
+fn set_data_to_clipboard(data: &[u8], format: u32) -> Result<()> {
     unsafe {
-        let global = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of_val(data))?;
-        let handle = GlobalLock(global);
-        std::ptr::copy_nonoverlapping(data.as_ptr(), handle as _, data.len());
-        let _ = GlobalUnlock(global);
-        SetClipboardData(format, Some(HANDLE(global.0)))?;
+        let global = GlobalAlloc(GMEM_MOVEABLE, data.len().max(1))?;
+        let destination = GlobalLock(global).cast::<u8>();
+        if destination.is_null() {
+            free_global_memory(global);
+            return Err(anyhow!(
+                "GlobalLock failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        std::ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len());
+        if GlobalUnlock(global).is_err() {
+            // GlobalUnlock returns zero when the final lock is released; that is expected here.
+        }
+        if let Err(error) = SetClipboardData(format, Some(HANDLE(global.0))) {
+            free_global_memory(global);
+            return Err(error.into());
+        }
     }
     Ok(())
+}
+
+fn free_global_memory(mut global: HGLOBAL) {
+    // SAFETY: The allocation was returned by GlobalAlloc and ownership was not transferred.
+    unsafe { global.free() };
 }
 
 // Here writing PNG to the clipboard to better support other apps. For more info, please ref to
@@ -281,10 +329,7 @@ where
 }
 
 fn read_string_from_clipboard() -> Option<ClipboardEntry> {
-    let text = with_clipboard_data(CF_UNICODETEXT.0 as u32, |data_ptr, _| {
-        let pcwstr = PCWSTR(data_ptr as *const u16);
-        String::from_utf16_lossy(unsafe { pcwstr.as_wide() })
-    })?;
+    let text = read_utf16_from_clipboard(CF_UNICODETEXT.0 as u32)?;
     let Some(hash) = read_hash_from_clipboard() else {
         return Some(ClipboardEntry::String(ClipboardString::new(text)));
     };
@@ -320,9 +365,19 @@ fn read_hash_from_clipboard() -> Option<u64> {
 
 fn read_metadata_from_clipboard() -> Option<String> {
     unsafe { IsClipboardFormatAvailable(*CLIPBOARD_METADATA_FORMAT).ok()? };
-    with_clipboard_data(*CLIPBOARD_METADATA_FORMAT, |data_ptr, _size| {
-        let pcwstr = PCWSTR(data_ptr as *const u16);
-        String::from_utf16_lossy(unsafe { pcwstr.as_wide() })
+    read_utf16_from_clipboard(*CLIPBOARD_METADATA_FORMAT)
+}
+
+fn read_utf16_from_clipboard(format: u32) -> Option<String> {
+    with_clipboard_data(format, |data_ptr, size| {
+        let words = unsafe {
+            std::slice::from_raw_parts(data_ptr.cast::<u16>(), size / std::mem::size_of::<u16>())
+        };
+        let text_end = words
+            .iter()
+            .position(|word| *word == 0)
+            .unwrap_or(words.len());
+        String::from_utf16_lossy(&words[..text_end])
     })
 }
 
@@ -346,14 +401,11 @@ fn read_image_for_type(format_number: u32, format: ImageFormat) -> Option<Clipbo
 }
 
 fn read_files_from_clipboard() -> Option<ClipboardEntry> {
-    let text = with_clipboard_data(CF_HDROP.0 as u32, |data_ptr, _size| {
-        let hdrop = HDROP(data_ptr);
-        let mut filenames = String::new();
-        with_file_names(hdrop, |file_name| {
-            filenames.push_str(&file_name);
-        });
-        filenames
-    })?;
+    let handle = unsafe { GetClipboardData(CF_HDROP.0 as u32).ok()? };
+    let hdrop = HDROP(handle.0);
+    let mut filenames = Vec::new();
+    with_file_names(hdrop, |file_name| filenames.push(file_name));
+    let text = filenames.join("\n");
     Some(ClipboardEntry::String(ClipboardString {
         text,
         metadata: None,
@@ -367,8 +419,17 @@ where
     let global = HGLOBAL(unsafe { GetClipboardData(format).ok() }?.0);
     let size = unsafe { GlobalSize(global) };
     let data_ptr = unsafe { GlobalLock(global) };
+    if data_ptr.is_null() {
+        log::error!(
+            "Failed to lock clipboard data for format {format}: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
     let result = f(data_ptr, size);
-    unsafe { GlobalUnlock(global).ok() };
+    if unsafe { GlobalUnlock(global) }.is_err() {
+        // GlobalUnlock returns zero when the final lock is released; that is expected here.
+    }
     Some(result)
 }
 

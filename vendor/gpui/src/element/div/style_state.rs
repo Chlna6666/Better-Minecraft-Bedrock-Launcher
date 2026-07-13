@@ -113,7 +113,7 @@ impl Interactivity {
 
     /// Compute the visual style for this element, based on the current bounds and the element's state.
     pub fn compute_style(
-        &self,
+        &mut self,
         global_id: Option<&GlobalElementId>,
         hitbox: Option<&Hitbox>,
         window: &mut Window,
@@ -129,7 +129,7 @@ impl Interactivity {
 
     /// Called from internal methods that have already called with_element_state.
     pub(crate) fn compute_style_internal(
-        &self,
+        &mut self,
         hitbox: Option<&Hitbox>,
         mut element_state: Option<&mut InteractiveElementState>,
         window: &mut Window,
@@ -203,17 +203,10 @@ impl Interactivity {
             }
         }
 
-        // This cache is intentionally per-Interactivity (one frame) rather than
-        // per-element-state (cross-frame) to avoid stale reuse when the element
-        // tree rebuilds with different base styles.
-        let cache_entry = (!cache_key.has_active_drag).then_some(ComputedStyleCache {
+        self.computed_style_cache = (!cache_key.has_active_drag).then_some(ComputedStyleCache {
             key: cache_key,
             style: style.clone(),
         });
-        unsafe {
-            let this = self as *const Self as *mut Interactivity;
-            (*this).computed_style_cache = cache_entry;
-        }
 
         style
     }

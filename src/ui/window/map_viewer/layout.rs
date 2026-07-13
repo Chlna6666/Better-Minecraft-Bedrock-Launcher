@@ -105,24 +105,29 @@ pub fn center_stage_rect_for_layout(
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn hud_stack_rects(
     viewport_width: f32,
-    viewport_height: f32,
+    _viewport_height: f32,
     ruler_visible: bool,
 ) -> (Option<Bounds<Pixels>>, Bounds<Pixels>) {
     let right = 16.0;
-    let bottom = 16.0;
+    let top = 16.0;
     let gap = 8.0;
+    let ruler_size = size(px(128.0), px(24.0));
     let coord_size = size(px(190.0), px(34.0));
     let coord_origin = point(
         px((viewport_width - right - coord_size.width / px(1.0)).max(0.0)),
-        px((viewport_height - bottom - coord_size.height / px(1.0)).max(0.0)),
+        px(top
+            + if ruler_visible {
+                ruler_size.height / px(1.0) + gap
+            } else {
+                0.0
+            }),
     );
     let coord = Bounds::new(coord_origin, coord_size);
     let ruler = ruler_visible.then(|| {
-        let ruler_size = size(px(128.0), px(24.0));
         Bounds::new(
             point(
                 px((viewport_width - right - ruler_size.width / px(1.0)).max(0.0)),
-                px((coord.top() / px(1.0) - gap - ruler_size.height / px(1.0)).max(0.0)),
+                px(top),
             ),
             ruler_size,
         )

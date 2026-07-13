@@ -345,6 +345,7 @@ impl Window {
             dirty_frame_deferred_pending: false,
             async_app,
             frame_watchdog,
+            platform_frame_watchdog_task: None,
             frame_throttle: WindowFrameThrottle::default(),
             draw_deadline: None,
             draw_was_degraded: false,

@@ -24,8 +24,8 @@
 - [动画引擎](animation_engine.zh-CN.md)：timing、easing、transition metadata、
   drivers、窗口调度和 scene/nova animation 数据通道。
 - [Renderer backend](renderer_backend.zh-CN.md)：backend options、frame
-  scheduling、Windows GPU startup 和 metrics。
-- [Windows renderer backend](windows_renderer_backend.zh-CN.md)：Windows GPU
+  scheduling、nova-gfx startup 和 metrics。
+- [Windows renderer backend](windows_renderer_backend.zh-CN.md)：Windows nova-gfx
   backend selection 和 winit frame delivery。
 - [运行时 WGSL shaders](runtime_wgsl_shaders.zh-CN.md)：运行时 shader 校验和自
   定义 GPU shader modules。

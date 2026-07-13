@@ -157,11 +157,12 @@ impl NovaRenderer {
         };
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
-        self.path_resource_set = next_path_mask_target.resource_set;
+        self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
         self.backdrop_blur_targets = next_backdrop_blur_targets;
         self.present_cache_texture = next_present_cache_target.texture;
         self.present_cache_texture_view = next_present_cache_target.texture_view;
-        self.present_cache_resource_set = next_present_cache_target.resource_set;
+        self.update_present_cache_resource_sets(&next_present_cache_target.resource_sets)?;
+        self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_config = surface_config;
         self.current_size = next_size;
         self.needs_full_redraw_after_resize = true;
@@ -422,11 +423,12 @@ impl NovaRenderer {
         };
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
-        self.path_resource_set = next_path_mask_target.resource_set;
+        self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
         self.backdrop_blur_targets = next_backdrop_blur_targets;
         self.present_cache_texture = next_present_cache_target.texture;
         self.present_cache_texture_view = next_present_cache_target.texture_view;
-        self.present_cache_resource_set = next_present_cache_target.resource_set;
+        self.update_present_cache_resource_sets(&next_present_cache_target.resource_sets)?;
+        self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_alpha = alpha;
         self.needs_full_redraw_after_resize = true;
         self.present_cache_valid = false;
@@ -437,7 +439,11 @@ impl NovaRenderer {
         NovaPathMaskTarget {
             texture: self.path_texture,
             texture_view: self.path_texture_view,
-            resource_set: self.path_resource_set,
+            resource_sets: self
+                .frame_resources
+                .iter()
+                .map(|resources| resources.path_resource_set)
+                .collect(),
         }
     }
 
@@ -449,7 +455,11 @@ impl NovaRenderer {
         NovaPresentCacheTarget {
             texture: self.present_cache_texture,
             texture_view: self.present_cache_texture_view,
-            resource_set: self.present_cache_resource_set,
+            resource_sets: self
+                .frame_resources
+                .iter()
+                .map(|resources| resources.present_cache_resource_set)
+                .collect(),
         }
     }
 
@@ -458,8 +468,7 @@ impl NovaRenderer {
             size,
             format: self.surface_format,
             resource_set_layout: self.path_resource_set_layout,
-            global_buffer: self.global_buffer,
-            path_sprite_buffer: self.path_sprite_buffer,
+            frame_buffers: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         }
     }
@@ -469,8 +478,7 @@ impl NovaRenderer {
             size,
             format: self.surface_format,
             resource_set_layout: self.poly_sprite_resource_set_layout,
-            global_buffer: self.global_buffer,
-            sprite_buffer: self.present_copy_sprite_buffer,
+            frame_buffers: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         }
     }
@@ -485,9 +493,7 @@ impl NovaRenderer {
             downsample: self.frame_upload.backdrop_blur_downsample(),
             pass_resource_set_layout: self.backdrop_blur_pass_resource_set_layout,
             blur_resource_set_layout: self.backdrop_blur_resource_set_layout,
-            global_buffer: self.global_buffer,
-            pass_buffer: self.backdrop_blur_pass_buffer,
-            blur_buffer: self.backdrop_blur_buffer,
+            frame_buffers: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         }
     }

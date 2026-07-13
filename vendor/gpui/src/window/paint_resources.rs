@@ -30,6 +30,15 @@ impl<'a> ImagePaintRequest<'a> {
     }
 }
 
+/// The result of painting images with a limit for newly uploaded image tiles.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ImagePaintProgress {
+    /// Number of image requests emitted into the current frame scene.
+    pub painted_requests: usize,
+    /// Number of requests skipped because their image tile was not yet resident.
+    pub deferred_requests: usize,
+}
+
 struct ImagePaintContext {
     scale_factor: f32,
     content_mask: ContentMask<ScaledPixels>,
@@ -139,6 +148,60 @@ impl Window {
         }
 
         Ok(())
+    }
+
+    /// Paint images while limiting newly resident static image tiles per frame.
+    ///
+    /// Already resident images are always emitted. Requests that need a new atlas tile after the
+    /// budget has been reached are skipped and reported to the caller, which can schedule a
+    /// follow-up frame without blocking input on a large burst of texture uploads.
+    pub fn paint_images_budgeted<'a>(
+        &mut self,
+        requests: impl IntoIterator<Item = ImagePaintRequest<'a>>,
+        max_new_image_tiles: usize,
+    ) -> Result<ImagePaintProgress> {
+        self.invalidator.debug_assert_paint();
+
+        let context = self.image_paint_context();
+        let mut progress = ImagePaintProgress::default();
+        let mut new_image_tiles = 0usize;
+        for request in requests {
+            let frame = request
+                .image
+                .frame(request.frame_index)
+                .ok_or_else(|| anyhow!("invalid image frame index {}", request.frame_index))?;
+            let frame_sequence = frame.sequence();
+            let frame_slot = request
+                .image
+                .gpu_frame_slot_for_frame(frame_sequence, context.animation_config);
+            let cache_key = ImagePaintTileCacheKey {
+                image_id: request.image.id,
+                frame_slot,
+                frame_sequence,
+                pixel_format: frame.pixel_format(),
+            };
+            let requires_new_image_tile = request.image.is_animated()
+                || !self.image_paint_tile_cache.contains_key(&cache_key);
+            if requires_new_image_tile && new_image_tiles >= max_new_image_tiles {
+                progress.deferred_requests = progress.deferred_requests.saturating_add(1);
+                continue;
+            }
+
+            self.paint_image_frame_in_context(
+                &context,
+                request.bounds,
+                request.corner_radii,
+                request.image,
+                frame,
+                request.grayscale,
+            )?;
+            progress.painted_requests = progress.painted_requests.saturating_add(1);
+            if requires_new_image_tile {
+                new_image_tiles = new_image_tiles.saturating_add(1);
+            }
+        }
+
+        Ok(progress)
     }
 
     pub(crate) fn paint_image_frame(

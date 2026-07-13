@@ -67,17 +67,19 @@ impl MapViewerWindowView {
             let (event_sender, mut event_receiver) = unbounded::<Preview3dLoadEvent>();
             let complete_sender = event_sender.clone();
             let load_task = cx.background_spawn(async move {
-                let chunk_sender = event_sender.clone();
                 let result = load_preview_3d_mesh_blocking_incremental(
                     &world_path,
                     signature.bounds,
                     Some(preview_cancel_for_load),
-                    move |mesh, status| {
-                        if chunk_sender
-                            .unbounded_send(Preview3dLoadEvent::Chunk { mesh, status })
-                            .is_err()
-                        {
-                            tracing::debug!("preview 3d chunk receiver was dropped");
+                    {
+                        let event_sender = event_sender.clone();
+                        move |mesh, status| {
+                            if event_sender
+                                .unbounded_send(Preview3dLoadEvent::Chunk { mesh, status })
+                                .is_err()
+                            {
+                                tracing::debug!("preview 3d incremental receiver was dropped");
+                            }
                         }
                     },
                 )
@@ -439,7 +441,7 @@ impl MapViewerWindowView {
             String::new()
         };
         SharedString::from(format!(
-            "区块 已绘制 {}/{} · 已处理 {} · 子区块 {} · 方块 {} 玻璃 {} 水 {} 岩浆 {} · 面 {} 玻璃 {} 水 {} 岩浆 {} · 分片 {} · 顶点 {} · 单片预算 {} 顶点 · 剔除内部面 {}{}{} · Y {}..{} · 缺失 {} · GPUI GPU · 视角 {:.2},{:.2},{:.2} · 镜头偏航 {:.1} 俯仰 {:.1} · 模型偏航 {:.1} 俯仰 {:.1} · 缩放 {:.2}",
+            "区块 已绘制 {}/{} · 已处理 {} · 子区块 {} · 方块 {} 玻璃 {} 水 {} 岩浆 {} · 面 {} 玻璃 {} 水 {} 岩浆 {} · 分片 {} · 顶点 {} · 总预算 {} 顶点 · 剔除内部面 {}{}{} · Y {}..{} · 缺失 {} · GPUI GPU · 视角 {:.2},{:.2},{:.2} · 镜头偏航 {:.1} 俯仰 {:.1} · 模型偏航 {:.1} 俯仰 {:.1} · 缩放 {:.2}",
             mesh.rendered_chunk_count(),
             mesh.chunk_count,
             mesh.processed_chunk_count,

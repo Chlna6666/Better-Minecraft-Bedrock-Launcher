@@ -691,10 +691,7 @@ pub fn render_app_chrome(
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _window, cx| {
                 cx.stop_propagation();
-                cx.update_global(|theme: &mut ThemeState, cx| {
-                    theme.toggle(Instant::now());
-                    ThemeState::sync_component_theme(theme.target_dark, cx);
-                });
+                ThemeState::toggle_global(cx);
             }),
         )
         .child(

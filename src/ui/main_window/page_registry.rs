@@ -260,6 +260,8 @@ impl MainWindowView {
         clear_optional_page_view(&mut self.download_page_view);
         self.download_controls_initialized = false;
         self.download_controls_subscriptions.clear();
+        self.download_overlay_active = false;
+        self.download_overlay_task_updates_task.take();
         self.download_prefs_last_save = None;
         if !has_route_state {
             return;
@@ -622,6 +624,8 @@ impl MainWindowView {
             plugin_page_key: None,
             download_controls_initialized: false,
             download_controls_subscriptions: Vec::new(),
+            download_overlay_active: false,
+            download_overlay_task_updates_task: None,
             download_prefs_last_save: None,
             download_curseforge_invalidate_seq_seen: 0,
             download_curseforge_invalidate_pending_seen: false,
@@ -643,6 +647,7 @@ impl MainWindowView {
             startup_route_bootstrapped: false,
             startup_deferred_ready: false,
             was_window_minimized: false,
+            theme_color_cache: None,
         };
 
         this.install_reactors(cx);

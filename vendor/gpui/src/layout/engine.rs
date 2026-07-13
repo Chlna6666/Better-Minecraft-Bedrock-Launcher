@@ -44,7 +44,6 @@ pub struct TaffyLayoutEngine {
     pub(super) measured_subtrees: FxHashSet<LayoutId>,
     pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
     pub(super) computed_root_keys: Vec<(LayoutRootCacheKey, LayoutId)>,
-    pub(super) retained_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     pub(super) subtree_scratch: Vec<LayoutId>,
     pub(super) nodes_requested: usize,
     pub(super) measured_nodes_requested: usize,
@@ -69,7 +68,6 @@ impl TaffyLayoutEngine {
             measured_subtrees: FxHashSet::default(),
             previous_layout_roots: FxHashMap::default(),
             computed_root_keys: Vec::new(),
-            retained_layout_bounds: FxHashMap::default(),
             subtree_scratch: Vec::new(),
             nodes_requested: 0,
             measured_nodes_requested: 0,
@@ -91,7 +89,6 @@ impl TaffyLayoutEngine {
         self.node_fingerprints.clear();
         self.measured_subtrees.clear();
         self.computed_root_keys.clear();
-        self.retained_layout_bounds.clear();
         self.nodes_requested = 0;
         self.measured_nodes_requested = 0;
         self.roots_computed = 0;
@@ -246,8 +243,7 @@ impl TaffyLayoutEngine {
         self.roots_computed = self.roots_computed.saturating_add(1);
         let root_key = self.root_cache_key(id, available_space);
         if let Some(root_key) = root_key {
-            if self.try_retain_layout(id, &root_key) {
-                self.replay_impure_measurements(id, window, cx);
+            if self.try_retain_layout(id, &root_key, window, cx) {
                 self.computed_layouts.insert(id);
                 self.computed_root_keys.push((root_key, id));
                 self.layout_cache_hits = self.layout_cache_hits.saturating_add(1);
@@ -337,34 +333,7 @@ impl TaffyLayoutEngine {
         }
     }
 
-    fn replay_impure_measurements(&mut self, root_id: LayoutId, window: &mut Window, cx: &mut App) {
-        let mut subtree_nodes = std::mem::take(&mut self.subtree_scratch);
-        subtree_nodes.clear();
-        self.collect_subtree_nodes_into(root_id, &mut subtree_nodes);
-
-        for layout_id in subtree_nodes.iter().copied() {
-            let Some(node_context) = self.taffy.get_node_context_mut(layout_id.into()) else {
-                continue;
-            };
-            if node_context.is_pure {
-                continue;
-            }
-            let Some((known_dimensions, available_space)) = node_context.last_measure_input else {
-                continue;
-            };
-            (node_context.measure)(known_dimensions, available_space, window, cx);
-        }
-
-        subtree_nodes.clear();
-        self.subtree_scratch = subtree_nodes;
-    }
-
     pub fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels> {
-        if let Some(layout) = self.retained_layout_bounds.get(&id).cloned() {
-            self.absolute_layout_bounds.insert(id, layout);
-            self.bounds_cache_hits = self.bounds_cache_hits.saturating_add(1);
-            return layout;
-        }
         if let Some(layout) = self.absolute_layout_bounds.get(&id).cloned() {
             self.bounds_cache_hits = self.bounds_cache_hits.saturating_add(1);
             return layout;

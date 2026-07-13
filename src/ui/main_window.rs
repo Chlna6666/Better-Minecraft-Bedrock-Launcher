@@ -12,9 +12,7 @@ use crate::ui::state::i18n::I18n;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
-use crate::ui::theme::colors::{
-    DarkColors, LightColors, lerp_theme_colors, parse_hex_color_to_hsla,
-};
+use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
 use crate::utils::updater::ReleaseSummary;
 use gpui::*;
 use std::any::type_name;
@@ -174,6 +172,19 @@ struct MainWindowRenderModel {
     update_modal_visible: bool,
     update_modal_animating: bool,
     diagnostics_visible: bool,
+    launcher_snapshot: crate::ui::hooks::use_launcher::LauncherSnapshot,
+    launch_prereq_visible: bool,
+    launch_prereq_busy_deadline: Option<Instant>,
+    toast_visible: bool,
+    toast_breadcrumb_visible: bool,
+    dropdown_visible: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ThemeColorCache {
+    factor: f32,
+    accent: Option<Hsla>,
+    colors: crate::ui::theme::colors::ThemeColors,
 }
 
 pub struct MainWindowView {
@@ -191,6 +202,8 @@ pub struct MainWindowView {
     plugin_page_key: Option<(String, String)>,
     download_controls_initialized: bool,
     download_controls_subscriptions: Vec<Subscription>,
+    download_overlay_active: bool,
+    download_overlay_task_updates_task: Option<Task<()>>,
     download_prefs_last_save: Option<Instant>,
     download_curseforge_invalidate_seq_seen: u64,
     download_curseforge_invalidate_pending_seen: bool,
@@ -212,6 +225,7 @@ pub struct MainWindowView {
     startup_route_bootstrapped: bool,
     startup_deferred_ready: bool,
     was_window_minimized: bool,
+    theme_color_cache: Option<ThemeColorCache>,
 }
 
 impl MainWindowView {
@@ -267,7 +281,47 @@ impl MainWindowView {
         crate::utils::memory::spawn_working_set_trim_task("window_minimized");
     }
 
-    fn build_render_model(&self, now: Instant, window: &Window, cx: &App) -> MainWindowRenderModel {
+    fn theme_colors_for_render(
+        &mut self,
+        now: Instant,
+        cx: &App,
+    ) -> (f32, Option<Hsla>, crate::ui::theme::colors::ThemeColors) {
+        let (theme_k, theme_accent, theme_animating) = {
+            let theme = cx.global::<ThemeState>();
+            (theme.factor(now), theme.accent, theme.is_animating(now))
+        };
+
+        if !theme_animating
+            && let Some(cache) = self.theme_color_cache
+            && same_theme_factor(cache.factor, theme_k)
+            && same_optional_hsla(cache.accent, theme_accent)
+        {
+            return (theme_k, theme_accent, cache.colors);
+        }
+
+        let theme_colors = lerp_theme_colors(
+            &LightColors::colors(),
+            &DarkColors::colors(),
+            theme_k,
+            theme_accent,
+        );
+        if !theme_animating {
+            self.theme_color_cache = Some(ThemeColorCache {
+                factor: theme_k,
+                accent: theme_accent,
+                colors: theme_colors,
+            });
+        }
+
+        (theme_k, theme_accent, theme_colors)
+    }
+
+    fn build_render_model(
+        &mut self,
+        now: Instant,
+        window: &Window,
+        cx: &App,
+    ) -> MainWindowRenderModel {
         let route = crate::ui::navigation::current_route_target(cx);
         let builtin_route = match &route {
             RouteTarget::Builtin(route) => *route,
@@ -275,16 +329,7 @@ impl MainWindowView {
         };
         let debug_enabled = cx.global::<DebugState>().enabled;
         let update_render_state = self.read_update_render_state(now, debug_enabled, cx);
-        let (theme_k, theme_accent) = {
-            let theme = cx.global::<ThemeState>();
-            (theme.factor(now), theme.accent)
-        };
-        let theme_colors = lerp_theme_colors(
-            &LightColors::colors(),
-            &DarkColors::colors(),
-            theme_k,
-            theme_accent,
-        );
+        let (theme_k, theme_accent, theme_colors) = self.theme_colors_for_render(now, cx);
         let window_bounds = window.bounds();
         let window_width = window_bounds.size.width;
         let window_height = window_bounds.size.height;
@@ -305,6 +350,27 @@ impl MainWindowView {
             .global::<crate::ui::state::diagnostics::DiagnosticsState>()
             .pending_report
             .is_some();
+        let launcher_snapshot = crate::ui::hooks::use_launcher::read_launcher_snapshot(now, cx);
+        let (launch_prereq_visible, launch_prereq_busy_deadline) = {
+            let launch_prereq_state =
+                cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
+            (
+                launch_prereq_state.visible,
+                launch_prereq_state.next_busy_animation_deadline(now),
+            )
+        };
+        let (toast_visible, toast_breadcrumb_visible) = {
+            let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
+            (
+                crate::ui::components::toast::has_visible_toasts(now, toast_state),
+                crate::ui::components::toast::has_visible_breadcrumb(now, toast_state),
+            )
+        };
+        let dropdown_visible = {
+            let dropdown_state =
+                cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
+            crate::ui::components::dropdown::has_visible_overlay(now, dropdown_state)
+        };
 
         MainWindowRenderModel {
             now,
@@ -325,6 +391,12 @@ impl MainWindowView {
             update_modal_visible,
             update_modal_animating,
             diagnostics_visible,
+            launcher_snapshot,
+            launch_prereq_visible,
+            launch_prereq_busy_deadline,
+            toast_visible,
+            toast_breadcrumb_visible,
+            dropdown_visible,
         }
     }
 
@@ -372,6 +444,7 @@ impl MainWindowView {
             .child(
                 AnyView::from(self.background_view.clone())
                     .cached_absolute_by(&"main-window-background")
+                    .reuse_on_window_refresh()
                     .critical()
                     .into_any_element(),
             );
@@ -553,24 +626,21 @@ impl MainWindowView {
         }
 
         if !model.agreement_render_state.visible {
-            let launcher_snapshot =
-                crate::ui::hooks::use_launcher::read_launcher_snapshot(model.now, cx);
-            if launcher_snapshot.show_modal {
+            if model.launcher_snapshot.show_modal {
                 root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
-                    &launcher_snapshot,
+                    &model.launcher_snapshot,
                     window,
                     cx,
                 ));
             }
 
-            let launch_prereq_state =
-                cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
-            if launch_prereq_state.visible {
-                if let Some(deadline) = launch_prereq_state.next_busy_animation_deadline(model.now)
-                {
+            if model.launch_prereq_visible {
+                if let Some(deadline) = model.launch_prereq_busy_deadline {
                     window.request_invalidation_at(deadline, cx);
                 }
 
+                let launch_prereq_state =
+                    cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
                 root = root.child(
                     crate::ui::overlays::launch_prereq::render_launch_prereq_overlay(
                         launch_prereq_state,
@@ -587,8 +657,8 @@ impl MainWindowView {
             root = root.child(self.render_plugin_modal(modal, model, window, cx));
         }
 
-        let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
-        if crate::ui::components::toast::has_visible_toasts(model.now, toast_state) {
+        if model.toast_visible {
+            let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
             root = root.child(crate::ui::components::toast::render_overlay(
                 window,
                 cx,
@@ -598,8 +668,9 @@ impl MainWindowView {
             ));
         }
 
-        let dropdown_state = cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
-        if crate::ui::components::dropdown::has_visible_overlay(model.now, dropdown_state) {
+        if model.dropdown_visible {
+            let dropdown_state =
+                cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             root = root.child(crate::ui::components::dropdown::render_overlay(
                 window,
                 model.now,
@@ -607,7 +678,8 @@ impl MainWindowView {
             ));
         }
 
-        if crate::ui::components::toast::has_visible_breadcrumb(model.now, toast_state) {
+        if model.toast_breadcrumb_visible {
+            let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
             root = root.child(crate::ui::components::toast::render_breadcrumb_overlay(
                 window,
                 cx,
@@ -1270,6 +1342,54 @@ impl MainWindowView {
             });
         self.download_controls_subscriptions.push(refresh_sub);
 
+        let overlay_sub = cx
+            .observe_global::<crate::ui::views::download::state::DownloadPageState>(|this, cx| {
+                let route = crate::ui::navigation::current_route(cx);
+                if route != AppRoute::Download {
+                    this.download_overlay_active = false;
+                    return;
+                }
+
+                let active = cx.read_global(
+                    |s: &crate::ui::views::download::state::DownloadPageState, _cx| {
+                        s.game_dialog.is_some()
+                            || (matches!(
+                                s.tab,
+                                crate::ui::views::download::state::DownloadTab::ResourcePack
+                            ) && s.curseforge_install_open)
+                    },
+                );
+                let should_notify = this.download_overlay_active || active;
+                this.download_overlay_active = active;
+
+                if should_notify {
+                    cx.notify();
+                }
+            });
+        self.download_controls_subscriptions.push(overlay_sub);
+
+        let mut task_updates = crate::tasks::task_manager::subscribe_task_updates();
+        self.download_overlay_task_updates_task = Some(cx.spawn(async move |handle, cx| {
+            loop {
+                match task_updates.recv().await {
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+
+                if handle
+                    .update(cx, |this, cx| {
+                        if this.download_overlay_active {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }));
+
         if let Some(input) = search_input {
             let sub = cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
@@ -1378,6 +1498,25 @@ fn background_animation_suppressed(
     suppress_background_animation_frames: bool,
 ) -> bool {
     suppress_background_animation_frames
+}
+
+fn same_theme_factor(left: f32, right: f32) -> bool {
+    (left - right).abs() <= f32::EPSILON
+}
+
+fn same_optional_hsla(left: Option<Hsla>, right: Option<Hsla>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => same_hsla(left, right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn same_hsla(left: Hsla, right: Hsla) -> bool {
+    same_theme_factor(left.h, right.h)
+        && same_theme_factor(left.s, right.s)
+        && same_theme_factor(left.l, right.l)
+        && same_theme_factor(left.a, right.a)
 }
 
 impl Render for MainWindowView {

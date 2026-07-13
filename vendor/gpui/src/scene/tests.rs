@@ -158,6 +158,189 @@ fn monochrome_sprite_batches_split_by_sampling() {
 }
 
 #[test]
+fn scene_batches_use_draw_order_then_primitive_kind() {
+    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
+    let content_mask = ContentMask { bounds };
+    let mut scene = Scene::default();
+
+    scene.push_layer(bounds);
+    scene.insert_primitive(PaintGpuMesh3d {
+        order: 0,
+        bounds,
+        content_mask: content_mask.clone(),
+        mesh: Arc::new(GpuMesh3d::new(
+            vec![GpuMesh3dVertex {
+                position: [0.0, 0.0, 0.0],
+                color: [1.0, 1.0, 1.0, 1.0],
+            }],
+            vec![0],
+            GpuMesh3dDrawRanges {
+                opaque: GpuMesh3dRange { start: 0, count: 1 },
+                glass: GpuMesh3dRange::default(),
+                water: GpuMesh3dRange::default(),
+            },
+            [0.0, 0.0, 0.0],
+            1.0,
+            1.0,
+            test_gpu_mesh_3d_shader(),
+        )),
+        parameters: GpuMesh3dDrawParameters {
+            view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
+        },
+    });
+    scene.insert_primitive(Quad {
+        bounds,
+        content_mask,
+        ..Quad::default()
+    });
+    scene.pop_layer();
+    scene.finish();
+
+    let batches = scene.batches().collect::<Vec<_>>();
+    assert!(matches!(batches[0], PrimitiveBatch::Quads(_)));
+    assert!(matches!(batches[1], PrimitiveBatch::GpuMeshes3d(_)));
+}
+
+#[test]
+fn retained_prefix_replay_preserves_draw_orders() {
+    let layer_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(40.0), px(40.0))).scale(1.0);
+    let first_bounds = Bounds::new(point(px(2.0), px(2.0)), size(px(12.0), px(12.0))).scale(1.0);
+    let second_bounds = Bounds::new(point(px(8.0), px(8.0)), size(px(12.0), px(12.0))).scale(1.0);
+    let following_bounds =
+        Bounds::new(point(px(10.0), px(10.0)), size(px(12.0), px(12.0))).scale(1.0);
+
+    let mut previous = Scene::default();
+    previous.insert_primitive(Quad {
+        bounds: first_bounds,
+        content_mask: ContentMask {
+            bounds: layer_bounds,
+        },
+        ..Quad::default()
+    });
+    previous.push_layer(layer_bounds);
+    previous.insert_primitive(Quad {
+        bounds: second_bounds,
+        content_mask: ContentMask {
+            bounds: layer_bounds,
+        },
+        ..Quad::default()
+    });
+    previous.pop_layer();
+
+    let replay_end = previous.len();
+    let expected_replayed_orders = previous
+        .paint_operations
+        .iter()
+        .filter_map(|operation| match operation {
+            PaintOperation::Primitive(primitive) => Some(primitive.order()),
+            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut replayed = Scene::default();
+    replayed.replay(0..replay_end, &previous);
+    let actual_replayed_orders = replayed
+        .paint_operations
+        .iter()
+        .filter_map(|operation| match operation {
+            PaintOperation::Primitive(primitive) => Some(primitive.order()),
+            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual_replayed_orders, expected_replayed_orders);
+
+    let following = Quad {
+        bounds: following_bounds,
+        content_mask: ContentMask {
+            bounds: layer_bounds,
+        },
+        ..Quad::default()
+    };
+    previous.insert_primitive(following.clone());
+    replayed.insert_primitive(following);
+
+    assert_eq!(
+        replayed.quads.last().map(|quad| quad.order),
+        previous.quads.last().map(|quad| quad.order)
+    );
+}
+
+#[test]
+fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
+    let content_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(40.0), px(40.0))).scale(1.0);
+    let first = Quad {
+        bounds: Bounds::new(point(px(2.0), px(2.0)), size(px(12.0), px(12.0))).scale(1.0),
+        content_mask: ContentMask {
+            bounds: content_bounds,
+        },
+        ..Quad::default()
+    };
+    let second = Quad {
+        bounds: Bounds::new(point(px(8.0), px(8.0)), size(px(12.0), px(12.0))).scale(1.0),
+        content_mask: ContentMask {
+            bounds: content_bounds,
+        },
+        ..Quad::default()
+    };
+
+    let mut previous = Scene::default();
+    previous.insert_primitive(first.clone());
+    previous.insert_primitive(second);
+
+    let mut replayed = Scene::default();
+    replayed.insert_primitive(first);
+    replayed.replay(1..previous.len(), &previous);
+
+    assert!(!replayed.retained_prefix_invalid);
+    assert_eq!(replayed.retained_prefix_verified_len, previous.len());
+    assert_eq!(
+        replayed
+            .quads
+            .iter()
+            .map(|quad| quad.order)
+            .collect::<Vec<_>>(),
+        previous
+            .quads
+            .iter()
+            .map(|quad| quad.order)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn retained_suffix_replay_recomputes_after_prefix_bounds_change() {
+    let content_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(50.0), px(50.0))).scale(1.0);
+    let first = Quad {
+        bounds: Bounds::new(point(px(2.0), px(2.0)), size(px(12.0), px(12.0))).scale(1.0),
+        content_mask: ContentMask {
+            bounds: content_bounds,
+        },
+        ..Quad::default()
+    };
+    let changed_first = Quad {
+        bounds: Bounds::new(point(px(30.0), px(30.0)), size(px(12.0), px(12.0))).scale(1.0),
+        ..first.clone()
+    };
+    let second = Quad {
+        bounds: Bounds::new(point(px(8.0), px(8.0)), size(px(12.0), px(12.0))).scale(1.0),
+        content_mask: ContentMask {
+            bounds: content_bounds,
+        },
+        ..Quad::default()
+    };
+
+    let mut previous = Scene::default();
+    previous.insert_primitive(first);
+    previous.insert_primitive(second);
+
+    let mut replayed = Scene::default();
+    replayed.insert_primitive(changed_first);
+    replayed.replay(1..previous.len(), &previous);
+
+    assert!(replayed.retained_prefix_invalid);
+}
+
+#[test]
 fn prepared_quad_runs_split_solid_and_bordered_quads() {
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
     let content_mask = ContentMask { bounds };

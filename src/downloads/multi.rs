@@ -1019,6 +1019,7 @@ pub async fn download_multi(
     headers: Option<HeaderMap>,
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
+    crate::downloads::register_download_task_stage_labels();
     let threads = threads.max(1);
     debug!(
         "启动极致性能多线程下载: task={} threads={}",

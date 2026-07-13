@@ -36,9 +36,6 @@ pub(super) struct DrawableSize {
     pub(super) height: u32,
 }
 
-const BACKDROP_BLUR_REDUCED_QUALITY_BUDGET: Duration = Duration::from_millis(4);
-const BACKDROP_BLUR_REDUCED_QUALITY_DURATION: Duration = Duration::from_secs(2);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NovaMeshCacheEntry {
     pub(super) generation: u64,
@@ -46,6 +43,19 @@ pub(super) struct NovaMeshCacheEntry {
     pub(super) vertex_count: u32,
     pub(super) index_offset: u32,
     pub(super) index_count: u32,
+}
+
+#[derive(Clone)]
+pub(crate) struct NovaRendererAtlas(Arc<NovaAtlas>);
+
+impl NovaRendererAtlas {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(NovaAtlas::new()))
+    }
+
+    pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        self.0.clone()
+    }
 }
 
 pub(crate) struct NovaRenderer {
@@ -60,6 +70,8 @@ pub(crate) struct NovaRenderer {
     pipelines: NovaPipelines,
     depth_texture: TextureId,
     depth_texture_view: TextureViewId,
+    frame_resources: Vec<NovaFrameResources>,
+    current_frame_resource_index: usize,
     global_buffer: BufferId,
     text_raster_buffer: BufferId,
     quad_buffer: BufferId,
@@ -69,6 +81,7 @@ pub(crate) struct NovaRenderer {
     mono_sprite_buffer: BufferId,
     poly_sprite_buffer: BufferId,
     present_copy_sprite_buffer: BufferId,
+    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache,
     underline_buffer: BufferId,
     backdrop_blur_pass_buffer: BufferId,
     backdrop_blur_buffer: BufferId,
@@ -112,13 +125,18 @@ pub(crate) struct NovaRenderer {
     rendering_parameters: NovaRenderingParameters,
     diagnostics: NovaRenderDiagnostics,
     submission_mode: GpuSubmissionMode,
-    pending_submissions: Vec<SubmissionId>,
+    pending_submissions: Vec<PendingSubmission>,
     metrics_started_at: Instant,
     first_frame_reported: bool,
     submitted_frames: u64,
     needs_full_redraw_after_resize: bool,
     present_cache_valid: bool,
-    backdrop_blur_reduced_until: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingSubmission {
+    submission: SubmissionId,
+    frame_resource_index: usize,
 }
 
 #[derive(Default)]
@@ -127,6 +145,21 @@ struct NovaDrawStepScratch {
     present_copy_steps: Vec<RenderStepDescriptor>,
     backdrop_blur_source_steps: Vec<RenderStepDescriptor>,
     path_mask_steps: Vec<DrawStepDescriptor>,
+}
+
+#[derive(Default)]
+struct PresentCopySpriteUploadCache {
+    frame_sizes: Vec<Option<DrawableSize>>,
+    bytes: Vec<u8>,
+}
+
+impl PresentCopySpriteUploadCache {
+    fn new(frame_resource_count: usize) -> Self {
+        Self {
+            frame_sizes: vec![None; frame_resource_count],
+            bytes: Vec::new(),
+        }
+    }
 }
 
 impl NovaRenderer {
@@ -253,10 +286,7 @@ impl NovaRenderer {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn draw_scene_for_platform(&mut self, scene: &crate::Scene) -> Result<()> {
-        let backdrop_blur_quality = self.backdrop_blur_quality_for_visual_effects(
-            FrameVisualEffectQuality::Full,
-            Instant::now(),
-        );
+        let backdrop_blur_quality = NovaBackdropBlurQuality::Full;
         let upload = self.frame_upload.encode(
             scene,
             self.current_size,
@@ -318,6 +348,8 @@ impl NovaRenderer {
         self.atlas.trim(level);
         self.frame_upload.trim_retained_capacity(level);
         self.draw_step_scratch.trim_retained_capacity(level);
+        self.present_copy_sprite_upload_cache
+            .trim_retained_capacity(level);
         self.trim_custom_mesh_3d_cache(level);
 
         if matches!(
@@ -358,40 +390,8 @@ impl NovaRenderer {
         );
     }
 
-    fn backdrop_blur_quality(&self, render_plan: FrameRenderPlan<'_>) -> NovaBackdropBlurQuality {
-        self.backdrop_blur_quality_for_visual_effects(
-            render_plan.visual_effect_quality,
-            Instant::now(),
-        )
-    }
-
-    fn backdrop_blur_quality_for_visual_effects(
-        &self,
-        visual_effect_quality: FrameVisualEffectQuality,
-        now: Instant,
-    ) -> NovaBackdropBlurQuality {
-        let requested_quality =
-            NovaBackdropBlurQuality::from_visual_effect_quality(visual_effect_quality);
-        requested_quality.most_reduced(self.dynamic_backdrop_blur_quality(now))
-    }
-
-    fn dynamic_backdrop_blur_quality(&self, now: Instant) -> NovaBackdropBlurQuality {
-        if self
-            .backdrop_blur_reduced_until
-            .is_some_and(|deadline| now < deadline)
-        {
-            NovaBackdropBlurQuality::Reduced
-        } else {
-            NovaBackdropBlurQuality::Full
-        }
-    }
-
-    pub(super) fn record_backdrop_blur_frame_time(&mut self, elapsed: Duration) {
-        if elapsed < BACKDROP_BLUR_REDUCED_QUALITY_BUDGET {
-            return;
-        }
-        self.backdrop_blur_reduced_until =
-            Some(Instant::now() + BACKDROP_BLUR_REDUCED_QUALITY_DURATION);
+    fn backdrop_blur_quality(&self, _render_plan: FrameRenderPlan<'_>) -> NovaBackdropBlurQuality {
+        NovaBackdropBlurQuality::Full
     }
 
     fn destroy_backdrop_blur_targets(&mut self) {
@@ -433,14 +433,79 @@ impl NovaRenderer {
         }
     }
 
+    pub(super) fn activate_frame_resources(&mut self, index: usize) -> Result<()> {
+        let Some(resources) = self.frame_resources.get(index).copied() else {
+            anyhow::bail!("nova frame resource slot {index} is unavailable");
+        };
+        self.current_frame_resource_index = index;
+        self.global_buffer = resources.buffers.global_buffer;
+        self.text_raster_buffer = resources.buffers.text_raster_buffer;
+        self.quad_buffer = resources.buffers.quad_buffer;
+        self.shadow_buffer = resources.buffers.shadow_buffer;
+        self.path_rasterization_vertex_buffer = resources.buffers.path_rasterization_vertex_buffer;
+        self.path_sprite_buffer = resources.buffers.path_sprite_buffer;
+        self.mono_sprite_buffer = resources.buffers.mono_sprite_buffer;
+        self.poly_sprite_buffer = resources.buffers.poly_sprite_buffer;
+        self.present_copy_sprite_buffer = resources.buffers.present_copy_sprite_buffer;
+        self.underline_buffer = resources.buffers.underline_buffer;
+        self.backdrop_blur_pass_buffer = resources.buffers.backdrop_blur_pass_buffer;
+        self.backdrop_blur_buffer = resources.buffers.backdrop_blur_buffer;
+        self.animation_binding_buffer = resources.buffers.animation_binding_buffer;
+        self.animation_value_buffer = resources.buffers.animation_value_buffer;
+        self.custom_mesh_3d_parameters_buffer = resources.buffers.custom_mesh_3d_parameters_buffer;
+        self.quad_resource_set = resources.resource_sets.quad_resource_set;
+        self.shadow_resource_set = resources.resource_sets.shadow_resource_set;
+        self.path_rasterization_resource_set =
+            resources.resource_sets.path_rasterization_resource_set;
+        self.path_resource_set = resources.path_resource_set;
+        self.present_cache_resource_set = resources.present_cache_resource_set;
+        self.underline_resource_set = resources.resource_sets.underline_resource_set;
+        self.custom_mesh_3d_resource_set = resources.resource_sets.custom_mesh_3d_resource_set;
+        Ok(())
+    }
+
+    pub(super) fn frame_resource_buffers(&self) -> Vec<NovaFrameResourceBuffers> {
+        self.frame_resources
+            .iter()
+            .map(|resources| resources.buffers)
+            .collect()
+    }
+
+    pub(super) fn update_path_mask_resource_sets(
+        &mut self,
+        resource_sets: &[ResourceSetId],
+    ) -> Result<()> {
+        if resource_sets.len() != self.frame_resources.len() {
+            anyhow::bail!("path mask frame resource set count does not match frame resources");
+        }
+        for (resources, resource_set) in self.frame_resources.iter_mut().zip(resource_sets) {
+            resources.path_resource_set = *resource_set;
+        }
+        Ok(())
+    }
+
+    pub(super) fn update_present_cache_resource_sets(
+        &mut self,
+        resource_sets: &[ResourceSetId],
+    ) -> Result<()> {
+        if resource_sets.len() != self.frame_resources.len() {
+            anyhow::bail!("present cache frame resource set count does not match frame resources");
+        }
+        for (resources, resource_set) in self.frame_resources.iter_mut().zip(resource_sets) {
+            resources.present_cache_resource_set = *resource_set;
+        }
+        Ok(())
+    }
+
     fn atlas_resource_descriptor(&self) -> NovaAtlasResourceDescriptor {
         NovaAtlasResourceDescriptor {
             mono_sprite_resource_set_layout: self.mono_sprite_resource_set_layout,
             poly_sprite_resource_set_layout: self.poly_sprite_resource_set_layout,
-            global_buffer: self.global_buffer,
-            text_raster_buffer: self.text_raster_buffer,
-            mono_sprite_buffer: self.mono_sprite_buffer,
-            poly_sprite_buffer: self.poly_sprite_buffer,
+            frame_buffers: self
+                .frame_resources
+                .iter()
+                .map(|resources| resources.buffers)
+                .collect(),
             sampler: self.atlas_sampler,
         }
     }
@@ -499,6 +564,17 @@ impl NovaDrawStepScratch {
         trim_vec_capacity(&mut self.present_copy_steps, 1, multiplier);
         trim_vec_capacity(&mut self.backdrop_blur_source_steps, 64, multiplier);
         trim_vec_capacity(&mut self.path_mask_steps, 32, multiplier);
+    }
+}
+
+impl PresentCopySpriteUploadCache {
+    fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
+        let multiplier = match level {
+            GpuiMemoryTrimLevel::Light => 16,
+            GpuiMemoryTrimLevel::Moderate => 8,
+            GpuiMemoryTrimLevel::Aggressive => 1,
+        };
+        trim_vec_capacity(&mut self.bytes, PACKED_POLY_SPRITE_BYTES, multiplier);
     }
 }
 

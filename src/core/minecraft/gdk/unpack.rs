@@ -10,6 +10,7 @@ pub fn start_unpack_gdk_task(
     input_path: impl Into<PathBuf>,
     folder_name: &str,
 ) -> Result<String, String> {
+    crate::core::minecraft::gdk::register_gdk_task_stage_labels();
     let task_id = create_task_with_details(
         None,
         "安装 GDK 游戏",

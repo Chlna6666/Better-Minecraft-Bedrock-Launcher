@@ -6,7 +6,7 @@ use crate::downloads::runtime::spawn_download_task;
 use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    create_task_with_options, finish_task, register_task_abort_handle, reset_progress,
+    create_task_with_details, finish_task, register_task_abort_handle, reset_progress,
     task_control, update_progress,
 };
 use num_cpus;
@@ -56,6 +56,13 @@ fn sanitize_filename(name: &str) -> String {
     } else {
         s
     }
+}
+
+fn download_task_detail(dest: &Path) -> Option<String> {
+    dest.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn percent_decode_lossy(input: &str) -> String {
@@ -275,6 +282,7 @@ impl DownloaderManager {
         headers: Option<HeaderMap>, // [新增]
         md5_expected: Option<&str>,
     ) -> Result<CoreResult<PathBuf>, CoreError> {
+        crate::downloads::register_download_task_stage_labels();
         let config = read_config().map_err(|e| CoreError::Config(e.to_string()))?;
 
         let configured_threads = if config.launcher.download.auto_thread_count {
@@ -488,6 +496,7 @@ impl DownloaderManager {
         headers: Option<HeaderMap>,
         md5_expected: Option<&str>,
     ) -> Result<CoreResult<PathBuf>, CoreError> {
+        crate::downloads::register_download_task_stage_labels();
         if urls.is_empty() {
             return Err(CoreError::BadUpdateIdentity);
         }
@@ -576,7 +585,15 @@ impl DownloaderManager {
         dest: PathBuf,
         md5_expected: Option<String>,
     ) -> String {
-        let task_id = create_task_with_options(None, "ready", None, true);
+        crate::downloads::register_download_task_stage_labels();
+        let task_id = create_task_with_details(
+            None,
+            "下载任务",
+            download_task_detail(dest.as_path()),
+            "ready",
+            None,
+            true,
+        );
         let client = self.client.clone();
 
         // clones for task

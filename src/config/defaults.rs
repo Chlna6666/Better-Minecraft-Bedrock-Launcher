@@ -44,6 +44,10 @@ pub fn default_font_source() -> String {
     FONT_SOURCE_DEFAULT.to_string()
 }
 
+pub fn default_theme_mode() -> String {
+    super::config::THEME_MODE_LIGHT.to_string()
+}
+
 pub fn default_music_volume() -> f32 {
     DEFAULT_MUSIC_VOLUME
 }
@@ -53,6 +57,7 @@ pub fn get_default_config() -> Config {
         config_version: CURRENT_CONFIG_VERSION,
         custom_style: CustomStyle {
             theme_color: "#a0d9b6".to_string(),
+            theme_mode: default_theme_mode(),
             background_option: "default".to_string(),
             local_image_path: "".to_string(),
             network_image_url: "".to_string(),

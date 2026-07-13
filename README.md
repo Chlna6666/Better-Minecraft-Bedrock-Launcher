@@ -17,7 +17,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 | UI 框架 | GPUI 原生界面，非 WebView |
 | 主要平台 | Windows 10 / Windows 11 |
 | Minecraft 版本类型 | UWP、GDK，含正式版 / 预览版 / 教育版相关分支 |
-| 渲染后端 | GPUI WGPU 优先，Windows 可使用 DX12 / Vulkan 路径 |
+| 渲染后端 | GPUI nova-gfx 路径，Windows 默认 Nova DX12，可配置 Nova Vulkan |
 | 插件系统 | WASM 沙箱插件，API 版本 `0.4` |
 | 许可证 | GPL-3.0-only |
 
@@ -118,7 +118,8 @@ flowchart TD
     UI --> Config["src/config\n配置和迁移"]
     Core --> Downloads["src/downloads\n多线程下载、WU 协议、完整性校验"]
     Core --> Assets["src/assets / assets\n嵌入资源、字体、图标、本地化、运行时负载"]
-    UI --> GPUI["vendor/gpui\nWGPU 渲染、窗口、元素系统"]
+    UI --> GPUI["vendor/gpui\nnova-gfx 渲染、窗口、元素系统"]
+    GPUI --> Nova["crates/nova-gfx\nDX12 / Vulkan / Metal / OpenGL / WebGL 抽象"]
 ```
 
 主要目录：
@@ -133,10 +134,12 @@ flowchart TD
 | `src/config` | 配置结构、默认值、迁移和持久化 |
 | `assets` | 编译期嵌入的图标、字体、图片、本地化和二进制负载 |
 | `vendor/gpui` | 本项目维护的 GPUI 框架代码 |
+| `crates/nova-gfx` | GPUI nova 渲染路径使用的跨后端图形抽象 |
 | `crates/bmcbl-plugin-api` | 插件 ABI、宏和打包工具 |
 | `crates/gpui-hooks` | GPUI hooks 辅助库 |
 | `crates/lucide-gpui` | Lucide 图标到 GPUI 的适配 |
 
+当前结构总览见 [docs/BMCBL_PROJECT_STRUCTURE.md](docs/BMCBL_PROJECT_STRUCTURE.md)。
 架构边界见 [docs/ARCHITECTURE_BOUNDARIES.md](docs/ARCHITECTURE_BOUNDARIES.md)。
 GPUI 渲染细节见 [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.md)。
 路由和 hooks 见 [docs/GPUI_ROUTER_HOOKS.md](docs/GPUI_ROUTER_HOOKS.md)。

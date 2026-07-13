@@ -1,5 +1,6 @@
 use crate::tasks::task_manager::TaskSnapshot;
 use crate::ui::animation::repeating_linear_motion;
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::html_renderer::render_html_document;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputState, Paste};
@@ -55,6 +56,11 @@ const CURSEFORGE_RESULT_CARD_STAGGER_MS: u64 = 18;
 const CURSEFORGE_RESULT_CARD_ANIMATION_MS: u64 = 120;
 const CURSEFORGE_RESULT_LOGO_RENDER_BUDGET: usize = 12;
 const CURSEFORGE_RESULT_CARD_OVERSCAN: usize = 2;
+const CURSEFORGE_SIDEBAR_IMAGE_CACHE_ITEMS: usize = 64;
+const CURSEFORGE_SIDEBAR_IMAGE_BYTES_PER_ITEM: usize = 96 * 1024;
+const CURSEFORGE_DETAIL_IMAGE_CACHE_ITEMS: usize = 24;
+const CURSEFORGE_DETAIL_IMAGE_BYTES_PER_ITEM: usize = 512 * 1024;
+const CURSEFORGE_DETAIL_SCROLL_ACCELERATION: f32 = 1.65;
 
 pub(crate) fn should_render_curseforge_result_images() -> bool {
     env::var_os("BMCBL_DISABLE_CURSEFORGE_RESULT_IMAGES").is_none()
@@ -84,6 +90,22 @@ pub(crate) fn should_animate_curseforge_result_cards() -> bool {
     env::var_os("BMCBL_CURSEFORGE_RESULT_STATIC").is_none()
 }
 
+fn curseforge_sidebar_image_cache_config() -> BoundedImageCacheConfig {
+    BoundedImageCacheConfig {
+        max_items: CURSEFORGE_SIDEBAR_IMAGE_CACHE_ITEMS,
+        max_bytes: CURSEFORGE_SIDEBAR_IMAGE_CACHE_ITEMS
+            .saturating_mul(CURSEFORGE_SIDEBAR_IMAGE_BYTES_PER_ITEM),
+    }
+}
+
+fn curseforge_detail_image_cache_config() -> BoundedImageCacheConfig {
+    BoundedImageCacheConfig {
+        max_items: CURSEFORGE_DETAIL_IMAGE_CACHE_ITEMS,
+        max_bytes: CURSEFORGE_DETAIL_IMAGE_CACHE_ITEMS
+            .saturating_mul(CURSEFORGE_DETAIL_IMAGE_BYTES_PER_ITEM),
+    }
+}
+
 fn clamped_curseforge_results_scroll_offset_y(state: &DownloadPageState) -> Pixels {
     let scroll_handle = &state.curseforge_results_scroll;
     let max_offset_y = scroll_handle.max_offset().height;
@@ -104,15 +126,58 @@ fn clamp_curseforge_results_scroll_in_state(state: &mut DownloadPageState) -> bo
     true
 }
 
+#[derive(Clone, PartialEq)]
+struct CurseForgeResourcePanelSignature {
+    install_open: bool,
+    install_stage: crate::ui::views::download::state::CurseForgeInstallStage,
+    install_error: Option<SharedString>,
+    install_file_count: usize,
+    install_selected_file_id: Option<i32>,
+    install_target_folder: Option<SharedString>,
+    install_task_id: Option<SharedString>,
+    install_downloaded_path: Option<SharedString>,
+    install_conflict_message: Option<SharedString>,
+    mod_page_open: bool,
+    mod_page_loading: bool,
+    mod_page_error: Option<SharedString>,
+    mod_page_mod_id: Option<i32>,
+    mod_page_mod: Option<crate::ui::views::download::state::CurseForgeModEntry>,
+    mod_page_description_len: usize,
+}
+
+fn curseforge_resource_panel_signature(
+    state: &DownloadPageState,
+) -> CurseForgeResourcePanelSignature {
+    CurseForgeResourcePanelSignature {
+        install_open: state.curseforge_install_open,
+        install_stage: state.curseforge_install_stage,
+        install_error: state.curseforge_install_error.clone(),
+        install_file_count: state.curseforge_install_files.len(),
+        install_selected_file_id: state.curseforge_install_selected_file_id,
+        install_target_folder: state.curseforge_install_target_folder.clone(),
+        install_task_id: state.curseforge_install_task_id.clone(),
+        install_downloaded_path: state.curseforge_install_downloaded_path.clone(),
+        install_conflict_message: state.curseforge_install_conflict_message.clone(),
+        mod_page_open: state.curseforge_mod_page_open,
+        mod_page_loading: state.curseforge_mod_page_loading,
+        mod_page_error: state.curseforge_mod_page_error.clone(),
+        mod_page_mod_id: state.curseforge_mod_page_mod_id,
+        mod_page_mod: state.curseforge_mod_page_mod.clone(),
+        mod_page_description_len: state.curseforge_mod_page_description.as_ref().len(),
+    }
+}
+
 #[hook_element]
 pub(crate) struct CurseForgeResourcePanelView {
     tasks: HashMap<Arc<str>, Arc<TaskSnapshot>>,
     _subscriptions: Vec<Subscription>,
     task_updates_task: Option<Task<anyhow::Result<()>>>,
+    focus_handle: FocusHandle,
     curseforge_sidebar: Entity<CurseForgeSidebarView>,
     curseforge_content: Entity<CurseForgeContentView>,
-    curseforge_mod_page: Entity<CurseForgeModPageView>,
+    detail_image_cache: Entity<BoundedImageCache>,
     initial_tab: crate::ui::views::download::state::DownloadTab,
+    last_signature: CurseForgeResourcePanelSignature,
     active: bool,
 }
 
@@ -172,15 +237,27 @@ impl CurseForgeResourcePanelView {
     }
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let initial_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
+        let (initial_tab, initial_signature) = cx.read_global(|state: &DownloadPageState, _cx| {
+            (state.tab, curseforge_resource_panel_signature(state))
+        });
 
         let mut subscriptions = vec![
             cx.observe_global::<DownloadPageState>(|this, cx| {
-                // 关键：只在标签页变化时刷新，不监听整个 DownloadPageState
-                let current_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
+                let (current_tab, current_signature) =
+                    cx.read_global(|state: &DownloadPageState, _cx| {
+                        (state.tab, curseforge_resource_panel_signature(state))
+                    });
 
+                let mut should_notify = false;
                 if current_tab != this.initial_tab {
                     this.initial_tab = current_tab;
+                    should_notify = true;
+                }
+                if current_signature != this.last_signature {
+                    this.last_signature = current_signature;
+                    should_notify = true;
+                }
+                if should_notify {
                     cx.notify();
                 }
             }),
@@ -198,10 +275,12 @@ impl CurseForgeResourcePanelView {
             tasks: crate::tasks::task_manager::snapshot_arcs_map(),
             _subscriptions: subscriptions,
             task_updates_task: None,
+            focus_handle: cx.focus_handle().tab_stop(true),
             curseforge_sidebar: cx.new(CurseForgeSidebarView::new),
             curseforge_content: cx.new(CurseForgeContentView::new),
-            curseforge_mod_page: cx.new(CurseForgeModPageView::new),
+            detail_image_cache: BoundedImageCache::new(curseforge_detail_image_cache_config(), cx),
             initial_tab,
+            last_signature: initial_signature,
             active: true,
             __gpui_hooks: RefCell::new(Vec::new()),
             __gpui_hook_index: Cell::new(0),
@@ -247,16 +326,27 @@ impl Render for CurseForgeResourcePanelView {
             state,
             &self.curseforge_sidebar,
             &self.curseforge_content,
-            &self.curseforge_mod_page,
+            &self.detail_image_cache,
             manage_state.selected_folder.clone(),
             &local_versions,
             &self.tasks,
         )
+        .key_context("Download")
+        .track_focus(&self.focus_handle)
+        .on_mouse_down(MouseButton::Left, {
+            let focus_handle = self.focus_handle.clone();
+            move |_event, window, cx| {
+                if !focus_handle.contains_focused(window, cx) {
+                    focus_handle.focus(window);
+                }
+            }
+        })
     }
 }
 
 pub(crate) struct CurseForgeSidebarView {
     _subscriptions: Vec<Subscription>,
+    sidebar_image_cache: Entity<BoundedImageCache>,
     last_root_id: Option<i32>,
     last_sub_id: Option<i32>,
     last_category_count: usize,
@@ -268,6 +358,10 @@ impl CurseForgeSidebarView {
         if !should_render_curseforge_sidebar() {
             return Self {
                 _subscriptions: Vec::new(),
+                sidebar_image_cache: BoundedImageCache::new(
+                    curseforge_sidebar_image_cache_config(),
+                    cx,
+                ),
                 last_root_id: None,
                 last_sub_id: None,
                 last_category_count: 0,
@@ -310,6 +404,10 @@ impl CurseForgeSidebarView {
 
         Self {
             _subscriptions: subscriptions,
+            sidebar_image_cache: BoundedImageCache::new(
+                curseforge_sidebar_image_cache_config(),
+                cx,
+            ),
             last_root_id,
             last_sub_id,
             last_category_count,
@@ -329,7 +427,7 @@ impl Render for CurseForgeSidebarView {
             theme.accent,
         );
         let state = cx.global::<DownloadPageState>();
-        render_curseforge_sidebar(&colors, state)
+        render_curseforge_sidebar(&colors, state, &self.sidebar_image_cache)
     }
 }
 
@@ -371,190 +469,6 @@ impl Render for CurseForgeContentView {
             theme.accent,
         );
         content::render_curseforge_content(window, cx, &colors, &self.curseforge_results_list, now)
-    }
-}
-
-pub(crate) struct CurseForgeModPageView {
-    _subscriptions: Vec<Subscription>,
-    curseforge_files_pane: Entity<CurseForgeFilesPaneView>,
-    curseforge_description_pane: Entity<CurseForgeDescriptionPaneView>,
-    last_mod_page_open: bool,
-}
-
-impl CurseForgeModPageView {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let initial_mod_page_open =
-            cx.read_global(|state: &DownloadPageState, _cx| state.curseforge_mod_page_open);
-
-        let subscriptions = vec![
-            cx.observe_global::<DownloadPageState>(|this, cx| {
-                // 关键：只在页面打开状态变化时刷新，不监听整个 DownloadPageState
-                let current_mod_page_open =
-                    cx.read_global(|state: &DownloadPageState, _cx| state.curseforge_mod_page_open);
-
-                if current_mod_page_open != this.last_mod_page_open {
-                    this.last_mod_page_open = current_mod_page_open;
-                    cx.notify();
-                }
-            }),
-            cx.observe_global::<crate::ui::views::manage::state::ManagePageState>(|_, cx| {
-                let should_notify = cx.read_global(|state: &DownloadPageState, _cx| {
-                    state.curseforge_mod_page_open || state.curseforge_install_open
-                });
-                if should_notify {
-                    cx.notify();
-                }
-            }),
-        ];
-        Self {
-            _subscriptions: subscriptions,
-            curseforge_files_pane: cx.new(CurseForgeFilesPaneView::new),
-            curseforge_description_pane: cx.new(CurseForgeDescriptionPaneView::new),
-            last_mod_page_open: initial_mod_page_open,
-        }
-    }
-}
-
-impl Render for CurseForgeModPageView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = std::time::Instant::now();
-        let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-        let colors = crate::ui::theme::colors::lerp_theme_colors(
-            &crate::ui::theme::colors::LightColors::colors(),
-            &crate::ui::theme::colors::DarkColors::colors(),
-            theme.factor(now),
-            theme.accent,
-        );
-        let state = cx.global::<DownloadPageState>();
-        let manage_state = cx.global::<crate::ui::views::manage::state::ManagePageState>();
-        let local_versions = read_local_versions_snapshot(cx);
-        let tasks = HashMap::new();
-        // 关键：详情页不订阅图片状态，避免渲染风暴
-        modals::render_curseforge_mod_page_modal(
-            &colors,
-            state,
-            &self.curseforge_files_pane,
-            &self.curseforge_description_pane,
-            manage_state.selected_folder.clone(),
-            &local_versions,
-            &tasks,
-        )
-    }
-}
-
-pub(crate) struct CurseForgeFilesPaneView {
-    _subscriptions: Vec<Subscription>,
-    last_mod_page_open: bool,
-    last_install_stage: crate::ui::views::download::state::CurseForgeInstallStage,
-}
-
-impl CurseForgeFilesPaneView {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let (initial_mod_page_open, initial_install_stage) =
-            cx.read_global(|state: &DownloadPageState, _cx| {
-                (
-                    state.curseforge_mod_page_open,
-                    state.curseforge_install_stage,
-                )
-            });
-
-        let subscriptions = vec![
-            cx.observe_global::<DownloadPageState>(|this, cx| {
-                // 关键：只在详情页打开状态或安装阶段变化时刷新
-                let (current_mod_page_open, current_install_stage) =
-                    cx.read_global(|state: &DownloadPageState, _cx| {
-                        (
-                            state.curseforge_mod_page_open,
-                            state.curseforge_install_stage,
-                        )
-                    });
-
-                if current_mod_page_open != this.last_mod_page_open
-                    || current_install_stage != this.last_install_stage
-                {
-                    this.last_mod_page_open = current_mod_page_open;
-                    this.last_install_stage = current_install_stage;
-                    cx.notify();
-                }
-            }),
-            cx.observe_global::<crate::ui::views::manage::state::ManagePageState>(|_, cx| {
-                let should_notify =
-                    cx.read_global(|state: &DownloadPageState, _cx| state.curseforge_mod_page_open);
-                if should_notify {
-                    cx.notify();
-                }
-            }),
-        ];
-        Self {
-            _subscriptions: subscriptions,
-            last_mod_page_open: initial_mod_page_open,
-            last_install_stage: initial_install_stage,
-        }
-    }
-}
-
-impl Render for CurseForgeFilesPaneView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = std::time::Instant::now();
-        let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-        let colors = crate::ui::theme::colors::lerp_theme_colors(
-            &crate::ui::theme::colors::LightColors::colors(),
-            &crate::ui::theme::colors::DarkColors::colors(),
-            theme.factor(now),
-            theme.accent,
-        );
-        let state = cx.global::<DownloadPageState>();
-        let manage_state = cx.global::<crate::ui::views::manage::state::ManagePageState>();
-        let local_versions = read_local_versions_snapshot(cx);
-        render_curseforge_detail_files_panel(
-            &colors,
-            state,
-            manage_state.selected_folder.clone(),
-            &local_versions,
-        )
-    }
-}
-
-pub(crate) struct CurseForgeDescriptionPaneView {
-    _subscriptions: Vec<Subscription>,
-    last_mod_page_open: bool,
-}
-
-impl CurseForgeDescriptionPaneView {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let initial_mod_page_open =
-            cx.read_global(|state: &DownloadPageState, _cx| state.curseforge_mod_page_open);
-
-        let subscriptions = vec![cx.observe_global::<DownloadPageState>(|this, cx| {
-            // 关键：只在页面打开状态变化时刷新，不监听整个 DownloadPageState
-            let current_mod_page_open =
-                cx.read_global(|state: &DownloadPageState, _cx| state.curseforge_mod_page_open);
-
-            if current_mod_page_open != this.last_mod_page_open {
-                this.last_mod_page_open = current_mod_page_open;
-                cx.notify();
-            }
-        })];
-        Self {
-            _subscriptions: subscriptions,
-            last_mod_page_open: initial_mod_page_open,
-        }
-    }
-}
-
-impl Render for CurseForgeDescriptionPaneView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = std::time::Instant::now();
-        let theme = cx.global::<crate::ui::state::theme::ThemeState>();
-        let colors = crate::ui::theme::colors::lerp_theme_colors(
-            &crate::ui::theme::colors::LightColors::colors(),
-            &crate::ui::theme::colors::DarkColors::colors(),
-            theme.factor(now),
-            theme.accent,
-        );
-        let state = cx.global::<DownloadPageState>();
-        // 关键：描述面板不订阅图片状态，避免渲染风暴
-        render_curseforge_detail_description_panel(&colors, state)
     }
 }
 
@@ -676,11 +590,8 @@ fn build_curseforge_result_card_props(
         .collect()
 }
 
-fn scroll_event_delta_y(event: &ScrollWheelEvent) -> Pixels {
-    match event.delta {
-        ScrollDelta::Pixels(delta) => delta.y,
-        ScrollDelta::Lines(delta) => px(delta.y * 20.0),
-    }
+fn scroll_event_delta_y_with_line_height(event: &ScrollWheelEvent, line_height: Pixels) -> Pixels {
+    event.delta.pixel_delta(line_height).y
 }
 
 fn localize_curseforge_tag(name: &str, slug: Option<&str>) -> SharedString {
@@ -720,16 +631,21 @@ fn localize_curseforge_tag(name: &str, slug: Option<&str>) -> SharedString {
     SharedString::from(localized.to_string())
 }
 
+fn curseforge_file_version_label(
+    file: &crate::ui::views::download::state::CurseForgeFileEntry,
+) -> SharedString {
+    file.game_versions
+        .iter()
+        .find(|version| version.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+        .cloned()
+        .unwrap_or_else(|| SharedString::from("未知版本"))
+}
+
 fn render_curseforge_detail_file_row(
     colors: &ThemeColors,
     file: &crate::ui::views::download::state::CurseForgeFileEntry,
 ) -> Div {
-    let version_label = file
-        .game_versions
-        .iter()
-        .find(|version| version.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
-        .cloned()
-        .unwrap_or_else(|| SharedString::from("未知版本"));
+    let version_label = curseforge_file_version_label(file);
     let date_label = format_date_ymd(file.file_date.as_ref());
 
     div()
@@ -810,8 +726,6 @@ fn render_curseforge_detail_files_panel(
     } else {
         None
     };
-    let default_target = modals::default_install_target(selected_folder, local_versions);
-
     div()
         .rounded(px(12.))
         .bg(Hsla {
@@ -890,6 +804,11 @@ fn render_curseforge_detail_files_panel(
             let mut list = div().flex().flex_col().gap(px(10.));
             for file in state.curseforge_install_files.iter().take(12) {
                 let file_id = file.id;
+                let default_target = modals::default_install_target_for_file(
+                    file,
+                    selected_folder.clone(),
+                    local_versions,
+                );
                 let row = render_curseforge_detail_file_row(colors, file);
                 let action = div()
                     .h(px(40.))
@@ -913,14 +832,12 @@ fn render_curseforge_detail_files_panel(
                         let mod_entry = mod_entry.clone();
                         let default_target = default_target.clone();
                         move |_ev, _window, cx| {
-                            modals::open_curseforge_install_modal(
+                            modals::open_curseforge_install_modal_for_file(
                                 mod_entry.clone(),
+                                file_id,
                                 default_target.clone(),
                                 cx,
                             );
-                            cx.update_global(|state: &mut DownloadPageState, _cx| {
-                                state.curseforge_install_selected_file_id = Some(file_id);
-                            });
                         }
                     });
 
@@ -970,46 +887,41 @@ fn render_curseforge_detail_description_panel(
 }
 
 pub(super) fn render_resource_panel(
-    colors: &ThemeColors,
+    _colors: &ThemeColors,
     state: &DownloadPageState,
     curseforge_sidebar: &Entity<CurseForgeSidebarView>,
     curseforge_content: &Entity<CurseForgeContentView>,
-    curseforge_mod_page: &Entity<CurseForgeModPageView>,
-    selected_folder: Option<SharedString>,
-    local_versions: &LocalVersionsSnapshot,
-    tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
+    detail_image_cache: &Entity<BoundedImageCache>,
+    _selected_folder: Option<SharedString>,
+    _local_versions: &LocalVersionsSnapshot,
+    _tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
 ) -> Div {
-    let body: AnyElement = if state.curseforge_mod_page_open {
-        curseforge_mod_page.clone().into_any_element()
-    } else {
-        div()
-            .size_full()
-            .flex()
-            .overflow_hidden()
-            .gap(px(20.))
-            .p(px(12.))
-            .min_h(px(0.))
-            .min_w(px(0.))
-            .when(should_render_curseforge_sidebar(), |this| {
-                this.child(
-                    div()
-                        .w(px(220.))
-                        .flex_none()
-                        .min_h(px(0.))
-                        .overflow_hidden()
-                        .child(curseforge_sidebar.clone().into_any_element()),
-                )
-            })
-            .child(
+    let body = div()
+        .size_full()
+        .flex()
+        .overflow_hidden()
+        .gap(px(20.))
+        .p(px(12.))
+        .min_h(px(0.))
+        .min_w(px(0.))
+        .when(should_render_curseforge_sidebar(), |this| {
+            this.child(
                 div()
-                    .min_w(px(0.))
+                    .w(px(220.))
+                    .flex_none()
                     .min_h(px(0.))
-                    .flex_1()
                     .overflow_hidden()
-                    .child(curseforge_content.clone().into_any_element()),
+                    .child(curseforge_sidebar.clone().into_any_element()),
             )
-            .into_any_element()
-    };
+        })
+        .child(
+            div()
+                .min_w(px(0.))
+                .min_h(px(0.))
+                .flex_1()
+                .overflow_hidden()
+                .child(curseforge_content.clone().into_any_element()),
+        );
 
     div()
         .size_full()
@@ -1019,18 +931,52 @@ pub(super) fn render_resource_panel(
         .min_h(px(0.))
         .child(div().flex_1().min_w(px(0.)).min_h(px(0.)).child(body))
         .on_action(|_: &Paste, _window, cx| handle_clipboard_share_paste(cx))
-        .when(state.curseforge_install_open, |this| {
-            this.child(modals::render_curseforge_install_modal(
-                colors,
+        .when(state.curseforge_mod_page_open, |this| {
+            this.child(modals::render_curseforge_mod_page_modal(
+                _colors,
                 state,
-                selected_folder.clone(),
-                local_versions,
-                tasks,
+                detail_image_cache,
+                _selected_folder.clone(),
+                _local_versions,
+                _tasks,
             ))
         })
 }
 
-fn render_curseforge_sidebar(colors: &ThemeColors, state: &DownloadPageState) -> Div {
+pub(super) fn render_curseforge_install_overlay(
+    colors: &ThemeColors,
+    cx: &App,
+) -> Option<AnyElement> {
+    let state = cx.global::<DownloadPageState>();
+    if state.tab != DownloadTab::ResourcePack || !state.curseforge_install_open {
+        return None;
+    }
+
+    let selected_folder = cx.read_global(
+        |state: &crate::ui::views::manage::state::ManagePageState, _cx| {
+            state.selected_folder.clone()
+        },
+    );
+    let local_versions = read_local_versions_snapshot(cx);
+    let tasks = crate::tasks::task_manager::snapshot_arcs_map();
+
+    Some(
+        modals::render_curseforge_install_modal(
+            colors,
+            state,
+            selected_folder,
+            &local_versions,
+            &tasks,
+        )
+        .into_any_element(),
+    )
+}
+
+fn render_curseforge_sidebar(
+    colors: &ThemeColors,
+    state: &DownloadPageState,
+    sidebar_image_cache: &Entity<BoundedImageCache>,
+) -> Div {
     let active_root = state.curseforge_selected_root_id;
     let active_sub = state.curseforge_selected_sub_id;
 
@@ -1068,6 +1014,7 @@ fn render_curseforge_sidebar(colors: &ThemeColors, state: &DownloadPageState) ->
                         .h(px(18.))
                         .rounded(px(5.))
                         .object_fit(ObjectFit::Cover)
+                        .image_cache(sidebar_image_cache)
                         .with_loading({
                             let colors = *colors;
                             move || {
@@ -1906,7 +1853,7 @@ fn render_curseforge_results_list(
             .on_scroll_wheel(move |event, window, cx| {
                 let offset = results_scroll.offset();
                 let max_offset = results_scroll.max_offset();
-                let delta_y = scroll_event_delta_y(event);
+                let delta_y = scroll_event_delta_y_with_line_height(event, window.line_height());
                 let at_bottom = offset.y <= -max_offset.height;
                 let at_top = offset.y >= px(0.);
 
@@ -1971,6 +1918,7 @@ fn render_curseforge_results_list(
 
     let render_started_at = std::time::Instant::now();
     let mut visible_card_items = div().w_full().flex().flex_col().gap(px(6.));
+    let default_install_target = default_install_target_for_results(cx);
 
     let transition_started_at = results_transition_at;
     let transition_now = std::time::Instant::now();
@@ -1986,6 +1934,7 @@ fn render_curseforge_results_list(
             colors,
             cached_card_props,
             &this.result_logo_cache,
+            default_install_target.clone(),
             is_heavy_card,
             transition_started_at,
             transition_now,
@@ -2047,10 +1996,21 @@ fn render_curseforge_results_list(
     content
 }
 
+fn default_install_target_for_results(cx: &App) -> Option<SharedString> {
+    let selected_folder = cx.read_global(
+        |state: &crate::ui::views::manage::state::ManagePageState, _cx| {
+            state.selected_folder.clone()
+        },
+    );
+    let local_versions = read_local_versions_snapshot(cx);
+    modals::default_install_target(selected_folder, &local_versions)
+}
+
 fn render_curseforge_result_card(
     colors: &ThemeColors,
     props: &CurseForgeResultCardProps,
     result_logo_cache: &Entity<BoundedImageCache>,
+    default_install_target: Option<SharedString>,
     is_heavy_card: bool,
     transition_started_at: Option<Instant>,
     now: Instant,
@@ -2122,6 +2082,13 @@ fn render_curseforge_result_card(
         .h(px(78.))
         .rounded(px(8.))
         .hover(move |s| s.bg(card_hover_bg))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, {
+            let mod_id = props.mod_id;
+            move |_ev, _window, cx| {
+                modals::open_curseforge_mod_page(mod_id, cx);
+            }
+        })
         .opacity(reveal_opacity)
         .relative()
         .top(reveal_translate_y)
@@ -2294,6 +2261,19 @@ fn render_curseforge_result_card(
                 .items_center()
                 .justify_center()
                 .text_color(colors.accent)
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, {
+                    let mod_id = props.mod_id;
+                    let default_install_target = default_install_target.clone();
+                    move |_ev, _window, cx| {
+                        cx.stop_propagation();
+                        modals::open_curseforge_install_modal_for_mod_id(
+                            mod_id,
+                            default_install_target.clone(),
+                            cx,
+                        );
+                    }
+                })
                 .child(
                     div()
                         .flex()
@@ -2591,6 +2571,541 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
         )
 }
 
+fn close_curseforge_install_modal_from_ui(cx: &mut App) {
+    let task_id = cx.read_global(|state: &DownloadPageState, _cx| {
+        if matches!(
+            state.curseforge_install_stage,
+            crate::ui::views::download::state::CurseForgeInstallStage::Downloading
+        ) {
+            state.curseforge_install_task_id.clone()
+        } else {
+            None
+        }
+    });
+
+    if let Some(task_id) = task_id {
+        crate::tasks::task_manager::cancel_task(task_id.as_ref());
+    }
+
+    modals::close_curseforge_install_modal(cx);
+}
+
+fn render_curseforge_install_close_button(colors: &ThemeColors) -> Div {
+    div()
+        .size(px(34.))
+        .rounded(px(10.))
+        .bg(Hsla {
+            a: 0.70,
+            ..colors.surface
+        })
+        .border_1()
+        .border_color(Hsla {
+            a: 0.10,
+            ..colors.border
+        })
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(themed_icon(
+            lucide_icons::icon_x(),
+            16.0,
+            colors.text_secondary,
+        ))
+        .hover(|style| {
+            style.bg(Hsla {
+                a: 0.95,
+                ..colors.surface_hover
+            })
+        })
+        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+            close_curseforge_install_modal_from_ui(cx);
+        })
+}
+
+fn render_curseforge_install_header(
+    colors: &ThemeColors,
+    kicker: &'static str,
+    title: SharedString,
+    subtitle: Option<SharedString>,
+) -> Div {
+    div()
+        .px(px(18.))
+        .py(px(16.))
+        .border_b_1()
+        .border_color(Hsla {
+            a: 0.10,
+            ..colors.border
+        })
+        .flex()
+        .items_start()
+        .justify_between()
+        .gap(px(16.))
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(12.))
+                .min_w(px(0.))
+                .child(
+                    div()
+                        .size(px(48.))
+                        .flex_none()
+                        .rounded(px(12.))
+                        .bg(Hsla {
+                            a: 0.10,
+                            ..colors.accent
+                        })
+                        .border_1()
+                        .border_color(Hsla {
+                            a: 0.10,
+                            ..colors.border
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(themed_icon(
+                            lucide_icons::icon_package(),
+                            20.0,
+                            colors.accent,
+                        )),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(colors.text_muted)
+                                .child(kicker),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(17.))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(colors.text_primary)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(title),
+                        )
+                        .when_some(subtitle, |this, subtitle| {
+                            this.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(colors.text_muted)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(subtitle),
+                            )
+                        }),
+                ),
+        )
+        .child(render_curseforge_install_close_button(colors))
+}
+
+fn launch_version_dropdown_label(
+    version: &crate::core::version::launch_versions::LaunchVersionEntry,
+) -> SharedString {
+    let name = version.name.trim();
+    let folder = version.folder.trim();
+    if name.is_empty() || name == folder {
+        SharedString::from(folder.to_string())
+    } else {
+        SharedString::from(format!("{name} ({folder})"))
+    }
+}
+
+fn install_target_label(folder: &str, local_versions: &LocalVersionsSnapshot) -> SharedString {
+    local_versions
+        .versions
+        .iter()
+        .find(|version| version.folder.as_ref() == folder)
+        .map(launch_version_dropdown_label)
+        .unwrap_or_else(|| SharedString::from(folder.to_string()))
+}
+
+fn render_install_target_dropdown(
+    colors: &ThemeColors,
+    state: &DownloadPageState,
+    local_versions: &LocalVersionsSnapshot,
+    enabled: bool,
+) -> Dropdown {
+    let has_versions = !local_versions.versions.is_empty();
+    let options = if has_versions {
+        local_versions
+            .versions
+            .iter()
+            .map(launch_version_dropdown_label)
+            .map(DropdownOption::from)
+            .collect::<Vec<_>>()
+    } else {
+        vec![DropdownOption::from(SharedString::from("暂无可用版本"))]
+    };
+
+    let selected_index = state
+        .curseforge_install_target_folder
+        .as_ref()
+        .and_then(|selected| {
+            local_versions
+                .versions
+                .iter()
+                .position(|version| version.folder.as_ref() == selected.as_ref())
+        })
+        .unwrap_or(0);
+
+    let label = state
+        .curseforge_install_target_folder
+        .as_ref()
+        .map(|folder| install_target_label(folder.as_ref(), local_versions))
+        .unwrap_or_else(|| SharedString::from("选择版本"));
+    let label = if has_versions {
+        label
+    } else {
+        SharedString::from("暂无可用版本")
+    };
+
+    let folders = local_versions
+        .versions
+        .iter()
+        .map(|version| SharedString::from(version.folder.to_string()))
+        .collect::<Vec<_>>();
+
+    Dropdown::with_trigger(
+        SharedString::from("curseforge-install-target-dropdown"),
+        colors,
+        px(360.),
+        px(40.),
+        label,
+        options,
+        selected_index,
+        enabled && has_versions,
+        |colors, _width, _height, enabled, open_k, label| {
+            div()
+                .size_full()
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if enabled {
+                            colors.text_primary
+                        } else {
+                            colors.text_muted
+                        })
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(label.clone()),
+                )
+                .child(
+                    svg()
+                        .path(lucide_icons::icon_chevron_down())
+                        .w(px(15.))
+                        .h(px(15.))
+                        .opacity(if enabled { 0.75 } else { 0.35 })
+                        .text_color(colors.text_secondary)
+                        .with_transformation(Transformation::rotate(radians(
+                            open_k * std::f32::consts::PI,
+                        ))),
+                )
+                .into_any_element()
+        },
+        move |index, _window, cx| {
+            let Some(folder) = folders.get(index).cloned() else {
+                return;
+            };
+            cx.update_global(|state: &mut DownloadPageState, _cx| {
+                state.curseforge_install_target_folder = Some(folder);
+            });
+        },
+    )
+    .rounded(px(10.))
+}
+
+fn render_curseforge_install_file_option(
+    colors: &ThemeColors,
+    file: &crate::ui::views::download::state::CurseForgeFileEntry,
+    default_target: Option<SharedString>,
+) -> Div {
+    let file_id = file.id;
+    let disabled = file.download_url.is_none();
+    let version_label = curseforge_file_version_label(file);
+    let date_label = format_date_ymd(file.file_date.as_ref());
+    let action_label = if disabled {
+        "无下载地址"
+    } else {
+        "安装"
+    };
+
+    div()
+        .w_full()
+        .min_h(px(60.))
+        .rounded(px(10.))
+        .bg(Hsla {
+            a: 0.52,
+            ..colors.surface
+        })
+        .border_1()
+        .border_color(Hsla {
+            a: 0.10,
+            ..colors.border
+        })
+        .px(px(12.))
+        .py(px(10.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(14.))
+        .opacity(if disabled { 0.64 } else { 1.0 })
+        .hover(|style| {
+            style.border_color(Hsla {
+                a: 0.42,
+                ..colors.accent
+            })
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(5.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.text_primary)
+                        .line_height(relative(1.25))
+                        .child(file.display_name.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.text_muted)
+                        .child(date_label),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .child(
+                    div()
+                        .h(px(26.))
+                        .px(px(9.))
+                        .rounded(px(7.))
+                        .bg(Hsla {
+                            a: 0.10,
+                            ..colors.accent
+                        })
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.accent)
+                        .child(version_label),
+                )
+                .child(
+                    div()
+                        .w(px(72.))
+                        .text_size(px(12.))
+                        .text_color(colors.text_secondary)
+                        .child(format_bytes(file.file_length)),
+                )
+                .child(
+                    div()
+                        .h(px(36.))
+                        .px(px(13.))
+                        .rounded(px(9.))
+                        .bg(if disabled {
+                            colors.surface_hover
+                        } else {
+                            colors.accent
+                        })
+                        .border_1()
+                        .border_color(Hsla {
+                            a: 0.10,
+                            ..colors.border
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.))
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(if disabled {
+                            colors.text_muted
+                        } else {
+                            colors.btn_primary_text
+                        })
+                        .child(themed_icon(
+                            lucide_icons::icon_download(),
+                            15.0,
+                            if disabled {
+                                colors.text_muted
+                            } else {
+                                colors.btn_primary_text
+                            },
+                        ))
+                        .child(action_label)
+                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                            if disabled {
+                                return;
+                            }
+                            let default_target = default_target.clone();
+                            cx.update_global(|state: &mut DownloadPageState, _cx| {
+                                state.curseforge_install_selected_file_id = Some(file_id);
+                                state.curseforge_install_stage =
+                                    crate::ui::views::download::state::CurseForgeInstallStage::Idle;
+                                state.curseforge_install_error = None;
+                                state.curseforge_install_task_id = None;
+                                state.curseforge_install_downloaded_path = None;
+                                state.curseforge_install_conflict_message = None;
+                                if default_target.is_some() {
+                                    state.curseforge_install_target_folder = default_target;
+                                }
+                            });
+                        }),
+                ),
+        )
+}
+
+fn render_curseforge_install_file_selection_modal(
+    colors: &ThemeColors,
+    state: &DownloadPageState,
+    selected_folder: Option<SharedString>,
+    local_versions: &LocalVersionsSnapshot,
+) -> Div {
+    let mod_name = state
+        .curseforge_install_mod
+        .as_ref()
+        .map(|mod_entry| mod_entry.name.clone())
+        .unwrap_or_else(|| SharedString::from("CurseForge 安装"));
+    let files_loading = matches!(
+        state.curseforge_install_stage,
+        crate::ui::views::download::state::CurseForgeInstallStage::LoadingFiles
+    );
+    let files_error = if state.curseforge_install_files.is_empty() {
+        state.curseforge_install_error.clone()
+    } else {
+        None
+    };
+
+    let mut files_list = div().flex().flex_col().gap(px(8.));
+    for file in &state.curseforge_install_files {
+        let default_target =
+            modals::default_install_target_for_file(file, selected_folder.clone(), local_versions);
+        files_list = files_list.child(render_curseforge_install_file_option(
+            colors,
+            file,
+            default_target,
+        ));
+    }
+
+    let body = div()
+        .flex_1()
+        .min_h(px(0.))
+        .px(px(16.))
+        .py(px(14.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(colors.text_muted)
+                        .child("选择要下载的资源文件版本"),
+                )
+                .child(
+                    div()
+                        .h(px(28.))
+                        .px(px(10.))
+                        .rounded(px(999.))
+                        .bg(Hsla {
+                            a: 0.10,
+                            ..colors.accent
+                        })
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.accent)
+                        .child(format!("{} 个文件", state.curseforge_install_files.len())),
+                ),
+        )
+        .when(files_loading, |this| {
+            this.child(status_card(colors, "正在加载文件列表...", None))
+        })
+        .when_some(files_error, |this, error| {
+            this.child(status_card(
+                colors,
+                &format!("文件列表加载失败: {error}"),
+                Some(colors.danger),
+            ))
+        })
+        .when(
+            !files_loading
+                && state.curseforge_install_error.is_none()
+                && state.curseforge_install_files.is_empty(),
+            |this| this.child(status_card(colors, "当前资源没有可安装文件。", None)),
+        )
+        .when(!state.curseforge_install_files.is_empty(), |this| {
+            this.child(
+                div()
+                    .id("curseforge-install-file-list-scroll")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .scrollbar_width(px(0.))
+                    .child(files_list),
+            )
+        });
+
+    modal::modal_layer_dismissible(
+        modal::modal_surface(
+            Hsla {
+                a: 0.96,
+                ..colors.surface
+            },
+            Hsla {
+                a: 0.18,
+                ..colors.border
+            },
+            px(820.),
+            px(560.),
+            px(18.),
+        )
+        .child(render_curseforge_install_header(
+            colors, "文件", mod_name, None,
+        ))
+        .child(body),
+        Hsla {
+            a: 0.0,
+            ..colors.backdrop
+        },
+        Rc::new(|cx| {
+            close_curseforge_install_modal_from_ui(cx);
+        }),
+    )
+}
+
 fn render_curseforge_install_modal(
     colors: &ThemeColors,
     state: &DownloadPageState,
@@ -2610,171 +3125,34 @@ fn render_curseforge_install_modal(
         .as_ref()
         .and_then(|id| tasks.get(id.as_ref()));
 
-    let close_btn = div()
-        .w(px(36.))
-        .h(px(36.))
-        .rounded(px(10.))
-        .bg(colors.surface)
-        .border_1()
-        .border_color(colors.border)
-        .cursor_pointer()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(themed_icon(
-            lucide_icons::icon_x(),
-            18.0,
-            colors.text_secondary,
-        ))
-        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-            modals::close_curseforge_install_modal(cx);
-        });
-
-    let header = div()
-        .px(px(16.))
-        .py(px(14.))
-        .flex()
-        .items_center()
-        .justify_between()
-        .border_1()
-        .border_color(Hsla {
-            a: 0.10,
-            ..colors.border
-        })
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .min_w(px(0.))
-                .child(
-                    div()
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(colors.text_primary)
-                        .child(mod_name),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(colors.text_secondary)
-                        .child("选择文件并安装到指定版本"),
-                ),
-        )
-        .child(close_btn);
-
-    let mut versions_list = div().flex().flex_col().gap(px(6.));
-    for v in local_versions.versions.iter() {
-        let folder = v.folder.clone();
-        let selected = state
-            .curseforge_install_target_folder
-            .as_ref()
-            .map(|s| s.as_ref() == folder.as_ref())
-            .unwrap_or(false);
-        let bg = if selected {
-            colors.accent
-        } else {
-            colors.surface
-        };
-        let fg = if selected {
-            colors.btn_primary_text
-        } else {
-            colors.text_primary
-        };
-
-        versions_list = versions_list.child(
-            div()
-                .w_full()
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(px(10.))
-                .bg(bg)
-                .border_1()
-                .border_color(colors.border)
-                .cursor_pointer()
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(fg)
-                        .child(SharedString::from(folder.clone())),
-                )
-                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_target_folder = Some(folder.clone().into());
-                    });
-                }),
+    let Some(selected_file) = state.curseforge_install_selected_file_id.and_then(|id| {
+        state
+            .curseforge_install_files
+            .iter()
+            .find(|file| file.id == id)
+    }) else {
+        return render_curseforge_install_file_selection_modal(
+            colors,
+            state,
+            selected_folder,
+            local_versions,
         );
-    }
+    };
 
-    let mut files_list = div().flex().flex_col().gap(px(8.));
-    for f in &state.curseforge_install_files {
-        let file_id = f.id;
-        let selected = state.curseforge_install_selected_file_id == Some(file_id);
-        let bg = if selected {
-            Hsla {
-                a: 0.18,
-                ..colors.accent
-            }
-        } else {
-            colors.surface
-        };
-        let border = if selected {
-            colors.accent
-        } else {
-            colors.border
-        };
-        let disabled = f.download_url.is_none();
-
-        files_list = files_list.child(
-            div()
-                .w_full()
-                .px(px(12.))
-                .py(px(10.))
-                .rounded(px(12.))
-                .bg(bg)
-                .border_1()
-                .border_color(border)
-                .cursor_pointer()
-                .opacity(if disabled { 0.65 } else { 1.0 })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.))
-                                .min_w(px(0.))
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(colors.text_primary)
-                                        .child(f.display_name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(colors.text_secondary)
-                                        .child(format_bytes(f.file_length)),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(colors.text_muted)
-                                .child(f.file_date.clone()),
-                        ),
-                )
-                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_selected_file_id = Some(file_id);
-                    });
-                }),
-        );
-    }
+    let header = render_curseforge_install_header(
+        colors,
+        "安装",
+        mod_name,
+        Some(selected_file.display_name.clone()),
+    );
+    let target_dropdown_enabled = matches!(
+        stage,
+        crate::ui::views::download::state::CurseForgeInstallStage::Idle
+            | crate::ui::views::download::state::CurseForgeInstallStage::Error
+            | crate::ui::views::download::state::CurseForgeInstallStage::Success
+    );
+    let target_dropdown =
+        render_install_target_dropdown(colors, state, local_versions, target_dropdown_enabled);
 
     let error_line = state.curseforge_install_error.as_ref().map(|e| {
         status_card(colors, &format!("错误: {e}"), Some(colors.danger)).into_any_element()
@@ -2851,13 +3229,21 @@ fn render_curseforge_install_modal(
         crate::ui::views::download::state::CurseForgeInstallStage::Conflict => "覆盖安装",
         crate::ui::views::download::state::CurseForgeInstallStage::Success => "完成",
         crate::ui::views::download::state::CurseForgeInstallStage::Downloading => "下载中...",
-        _ => "安装",
+        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => "检查中...",
+        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => {
+            "检查冲突..."
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::Installing => "安装中...",
+        _ => "下载并安装",
     };
 
     let primary_enabled = match stage {
         crate::ui::views::download::state::CurseForgeInstallStage::Conflict => true,
         crate::ui::views::download::state::CurseForgeInstallStage::Success => true,
-        crate::ui::views::download::state::CurseForgeInstallStage::Downloading => false,
+        crate::ui::views::download::state::CurseForgeInstallStage::Downloading
+        | crate::ui::views::download::state::CurseForgeInstallStage::Inspecting
+        | crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict
+        | crate::ui::views::download::state::CurseForgeInstallStage::Installing => false,
         _ => can_install,
     };
 
@@ -2946,262 +3332,254 @@ fn render_curseforge_install_modal(
                 s.curseforge_install_conflict_message = None;
             });
 
-            cx.spawn(async move |cx| -> Result<(), String> {
-                let task_id = crate::downloads::api::download_resource_to_cache(
-                    download_url,
-                    file_name.clone(),
-                    None,
-                )
-                .await?;
+            cx.spawn(async move |cx| {
+                let result = async {
+                    let task_id = crate::downloads::api::download_resource_to_cache(
+                        download_url,
+                        file_name.clone(),
+                        None,
+                    )
+                    .await?;
 
-                cx.update_global(|s: &mut DownloadPageState, _cx| {
-                    s.curseforge_install_task_id = Some(SharedString::from(task_id.clone()));
-                })
-                .map_err(|e| e.to_string())?;
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        s.curseforge_install_task_id = Some(SharedString::from(task_id.clone()));
+                    })
+                    .map_err(|e| e.to_string())?;
 
-                let snap = wait_task_finished(&task_id)?;
-                if snap.status.as_ref() != "completed" {
-                    return Err(format!(
-                        "download {} ({})",
-                        snap.status,
-                        snap.message.clone().unwrap_or_default()
-                    ));
+                    let snap = cx
+                        .background_spawn({
+                            let task_id = task_id.clone();
+                            async move { wait_task_finished(&task_id) }
+                        })
+                        .await;
+                    let snap = snap?;
+                    if snap.status.as_ref() != "completed" {
+                        return Err(format!(
+                            "download {} ({})",
+                            snap.status,
+                            snap.message.clone().unwrap_or_default()
+                        ));
+                    }
+                    let path = snap
+                        .message
+                        .clone()
+                        .map(|message| message.to_string())
+                        .ok_or_else(|| "download completed but no path returned".to_string())?;
+
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        s.curseforge_install_downloaded_path =
+                            Some(SharedString::from(path.clone()));
+                        s.curseforge_install_stage =
+                            crate::ui::views::download::state::CurseForgeInstallStage::Inspecting;
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                    let preview =
+                        crate::core::minecraft::assets::inspect_import_file(path.to_string(), None)
+                            .await?;
+                    if !preview.valid {
+                        let msg = preview
+                            .invalid_reason
+                            .unwrap_or_else(|| "无效的资源包".to_string());
+                        cx.update_global(|s: &mut DownloadPageState, _cx| {
+                            s.curseforge_install_stage =
+                                crate::ui::views::download::state::CurseForgeInstallStage::Error;
+                            s.curseforge_install_error = Some(SharedString::from(msg));
+                        })
+                        .map_err(|e| e.to_string())?;
+                        return Ok::<(), String>(());
+                    }
+
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        s.curseforge_install_stage =
+                            crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict;
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                    let conflict = crate::core::minecraft::assets::check_import_conflict(
+                        crate::core::minecraft::assets::CheckImportRequest {
+                            build_type: crate::core::minecraft::paths::BuildType::Uwp,
+                            edition: crate::core::minecraft::paths::Edition::Release,
+                            version_name: target_folder.clone(),
+                            enable_isolation: true,
+                            user_id: None,
+                            file_path: path.to_string(),
+                            allow_shared_fallback: false,
+                        },
+                    )
+                    .await?;
+
+                    if conflict.has_conflict && !overwrite {
+                        cx.update_global(|s: &mut DownloadPageState, _cx| {
+                            s.curseforge_install_stage =
+                                crate::ui::views::download::state::CurseForgeInstallStage::Conflict;
+                            s.curseforge_install_conflict_message =
+                                Some(SharedString::from(conflict.message));
+                        })
+                        .map_err(|e| e.to_string())?;
+                        return Ok::<(), String>(());
+                    }
+
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        s.curseforge_install_stage =
+                            crate::ui::views::download::state::CurseForgeInstallStage::Installing;
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                    crate::core::minecraft::assets::import_assets(
+                        crate::core::minecraft::assets::ImportAssetsRequest {
+                            build_type: crate::core::minecraft::paths::BuildType::Uwp,
+                            edition: crate::core::minecraft::paths::Edition::Release,
+                            version_name: target_folder,
+                            enable_isolation: true,
+                            user_id: None,
+                            file_paths: vec![path.to_string()],
+                            overwrite,
+                            allow_shared_fallback: false,
+                        },
+                    )
+                    .await?;
+
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        s.curseforge_install_stage =
+                            crate::ui::views::download::state::CurseForgeInstallStage::Success;
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                    Ok::<(), String>(())
                 }
-                let path = snap
-                    .message
-                    .clone()
-                    .map(|message| message.to_string())
-                    .ok_or_else(|| "download completed but no path returned".to_string())?;
+                .await;
 
-                cx.update_global(|s: &mut DownloadPageState, _cx| {
-                    s.curseforge_install_downloaded_path = Some(SharedString::from(path.clone()));
-                    s.curseforge_install_stage =
-                        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting;
-                })
-                .map_err(|e| e.to_string())?;
-
-                let preview =
-                    crate::core::minecraft::assets::inspect_import_file(path.to_string(), None)
-                        .await?;
-                if !preview.valid {
-                    let msg = preview
-                        .invalid_reason
-                        .unwrap_or_else(|| "无效的资源包".to_string());
+                if let Err(error) = result {
                     cx.update_global(|s: &mut DownloadPageState, _cx| {
                         s.curseforge_install_stage =
                             crate::ui::views::download::state::CurseForgeInstallStage::Error;
-                        s.curseforge_install_error = Some(SharedString::from(msg));
+                        s.curseforge_install_error = Some(SharedString::from(error));
                     })
                     .map_err(|e| e.to_string())?;
-                    return Ok(());
                 }
-
-                cx.update_global(|s: &mut DownloadPageState, _cx| {
-                    s.curseforge_install_stage =
-                        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict;
-                })
-                .map_err(|e| e.to_string())?;
-
-                let conflict = crate::core::minecraft::assets::check_import_conflict(
-                    crate::core::minecraft::assets::CheckImportRequest {
-                        build_type: crate::core::minecraft::paths::BuildType::Uwp,
-                        edition: crate::core::minecraft::paths::Edition::Release,
-                        version_name: target_folder.clone(),
-                        enable_isolation: true,
-                        user_id: None,
-                        file_path: path.to_string(),
-                        allow_shared_fallback: false,
-                    },
-                )
-                .await?;
-
-                if conflict.has_conflict && !overwrite {
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.curseforge_install_stage =
-                            crate::ui::views::download::state::CurseForgeInstallStage::Conflict;
-                        s.curseforge_install_conflict_message =
-                            Some(SharedString::from(conflict.message));
-                    })
-                    .map_err(|e| e.to_string())?;
-                    return Ok(());
-                }
-
-                cx.update_global(|s: &mut DownloadPageState, _cx| {
-                    s.curseforge_install_stage =
-                        crate::ui::views::download::state::CurseForgeInstallStage::Installing;
-                })
-                .map_err(|e| e.to_string())?;
-
-                let _ = crate::core::minecraft::assets::import_assets(
-                    crate::core::minecraft::assets::ImportAssetsRequest {
-                        build_type: crate::core::minecraft::paths::BuildType::Uwp,
-                        edition: crate::core::minecraft::paths::Edition::Release,
-                        version_name: target_folder,
-                        enable_isolation: true,
-                        user_id: None,
-                        file_paths: vec![path.to_string()],
-                        overwrite,
-                        allow_shared_fallback: false,
-                    },
-                )
-                .await?;
-
-                cx.update_global(|s: &mut DownloadPageState, _cx| {
-                    s.curseforge_install_stage =
-                        crate::ui::views::download::state::CurseForgeInstallStage::Success;
-                })
-                .map_err(|e| e.to_string())?;
 
                 Ok::<(), String>(())
             })
-            .detach();
+            .detach_and_log_err(cx);
         });
 
-    let cancel_btn = div()
-        .px(px(16.))
-        .py(px(10.))
-        .rounded(px(12.))
-        .bg(colors.surface)
-        .border_1()
-        .border_color(colors.border)
-        .cursor_pointer()
-        .text_color(colors.text_primary)
-        .child("关闭")
-        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-            if matches!(
-                stage,
-                crate::ui::views::download::state::CurseForgeInstallStage::Downloading
-            ) {
-                if let Some(task_id) = cx
-                    .read_global(|s: &DownloadPageState, _cx| s.curseforge_install_task_id.clone())
-                {
-                    crate::tasks::task_manager::cancel_task(task_id.as_ref());
-                }
-            }
-
-            modals::close_curseforge_install_modal(cx);
-        });
-
-    let footer = div()
-        .px(px(16.))
-        .py(px(14.))
-        .flex()
-        .items_center()
-        .justify_end()
-        .gap(px(10.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.10,
-            ..colors.border
-        })
-        .child(cancel_btn)
-        .child(primary_btn);
+    let operation_line = match stage {
+        crate::ui::views::download::state::CurseForgeInstallStage::Inspecting => {
+            Some(status_card(colors, "正在检查资源包...", None).into_any_element())
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::CheckingConflict => {
+            Some(status_card(colors, "正在检查已安装资源冲突...", None).into_any_element())
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::Installing => {
+            Some(status_card(colors, "正在安装资源包...", None).into_any_element())
+        }
+        crate::ui::views::download::state::CurseForgeInstallStage::Success => {
+            Some(status_card(colors, "安装完成", Some(colors.accent)).into_any_element())
+        }
+        _ => None,
+    };
 
     let body = div()
         .flex_1()
         .min_h(px(0.))
-        .p(px(16.))
+        .px(px(18.))
+        .py(px(16.))
         .flex()
-        .gap(px(14.))
+        .flex_col()
+        .gap(px(12.))
         .child(
             div()
-                .w(px(220.))
-                .rounded(px(8.))
+                .rounded(px(14.))
                 .bg(Hsla {
-                    a: 0.55,
+                    a: 0.44,
                     ..colors.surface
                 })
                 .border_1()
-                .border_color(colors.border)
-                .p(px(12.))
+                .border_color(Hsla {
+                    a: 0.10,
+                    ..colors.border
+                })
+                .p(px(14.))
+                .min_h(px(68.))
                 .flex()
-                .flex_col()
-                .gap(px(10.))
+                .items_center()
+                .justify_between()
+                .gap(px(14.))
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(px(13.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_secondary)
-                        .child("安装到版本"),
+                        .child("目标版本"),
                 )
-                .child(
-                    div()
-                        .id("cf-install-versions-scroll")
-                        .flex_1()
-                        .min_h(px(0.))
-                        .overflow_y_scroll()
-                        .scrollbar_width(px(0.))
-                        .child(versions_list),
-                ),
+                .child(div().flex_none().child(target_dropdown)),
         )
         .child(
             div()
-                .flex_1()
-                .min_w(px(0.))
-                .rounded(px(8.))
+                .rounded(px(14.))
                 .bg(Hsla {
-                    a: 0.55,
+                    a: 0.44,
                     ..colors.surface
                 })
                 .border_1()
-                .border_color(colors.border)
-                .p(px(12.))
+                .border_color(Hsla {
+                    a: 0.10,
+                    ..colors.border
+                })
+                .p(px(14.))
+                .min_h(px(106.))
                 .flex()
                 .flex_col()
+                .items_start()
                 .gap(px(10.))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(colors.text_secondary)
-                        .child("文件列表"),
-                )
-                .child(
-                    div()
-                        .id("cf-install-files-scroll")
-                        .flex_1()
-                        .min_h(px(0.))
-                        .overflow_y_scroll()
-                        .scrollbar_width(px(0.))
-                        .child(files_list),
+                .child(primary_btn)
+                .when(
+                    matches!(
+                        stage,
+                        crate::ui::views::download::state::CurseForgeInstallStage::Idle
+                            | crate::ui::views::download::state::CurseForgeInstallStage::Error
+                    ),
+                    |this| {
+                        this.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(colors.text_muted)
+                                .child(format!(
+                                    "默认下载到系统缓存 ({})",
+                                    format_bytes(selected_file.file_length)
+                                )),
+                        )
+                    },
                 )
                 .when_some(progress_bar, |this, bar| this.child(bar))
-                .when_some(error_line, |this, e| this.child(e))
-                .when_some(conflict_line, |this, e| this.child(e)),
+                .when_some(operation_line, |this, status| this.child(status))
+                .when_some(error_line, |this, error| this.child(error))
+                .when_some(conflict_line, |this, conflict| this.child(conflict)),
         );
 
     modal::modal_layer_dismissible(
-        div()
-            .w_full()
-            .h_full()
-            .p(px(18.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .w(px(780.))
-                    .h(px(540.))
-                    .rounded(px(18.))
-                    .bg(Hsla {
-                        a: 0.90,
-                        ..colors.surface
-                    })
-                    .border_1()
-                    .border_color(colors.border)
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .child(header)
-                    .child(body)
-                    .child(footer),
-            ),
+        modal::modal_surface(
+            Hsla {
+                a: 0.96,
+                ..colors.surface
+            },
+            Hsla {
+                a: 0.18,
+                ..colors.border
+            },
+            px(720.),
+            px(360.),
+            px(18.),
+        )
+        .child(header)
+        .child(body),
         Hsla {
-            a: 0.55,
+            a: 0.0,
             ..colors.backdrop
         },
         Rc::new(|cx| {
-            modals::close_curseforge_install_modal(cx);
+            close_curseforge_install_modal_from_ui(cx);
         }),
     )
 }
@@ -3209,8 +3587,7 @@ fn render_curseforge_install_modal(
 fn render_curseforge_mod_page_modal(
     colors: &ThemeColors,
     state: &DownloadPageState,
-    curseforge_files_pane: &Entity<CurseForgeFilesPaneView>,
-    curseforge_description_pane: &Entity<CurseForgeDescriptionPaneView>,
+    detail_image_cache: &Entity<BoundedImageCache>,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
     _tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
@@ -3399,7 +3776,8 @@ fn render_curseforge_mod_page_modal(
                 ),
         )
         .when_some(state.curseforge_mod_page_mod.clone(), |this, mod_entry| {
-            let default_target = modals::default_install_target(selected_folder, local_versions);
+            let default_target =
+                modals::default_install_target(selected_folder.clone(), local_versions);
             let localized_categories = state
                 .curseforge_categories
                 .iter()
@@ -3508,7 +3886,6 @@ fn render_curseforge_mod_page_modal(
                     .join(", "),
             )
         };
-        let logo: Option<Arc<Image>> = None;
         let description_document = state.curseforge_mod_page_document.clone();
         let updated_at = format_date_ymd(mod_entry.date_modified.as_ref());
         let downloads = format_count(mod_entry.download_count);
@@ -3529,8 +3906,6 @@ fn render_curseforge_mod_page_modal(
             else {
                 continue;
             };
-
-            let tag_icon: Option<Arc<Image>> = None;
 
             tag_row = tag_row.child(
                 div()
@@ -3554,12 +3929,14 @@ fn render_curseforge_mod_page_modal(
                     .text_color(colors.text_secondary)
                     .min_w(px(0.))
                     .overflow_hidden()
-                    .when_some(tag_icon, |this, icon| {
+                    .when_some(category.icon_url.clone(), |this, icon_url| {
                         this.child(
-                            img(icon)
+                            img(icon_url)
                                 .w(px(12.))
                                 .h(px(12.))
-                                .object_fit(ObjectFit::Contain),
+                                .rounded(px(3.))
+                                .object_fit(ObjectFit::Contain)
+                                .image_cache(detail_image_cache),
                         )
                     })
                     .child(div().min_w(px(0.)).child(localize_curseforge_tag(
@@ -3581,6 +3958,29 @@ fn render_curseforge_mod_page_modal(
                     .overflow_y_scroll()
                     .scrollbar_width(px(0.))
                     .track_scroll(&state.curseforge_mod_page_scroll)
+                    .on_scroll_wheel({
+                        let scroll_handle = state.curseforge_mod_page_scroll.clone();
+                        move |event, window, cx| {
+                            let extra_delta_y = scroll_event_delta_y_with_line_height(
+                                event,
+                                window.line_height(),
+                            ) * (CURSEFORGE_DETAIL_SCROLL_ACCELERATION - 1.0);
+                            if extra_delta_y == Pixels::ZERO {
+                                return;
+                            }
+
+                            let offset = scroll_handle.offset();
+                            let max_offset = scroll_handle.max_offset();
+                            let next_y =
+                                (offset.y + extra_delta_y).clamp(-max_offset.height, px(0.));
+                            if next_y != offset.y {
+                                scroll_handle.set_offset(point(offset.x, next_y));
+                                window.refresh();
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        }
+                    })
                     .p(px(20.))
                     .child(
                         div()
@@ -3606,14 +4006,15 @@ fn render_curseforge_mod_page_modal(
                                                 a: 0.18,
                                                 ..colors.accent
                                             })
-                                            .when_some(logo, |this, image| {
+                                            .when_some(mod_entry.logo_url.clone(), |this, logo_url| {
                                                 this.child(
-                                                    img(image)
+                                                    img(logo_url)
                                                         .absolute()
                                                         .inset_0()
                                                         .w_full()
                                                         .h_full()
-                                                        .object_fit(ObjectFit::Cover),
+                                                        .object_fit(ObjectFit::Cover)
+                                                        .image_cache(detail_image_cache),
                                                 )
                                             })
                                             .child(
@@ -3906,12 +4307,13 @@ fn render_curseforge_mod_page_modal(
                                                 )
                                             }),
                                     )
-                                    .child(
-                                        div().child(curseforge_files_pane.clone()),
-                                    )
-                                    .child(
-                                        div().child(curseforge_description_pane.clone()),
-                                    ),
+                                    .child(render_curseforge_detail_files_panel(
+                                        colors,
+                                        state,
+                                        selected_folder.clone(),
+                                        local_versions,
+                                    ))
+                                    .child(render_curseforge_detail_description_panel(colors, state)),
                             ),
                     ),
             )
@@ -3923,11 +4325,25 @@ fn render_curseforge_mod_page_modal(
             .into_any_element()
     };
 
-    div()
-        .size_full()
-        .min_h(px(0.))
-        .flex()
-        .flex_col()
+    modal::modal_layer_dismissible(
+        modal::modal_surface(
+            Hsla {
+                a: 0.92,
+                ..colors.surface
+            },
+            colors.border,
+            px(960.),
+            px(540.),
+            px(18.),
+        )
         .child(header)
-        .child(body)
+        .child(body),
+        Hsla {
+            a: 0.55,
+            ..colors.backdrop
+        },
+        Rc::new(|cx| {
+            modals::close_curseforge_mod_page(cx);
+        }),
+    )
 }

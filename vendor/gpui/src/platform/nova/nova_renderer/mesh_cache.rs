@@ -4,13 +4,28 @@ impl NovaRenderer {
     pub(super) fn ensure_custom_mesh_3d_cache_for_current_backend(&mut self) -> Result<()> {
         self.custom_mesh_3d_uploaded_bytes_this_frame = 0;
         if self.frame_upload.custom_mesh_3d_meshes.is_empty() {
+            if !self.custom_mesh_3d_mesh_cache.is_empty() && self.pending_submissions.is_empty() {
+                self.clear_custom_mesh_3d_cache();
+                trim_custom_mesh_upload_scratch(
+                    &mut self.custom_mesh_3d_vertex_upload_scratch,
+                    256 * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES,
+                    1,
+                );
+                trim_custom_mesh_upload_scratch(
+                    &mut self.custom_mesh_3d_index_upload_scratch,
+                    512 * PACKED_CUSTOM_MESH_3D_INDEX_BYTES,
+                    1,
+                );
+            }
             return Ok(());
         }
 
         let meshes = self.frame_upload.custom_mesh_3d_meshes.clone();
-        if self.custom_mesh_3d_frame_has_stale_generation(&meshes)
-            || !self.custom_mesh_3d_missing_meshes_fit(&meshes)
-        {
+        let should_clear_cache = self.custom_mesh_3d_frame_has_orphaned_mesh(&meshes)
+            || self.custom_mesh_3d_frame_has_stale_generation(&meshes)
+            || !self.custom_mesh_3d_missing_meshes_fit(&meshes);
+        if should_clear_cache {
+            self.wait_for_pending_submissions()?;
             self.clear_custom_mesh_3d_cache();
         }
 
@@ -64,6 +79,7 @@ impl NovaRenderer {
             level,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
         ) && self.frame_upload.custom_mesh_3d_meshes.is_empty()
+            && self.pending_submissions.is_empty()
         {
             self.clear_custom_mesh_3d_cache();
         }
@@ -91,6 +107,12 @@ impl NovaRenderer {
                 .get(&mesh.id)
                 .is_some_and(|entry| entry.generation != mesh.generation)
         })
+    }
+
+    fn custom_mesh_3d_frame_has_orphaned_mesh(&self, meshes: &[Arc<GpuMesh3d>]) -> bool {
+        self.custom_mesh_3d_mesh_cache
+            .keys()
+            .any(|mesh_id| !meshes.iter().any(|mesh| mesh.id == *mesh_id))
     }
 
     fn custom_mesh_3d_missing_meshes_fit(&self, meshes: &[Arc<GpuMesh3d>]) -> bool {

@@ -137,15 +137,6 @@ impl Render for MapToolStripeView {
                 }),
             ))
             .child(div().flex_1())
-            .child(stripe_button(
-                "stripe-toggle",
-                &colors,
-                lucide_icons::icon_panel_left(),
-                snapshot.left_panel_open,
-                cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::ToggleLeftPanel);
-                }),
-            ))
     }
 }
 
@@ -159,7 +150,6 @@ fn theme_colors(cx: &App) -> ThemeColors {
     )
 }
 
-/// Icon + hover + active accent rail, VS Code Activity Bar style.
 fn stripe_button(
     id: &'static str,
     colors: &ThemeColors,
@@ -197,11 +187,7 @@ fn stripe_button(
         } else {
             gpui::transparent_black()
         })
-        .hover(|style| {
-            // Keep the active tint when already active; otherwise lift the surface.
-            if active { style } else { style.bg(hover_bg) }
-        })
-        // Left accent rail: a 2px bar pinned to the left edge marks the active entry.
+        .hover(|style| if active { style } else { style.bg(hover_bg) })
         .when(active, |this| {
             this.child(
                 div()

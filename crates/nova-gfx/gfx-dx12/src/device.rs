@@ -133,6 +133,8 @@ mod platform {
     const BACK_BUFFER_COUNT: u32 = 2;
     const DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT: u64 = 512;
     const DX12_TEXTURE_DATA_PITCH_ALIGNMENT: u64 = 256;
+    const DX12_RESOURCE_DESCRIPTOR_HEAP_CAPACITY: u32 = 4096;
+    const DX12_SAMPLER_DESCRIPTOR_HEAP_CAPACITY: u32 = NAGA_HLSL_SAMPLER_HEAP_SIZE;
     const NAGA_HLSL_SAMPLER_HEAP_SIZE: u32 = 2048;
     const NAGA_HLSL_SAMPLER_INDEX_SPACE: u32 = 255;
     const PHASE1_RESOURCE_SET_SPACE: u32 = 0;
@@ -194,13 +196,13 @@ mod platform {
             let resource_heap = DescriptorHeapAllocator::new(
                 &device,
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                256,
+                DX12_RESOURCE_DESCRIPTOR_HEAP_CAPACITY,
                 true,
             )?;
             let sampler_heap = DescriptorHeapAllocator::new(
                 &device,
                 D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                256,
+                DX12_SAMPLER_DESCRIPTOR_HEAP_CAPACITY,
                 true,
             )?;
             let rtv_heap =

@@ -29,24 +29,6 @@ pub(in crate::platform::nova) enum NovaBackdropBlurQuality {
 }
 
 impl NovaBackdropBlurQuality {
-    pub(in crate::platform::nova) fn from_visual_effect_quality(
-        quality: FrameVisualEffectQuality,
-    ) -> Self {
-        match quality {
-            FrameVisualEffectQuality::Full => Self::Full,
-            FrameVisualEffectQuality::Reduced => Self::Reduced,
-            FrameVisualEffectQuality::Disabled => Self::Disabled,
-        }
-    }
-
-    pub(in crate::platform::nova) fn most_reduced(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Disabled, _) | (_, Self::Disabled) => Self::Disabled,
-            (Self::Reduced, _) | (_, Self::Reduced) => Self::Reduced,
-            (Self::Full, Self::Full) => Self::Full,
-        }
-    }
-
     pub(in crate::platform::nova) fn adjusted_blur<'a>(
         self,
         blur: &'a crate::PaintBackdropBlur,

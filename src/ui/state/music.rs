@@ -2,7 +2,7 @@ use crate::music::{
     CoverDecodeRequest, DecodedCoverImage, MusicController, MusicPersistedState,
     MusicPlaybackSnapshot, MusicTrack,
 };
-use crate::ui::animation::{ease_out_cubic, eased_progress};
+use crate::ui::animation::{ease_out_cubic, raw_progress};
 use gpui::{App, Global, RenderImage};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
@@ -482,7 +482,7 @@ impl MusicState {
         let Some(started_at) = self.expanded_started_at else {
             return if self.expanded_target_open { 1.0 } else { 0.0 };
         };
-        let t = eased_progress(now, started_at, self.expanded_duration);
+        let t = raw_progress(now, started_at, self.expanded_duration);
         let eased = ease_out_cubic(t);
         (self.expanded_from + (self.expanded_to - self.expanded_from) * eased).clamp(0.0, 1.0)
     }

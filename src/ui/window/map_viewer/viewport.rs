@@ -44,7 +44,7 @@ pub(super) fn draw_grid_lines(
     let mut builder = PathBuilder::stroke(width);
     let mut x = start_x;
     while x <= end_x {
-        let screen_x = screen_x_for_block(bounds, viewport, layout, x);
+        let screen_x = screen_x_for_block(bounds, viewport, layout, x).floor();
         builder.move_to(point(px(screen_x), bounds.top()));
         builder.line_to(point(px(screen_x), bounds.bottom()));
         x = x.saturating_add(step);
@@ -54,7 +54,7 @@ pub(super) fn draw_grid_lines(
     }
     let mut z = start_z;
     while z <= end_z {
-        let screen_y = screen_y_for_block(bounds, viewport, layout, z);
+        let screen_y = screen_y_for_block(bounds, viewport, layout, z).floor();
         builder.move_to(point(bounds.left(), px(screen_y)));
         builder.line_to(point(bounds.right(), px(screen_y)));
         z = z.saturating_add(step);
@@ -397,6 +397,84 @@ pub(super) fn clamp_tile_span(min_value: &mut i32, max_value: &mut i32, center: 
     *max_value = center.saturating_add(right);
 }
 
+pub(super) fn clamp_tile_count(bounds: &mut TileBounds, center: (i32, i32), max_tiles: usize) {
+    let max_tiles = i64::try_from(max_tiles.max(1)).unwrap_or(i64::MAX);
+    let mut width = i64::from(bounds.max_x.saturating_sub(bounds.min_x).saturating_add(1)).max(1);
+    let mut height = i64::from(bounds.max_z.saturating_sub(bounds.min_z).saturating_add(1)).max(1);
+    if width.saturating_mul(height) <= max_tiles {
+        return;
+    }
+
+    let aspect = width as f64 / height as f64;
+    let mut target_width = ((max_tiles as f64 * aspect).sqrt().ceil() as i64).clamp(1, width);
+    let mut target_height = (max_tiles / target_width).clamp(1, height);
+    while target_width.saturating_mul(target_height) > max_tiles {
+        if target_width >= target_height && target_width > 1 {
+            target_width = target_width.saturating_sub(1);
+        } else if target_height > 1 {
+            target_height = target_height.saturating_sub(1);
+        } else {
+            break;
+        }
+    }
+    while target_width < width
+        && target_width.saturating_add(1).saturating_mul(target_height) <= max_tiles
+    {
+        target_width = target_width.saturating_add(1);
+    }
+    while target_height < height
+        && target_width.saturating_mul(target_height.saturating_add(1)) <= max_tiles
+    {
+        target_height = target_height.saturating_add(1);
+    }
+
+    width = target_width.max(1);
+    height = target_height.max(1);
+    clamp_bounds_axis_to_span(&mut bounds.min_x, &mut bounds.max_x, center.0, width);
+    clamp_bounds_axis_to_span(&mut bounds.min_z, &mut bounds.max_z, center.1, height);
+}
+
+pub(super) fn tile_bounds_count(bounds: TileBounds) -> usize {
+    if bounds.min_x > bounds.max_x || bounds.min_z > bounds.max_z {
+        return 0;
+    }
+    let width = usize::try_from(bounds.max_x.saturating_sub(bounds.min_x).saturating_add(1))
+        .unwrap_or(usize::MAX);
+    let height = usize::try_from(bounds.max_z.saturating_sub(bounds.min_z).saturating_add(1))
+        .unwrap_or(usize::MAX);
+    width.saturating_mul(height)
+}
+
+pub(super) fn viewport_with_composite_overscan(viewport: MapViewport) -> MapViewport {
+    let overscan_x = (viewport.width * 0.2).clamp(
+        MIN_VIEWPORT_COMPOSITE_OVERSCAN_PX,
+        MAX_VIEWPORT_COMPOSITE_OVERSCAN_PX,
+    );
+    let overscan_y = (viewport.height * 0.2).clamp(
+        MIN_VIEWPORT_COMPOSITE_OVERSCAN_PX,
+        MAX_VIEWPORT_COMPOSITE_OVERSCAN_PX,
+    );
+    MapViewport {
+        offset_x: viewport.offset_x + overscan_x,
+        offset_y: viewport.offset_y + overscan_y,
+        width: viewport.width + overscan_x * 2.0,
+        height: viewport.height + overscan_y * 2.0,
+        ..viewport
+    }
+}
+
+pub(super) fn canvas_tile_image_budget(_viewport: MapViewport, _layout: RenderLayout) -> usize {
+    usize::MAX
+}
+
+fn clamp_bounds_axis_to_span(min_value: &mut i32, max_value: &mut i32, center: i32, span: i64) {
+    let span = i32::try_from(span.max(1)).unwrap_or(i32::MAX);
+    let left = (span - 1) / 2;
+    let right = span - 1 - left;
+    *min_value = center.saturating_sub(left);
+    *max_value = center.saturating_add(right);
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct TileBounds {
     pub(super) min_x: i32,
@@ -413,6 +491,40 @@ impl TileBounds {
             min_z: self.min_z.saturating_sub(radius),
             max_z: self.max_z.saturating_add(radius),
         }
+    }
+
+    pub(super) fn contains(self, coord: (i32, i32)) -> bool {
+        coord.0 >= self.min_x
+            && coord.0 <= self.max_x
+            && coord.1 >= self.min_z
+            && coord.1 <= self.max_z
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RetainedTileFilter {
+    visible: TileBounds,
+    retained: TileBounds,
+    radius: i32,
+}
+
+impl RetainedTileFilter {
+    pub(super) fn new(visible: TileBounds, retained: TileBounds, radius: i32) -> Self {
+        Self {
+            visible,
+            retained,
+            radius,
+        }
+    }
+
+    pub(super) fn contains(self, coord: (i32, i32)) -> bool {
+        coord.0 >= self.retained.min_x
+            && coord.0 <= self.retained.max_x
+            && coord.1 >= self.retained.min_z
+            && coord.1 <= self.retained.max_z
+            && (self.radius <= 0
+                || squared_distance_to_tile_bounds(coord.0, coord.1, self.visible)
+                    <= i64::from(self.radius).saturating_mul(i64::from(self.radius)))
     }
 }
 
@@ -436,7 +548,7 @@ pub(super) fn visible_tile_bounds_for_render_range(
 pub(super) fn visible_tile_bounds_for_viewport(
     viewport: MapViewport,
     layout: RenderLayout,
-    center: (i32, i32),
+    _center: (i32, i32),
 ) -> Option<TileBounds> {
     let tile_size = layout_tile_size(layout);
     if !tile_size.is_finite() || tile_size <= 0.0 || !viewport.scale.is_finite() {
@@ -457,15 +569,31 @@ pub(super) fn visible_tile_bounds_for_viewport(
     let max_tile_x = ((max_map_x - edge_epsilon_x) / tile_size).floor() as i32;
     let min_tile_z = (min_map_z / tile_size).floor() as i32;
     let max_tile_z = ((max_map_z - edge_epsilon_z) / tile_size).floor() as i32;
-    let mut bounds = TileBounds {
+    let bounds = TileBounds {
         min_x: min_tile_x,
         max_x: max_tile_x.max(min_tile_x),
         min_z: min_tile_z,
         max_z: max_tile_z.max(min_tile_z),
     };
-    clamp_tile_span(&mut bounds.min_x, &mut bounds.max_x, center.0);
-    clamp_tile_span(&mut bounds.min_z, &mut bounds.max_z, center.1);
     (bounds.min_x <= bounds.max_x && bounds.min_z <= bounds.max_z).then_some(bounds)
+}
+
+pub(super) fn paint_tile_bounds_for_viewport(
+    viewport: MapViewport,
+    layout: RenderLayout,
+    radius: i32,
+) -> Option<TileBounds> {
+    let center = viewport.center_tile(layout);
+    let visible = visible_tile_bounds_for_viewport(viewport, layout, center)?;
+    let mut paint_bounds = visible.expand(radius);
+    clamp_tile_span(&mut paint_bounds.min_x, &mut paint_bounds.max_x, center.0);
+    clamp_tile_span(&mut paint_bounds.min_z, &mut paint_bounds.max_z, center.1);
+    let max_tiles = canvas_tile_image_budget(viewport, layout);
+    if tile_bounds_count(paint_bounds) > max_tiles && tile_bounds_count(visible) <= max_tiles {
+        return Some(visible);
+    }
+    clamp_tile_count(&mut paint_bounds, center, max_tiles);
+    Some(paint_bounds)
 }
 
 pub(super) fn tile_bounds_from_coords(coords: &[(i32, i32)]) -> Option<TileBounds> {
@@ -508,16 +636,40 @@ pub(super) fn collect_circular_tile_coords(
     if expanded.min_x > expanded.max_x || expanded.min_z > expanded.max_z {
         return Vec::new();
     }
+    if !expanded.contains(center) {
+        let mut coords = Vec::new();
+        collect_tile_coords_unsorted(visible, expanded, radius, &mut coords);
+        sort_tiles_center_first(&mut coords, center);
+        return coords;
+    }
     let radius_squared = i64::from(radius.max(0)).saturating_mul(i64::from(radius.max(0)));
     let mut coords = Vec::new();
-    for z in expanded.min_z..=expanded.max_z {
-        for x in expanded.min_x..=expanded.max_x {
-            if radius <= 0 || squared_distance_to_tile_bounds(x, z, visible) <= radius_squared {
-                coords.push((x, z));
-            }
+    for ring in 0..=max_tile_ring_for_bounds(expanded, center) {
+        if ring == 0 {
+            push_tile_if_selected(
+                &mut coords,
+                center,
+                visible,
+                expanded,
+                radius,
+                radius_squared,
+            );
+            continue;
+        }
+        for minor in 0..=ring {
+            push_ring_minor_tiles(
+                &mut coords,
+                center,
+                ring,
+                minor,
+                visible,
+                expanded,
+                radius,
+                radius_squared,
+            );
         }
     }
-    ordered_tiles_for_viewport(coords, center)
+    coords
 }
 
 pub(super) fn squared_distance_to_tile_bounds(x: i32, z: i32, bounds: TileBounds) -> i64 {
@@ -538,16 +690,14 @@ pub(super) fn squared_distance_to_tile_bounds(x: i32, z: i32, bounds: TileBounds
     dx.saturating_mul(dx).saturating_add(dz.saturating_mul(dz))
 }
 
-pub(super) fn ordered_tiles_for_viewport(
-    mut coords: Vec<(i32, i32)>,
-    center: (i32, i32),
-) -> Vec<(i32, i32)> {
-    sort_tiles_center_first(&mut coords, center);
-    coords
-}
-
 pub(super) fn sort_tiles_center_first(coords: &mut [(i32, i32)], center: (i32, i32)) {
     coords.sort_by_key(|coord| tile_distance_sort_key(*coord, center));
+}
+
+pub(super) fn tiles_are_sorted_center_first(coords: &[(i32, i32)], center: (i32, i32)) -> bool {
+    coords.windows(2).all(|window| {
+        tile_distance_sort_key(window[0], center) <= tile_distance_sort_key(window[1], center)
+    })
 }
 
 pub(super) fn tile_distance_sort_key(
@@ -573,8 +723,16 @@ pub(super) fn select_manifest_probe_tiles(
     center: (i32, i32),
     scanned_tiles: &BTreeSet<(i32, i32)>,
 ) -> Vec<(i32, i32)> {
+    if tiles_are_sorted_center_first(visible_tiles, center)
+        && tiles_are_sorted_center_first(prefetch_tiles, center)
+    {
+        return select_manifest_probe_tiles_from_ordered(
+            visible_tiles,
+            prefetch_tiles,
+            scanned_tiles,
+        );
+    }
     let visible_bounds = tile_bounds_from_coords(visible_tiles);
-    let visible_set = visible_tiles.iter().copied().collect::<BTreeSet<_>>();
     let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
 
@@ -586,7 +744,7 @@ pub(super) fn select_manifest_probe_tiles(
         candidates.push((0_u8, ring, distance_squared, 0_i64, manhattan, z, x, coord));
     }
     for coord in prefetch_tiles.iter().copied() {
-        if visible_set.contains(&coord) || scanned_tiles.contains(&coord) || !seen.insert(coord) {
+        if scanned_tiles.contains(&coord) || !seen.insert(coord) {
             continue;
         }
         let (ring, distance_squared, manhattan, z, x) = tile_distance_sort_key(coord, center);
@@ -621,6 +779,151 @@ pub(super) fn select_manifest_probe_tiles(
         .take(TILE_MANIFEST_PROBE_BATCH_TILES)
         .map(|candidate| candidate.7)
         .collect()
+}
+
+fn collect_tile_coords_unsorted(
+    visible: TileBounds,
+    expanded: TileBounds,
+    radius: i32,
+    coords: &mut Vec<(i32, i32)>,
+) {
+    let radius_squared = i64::from(radius.max(0)).saturating_mul(i64::from(radius.max(0)));
+    for z in expanded.min_z..=expanded.max_z {
+        for x in expanded.min_x..=expanded.max_x {
+            push_tile_if_selected(coords, (x, z), visible, expanded, radius, radius_squared);
+        }
+    }
+}
+
+fn max_tile_ring_for_bounds(bounds: TileBounds, center: (i32, i32)) -> i32 {
+    let min_dx = (i64::from(bounds.min_x) - i64::from(center.0)).abs();
+    let max_dx = (i64::from(bounds.max_x) - i64::from(center.0)).abs();
+    let min_dz = (i64::from(bounds.min_z) - i64::from(center.1)).abs();
+    let max_dz = (i64::from(bounds.max_z) - i64::from(center.1)).abs();
+    min_dx
+        .max(max_dx)
+        .max(min_dz)
+        .max(max_dz)
+        .min(i64::from(i32::MAX)) as i32
+}
+
+fn push_ring_minor_tiles(
+    coords: &mut Vec<(i32, i32)>,
+    center: (i32, i32),
+    ring: i32,
+    minor: i32,
+    visible: TileBounds,
+    expanded: TileBounds,
+    radius: i32,
+    radius_squared: i64,
+) {
+    if minor == 0 {
+        push_candidate_tiles(
+            coords,
+            &[(0, -ring), (-ring, 0), (ring, 0), (0, ring)],
+            center,
+            visible,
+            expanded,
+            radius,
+            radius_squared,
+        );
+    } else if minor == ring {
+        push_candidate_tiles(
+            coords,
+            &[(-ring, -ring), (ring, -ring), (-ring, ring), (ring, ring)],
+            center,
+            visible,
+            expanded,
+            radius,
+            radius_squared,
+        );
+    } else {
+        push_candidate_tiles(
+            coords,
+            &[
+                (-minor, -ring),
+                (minor, -ring),
+                (-ring, -minor),
+                (ring, -minor),
+                (-ring, minor),
+                (ring, minor),
+                (-minor, ring),
+                (minor, ring),
+            ],
+            center,
+            visible,
+            expanded,
+            radius,
+            radius_squared,
+        );
+    }
+}
+
+fn push_candidate_tiles(
+    coords: &mut Vec<(i32, i32)>,
+    offsets: &[(i32, i32)],
+    center: (i32, i32),
+    visible: TileBounds,
+    expanded: TileBounds,
+    radius: i32,
+    radius_squared: i64,
+) {
+    for &(offset_x, offset_z) in offsets {
+        let Some(x) = center.0.checked_add(offset_x) else {
+            continue;
+        };
+        let Some(z) = center.1.checked_add(offset_z) else {
+            continue;
+        };
+        push_tile_if_selected(coords, (x, z), visible, expanded, radius, radius_squared);
+    }
+}
+
+fn push_tile_if_selected(
+    coords: &mut Vec<(i32, i32)>,
+    coord: (i32, i32),
+    visible: TileBounds,
+    expanded: TileBounds,
+    radius: i32,
+    radius_squared: i64,
+) {
+    if expanded.contains(coord)
+        && (radius <= 0
+            || squared_distance_to_tile_bounds(coord.0, coord.1, visible) <= radius_squared)
+    {
+        coords.push(coord);
+    }
+}
+
+fn select_manifest_probe_tiles_from_ordered(
+    visible_tiles: &[(i32, i32)],
+    prefetch_tiles: &[(i32, i32)],
+    scanned_tiles: &BTreeSet<(i32, i32)>,
+) -> Vec<(i32, i32)> {
+    let mut seen = BTreeSet::new();
+    let mut selected = Vec::with_capacity(TILE_MANIFEST_PROBE_BATCH_TILES);
+    push_ordered_manifest_probe_tiles(visible_tiles, scanned_tiles, &mut seen, &mut selected);
+    if selected.len() < TILE_MANIFEST_PROBE_BATCH_TILES {
+        push_ordered_manifest_probe_tiles(prefetch_tiles, scanned_tiles, &mut seen, &mut selected);
+    }
+    selected
+}
+
+fn push_ordered_manifest_probe_tiles(
+    tiles: &[(i32, i32)],
+    scanned_tiles: &BTreeSet<(i32, i32)>,
+    seen: &mut BTreeSet<(i32, i32)>,
+    selected: &mut Vec<(i32, i32)>,
+) {
+    for coord in tiles.iter().copied() {
+        if selected.len() >= TILE_MANIFEST_PROBE_BATCH_TILES {
+            break;
+        }
+        if scanned_tiles.contains(&coord) || !seen.insert(coord) {
+            continue;
+        }
+        selected.push(coord);
+    }
 }
 
 pub(super) fn tile_center_distance_squared(coord: (i32, i32), center: (i32, i32)) -> i64 {

@@ -1,5 +1,6 @@
 use super::config::{
     clamp_music_volume, merge_json_values, normalize_gpu_adapter_name, normalize_renderer_backend,
+    normalize_theme_mode,
 };
 use crate::music::MusicPlaybackMode;
 use serde_json::json;
@@ -48,6 +49,7 @@ fn missing_glass_effect_enabled_defaults_to_true() {
     .expect("legacy config should deserialize");
 
     assert!(config.custom_style.glass_effect_enabled);
+    assert_eq!(config.custom_style.theme_mode, "light");
     assert_eq!(
         config.launcher.gpu_adapter_name,
         super::config::default_gpu_adapter_name()
@@ -180,6 +182,15 @@ fn gpu_adapter_name_normalization_keeps_real_device_names() {
         normalize_gpu_adapter_name(" NVIDIA GeForce RTX 4060 "),
         "NVIDIA GeForce RTX 4060"
     );
+}
+
+#[test]
+fn theme_mode_normalization_defaults_to_light() {
+    assert_eq!(normalize_theme_mode("dark"), "dark");
+    assert_eq!(normalize_theme_mode("DARK"), "dark");
+    assert_eq!(normalize_theme_mode("light"), "light");
+    assert_eq!(normalize_theme_mode(""), "light");
+    assert_eq!(normalize_theme_mode("system"), "light");
 }
 
 #[test]

@@ -1,22 +1,24 @@
 use anyhow::Result;
 
 use super::super::*;
-use super::buffers::NovaResourceBuffers;
+use super::buffers::NovaFrameResourceBuffers;
 
-pub(super) struct NovaRendererResourceSets {
-    pub(super) quad_resource_set: ResourceSetId,
-    pub(super) shadow_resource_set: ResourceSetId,
-    pub(super) path_rasterization_resource_set: ResourceSetId,
-    pub(super) underline_resource_set: ResourceSetId,
-    pub(super) custom_mesh_3d_resource_set: ResourceSetId,
+#[derive(Clone, Copy)]
+pub(in crate::platform::nova) struct NovaFrameResourceSets {
+    pub(in crate::platform::nova) quad_resource_set: ResourceSetId,
+    pub(in crate::platform::nova) shadow_resource_set: ResourceSetId,
+    pub(in crate::platform::nova) path_rasterization_resource_set: ResourceSetId,
+    pub(in crate::platform::nova) underline_resource_set: ResourceSetId,
+    pub(in crate::platform::nova) custom_mesh_3d_resource_set: ResourceSetId,
 }
 
 pub(super) fn create_renderer_resource_sets<D>(
     device: &mut D,
     label: &str,
     layouts: &NovaResourceLayouts,
-    buffers: &NovaResourceBuffers,
-) -> Result<NovaRendererResourceSets>
+    buffers: &NovaFrameResourceBuffers,
+    custom_mesh_3d_vertices_buffer: BufferId,
+) -> Result<NovaFrameResourceSets>
 where
     D: BackendResources,
 {
@@ -122,11 +124,11 @@ where
         bindings: custom_mesh_3d_resource_bindings(
             buffers.global_buffer,
             buffers.custom_mesh_3d_parameters_buffer,
-            buffers.custom_mesh_3d_vertices_buffer,
+            custom_mesh_3d_vertices_buffer,
         ),
     })?;
 
-    Ok(NovaRendererResourceSets {
+    Ok(NovaFrameResourceSets {
         quad_resource_set,
         shadow_resource_set,
         path_rasterization_resource_set,

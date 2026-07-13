@@ -5,7 +5,7 @@ use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
 use crate::ui::animation::{
-    ease_in_cubic, ease_out_back, ease_out_cubic, ease_out_elastic, eased_progress,
+    ease_in_cubic, ease_out_back, ease_out_cubic, ease_out_elastic, raw_progress,
     request_animation_frame_if,
 };
 use crate::ui::components::scroll::ScrollableElement as _;
@@ -192,7 +192,7 @@ impl HomePageView {
             return if self.dropdown_open { 1.0 } else { 0.0 };
         };
 
-        let progress = eased_progress(now, started_at, DROPDOWN_ANIMATION_DURATION);
+        let progress = raw_progress(now, started_at, DROPDOWN_ANIMATION_DURATION);
         if self.dropdown_anim_from_open {
             1.0 - ease_in_cubic(progress)
         } else {
@@ -777,7 +777,7 @@ impl Render for HomePageView {
                 let elapsed = now.saturating_duration_since(at);
                 let duration = Duration::from_millis(600);
                 if elapsed < duration {
-                    eased_progress(now, at, duration)
+                    raw_progress(now, at, duration)
                 } else {
                     1.0
                 }

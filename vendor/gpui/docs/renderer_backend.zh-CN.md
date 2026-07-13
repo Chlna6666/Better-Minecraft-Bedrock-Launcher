@@ -10,8 +10,8 @@ defaults。
 
 `RendererOptions` 包含：
 
-- `backend`：`RendererBackend::Auto`、`NovaVulkan`、`NovaDx12` 或
-  `HeadlessTest`；
+- `backend`：`RendererBackend::Auto`、`NovaVulkan`、`NovaDx12`、`NovaMetal`
+  或 `HeadlessTest`；
 - `adapter_name`：可选的精确 GPU adapter preference；
 - `power_preference`：默认 low-power 或 high-performance preference；
 - `present_mode`：支持时使用 vsync、mailbox 或 immediate preference；
@@ -24,16 +24,16 @@ defaults。
 ## 环境变量 Override
 
 `GPUI_RENDERER` 可以覆盖配置的 backend。可接受值包括 `auto`、`vulkan`、
-`vulkan`、`dx12`、`dx12` 和 `headless`。
+`dx12`、`metal` 和 `headless`。
 
 renderer choice 的应用 UI 应放在 GPUI 外部。GPUI 暴露 options 和 metrics；应用
 决定自己的 defaults。
 
-## Windows GPU 路径
+## Nova-gfx 路径
 
-Windows 平台路径是 GPU-first 且基于 winit。`RendererBackend::Auto` 会按平台顺序
-尝试支持的 GPU backends；显式 Vulkan 或 DX12 preference 会选择单一 backend，并
-提供 fallback diagnostics。
+GPUI 平台渲染路径使用 nova-gfx。`RendererBackend::Auto` 会选择平台默认 backend；
+显式 Vulkan、DX12 或 Metal preference 会选择对应 native backend，并提供 fallback
+diagnostics。
 
 Windows renderer 也负责 event-driven、continuous 和 presentation-only frames 的帧
 调度。presentation-only frames 用于已经准备好的内容可以显示，而不必重建完整 scene

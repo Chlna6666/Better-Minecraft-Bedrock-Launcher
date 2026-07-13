@@ -2,28 +2,80 @@ use anyhow::Result;
 
 use super::super::*;
 
-pub(super) struct NovaResourceBuffers {
-    pub(super) global_buffer: BufferId,
-    pub(super) text_raster_buffer: BufferId,
-    pub(super) quad_buffer: BufferId,
-    pub(super) shadow_buffer: BufferId,
-    pub(super) path_rasterization_vertex_buffer: BufferId,
-    pub(super) path_sprite_buffer: BufferId,
-    pub(super) mono_sprite_buffer: BufferId,
-    pub(super) poly_sprite_buffer: BufferId,
-    pub(super) present_copy_sprite_buffer: BufferId,
-    pub(super) underline_buffer: BufferId,
-    pub(super) backdrop_blur_pass_buffer: BufferId,
-    pub(super) backdrop_blur_buffer: BufferId,
-    pub(super) animation_binding_buffer: BufferId,
-    pub(super) animation_value_buffer: BufferId,
-    pub(super) custom_mesh_3d_parameters_buffer: BufferId,
+#[derive(Clone, Copy)]
+pub(in crate::platform::nova) struct NovaFrameResourceBuffers {
+    pub(in crate::platform::nova) global_buffer: BufferId,
+    pub(in crate::platform::nova) text_raster_buffer: BufferId,
+    pub(in crate::platform::nova) quad_buffer: BufferId,
+    pub(in crate::platform::nova) shadow_buffer: BufferId,
+    pub(in crate::platform::nova) path_rasterization_vertex_buffer: BufferId,
+    pub(in crate::platform::nova) path_sprite_buffer: BufferId,
+    pub(in crate::platform::nova) mono_sprite_buffer: BufferId,
+    pub(in crate::platform::nova) poly_sprite_buffer: BufferId,
+    pub(in crate::platform::nova) present_copy_sprite_buffer: BufferId,
+    pub(in crate::platform::nova) underline_buffer: BufferId,
+    pub(in crate::platform::nova) backdrop_blur_pass_buffer: BufferId,
+    pub(in crate::platform::nova) backdrop_blur_buffer: BufferId,
+    pub(in crate::platform::nova) animation_binding_buffer: BufferId,
+    pub(in crate::platform::nova) animation_value_buffer: BufferId,
+    pub(in crate::platform::nova) custom_mesh_3d_parameters_buffer: BufferId,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct NovaSharedResourceBuffers {
     pub(super) custom_mesh_3d_vertices_buffer: BufferId,
     pub(super) custom_mesh_3d_indices_buffer: BufferId,
     pub(super) atlas_sampler: SamplerId,
 }
 
+pub(super) struct NovaResourceBuffers {
+    pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
+    pub(super) shared: NovaSharedResourceBuffers,
+}
+
 pub(super) fn create_resource_buffers<D>(device: &mut D, label: &str) -> Result<NovaResourceBuffers>
+where
+    D: BackendResources,
+{
+    let mut frame_buffers = Vec::with_capacity(MAX_IN_FLIGHT_SUBMISSIONS);
+    for index in 0..MAX_IN_FLIGHT_SUBMISSIONS {
+        frame_buffers.push(create_frame_resource_buffers(
+            device,
+            &format!("{label} frame {index}"),
+        )?);
+    }
+
+    let custom_mesh_3d_vertices_buffer = device.create_buffer(&BufferDescriptor {
+        label: Some(format!("{label} custom GPU mesh 3D vertices")),
+        size: (MAX_CUSTOM_MESH_3D_VERTICES * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
+        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::CpuToGpu,
+    })?;
+    let custom_mesh_3d_indices_buffer = device.create_buffer(&BufferDescriptor {
+        label: Some(format!("{label} custom GPU mesh 3D indices")),
+        size: (MAX_CUSTOM_MESH_3D_INDICES * PACKED_CUSTOM_MESH_3D_INDEX_BYTES) as u64,
+        usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::CpuToGpu,
+    })?;
+    let atlas_sampler = device.create_sampler(&SamplerDescriptor {
+        label: Some(format!("{label} glyph atlas sampler")),
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+    })?;
+
+    Ok(NovaResourceBuffers {
+        frame_buffers,
+        shared: NovaSharedResourceBuffers {
+            custom_mesh_3d_vertices_buffer,
+            custom_mesh_3d_indices_buffer,
+            atlas_sampler,
+        },
+    })
+}
+
+fn create_frame_resource_buffers<D>(device: &mut D, label: &str) -> Result<NovaFrameResourceBuffers>
 where
     D: BackendResources,
 {
@@ -117,27 +169,8 @@ where
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
-    let custom_mesh_3d_vertices_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} custom GPU mesh 3D vertices")),
-        size: (MAX_CUSTOM_MESH_3D_VERTICES * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
-        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
-        memory_location: MemoryLocation::CpuToGpu,
-    })?;
-    let custom_mesh_3d_indices_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} custom GPU mesh 3D indices")),
-        size: (MAX_CUSTOM_MESH_3D_INDICES * PACKED_CUSTOM_MESH_3D_INDEX_BYTES) as u64,
-        usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
-        memory_location: MemoryLocation::CpuToGpu,
-    })?;
-    let atlas_sampler = device.create_sampler(&SamplerDescriptor {
-        label: Some(format!("{label} glyph atlas sampler")),
-        mag_filter: FilterMode::Linear,
-        min_filter: FilterMode::Linear,
-        address_mode_u: AddressMode::ClampToEdge,
-        address_mode_v: AddressMode::ClampToEdge,
-    })?;
 
-    Ok(NovaResourceBuffers {
+    Ok(NovaFrameResourceBuffers {
         global_buffer,
         text_raster_buffer,
         quad_buffer,
@@ -153,8 +186,5 @@ where
         animation_binding_buffer,
         animation_value_buffer,
         custom_mesh_3d_parameters_buffer,
-        custom_mesh_3d_vertices_buffer,
-        custom_mesh_3d_indices_buffer,
-        atlas_sampler,
     })
 }

@@ -25,7 +25,7 @@ struct Preview3dVertex {
 struct Preview3dVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) color: vec4<f32>,
-    @location(1) clip_distances: vec4<f32>,
+    @location(1) @interpolate(flat) draw_bounds: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: GlobalParams;
@@ -41,7 +41,12 @@ fn vs_preview_3d(
     let draw_parameters = preview_3d_draw_parameters[instance_index];
     let model_position = vec4<f32>(vertex.position_x, vertex.position_y, vertex.position_z, 1.0);
     let clip_position = draw_parameters.view_proj_model * model_position;
-    let ndc = clip_position.xyz / max(clip_position.w, 0.0001);
+    let safe_clip_w = select(
+        min(clip_position.w, -0.0001),
+        max(clip_position.w, 0.0001),
+        clip_position.w >= 0.0,
+    );
+    let ndc = clip_position.xyz / safe_clip_w;
 
     let edge_inset = min(vec2<f32>(6.0, 6.0), draw_parameters.bounds_size * vec2<f32>(0.08, 0.08));
     let mesh_origin = draw_parameters.bounds_origin + edge_inset;
@@ -57,20 +62,28 @@ fn vs_preview_3d(
     let device_position = pixel_position / viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
 
     var out: Preview3dVarying;
-    out.position = vec4<f32>(device_position, ndc.z, 1.0);
+    out.position = vec4<f32>(
+        device_position * clip_position.w,
+        clip_position.z,
+        clip_position.w,
+    );
     out.color = vec4<f32>(vertex.color_r, vertex.color_g, vertex.color_b, vertex.color_a);
-    let top_left = pixel_position - draw_origin;
-    let bottom_right = draw_origin + draw_size - pixel_position;
-    out.clip_distances = vec4<f32>(top_left.x, bottom_right.x, top_left.y, bottom_right.y);
+    out.draw_bounds = vec4<f32>(draw_origin, draw_origin + draw_size);
     return out;
 }
 
 @fragment
 fn fs_preview_3d(input: Preview3dVarying) -> @location(0) vec4<f32> {
-    if (any(input.clip_distances < vec4<f32>(0.0))) {
+    let fragment_position = input.position.xy;
+    let draw_bounds = input.draw_bounds;
+    if (fragment_position.x < draw_bounds.x || fragment_position.x > draw_bounds.z
+        || fragment_position.y < draw_bounds.y || fragment_position.y > draw_bounds.w) {
         return vec4<f32>(0.0);
     }
-    let edge_alpha = clamp(min(min(input.clip_distances.x, input.clip_distances.y), min(input.clip_distances.z, input.clip_distances.w)), 0.0, 1.0);
+    let edge_alpha = clamp(min(
+        min(fragment_position.x - draw_bounds.x, draw_bounds.z - fragment_position.x),
+        min(fragment_position.y - draw_bounds.y, draw_bounds.w - fragment_position.y),
+    ), 0.0, 1.0);
     let alpha = input.color.a * edge_alpha;
     if (alpha <= 0.0) {
         return vec4<f32>(0.0);
@@ -80,5 +93,11 @@ fn fs_preview_3d(input: Preview3dVarying) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_preview_3d_unclipped(input: Preview3dVarying) -> @location(0) vec4<f32> {
+    let fragment_position = input.position.xy;
+    let draw_bounds = input.draw_bounds;
+    if (fragment_position.x < draw_bounds.x || fragment_position.x > draw_bounds.z
+        || fragment_position.y < draw_bounds.y || fragment_position.y > draw_bounds.w) {
+        return vec4<f32>(0.0);
+    }
     return input.color;
 }

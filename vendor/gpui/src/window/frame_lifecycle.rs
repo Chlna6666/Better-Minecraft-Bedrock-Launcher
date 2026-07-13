@@ -327,14 +327,12 @@ impl Window {
         let handle = self.handle;
         let mut cx = self.async_app.clone();
         let executor = cx.foreground_executor().clone();
-        executor
-            .spawn(async move {
-                cx.background_executor().timer(FRAME_WATCHDOG_TIMEOUT).await;
-                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
-                    window.recover_stalled_platform_frame(generation, cx);
-                }));
-            })
-            .detach();
+        self.platform_frame_watchdog_task = Some(executor.spawn(async move {
+            cx.background_executor().timer(FRAME_WATCHDOG_TIMEOUT).await;
+            let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
+                window.recover_stalled_platform_frame(generation, cx);
+            }));
+        }));
     }
 
     pub(super) fn recover_stalled_platform_frame(&mut self, generation: u64, cx: &mut App) {
@@ -349,6 +347,7 @@ impl Window {
         }
 
         let frame_options = watchdog.platform_options;
+        self.platform_window.frame_request_timed_out(frame_options);
         log::warn!(
             "gpui stalled platform frame recovery: window={} generation={} dirty={} refreshing={} scheduled={} force_render={} require_presentation={}",
             self.handle.window_id().as_u64(),
@@ -378,6 +377,7 @@ impl Window {
         let mut watchdog = self.frame_watchdog.get();
         watchdog.platform_pending = false;
         self.frame_watchdog.set(watchdog);
+        self.platform_frame_watchdog_task.take();
     }
 
     pub(super) fn run_platform_frame(&mut self, frame_options: RequestFrameOptions, cx: &mut App) {
@@ -562,11 +562,12 @@ impl Window {
     fn finish_draw_budget_accounting(
         &mut self,
         generation_elapsed: Duration,
-        frame_budget: Duration,
+        progressive_budget: Duration,
         cx: &mut App,
     ) {
         let draw_was_degraded = self.draw_was_degraded;
-        let generation_budget_missed = generation_elapsed >= frame_budget;
+        let warning_budget = self.frame_throttle.generation_warning_budget();
+        let generation_budget_missed = generation_elapsed >= warning_budget;
         if generation_budget_missed
             && log::log_enabled!(log::Level::Warn)
             && self
@@ -578,16 +579,19 @@ impl Window {
             let first_view_dirty_entity = dirty_frame_diagnostics.first_view_dirty_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::warn!(
-                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_degraded={} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 generation_elapsed,
-                frame_budget,
+                warning_budget,
+                progressive_budget,
                 draw_was_degraded,
                 stats.layout.nodes,
                 stats.layout.measured_nodes,
                 stats.layout.roots,
                 stats.layout_cache.hits,
                 stats.layout_cache.misses,
+                stats.layout.cache_reused_roots,
+                stats.layout.cache_saved_roots,
                 stats.layout.bounds_cache_hits,
                 stats.layout.bounds_cache_misses,
                 stats.text_layout.hits,
@@ -596,6 +600,7 @@ impl Window {
                 stats.list_measured_items,
                 stats.scene.primitives,
                 stats.scene.batches,
+                stats.scene.replayed_primitives,
                 stats.scene.retained_capacity,
                 stats.frame_retained_capacity,
                 dirty_frame_diagnostics.refreshes,

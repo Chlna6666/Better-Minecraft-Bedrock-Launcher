@@ -430,20 +430,24 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
             )
         });
 
-    dialog.map(|dialog| {
-        modal::modal_layer_dismissible(
-            game::render_game_dialog(
-                colors,
-                dialog,
-                dialog_folder_input.as_ref(),
-                cdn_loading,
-                cdn_error,
-                cdn_results,
-                selected_cdn_base,
-            ),
-            hsla(0.0, 0.0, 0.0, 0.28),
-            Rc::new(dismiss_game_dialog),
-        )
-        .into_any_element()
-    })
+    if let Some(dialog) = dialog {
+        return Some(
+            modal::modal_layer_dismissible(
+                game::render_game_dialog(
+                    colors,
+                    dialog,
+                    dialog_folder_input.as_ref(),
+                    cdn_loading,
+                    cdn_error,
+                    cdn_results,
+                    selected_cdn_base,
+                ),
+                hsla(0.0, 0.0, 0.0, 0.28),
+                Rc::new(dismiss_game_dialog),
+            )
+            .into_any_element(),
+        );
+    }
+
+    curseforge::render_curseforge_install_overlay(colors, cx)
 }

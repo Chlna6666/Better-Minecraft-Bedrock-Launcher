@@ -16,6 +16,7 @@ const STARTUP_WARMUP_DELAY: Duration = Duration::from_millis(1500);
 pub(crate) struct AppBootstrap {
     debug_enabled: bool,
     theme_color_hex: String,
+    theme_mode: String,
     initial_locale: Locale,
     renderer_backend: gpui::RendererBackend,
     gpu_adapter_name: Option<String>,
@@ -47,6 +48,7 @@ impl AppBootstrap {
         Self {
             debug_enabled: config.launcher.debug,
             theme_color_hex: config.custom_style.theme_color.clone(),
+            theme_mode: config.custom_style.theme_mode.clone(),
             initial_locale: Locale::from_code(&locale_code).unwrap_or(Locale::EnUs),
             renderer_backend,
             gpu_adapter_name,
@@ -302,17 +304,15 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::plugins::runtime::PluginRegistry>();
     cx.default_global::<AppSubscriptions>();
 
-    crate::ui::state::theme::ThemeState::sync_component_theme(false, cx);
-
     cx.update_global(|i18n: &mut I18n, _cx| {
         i18n.set_locale(bootstrap.initial_locale);
     });
 
-    let accent = crate::ui::theme::parse_hex_color_to_hsla(&bootstrap.theme_color_hex);
-    cx.update_global(|theme: &mut crate::ui::state::theme::ThemeState, _cx| {
-        theme.accent_hex = SharedString::from(bootstrap.theme_color_hex.clone());
-        theme.accent = accent;
-    });
+    crate::ui::state::theme::ThemeState::apply_startup_config(
+        &bootstrap.theme_color_hex,
+        &bootstrap.theme_mode,
+        cx,
+    );
 
     cx.update_global(
         |agreement: &mut crate::ui::state::agreement::AgreementState, _cx| {
@@ -467,7 +467,7 @@ fn open_debug_window(cx: &mut App) {
     let debug_window = cx.open_window(window_options, move |window, cx| {
         window.set_title(&window_title);
 
-        let view = cx.new(crate::ui::window::debug::DebugView::new);
+        let view = cx.new(|cx| crate::ui::window::debug::DebugView::new(window, cx));
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))
     });
 

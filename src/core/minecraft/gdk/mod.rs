@@ -17,3 +17,13 @@ pub mod key;
 pub mod stream;
 pub mod structs;
 pub mod unpack;
+
+const GDK_TASK_STAGE_LABELS: [(&str, &str); 3] = [
+    ("initializing", "初始化中"),
+    ("decrypting", "解密中"),
+    ("extracting", "解压中"),
+];
+
+pub(crate) fn register_gdk_task_stage_labels() {
+    crate::tasks::task_manager::register_task_stage_labels(GDK_TASK_STAGE_LABELS);
+}

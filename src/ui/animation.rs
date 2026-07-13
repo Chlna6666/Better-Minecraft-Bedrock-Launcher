@@ -36,8 +36,9 @@ pub fn raw_progress(now: Instant, started_at: Instant, duration: Duration) -> f3
 pub fn eased_progress(now: Instant, started_at: Instant, duration: Duration) -> f32 {
     let elapsed = now.saturating_duration_since(started_at);
     AnimationSpec::new(duration.max(MIN_ANIMATION_DURATION))
+        .ease(Easing::OutCubic)
         .sample_elapsed(elapsed)
-        .raw_progress
+        .eased_progress
 }
 
 pub fn is_running(now: Instant, started_at: Option<Instant>, duration: Duration) -> bool {
@@ -105,4 +106,22 @@ fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
         animation = animation.repeat();
     }
     animation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eased_progress_applies_default_easing() {
+        let started_at = Instant::now();
+        let duration = Duration::from_millis(100);
+        let now = started_at + Duration::from_millis(50);
+
+        let raw = raw_progress(now, started_at, duration);
+        let eased = eased_progress(now, started_at, duration);
+
+        assert_eq!(raw, 0.5);
+        assert!(eased > raw);
+    }
 }

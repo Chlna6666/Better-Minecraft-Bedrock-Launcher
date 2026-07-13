@@ -1,13 +1,14 @@
 use super::{frame::AnimatedFrame, source::AnimatedImageSource, streaming::StreamingImageState};
 use crate::{BackgroundExecutor, DevicePixels, Result, Size, size};
-use crossbeam_queue::ArrayQueue;
 use image::{Delay, Frame};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
     fmt,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+        mpsc::{TryRecvError, sync_channel},
     },
     time::Duration,
 };
@@ -151,21 +152,23 @@ impl RenderImage {
         config: AnimatedImageConfig,
     ) -> Self {
         let config = config.clamped();
-        let queue = ArrayQueue::new(config.decode_ahead_frames);
+        let (queue_sender, queue_receiver) = sync_channel(config.decode_ahead_frames);
         let mut next_source_index = first_frame.sequence().saturating_add(1);
         for frame in queued_frames {
-            next_source_index = next_source_index.max(frame.sequence().saturating_add(1));
-            if queue.push(frame).is_err() {
+            let next_frame_index = frame.sequence().saturating_add(1);
+            if queue_sender.try_send(frame).is_err() {
                 break;
             }
+            next_source_index = next_source_index.max(next_frame_index);
         }
         let state = StreamingImageState {
             source,
             target,
             first_frame,
-            queue,
-            next_sequence: AtomicUsize::new(next_source_index),
-            next_source_index: AtomicUsize::new(next_source_index),
+            queue_sender,
+            queue_receiver: Mutex::new(queue_receiver),
+            next_sequence: next_source_index,
+            next_source_index,
             decode_task_running: AtomicBool::new(false),
             completed: AtomicBool::new(false),
         };
@@ -300,10 +303,18 @@ impl RenderImage {
             return None;
         };
         let mut next_frame = None;
-        while let Some(frame) = state.queue.pop() {
-            if frame.sequence > current_sequence {
-                next_frame = Some(frame);
-                break;
+        loop {
+            match state.queue_receiver.lock().try_recv() {
+                Ok(frame) if frame.sequence > current_sequence => {
+                    next_frame = Some(frame);
+                    break;
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    state.completed.store(true, SeqCst);
+                    break;
+                }
             }
         }
         state.ensure_decode_task(executor);

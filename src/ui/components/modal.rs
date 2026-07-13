@@ -1,36 +1,37 @@
 use gpui::*;
 use std::rc::Rc;
 
-const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 0.01;
-
-fn is_black_overlay(color: Hsla) -> bool {
-    color.l <= 0.12 && color.s <= 0.20
-}
+const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.46;
+const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.66;
+const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 8.0;
+const MIN_MODAL_BACKDROP_BLUR_PX: f32 = 0.5;
 
 fn frosted_backdrop_base(background: Hsla) -> Div {
-    frosted_backdrop_base_with_overlay(background, true)
+    frosted_backdrop_base_with_overlay(background, 1.0)
 }
 
-fn frosted_backdrop_base_with_overlay(background: Hsla, strengthen_black_overlay: bool) -> Div {
-    let overlay = if strengthen_black_overlay && is_black_overlay(background) {
-        Hsla {
-            a: (background.a * 1.12).clamp(0.55, 0.78),
-            ..background
-        }
-    } else {
-        background
+fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
+    let progress = progress.clamp(0.0, 1.0);
+    let overlay = Hsla {
+        a: background
+            .a
+            .clamp(MODAL_BACKDROP_MIN_ALPHA, MODAL_BACKDROP_MAX_ALPHA)
+            * progress,
+        ..black()
     };
 
-    let backdrop = div().absolute().inset_0().occlude().bg(overlay);
-    if DEFAULT_MODAL_BACKDROP_BLUR_PX >= 0.5 {
+    let backdrop = div().absolute().inset_0().occlude();
+    let blur_radius = px(DEFAULT_MODAL_BACKDROP_BLUR_PX * progress);
+    if blur_radius >= px(MIN_MODAL_BACKDROP_BLUR_PX) {
         backdrop.backdrop_blur(
-            BackdropBlurStyle::new(px(DEFAULT_MODAL_BACKDROP_BLUR_PX))
+            BackdropBlurStyle::new(blur_radius)
                 .downsample(2)
                 .levels(3)
-                .saturation(1.08),
+                .saturation(1.08)
+                .tint(overlay),
         )
     } else {
-        backdrop
+        backdrop.bg(overlay)
     }
 }
 
@@ -41,13 +42,7 @@ pub fn modal_backdrop(background: Hsla) -> Div {
 
 /// Animated fullscreen backdrop for modal open/close transitions.
 pub fn animated_modal_backdrop(background: Hsla, progress: f32) -> Div {
-    let progress = progress.clamp(0.0, 1.0);
-    let background = Hsla {
-        a: background.a * progress,
-        ..background
-    };
-
-    intercepting_backdrop(frosted_backdrop_base_with_overlay(background, false))
+    intercepting_backdrop(frosted_backdrop_base_with_overlay(background, progress))
 }
 
 fn default_modal_content_offset(progress: f32, visible: bool) -> Pixels {
@@ -129,6 +124,28 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> Div {
                 .occlude()
                 .child(content),
         )
+}
+
+/// Shared modal card shell used inside modal layers.
+pub fn modal_surface(
+    background: Hsla,
+    border: Hsla,
+    width: Pixels,
+    height: Pixels,
+    radius: Pixels,
+) -> Div {
+    div()
+        .w(width)
+        .h(height)
+        .max_w(relative(1.0))
+        .max_h(relative(1.0))
+        .rounded(radius)
+        .bg(background)
+        .border_1()
+        .border_color(border)
+        .overflow_hidden()
+        .flex()
+        .flex_col()
 }
 
 /// Like [`modal_layer`], but clicking the backdrop dismisses the modal.

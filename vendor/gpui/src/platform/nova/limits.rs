@@ -11,9 +11,10 @@ pub(super) const MAX_BACKDROP_BLURS: usize = 1024;
 pub(super) const MAX_ANIMATION_BINDINGS: usize =
     MAX_QUADS + MAX_SHADOWS + MAX_MONO_SPRITES + MAX_POLY_SPRITES + MAX_BACKDROP_BLURS;
 pub(super) const MAX_ANIMATION_VALUES: usize = MAX_ANIMATION_BINDINGS;
-// Nova currently rewrites one set of frame upload buffers each frame. Keep one
-// deferred present in flight until those buffers are moved to a per-frame ring.
-pub(super) const MAX_IN_FLIGHT_SUBMISSIONS: usize = 1;
+// CPU-visible frame upload buffers are rewritten every frame. Keep one
+// buffer/resource-set slot per deferred submission so the CPU can upload the
+// next frame without overwriting data still referenced by the GPU queue.
+pub(super) const MAX_IN_FLIGHT_SUBMISSIONS: usize = 2;
 pub(super) const GLOBAL_UPLOAD_BYTES: usize = 24;
 pub(super) const TEXT_RASTER_UPLOAD_BYTES: usize = 32;
 pub(super) const BACKDROP_BLUR_PASS_BYTES: usize = 16;

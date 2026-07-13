@@ -5,6 +5,7 @@ use super::players::*;
 use super::prelude::*;
 use super::tile_state::*;
 use super::viewport::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) const CHUNKS_PER_REGION: u32 = 32;
 pub(super) const CHUNKS_PER_TILE: u32 = 8;
@@ -15,45 +16,83 @@ pub(super) const DEFAULT_TILE_SIZE: f32 = 512.0;
 pub(super) const PREFETCH_RADIUS: i32 = 0;
 pub(super) const RETAIN_RADIUS: i32 = 1;
 pub(super) const DRAG_RETAIN_RADIUS: i32 = 3;
-pub(super) const DRAG_PREFETCH_RADIUS: i32 = 1;
-pub(super) const DRAG_CANVAS_SYNC_INTERVAL: Duration = Duration::from_millis(8);
-pub(super) const DRAG_VIEWPORT_TILE_SYNC_INTERVAL: Duration = Duration::from_millis(16);
-pub(super) const DRAG_RENDER_IMAGE_EVICTION_DELAY: Duration = Duration::from_millis(400);
-pub(super) const DRAG_RENDER_IMAGE_EVICTION_FLUSH_LIMIT: usize = 8;
+pub(super) const DRAG_CANVAS_SYNC_INTERVAL: Duration = Duration::from_millis(16);
+pub(super) const VIEWPORT_INTERACTION_IDLE_DELAY: Duration = Duration::from_millis(120);
+pub(super) const MAP_MEMORY_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
+pub(super) const DRAG_RENDER_IMAGE_EVICTION_DELAY: Duration = Duration::from_millis(120);
+pub(super) const DRAG_RENDER_IMAGE_EVICTION_FLUSH_LIMIT: usize = 64;
 pub(super) const MAX_TILE_SPAN_PER_AXIS: i32 = 64;
+pub(super) const MAX_VIEWPORT_COMPOSITE_DIMENSION: u32 = 4096;
+pub(super) const MIN_VIEWPORT_COMPOSITE_OVERSCAN_PX: f32 = 64.0;
+pub(super) const MAX_VIEWPORT_COMPOSITE_OVERSCAN_PX: f32 = 256.0;
 pub(super) const DEFAULT_CPU_PERCENT: u8 = 60;
 pub(super) const MIN_CPU_PERCENT: u8 = 10;
 pub(super) const MAX_CPU_PERCENT: u8 = 90;
 pub(super) const CPU_PERCENT_STEP: u8 = 5;
 pub(super) const RENDER_PIPELINE_DEPTH: usize = 32;
+pub(super) const RENDER_REGION_CACHE_ENTRIES: usize = 32;
 pub(super) const MIN_UI_TILE_MEMORY_BUDGET_BYTES: usize = 16 * 1024 * 1024;
-pub(super) const MAX_UI_TILE_MEMORY_BUDGET_BYTES: usize = 160 * 1024 * 1024;
 pub(super) const MIN_RENDER_MEMORY_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) const MAX_RENDER_MEMORY_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const MIN_RENDER_STAGING_POOL_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_RENDER_STAGING_POOL_BYTES: usize = 128 * 1024 * 1024;
 pub(super) const RENDER_CPU_ENCODE_WORKERS: usize = 1;
 pub(super) const RENDER_UI_BATCH_TILES: usize = 8;
-pub(super) const MAX_CONCURRENT_RENDER_BATCHES: usize = 2;
+pub(super) const MAX_CONCURRENT_RENDER_BATCHES: usize = 1;
 pub(super) const RENDER_STREAM_GROUP_TILES: usize = 4;
 pub(super) const TILE_MANIFEST_PROBE_BATCH_TILES: usize = 16;
+pub(super) const TILE_MANIFEST_PROBE_MAX_WORKERS: usize = 2;
 pub(super) const MIN_VIEWPORT_SCALE: f32 = 0.03125;
 pub(super) const MAX_VIEWPORT_SCALE: f32 = 8.0;
 pub(super) const TILE_SEAM_BLEED_PX: f32 = 0.0;
 pub(super) const TILE_READY_BATCH_LIMIT: usize = 16;
 pub(super) const TILE_READY_BATCH_INTERVAL: Duration = Duration::from_millis(33);
-pub(super) const CACHE_READY_BATCH_LIMIT: usize = 4;
-pub(super) const CACHE_READY_BATCH_INTERVAL: Duration = Duration::from_millis(8);
 pub(super) const FIRST_REVEAL_READY_BATCH_LIMIT: usize = 4;
 pub(super) const FIRST_REVEAL_READY_BATCH_INTERVAL: Duration = Duration::from_millis(16);
-pub(super) const FIRST_VISIBLE_BATCH_LIMIT: usize = 4;
+pub(super) const QUICK_REVEAL_TILE_FRAME_INTERVAL: Duration = Duration::from_millis(8);
+pub(super) const FIRST_VISIBLE_BATCH_LIMIT: usize = 1;
 pub(super) const OVERVIEW_VISIBLE_TILE_THRESHOLD: usize = 256;
 pub(super) const OVERVIEW_VISIBLE_BATCH_LIMIT: usize = 24;
 pub(super) const OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT: usize = 16;
+pub(super) const VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = 192;
+pub(super) const INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = 48;
 
 pub(super) type TileChunkPositions = Arc<[ChunkPos]>;
 pub(super) type TileChunkIndex = BTreeMap<(i32, i32), TileChunkPositions>;
 pub(super) const DRAG_VISIBLE_BATCH_LIMIT: usize = 4;
+pub(super) const VIEWPORT_WORK_REFRESH_INTERVAL: Duration = Duration::from_millis(16);
+
+#[derive(Clone, Default)]
+pub(super) struct PhysicalRenderBatchBudget {
+    active: Arc<AtomicUsize>,
+}
+
+impl PhysicalRenderBatchBudget {
+    pub(super) fn active(&self) -> usize {
+        self.active.load(Ordering::Acquire)
+    }
+
+    pub(super) fn try_acquire(&self, limit: usize) -> Option<PhysicalRenderBatchPermit> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < limit.max(1)).then_some(active.saturating_add(1))
+            })
+            .ok()?;
+        Some(PhysicalRenderBatchPermit {
+            active: Arc::clone(&self.active),
+        })
+    }
+}
+
+pub(super) struct PhysicalRenderBatchPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for PhysicalRenderBatchPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 pub(super) const VIEWPORT_TILE_SYNC_INTERVAL: Duration = Duration::from_millis(80);
 pub(super) const VISIBLE_TILE_LOG_INTERVAL: Duration = Duration::from_millis(250);
 pub(super) const TILE_MEMORY_TRIM_INTERVAL: Duration = Duration::from_millis(250);
@@ -119,7 +158,7 @@ impl RenderCpuBudget {
             .saturating_mul(usize::from(self.percent))
             .saturating_add(99)
             / 100;
-        let interactive_cap = available.saturating_sub(1).clamp(1, 8);
+        let interactive_cap = available.saturating_sub(1).max(1);
         requested.clamp(1, interactive_cap)
     }
 
@@ -152,10 +191,10 @@ impl RenderCpuBudget {
             chunk_batch_size: render_cpu_chunk_batch_size(workers).min(RENDER_STREAM_GROUP_TILES),
             encode_workers: RENDER_CPU_ENCODE_WORKERS,
             max_total_threads: workers,
-            max_db_workers: workers.min(2).max(1),
-            max_bake_workers: workers.min(2).max(1),
-            max_compose_workers: workers.min(1),
-            max_in_flight_regions: workers.min(2).max(1),
+            max_db_workers: workers,
+            max_bake_workers: workers,
+            max_compose_workers: workers,
+            max_in_flight_regions: workers,
         }
     }
 }
@@ -851,6 +890,92 @@ impl ChunkTransferProgress {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(super) struct ChunkTransferTaskProgressSync {
+    phase: Option<SharedString>,
+    completed: usize,
+}
+
+impl ChunkTransferTaskProgressSync {
+    pub(super) fn next_delta(
+        &mut self,
+        progress: &ChunkTransferProgress,
+    ) -> (bool, u64, Option<u64>) {
+        let phase_changed = self.phase.as_ref() != Some(&progress.phase);
+        let total = progress.total.max(1);
+        let completed = progress.completed.min(total);
+        let delta = if phase_changed {
+            completed
+        } else {
+            completed.saturating_sub(self.completed)
+        };
+        self.phase = Some(progress.phase.clone());
+        self.completed = completed;
+        (
+            phase_changed,
+            task_progress_units(delta),
+            Some(task_progress_units(total)),
+        )
+    }
+}
+
+pub(super) const MAP_OPERATION_CANCELLED_MESSAGE: &str = "地图操作已取消";
+
+pub(super) fn sync_map_operation_task_progress(
+    task_id: &str,
+    progress_sync: &mut ChunkTransferTaskProgressSync,
+    progress: &ChunkTransferProgress,
+    stage: &str,
+) {
+    let (reset, delta, total) = progress_sync.next_delta(progress);
+    if reset {
+        task_manager::reset_progress(task_id, total, Some(stage));
+    }
+    task_manager::update_progress(task_id, delta, total, Some(stage));
+}
+
+pub(super) fn map_operation_cancelled(cancel: &CancelFlag, task_id: &str) -> bool {
+    cancel.is_cancelled() || task_manager::is_cancelled(task_id)
+}
+
+pub(super) fn check_map_operation_cancelled(
+    cancel: &CancelFlag,
+    task_id: &str,
+) -> Result<(), String> {
+    if map_operation_cancelled(cancel, task_id) {
+        return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
+pub(super) fn is_map_operation_cancelled_error(error: &str) -> bool {
+    let error_lower = error.to_ascii_lowercase();
+    error.contains("已取消") || error.contains("取消") || error_lower.contains("cancel")
+}
+
+pub(super) fn map_operation_status_for_result<T>(
+    result: &Result<T, String>,
+    cancel: &CancelFlag,
+    task_id: &str,
+) -> &'static str {
+    if map_operation_cancelled(cancel, task_id)
+        || result
+            .as_ref()
+            .err()
+            .is_some_and(|error| is_map_operation_cancelled_error(error))
+    {
+        "cancelled"
+    } else if result.is_ok() {
+        "completed"
+    } else {
+        "error"
+    }
+}
+
+pub(super) fn task_progress_units(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct CopiedChunkSnapshot {
     pub(super) chunk: ChunkPos,
@@ -1390,6 +1515,7 @@ pub(super) struct TileLayerSnapshotKey {
     pub(super) layout: RenderLayout,
     pub(super) colors: ThemeColors,
     pub(super) dragging: bool,
+    pub(super) overlays: OverlayOptions,
     pub(super) tile_generation: u64,
 }
 
@@ -1417,6 +1543,7 @@ pub struct MapViewerWindowView {
     pub(super) map_focus_handle: FocusHandle,
     pub(super) preview_3d_focus_handle: FocusHandle,
     pub(super) edit_toast_id: Option<toast::ToastId>,
+    pub(super) edit_task_toast_ids: HashMap<String, toast::ToastId>,
     pub(super) toolbar_state: ToolbarState,
     pub(super) input_fields: MapInputFields,
     pub(super) ui_state: MapViewerUiState,
@@ -1466,17 +1593,27 @@ pub struct MapViewerWindowView {
     pub(super) metadata_cancel: Option<RenderTaskControl>,
     pub(super) manifest_probe_cancel: Option<RenderTaskControl>,
     pub(super) render_cancels: BTreeMap<u64, RenderCancelFlag>,
-    pub(super) active_render_tiles: BTreeSet<(i32, i32)>,
-    pub(super) active_render_center_tile: Option<(i32, i32)>,
+    pub(super) active_render_tiles: ActiveRenderTiles,
+    pub(super) active_render_center_tiles: BTreeMap<u64, (i32, i32)>,
+    pub(super) manifest_probe_request_id: Option<u64>,
     pub(super) pending_viewport_refresh: bool,
+    pub(super) viewport_work_refresh_scheduled: bool,
     pub(super) viewport_idle_generation: u64,
+    pub(super) viewport_idle_task: Option<Task<anyhow::Result<()>>>,
+    pub(super) physical_render_batches: PhysicalRenderBatchBudget,
+    pub(super) last_viewport_interaction: Option<Instant>,
     pub(super) last_viewport_tile_sync: Option<Instant>,
     pub(super) last_drag_canvas_snapshot_sync: Option<Instant>,
+    pub(super) pending_interaction_ready_tiles: Vec<(i32, i32)>,
+    pub(super) last_interaction_ready_flush: Option<Instant>,
     pub(super) last_visible_tile_log: Option<Instant>,
     pub(super) last_tile_memory_trim: Option<Instant>,
+    pub(super) last_memory_snapshot_record: Option<Instant>,
     pub(super) pending_render_image_evictions: Vec<(Instant, Arc<RenderImage>)>,
     pub(super) pending_render_image_eviction_generation: u64,
     pub(super) last_visible_tile_signature: Option<ViewportTileSignature>,
+    pub(super) viewport_composite_signature: Option<ViewportCompositeSignature>,
+    pub(super) viewport_composite_request_id: Option<u64>,
     pub(super) last_ready_status_update: Option<Instant>,
     pub(super) status: SharedString,
     pub(super) diagnostics: RenderDiagnostics,
@@ -1493,7 +1630,7 @@ pub struct MapViewerWindowView {
 pub(super) struct ViewportTileSignature {
     pub(super) visible: Vec<(i32, i32)>,
     pub(super) prefetch: Vec<(i32, i32)>,
-    pub(super) retain: Vec<(i32, i32)>,
+    pub(super) retain_filter: Option<RetainedTileFilter>,
     pub(super) center: (i32, i32),
     pub(super) metadata_loading: bool,
     pub(super) metadata_index_ready: bool,
@@ -1501,9 +1638,19 @@ pub(super) struct ViewportTileSignature {
 
 pub(super) struct ViewportTilePlan {
     pub(super) visible: Vec<(i32, i32)>,
+    pub(super) visible_bounds: Option<TileBounds>,
     pub(super) prefetch: Vec<(i32, i32)>,
-    pub(super) retain: BTreeSet<(i32, i32)>,
+    pub(super) retain_filter: Option<RetainedTileFilter>,
     pub(super) center: (i32, i32),
-    pub(super) is_dragging: bool,
+    pub(super) is_interacting: bool,
     pub(super) prefetch_radius: i32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ViewportCompositeSignature {
+    pub(super) viewport: MapViewport,
+    pub(super) layout: RenderLayout,
+    pub(super) render_generation: u64,
+    pub(super) visible: Vec<(i32, i32)>,
+    pub(super) center: (i32, i32),
 }

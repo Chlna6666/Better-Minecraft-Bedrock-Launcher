@@ -505,10 +505,7 @@ impl MainWindowView {
                         );
 
                         if let Some(hex) = normalized {
-                            cx.update_global(|theme: &mut ThemeState, _cx| {
-                                theme.accent_hex = SharedString::from(hex.clone());
-                                theme.accent = parse_hex_color_to_hsla(&hex);
-                            });
+                            ThemeState::set_accent_hex(&hex, cx);
                         }
 
                         this.notify_all_page_views(cx);

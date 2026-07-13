@@ -39,22 +39,34 @@ const PREVIEW_3D_GPU_BUFFER_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const PREVIEW_3D_GPU_VERTEX_BUDGET: usize =
     PREVIEW_3D_GPU_BUFFER_BUDGET_BYTES / std::mem::size_of::<GpuMesh3dVertex>();
 const PREVIEW_3D_FACE_BUDGET: usize = PREVIEW_3D_GPU_VERTEX_BUDGET / 4;
-const PREVIEW_3D_OPAQUE_FACE_BUDGET: usize = PREVIEW_3D_FACE_BUDGET * 3 / 5;
-const PREVIEW_3D_GLASS_FACE_BUDGET: usize = PREVIEW_3D_FACE_BUDGET / 5;
-const PREVIEW_3D_WATER_FACE_BUDGET: usize =
-    PREVIEW_3D_FACE_BUDGET - PREVIEW_3D_OPAQUE_FACE_BUDGET - PREVIEW_3D_GLASS_FACE_BUDGET;
-const PREVIEW_3D_BLOCK_RECORD_BUDGET: usize = PREVIEW_3D_FACE_BUDGET;
+const PREVIEW_3D_TOTAL_FACE_BUDGET: usize = PREVIEW_3D_FACE_BUDGET;
+const PREVIEW_3D_TOTAL_VERTEX_BUDGET: usize = PREVIEW_3D_TOTAL_FACE_BUDGET * 4;
+const PREVIEW_3D_GLASS_FACE_BUDGET: usize = PREVIEW_3D_TOTAL_FACE_BUDGET / 5;
+const PREVIEW_3D_WATER_FACE_BUDGET: usize = PREVIEW_3D_TOTAL_FACE_BUDGET / 5;
 const PREVIEW_3D_MIN_ZOOM: f32 = 0.05;
 const PREVIEW_3D_MAX_ZOOM: f32 = 64.0;
 const PREVIEW_3D_DEFAULT_DISTANCE: f32 = 3.0;
 const PREVIEW_3D_FREE_MOVE_SPEED: f32 = 0.65;
 const PREVIEW_3D_BASE_FOV_Y_RADIANS: f32 = 55.0_f32.to_radians();
-const PREVIEW_3D_NEAR_PLANE: f32 = 0.02;
+const PREVIEW_3D_MIN_FOV_Y_RADIANS: f32 = 14.0_f32.to_radians();
+const PREVIEW_3D_MAX_GEOMETRIC_ZOOM: f32 = 1.5;
+const PREVIEW_3D_MIN_NEAR_PLANE: f32 = 0.02;
 const PREVIEW_3D_FAR_PLANE: f32 = 256.0;
 const PREVIEW_3D_INCREMENTAL_TARGET_UPDATES: usize = 12;
 const PREVIEW_3D_SHADER_SOURCE: &str = include_str!("preview_3d_surface.wgsl");
 type Preview3dMaterialName = Arc<str>;
 type Preview3dMaterialSlot = Arc<str>;
+
+fn preview_3d_opaque_face_budget(
+    glass_faces: usize,
+    water_faces: usize,
+    lava_faces: usize,
+) -> usize {
+    PREVIEW_3D_TOTAL_FACE_BUDGET
+        .saturating_sub(glass_faces)
+        .saturating_sub(water_faces)
+        .saturating_sub(lava_faces)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Preview3dCamera {
@@ -304,7 +316,15 @@ impl Preview3dMesh {
 #[derive(Clone, Debug)]
 pub(super) struct Preview3dChunkMesh {
     pub(super) gpu_mesh: Arc<GpuMesh3d>,
+    pub(super) world_origin: [i32; 3],
+    local_bounds: Preview3dMeshBounds,
     pub(super) face_metadata: Arc<[Preview3dFaceMetadata]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Preview3dMeshBounds {
+    min: [f32; 3],
+    max: [f32; 3],
 }
 
 impl Preview3dChunkMesh {
@@ -339,7 +359,7 @@ pub(super) struct Preview3dFaceMetadata {
 
 #[derive(Clone, Debug)]
 struct Preview3dFace {
-    corners: [[f32; 3]; 4],
+    corners: [[f64; 3]; 4],
     color: [f32; 4],
     shade: f32,
     normal: [i32; 3],
@@ -752,23 +772,23 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let total_chunks = preview_3d_bounds_chunk_count(bounds);
     let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
         .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let mut positions = preview_3d_chunk_positions(bounds);
-    preview_3d_sort_positions_by_distance(
-        &mut positions,
-        bounds.min_chunk_x + preview_3d_bounds_width(bounds) / 2,
-        bounds.min_chunk_z + preview_3d_bounds_depth(bounds) / 2,
-    );
-    let mut builder = Preview3dMeshBuilder::new(bounds, 0);
+    let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
     let chunk_total = positions.len();
-    let options = preview_3d_render_chunk_load_options(total_chunks, bounds, cancel.clone());
-    for chunk_positions in positions.chunks(preview_3d_incremental_mesh_batch_size(chunk_total)) {
+    let mut builder = Preview3dMeshBuilder::new(bounds, truncated_chunk_count);
+    let options = preview_3d_render_chunk_load_options(chunk_total, bounds, cancel.clone());
+    let mut completed_chunks = 0;
+    while completed_chunks < chunk_total {
         check_preview_3d_cancelled(cancel.as_ref())?;
+        let batch_size = preview_3d_incremental_batch_size(completed_chunks, chunk_total);
+        let next_completed_chunks = completed_chunks.saturating_add(batch_size).min(chunk_total);
         let chunks = world
-            .load_render_chunks_blocking(chunk_positions.to_vec(), options.clone())
+            .load_render_chunks_blocking(
+                positions[completed_chunks..next_completed_chunks].to_vec(),
+                options.clone(),
+            )
             .map_err(|error| error.to_string())?;
         let processed_chunks = chunks
             .par_iter()
@@ -777,7 +797,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
         for processed_chunk in processed_chunks {
             builder.push_processed_chunk(processed_chunk);
         }
-        let completed_chunks = builder.processed_chunk_count.min(chunk_total);
+        completed_chunks = next_completed_chunks;
         if preview_3d_should_emit_incremental_mesh(completed_chunks, chunk_total) {
             let status = Preview3dBuildStatus::new(
                 "拼接模型",
@@ -800,19 +820,13 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let total_chunks = preview_3d_bounds_chunk_count(bounds);
     let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
         .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let mut positions = preview_3d_chunk_positions(bounds);
-    preview_3d_sort_positions_by_distance(
-        &mut positions,
-        bounds.min_chunk_x + preview_3d_bounds_width(bounds) / 2,
-        bounds.min_chunk_z + preview_3d_bounds_depth(bounds) / 2,
-    );
-    let mut builder = Preview3dMeshBuilder::new(bounds, 0);
+    let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
     let chunk_total = positions.len();
-    let options = preview_3d_render_chunk_load_options(total_chunks, bounds, cancel.clone());
+    let mut builder = Preview3dMeshBuilder::new(bounds, truncated_chunk_count);
+    let options = preview_3d_render_chunk_load_options(chunk_total, bounds, cancel.clone());
     for chunk_positions in positions.chunks(preview_3d_incremental_mesh_batch_size(chunk_total)) {
         check_preview_3d_cancelled(cancel.as_ref())?;
         let chunks = world
@@ -977,6 +991,16 @@ fn preview_3d_chunk_positions(bounds: SlimeChunkBounds) -> Vec<ChunkPos> {
         .collect()
 }
 
+fn preview_3d_selection_chunk_positions(bounds: SlimeChunkBounds) -> (Vec<ChunkPos>, usize) {
+    let mut positions = preview_3d_chunk_positions(bounds);
+    preview_3d_sort_positions_by_distance(
+        &mut positions,
+        bounds.min_chunk_x + preview_3d_bounds_width(bounds) / 2,
+        bounds.min_chunk_z + preview_3d_bounds_depth(bounds) / 2,
+    );
+    (positions, 0)
+}
+
 fn preview_3d_sort_positions_by_distance(
     positions: &mut [ChunkPos],
     center_chunk_x: i32,
@@ -1026,6 +1050,17 @@ fn preview_3d_subchunk_decode_workers(total_chunks: usize) -> usize {
             .saturating_sub(1)
             .clamp(1, 8)
     }
+}
+
+fn preview_3d_incremental_batch_size(completed_chunks: usize, total_chunks: usize) -> usize {
+    let remaining_chunks = total_chunks.saturating_sub(completed_chunks);
+    if completed_chunks == 0 {
+        return remaining_chunks.min(1);
+    }
+    let remaining_updates = PREVIEW_3D_INCREMENTAL_TARGET_UPDATES
+        .saturating_sub(1)
+        .max(1);
+    (remaining_chunks.saturating_add(remaining_updates - 1) / remaining_updates).max(1)
 }
 
 fn preview_3d_incremental_mesh_batch_size(total_chunks: usize) -> usize {
@@ -1182,7 +1217,7 @@ impl Preview3dMeshBuilder {
             culled_face_count: self.culled_face_count,
             omitted_face_count: self.omitted_face_count,
             truncated_chunk_count: self.truncated_chunk_count,
-            vertex_budget: PREVIEW_3D_GPU_VERTEX_BUDGET,
+            vertex_budget: PREVIEW_3D_TOTAL_VERTEX_BUDGET,
         }
     }
 
@@ -1203,19 +1238,16 @@ impl Preview3dMeshBuilder {
         &self,
         generation: u64,
     ) -> Result<(Vec<Preview3dChunkMesh>, usize, usize, usize), String> {
-        let ((opaque_result, glass_result), (water_result, lava_result)) = rayon::join(
-            || {
-                rayon::join(
-                    || self.collect_opaque_faces(),
-                    || self.collect_glass_faces(),
-                )
-            },
+        let (glass_result, (water_result, lava_result)) = rayon::join(
+            || self.collect_glass_faces(),
             || rayon::join(|| self.collect_water_faces(), || self.collect_lava_faces()),
         );
-        let (opaque_faces, opaque_omitted) = opaque_result;
         let (glass_faces, glass_omitted) = glass_result;
         let (water_faces, water_omitted) = water_result;
         let (lava_faces, lava_omitted) = lava_result;
+        let (opaque_faces, opaque_omitted) = self.collect_opaque_faces(
+            preview_3d_opaque_face_budget(glass_faces.len(), water_faces.len(), lava_faces.len()),
+        );
         let omitted_face_count = opaque_omitted
             .saturating_add(glass_omitted)
             .saturating_add(water_omitted)
@@ -1228,12 +1260,13 @@ impl Preview3dMeshBuilder {
         {
             return Ok((Vec::new(), omitted_face_count, 0, 0));
         }
-        let (center, horizontal_span, vertical_span) = self.mesh_frame();
-        let meshes = build_preview_3d_gpu_meshes(
+        let (world_origin, center, horizontal_span, vertical_span) = self.mesh_frame();
+        let meshes = build_preview_3d_gpu_meshes_at_world_origin(
             &opaque_faces,
             &glass_faces,
             &water_faces,
             &lava_faces,
+            world_origin,
             center,
             horizontal_span,
             vertical_span,
@@ -1247,29 +1280,29 @@ impl Preview3dMeshBuilder {
         ))
     }
 
-    fn collect_opaque_faces(&self) -> (Vec<Preview3dFace>, usize) {
-        let mut budget = Preview3dFaceBudget::unbounded();
-        let mut faces = Vec::with_capacity(PREVIEW_3D_OPAQUE_FACE_BUDGET.min(64 * 1024));
+    fn collect_opaque_faces(&self, max_faces: usize) -> (Vec<Preview3dFace>, usize) {
+        let mut budget = Preview3dFaceBudget::new(max_faces);
+        let mut faces = Vec::with_capacity(max_faces.min(64 * 1024));
         self.push_opaque_faces(&mut faces, &mut budget);
         (faces, budget.omitted_faces)
     }
 
     fn collect_glass_faces(&self) -> (Vec<Preview3dFace>, usize) {
-        let mut budget = Preview3dFaceBudget::unbounded();
+        let mut budget = Preview3dFaceBudget::new(PREVIEW_3D_GLASS_FACE_BUDGET);
         let mut faces = Vec::with_capacity(PREVIEW_3D_GLASS_FACE_BUDGET.min(16 * 1024));
         self.push_glass_faces(&mut faces, &mut budget);
         (faces, budget.omitted_faces)
     }
 
     fn collect_water_faces(&self) -> (Vec<Preview3dFace>, usize) {
-        let mut budget = Preview3dFaceBudget::unbounded();
+        let mut budget = Preview3dFaceBudget::new(PREVIEW_3D_WATER_FACE_BUDGET / 2);
         let mut faces = Vec::with_capacity(PREVIEW_3D_WATER_FACE_BUDGET.min(16 * 1024));
         self.push_water_faces(&mut faces, &mut budget);
         (faces, budget.omitted_faces)
     }
 
     fn collect_lava_faces(&self) -> (Vec<Preview3dFace>, usize) {
-        let mut budget = Preview3dFaceBudget::unbounded();
+        let mut budget = Preview3dFaceBudget::new(PREVIEW_3D_WATER_FACE_BUDGET / 2);
         let mut faces = Vec::with_capacity((PREVIEW_3D_WATER_FACE_BUDGET / 2).min(8 * 1024));
         self.push_lava_faces(&mut faces, &mut budget);
         (faces, budget.omitted_faces)
@@ -1302,23 +1335,26 @@ impl Preview3dMeshBuilder {
         self.push_detail_faces(faces, budget, |blocks| &blocks.detail_blocks);
     }
 
-    fn mesh_frame(&self) -> ([f32; 3], f32, f32) {
+    fn mesh_frame(&self) -> ([i32; 3], [f32; 3], f32, f32) {
         if self.min_y == i16::MAX || self.max_y == i16::MIN {
-            return preview_3d_selection_frame(self.bounds);
+            let (center, horizontal_span, vertical_span) = preview_3d_selection_frame(self.bounds);
+            return ([0, 0, 0], center, horizontal_span, vertical_span);
         }
-        let min_x = self.min_x as f32;
-        let max_x = self.max_x as f32 + 1.0;
-        let min_z = self.min_z as f32;
-        let max_z = self.max_z as f32 + 1.0;
-        let min_y = f32::from(self.min_y);
-        let max_y = f32::from(self.max_y).max(min_y + 1.0) + 1.0;
-        let horizontal_span = (max_x - min_x).max(max_z - min_z).max(1.0);
-        let vertical_span = (max_y - min_y).max(1.0);
+        let world_origin = [self.min_x, i32::from(self.min_y), self.min_z];
+        let min_x = f64::from(self.min_x);
+        let max_x = f64::from(self.max_x) + 1.0;
+        let min_z = f64::from(self.min_z);
+        let max_z = f64::from(self.max_z) + 1.0;
+        let min_y = f64::from(self.min_y);
+        let max_y = (f64::from(self.max_y)).max(min_y + 1.0) + 1.0;
+        let horizontal_span = (max_x - min_x).max(max_z - min_z).max(1.0) as f32;
+        let vertical_span = (max_y - min_y).max(1.0) as f32;
         (
+            world_origin,
             [
-                (min_x + max_x) * 0.5,
-                (min_y + max_y) * 0.5,
-                (min_z + max_z) * 0.5,
+                ((min_x + max_x) * 0.5 - f64::from(world_origin[0])) as f32,
+                ((min_y + max_y) * 0.5 - f64::from(world_origin[1])) as f32,
+                ((min_z + max_z) * 0.5 - f64::from(world_origin[2])) as f32,
             ],
             horizontal_span,
             vertical_span,
@@ -1705,11 +1741,7 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
     block_models: Option<&BlockModelRepository>,
 ) -> Result<Preview3dChunkBlocks, String> {
     let palette = RenderPalette::default();
-    let initial_block_capacity = chunk
-        .subchunks
-        .len()
-        .saturating_mul(16 * 16 * 16)
-        .min(PREVIEW_3D_BLOCK_RECORD_BUDGET);
+    let initial_block_capacity = chunk.subchunks.len().saturating_mul(16 * 16 * 16);
     let mut occupied = HashSet::<BlockKey>::with_capacity(initial_block_capacity);
     let mut glass = HashSet::<BlockKey>::with_capacity(initial_block_capacity / 8);
     let mut water = HashSet::<BlockKey>::with_capacity(initial_block_capacity / 8);
@@ -1721,7 +1753,7 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
         Vec::<Preview3dDetailBlock>::with_capacity(initial_block_capacity / 16);
     let mut water_blocks = Vec::<Preview3dFluidBlock>::with_capacity(initial_block_capacity / 8);
     let mut lava_blocks = Vec::<Preview3dFluidBlock>::with_capacity(initial_block_capacity / 16);
-    let mut block_budget = Preview3dBlockBudget::new(initial_block_capacity);
+    let mut block_budget = Preview3dBlockBudget::unbounded();
     let mut min_y = i16::MAX;
     let mut max_y = i16::MIN;
     let mut min_x = i32::MAX;
@@ -2136,6 +2168,10 @@ impl Preview3dBlockBudget {
         }
     }
 
+    const fn unbounded() -> Self {
+        Self::new(usize::MAX)
+    }
+
     const fn is_full(&self) -> bool {
         self.used_records >= self.max_records
     }
@@ -2156,18 +2192,9 @@ struct Preview3dFaceBudget {
 }
 
 impl Preview3dFaceBudget {
-    #[cfg(test)]
     const fn new(max_faces: usize) -> Self {
         Self {
             max_faces,
-            emitted_faces: 0,
-            omitted_faces: 0,
-        }
-    }
-
-    const fn unbounded() -> Self {
-        Self {
-            max_faces: usize::MAX,
             emitted_faces: 0,
             omitted_faces: 0,
         }
@@ -2275,11 +2302,11 @@ impl Preview3dMergedFaceRect {
     fn into_face(self, key: Preview3dFacePlaneKey) -> Preview3dFace {
         let color = key.color.map(f32::from_bits);
         let shade = f32::from_bits(key.shade_bits);
-        let p = key.plane as f32;
-        let u0 = self.u0 as f32;
-        let u1 = self.u1 as f32;
-        let v0 = self.v0 as f32;
-        let v1 = self.v1 as f32;
+        let p = f64::from(key.plane);
+        let u0 = f64::from(self.u0);
+        let u1 = f64::from(self.u1);
+        let v0 = f64::from(self.v0);
+        let v1 = f64::from(self.v1);
         let corners = match (key.axis, key.normal_positive) {
             (0, true) => [[p, v0, u0], [p, v0, u1], [p, v1, u1], [p, v1, u0]],
             (0, false) => [[p, v0, u1], [p, v0, u0], [p, v1, u0], [p, v1, u1]],
@@ -2486,7 +2513,7 @@ impl Default for Preview3dStructureChunkBuilder {
     fn default() -> Self {
         Self {
             blocks: Preview3dChunkBlocks::default(),
-            block_budget: Preview3dBlockBudget::new(PREVIEW_3D_BLOCK_RECORD_BUDGET),
+            block_budget: Preview3dBlockBudget::unbounded(),
         }
     }
 }
@@ -2707,9 +2734,9 @@ fn block_face(block: BlockKey, face: FaceDefinition, color: [f32; 4]) -> Preview
     Preview3dFace {
         corners: face.corners.map(|corner| {
             [
-                block.x as f32 + corner[0],
-                block.y as f32 + corner[1],
-                block.z as f32 + corner[2],
+                f64::from(block.x) + f64::from(corner[0]),
+                f64::from(block.y) + f64::from(corner[1]),
+                f64::from(block.z) + f64::from(corner[2]),
             ]
         }),
         color,
@@ -2830,9 +2857,9 @@ fn preview_3d_push_plane_face(
     faces.push(Preview3dFace {
         corners: plane.corners.map(|corner| {
             [
-                block.x as f32 + corner[0],
-                block.y as f32 + corner[1],
-                block.z as f32 + corner[2],
+                f64::from(block.x) + f64::from(corner[0]),
+                f64::from(block.y) + f64::from(corner[1]),
+                f64::from(block.z) + f64::from(corner[2]),
             ]
         }),
         color,
@@ -2951,8 +2978,13 @@ fn preview_3d_is_glass_block(normalized: &str) -> bool {
 }
 
 fn preview_3d_detail_shape_for_block(state: &BlockState) -> Option<Preview3dDetailShape> {
-    model_shape_for_block_state(&preview_3d_block_state_query(state))
+    let mut shape = model_shape_for_block_state(&preview_3d_block_state_query(state))
         .map(preview_3d_detail_shape_from_model_shape)
+        .filter(|shape| !preview_3d_shape_is_full_cube(shape))?;
+    if preview_3d_uses_full_inventory_texture_uv(state) {
+        preview_3d_apply_full_texture_uv(&mut shape);
+    }
+    Some(shape)
 }
 
 fn preview_3d_resolved_detail_shape_for_block(
@@ -3031,6 +3063,30 @@ fn preview_3d_shape_from_named_geometry(
         preview_3d_normalize_shulker_geometry_shape(&mut shape);
     }
     Some(shape).filter(|shape| !shape.is_empty())
+}
+
+fn preview_3d_uses_full_inventory_texture_uv(state: &BlockState) -> bool {
+    let normalized = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
+    normalized == "chest" || normalized.ends_with("_chest")
+}
+
+fn preview_3d_apply_full_texture_uv(shape: &mut Preview3dDetailShape) {
+    let uv = preview_3d_full_texture_uv();
+    for cuboid in &mut shape.cuboids {
+        for face in [
+            BlockFace::Up,
+            BlockFace::Down,
+            BlockFace::North,
+            BlockFace::South,
+            BlockFace::East,
+            BlockFace::West,
+        ] {
+            cuboid.face_uvs.insert(face, uv);
+        }
+    }
+    for plane in &mut shape.planes {
+        plane.uv = Some(uv);
+    }
 }
 
 fn preview_3d_normalize_shulker_geometry_shape(shape: &mut Preview3dDetailShape) {
@@ -3915,12 +3971,131 @@ fn preview_3d_fit_scale(horizontal_span: f32, vertical_span: f32) -> f32 {
     1.48 / fitted_span.max(1.0)
 }
 
+fn preview_3d_projection_for_zoom(zoom: f32) -> (f32, f32) {
+    let zoom = zoom.clamp(PREVIEW_3D_MIN_ZOOM, PREVIEW_3D_MAX_ZOOM);
+    let geometric_zoom = zoom.min(PREVIEW_3D_MAX_GEOMETRIC_ZOOM);
+    let optical_zoom = (zoom / geometric_zoom).max(1.0);
+    let vertical_fov = (PREVIEW_3D_BASE_FOV_Y_RADIANS / optical_zoom)
+        .clamp(PREVIEW_3D_MIN_FOV_Y_RADIANS, PREVIEW_3D_BASE_FOV_Y_RADIANS);
+    (geometric_zoom, vertical_fov)
+}
+
+fn preview_3d_near_plane(geometric_zoom: f32) -> f32 {
+    (0.06 / geometric_zoom.max(1.0)).clamp(PREVIEW_3D_MIN_NEAR_PLANE, 0.06)
+}
+
+fn preview_3d_face_bounds(
+    opaque_faces: &[Preview3dFace],
+    glass_faces: &[Preview3dFace],
+    water_faces: &[Preview3dFace],
+    lava_faces: &[Preview3dFace],
+    world_origin: [i32; 3],
+) -> Preview3dMeshBounds {
+    let mut bounds = Preview3dMeshBounds {
+        min: [f32::INFINITY; 3],
+        max: [f32::NEG_INFINITY; 3],
+    };
+    for face in opaque_faces
+        .iter()
+        .chain(glass_faces.iter())
+        .chain(water_faces.iter())
+        .chain(lava_faces.iter())
+    {
+        for corner in face.corners {
+            for axis in 0..3 {
+                let coordinate = (corner[axis] - f64::from(world_origin[axis])) as f32;
+                bounds.min[axis] = bounds.min[axis].min(coordinate);
+                bounds.max[axis] = bounds.max[axis].max(coordinate);
+            }
+        }
+    }
+    bounds
+}
+
+pub(super) fn preview_3d_chunk_mesh_is_visible(
+    mesh: &Preview3dChunkMesh,
+    parameters: &GpuMesh3dDrawParameters,
+) -> bool {
+    preview_3d_bounds_intersect_clip_space(mesh.local_bounds, parameters.view_projection_model)
+}
+
+fn preview_3d_bounds_intersect_clip_space(
+    bounds: Preview3dMeshBounds,
+    view_projection_model: [[f32; 4]; 4],
+) -> bool {
+    let mut outside_left = true;
+    let mut outside_right = true;
+    let mut outside_top = true;
+    let mut outside_bottom = true;
+    let mut outside_near = true;
+    let mut outside_far = true;
+    let mut behind_camera = true;
+
+    for x in [bounds.min[0], bounds.max[0]] {
+        for y in [bounds.min[1], bounds.max[1]] {
+            for z in [bounds.min[2], bounds.max[2]] {
+                let clip = mat4_mul_vec4(view_projection_model, [x, y, z, 1.0]);
+                outside_left &= clip[0] < -clip[3];
+                outside_right &= clip[0] > clip[3];
+                outside_bottom &= clip[1] < -clip[3];
+                outside_top &= clip[1] > clip[3];
+                outside_near &= clip[2] < -clip[3];
+                outside_far &= clip[2] > clip[3];
+                behind_camera &= clip[3] <= 0.0;
+            }
+        }
+    }
+
+    !(outside_left
+        || outside_right
+        || outside_top
+        || outside_bottom
+        || outside_near
+        || outside_far
+        || behind_camera)
+}
+
+#[cfg(test)]
 fn build_preview_3d_gpu_meshes(
     opaque_faces: &[Preview3dFace],
     glass_faces: &[Preview3dFace],
     water_faces: &[Preview3dFace],
     lava_faces: &[Preview3dFace],
     center: [f32; 3],
+    horizontal_span: f32,
+    vertical_span: f32,
+    generation: u64,
+) -> Result<Vec<Preview3dChunkMesh>, String> {
+    let world_origin = [
+        center[0].floor() as i32,
+        center[1].floor() as i32,
+        center[2].floor() as i32,
+    ];
+    let local_center = [
+        center[0] - world_origin[0] as f32,
+        center[1] - world_origin[1] as f32,
+        center[2] - world_origin[2] as f32,
+    ];
+    build_preview_3d_gpu_meshes_at_world_origin(
+        opaque_faces,
+        glass_faces,
+        water_faces,
+        lava_faces,
+        world_origin,
+        local_center,
+        horizontal_span,
+        vertical_span,
+        generation,
+    )
+}
+
+fn build_preview_3d_gpu_meshes_at_world_origin(
+    opaque_faces: &[Preview3dFace],
+    glass_faces: &[Preview3dFace],
+    water_faces: &[Preview3dFace],
+    lava_faces: &[Preview3dFace],
+    world_origin: [i32; 3],
+    local_center: [f32; 3],
     horizontal_span: f32,
     vertical_span: f32,
     generation: u64,
@@ -3933,7 +4108,8 @@ fn build_preview_3d_gpu_meshes(
             slice.glass,
             slice.water,
             slice.lava,
-            center,
+            world_origin,
+            local_center,
             fit_scale,
             generation,
         )?);
@@ -3962,35 +4138,13 @@ fn preview_3d_face_slices<'a>(
         let glass_remaining = glass_faces.len() - glass_start;
         let water_remaining = water_faces.len() - water_start;
         let lava_remaining = lava_faces.len() - lava_start;
-        let mut opaque_count = opaque_remaining.min(PREVIEW_3D_OPAQUE_FACE_BUDGET.max(1));
-        let mut glass_count = glass_remaining.min(PREVIEW_3D_GLASS_FACE_BUDGET.max(1));
-        let fluid_budget = PREVIEW_3D_WATER_FACE_BUDGET.max(2);
-        let mut water_count = water_remaining.min(fluid_budget / 2);
-        let mut lava_count = lava_remaining.min(fluid_budget - water_count);
-        let used_faces = opaque_count
-            .saturating_add(glass_count)
-            .saturating_add(water_count)
-            .saturating_add(lava_count);
-        let mut remaining_faces = max_faces.saturating_sub(used_faces);
-        if remaining_faces > 0 {
-            let extra = (opaque_remaining - opaque_count).min(remaining_faces);
-            opaque_count += extra;
-            remaining_faces -= extra;
-        }
-        if remaining_faces > 0 {
-            let extra = (glass_remaining - glass_count).min(remaining_faces);
-            glass_count += extra;
-            remaining_faces -= extra;
-        }
-        if remaining_faces > 0 {
-            let extra = (water_remaining - water_count).min(remaining_faces);
-            water_count += extra;
-            remaining_faces -= extra;
-        }
-        if remaining_faces > 0 {
-            let extra = (lava_remaining - lava_count).min(remaining_faces);
-            lava_count += extra;
-        }
+        let opaque_count = opaque_remaining.min(max_faces);
+        let remaining_faces = max_faces.saturating_sub(opaque_count);
+        let glass_count = glass_remaining.min(remaining_faces);
+        let remaining_faces = remaining_faces.saturating_sub(glass_count);
+        let water_count = water_remaining.min(remaining_faces);
+        let remaining_faces = remaining_faces.saturating_sub(water_count);
+        let lava_count = lava_remaining.min(remaining_faces);
 
         slices.push(Preview3dFaceSlice {
             opaque: &opaque_faces[opaque_start..opaque_start + opaque_count],
@@ -4024,12 +4178,23 @@ fn build_preview_3d_gpu_mesh(
     generation: u64,
 ) -> Result<GpuMesh3d, String> {
     let fit_scale = preview_3d_fit_scale(horizontal_span, vertical_span);
+    let world_origin = [
+        center[0].floor() as i32,
+        center[1].floor() as i32,
+        center[2].floor() as i32,
+    ];
+    let local_center = [
+        center[0] - world_origin[0] as f32,
+        center[1] - world_origin[1] as f32,
+        center[2] - world_origin[2] as f32,
+    ];
     Ok(build_preview_3d_gpu_mesh_from_slices(
         opaque_faces,
         glass_faces,
         water_faces,
         &[],
-        center,
+        world_origin,
+        local_center,
         fit_scale,
         generation,
     )
@@ -4041,7 +4206,8 @@ fn build_preview_3d_gpu_mesh_from_slices(
     glass_faces: &[Preview3dFace],
     water_faces: &[Preview3dFace],
     lava_faces: &[Preview3dFace],
-    center: [f32; 3],
+    world_origin: [i32; 3],
+    local_center: [f32; 3],
     fit_scale: f32,
     generation: u64,
 ) -> Result<Preview3dChunkMesh, String> {
@@ -4060,20 +4226,34 @@ fn build_preview_3d_gpu_mesh_from_slices(
     let mut vertices = Vec::with_capacity(vertex_count);
     let mut indices = Vec::with_capacity(index_count);
     let mut face_metadata = Vec::with_capacity(face_count);
+    let local_bounds = preview_3d_face_bounds(
+        opaque_faces,
+        glass_faces,
+        water_faces,
+        lava_faces,
+        world_origin,
+    );
     let opaque = push_preview_gpu_faces(
         &mut vertices,
         &mut indices,
         &mut face_metadata,
         opaque_faces,
+        world_origin,
     );
-    let glass =
-        push_preview_gpu_faces(&mut vertices, &mut indices, &mut face_metadata, glass_faces);
+    let glass = push_preview_gpu_faces(
+        &mut vertices,
+        &mut indices,
+        &mut face_metadata,
+        glass_faces,
+        world_origin,
+    );
     let water = push_preview_gpu_fluid_faces(
         &mut vertices,
         &mut indices,
         &mut face_metadata,
         water_faces,
         lava_faces,
+        world_origin,
     );
     let gpu_mesh = GpuMesh3d::new(
         Arc::from(vertices.into_boxed_slice()),
@@ -4083,7 +4263,7 @@ fn build_preview_3d_gpu_mesh_from_slices(
             glass,
             water,
         },
-        center,
+        local_center,
         fit_scale,
         PREVIEW_3D_VERTICAL_SCALE,
         preview_3d_gpu_mesh_shader()?,
@@ -4091,6 +4271,8 @@ fn build_preview_3d_gpu_mesh_from_slices(
     .with_generation(generation);
     Ok(Preview3dChunkMesh {
         gpu_mesh: Arc::new(gpu_mesh),
+        world_origin,
+        local_bounds,
         face_metadata: Arc::from(face_metadata.into_boxed_slice()),
     })
 }
@@ -4118,10 +4300,11 @@ fn push_preview_gpu_faces(
     indices: &mut Vec<u32>,
     face_metadata: &mut Vec<Preview3dFaceMetadata>,
     faces: &[Preview3dFace],
+    world_origin: [i32; 3],
 ) -> GpuMesh3dRange {
     let start = u32::try_from(indices.len()).unwrap_or(u32::MAX);
     for face in faces {
-        push_preview_gpu_face(vertices, indices, face_metadata, face);
+        push_preview_gpu_face(vertices, indices, face_metadata, face, world_origin);
     }
     let count = u32::try_from(indices.len().saturating_sub(start as usize)).unwrap_or(u32::MAX);
     GpuMesh3dRange { start, count }
@@ -4133,20 +4316,41 @@ fn push_preview_gpu_fluid_faces(
     face_metadata: &mut Vec<Preview3dFaceMetadata>,
     water_faces: &[Preview3dFace],
     lava_faces: &[Preview3dFace],
+    world_origin: [i32; 3],
 ) -> GpuMesh3dRange {
     let start = u32::try_from(indices.len()).unwrap_or(u32::MAX);
-    push_preview_gpu_faces_matching(vertices, indices, face_metadata, water_faces, |face| {
-        face.normal != [0, 1, 0]
-    });
-    push_preview_gpu_faces_matching(vertices, indices, face_metadata, lava_faces, |face| {
-        face.normal != [0, 1, 0]
-    });
-    push_preview_gpu_faces_matching(vertices, indices, face_metadata, water_faces, |face| {
-        face.normal == [0, 1, 0]
-    });
-    push_preview_gpu_faces_matching(vertices, indices, face_metadata, lava_faces, |face| {
-        face.normal == [0, 1, 0]
-    });
+    push_preview_gpu_faces_matching(
+        vertices,
+        indices,
+        face_metadata,
+        water_faces,
+        |face| face.normal != [0, 1, 0],
+        world_origin,
+    );
+    push_preview_gpu_faces_matching(
+        vertices,
+        indices,
+        face_metadata,
+        lava_faces,
+        |face| face.normal != [0, 1, 0],
+        world_origin,
+    );
+    push_preview_gpu_faces_matching(
+        vertices,
+        indices,
+        face_metadata,
+        water_faces,
+        |face| face.normal == [0, 1, 0],
+        world_origin,
+    );
+    push_preview_gpu_faces_matching(
+        vertices,
+        indices,
+        face_metadata,
+        lava_faces,
+        |face| face.normal == [0, 1, 0],
+        world_origin,
+    );
     let count = u32::try_from(indices.len().saturating_sub(start as usize)).unwrap_or(u32::MAX);
     GpuMesh3dRange { start, count }
 }
@@ -4157,10 +4361,11 @@ fn push_preview_gpu_faces_matching(
     face_metadata: &mut Vec<Preview3dFaceMetadata>,
     faces: &[Preview3dFace],
     mut predicate: impl FnMut(&Preview3dFace) -> bool,
+    world_origin: [i32; 3],
 ) {
     for face in faces {
         if predicate(face) {
-            push_preview_gpu_face(vertices, indices, face_metadata, face);
+            push_preview_gpu_face(vertices, indices, face_metadata, face, world_origin);
         }
     }
 }
@@ -4170,11 +4375,16 @@ fn push_preview_gpu_face(
     indices: &mut Vec<u32>,
     face_metadata: &mut Vec<Preview3dFaceMetadata>,
     face: &Preview3dFace,
+    world_origin: [i32; 3],
 ) {
     let color = shade_preview_color(face.color, face.shade);
     let base_vertex = u32::try_from(vertices.len()).unwrap_or(u32::MAX);
     let vertex = |index: usize| GpuMesh3dVertex {
-        position: face.corners[index],
+        position: [
+            (face.corners[index][0] - f64::from(world_origin[0])) as f32,
+            (face.corners[index][1] - f64::from(world_origin[1])) as f32,
+            (face.corners[index][2] - f64::from(world_origin[2])) as f32,
+        ],
         color,
     };
     vertices.extend([vertex(0), vertex(1), vertex(2), vertex(3)]);
@@ -4220,13 +4430,13 @@ fn preview_3d_view_proj_model(
     let eye = camera.position;
     let look_at = vec3_add(eye, camera.forward());
     let view = mat4_look_at(eye, look_at, preview_3d_camera_up(pitch));
+    let (geometric_zoom, vertical_fov) = preview_3d_projection_for_zoom(camera.zoom);
     let proj = mat4_perspective(
         aspect.max(0.1),
-        PREVIEW_3D_BASE_FOV_Y_RADIANS,
-        PREVIEW_3D_NEAR_PLANE,
+        vertical_fov,
+        preview_3d_near_plane(geometric_zoom),
         PREVIEW_3D_FAR_PLANE,
     );
-    let zoom = camera.zoom.max(PREVIEW_3D_MIN_ZOOM);
     let rotation = mat4_mul(
         mat4_rotation_y(model_rotation.yaw),
         mat4_rotation_x(model_rotation.pitch),
@@ -4237,13 +4447,13 @@ fn preview_3d_view_proj_model(
                 -scale
             } else {
                 scale
-            } * zoom,
-            scale * PREVIEW_3D_VERTICAL_SCALE * zoom,
+            } * geometric_zoom,
+            scale * PREVIEW_3D_VERTICAL_SCALE * geometric_zoom,
             if model_rotation.mirror_z {
                 -scale
             } else {
                 scale
-            } * zoom,
+            } * geometric_zoom,
         ]),
         mat4_mul(
             rotation,
@@ -4345,7 +4555,6 @@ fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     out
 }
 
-#[cfg(test)]
 fn mat4_mul_vec4(matrix: [[f32; 4]; 4], value: [f32; 4]) -> [f32; 4] {
     [
         matrix[0][0] * value[0]
@@ -4708,8 +4917,8 @@ mod tests {
         let (min_y, max_y) = if !has_faces {
             (0, 16)
         } else {
-            let mut min_y = f32::INFINITY;
-            let mut max_y = f32::NEG_INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
             for corner in opaque_faces
                 .iter()
                 .chain(glass_faces.iter())
@@ -4891,6 +5100,76 @@ mod tests {
         assert!(positions.iter().any(|position| {
             position.x == bounds.max_chunk_x && position.z == bounds.max_chunk_z
         }));
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_selection_positions_cover_the_full_selection() {
+        let bounds = SlimeChunkBounds {
+            dimension: bedrock_render::Dimension::Overworld,
+            min_chunk_x: -40,
+            max_chunk_x: 39,
+            min_chunk_z: -32,
+            max_chunk_z: 31,
+        };
+
+        let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
+
+        assert_eq!(positions.len(), preview_3d_bounds_chunk_count(bounds));
+        assert_eq!(truncated_chunk_count, 0);
+        assert_eq!(
+            positions.first().map(|position| (position.x, position.z)),
+            Some((0, 0))
+        );
+        assert!(positions.iter().any(|position| {
+            position.x == bounds.min_chunk_x && position.z == bounds.min_chunk_z
+        }));
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_uses_the_full_single_frame_gpu_face_budget() {
+        assert_eq!(PREVIEW_3D_TOTAL_FACE_BUDGET, PREVIEW_3D_FACE_BUDGET);
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_reassigns_unused_transparent_capacity_to_terrain() {
+        let glass_faces = 683;
+        let water_faces = 8_136;
+        let lava_faces = 1_614;
+
+        let opaque_budget = preview_3d_opaque_face_budget(glass_faces, water_faces, lava_faces);
+
+        assert_eq!(
+            opaque_budget,
+            PREVIEW_3D_TOTAL_FACE_BUDGET - glass_faces - water_faces - lava_faces
+        );
+        assert!(opaque_budget > PREVIEW_3D_TOTAL_FACE_BUDGET * 3 / 5);
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_starts_large_selection_with_one_visible_chunk() {
+        let total_chunks = 625;
+
+        assert_eq!(preview_3d_incremental_batch_size(0, total_chunks), 1);
+        assert_eq!(preview_3d_incremental_batch_size(1, total_chunks), 57);
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_shader_clips_fragments_to_the_preview_bounds() {
+        assert!(PREVIEW_3D_SHADER_SOURCE.contains("draw_bounds"));
+        assert!(PREVIEW_3D_SHADER_SOURCE.contains("input.position"));
+        assert!(!PREVIEW_3D_SHADER_SOURCE.contains("clip_distances"));
+        assert!(!PREVIEW_3D_SHADER_SOURCE.contains("outside_view"));
+        assert!(!PREVIEW_3D_SHADER_SOURCE.contains("vec4<f32>(2.0, 2.0, 1.0, 1.0)"));
+        assert!(preview_3d_gpu_mesh_shader().is_ok());
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_block_records_do_not_reject_large_chunks() {
+        let mut budget = Preview3dBlockBudget::unbounded();
+
+        for _ in 0..(16 * 1024 + 1) {
+            assert!(budget.try_take());
+        }
     }
 
     #[test]
@@ -5153,8 +5432,9 @@ mod tests {
         assert_ne!(camera.yaw, Preview3dCamera::default().yaw);
         assert_ne!(camera.pitch, Preview3dCamera::default().pitch);
         assert_eq!(camera.zoom, original_zoom);
+        let raised_pitch = camera.pitch;
         camera.rotate_orbit(0.0, -240.0);
-        assert!(camera.pitch > std::f32::consts::FRAC_PI_2);
+        assert!(camera.pitch < raised_pitch);
         camera.rotate_orbit(0.0, 10_000.0);
         assert!(camera.pitch >= PREVIEW_3D_MIN_PITCH);
         assert!(camera.pitch <= PREVIEW_3D_MAX_PITCH);
@@ -5396,6 +5676,7 @@ mod tests {
         let blocks =
             preview_3d_collect_chunk_blocks(&chunk).unwrap_or_else(|error| panic!("{error}"));
 
+        assert_eq!(blocks.occupied.len(), 2);
         assert_eq!(blocks.opaque_blocks.len(), 2);
         assert!(blocks.occupied.contains(&BlockKey { x: 0, y: 0, z: 0 }));
         assert!(blocks.occupied.contains(&BlockKey { x: 0, y: 1, z: 0 }));
@@ -5608,10 +5889,14 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"));
         let mesh = builder.build_mesh();
         let gpu_mesh = test_gpu_mesh(&mesh);
+        let world_origin_y = mesh
+            .chunk_meshes
+            .first()
+            .map_or(0.0, |chunk_mesh| chunk_mesh.world_origin[1] as f32);
         let highest_y = gpu_mesh
             .vertices
             .iter()
-            .map(|vertex| vertex.position[1])
+            .map(|vertex| vertex.position[1] + world_origin_y)
             .fold(f32::NEG_INFINITY, f32::max);
 
         assert_eq!(mesh.face_count, 6);
@@ -5829,14 +6114,17 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"));
         let mesh = builder.build_mesh();
         let gpu_mesh = test_gpu_mesh(&mesh);
+        let world_origin = mesh.chunk_meshes.first().map_or([0.0; 3], |chunk_mesh| {
+            chunk_mesh.world_origin.map(|coordinate| coordinate as f32)
+        });
 
         assert!(
             gpu_mesh.vertices.iter().any(|vertex| {
-                (vertex.position[0] - 1.0).abs() < 0.001
-                    && vertex.position[1] >= 64.0
-                    && vertex.position[1] <= 65.0
-                    && vertex.position[2] >= 0.4375
-                    && vertex.position[2] <= 0.5625
+                (vertex.position[0] + world_origin[0] - 1.0).abs() < 0.001
+                    && vertex.position[1] + world_origin[1] >= 64.0
+                    && vertex.position[1] + world_origin[1] <= 65.0
+                    && vertex.position[2] + world_origin[2] >= 0.4375
+                    && vertex.position[2] + world_origin[2] <= 0.5625
             }),
             "iron bars without explicit state should connect to the east neighbor"
         );
@@ -6438,6 +6726,70 @@ mod tests {
                 .iter()
                 .all(|mesh| mesh.gpu_mesh.vertices.len() <= PREVIEW_3D_GPU_VERTEX_BUDGET)
         );
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_rebases_large_world_coordinates_before_gpu_upload() {
+        let world_origin = [54_240_342, 64, -54_240_342];
+        let face = block_face(
+            BlockKey {
+                x: world_origin[0],
+                y: world_origin[1],
+                z: world_origin[2],
+            },
+            FACE_DEFINITIONS[0],
+            [0.3, 0.7, 0.2, 1.0],
+        );
+
+        let meshes = build_preview_3d_gpu_meshes_at_world_origin(
+            &[face],
+            &[],
+            &[],
+            &[],
+            world_origin,
+            [0.5, 0.5, 0.5],
+            16.0,
+            16.0,
+            0,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let mesh = meshes
+            .first()
+            .unwrap_or_else(|| panic!("mesh should exist"));
+        let positions = mesh
+            .gpu_mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position)
+            .collect::<Vec<_>>();
+
+        assert_eq!(mesh.world_origin, world_origin);
+        assert!(positions.iter().any(|position| position[0] == 0.0));
+        assert!(positions.iter().any(|position| position[0] == 1.0));
+        assert!(positions.iter().any(|position| position[2] == 0.0));
+        assert!(positions.iter().any(|position| position[2] == 1.0));
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_uses_optical_zoom_before_model_enters_camera() {
+        let (geometric_zoom, vertical_fov) = preview_3d_projection_for_zoom(8.0);
+
+        assert!(geometric_zoom <= PREVIEW_3D_MAX_GEOMETRIC_ZOOM);
+        assert!(vertical_fov < PREVIEW_3D_BASE_FOV_Y_RADIANS);
+        assert!(vertical_fov >= PREVIEW_3D_MIN_FOV_Y_RADIANS);
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_clip_culling_rejects_meshes_outside_the_view() {
+        let bounds = Preview3dMeshBounds {
+            min: [3.0, -0.5, 0.25],
+            max: [4.0, 0.5, 0.75],
+        };
+
+        assert!(!preview_3d_bounds_intersect_clip_space(
+            bounds,
+            mat4_identity()
+        ));
     }
 
     #[test]

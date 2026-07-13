@@ -322,6 +322,8 @@ impl PlatformWindow for TestWindow {
         lock.last_requested_frame.set(Some(options));
     }
 
+    fn frame_request_timed_out(&self, _options: RequestFrameOptions) {}
+
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.lock().request_frame_callback = Some(callback);
     }

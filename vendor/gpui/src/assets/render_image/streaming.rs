@@ -2,7 +2,6 @@ use super::{frame::AnimatedFrame, source::AnimatedImageSource};
 use crate::assets::decode::resample_bgra_frame_to_target;
 use crate::assets::types::ImageDecodeTarget;
 use crate::{BackgroundExecutor, Result};
-use crossbeam_queue::ArrayQueue;
 use image::{
     AnimationDecoder, ImageFormat, Rgba,
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
@@ -11,23 +10,26 @@ use std::{
     io::Cursor,
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
+        mpsc::SyncSender,
     },
+    thread,
 };
 
 pub(in crate::assets) struct StreamingImageState {
     pub(super) source: AnimatedImageSource,
     pub(super) target: Option<ImageDecodeTarget>,
     pub(super) first_frame: AnimatedFrame,
-    pub(super) queue: ArrayQueue<AnimatedFrame>,
-    pub(super) next_sequence: AtomicUsize,
-    pub(super) next_source_index: AtomicUsize,
-    pub(super) decode_task_running: AtomicBool,
+    pub(super) queue_sender: SyncSender<AnimatedFrame>,
+    pub(super) queue_receiver: parking_lot::Mutex<std::sync::mpsc::Receiver<AnimatedFrame>>,
+    pub(super) next_sequence: usize,
+    pub(super) next_source_index: usize,
+    pub(in crate::assets) decode_task_running: AtomicBool,
     pub(super) completed: AtomicBool,
 }
 
 impl StreamingImageState {
-    pub(in crate::assets) fn ensure_decode_task(self: &Arc<Self>, executor: &BackgroundExecutor) {
+    pub(in crate::assets) fn ensure_decode_task(self: &Arc<Self>, _executor: &BackgroundExecutor) {
         if self.completed.load(Ordering::Acquire) {
             return;
         }
@@ -40,12 +42,14 @@ impl StreamingImageState {
         }
 
         let state = Arc::downgrade(self);
-        let executor = executor.clone();
-        executor
-            .spawn(async move {
-                decode_streaming_frames(state);
-            })
-            .detach();
+        if let Err(error) = thread::Builder::new()
+            .name("gpui-animation-decode".to_string())
+            .spawn(move || decode_streaming_frames(state))
+        {
+            self.decode_task_running.store(false, Ordering::Release);
+            self.completed.store(true, Ordering::Release);
+            log::debug!("failed to start animated image decoder: {error}");
+        }
     }
 }
 
@@ -56,17 +60,15 @@ fn decode_streaming_frames(state: Weak<StreamingImageState>) {
         };
         let source = shared_state.source.clone();
         let target = shared_state.target;
-        let mut next_sequence = shared_state.next_sequence.load(Ordering::Acquire);
-        let skipped_frames = shared_state.next_source_index.load(Ordering::Acquire);
+        let sender = shared_state.queue_sender.clone();
+        let mut next_sequence = shared_state.next_sequence;
+        let mut skipped_frames = shared_state.next_source_index;
         drop(shared_state);
 
-        match push_streaming_cycle(&source, target, &state, &mut next_sequence, skipped_frames) {
-            Ok(StreamCycle::Dropped | StreamCycle::Paused) => break,
+        match push_streaming_cycle(&source, target, &sender, &mut next_sequence, skipped_frames) {
+            Ok(StreamCycle::Dropped) => break,
             Ok(StreamCycle::Finished) => {
-                if let Some(state) = state.upgrade() {
-                    state.next_sequence.store(next_sequence, Ordering::Release);
-                    state.next_source_index.store(0, Ordering::Release);
-                }
+                skipped_frames = 0;
             }
             Err(error) => {
                 if let Some(state) = state.upgrade() {
@@ -85,14 +87,13 @@ fn decode_streaming_frames(state: Weak<StreamingImageState>) {
 
 enum StreamCycle {
     Finished,
-    Paused,
     Dropped,
 }
 
 fn push_streaming_cycle(
     source: &AnimatedImageSource,
     target: Option<ImageDecodeTarget>,
-    state: &Weak<StreamingImageState>,
+    sender: &SyncSender<AnimatedFrame>,
     next_sequence: &mut usize,
     skipped_frames: usize,
 ) -> Result<StreamCycle> {
@@ -102,7 +103,7 @@ fn push_streaming_cycle(
             push_streaming_frames(
                 decoder.into_frames(),
                 target,
-                state,
+                sender,
                 next_sequence,
                 skipped_frames,
             )
@@ -115,7 +116,7 @@ fn push_streaming_cycle(
             push_streaming_frames(
                 decoder.apng()?.into_frames(),
                 target,
-                state,
+                sender,
                 next_sequence,
                 skipped_frames,
             )
@@ -129,7 +130,7 @@ fn push_streaming_cycle(
             push_streaming_frames(
                 decoder.into_frames(),
                 target,
-                state,
+                sender,
                 next_sequence,
                 skipped_frames,
             )
@@ -141,7 +142,7 @@ fn push_streaming_cycle(
 fn push_streaming_frames(
     frames: image::Frames<'_>,
     target: Option<ImageDecodeTarget>,
-    state: &Weak<StreamingImageState>,
+    sender: &SyncSender<AnimatedFrame>,
     next_sequence: &mut usize,
     skipped_frames: usize,
 ) -> Result<StreamCycle> {
@@ -156,17 +157,10 @@ fn push_streaming_frames(
         } else {
             frame
         };
-        let Some(state) = state.upgrade() else {
+        if sender.send(frame).is_err() {
             return Ok(StreamCycle::Dropped);
-        };
-        if state.queue.push(frame).is_err() {
-            return Ok(StreamCycle::Paused);
         }
         *next_sequence = next_sequence.saturating_add(1);
-        state.next_sequence.store(*next_sequence, Ordering::Release);
-        state
-            .next_source_index
-            .store(source_index.saturating_add(1), Ordering::Release);
     }
 
     Ok(StreamCycle::Finished)

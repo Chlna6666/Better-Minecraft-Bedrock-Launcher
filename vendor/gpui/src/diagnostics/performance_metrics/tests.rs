@@ -1,8 +1,20 @@
 use super::*;
-use std::time::Duration;
+use std::{
+    sync::{LazyLock, Mutex, MutexGuard},
+    time::Duration,
+};
+
+static PERFORMANCE_METRICS_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn lock_performance_metrics() -> MutexGuard<'static, ()> {
+    PERFORMANCE_METRICS_TEST_LOCK
+        .lock()
+        .expect("performance metrics test lock should not be poisoned")
+}
 
 #[test]
 fn records_aggregate_image_decode_metrics() {
+    let _lock = lock_performance_metrics();
     let before = performance_metrics_snapshot();
 
     record_image_decode_metrics_with_threshold(
@@ -42,6 +54,7 @@ fn records_aggregate_image_decode_metrics() {
 
 #[test]
 fn records_retained_image_asset_metrics() {
+    let _lock = lock_performance_metrics();
     let key = 0xA55E7;
     drop_image_asset_retained(key);
 
@@ -73,7 +86,9 @@ fn records_retained_image_asset_metrics() {
 
 #[test]
 fn records_extended_gpu_metrics() {
+    let _lock = lock_performance_metrics();
     reset_frame_upload_metrics();
+    let before = performance_metrics_snapshot();
     record_atlas_upload_metrics(64, 1, Duration::from_micros(2));
     record_atlas_upload_metrics(32, 2, Duration::from_micros(3));
     record_prepared_command_count(32);
@@ -86,6 +101,8 @@ fn records_extended_gpu_metrics() {
     record_upload_arena_metrics(65_536, 1_048_576, 768, 2048);
     record_gpu_cache_metrics(7, 1);
     record_gpu_pass_metrics(1, 2, 1);
+    record_gpu_submission_wait(Duration::from_millis(2));
+    record_gpu_submission_wait(Duration::from_millis(9));
     record_gpu_surface_metrics("Bgra8Unorm", "PreMultiplied", "Mailbox", 3, 2);
     record_dirty_region_metrics(2, 4096);
     record_partial_redraw();
@@ -114,6 +131,29 @@ fn records_extended_gpu_metrics() {
     assert_eq!(snapshot.mask_pass_count, 1);
     assert_eq!(snapshot.main_pass_count, 2);
     assert_eq!(snapshot.composite_pass_count, 1);
+    assert_eq!(
+        snapshot.gpu_submission_wait_count,
+        before.gpu_submission_wait_count + 2
+    );
+    assert_eq!(
+        snapshot.gpu_submission_wait_time,
+        Some(Duration::from_millis(9))
+    );
+    assert!(
+        snapshot
+            .gpu_submission_wait_total_time
+            .is_some_and(|duration| {
+                duration
+                    >= before.gpu_submission_wait_total_time.unwrap_or_default()
+                        + Duration::from_millis(11)
+            })
+    );
+    assert!(
+        snapshot
+            .gpu_submission_wait_max_time
+            .is_some_and(|duration| duration >= Duration::from_millis(9))
+    );
+    assert!(snapshot.gpu_submission_slow_wait_count >= before.gpu_submission_slow_wait_count + 1);
     assert_eq!(snapshot.gpu_surface_reconfigure_count, 3);
     assert_eq!(snapshot.gpu_surface_error_count, 2);
     assert_eq!(snapshot.dirty_rect_count, 2);
@@ -125,6 +165,7 @@ fn records_extended_gpu_metrics() {
 
 #[test]
 fn records_scene_and_refresh_metrics() {
+    let _lock = lock_performance_metrics();
     record_scene_frame_metrics(SceneFrameMetrics {
         primitives: 7,
         batches: 3,
@@ -176,6 +217,7 @@ fn records_scene_and_refresh_metrics() {
 
 #[test]
 fn records_window_scoped_metrics() {
+    let _lock = lock_performance_metrics();
     record_window_request_redraw(10);
     record_window_frame_disposition(
         10,

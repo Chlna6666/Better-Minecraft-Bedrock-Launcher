@@ -13,6 +13,17 @@ impl RequestFrameOptions {
             force_render: true,
         }
     }
+
+    pub(crate) fn requires_frame(self) -> bool {
+        self.require_presentation || self.force_render
+    }
+
+    pub(crate) fn merge(self, options: Self) -> Self {
+        Self {
+            require_presentation: self.require_presentation || options.require_presentation,
+            force_render: self.force_render || options.force_render,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

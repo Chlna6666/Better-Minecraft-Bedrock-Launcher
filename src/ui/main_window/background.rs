@@ -3,7 +3,7 @@ use tracing::{info, instrument};
 
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
-const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = false;
+const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
 const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
 const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
 
@@ -39,15 +39,20 @@ impl AppBackgroundView {
         bootstrap_background_option: SharedString,
         bootstrap_local_image_path: SharedString,
         bootstrap_network_image_url: SharedString,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
         let _ = startup_trace_origin();
+        let _subscriptions = vec![
+            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
+                cx.notify();
+            }),
+        ];
         Self {
             bootstrap_background_option,
             bootstrap_local_image_path,
             bootstrap_network_image_url,
             last_background_error_signature: None,
-            _subscriptions: Vec::new(),
+            _subscriptions,
             last_background_option: String::new(),
             last_local_image_path: String::new(),
             last_network_image_url: String::new(),
@@ -84,7 +89,9 @@ impl AppBackgroundView {
             background_option: settings.background_option.to_string(),
             local_image_path: settings.local_image_path.to_string(),
             network_image_url: settings.network_image_url.to_string(),
-            background_blur: crate::config::config::clamp_background_blur(settings.background_blur),
+            background_blur: crate::config::config::clamp_background_blur(
+                settings.background_blur_preview,
+            ),
             network_image_refresh_nonce: settings.network_image_refresh_nonce,
         }
     }
@@ -364,8 +371,8 @@ mod tests {
     }
 
     #[test]
-    fn background_blur_uses_static_overlay_by_default() {
-        assert!(!BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
+    fn background_blur_uses_gpu_backdrop_blur_by_default() {
+        assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
             background_blur_overlay_color(f32::MAX).a,

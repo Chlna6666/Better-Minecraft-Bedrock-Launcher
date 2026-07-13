@@ -53,11 +53,15 @@ impl MapViewerWindowView {
                 };
 
                 let mut batch = HashMap::new();
-                batch.insert(first_snapshot.id.clone(), first_snapshot);
+                if is_map_window_task_snapshot(first_snapshot.as_ref()) {
+                    batch.insert(first_snapshot.id.clone(), first_snapshot);
+                }
                 loop {
                     match updates.try_recv() {
                         Ok(snapshot) => {
-                            batch.insert(snapshot.id.clone(), snapshot);
+                            if is_map_window_task_snapshot(snapshot.as_ref()) {
+                                batch.insert(snapshot.id.clone(), snapshot);
+                            }
                         }
                         Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
@@ -66,10 +70,15 @@ impl MapViewerWindowView {
                         }
                     }
                 }
+                if batch.is_empty() {
+                    continue;
+                }
                 let snapshots = batch.into_values().collect::<Vec<_>>();
 
                 if handle
                     .update(cx, move |this, cx| {
+                        this.task_snapshots
+                            .retain(|_, snapshot| is_map_window_task_snapshot(snapshot.as_ref()));
                         for snapshot in snapshots {
                             this.task_snapshots.insert(snapshot.id.clone(), snapshot);
                         }
@@ -330,6 +339,22 @@ impl MapViewerWindowView {
         snapshots.truncate(limit);
         snapshots
     }
+}
+
+fn is_map_window_task_snapshot(snapshot: &TaskSnapshot) -> bool {
+    matches!(
+        snapshot.stage.as_ref(),
+        "打开地图"
+            | "地图索引"
+            | "探测瓦片"
+            | "局部刷新"
+            | "地图导出"
+            | "地图导入"
+            | "复制区块"
+            | "粘贴区块"
+            | "删除区块"
+            | "写入地图"
+    )
 }
 
 fn local_progress_inline(

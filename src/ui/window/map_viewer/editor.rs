@@ -584,12 +584,26 @@ impl MapViewerWindowView {
             .collect::<BTreeSet<_>>();
         let affected_chunk_list = affected_chunks.iter().copied().collect::<Vec<_>>();
         let progress_total = affected_chunk_list.len().max(1);
+        let task_id = task_manager::create_task_with_details(
+            None,
+            "删除选区区块",
+            Some(format!("{progress_total} 个 chunk")),
+            "map_delete",
+            Some(task_progress_units(progress_total)),
+            false,
+        );
+        let cancel = CancelFlag::new();
+        task_manager::register_task_cancel_hook(task_id.clone(), {
+            let cancel = cancel.clone();
+            move || cancel.cancel()
+        });
         self.set_chunk_transfer_progress(ChunkTransferProgress {
             phase: SharedString::from("删除区块"),
             completed: 0,
             total: progress_total,
         });
-        self.begin_edit_toast(
+        self.begin_task_toast(
+            &task_id,
             SharedString::from(format!("正在删除 {progress_total} 个选区 chunk...")),
             cx,
         );
@@ -608,8 +622,13 @@ impl MapViewerWindowView {
             let progress_sender = event_sender.clone();
             let completion_sender = event_sender.clone();
             let affected_chunks_for_task = affected_chunks.clone();
+            let task_id_for_background = task_id.clone();
+            let cancel_for_background = cancel.clone();
             let task = cx.background_spawn(async move {
+                let task_id_for_task = task_id_for_background;
+                let cancel_for_task = cancel_for_background;
                 let result = (|| {
+                    check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
@@ -634,7 +653,9 @@ impl MapViewerWindowView {
                     let total = affected_chunk_list.len().max(1);
                     let mut cleared = 0usize;
                     let result = (|| {
+                        let mut progress_sync = ChunkTransferTaskProgressSync::default();
                         for (index, chunk) in affected_chunk_list.into_iter().enumerate() {
+                            check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                             let bounds = SlimeChunkBounds {
                                 dimension: chunk.dimension,
                                 min_chunk_x: chunk.x,
@@ -646,14 +667,19 @@ impl MapViewerWindowView {
                                 clear_chunks_blocking(&world, bounds, &guard)
                                     .map_err(|error| error.to_string())?,
                             );
+                            let progress = ChunkTransferProgress {
+                                phase: SharedString::from("删除区块"),
+                                completed: index + 1,
+                                total,
+                            };
+                            sync_map_operation_task_progress(
+                                &task_id_for_task,
+                                &mut progress_sync,
+                                &progress,
+                                "map_delete",
+                            );
                             if progress_sender
-                                .unbounded_send(DeleteSelectionEvent::Progress(
-                                    ChunkTransferProgress {
-                                        phase: SharedString::from("删除区块"),
-                                        completed: index + 1,
-                                        total,
-                                    },
-                                ))
+                                .unbounded_send(DeleteSelectionEvent::Progress(progress))
                                 .is_err()
                             {
                                 break;
@@ -679,6 +705,14 @@ impl MapViewerWindowView {
                         )),
                     }
                 })();
+                let status =
+                    map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
+                let message = match (&result, status) {
+                    (Ok(cleared), "completed") => Some(format!("已清空 {cleared} 个 chunk")),
+                    (Err(error), _) => Some(error.clone()),
+                    _ => None,
+                };
+                task_manager::finish_task(&task_id_for_task, status, message);
                 if completion_sender
                     .unbounded_send(DeleteSelectionEvent::Complete(result))
                     .is_err()
@@ -692,6 +726,7 @@ impl MapViewerWindowView {
             };
             while let Some(event) = event_receiver.next().await {
                 let is_complete = matches!(&event, DeleteSelectionEvent::Complete(_));
+                let task_id_for_ui = task_id.clone();
                 view.update(cx, {
                     let affected_chunks = affected_chunks.clone();
                     move |this, cx| {
@@ -717,7 +752,8 @@ impl MapViewerWindowView {
                                         let message =
                                             format!("已清空 {cleared} 个选区 chunk 为空气");
                                         this.status = SharedString::from(message.clone());
-                                        this.resolve_edit_toast(
+                                        this.resolve_task_toast(
+                                            &task_id_for_ui,
                                             toast::ToastKind::Success,
                                             SharedString::from(message),
                                             cx,
@@ -725,12 +761,24 @@ impl MapViewerWindowView {
                                     }
                                     Err(error) => {
                                         this.finish_chunk_transfer_progress();
-                                        this.status = SharedString::from(error.clone());
-                                        this.resolve_edit_toast(
-                                            toast::ToastKind::Error,
-                                            SharedString::from(error),
-                                            cx,
-                                        );
+                                        if is_map_operation_cancelled_error(&error) {
+                                            let message = SharedString::from("删除选区已取消");
+                                            this.status = message.clone();
+                                            this.resolve_task_toast(
+                                                &task_id_for_ui,
+                                                toast::ToastKind::Info,
+                                                message,
+                                                cx,
+                                            );
+                                        } else {
+                                            this.status = SharedString::from(error.clone());
+                                            this.resolve_task_toast(
+                                                &task_id_for_ui,
+                                                toast::ToastKind::Error,
+                                                SharedString::from(error),
+                                                cx,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -781,6 +829,15 @@ impl MapViewerWindowView {
         self.context_menu = None;
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
+        let task_stage = match &action {
+            QuickWriteAction::PasteCopiedChunk { .. }
+            | QuickWriteAction::PasteCopiedChunks { .. }
+            | QuickWriteAction::PasteImportedStructure { .. } => "map_paste",
+            QuickWriteAction::DeleteCurrentChunk(_)
+            | QuickWriteAction::DeleteCurrentChunkBlockEntities(_)
+            | QuickWriteAction::DeleteCurrentChunkActors(_) => "map_delete",
+            QuickWriteAction::ResetCurrentChunk(_) => "map_write",
+        };
         let progress = action
             .progress_seed()
             .map(|(phase, total)| ChunkTransferProgress {
@@ -788,12 +845,32 @@ impl MapViewerWindowView {
                 completed: 0,
                 total,
             });
+        let task_total = progress
+            .as_ref()
+            .map(|progress| task_progress_units(progress.total.max(1)));
+        let task_id = task_manager::create_task_with_details(
+            None,
+            action.label(),
+            None,
+            task_stage,
+            task_total,
+            false,
+        );
+        let cancel = CancelFlag::new();
+        task_manager::register_task_cancel_hook(task_id.clone(), {
+            let cancel = cancel.clone();
+            move || cancel.cancel()
+        });
         if let Some(progress) = progress {
             self.set_chunk_transfer_progress(progress);
         } else {
             self.finish_chunk_transfer_progress();
         }
-        self.begin_edit_toast(SharedString::from(format!("正在{}...", action.label())), cx);
+        self.begin_task_toast(
+            &task_id,
+            SharedString::from(format!("正在{}...", action.label())),
+            cx,
+        );
         self.status = SharedString::from(format!("正在{}...", action.label()));
         cx.notify();
 
@@ -817,8 +894,13 @@ impl MapViewerWindowView {
             let (event_sender, mut event_receiver) = unbounded::<QuickWriteEvent>();
             let progress_sender = event_sender.clone();
             let completion_sender = event_sender.clone();
+            let task_id_for_background = task_id.clone();
+            let cancel_for_background = cancel.clone();
             let task = cx.background_spawn(async move {
+                let task_id_for_task = task_id_for_background;
+                let cancel_for_task = cancel_for_background;
                 let result = (|| {
+                    check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
@@ -831,13 +913,21 @@ impl MapViewerWindowView {
                         copied_chunk.as_ref(),
                         imported_structure.as_ref(),
                     )?);
+                    let mut progress_sync = ChunkTransferTaskProgressSync::default();
                     let result = run_quick_write_action_blocking(
                         &world,
                         action_for_task.clone(),
                         &guard,
                         copied_chunk.as_ref(),
                         imported_structure.as_ref(),
+                        Some(&cancel_for_task),
                         |progress| {
+                            sync_map_operation_task_progress(
+                                &task_id_for_task,
+                                &mut progress_sync,
+                                &progress,
+                                task_stage,
+                            );
                             let _ =
                                 progress_sender.unbounded_send(QuickWriteEvent::Progress(progress));
                         },
@@ -861,6 +951,14 @@ impl MapViewerWindowView {
                         }
                     }
                 })();
+                let status =
+                    map_operation_status_for_result(&result, &cancel_for_task, &task_id_for_task);
+                let message = match (&result, status) {
+                    (Ok((message, _)), "completed") => Some(message.clone()),
+                    (Err(error), _) => Some(error.clone()),
+                    _ => None,
+                };
+                task_manager::finish_task(&task_id_for_task, status, message);
                 if completion_sender
                     .unbounded_send(QuickWriteEvent::Complete(result))
                     .is_err()
@@ -871,6 +969,7 @@ impl MapViewerWindowView {
             task.detach();
             while let Some(event) = event_receiver.next().await {
                 let is_complete = matches!(&event, QuickWriteEvent::Complete(_));
+                let task_id_for_ui = task_id.clone();
                 let Some(view) = handle.upgrade() else {
                     return Ok(());
                 };
@@ -892,7 +991,8 @@ impl MapViewerWindowView {
                                     cx,
                                 );
                                 this.status = SharedString::from(message.clone());
-                                this.resolve_edit_toast(
+                                this.resolve_task_toast(
+                                    &task_id_for_ui,
                                     toast::ToastKind::Success,
                                     SharedString::from(message),
                                     cx,
@@ -900,12 +1000,24 @@ impl MapViewerWindowView {
                             }
                             Err(error) => {
                                 this.finish_chunk_transfer_progress();
-                                this.status = SharedString::from(error.clone());
-                                this.resolve_edit_toast(
-                                    toast::ToastKind::Error,
-                                    SharedString::from(error),
-                                    cx,
-                                );
+                                if is_map_operation_cancelled_error(&error) {
+                                    let message = SharedString::from("地图写入已取消");
+                                    this.status = message.clone();
+                                    this.resolve_task_toast(
+                                        &task_id_for_ui,
+                                        toast::ToastKind::Info,
+                                        message,
+                                        cx,
+                                    );
+                                } else {
+                                    this.status = SharedString::from(error.clone());
+                                    this.resolve_task_toast(
+                                        &task_id_for_ui,
+                                        toast::ToastKind::Error,
+                                        SharedString::from(error),
+                                        cx,
+                                    );
+                                }
                             }
                         },
                     }
@@ -1748,8 +1860,10 @@ pub(super) fn run_quick_write_action_blocking(
     guard: &WriteGuard,
     copied_chunk: Option<&CopiedChunkData>,
     imported_structure: Option<&ImportedStructureData>,
+    cancel: Option<&CancelFlag>,
     mut progress: impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+    check_bedrock_operation_cancelled(cancel)?;
     let chunk = action.chunk();
     let result = match action {
         QuickWriteAction::DeleteCurrentChunk(_) | QuickWriteAction::ResetCurrentChunk(_) => {
@@ -1773,12 +1887,14 @@ pub(super) fn run_quick_write_action_blocking(
             let (message, invalidation) =
                 if matches!(action, QuickWriteAction::ResetCurrentChunk(_)) {
                     let deleted = delete_chunks_blocking(world, bounds, guard)?;
+                    check_bedrock_operation_cancelled(cancel)?;
                     (
                         format!("已重置当前 chunk，删除 {deleted} 条记录并允许游戏重新加载"),
                         MapEditInvalidation::chunk(chunk).with_metadata(),
                     )
                 } else {
                     let cleared = clear_chunks_blocking(world, bounds, guard)?;
+                    check_bedrock_operation_cancelled(cancel)?;
                     (
                         format!("已清空当前 chunk 为空气（{} 个 chunk）", cleared),
                         MapEditInvalidation::chunk(chunk).with_metadata(),
@@ -1792,6 +1908,7 @@ pub(super) fn run_quick_write_action_blocking(
             Ok((message, invalidation))
         }
         QuickWriteAction::DeleteCurrentChunkBlockEntities(_) => {
+            check_bedrock_operation_cancelled(cancel)?;
             delete_chunk_record_with_guard(world, chunk, ChunkRecordTag::BlockEntity, guard)?;
             Ok((
                 format!("已删除 chunk {},{} 方块实体记录", chunk.x, chunk.z),
@@ -1802,9 +1919,11 @@ pub(super) fn run_quick_write_action_blocking(
             let actors = world.actors_in_chunk_blocking(chunk)?;
             let mut deleted = 0usize;
             for uid in actors.into_iter().filter_map(|actor| actor.uid) {
+                check_bedrock_operation_cancelled(cancel)?;
                 world.delete_actor_blocking(chunk, uid)?;
                 deleted = deleted.saturating_add(1);
             }
+            check_bedrock_operation_cancelled(cancel)?;
             delete_chunk_record_with_guard(world, chunk, ChunkRecordTag::Entity, guard)?;
             Ok((
                 format!(
@@ -1829,6 +1948,7 @@ pub(super) fn run_quick_write_action_blocking(
                 target,
                 transform,
                 guard,
+                cancel,
                 &mut progress,
             )
         }
@@ -1848,6 +1968,7 @@ pub(super) fn run_quick_write_action_blocking(
                 target_anchor,
                 transform,
                 guard,
+                cancel,
                 &mut progress,
             )
         }
@@ -1866,6 +1987,7 @@ pub(super) fn run_quick_write_action_blocking(
                 target_anchor,
                 transform,
                 guard,
+                cancel,
                 &mut progress,
             )
         }
@@ -1942,6 +2064,7 @@ pub(super) fn copy_chunks_blocking(
     editor: &MapWorldEditor,
     source_anchor: ChunkPos,
     chunks: Vec<ChunkPos>,
+    cancel: Option<&CancelFlag>,
     mut progress: impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<CopiedChunkData> {
     if chunks.is_empty() {
@@ -1953,6 +2076,7 @@ pub(super) fn copy_chunks_blocking(
     let total = chunks.len();
     let mut copied_chunks = Vec::with_capacity(total);
     for (index, chunk) in chunks.into_iter().enumerate() {
+        check_bedrock_operation_cancelled(cancel)?;
         let records = copy_safe_chunk_records(editor.world().get_chunk_blocking(chunk)?.records);
         let parsed_chunk = editor
             .world()
@@ -1990,6 +2114,15 @@ pub(super) fn copy_chunks_blocking(
     })
 }
 
+fn check_bedrock_operation_cancelled(cancel: Option<&CancelFlag>) -> bedrock_world::Result<()> {
+    if cancel.is_some_and(CancelFlag::is_cancelled) {
+        return Err(bedrock_world::BedrockWorldError::Validation(
+            MAP_OPERATION_CANCELLED_MESSAGE.to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn paste_copied_chunk_blocking(
     world: &BedrockWorld,
     copied_chunk: &CopiedChunkData,
@@ -1997,8 +2130,10 @@ pub(super) fn paste_copied_chunk_blocking(
     target_anchor: ChunkPos,
     transform: PasteTransform,
     guard: &WriteGuard,
+    cancel: Option<&CancelFlag>,
     progress: &mut impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+    check_bedrock_operation_cancelled(cancel)?;
     if !transform.is_default() {
         return paste_transformed_copied_chunks_blocking(
             world,
@@ -2007,6 +2142,7 @@ pub(super) fn paste_copied_chunk_blocking(
             target_anchor,
             transform,
             guard,
+            cancel,
             progress,
         );
     }
@@ -2025,6 +2161,7 @@ pub(super) fn paste_copied_chunk_blocking(
         ))
         .enumerate()
     {
+        check_bedrock_operation_cancelled(cancel)?;
         delete_chunks_blocking(
             world,
             SlimeChunkBounds {
@@ -2078,6 +2215,7 @@ pub(super) fn paste_copied_chunk_blocking(
             total,
         });
     }
+    check_bedrock_operation_cancelled(cancel)?;
 
     Ok((
         format!(
@@ -2114,6 +2252,8 @@ pub(super) fn copied_chunk_snapshot_structure_placement(
         version: None,
         records: snapshot.records.clone(),
     };
+    let decoded_subchunks = copied_chunk_decoded_subchunks(&chunk, min_y, max_y)?;
+    let legacy_terrain = chunk.legacy_terrain()?;
 
     for x in 0..size.x {
         let local_x = u8::try_from(x).map_err(|_| {
@@ -2129,41 +2269,26 @@ pub(super) fn copied_chunk_snapshot_structure_placement(
             })?;
             for y in 0..size.y {
                 let world_y = min_y.saturating_add(y);
-                let entry = match chunk.get_block(
-                    local_x,
-                    i16::try_from(world_y).map_err(|_| {
-                        bedrock_world::BedrockWorldError::Validation(format!(
-                            "chunk copy source y={world_y} cannot be represented as i16"
-                        ))
-                    })?,
-                    local_z,
-                ) {
-                    Ok(state) => bedrock_world::McStructurePaletteEntry::from_block_state(&state),
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            bedrock_world::BedrockWorldErrorKind::UnsupportedChunkFormat
-                        ) =>
-                    {
-                        bedrock_world::McStructurePaletteEntry::air()
-                    }
-                    Err(error) => return Err(error),
-                };
-                let palette_key = mcstructure_palette_key(&entry);
-                let palette_index = if let Some(index) = palette_indices.get(&palette_key) {
-                    *index
-                } else {
-                    let index = i32::try_from(structure.palette.len()).map_err(|_| {
-                        bedrock_world::BedrockWorldError::Validation(
-                            "结构 palette 超过 i32 上限".to_string(),
-                        )
-                    })?;
-                    structure.palette.push(entry);
-                    palette_indices.insert(palette_key, index);
-                    index
-                };
                 let block_index = size.index(x, y, z)?;
-                structure.primary_indices[block_index] = palette_index;
+                if let Some(entry) = copied_chunk_structure_primary_entry_at(
+                    &decoded_subchunks,
+                    legacy_terrain.as_ref(),
+                    local_x,
+                    world_y,
+                    local_z,
+                )? {
+                    structure.primary_indices[block_index] =
+                        mcstructure_palette_index(&mut structure, &mut palette_indices, entry)?;
+                }
+                if let Some(entry) = copied_chunk_structure_secondary_entry_at(
+                    &decoded_subchunks,
+                    local_x,
+                    world_y,
+                    local_z,
+                )? {
+                    structure.secondary_indices[block_index] =
+                        mcstructure_palette_index(&mut structure, &mut palette_indices, entry)?;
+                }
             }
         }
     }
@@ -2193,8 +2318,10 @@ fn paste_transformed_copied_chunks_blocking(
     target_anchor: ChunkPos,
     transform: PasteTransform,
     guard: &WriteGuard,
+    cancel: Option<&CancelFlag>,
     progress: &mut impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+    check_bedrock_operation_cancelled(cancel)?;
     let targets = pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform);
     let total = targets.len().max(1);
     let mut affected_chunks = BTreeSet::new();
@@ -2205,6 +2332,7 @@ fn paste_transformed_copied_chunks_blocking(
         .zip(targets.iter().copied())
         .enumerate()
     {
+        check_bedrock_operation_cancelled(cancel)?;
         delete_chunks_blocking(
             world,
             SlimeChunkBounds {
@@ -2224,6 +2352,7 @@ fn paste_transformed_copied_chunks_blocking(
 
         let structure_placement =
             copied_chunk_snapshot_structure_placement(snapshot, target_chunk)?;
+        check_bedrock_operation_cancelled(cancel)?;
         let result = structure_placement.structure.write_to_world_blocking(
             world,
             bedrock_world::McStructurePlacement {
@@ -2246,6 +2375,7 @@ fn paste_transformed_copied_chunks_blocking(
                 });
             },
         )?;
+        check_bedrock_operation_cancelled(cancel)?;
         let shifted_hsa = snapshot
             .hardcoded_spawn_areas
             .iter()
@@ -2266,6 +2396,7 @@ fn paste_transformed_copied_chunks_blocking(
         affected_chunks.extend(result.affected_chunks);
         affected_chunks.insert(target_chunk);
     }
+    check_bedrock_operation_cancelled(cancel)?;
 
     Ok((
         format!(
@@ -2290,6 +2421,144 @@ const fn mcstructure_rotation_for_paste(
         PasteRotation::Rotate180 => bedrock_world::McStructureRotation::Rotate180,
         PasteRotation::CounterClockwise90 => bedrock_world::McStructureRotation::CounterClockwise90,
     }
+}
+
+fn copied_chunk_decoded_subchunks(
+    chunk: &bedrock_world::Chunk,
+    min_y: i32,
+    max_y: i32,
+) -> bedrock_world::Result<BTreeMap<i8, bedrock_world::SubChunk>> {
+    let mut subchunks = BTreeMap::new();
+    for subchunk_y in min_y.div_euclid(16)..=max_y.div_euclid(16) {
+        let subchunk_y = i8::try_from(subchunk_y).map_err(|_| {
+            bedrock_world::BedrockWorldError::Validation(format!(
+                "chunk copy source subchunk y={subchunk_y} cannot be represented as i8"
+            ))
+        })?;
+        if let Some(subchunk) = chunk.get_subchunk(subchunk_y)? {
+            subchunks.insert(subchunk_y, subchunk);
+        }
+    }
+    Ok(subchunks)
+}
+
+fn copied_chunk_structure_primary_entry_at(
+    subchunks: &BTreeMap<i8, bedrock_world::SubChunk>,
+    legacy_terrain: Option<&bedrock_world::LegacyTerrain>,
+    local_x: u8,
+    world_y: i32,
+    local_z: u8,
+) -> bedrock_world::Result<Option<bedrock_world::McStructurePaletteEntry>> {
+    let (subchunk_y, local_y) = copied_chunk_structure_subchunk_coords(world_y)?;
+    if let Some(state) = subchunks.get(&subchunk_y).and_then(|subchunk| {
+        copied_chunk_subchunk_layer_state_at(subchunk, 0, local_x, local_y, local_z)
+    }) {
+        return Ok(Some(
+            bedrock_world::McStructurePaletteEntry::from_block_state(state),
+        ));
+    }
+    Ok(legacy_terrain
+        .and_then(|terrain| copied_chunk_legacy_block_state_at(terrain, local_x, world_y, local_z))
+        .map(|state| bedrock_world::McStructurePaletteEntry::from_block_state(&state)))
+}
+
+fn copied_chunk_structure_secondary_entry_at(
+    subchunks: &BTreeMap<i8, bedrock_world::SubChunk>,
+    local_x: u8,
+    world_y: i32,
+    local_z: u8,
+) -> bedrock_world::Result<Option<bedrock_world::McStructurePaletteEntry>> {
+    let (subchunk_y, local_y) = copied_chunk_structure_subchunk_coords(world_y)?;
+    Ok(subchunks
+        .get(&subchunk_y)
+        .and_then(|subchunk| {
+            copied_chunk_subchunk_layer_state_at(subchunk, 1, local_x, local_y, local_z)
+        })
+        .filter(|state| !copied_chunk_is_air_block_state_name(&state.name))
+        .map(bedrock_world::McStructurePaletteEntry::from_block_state))
+}
+
+fn copied_chunk_structure_subchunk_coords(world_y: i32) -> bedrock_world::Result<(i8, u8)> {
+    let subchunk_y = i8::try_from(world_y.div_euclid(16)).map_err(|_| {
+        bedrock_world::BedrockWorldError::Validation(format!(
+            "chunk copy source y={world_y} cannot be represented as a subchunk index"
+        ))
+    })?;
+    let local_y = u8::try_from(world_y.rem_euclid(16)).map_err(|_| {
+        bedrock_world::BedrockWorldError::Validation(format!(
+            "chunk copy source y={world_y} has invalid local subchunk offset"
+        ))
+    })?;
+    Ok((subchunk_y, local_y))
+}
+
+fn copied_chunk_subchunk_layer_state_at(
+    subchunk: &bedrock_world::SubChunk,
+    layer: usize,
+    local_x: u8,
+    local_y: u8,
+    local_z: u8,
+) -> Option<&bedrock_world::BlockState> {
+    let bedrock_world::SubChunkFormat::Paletted { storages, .. } = &subchunk.format else {
+        return None;
+    };
+    storages
+        .get(layer)
+        .and_then(|storage| storage.block_state_at(local_x, local_y, local_z))
+}
+
+fn copied_chunk_legacy_block_state_at(
+    terrain: &bedrock_world::LegacyTerrain,
+    local_x: u8,
+    world_y: i32,
+    local_z: u8,
+) -> Option<bedrock_world::BlockState> {
+    if !(0..=127).contains(&world_y) {
+        return None;
+    }
+    let local_y = u8::try_from(world_y).ok()?;
+    let id = terrain.block_id_at(local_x, local_y, local_z)?;
+    let mut states = BTreeMap::new();
+    if let Some(data) = terrain.block_data_at(local_x, local_y, local_z) {
+        states.insert("data".to_string(), bedrock_world::NbtTag::Byte(data as i8));
+    }
+    Some(bedrock_world::BlockState {
+        name: format!("legacy:{id}"),
+        states,
+        version: None,
+    })
+}
+
+fn copied_chunk_is_air_block_state_name(name: &str) -> bool {
+    matches!(
+        name,
+        "air"
+            | "cave_air"
+            | "void_air"
+            | "minecraft:air"
+            | "minecraft:cave_air"
+            | "minecraft:void_air"
+            | "minecraft:structure_void"
+            | "minecraft:light_block"
+            | "minecraft:light"
+    )
+}
+
+fn mcstructure_palette_index(
+    structure: &mut bedrock_world::McStructureFile,
+    palette_indices: &mut HashMap<String, i32>,
+    entry: bedrock_world::McStructurePaletteEntry,
+) -> bedrock_world::Result<i32> {
+    let palette_key = mcstructure_palette_key(&entry);
+    if let Some(index) = palette_indices.get(&palette_key) {
+        return Ok(*index);
+    }
+    let index = i32::try_from(structure.palette.len()).map_err(|_| {
+        bedrock_world::BedrockWorldError::Validation("结构 palette 超过 i32 上限".to_string())
+    })?;
+    structure.palette.push(entry);
+    palette_indices.insert(palette_key, index);
+    Ok(index)
 }
 
 fn mcstructure_palette_key(entry: &bedrock_world::McStructurePaletteEntry) -> String {

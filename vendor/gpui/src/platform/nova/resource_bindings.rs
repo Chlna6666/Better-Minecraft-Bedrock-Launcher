@@ -1,13 +1,9 @@
 use super::*;
 
-#[derive(Clone, Copy)]
 pub(super) struct NovaAtlasResourceDescriptor {
     pub(super) mono_sprite_resource_set_layout: ResourceSetLayoutId,
     pub(super) poly_sprite_resource_set_layout: ResourceSetLayoutId,
-    pub(super) global_buffer: BufferId,
-    pub(super) text_raster_buffer: BufferId,
-    pub(super) mono_sprite_buffer: BufferId,
-    pub(super) poly_sprite_buffer: BufferId,
+    pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
     pub(super) sampler: SamplerId,
 }
 

@@ -1,4 +1,4 @@
-use crate::{Size, size};
+use crate::{App, Size, Window, size};
 use smallvec::SmallVec;
 
 use super::{
@@ -27,12 +27,14 @@ impl TaffyLayoutEngine {
         &mut self,
         id: LayoutId,
         root_key: &LayoutRootCacheKey,
+        window: &mut Window,
+        cx: &mut App,
     ) -> bool {
         let mut current_nodes = std::mem::take(&mut self.subtree_scratch);
         current_nodes.clear();
         self.collect_subtree_nodes_into(id, &mut current_nodes);
 
-        let retained = self.try_retain_layout_from_nodes(&current_nodes, root_key);
+        let retained = self.try_retain_layout_from_nodes(&current_nodes, root_key, window, cx);
 
         current_nodes.clear();
         self.subtree_scratch = current_nodes;
@@ -43,6 +45,8 @@ impl TaffyLayoutEngine {
         &mut self,
         current_nodes: &[LayoutId],
         root_key: &LayoutRootCacheKey,
+        window: &mut Window,
+        cx: &mut App,
     ) -> bool {
         let Some(cached_nodes) = self.previous_layout_roots.get(root_key) else {
             return false;
@@ -50,20 +54,18 @@ impl TaffyLayoutEngine {
         if current_nodes.len() != cached_nodes.len() {
             return false;
         }
-        for (current_id, cached_node) in current_nodes.iter().zip(cached_nodes.iter()) {
-            let current_fingerprint = self.node_fingerprints.get(current_id).copied().flatten();
-            if current_fingerprint != Some(cached_node.fingerprint) {
-                return false;
-            }
-        }
-
         let reused_node_count = current_nodes.len();
-        let retained_layout_bounds = &mut self.retained_layout_bounds;
+        let absolute_layout_bounds = &mut self.absolute_layout_bounds;
         let taffy = &mut self.taffy;
         for (current_id, cached_node) in current_nodes.iter().copied().zip(cached_nodes.iter()) {
-            retained_layout_bounds.insert(current_id, cached_node.bounds);
+            absolute_layout_bounds.insert(current_id, cached_node.bounds);
             if let Some(node_context) = taffy.get_node_context_mut(current_id.into()) {
                 node_context.last_measure_input = cached_node.measure_input;
+                if !node_context.is_pure
+                    && let Some((known_dimensions, available_space)) = cached_node.measure_input
+                {
+                    (node_context.measure)(known_dimensions, available_space, window, cx);
+                }
             }
         }
         self.layout_cache_saved_roots = self
@@ -94,7 +96,6 @@ impl TaffyLayoutEngine {
             .into_iter()
             .map(|id| {
                 Some(RetainedLayoutNode {
-                    fingerprint: self.node_fingerprints.get(&id).copied().flatten()?,
                     bounds: self.absolute_layout_bounds.get(&id).copied()?,
                     measure_input: self
                         .taffy

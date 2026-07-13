@@ -1,4 +1,7 @@
-use super::layout::{IDE_SPLITTER_WIDTH, IDE_STATUS_BAR_HEIGHT, IDE_TOP_BAR_HEIGHT};
+use super::layout::{
+    IDE_DIVIDER_WIDTH, IDE_LEFT_DOCK_WIDTH, IDE_LEFT_STRIPE_WIDTH, IDE_SPLITTER_WIDTH,
+    IDE_STATUS_BAR_HEIGHT, IDE_TOP_BAR_HEIGHT,
+};
 use bedrock_render::{ChunkPos, Dimension};
 use gpui::SharedString;
 use std::sync::Arc;
@@ -76,6 +79,19 @@ impl Default for MapViewerUiState {
 impl MapViewerUiState {
     pub fn clamp_sizes(&mut self, viewport_width: f32, viewport_height: f32) {
         self.right_panel_width = clamp_right_panel_width(self.right_panel_width, viewport_width);
+        if self.left_panel_open
+            && self.right_panel_open
+            && viewport_width
+                < IDE_LEFT_STRIPE_WIDTH
+                    + IDE_DIVIDER_WIDTH
+                    + IDE_LEFT_DOCK_WIDTH
+                    + IDE_DIVIDER_WIDTH
+                    + IDE_SPLITTER_WIDTH
+                    + self.right_panel_width
+                    + MIN_CENTER_WIDTH
+        {
+            self.left_panel_open = false;
+        }
         self.bottom_panel_height =
             clamp_bottom_panel_height(self.bottom_panel_height, viewport_height);
     }
@@ -147,7 +163,14 @@ pub struct DbTreeState {
 }
 
 pub fn clamp_right_panel_width(width: f32, viewport_width: f32) -> f32 {
-    let max_width = (viewport_width * 0.45).max(RIGHT_PANEL_MIN_WIDTH);
+    let available_width = viewport_width
+        - IDE_LEFT_STRIPE_WIDTH
+        - IDE_DIVIDER_WIDTH
+        - IDE_SPLITTER_WIDTH
+        - MIN_CENTER_WIDTH;
+    let max_width = (viewport_width * 0.45)
+        .min(available_width)
+        .max(RIGHT_PANEL_MIN_WIDTH);
     width.clamp(RIGHT_PANEL_MIN_WIDTH, max_width)
 }
 
@@ -208,6 +231,24 @@ mod tests {
         assert_eq!(clamp_right_panel_width(100.0, 1000.0), 300.0);
         assert_eq!(clamp_bottom_panel_height(800.0, 900.0), 566.0);
         assert_eq!(clamp_bottom_panel_height(80.0, 900.0), 170.0);
+    }
+
+    #[test]
+    fn narrow_window_collapses_left_dock_when_right_dock_opens() {
+        let mut state = MapViewerUiState {
+            left_panel_open: true,
+            right_panel_open: true,
+            ..MapViewerUiState::default()
+        };
+
+        state.clamp_sizes(920.0, 720.0);
+
+        assert!(!state.left_panel_open);
+        let reserved = IDE_LEFT_STRIPE_WIDTH
+            + IDE_DIVIDER_WIDTH
+            + IDE_SPLITTER_WIDTH
+            + state.right_panel_width;
+        assert!(920.0 - reserved >= MIN_CENTER_WIDTH);
     }
 
     #[test]

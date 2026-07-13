@@ -321,6 +321,7 @@ impl WindowsPlatform {
 
     fn generate_creation_info(&self) -> WindowCreationInfo {
         WindowCreationInfo {
+            background_executor: self.background_executor.clone(),
             executor: self.foreground_executor.clone(),
             disable_direct_composition: self.disable_direct_composition,
             renderer_backend: self.renderer_backend,
@@ -767,7 +768,9 @@ impl Platform for WindowsPlatform {
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
-        write_to_clipboard(item);
+        if let Err(error) = write_to_clipboard(item) {
+            log::error!("Failed to write clipboard: {error:#}");
+        }
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
@@ -916,6 +919,16 @@ impl WindowsApplication {
     fn run_foreground_tasks(&self) {
         if self.inner.run_foreground_tasks() {
             self.request_main_thread_task_wakeup();
+        }
+    }
+
+    fn dispatch_pending_frame_requests(&self) {
+        let windows: Vec<_> = self.windows.values().cloned().collect();
+        for window in windows {
+            let options = window.take_pending_frame_request();
+            if options.requires_frame() {
+                window.invoke_request_frame(options);
+            }
         }
     }
 
@@ -1068,6 +1081,10 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         {
             self.run_foreground_tasks();
         }
+        // `RedrawRequested` can be suppressed while a native window is being mapped or when
+        // Windows coalesces redraws. Consume any request that survived the event cycle so the
+        // frame watchdog does not become the normal delivery path.
+        self.dispatch_pending_frame_requests();
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = None;
         });
@@ -1097,7 +1114,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                     Self::sync_window_size(&window, physical_size, scale_factor)
                 {
                     window.invoke_resize(logical_size, scale_factor);
-                    window.0.request_frame(RequestFrameOptions::from_refresh());
+                    window.request_frame(RequestFrameOptions::from_refresh());
                 }
                 self.refresh_display_cache(event_loop);
             }
@@ -1112,7 +1129,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::Focused(active) => {
                 if active {
                     self.focused_window_id = Some(window_id);
-                    window.0.request_frame(RequestFrameOptions::from_refresh());
+                    window.request_frame(RequestFrameOptions::from_refresh());
                 } else if self.focused_window_id == Some(window_id) {
                     self.focused_window_id = None;
                 }
@@ -1126,7 +1143,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 {
                     self.refresh_display_cache(event_loop);
                     window.invoke_resize(logical_size, scale_factor);
-                    window.0.request_frame(RequestFrameOptions::from_refresh());
+                    window.request_frame(RequestFrameOptions::from_refresh());
                 } else {
                     self.refresh_display_cache(event_loop);
                 }
@@ -1162,7 +1179,10 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 }
             }
             winit::event::WindowEvent::RedrawRequested => {
-                window.invoke_request_frame(window.take_pending_frame_request());
+                let options = window.take_pending_frame_request();
+                if options.requires_frame() {
+                    window.invoke_request_frame(options);
+                }
             }
             winit::event::WindowEvent::CursorEntered { .. } => {
                 self.hovered_window_id = Some(window_id);
@@ -1444,6 +1464,7 @@ impl Drop for WindowsPlatformState {
 }
 
 pub(crate) struct WindowCreationInfo {
+    pub(crate) background_executor: BackgroundExecutor,
     pub(crate) executor: ForegroundExecutor,
     pub(crate) disable_direct_composition: bool,
     pub(crate) renderer_backend: RendererBackend,
@@ -1625,15 +1646,15 @@ mod tests {
     #[test]
     fn test_clipboard() {
         let item = ClipboardItem::new_string("你好，我是张小白".to_string());
-        write_to_clipboard(item.clone());
+        write_to_clipboard(item.clone()).expect("writes CJK clipboard text");
         assert_eq!(read_from_clipboard(), Some(item));
 
         let item = ClipboardItem::new_string("12345".to_string());
-        write_to_clipboard(item.clone());
+        write_to_clipboard(item.clone()).expect("writes ASCII clipboard text");
         assert_eq!(read_from_clipboard(), Some(item));
 
         let item = ClipboardItem::new_string_with_json_metadata("abcdef".to_string(), vec![3, 4]);
-        write_to_clipboard(item.clone());
+        write_to_clipboard(item.clone()).expect("writes clipboard metadata");
         assert_eq!(read_from_clipboard(), Some(item));
     }
 

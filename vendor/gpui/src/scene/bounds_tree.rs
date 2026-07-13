@@ -33,11 +33,20 @@ where
     }
 
     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
+        self.insert_internal(new_bounds, None)
+    }
+
+    pub(crate) fn insert_with_order(&mut self, new_bounds: Bounds<U>, order: u32) -> u32 {
+        self.insert_internal(new_bounds, Some(order))
+    }
+
+    fn insert_internal(&mut self, new_bounds: Bounds<U>, retained_order: Option<u32>) -> u32 {
         // If the tree is empty, make the root the new leaf.
         if self.root.is_none() {
-            let new_node = self.push_leaf(new_bounds, 1);
+            let order = retained_order.unwrap_or(1);
+            let new_node = self.push_leaf(new_bounds, order);
             self.root = Some(new_node);
-            return 1;
+            return order;
         }
 
         // Search for the best place to add the new leaf based on heuristics.
@@ -64,12 +73,16 @@ where
                 .union(self.nodes[right].bounds())
                 .half_perimeter();
             if left_cost < right_cost {
-                max_intersecting_ordering =
-                    self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
+                if retained_order.is_none() {
+                    max_intersecting_ordering =
+                        self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
+                }
                 index = left;
             } else {
-                max_intersecting_ordering =
-                    self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
+                if retained_order.is_none() {
+                    max_intersecting_ordering =
+                        self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
+                }
                 index = right;
             }
         }
@@ -87,11 +100,11 @@ where
         else {
             unreachable!();
         };
-        if sibling_bounds.intersects(&new_bounds) {
+        if retained_order.is_none() && sibling_bounds.intersects(&new_bounds) {
             max_intersecting_ordering = cmp::max(max_intersecting_ordering, *sibling_ordering);
         }
 
-        let ordering = max_intersecting_ordering + 1;
+        let ordering = retained_order.unwrap_or(max_intersecting_ordering + 1);
         let new_node = self.push_leaf(new_bounds, ordering);
         let new_parent = self.push_internal(sibling, new_node);
 
@@ -333,5 +346,50 @@ mod tests {
                 assert_eq!(actual_ordering, expected_ordering);
             }
         }
+    }
+
+    #[test]
+    fn retained_orders_preserve_future_insert_order() {
+        let bounds = [
+            Bounds::new(
+                Point { x: 0.0, y: 0.0 },
+                Size {
+                    width: 12.0,
+                    height: 12.0,
+                },
+            ),
+            Bounds::new(
+                Point { x: 4.0, y: 4.0 },
+                Size {
+                    width: 12.0,
+                    height: 12.0,
+                },
+            ),
+            Bounds::new(
+                Point { x: 30.0, y: 30.0 },
+                Size {
+                    width: 5.0,
+                    height: 5.0,
+                },
+            ),
+        ];
+        let following = Bounds::new(
+            Point { x: 8.0, y: 8.0 },
+            Size {
+                width: 12.0,
+                height: 12.0,
+            },
+        );
+
+        let mut original = BoundsTree::default();
+        let orders = bounds.map(|bounds| original.insert(bounds));
+        let expected_following_order = original.insert(following);
+
+        let mut retained = BoundsTree::default();
+        for (bounds, order) in bounds.into_iter().zip(orders) {
+            retained.insert_with_order(bounds, order);
+        }
+
+        assert_eq!(retained.insert(following), expected_following_order);
     }
 }

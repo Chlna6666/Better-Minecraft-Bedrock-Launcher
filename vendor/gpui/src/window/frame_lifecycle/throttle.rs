@@ -5,6 +5,8 @@ use super::TARGET_FRAME_GENERATION_BUDGET;
 const HIGH_REFRESH_FRAME_BUDGET_HEADROOM: f32 = 0.85;
 const HIGH_REFRESH_FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const MIN_DYNAMIC_FRAME_BUDGET: Duration = Duration::from_millis(2);
+const DEFAULT_DISPLAY_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+const FRAME_GENERATION_WARNING_HEADROOM: f32 = 0.95;
 const FRAME_GENERATION_BUDGET_WARN_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -102,6 +104,15 @@ impl WindowFrameThrottle {
         frame_interval.clamp(TARGET_FRAME_GENERATION_BUDGET, HIGH_REFRESH_FRAME_INTERVAL)
     }
 
+    pub(super) fn generation_warning_budget(self) -> Duration {
+        self.estimated_frame_interval
+            .filter(|interval| *interval <= DEFAULT_DISPLAY_FRAME_INTERVAL)
+            .unwrap_or(DEFAULT_DISPLAY_FRAME_INTERVAL)
+            .max(HIGH_REFRESH_FRAME_INTERVAL)
+            .mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
+            .max(TARGET_FRAME_GENERATION_BUDGET)
+    }
+
     pub(super) fn should_warn_generation_budget_miss(&mut self, now: Instant) -> bool {
         let should_warn = self.last_generation_budget_warning_at.is_none_or(|last| {
             now.saturating_duration_since(last) >= FRAME_GENERATION_BUDGET_WARN_INTERVAL
@@ -138,6 +149,56 @@ mod tests {
         assert!(
             throttle
                 .should_warn_generation_budget_miss(now + FRAME_GENERATION_BUDGET_WARN_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn generation_warning_budget_defaults_to_sixty_hz_headroom() {
+        let throttle = WindowFrameThrottle::default();
+
+        assert_eq!(
+            throttle.generation_warning_budget(),
+            DEFAULT_DISPLAY_FRAME_INTERVAL.mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
+        );
+    }
+
+    #[test]
+    fn generation_warning_budget_tracks_high_refresh_frames() {
+        let mut throttle = WindowFrameThrottle::default();
+        let now = Instant::now();
+        let frame_interval = Duration::from_millis(8);
+        throttle.record_frame_start(now);
+        throttle.record_frame_start(now + frame_interval);
+
+        assert_eq!(
+            throttle.generation_warning_budget(),
+            frame_interval.mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
+        );
+    }
+
+    #[test]
+    fn generation_warning_budget_ignores_sub_refresh_bursts() {
+        let mut throttle = WindowFrameThrottle::default();
+        let now = Instant::now();
+        throttle.record_frame_start(now);
+        throttle.record_frame_start(now + Duration::from_millis(2));
+
+        assert_eq!(
+            throttle.generation_warning_budget(),
+            HIGH_REFRESH_FRAME_INTERVAL.mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
+        );
+    }
+
+    #[test]
+    fn generation_warning_budget_ignores_slow_interaction_gaps() {
+        let mut throttle = WindowFrameThrottle::default();
+        let now = Instant::now();
+        throttle.record_frame_start(now);
+        throttle.record_frame_start(now + Duration::from_millis(33));
+
+        assert_eq!(
+            throttle.generation_warning_budget(),
+            DEFAULT_DISPLAY_FRAME_INTERVAL.mul_f32(FRAME_GENERATION_WARNING_HEADROOM)
         );
     }
 

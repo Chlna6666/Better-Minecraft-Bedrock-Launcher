@@ -1,7 +1,7 @@
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
-use super::preview_3d::preview_3d_draw_parameters;
+use super::preview_3d::{preview_3d_chunk_mesh_is_visible, preview_3d_draw_parameters};
 
 impl MapViewerWindowView {
     pub(super) fn render_preview_3d_panel(
@@ -284,6 +284,9 @@ impl MapViewerWindowView {
                                         camera,
                                         model_rotation,
                                     );
+                                    if !preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters) {
+                                        continue;
+                                    }
                                     window.paint_gpu_mesh_3d(
                                         bounds,
                                         chunk_mesh.gpu_mesh.clone(),

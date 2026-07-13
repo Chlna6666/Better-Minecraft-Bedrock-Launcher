@@ -1,4 +1,6 @@
-use super::helpers::{panic_payload_message, render_cpu_chunk_batch_size};
+use super::helpers::{
+    manifest_probe_worker_count, panic_payload_message, render_cpu_chunk_batch_size,
+};
 use super::model::*;
 use super::prelude::*;
 use super::tile_render::*;
@@ -29,9 +31,13 @@ pub(super) fn load_tile_manifest_from_disk(
         .load(&key)
         .map_err(|error| format!("读取地图索引缓存失败: {error}"))?;
     check_metadata_cancelled(&cancel)?;
-    Ok(result.map(|snapshot| TileManifestProbeResult {
+    let Some(snapshot) = result else {
+        return Ok(None);
+    };
+    let tile_chunk_index = shared_tile_chunk_index(dimension, layout, snapshot.tile_chunk_index)?;
+    Ok(Some(TileManifestProbeResult {
         requested_tiles: snapshot.requested_tiles,
-        tile_chunk_index: shared_tile_chunk_index(snapshot.tile_chunk_index),
+        tile_chunk_index,
         bounds: snapshot.bounds,
         center_block_x: snapshot.center_block_x,
         center_block_z: snapshot.center_block_z,
@@ -52,16 +58,17 @@ pub(super) fn load_tile_manifest_probe(
     let started = Instant::now();
     validate_ui_render_layout(layout)?;
     check_metadata_cancelled(&cancel)?;
-    let worker_count = cpu_budget.thread_count().max(1);
+    let requested_tile_count = requested_tiles.len();
+    let worker_count = manifest_probe_worker_count(cpu_budget);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         render_session.probe_tile_manifest_blocking(
             TileManifestProbeRequest {
                 dimension,
                 layout,
                 requested_tiles,
-                queue_depth: worker_count,
-                table_batch_size: render_cpu_chunk_batch_size(worker_count),
-                progress_interval: 128,
+                queue_depth: worker_count.min(requested_tile_count.max(1)),
+                table_batch_size: render_cpu_chunk_batch_size(worker_count).min(8),
+                progress_interval: 32,
             },
             &cancel,
         )
@@ -69,10 +76,10 @@ pub(super) fn load_tile_manifest_probe(
     .map_err(|payload| format!("探测地图瓦片索引崩溃: {}", panic_payload_message(payload)))?
     .map_err(|error| format!("探测地图瓦片索引失败: {error}"))?;
     check_metadata_cancelled(&cancel)?;
-    let chunk_count = result
-        .tile_chunk_index
+    let tile_chunk_index = shared_tile_chunk_index(dimension, layout, result.tile_chunk_index)?;
+    let chunk_count = tile_chunk_index
         .values()
-        .map(Vec::len)
+        .map(|positions| positions.len())
         .sum::<usize>();
     let tile_bounds = tile_bounds_from_coords(&result.requested_tiles);
     tracing::debug!(
@@ -89,16 +96,23 @@ pub(super) fn load_tile_manifest_probe(
     );
     Ok(TileManifestProbeResult {
         requested_tiles: result.requested_tiles,
-        tile_chunk_index: shared_tile_chunk_index(result.tile_chunk_index),
+        tile_chunk_index,
         bounds: result.bounds,
         center_block_x: None,
         center_block_z: None,
     })
 }
 
-fn shared_tile_chunk_index(index: BTreeMap<(i32, i32), Vec<ChunkPos>>) -> TileChunkIndex {
+pub(super) fn shared_tile_chunk_index(
+    dimension: Dimension,
+    layout: RenderLayout,
+    index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
+) -> Result<TileChunkIndex, String> {
     index
         .into_iter()
-        .map(|(coord, positions)| (coord, TileChunkPositions::from(positions)))
+        .map(|(coord, positions)| {
+            normalize_tile_chunk_positions(dimension, coord, layout, positions)
+                .map(|positions| (coord, TileChunkPositions::from(positions)))
+        })
         .collect()
 }

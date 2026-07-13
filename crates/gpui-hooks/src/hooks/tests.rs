@@ -2,7 +2,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{HasHooks, UseEffectHook, UseMemoHook, UseReducerHook, UseStateHook};
+use super::{HasHooks, UseCallbackHook, UseEffectHook, UseMemoHook, UseReducerHook, UseStateHook};
 
 struct TestElement {
     hooks: RefCell<Vec<Box<dyn Any>>>,
@@ -101,6 +101,26 @@ fn use_memo_updates_only_when_dependencies_change() {
     element._finish_hooks();
     assert_eq!(*memo, 9);
     assert_eq!(compute_count.get(), 2);
+}
+
+#[test]
+fn use_callback_reuses_callback_when_dependencies_do_not_change() {
+    let element = TestElement::default();
+
+    element._begin_hooks();
+    let callback = element.use_callback(|| 1_u32, [1_u32]);
+    element._finish_hooks();
+    assert_eq!(callback.invoke(), 1);
+
+    element._begin_hooks();
+    let callback = element.use_callback(|| 2_u32, [1_u32]);
+    element._finish_hooks();
+    assert_eq!(callback.invoke(), 1);
+
+    element._begin_hooks();
+    let callback = element.use_callback(|| 3_u32, [2_u32]);
+    element._finish_hooks();
+    assert_eq!(callback.invoke(), 3);
 }
 
 #[test]

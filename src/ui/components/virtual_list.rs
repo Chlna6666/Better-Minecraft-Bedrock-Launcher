@@ -121,4 +121,15 @@ mod tests {
         assert_eq!(plan.render_slice.top_spacer, px(0.0));
         assert_eq!(plan.render_slice.bottom_spacer, px(0.0));
     }
+
+    #[::core::prelude::v1::test]
+    fn virtual_list_limits_heavy_slice_to_budget() {
+        let plan = compute_virtual_list_plan(100, 68.0, px(-680.0), px(340.0), 8, 3);
+
+        assert_eq!(plan.visible_slice.start_index, 10);
+        assert_eq!(plan.visible_slice.end_index, 16);
+        assert_eq!(plan.heavy_slice.start_index, 10);
+        assert_eq!(plan.heavy_slice.end_index, 13);
+        assert_eq!(plan.heavy_slice.len(), 3);
+    }
 }

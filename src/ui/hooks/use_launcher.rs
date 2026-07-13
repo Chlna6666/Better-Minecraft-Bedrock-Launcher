@@ -772,6 +772,100 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
     .detach();
 }
 
+pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
+    let context = read_active_launch_prereq(cx);
+    let Some(context) = context else {
+        return;
+    };
+    if context.busy {
+        return;
+    }
+
+    let Some(plan) = context
+        .check
+        .as_ref()
+        .and_then(|check| check.windows_app_sdk_plan.clone())
+    else {
+        return;
+    };
+
+    let start_log = cx
+        .global::<I18n>()
+        .t("LaunchPrereq.logs.installWindowsAppSdk");
+    cx.update_global(|state: &mut LaunchPrereqState, _cx| {
+        if state.set_operation_if_matches(
+            context.request_id,
+            LaunchPrereqOperation::InstallingWindowsAppSdk,
+        ) {
+            let _ = state.push_log_if_matches(context.request_id, start_log);
+        }
+    });
+    info!(
+        request_id = context.request_id,
+        version_name = %context.version.name,
+        installer_path = %plan.installer_path.display(),
+        installer_source = ?plan.source,
+        version = plan.version_label,
+        "开始安装 Windows App SDK Runtime"
+    );
+
+    let (sender, receiver) = unbounded_channel();
+    spawn_dependency_event_pump(context.request_id, receiver, cx);
+
+    cx.spawn(async move |cx| {
+        let result = tokio::spawn(async move {
+            mc_dependency::install_windows_app_sdk_runtime(context.locale, plan, Some(sender)).await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {
+                info!(
+                    request_id = context.request_id,
+                    version_name = %context.version.name,
+                    "Windows App SDK Runtime 安装完成，准备重新检查"
+                );
+                if let Err(error) =
+                    schedule_launch_prereq_check(context.version, context.request_id, cx)
+                {
+                    warn!("schedule Windows App SDK recheck failed: {error:?}");
+                }
+            }
+            Ok(Err(error)) => {
+                warn!(
+                    request_id = context.request_id,
+                    version_name = %context.version.name,
+                    error = %error,
+                    "Windows App SDK Runtime 安装失败"
+                );
+                apply_launch_prereq_failure(
+                    context.request_id,
+                    "LaunchPrereq.errors.installWindowsAppSdkFailed",
+                    &error.to_string(),
+                    cx,
+                );
+            }
+            Err(error) => {
+                warn!(
+                    request_id = context.request_id,
+                    version_name = %context.version.name,
+                    error = %error,
+                    "Windows App SDK Runtime 安装任务执行失败"
+                );
+                apply_launch_prereq_failure(
+                    context.request_id,
+                    "LaunchPrereq.errors.installWindowsAppSdkFailed",
+                    &error.to_string(),
+                    cx,
+                );
+            }
+        }
+
+        Ok::<(), Error>(())
+    })
+    .detach();
+}
+
 pub fn sync_launcher_state(now: std::time::Instant, cx: &mut App) {
     let should_finish_close = {
         let state = cx.global::<LauncherState>();
@@ -901,6 +995,7 @@ fn spawn_launch_prereq_check_for_request(
                     developer_mode_required = check.developer_mode_required,
                     missing_uwp_dependencies = check.missing_uwp_dependencies.len(),
                     game_input_required = check.game_input_plan.is_some(),
+                    windows_app_sdk_required = check.windows_app_sdk_plan.is_some(),
                     "启动前检查发现缺失依赖或环境项"
                 );
                 let issue_logs = build_issue_logs(&check, cx);
@@ -1191,6 +1286,25 @@ fn build_issue_logs(check: &LaunchPrerequisiteCheck, cx: &mut AsyncApp) -> Vec<S
                     cx,
                     "LaunchPrereq.logs.missingGameInputDownload",
                     mc_dependency::GAMEINPUT_RELEASES_URL,
+                ));
+            }
+        }
+    }
+
+    if let Some(plan) = check.windows_app_sdk_plan.as_ref() {
+        match plan.source {
+            mc_dependency::WindowsAppSdkInstallerSource::Local => {
+                logs.push(async_i18n_text_path(
+                    cx,
+                    "LaunchPrereq.logs.missingWindowsAppSdkLocal",
+                    &plan.installer_path.display().to_string(),
+                ));
+            }
+            mc_dependency::WindowsAppSdkInstallerSource::Download => {
+                logs.push(async_i18n_text_url(
+                    cx,
+                    "LaunchPrereq.logs.missingWindowsAppSdkDownload",
+                    mc_dependency::WINDOWS_APP_SDK_RELEASES_URL,
                 ));
             }
         }

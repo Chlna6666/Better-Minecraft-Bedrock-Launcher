@@ -6,8 +6,9 @@ pub(super) use super::actions::{
     MapViewerRotatePastePreviewCounterClockwise, MapViewerStartPastePreview, MapViewerUndoEdit,
 };
 pub(super) use super::canvas::{
-    MapCanvasAction, MapCanvasSnapshot, MapCanvasView, TilePaintSnapshot, TilePaintSnapshotPatch,
-    build_tile_paint_snapshot, patch_tile_paint_snapshot,
+    MapCanvasAction, MapCanvasSnapshot, MapCanvasView, ScreenPaintImage, TilePaintSnapshot,
+    TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot,
+    screen_image_viewports_transformable, take_map_tile_paint_resources_unavailable,
 };
 pub(super) use super::layout::{
     CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_ICON_SIZE, CHROME_SECTION_GAP,
@@ -99,7 +100,7 @@ pub(super) use futures_util::StreamExt as _;
 pub(super) use gpui::prelude::FluentBuilder as _;
 pub(super) use gpui::*;
 pub(super) use serde::{Deserialize, Serialize};
-pub(super) use std::collections::{BTreeMap, BTreeSet, HashMap};
+pub(super) use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 pub(super) use std::hash::Hash;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::sync::{Arc, Mutex, OnceLock};

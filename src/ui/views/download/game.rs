@@ -4,7 +4,7 @@ use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::components::toast;
-use crate::ui::components::virtual_list::compute_windowed_list_slice;
+use crate::ui::components::virtual_list::compute_virtual_list_plan;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{
     DownloadChannelFilter, DownloadPageState, GameDialogCdnResult, GameDialogKind, GameDialogState,
@@ -25,6 +25,7 @@ use super::common::{status_card, wait_task_finished};
 
 const GAME_ROW_PITCH_PX: f32 = 96.0;
 const GAME_ROW_OVERSCAN: usize = 1;
+const GAME_ROW_HEAVY_BUDGET: usize = 6;
 
 #[derive(Clone, PartialEq, Eq)]
 struct GamePageRowProps {
@@ -48,6 +49,7 @@ struct GameVisibleRowProps {
     disabled: bool,
     md5: Option<SharedString>,
     local_path: Option<SharedString>,
+    active_task_running: bool,
     active_snapshot: Option<Arc<TaskSnapshot>>,
 }
 
@@ -561,25 +563,32 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
         )
     };
 
-    let windowed_slice = compute_windowed_list_slice(
+    let virtual_list_plan = compute_virtual_list_plan(
         page_rows.len(),
         GAME_ROW_PITCH_PX,
         state.game_rows_scroll.offset().y,
         state.game_rows_scroll.bounds().size.height,
         GAME_ROW_OVERSCAN,
+        GAME_ROW_HEAVY_BUDGET,
     );
 
     let prepare_started_at = Instant::now();
     let mut rows_body = div().flex().flex_col().min_w(px(0.));
-    if windowed_slice.top_spacer > px(0.) {
-        rows_body = rows_body.child(div().h(windowed_slice.top_spacer));
+    if virtual_list_plan.render_slice.top_spacer > px(0.) {
+        rows_body = rows_body.child(div().h(virtual_list_plan.render_slice.top_spacer));
     }
 
-    let visible_start = windowed_slice.start_index;
-    let visible_end = windowed_slice.end_index.min(page_rows.len());
+    let visible_start = virtual_list_plan.render_slice.start_index;
+    let visible_end = virtual_list_plan
+        .render_slice
+        .end_index
+        .min(page_rows.len());
     let visible_rows = page_rows[visible_start..visible_end]
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row_offset, row)| {
+            let virtual_index = visible_start + row_offset;
+            let is_heavy_row = virtual_list_plan.heavy_slice.contains(virtual_index);
             let local_path = state
                 .local_path_by_package
                 .get(&row.package_id)
@@ -609,14 +618,19 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 .get(&row.package_id)
                 .map(|op| (op.download_task_id.clone(), op.extract_task_id.clone()))
                 .unwrap_or((None, None));
-            let active_snapshot = download_task
-                .as_ref()
-                .and_then(|id| task_manager::get_snapshot_arc(id.as_ref()))
-                .or_else(|| {
-                    extract_task
-                        .as_ref()
-                        .and_then(|id| task_manager::get_snapshot_arc(id.as_ref()))
-                });
+            let active_task_running = download_task.is_some() || extract_task.is_some();
+            let active_snapshot = if is_heavy_row {
+                download_task
+                    .as_ref()
+                    .and_then(|id| task_manager::get_snapshot_arc(id.as_ref()))
+                    .or_else(|| {
+                        extract_task
+                            .as_ref()
+                            .and_then(|id| task_manager::get_snapshot_arc(id.as_ref()))
+                    })
+            } else {
+                None
+            };
 
             GameVisibleRowProps {
                 version: row.version.clone(),
@@ -628,6 +642,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 disabled,
                 md5: row.md5.clone(),
                 local_path,
+                active_task_running,
                 active_snapshot,
             }
         })
@@ -636,16 +651,19 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
     let prepare_elapsed_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
     if prepare_elapsed_ms >= 4.0 {
         tracing::debug!(
-            "game rows prepare slow: elapsed_ms={prepare_elapsed_ms:.3} total_rows={} visible_start={} visible_len={}",
+            "game rows prepare slow: elapsed_ms={prepare_elapsed_ms:.3} total_rows={} render_start={} render_len={} visible_start={} visible_len={} heavy_start={} heavy_len={}",
             page_rows.len(),
-            visible_start,
-            visible_rows.len()
+            virtual_list_plan.render_slice.start_index,
+            virtual_list_plan.render_slice.visible_len(),
+            virtual_list_plan.visible_slice.start_index,
+            virtual_list_plan.visible_slice.len(),
+            virtual_list_plan.heavy_slice.start_index,
+            virtual_list_plan.heavy_slice.len()
         );
     }
 
     let render_started_at = Instant::now();
     for row in &visible_rows {
-        let ext = if row.is_gdk { ".msixvc" } else { ".appx" };
         rows_body = rows_body
             .child(render_version_row(
                 colors,
@@ -658,6 +676,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 row.package_id.clone(),
                 row.md5.clone(),
                 row.local_path.clone(),
+                row.active_task_running,
                 row.active_snapshot.clone(),
             ))
             .child(div().h(px(12.)));
@@ -666,15 +685,19 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
     let render_elapsed_ms = render_started_at.elapsed().as_secs_f64() * 1000.0;
     if render_elapsed_ms >= 6.0 {
         tracing::debug!(
-            "game rows render slow: elapsed_ms={render_elapsed_ms:.3} total_rows={} visible_start={} visible_len={}",
+            "game rows render slow: elapsed_ms={render_elapsed_ms:.3} total_rows={} render_start={} render_len={} visible_start={} visible_len={} heavy_start={} heavy_len={}",
             page_rows.len(),
-            visible_start,
-            visible_rows.len()
+            virtual_list_plan.render_slice.start_index,
+            virtual_list_plan.render_slice.visible_len(),
+            virtual_list_plan.visible_slice.start_index,
+            virtual_list_plan.visible_slice.len(),
+            virtual_list_plan.heavy_slice.start_index,
+            virtual_list_plan.heavy_slice.len()
         );
     }
 
-    if windowed_slice.bottom_spacer > px(0.) {
-        rows_body = rows_body.child(div().h(windowed_slice.bottom_spacer));
+    if virtual_list_plan.render_slice.bottom_spacer > px(0.) {
+        rows_body = rows_body.child(div().h(virtual_list_plan.render_slice.bottom_spacer));
     }
 
     let rows = div()
@@ -967,6 +990,7 @@ fn render_version_row(
     package_id: SharedString,
     md5: Option<SharedString>,
     local_path: Option<SharedString>,
+    active_task_running: bool,
     active_task: Option<Arc<TaskSnapshot>>,
 ) -> AnyElement {
     let channel_bg = if channel == "正式" {
@@ -1147,21 +1171,28 @@ fn render_version_row(
             let version = version.clone();
             let md5_string_outer = md5.clone().map(|s| s.to_string());
             let active_task = active_task.clone();
+            let active_task_running = active_task_running || active_task.is_some();
             let local_path = local_path.clone();
 
             let btn_label = active_task
                 .as_ref()
                 .map(|snapshot| SharedString::from(snapshot.stage.clone()))
-                .unwrap_or_else(|| SharedString::from(action_label));
+                .unwrap_or_else(|| {
+                    if active_task_running {
+                        SharedString::from("处理中")
+                    } else {
+                        SharedString::from(action_label)
+                    }
+                });
             let local_ready = local_path.is_some();
 
             {
-                let btn_fg = if disabled || active_task.is_some() {
+                let btn_fg = if disabled || active_task_running {
                     colors.text_secondary
                 } else {
                     colors.btn_primary_text
                 };
-                let btn_bg = if disabled || active_task.is_some() {
+                let btn_bg = if disabled || active_task_running {
                     Hsla {
                         a: 0.10,
                         ..colors.text_secondary
@@ -1171,7 +1202,7 @@ fn render_version_row(
                 };
 
                 {
-                    let is_interactive = !disabled && active_task.is_none();
+                    let is_interactive = !disabled && !active_task_running;
                     div()
                         .id(("download-game-action-btn", row_element_id))
                         .w(px(140.))
@@ -1194,7 +1225,7 @@ fn render_version_row(
                 }
             }
             .on_mouse_down(MouseButton::Left, move |_ev, window, cx| {
-                if disabled || active_task.is_some() {
+                if disabled || active_task_running {
                     return;
                 }
 

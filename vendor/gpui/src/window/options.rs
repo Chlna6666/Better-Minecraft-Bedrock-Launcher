@@ -221,17 +221,10 @@ pub(crate) struct WindowParams {
     )]
     pub is_minimizable: bool,
 
-    #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
-        allow(dead_code)
-    )]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub focus: bool,
 
     #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
-    #[cfg_attr(
-        target_os = "windows",
-        expect(dead_code, reason = "Windows maps windows immediately after creation")
-    )]
     pub show: bool,
 
     #[cfg_attr(feature = "wayland", allow(dead_code))]

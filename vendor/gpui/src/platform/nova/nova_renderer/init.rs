@@ -14,6 +14,31 @@ impl NovaRenderer {
             + ::winit::raw_window_handle::HasWindowHandle
             + 'static,
     {
+        Self::new_with_atlas(
+            window,
+            backend,
+            renderer_options,
+            submission_mode,
+            drawable_size,
+            transparent,
+            NovaRendererAtlas::new(),
+        )
+    }
+
+    pub(crate) fn new_with_atlas<W>(
+        window: &W,
+        backend: RendererBackend,
+        renderer_options: &RendererOptions,
+        submission_mode: GpuSubmissionMode,
+        drawable_size: Size<DevicePixels>,
+        transparent: bool,
+        atlas: NovaRendererAtlas,
+    ) -> Result<Self>
+    where
+        W: ::winit::raw_window_handle::HasDisplayHandle
+            + ::winit::raw_window_handle::HasWindowHandle
+            + 'static,
+    {
         let metrics_started_at = Instant::now();
         let width = drawable_size.width.0.max(1) as u32;
         let height = drawable_size.height.0.max(1) as u32;
@@ -29,7 +54,7 @@ impl NovaRenderer {
         match backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             RendererBackend::NovaDx12 => {
-                let shader_binaries = compile_nova_shader_binaries(compile_wgsl_to_hlsl)?;
+                let shader_binaries = cached_nova_dx12_shader_binaries()?;
                 let mut device = Dx12Device::new(&DeviceDescriptor {
                     application_name: "gpui nova dx12".to_string(),
                     adapter_name: renderer_options.adapter_name.clone(),
@@ -50,6 +75,12 @@ impl NovaRenderer {
                 )
                 .context("creating GPUI nova DX12 render resources")?;
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
+                let frame_resources = resources.frame_resources;
+                let current_frame_resources = frame_resources
+                    .first()
+                    .copied()
+                    .context("nova renderer resources should include at least one frame slot")?;
+                let frame_resource_count = frame_resources.len();
                 Ok(Self {
                     backend: NovaBackend::Dx12(device),
                     surface,
@@ -62,38 +93,59 @@ impl NovaRenderer {
                     pipelines: resources.pipelines,
                     depth_texture: resources.depth_texture,
                     depth_texture_view: resources.depth_texture_view,
-                    global_buffer: resources.global_buffer,
-                    text_raster_buffer: resources.text_raster_buffer,
-                    quad_buffer: resources.quad_buffer,
-                    shadow_buffer: resources.shadow_buffer,
-                    path_rasterization_vertex_buffer: resources.path_rasterization_vertex_buffer,
-                    path_sprite_buffer: resources.path_sprite_buffer,
-                    mono_sprite_buffer: resources.mono_sprite_buffer,
-                    poly_sprite_buffer: resources.poly_sprite_buffer,
-                    present_copy_sprite_buffer: resources.present_copy_sprite_buffer,
-                    underline_buffer: resources.underline_buffer,
-                    backdrop_blur_pass_buffer: resources.backdrop_blur_pass_buffer,
-                    backdrop_blur_buffer: resources.backdrop_blur_buffer,
-                    animation_binding_buffer: resources.animation_binding_buffer,
-                    animation_value_buffer: resources.animation_value_buffer,
-                    custom_mesh_3d_parameters_buffer: resources.custom_mesh_3d_parameters_buffer,
+                    frame_resources,
+                    current_frame_resource_index: 0,
+                    global_buffer: current_frame_resources.buffers.global_buffer,
+                    text_raster_buffer: current_frame_resources.buffers.text_raster_buffer,
+                    quad_buffer: current_frame_resources.buffers.quad_buffer,
+                    shadow_buffer: current_frame_resources.buffers.shadow_buffer,
+                    path_rasterization_vertex_buffer: current_frame_resources
+                        .buffers
+                        .path_rasterization_vertex_buffer,
+                    path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
+                    mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
+                    poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
+                    present_copy_sprite_buffer: current_frame_resources
+                        .buffers
+                        .present_copy_sprite_buffer,
+                    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache::new(
+                        frame_resource_count,
+                    ),
+                    underline_buffer: current_frame_resources.buffers.underline_buffer,
+                    backdrop_blur_pass_buffer: current_frame_resources
+                        .buffers
+                        .backdrop_blur_pass_buffer,
+                    backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
+                    animation_binding_buffer: current_frame_resources
+                        .buffers
+                        .animation_binding_buffer,
+                    animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
+                    custom_mesh_3d_parameters_buffer: current_frame_resources
+                        .buffers
+                        .custom_mesh_3d_parameters_buffer,
                     custom_mesh_3d_vertices_buffer: resources.custom_mesh_3d_vertices_buffer,
                     custom_mesh_3d_indices_buffer: resources.custom_mesh_3d_indices_buffer,
-                    quad_resource_set: resources.quad_resource_set,
-                    shadow_resource_set: resources.shadow_resource_set,
-                    path_rasterization_resource_set: resources.path_rasterization_resource_set,
+                    quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
+                    shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
+                    path_rasterization_resource_set: current_frame_resources
+                        .resource_sets
+                        .path_rasterization_resource_set,
                     path_resource_set_layout: resources.path_resource_set_layout,
-                    path_resource_set: resources.path_resource_set,
-                    present_cache_resource_set: resources.present_cache_resource_set,
+                    path_resource_set: current_frame_resources.path_resource_set,
+                    present_cache_resource_set: current_frame_resources.present_cache_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
-                    underline_resource_set: resources.underline_resource_set,
+                    underline_resource_set: current_frame_resources
+                        .resource_sets
+                        .underline_resource_set,
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
                     custom_mesh_3d_pipeline_layout: resources.custom_mesh_3d_pipeline_layout,
-                    custom_mesh_3d_resource_set: resources.custom_mesh_3d_resource_set,
+                    custom_mesh_3d_resource_set: current_frame_resources
+                        .resource_sets
+                        .custom_mesh_3d_resource_set,
                     custom_mesh_3d_mesh_cache: FxHashMap::default(),
                     custom_mesh_3d_vertex_cursor: 0,
                     custom_mesh_3d_index_cursor: 0,
@@ -111,7 +163,7 @@ impl NovaRenderer {
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
-                    atlas: Arc::new(NovaAtlas::new()),
+                    atlas: atlas.0.clone(),
                     rendering_parameters: NovaRenderingParameters::from_env(),
                     diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
@@ -121,7 +173,6 @@ impl NovaRenderer {
                     submitted_frames: 0,
                     needs_full_redraw_after_resize: true,
                     present_cache_valid: false,
-                    backdrop_blur_reduced_until: None,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-dx12", target_os = "windows")))]
@@ -132,7 +183,7 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             RendererBackend::NovaMetal => {
-                let shader_binaries = compile_nova_shader_binaries(compile_wgsl_to_msl)?;
+                let shader_binaries = cached_nova_metal_shader_binaries()?;
                 let mut device = MetalDevice::new(&DeviceDescriptor {
                     application_name: "gpui nova metal".to_string(),
                     adapter_name: renderer_options.adapter_name.clone(),
@@ -153,6 +204,12 @@ impl NovaRenderer {
                 )
                 .context("creating GPUI nova Metal render resources")?;
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
+                let frame_resources = resources.frame_resources;
+                let current_frame_resources = frame_resources
+                    .first()
+                    .copied()
+                    .context("nova renderer resources should include at least one frame slot")?;
+                let frame_resource_count = frame_resources.len();
                 Ok(Self {
                     backend: NovaBackend::Metal(device),
                     surface,
@@ -165,38 +222,59 @@ impl NovaRenderer {
                     pipelines: resources.pipelines,
                     depth_texture: resources.depth_texture,
                     depth_texture_view: resources.depth_texture_view,
-                    global_buffer: resources.global_buffer,
-                    text_raster_buffer: resources.text_raster_buffer,
-                    quad_buffer: resources.quad_buffer,
-                    shadow_buffer: resources.shadow_buffer,
-                    path_rasterization_vertex_buffer: resources.path_rasterization_vertex_buffer,
-                    path_sprite_buffer: resources.path_sprite_buffer,
-                    mono_sprite_buffer: resources.mono_sprite_buffer,
-                    poly_sprite_buffer: resources.poly_sprite_buffer,
-                    present_copy_sprite_buffer: resources.present_copy_sprite_buffer,
-                    underline_buffer: resources.underline_buffer,
-                    backdrop_blur_pass_buffer: resources.backdrop_blur_pass_buffer,
-                    backdrop_blur_buffer: resources.backdrop_blur_buffer,
-                    animation_binding_buffer: resources.animation_binding_buffer,
-                    animation_value_buffer: resources.animation_value_buffer,
-                    custom_mesh_3d_parameters_buffer: resources.custom_mesh_3d_parameters_buffer,
+                    frame_resources,
+                    current_frame_resource_index: 0,
+                    global_buffer: current_frame_resources.buffers.global_buffer,
+                    text_raster_buffer: current_frame_resources.buffers.text_raster_buffer,
+                    quad_buffer: current_frame_resources.buffers.quad_buffer,
+                    shadow_buffer: current_frame_resources.buffers.shadow_buffer,
+                    path_rasterization_vertex_buffer: current_frame_resources
+                        .buffers
+                        .path_rasterization_vertex_buffer,
+                    path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
+                    mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
+                    poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
+                    present_copy_sprite_buffer: current_frame_resources
+                        .buffers
+                        .present_copy_sprite_buffer,
+                    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache::new(
+                        frame_resource_count,
+                    ),
+                    underline_buffer: current_frame_resources.buffers.underline_buffer,
+                    backdrop_blur_pass_buffer: current_frame_resources
+                        .buffers
+                        .backdrop_blur_pass_buffer,
+                    backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
+                    animation_binding_buffer: current_frame_resources
+                        .buffers
+                        .animation_binding_buffer,
+                    animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
+                    custom_mesh_3d_parameters_buffer: current_frame_resources
+                        .buffers
+                        .custom_mesh_3d_parameters_buffer,
                     custom_mesh_3d_vertices_buffer: resources.custom_mesh_3d_vertices_buffer,
                     custom_mesh_3d_indices_buffer: resources.custom_mesh_3d_indices_buffer,
-                    quad_resource_set: resources.quad_resource_set,
-                    shadow_resource_set: resources.shadow_resource_set,
-                    path_rasterization_resource_set: resources.path_rasterization_resource_set,
+                    quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
+                    shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
+                    path_rasterization_resource_set: current_frame_resources
+                        .resource_sets
+                        .path_rasterization_resource_set,
                     path_resource_set_layout: resources.path_resource_set_layout,
-                    path_resource_set: resources.path_resource_set,
-                    present_cache_resource_set: resources.present_cache_resource_set,
+                    path_resource_set: current_frame_resources.path_resource_set,
+                    present_cache_resource_set: current_frame_resources.present_cache_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
-                    underline_resource_set: resources.underline_resource_set,
+                    underline_resource_set: current_frame_resources
+                        .resource_sets
+                        .underline_resource_set,
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
                     custom_mesh_3d_pipeline_layout: resources.custom_mesh_3d_pipeline_layout,
-                    custom_mesh_3d_resource_set: resources.custom_mesh_3d_resource_set,
+                    custom_mesh_3d_resource_set: current_frame_resources
+                        .resource_sets
+                        .custom_mesh_3d_resource_set,
                     custom_mesh_3d_mesh_cache: FxHashMap::default(),
                     custom_mesh_3d_vertex_cursor: 0,
                     custom_mesh_3d_index_cursor: 0,
@@ -214,7 +292,7 @@ impl NovaRenderer {
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
-                    atlas: Arc::new(NovaAtlas::new()),
+                    atlas: atlas.0.clone(),
                     rendering_parameters: NovaRenderingParameters::from_env(),
                     diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
@@ -224,7 +302,6 @@ impl NovaRenderer {
                     submitted_frames: 0,
                     needs_full_redraw_after_resize: true,
                     present_cache_valid: false,
-                    backdrop_blur_reduced_until: None,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-metal", target_os = "macos")))]
@@ -238,7 +315,7 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
             RendererBackend::NovaVulkan => {
-                let shader_binaries = compile_nova_shader_binaries(compile_wgsl_to_spirv)?;
+                let shader_binaries = cached_nova_vulkan_shader_binaries()?;
                 let mut device = VulkanDevice::new(&DeviceDescriptor {
                     application_name: "gpui nova vulkan".to_string(),
                     adapter_name: renderer_options.adapter_name.clone(),
@@ -259,6 +336,12 @@ impl NovaRenderer {
                 )
                 .context("creating GPUI nova Vulkan render resources")?;
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
+                let frame_resources = resources.frame_resources;
+                let current_frame_resources = frame_resources
+                    .first()
+                    .copied()
+                    .context("nova renderer resources should include at least one frame slot")?;
+                let frame_resource_count = frame_resources.len();
                 Ok(Self {
                     backend: NovaBackend::Vulkan(device),
                     surface,
@@ -271,38 +354,59 @@ impl NovaRenderer {
                     pipelines: resources.pipelines,
                     depth_texture: resources.depth_texture,
                     depth_texture_view: resources.depth_texture_view,
-                    global_buffer: resources.global_buffer,
-                    text_raster_buffer: resources.text_raster_buffer,
-                    quad_buffer: resources.quad_buffer,
-                    shadow_buffer: resources.shadow_buffer,
-                    path_rasterization_vertex_buffer: resources.path_rasterization_vertex_buffer,
-                    path_sprite_buffer: resources.path_sprite_buffer,
-                    mono_sprite_buffer: resources.mono_sprite_buffer,
-                    poly_sprite_buffer: resources.poly_sprite_buffer,
-                    present_copy_sprite_buffer: resources.present_copy_sprite_buffer,
-                    underline_buffer: resources.underline_buffer,
-                    backdrop_blur_pass_buffer: resources.backdrop_blur_pass_buffer,
-                    backdrop_blur_buffer: resources.backdrop_blur_buffer,
-                    animation_binding_buffer: resources.animation_binding_buffer,
-                    animation_value_buffer: resources.animation_value_buffer,
-                    custom_mesh_3d_parameters_buffer: resources.custom_mesh_3d_parameters_buffer,
+                    frame_resources,
+                    current_frame_resource_index: 0,
+                    global_buffer: current_frame_resources.buffers.global_buffer,
+                    text_raster_buffer: current_frame_resources.buffers.text_raster_buffer,
+                    quad_buffer: current_frame_resources.buffers.quad_buffer,
+                    shadow_buffer: current_frame_resources.buffers.shadow_buffer,
+                    path_rasterization_vertex_buffer: current_frame_resources
+                        .buffers
+                        .path_rasterization_vertex_buffer,
+                    path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
+                    mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
+                    poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
+                    present_copy_sprite_buffer: current_frame_resources
+                        .buffers
+                        .present_copy_sprite_buffer,
+                    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache::new(
+                        frame_resource_count,
+                    ),
+                    underline_buffer: current_frame_resources.buffers.underline_buffer,
+                    backdrop_blur_pass_buffer: current_frame_resources
+                        .buffers
+                        .backdrop_blur_pass_buffer,
+                    backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
+                    animation_binding_buffer: current_frame_resources
+                        .buffers
+                        .animation_binding_buffer,
+                    animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
+                    custom_mesh_3d_parameters_buffer: current_frame_resources
+                        .buffers
+                        .custom_mesh_3d_parameters_buffer,
                     custom_mesh_3d_vertices_buffer: resources.custom_mesh_3d_vertices_buffer,
                     custom_mesh_3d_indices_buffer: resources.custom_mesh_3d_indices_buffer,
-                    quad_resource_set: resources.quad_resource_set,
-                    shadow_resource_set: resources.shadow_resource_set,
-                    path_rasterization_resource_set: resources.path_rasterization_resource_set,
+                    quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
+                    shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
+                    path_rasterization_resource_set: current_frame_resources
+                        .resource_sets
+                        .path_rasterization_resource_set,
                     path_resource_set_layout: resources.path_resource_set_layout,
-                    path_resource_set: resources.path_resource_set,
-                    present_cache_resource_set: resources.present_cache_resource_set,
+                    path_resource_set: current_frame_resources.path_resource_set,
+                    present_cache_resource_set: current_frame_resources.present_cache_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
-                    underline_resource_set: resources.underline_resource_set,
+                    underline_resource_set: current_frame_resources
+                        .resource_sets
+                        .underline_resource_set,
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
                     custom_mesh_3d_pipeline_layout: resources.custom_mesh_3d_pipeline_layout,
-                    custom_mesh_3d_resource_set: resources.custom_mesh_3d_resource_set,
+                    custom_mesh_3d_resource_set: current_frame_resources
+                        .resource_sets
+                        .custom_mesh_3d_resource_set,
                     custom_mesh_3d_mesh_cache: FxHashMap::default(),
                     custom_mesh_3d_vertex_cursor: 0,
                     custom_mesh_3d_index_cursor: 0,
@@ -320,7 +424,7 @@ impl NovaRenderer {
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
-                    atlas: Arc::new(NovaAtlas::new()),
+                    atlas: atlas.0.clone(),
                     rendering_parameters: NovaRenderingParameters::from_env(),
                     diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
@@ -330,7 +434,6 @@ impl NovaRenderer {
                     submitted_frames: 0,
                     needs_full_redraw_after_resize: true,
                     present_cache_valid: false,
-                    backdrop_blur_reduced_until: None,
                 })
             }
             #[cfg(not(all(

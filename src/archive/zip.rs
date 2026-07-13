@@ -25,6 +25,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
     force_replace: bool,
     task_id: String,
 ) -> Result<CoreResult<()>, CoreError> {
+    crate::archive::register_archive_task_stage_labels();
     // spawn_blocking 内执行实际解压（IO 密集）
     let dest_string = destination.to_string();
     let task_id_clone_for_block = task_id.clone();

@@ -3,37 +3,47 @@
 [中文](README.zh-CN.md)
 
 GPUI is a hybrid immediate and retained mode, GPU-accelerated UI framework for
-Rust desktop applications. It provides application state, windows, entity-based
-views, declarative elements, input dispatch, platform integration, and renderer
-backends in one crate.
+Rust desktop applications. It provides application state, windows,
+entity-based views, declarative elements, input dispatch, platform integration,
+and renderer backends in one crate.
 
-This branch keeps GPUI pre-1.0 while updating the renderer and platform
-direction:
+This vendored branch is pre-1.0 and is maintained for BMCBL's native desktop
+UI. The current renderer direction is nova-gfx:
 
-- Windows uses a WGPU and winit based platform path.
-- The default renderer direction is WGPU-first, with Vulkan and DX12 backend
-  selection on Windows.
+- Windows uses a winit platform path and defaults to the Nova DX12 backend when
+  the feature is enabled.
+- Vulkan is available through the Nova Vulkan backend, including the optional
+  Windows Vulkan feature path.
+- macOS framework code targets Nova Metal for the normal nova-gfx path.
 - The compositor is event driven by default. Continuous rendering is reserved
   for explicit `RenderPolicy::Continuous` configuration.
-- Custom WGPU surfaces can render application-owned GPU content and then paint
-  that surface into the GPUI scene.
+- Custom GPU content should enter GPUI through scene primitives, image
+  elements, runtime WGSL shader helpers, or custom 3D mesh primitives rather
+  than the removed application-facing surface API.
 - WGSL shaders can be validated at build time for built-in renderer shaders or
-  loaded at runtime for custom examples and applications.
-- The examples are updated for the current `App`, `Context<T>`, `Window`, and
+  loaded at runtime for custom mesh examples and applications.
+- The examples use the current `App`, `Context<T>`, explicit `Window`, and
   `Entity<T>` API shape.
 
 ## Quick Start
 
-Add GPUI to a Rust 2024 project and create an `Application`:
+For an application in this repository, use the vendored path dependency:
 
 ```toml
 [dependencies]
-gpui = { version = "0.2.2" }
+gpui = { path = "vendor/gpui", default-features = false, features = [
+    "mimalloc-collect",
+    "nova-gfx",
+    "nova-gfx-dx12",
+    "nova-gfx-vulkan",
+] }
 ```
 
+Create an `Application` and mount an entity view:
+
 ```rust
-use gpui::{div, App, Application, Context, Render, Window};
 use gpui::prelude::*;
+use gpui::{div, App, Application, Context, IntoElement, Render, Window};
 
 struct Hello;
 
@@ -59,15 +69,15 @@ fn main() {
 - `Context<T>` is provided while creating, updating, rendering, or handling
   events for an `Entity<T>`.
 - `Window` is passed explicitly to render and event code that needs input,
-  focus, drawing, frame requests, actions, or custom WGPU surfaces.
+  focus, drawing, frame requests, actions, platform state, or custom paint.
 - `Entity<T>` stores GPUI-owned state. Update entities through `Entity::update`
   or a `Context<T>` listener, and call `cx.notify()` when rendering should
   change.
-- `Render` views build element trees every frame. `RenderOnce` components are
-  lightweight element recipes that are consumed when rendered.
+- `Render` views build element trees. `RenderOnce` components are lightweight
+  element recipes that are consumed when rendered.
 - `cx.spawn(async move |cx| ...)` and `window.spawn(cx, async move |cx| ...)`
-  run foreground async work. Use `cx.background_spawn` for work that must not
-  block UI rendering.
+  run foreground async work. Use background executors or blocking tasks for
+  work that must not block UI rendering.
 
 Obsolete application-facing names should not be used in new code:
 `Model<T>`, `View<T>`, `AppContext` as a context type, `ModelContext<T>`,
@@ -89,19 +99,21 @@ flowchart TD
     PlatformSelect --> Test["Headless test platform"]
 
     Windows --> Winit["winit event loop"]
-    Windows --> WgpuBackend{"WGPU backend"}
-    WgpuBackend --> Vulkan["Vulkan"]
-    WgpuBackend --> Dx12["DX12"]
+    Windows --> NovaDx12["Nova DX12"]
+    Windows --> NovaVulkanWin["Nova Vulkan (optional)"]
 
-    MacOS --> Metal["Metal renderer path"]
+    MacOS --> NovaMetal["Nova Metal"]
     Linux --> LinuxWindowing{"Windowing backend"}
     LinuxWindowing --> X11["X11"]
     LinuxWindowing --> Wayland["Wayland"]
-    Linux --> WgpuVulkan["WGPU Vulkan"]
+    Linux --> NovaVulkan["Nova Vulkan"]
     Test --> Headless["Headless renderer"]
 
     Winit --> PlatformEvents["Platform events"]
-    Metal --> PlatformEvents
+    NovaDx12 --> NovaRenderer["NovaRenderer"]
+    NovaVulkanWin --> NovaRenderer
+    NovaMetal --> NovaRenderer
+    NovaVulkan --> NovaRenderer
     X11 --> PlatformEvents
     Wayland --> PlatformEvents
     Headless --> PlatformEvents
@@ -113,12 +125,13 @@ flowchart TD
     Entities --> ElementTree
     ElementTree --> Layout["Layout and prepaint"]
     Layout --> Scene["Scene primitives"]
-    Scene --> Renderer["Renderer backend"]
-    Renderer --> Present["Present frame"]
+    Scene --> RenderPlan["FrameRenderPlan"]
+    RenderPlan --> NovaRenderer
+    NovaRenderer --> Present["Swapchain present"]
     Present --> PlatformEvents
 ```
 
-### Frame Flow
+## Frame Flow
 
 The normal frame path is event-driven. State changes notify entities, windows
 coalesce frame requests, and the renderer only redraws when scene state or
@@ -131,7 +144,7 @@ sequenceDiagram
     participant App as App
     participant Entity as Entity<T>
     participant Render as Render tree
-    participant Renderer as Renderer backend
+    participant Renderer as Nova renderer
 
     Input->>Window: mouse / keyboard / window event
     Window->>App: dispatch action or event callback
@@ -140,84 +153,83 @@ sequenceDiagram
     App->>Window: request frame
     Window->>Render: render entities into elements
     Render->>Window: layout, prepaint, paint
-    Window->>Renderer: submit scene
-    Renderer->>Window: present or presentation-only frame
+    Window->>Renderer: submit FrameRenderPlan
+    Renderer->>Window: draw, present, or presentation-only frame
 ```
 
-### Custom WGPU Surface Flow
+`RequestFrameOptions::force_render` marks layout and paint as dirty.
+`RequestFrameOptions::require_presentation` allows a presentation-only frame
+when prepared content or retained GPU output needs to become visible.
 
-Custom GPU content uses GPUI's WGPU device and queue while keeping application
-rendering isolated from GPUI's element renderer.
+## Custom GPU Content
 
-```mermaid
-flowchart LR
-    Element["Custom element paint"] --> Create["Window::create_wgpu_surface"]
-    Create --> Surface["WgpuSurfaceHandle"]
-    Surface --> Device["device / queue"]
-    Device --> Resources["Application buffers, textures, bind groups, pipelines"]
-    Resources --> WGSL["Runtime WGSL validation"]
-    WGSL --> BackBuffer["back_buffer_view"]
-    BackBuffer --> Submit["queue.submit"]
-    Submit --> SwapOrPresent{"Render path"}
-    SwapOrPresent --> Swap["swap_buffers inside current paint"]
-    SwapOrPresent --> PresentSurface["present outside current paint"]
-    Swap --> Paint["Window::paint_wgpu_surface"]
-    PresentSurface --> Paint
-    Paint --> Scene["GPUI scene primitive"]
-```
+The old application-facing surface flow is not part of the current GPUI API.
+New custom GPU content should use one of these paths:
 
-### Original GPUI Architecture Comparison
+- ordinary element painting into GPUI scene primitives;
+- image and SVG elements;
+- runtime WGSL shader modules for custom mesh pipelines;
+- custom 3D mesh primitives with `GpuMesh3d`, `GpuMesh3dShader`, and
+  `GpuMesh3dDrawParameters`;
+- application-level render targets exposed through a deliberate GPUI scene or
+  renderer extension point.
 
-| Area | Original GPUI direction | This branch |
+This keeps the renderer backend-neutral. Application code should not assume a
+backend-specific device, queue, or surface handle.
+
+## Original GPUI Architecture Comparison
+
+| Area | Original GPUI direction | This vendored branch |
 | --- | --- | --- |
-| Windows platform | DirectX-oriented Windows renderer path | WGPU and winit based Windows platform path |
-| Windows backend selection | Platform-specific renderer implementation | `RendererBackend` can select WGPU Vulkan or WGPU DX12 |
-| Renderer default | Platform renderer chosen internally | WGPU-first direction where supported, with explicit renderer options |
+| Windows platform | DirectX-oriented Windows renderer path | winit platform path with nova-gfx backends |
+| Windows backend selection | Platform-specific renderer implementation | `RendererBackend` can select `NovaDx12` or `NovaVulkan` |
+| Renderer default | Platform renderer chosen internally | Nova DX12 on Windows when available, Nova Vulkan on Linux/FreeBSD, Nova Metal on macOS |
 | Frame scheduling | Redraw behavior tied closely to platform renderer loops | Event-driven composition with presentation-only frame support |
-| Shader model | Built-in renderer shaders owned by platform paths | Built-in WGSL validation plus runtime WGSL helpers for custom surfaces |
-| Custom GPU content | Framework rendering primitives are the main extension point | Application-owned WGPU surfaces can be painted into the GPUI scene |
+| Shader model | Built-in renderer shaders owned by platform paths | Built-in WGSL validation plus runtime WGSL helpers for custom mesh shaders |
+| Custom GPU content | Framework rendering primitives are the main extension point | Scene primitives, images, SVG, runtime shader helpers, and custom mesh primitives |
 | Example API style | Older examples may use previous context and view terminology | Examples use `App`, `Context<T>`, explicit `Window`, and `Entity<T>` |
 
 ## Renderer Notes
 
 `RendererOptions` controls backend selection, GPU adapter selection, present
-mode preference, render policy, and frame metrics. `RendererBackend::Auto`
-selects a platform default. On Windows, explicit `WgpuVulkan` and `WgpuDx12`
-selection is available.
+mode preference, GPU submission policy, render policy, and frame metrics.
+`RendererBackend::Auto` chooses the platform default. Explicit backends include
+`NovaDx12`, `NovaVulkan`, `NovaMetal`, and `HeadlessTest`.
 
-Event-driven rendering is the default. `RequestFrameOptions::force_render`
-marks layout and paint as dirty; `RequestFrameOptions::require_presentation`
-allows a presentation-only frame when prepared content or a WGPU surface needs
-to become visible.
-
-For custom GPU content, create a `WgpuSurfaceHandle` with
-`Window::create_wgpu_surface`, render into `back_buffer_view`, call `present`
-or `swap_buffers` depending on the render path, and paint it with
-`Window::paint_wgpu_surface`.
+The nova-gfx path converts GPUI scenes into frame upload buckets, GPU render
+steps, optional offscreen path/backdrop passes, retained present-cache updates,
+and swapchain presentation. Partial redraw is used when a dirty region can be
+bounded safely; otherwise the renderer falls back to full redraw.
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Development guide](docs/development.md)
 - [Contexts and entities](docs/contexts.md)
+- [Rendering and elements](docs/rendering.md)
+- [Renderer backend](docs/renderer_backend.md)
+- [Windows renderer backend](docs/windows_renderer_backend.md)
 - [Runtime WGSL shaders](docs/runtime_wgsl_shaders.md)
-- [WGPU surfaces](docs/wgpu_surfaces.md)
+- [Performance pipeline](docs/performance_pipeline.md)
 - [Examples](docs/examples.md)
 - [Validation](docs/validation.md)
+
+BMCBL's integration-level renderer guide lives at
+`../../docs/GPUI_VENDOR_RENDERING.md` from this directory.
 
 ## Examples
 
 The examples are kept on the current GPUI API surface:
 
 ```powershell
-cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
+cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12 --examples
 cargo run --manifest-path Cargo.toml --example hello_world
 cargo run --manifest-path Cargo.toml --example minimal_window
-cargo run --manifest-path Cargo.toml --example hatsune_miku_viewer
+cargo run --manifest-path Cargo.toml --example image_gallery
 ```
 
-Some examples are platform-specific. The custom WGPU surface viewer currently
-enables its full implementation on Windows.
+Some examples are platform-specific. Runtime shader and custom mesh examples
+must declare the renderer features they require.
 
 ## Validation
 
@@ -225,7 +237,7 @@ Use focused validation for this crate:
 
 ```powershell
 cargo fmt --manifest-path Cargo.toml --all
-cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
-cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --lib -- -D warnings
-cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
+cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12
+cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12 --lib -- -D warnings
+cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12 --examples
 ```

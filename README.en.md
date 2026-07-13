@@ -18,7 +18,7 @@ single desktop application.
 | UI framework | Native GPUI, no WebView |
 | Primary platform | Windows 10 / Windows 11 |
 | Minecraft version types | UWP and GDK, including release / preview / education branches |
-| Renderer | GPUI WGPU-first renderer, DX12 / Vulkan paths on Windows |
+| Renderer | GPUI nova-gfx path, Nova DX12 by default on Windows, configurable Nova Vulkan |
 | Plugin system | WASM sandbox plugins, API version `0.4` |
 | License | GPL-3.0-only |
 
@@ -148,7 +148,8 @@ flowchart TD
     UI --> Config["src/config\nConfiguration and migrations"]
     Core --> Downloads["src/downloads\nMulti-thread downloads, WU protocol, integrity"]
     Core --> Assets["src/assets / assets\nEmbedded assets, fonts, icons, locales, runtime payloads"]
-    UI --> GPUI["vendor/gpui\nWGPU renderer, windows, element system"]
+    UI --> GPUI["vendor/gpui\nnova-gfx renderer, windows, element system"]
+    GPUI --> Nova["crates/nova-gfx\nDX12 / Vulkan / Metal / OpenGL / WebGL abstraction"]
 ```
 
 Main directories:
@@ -163,10 +164,12 @@ Main directories:
 | `src/config` | Config structs, defaults, migrations, and persistence |
 | `assets` | Compile-time icons, fonts, images, locales, and binary payloads |
 | `vendor/gpui` | Project-maintained GPUI framework code |
+| `crates/nova-gfx` | Cross-backend graphics abstraction used by the GPUI nova renderer path |
 | `crates/bmcbl-plugin-api` | Plugin ABI, macros, and packaging tools |
 | `crates/gpui-hooks` | GPUI hooks helpers |
 | `crates/lucide-gpui` | Lucide icon adapter for GPUI |
 
+Current structure: [docs/BMCBL_PROJECT_STRUCTURE.md](docs/BMCBL_PROJECT_STRUCTURE.md).
 Architecture boundaries: [docs/ARCHITECTURE_BOUNDARIES.md](docs/ARCHITECTURE_BOUNDARIES.md).
 GPUI renderer notes: [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.md).
 Router and hooks: [docs/GPUI_ROUTER_HOOKS.md](docs/GPUI_ROUTER_HOOKS.md).

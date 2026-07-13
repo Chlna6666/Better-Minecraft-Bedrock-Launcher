@@ -26,7 +26,7 @@ const LOG_THROTTLE_RETENTION: Duration = Duration::from_secs(120);
 const LOG_THROTTLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(15);
 const LOG_THROTTLE_MAX_TRACKED: usize = 4096;
 const PREVIOUS_LOG_FILE: &str = "previous.log";
-const DEBUG_LOG_FILTER: &str = "bmcbl=debug,bmcbl::ui::window::map_viewer=trace,bedrock_leveldb=trace,bedrock_world=trace,bedrock_render=trace,gpui=debug,reqwest=info,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,info";
+const DEBUG_LOG_FILTER: &str = "bmcbl=debug,bmcbl::ui::window::map_viewer=debug,bedrock_leveldb=info,bedrock_world=debug,bedrock_render=debug,gpui=debug,reqwest=info,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,info";
 
 static LOG_THROTTLE_STATE: Lazy<Mutex<LogThrottleState>> =
     Lazy::new(|| Mutex::new(LogThrottleState::default()));
@@ -474,7 +474,9 @@ mod tests {
     #[test]
     fn debug_log_filter_uses_current_crate_target() {
         assert!(DEBUG_LOG_FILTER.contains("bmcbl=debug"));
-        assert!(DEBUG_LOG_FILTER.contains("bmcbl::ui::window::map_viewer=trace"));
+        assert!(DEBUG_LOG_FILTER.contains("bmcbl::ui::window::map_viewer=debug"));
+        assert!(DEBUG_LOG_FILTER.contains("bedrock_leveldb=info"));
+        assert!(!DEBUG_LOG_FILTER.contains("bedrock_leveldb=trace"));
         assert!(!DEBUG_LOG_FILTER.contains("BMCBL=debug"));
         assert!(!DEBUG_LOG_FILTER.contains("BMCBL::"));
     }

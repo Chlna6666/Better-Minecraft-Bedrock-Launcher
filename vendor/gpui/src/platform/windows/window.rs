@@ -31,7 +31,6 @@ use windows::{
 use crate::diagnostics::performance_metrics::{
     record_frame_request, record_renderer_backend, record_window_request_redraw,
 };
-use crate::platform::NovaRenderer;
 use crate::platform::windows::with_dll_library;
 use crate::platform::winit::{
     maximize_window, minimize_window, request_window_inner_size,
@@ -39,6 +38,7 @@ use crate::platform::winit::{
     start_window_resize as start_winit_window_resize, toggle_window_fullscreen,
     toggle_window_maximized,
 };
+use crate::platform::{NovaRenderer, NovaRendererAtlas};
 use crate::*;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event_loop::ActiveEventLoop;
@@ -262,6 +262,47 @@ impl WindowsWindow {
         request
     }
 
+    pub(crate) fn request_frame(&self, options: RequestFrameOptions) {
+        if !self.0.queue_frame_request(options) {
+            return;
+        }
+
+        // Keep frame delivery in the native event queue. On Windows, redraw work runs after
+        // higher-priority input and window messages, so a continuously animating view cannot
+        // monopolize the foreground executor. The frame watchdog remains the fallback when a
+        // requested redraw is not delivered.
+        record_window_request_redraw(self.0.handle.window_id().data().as_ffi());
+        self.window().request_redraw();
+    }
+
+    fn request_first_presentable_frame(&self) {
+        let options = RequestFrameOptions {
+            require_presentation: true,
+            force_render: true,
+        };
+        let callback_registered = self.0.state.borrow().callbacks.request_frame.is_some();
+        if !callback_registered {
+            self.request_frame(options);
+            return;
+        }
+
+        // Windows can suppress RedrawRequested for a hidden HWND. Once renderer initialization
+        // completes, dispatch exactly this first presentable frame directly so visibility does
+        // not wait on a native redraw that cannot arrive until the window is already visible.
+        let pending = self.take_pending_frame_request();
+        record_frame_request();
+        self.invoke_request_frame(pending.merge(options));
+    }
+
+    pub(crate) fn clear_timed_out_frame_request(&self, _options: RequestFrameOptions) {
+        let state = self.0.state.borrow();
+        state
+            .pending_frame_request
+            .set(clear_pending_frame_request_after_timeout(
+                state.pending_frame_request.get(),
+            ));
+    }
+
     pub(crate) fn restore_minimized_window(&self) {
         let Some(hwnd) = self.native_hwnd() else {
             return;
@@ -311,16 +352,18 @@ pub enum WindowsRenderer {
 }
 
 impl WindowsRenderer {
-    fn new(
-        window: &WinitWindow,
-        logical_size: Size<Pixels>,
-        scale_factor: f32,
-        disable_direct_composition: bool,
-        renderer_backend_candidates: Vec<RendererBackend>,
-        renderer_options: &RendererOptions,
-        window_id: WindowId,
-        transparent: bool,
-    ) -> Result<Self> {
+    fn new(initialization: WindowsRendererInitialization) -> Result<Self> {
+        let WindowsRendererInitialization {
+            window,
+            logical_size,
+            scale_factor,
+            disable_direct_composition,
+            renderer_backend_candidates,
+            renderer_options,
+            window_id,
+            transparent,
+            atlas,
+        } = initialization;
         let drawable_size = logical_size
             .to_device_pixels(scale_factor)
             .map(|axis| DevicePixels(axis.0.max(1)));
@@ -328,13 +371,14 @@ impl WindowsRenderer {
         let mut last_error = None;
 
         for (candidate_index, candidate) in renderer_backend_candidates.into_iter().enumerate() {
-            match NovaRenderer::new(
-                window,
+            match NovaRenderer::new_with_atlas(
+                &window,
                 candidate,
-                renderer_options,
+                &renderer_options,
                 GpuSubmissionMode::Deferred,
                 drawable_size,
                 transparent,
+                atlas.clone(),
             ) {
                 Ok(renderer) => {
                     let gpu_specs = renderer.gpu_specs();
@@ -390,12 +434,6 @@ impl WindowsRenderer {
     pub fn update_transparency(&mut self, is_transparent: bool) {
         match self {
             Self::Nova(renderer) => renderer.update_transparency(is_transparent),
-        }
-    }
-
-    pub fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        match self {
-            Self::Nova(renderer) => renderer.sprite_atlas(),
         }
     }
 
@@ -461,30 +499,170 @@ impl Drop for WindowsRenderer {
     }
 }
 
+enum WindowsRendererState {
+    Initializing,
+    Ready(WindowsRenderer),
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeWindowVisibilityAction {
+    None,
+    Show { focus: bool },
+    Hide,
+    Focus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WindowsWindowPresentationState {
+    mapped: bool,
+    show_requested: bool,
+    first_frame_presented: bool,
+    native_visible: bool,
+    focus_requested: bool,
+}
+
+impl WindowsWindowPresentationState {
+    fn new(show_requested: bool, focus_requested: bool) -> Self {
+        Self {
+            mapped: false,
+            show_requested,
+            first_frame_presented: false,
+            native_visible: false,
+            focus_requested,
+        }
+    }
+
+    fn map(&mut self) -> NativeWindowVisibilityAction {
+        self.mapped = true;
+        self.reconcile()
+    }
+
+    fn request_show(&mut self) -> NativeWindowVisibilityAction {
+        self.show_requested = true;
+        self.reconcile()
+    }
+
+    fn request_hide(&mut self) -> NativeWindowVisibilityAction {
+        self.show_requested = false;
+        self.focus_requested = false;
+        self.reconcile()
+    }
+
+    fn request_activation(&mut self) -> NativeWindowVisibilityAction {
+        self.show_requested = true;
+        self.focus_requested = true;
+        self.reconcile()
+    }
+
+    fn first_frame_presented(&mut self) -> NativeWindowVisibilityAction {
+        self.first_frame_presented = true;
+        self.reconcile()
+    }
+
+    fn reconcile(&mut self) -> NativeWindowVisibilityAction {
+        let should_be_visible = self.mapped && self.show_requested && self.first_frame_presented;
+        match (self.native_visible, should_be_visible) {
+            (false, true) => {
+                self.native_visible = true;
+                let focus = std::mem::take(&mut self.focus_requested);
+                NativeWindowVisibilityAction::Show { focus }
+            }
+            (true, false) => {
+                self.native_visible = false;
+                NativeWindowVisibilityAction::Hide
+            }
+            (true, true) if std::mem::take(&mut self.focus_requested) => {
+                NativeWindowVisibilityAction::Focus
+            }
+            _ => NativeWindowVisibilityAction::None,
+        }
+    }
+}
+
+struct InitializedWindowsRenderer(WindowsRenderer);
+
+// SAFETY: Windows renderer initialization exclusively owns its DX12 or Vulkan device, surface,
+// swapchain, and resource handles. This wrapper is moved exactly once from the initialization
+// worker to the foreground thread, and the renderer is never accessed concurrently on both
+// threads. D3D12/DXGI and Vulkan handles do not require destruction on their creation thread.
+unsafe impl Send for InitializedWindowsRenderer {}
+
+struct WindowsRendererInitialization {
+    window: WindowsRendererWindowHandle,
+    logical_size: Size<Pixels>,
+    scale_factor: f32,
+    disable_direct_composition: bool,
+    renderer_backend_candidates: Vec<RendererBackend>,
+    renderer_options: RendererOptions,
+    window_id: WindowId,
+    transparent: bool,
+    atlas: NovaRendererAtlas,
+}
+
+struct WindowsRendererWindowHandle {
+    _window: Arc<WinitWindow>,
+    raw_window_handle: rwh::RawWindowHandle,
+}
+
+impl WindowsRendererWindowHandle {
+    fn new(window: Arc<WinitWindow>) -> Result<Self> {
+        let raw_window_handle = window
+            .window_handle()
+            .context("capturing Windows renderer window handle")?
+            .as_raw();
+        anyhow::ensure!(
+            matches!(raw_window_handle, rwh::RawWindowHandle::Win32(_)),
+            "Windows renderer requires a Win32 window handle"
+        );
+        Ok(Self {
+            _window: window,
+            raw_window_handle,
+        })
+    }
+}
+
+// SAFETY: The raw Win32 handle is captured on the main thread and remains valid because the
+// wrapper owns an Arc to the winit window. Background initialization only borrows the immutable
+// HWND/HINSTANCE values to create a graphics surface; it never calls winit APIs off-thread.
+unsafe impl Send for WindowsRendererWindowHandle {}
+
+impl rwh::HasWindowHandle for WindowsRendererWindowHandle {
+    fn window_handle(&self) -> std::result::Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+        // SAFETY: The raw handle lifetime is bounded by self, which keeps the winit window alive.
+        Ok(unsafe { rwh::WindowHandle::borrow_raw(self.raw_window_handle) })
+    }
+}
+
+impl rwh::HasDisplayHandle for WindowsRendererWindowHandle {
+    fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+        Ok(rwh::DisplayHandle::windows())
+    }
+}
+
 pub(crate) struct WindowsWindowInner {
     pub(crate) use_native_decorations: bool,
     pub(crate) state: RefCell<WindowsWindowState>,
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) handle: AnyWindowHandle,
     pub(crate) executor: ForegroundExecutor,
-    pub(crate) renderer: RefCell<WindowsRenderer>,
+    renderer: RefCell<WindowsRendererState>,
+    renderer_atlas: NovaRendererAtlas,
+    presentation_state: Cell<WindowsWindowPresentationState>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
     pub(crate) renderer_resize_retry_pending: Cell<bool>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
 }
 
 impl WindowsWindowInner {
-    pub(crate) fn request_frame(&self, options: RequestFrameOptions) {
+    fn queue_frame_request(&self, options: RequestFrameOptions) -> bool {
         let state = self.state.borrow();
         let pending = state.pending_frame_request.get();
-        let (pending, should_request_redraw) = merge_frame_request(pending, options);
+        let (pending, should_schedule_frame) = merge_frame_request(pending, options);
         state.pending_frame_request.set(pending);
         drop(state);
         record_frame_request();
-        if should_request_redraw {
-            record_window_request_redraw(self.handle.window_id().data().as_ffi());
-            self.window().request_redraw();
-        }
+        should_schedule_frame
     }
 
     fn window(&self) -> &WinitWindow {
@@ -498,14 +676,21 @@ fn merge_frame_request(
     pending: RequestFrameOptions,
     options: RequestFrameOptions,
 ) -> (RequestFrameOptions, bool) {
-    let already_pending = pending.require_presentation || pending.force_render;
+    let already_pending = pending.requires_frame();
     (
-        RequestFrameOptions {
-            require_presentation: pending.require_presentation || options.require_presentation,
-            force_render: pending.force_render || options.force_render,
-        },
-        !already_pending && (options.require_presentation || options.force_render),
+        pending.merge(options),
+        !already_pending && options.requires_frame(),
     )
+}
+
+fn clear_pending_frame_request_after_timeout(pending: RequestFrameOptions) -> RequestFrameOptions {
+    // A pending request is tied to one foreground callback. If that callback timed out,
+    // merged flags in the same slot are stranded too.
+    if pending.requires_frame() {
+        RequestFrameOptions::default()
+    } else {
+        pending
+    }
 }
 
 #[derive(Default)]
@@ -530,6 +715,7 @@ impl WindowsWindow {
         creation_info: WindowCreationInfo,
     ) -> Result<Self> {
         let WindowCreationInfo {
+            background_executor,
             executor,
             disable_direct_composition,
             renderer_backend,
@@ -554,6 +740,7 @@ impl WindowsWindow {
             renderer_backend,
             transparent_background,
         );
+        let presentation_state = WindowsWindowPresentationState::new(params.show, params.focus);
 
         let mut attributes = WinitWindow::default_attributes()
             .with_title(title)
@@ -602,16 +789,6 @@ impl WindowsWindow {
             width: Pixels(actual_inner_size.width as f32 / scale_factor),
             height: Pixels(actual_inner_size.height as f32 / scale_factor),
         };
-        let renderer = WindowsRenderer::new(
-            &winit_window,
-            actual_logical_size,
-            scale_factor,
-            disable_direct_composition,
-            renderer_backend_candidates,
-            &renderer_options,
-            handle.window_id(),
-            transparent_background,
-        )?;
         if params.window_icon.is_none()
             && let Some(hwnd) = hwnd
         {
@@ -624,9 +801,22 @@ impl WindowsWindow {
             }
         }
         let winit_window = Arc::new(winit_window);
+        let renderer_atlas = NovaRendererAtlas::new();
+        let renderer_initialization = WindowsRendererInitialization {
+            window: WindowsRendererWindowHandle::new(winit_window.clone())?,
+            logical_size: actual_logical_size,
+            scale_factor,
+            disable_direct_composition,
+            renderer_backend_candidates,
+            renderer_options,
+            window_id: handle.window_id(),
+            transparent: transparent_background,
+            atlas: renderer_atlas.clone(),
+        };
         let cell = OnceCell::new();
-        let _ = cell.set(winit_window);
-        Ok(Self(Rc::new(WindowsWindowInner {
+        cell.set(winit_window)
+            .map_err(|_| anyhow::anyhow!("Windows winit window was initialized twice"))?;
+        let window = Self(Rc::new(WindowsWindowInner {
             use_native_decorations,
             state: RefCell::new(WindowsWindowState {
                 callbacks: Callbacks::default(),
@@ -643,11 +833,104 @@ impl WindowsWindow {
             input_handler: RefCell::new(None),
             handle,
             executor,
-            renderer: RefCell::new(renderer),
+            renderer: RefCell::new(WindowsRendererState::Initializing),
+            renderer_atlas,
+            presentation_state: Cell::new(presentation_state),
             pending_renderer_size: Cell::new(None),
             renderer_resize_retry_pending: Cell::new(false),
             winit_window: cell,
-        })))
+        }));
+        window.start_renderer_initialization(background_executor, renderer_initialization);
+        Ok(window)
+    }
+
+    fn start_renderer_initialization(
+        &self,
+        background_executor: BackgroundExecutor,
+        initialization: WindowsRendererInitialization,
+    ) {
+        let (sender, receiver) = oneshot::channel();
+        background_executor
+            .spawn(async move {
+                let renderer = WindowsRenderer::new(initialization).map(InitializedWindowsRenderer);
+                if sender.send(renderer).is_err() {
+                    log::debug!("Windows renderer initialization receiver was dropped");
+                }
+            })
+            .detach();
+
+        let weak_window = Rc::downgrade(&self.0);
+        self.0
+            .executor
+            .spawn(async move {
+                let renderer = receiver.await.unwrap_or_else(|error| {
+                    Err(anyhow::anyhow!(
+                        "Windows renderer initialization task was cancelled: {error}"
+                    ))
+                });
+                if let Some(window) = weak_window.upgrade() {
+                    WindowsWindow(window)
+                        .finish_renderer_initialization(renderer.map(|renderer| renderer.0));
+                }
+            })
+            .detach();
+    }
+
+    fn finish_renderer_initialization(&self, renderer: Result<WindowsRenderer>) {
+        match renderer {
+            Ok(mut renderer) => {
+                let transparent = self.0.state.borrow().background_appearance.get()
+                    != WindowBackgroundAppearance::Opaque;
+                renderer.update_transparency(transparent);
+                *self.0.renderer.borrow_mut() = WindowsRendererState::Ready(renderer);
+                self.0.renderer_resize_retry_pending.set(false);
+                self.request_first_presentable_frame();
+            }
+            Err(error) => {
+                *self.0.renderer.borrow_mut() = WindowsRendererState::Failed;
+                log::error!("failed to initialize Windows renderer: {error:#}");
+                self.window().set_visible(false);
+                self.invoke_close();
+            }
+        }
+    }
+
+    fn update_presentation_state(
+        &self,
+        update: impl FnOnce(&mut WindowsWindowPresentationState) -> NativeWindowVisibilityAction,
+    ) {
+        let mut state = self.0.presentation_state.get();
+        let action = update(&mut state);
+        self.0.presentation_state.set(state);
+        self.apply_native_visibility_action(action);
+    }
+
+    fn apply_native_visibility_action(&self, action: NativeWindowVisibilityAction) {
+        match action {
+            NativeWindowVisibilityAction::None => {}
+            NativeWindowVisibilityAction::Show { focus } => {
+                log::debug!(
+                    "showing Windows window after a completed frame: window={}",
+                    self.0.handle.window_id().data().as_ffi()
+                );
+                self.window().set_visible(true);
+                self.restore_minimized_window();
+                if focus {
+                    self.window().focus_window();
+                    self.bring_to_foreground();
+                }
+            }
+            NativeWindowVisibilityAction::Hide => self.window().set_visible(false),
+            NativeWindowVisibilityAction::Focus => {
+                self.restore_minimized_window();
+                self.window().focus_window();
+                self.bring_to_foreground();
+            }
+        }
+    }
+
+    fn mark_first_frame_presented(&self) {
+        self.update_presentation_state(WindowsWindowPresentationState::first_frame_presented);
     }
 
     fn native_hwnd_from_winit_window(window: &WinitWindow) -> Option<HWND> {
@@ -664,16 +947,20 @@ impl WindowsWindow {
     }
 
     fn try_apply_queued_renderer_resize(&self) -> bool {
+        let mut renderer_state = self.0.renderer.borrow_mut();
+        let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
+            return false;
+        };
         let Some(size) = self.0.pending_renderer_size.take() else {
             return true;
         };
 
         self.0.renderer_resize_retry_pending.set(false);
-        if let Err(error) = self.0.renderer.borrow_mut().resize(size) {
+        if let Err(error) = renderer.resize(size) {
             log::warn!("failed to resize Windows renderer: {error:#}");
             self.0.pending_renderer_size.set(Some(size));
             if !self.0.renderer_resize_retry_pending.replace(true) {
-                self.0.request_frame(RequestFrameOptions::from_refresh());
+                self.request_frame(RequestFrameOptions::from_refresh());
             }
             return false;
         }
@@ -883,10 +1170,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn activate(&self) {
-        self.restore_minimized_window();
-        self.window().focus_window();
-        self.bring_to_foreground();
-        self.window().request_redraw();
+        self.update_presentation_state(WindowsWindowPresentationState::request_activation);
+        self.request_frame(RequestFrameOptions {
+            require_presentation: true,
+            force_render: true,
+        });
     }
 
     fn is_active(&self) -> bool {
@@ -912,20 +1200,21 @@ impl PlatformWindow for WindowsWindow {
         if let Some(hwnd) = self.native_hwnd() {
             apply_window_background_appearance(hwnd, background_appearance);
         }
-        self.0
-            .renderer
-            .borrow_mut()
-            .update_transparency(transparent);
+        if let WindowsRendererState::Ready(renderer) = &mut *self.0.renderer.borrow_mut() {
+            renderer.update_transparency(transparent);
+        }
     }
 
     fn show(&self) {
-        self.window().set_visible(true);
-        self.restore_minimized_window();
-        self.window().request_redraw();
+        self.update_presentation_state(WindowsWindowPresentationState::request_show);
+        self.request_frame(RequestFrameOptions {
+            require_presentation: true,
+            force_render: true,
+        });
     }
 
     fn hide_window(&self) {
-        self.window().set_visible(false);
+        self.update_presentation_state(WindowsWindowPresentationState::request_hide);
     }
 
     fn minimize(&self) {
@@ -955,7 +1244,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn request_frame(&self, options: RequestFrameOptions) {
-        self.0.request_frame(options);
+        WindowsWindow::request_frame(self, options);
+    }
+
+    fn frame_request_timed_out(&self, options: RequestFrameOptions) {
+        self.clear_timed_out_frame_request(options);
     }
 
     fn start_window_move(&self) {
@@ -1028,26 +1321,46 @@ impl PlatformWindow for WindowsWindow {
         if !self.try_apply_queued_renderer_resize() {
             return;
         }
-        self.0.renderer.borrow_mut().draw(render_plan).log_err();
+        let draw_result = {
+            let mut renderer_state = self.0.renderer.borrow_mut();
+            let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
+                return;
+            };
+            renderer.draw(render_plan)
+        };
+        match draw_result {
+            Ok(()) => self.mark_first_frame_presented(),
+            Err(error) => log::error!("failed to draw Windows frame: {error:#}"),
+        }
     }
 
     fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) {
         if !self.try_apply_queued_renderer_resize() {
             return;
         }
-        self.0
-            .renderer
-            .borrow_mut()
-            .present_framebuffer_only(render_plan)
-            .log_err();
+        let present_result = {
+            let mut renderer_state = self.0.renderer.borrow_mut();
+            let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
+                return;
+            };
+            renderer.present_framebuffer_only(render_plan)
+        };
+        match present_result {
+            Ok(()) => self.mark_first_frame_presented(),
+            Err(error) => log::error!("failed to present Windows framebuffer: {error:#}"),
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        self.0.renderer.borrow().sprite_atlas()
+        self.0.renderer_atlas.platform_atlas()
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.0.renderer.borrow().gpu_specs().log_err()
+        let renderer = self.0.renderer.borrow();
+        let WindowsRendererState::Ready(renderer) = &*renderer else {
+            return None;
+        };
+        renderer.gpu_specs().log_err()
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
@@ -1055,8 +1368,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn map_window(&mut self) -> anyhow::Result<()> {
-        self.window().set_visible(true);
-        self.window().request_redraw();
+        self.update_presentation_state(WindowsWindowPresentationState::map);
+        self.request_frame(RequestFrameOptions {
+            require_presentation: true,
+            force_render: true,
+        });
         Ok(())
     }
 }
@@ -1112,8 +1428,10 @@ impl ClickState {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClickState, merge_frame_request, renderer_backend_candidates,
-        should_use_native_decorations, should_use_no_redirection_bitmap,
+        ClickState, NativeWindowVisibilityAction, WindowsWindowPresentationState,
+        clear_pending_frame_request_after_timeout, merge_frame_request,
+        renderer_backend_candidates, should_use_native_decorations,
+        should_use_no_redirection_bitmap,
     };
     use crate::{
         DevicePixels, MouseButton, RendererBackend, RendererOptions, RequestFrameOptions,
@@ -1290,7 +1608,7 @@ mod tests {
             force_render: true,
         };
 
-        let (merged, should_request_redraw) = merge_frame_request(first, second);
+        let (merged, should_schedule_frame) = merge_frame_request(first, second);
 
         assert_eq!(
             merged,
@@ -1299,7 +1617,7 @@ mod tests {
                 force_render: true,
             }
         );
-        assert!(!should_request_redraw);
+        assert!(!should_schedule_frame);
     }
 
     #[test]
@@ -1310,7 +1628,7 @@ mod tests {
         };
         let resize_refresh = RequestFrameOptions::from_refresh();
 
-        let (merged, should_request_redraw) = merge_frame_request(pending, resize_refresh);
+        let (merged, should_schedule_frame) = merge_frame_request(pending, resize_refresh);
 
         assert_eq!(
             merged,
@@ -1319,11 +1637,11 @@ mod tests {
                 force_render: true,
             }
         );
-        assert!(!should_request_redraw);
+        assert!(!should_schedule_frame);
     }
 
     #[test]
-    fn first_pending_request_triggers_redraw() {
+    fn first_pending_request_requests_redraw() {
         let (merged, should_request_redraw) = merge_frame_request(
             RequestFrameOptions::default(),
             RequestFrameOptions::from_refresh(),
@@ -1331,5 +1649,82 @@ mod tests {
 
         assert_eq!(merged, RequestFrameOptions::from_refresh());
         assert!(should_request_redraw);
+    }
+
+    #[test]
+    fn timed_out_request_clears_merged_pending_request() {
+        let timed_out = RequestFrameOptions::from_refresh();
+        let pending = timed_out.merge(RequestFrameOptions {
+            require_presentation: true,
+            force_render: false,
+        });
+
+        assert_eq!(
+            clear_pending_frame_request_after_timeout(pending),
+            RequestFrameOptions::default()
+        );
+    }
+
+    #[test]
+    fn mapped_window_waits_for_first_presented_frame() {
+        let mut state = WindowsWindowPresentationState::new(true, true);
+
+        assert_eq!(state.map(), NativeWindowVisibilityAction::None);
+        assert!(!state.native_visible);
+    }
+
+    #[test]
+    fn first_presented_frame_reveals_and_focuses_requested_window() {
+        let mut state = WindowsWindowPresentationState::new(true, true);
+        assert_eq!(state.map(), NativeWindowVisibilityAction::None);
+
+        assert_eq!(
+            state.first_frame_presented(),
+            NativeWindowVisibilityAction::Show { focus: true }
+        );
+        assert!(state.native_visible);
+        assert!(!state.focus_requested);
+    }
+
+    #[test]
+    fn hidden_window_stays_hidden_after_first_presented_frame() {
+        let mut state = WindowsWindowPresentationState::new(false, false);
+        assert_eq!(state.map(), NativeWindowVisibilityAction::None);
+
+        assert_eq!(
+            state.first_frame_presented(),
+            NativeWindowVisibilityAction::None
+        );
+        assert!(!state.native_visible);
+    }
+
+    #[test]
+    fn pre_rendered_hidden_window_reveals_immediately_when_shown() {
+        let mut state = WindowsWindowPresentationState::new(false, false);
+        assert_eq!(state.map(), NativeWindowVisibilityAction::None);
+        assert_eq!(
+            state.first_frame_presented(),
+            NativeWindowVisibilityAction::None
+        );
+
+        assert_eq!(
+            state.request_show(),
+            NativeWindowVisibilityAction::Show { focus: false }
+        );
+    }
+
+    #[test]
+    fn activation_before_first_frame_defers_focus_until_reveal() {
+        let mut state = WindowsWindowPresentationState::new(false, false);
+        assert_eq!(state.map(), NativeWindowVisibilityAction::None);
+        assert_eq!(
+            state.request_activation(),
+            NativeWindowVisibilityAction::None
+        );
+
+        assert_eq!(
+            state.first_frame_presented(),
+            NativeWindowVisibilityAction::Show { focus: true }
+        );
     }
 }

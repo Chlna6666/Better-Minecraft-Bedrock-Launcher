@@ -146,6 +146,14 @@ impl NovaAtlas {
 }
 
 impl NovaAtlasState {
+    pub(in crate::platform::nova) fn remove_pending_uploads_for_texture(
+        &mut self,
+        texture_id: AtlasTextureId,
+    ) {
+        self.pending_uploads
+            .retain(|upload| upload.texture_id != texture_id);
+    }
+
     pub(in crate::platform::nova) fn enqueue_tile_upload(
         &mut self,
         texture_id: AtlasTextureId,

@@ -355,6 +355,7 @@ pub(super) struct NovaBackdropBlurRenderPass {
 pub(super) fn backdrop_blur_render_passes_for_targets(
     pipelines: &NovaPipelines,
     targets: &NovaBackdropBlurTargets,
+    frame_resource_index: usize,
     levels: usize,
 ) -> Vec<NovaBackdropBlurRenderPass> {
     if targets.levels.is_empty() {
@@ -364,9 +365,17 @@ pub(super) fn backdrop_blur_render_passes_for_targets(
     let mut passes = Vec::with_capacity(levels.saturating_mul(2).saturating_sub(1));
     for (level_index, level) in targets.levels.iter().take(levels).enumerate() {
         let resource_set = if level_index == 0 {
-            targets.source_pass_resource_set
+            targets
+                .source_pass_resource_sets
+                .get(frame_resource_index)
+                .copied()
+                .unwrap_or_else(|| ResourceSetId::new(0))
         } else {
-            targets.levels[level_index - 1].pass_resource_set
+            targets.levels[level_index - 1]
+                .pass_resource_sets
+                .get(frame_resource_index)
+                .copied()
+                .unwrap_or_else(|| ResourceSetId::new(0))
         };
         passes.push(NovaBackdropBlurRenderPass {
             target_texture_view: level.texture_view,
@@ -386,9 +395,11 @@ pub(super) fn backdrop_blur_render_passes_for_targets(
             target_texture_view: targets.levels[target_index].texture_view,
             step: DrawStepDescriptor {
                 pipeline: pipelines.backdrop_blur_upsample,
-                resource_sets: resource_set_list([
-                    targets.levels[target_index + 1].pass_resource_set
-                ]),
+                resource_sets: resource_set_list([targets.levels[target_index + 1]
+                    .pass_resource_sets
+                    .get(frame_resource_index)
+                    .copied()
+                    .unwrap_or_else(|| ResourceSetId::new(0))]),
                 vertex_count: 4,
                 first_vertex: 0,
                 instance_count: 1,

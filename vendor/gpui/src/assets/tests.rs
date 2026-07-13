@@ -7,7 +7,7 @@ use image::{
 };
 use rand::SeedableRng as _;
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 
 fn frame(width: u32, height: u32) -> Frame {
@@ -349,7 +349,7 @@ fn streaming_animation_decoded_byte_len_uses_resident_frames_only() {
 }
 
 #[test]
-fn streaming_animation_restarts_decoder_after_queue_pause() {
+fn streaming_animation_keeps_decoder_running_while_queue_is_full() {
     let bytes = animated_png_bytes_with_frame_count(4);
     let config = AnimatedImageConfig {
         decode_ahead_frames: 2,
@@ -364,16 +364,11 @@ fn streaming_animation_restarts_decoder_after_queue_pause() {
         decode_image_bytes(&bytes, ImageFormat::Png, config, Some(executor.clone())).unwrap();
 
     executor.run_until_parked();
-    let frame = image.next_streaming_frame(0, &executor).unwrap();
-    executor.run_until_parked();
-    let frame = image
-        .next_streaming_frame(frame.sequence(), &executor)
-        .unwrap();
-    let frame = image
-        .next_streaming_frame(frame.sequence(), &executor)
-        .unwrap();
+    let RenderImageData::Streaming(state) = &image.data else {
+        panic!("large animation should use streaming decode");
+    };
 
-    assert_eq!(frame.sequence(), 3);
+    assert!(state.decode_task_running.load(Ordering::Acquire));
 }
 
 fn animated_png_bytes() -> Vec<u8> {

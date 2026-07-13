@@ -2,7 +2,7 @@ use crate::config::config::read_config;
 use crate::downloads::manager::DownloaderManager;
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
-use crate::tasks::task_manager::{create_task, finish_task};
+use crate::tasks::task_manager::{create_task_with_details, finish_task};
 use crate::utils::cloudflare::get_optimized_ip;
 use crate::utils::file_ops;
 use anyhow::Result;
@@ -401,11 +401,15 @@ pub async fn download_and_apply_update(
     let timeout_secs = args.timeout_secs.unwrap_or(60u64);
     let auto_quit = args.auto_quit.unwrap_or(true);
 
-    let task_id = if let Some(input_id) = args.task_id {
-        create_task(Some(input_id), "ready", None)
-    } else {
-        create_task(None, "ready", None)
-    };
+    crate::downloads::register_download_task_stage_labels();
+    let task_id = create_task_with_details(
+        args.task_id,
+        "下载更新",
+        filename_hint.clone(),
+        "ready",
+        None,
+        false,
+    );
 
     info!("开始下载并应用：url={} task_id={}", url, task_id);
 

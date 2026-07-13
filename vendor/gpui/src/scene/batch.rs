@@ -2,9 +2,37 @@ use crate::{AtlasTextureId, ScaledPixels};
 use std::{iter::Peekable, slice};
 
 use super::{
-    MonochromeSprite, MonochromeSpriteSampling, PaintBackdropBlur, PaintGpuMesh3d, PaintSurface,
-    Path, PolychromeSprite, PrimitiveKind, Quad, Shadow, Underline,
+    DrawOrder, MonochromeSprite, MonochromeSpriteSampling, PaintBackdropBlur, PaintGpuMesh3d,
+    PaintSurface, Path, PolychromeSprite, PrimitiveKind, Quad, Shadow, Underline,
 };
+
+type BatchCandidate = (Option<DrawOrder>, PrimitiveKind);
+type BatchSortKey = (DrawOrder, PrimitiveKind);
+
+fn batch_sort_key((order, kind): BatchCandidate) -> BatchSortKey {
+    (order.unwrap_or(u32::MAX), kind)
+}
+
+fn first_two_batch_candidates(candidates: [BatchCandidate; 9]) -> (BatchCandidate, BatchCandidate) {
+    let [first, second, rest @ ..] = candidates;
+    let (mut first, mut second) = if batch_sort_key(second) < batch_sort_key(first) {
+        (second, first)
+    } else {
+        (first, second)
+    };
+
+    for candidate in rest {
+        let candidate_key = batch_sort_key(candidate);
+        if candidate_key < batch_sort_key(first) {
+            second = first;
+            first = candidate;
+        } else if candidate_key < batch_sort_key(second) {
+            second = candidate;
+        }
+    }
+
+    (first, second)
+}
 
 pub(super) struct BatchIterator<'a> {
     pub(super) shadows: &'a [Shadow],
@@ -40,7 +68,7 @@ impl<'a> Iterator for BatchIterator<'a> {
     type Item = PrimitiveBatch<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut orders_and_kinds = [
+        let (first, second) = first_two_batch_candidates([
             (
                 self.shadows_iter.peek().map(|s| s.order),
                 PrimitiveKind::Shadow,
@@ -71,13 +99,10 @@ impl<'a> Iterator for BatchIterator<'a> {
                 self.gpu_meshes_3d_iter.peek().map(|mesh| mesh.order),
                 PrimitiveKind::GpuMesh3d,
             ),
-        ];
-        orders_and_kinds.sort_by_key(|(order, kind)| (order.unwrap_or(u32::MAX), *kind));
+        ]);
 
-        let first = orders_and_kinds[0];
-        let second = orders_and_kinds[1];
         let (batch_kind, max_order_and_kind) = if first.0.is_some() {
-            (first.1, (second.0.unwrap_or(u32::MAX), second.1))
+            (first.1, batch_sort_key(second))
         } else {
             return None;
         };

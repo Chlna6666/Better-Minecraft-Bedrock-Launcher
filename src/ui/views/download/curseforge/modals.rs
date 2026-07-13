@@ -77,8 +77,7 @@ pub(super) fn render_curseforge_install_modal(
 pub(super) fn render_curseforge_mod_page_modal(
     colors: &ThemeColors,
     state: &DownloadPageState,
-    curseforge_files_pane: &Entity<super::CurseForgeFilesPaneView>,
-    curseforge_description_pane: &Entity<super::CurseForgeDescriptionPaneView>,
+    detail_image_cache: &Entity<BoundedImageCache>,
     selected_folder: Option<SharedString>,
     local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
     tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
@@ -86,8 +85,7 @@ pub(super) fn render_curseforge_mod_page_modal(
     super::render_curseforge_mod_page_modal(
         colors,
         state,
-        curseforge_files_pane,
-        curseforge_description_pane,
+        detail_image_cache,
         selected_folder,
         local_versions,
         tasks,
@@ -154,6 +152,92 @@ pub(super) fn default_install_target(
             .first()
             .map(|version| SharedString::from(version.folder.clone()))
     })
+}
+
+pub(super) fn default_install_target_for_file(
+    file: &crate::ui::views::download::state::CurseForgeFileEntry,
+    selected_folder: Option<SharedString>,
+    local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+) -> Option<SharedString> {
+    if let Some(selected_folder) = selected_folder
+        && local_version_supports_file(selected_folder.as_ref(), file, local_versions)
+    {
+        return Some(selected_folder);
+    }
+
+    local_versions
+        .versions
+        .iter()
+        .find(|version| launch_version_supports_file(version, file))
+        .map(|version| SharedString::from(version.folder.clone()))
+        .or_else(|| default_install_target(None, local_versions))
+}
+
+fn local_version_supports_file(
+    folder: &str,
+    file: &crate::ui::views::download::state::CurseForgeFileEntry,
+    local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+) -> bool {
+    local_versions.versions.iter().any(|version| {
+        version.folder.as_ref() == folder && launch_version_supports_file(version, file)
+    })
+}
+
+fn launch_version_supports_file(
+    version: &crate::core::version::launch_versions::LaunchVersionEntry,
+    file: &crate::ui::views::download::state::CurseForgeFileEntry,
+) -> bool {
+    file.game_versions.iter().any(|game_version| {
+        let game_version = game_version.trim();
+        !game_version.is_empty()
+            && (version_text_matches_game_version(version.version.as_ref(), game_version)
+                || version_text_matches_game_version(
+                    version.manifest_version.as_ref(),
+                    game_version,
+                )
+                || version_text_matches_game_version(version.folder.as_ref(), game_version)
+                || version_text_matches_game_version(version.name.as_ref(), game_version))
+    })
+}
+
+fn version_text_matches_game_version(version_text: &str, game_version: &str) -> bool {
+    let version_text = version_text.trim();
+    if version_text == game_version {
+        return true;
+    }
+
+    let version_parts = numeric_version_parts(version_text);
+    let game_version_parts = numeric_version_parts(game_version);
+    !game_version_parts.is_empty()
+        && version_parts.len() >= game_version_parts.len()
+        && game_version_parts
+            .iter()
+            .zip(version_parts.iter())
+            .all(|(game_part, version_part)| game_part == version_part)
+}
+
+fn numeric_version_parts(text: &str) -> Vec<u64> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            current.push(character);
+        } else if !current.is_empty() {
+            if let Ok(value) = current.parse() {
+                parts.push(value);
+            }
+            current.clear();
+        }
+    }
+
+    if !current.is_empty()
+        && let Ok(value) = current.parse()
+    {
+        parts.push(value);
+    }
+
+    parts
 }
 
 pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
@@ -255,6 +339,26 @@ pub(super) fn open_curseforge_install_modal(
     spawn_load_curseforge_install_files(mod_entry.id, cx);
 }
 
+pub(super) fn open_curseforge_install_modal_for_file(
+    mod_entry: crate::ui::views::download::state::CurseForgeModEntry,
+    file_id: i32,
+    default_target: Option<SharedString>,
+    cx: &mut App,
+) {
+    cx.update_global(|state: &mut DownloadPageState, _cx| {
+        state.curseforge_install_open = true;
+        state.curseforge_install_stage =
+            crate::ui::views::download::state::CurseForgeInstallStage::Idle;
+        state.curseforge_install_error = None;
+        state.curseforge_install_mod = Some(mod_entry);
+        state.curseforge_install_selected_file_id = Some(file_id);
+        state.curseforge_install_task_id = None;
+        state.curseforge_install_downloaded_path = None;
+        state.curseforge_install_conflict_message = None;
+        state.curseforge_install_target_folder = default_target;
+    });
+}
+
 fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
     let game_version = cx.read_global(|state: &DownloadPageState, _cx| {
         Some(state.curseforge_selected_game_version.to_string())
@@ -265,7 +369,6 @@ fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
         match result {
             Ok(files) => {
                 let files = curseforge_file_entries_from_query_data(files);
-                let first_id = files.first().map(|file| file.id);
                 if let Err(error) = cx.update_global(|state: &mut DownloadPageState, _cx| {
                     let current_mod_id = state
                         .curseforge_install_mod
@@ -274,8 +377,11 @@ fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
                     if current_mod_id != Some(mod_id) {
                         return;
                     }
+                    let previous_selected_id = state.curseforge_install_selected_file_id;
+                    let selected_id =
+                        previous_selected_id.filter(|id| files.iter().any(|file| file.id == *id));
                     state.curseforge_install_files = files;
-                    state.curseforge_install_selected_file_id = first_id;
+                    state.curseforge_install_selected_file_id = selected_id;
                     state.curseforge_install_stage =
                         crate::ui::views::download::state::CurseForgeInstallStage::Idle;
                 }) {

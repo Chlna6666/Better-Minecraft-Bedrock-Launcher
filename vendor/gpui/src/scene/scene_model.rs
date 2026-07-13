@@ -29,6 +29,8 @@ pub(crate) struct Scene {
     next_scene_animation_id: u32,
     prepared_batches: PreparedSceneBatches,
     replayed_primitives: usize,
+    pub(super) retained_prefix_invalid: bool,
+    pub(super) retained_prefix_verified_len: usize,
     idle_clear_frames: u16,
     recent_peak_paint_operations: usize,
     recent_peak_primitives: usize,
@@ -76,6 +78,8 @@ impl Scene {
         self.animation_values.clear();
         self.prepared_batches.clear();
         self.replayed_primitives = 0;
+        self.retained_prefix_invalid = false;
+        self.retained_prefix_verified_len = 0;
 
         if primitive_count_before_clear == 0 {
             self.idle_clear_frames = self.idle_clear_frames.saturating_add(1);
@@ -124,6 +128,10 @@ impl Scene {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
+        self.push_replayed_layer(bounds);
+    }
+
+    fn push_replayed_layer(&mut self, bounds: Bounds<ScaledPixels>) {
         let order = self.primitive_bounds.insert(bounds);
         self.layer_stack.push(order);
         self.paint_operations
@@ -131,6 +139,10 @@ impl Scene {
     }
 
     pub fn pop_layer(&mut self) {
+        self.pop_replayed_layer();
+    }
+
+    fn pop_replayed_layer(&mut self) {
         self.layer_stack.pop();
         self.paint_operations.push(PaintOperation::EndLayer);
     }
@@ -224,8 +236,24 @@ impl Scene {
             .push(PaintOperation::Primitive(primitive));
     }
 
-    fn replay_primitive(&mut self, primitive: &Primitive) {
-        let Some(order) = self.order_for_primitive(primitive) else {
+    fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
+        let order = if retain_order {
+            let clipped_bounds = primitive
+                .bounds()
+                .intersect(&primitive.content_mask().bounds);
+            if clipped_bounds.is_empty() {
+                return;
+            }
+            if let Some(layer_order) = self.layer_stack.last().copied() {
+                debug_assert_eq!(layer_order, primitive.order());
+                layer_order
+            } else {
+                self.primitive_bounds
+                    .insert_with_order(clipped_bounds, primitive.order())
+            }
+        } else if let Some(order) = self.order_for_primitive(primitive) {
+            order
+        } else {
             return;
         };
         self.replayed_primitives = self.replayed_primitives.saturating_add(1);
@@ -315,27 +343,58 @@ impl Scene {
     }
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+        let range_end = range.end;
+        let retain_order = !self.retained_prefix_invalid
+            && self.paint_operations.len() == range.start
+            && self.ordering_prefix_matches_previous(prev_scene, range.start);
+        if !retain_order {
+            self.retained_prefix_invalid = true;
+        }
         for operation in &prev_scene.paint_operations[range] {
             match operation {
-                PaintOperation::Primitive(primitive) => self.replay_primitive(primitive),
-                PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
-                PaintOperation::EndLayer => self.pop_layer(),
+                PaintOperation::Primitive(primitive) => {
+                    self.replay_primitive(primitive, retain_order)
+                }
+                PaintOperation::StartLayer(bounds) => self.push_replayed_layer(*bounds),
+                PaintOperation::EndLayer => self.pop_replayed_layer(),
             }
+        }
+        if retain_order && self.paint_operations.len() == range_end {
+            self.retained_prefix_verified_len = range_end;
+        } else if retain_order {
+            self.retained_prefix_invalid = true;
         }
     }
 
+    fn ordering_prefix_matches_previous(&self, prev_scene: &Scene, prefix_end: usize) -> bool {
+        let prefix_start = self.retained_prefix_verified_len;
+        let Some(current_prefix) = self.paint_operations.get(prefix_start..prefix_end) else {
+            return false;
+        };
+        let Some(previous_prefix) = prev_scene.paint_operations.get(prefix_start..prefix_end)
+        else {
+            return false;
+        };
+
+        current_prefix
+            .iter()
+            .zip(previous_prefix)
+            .all(|(current, previous)| ordering_operations_match(current, previous))
+    }
+
     pub fn finish(&mut self) {
-        self.shadows.sort_by_key(|shadow| shadow.order);
-        self.quads.sort_by_key(|quad| quad.order);
-        self.paths.sort_by_key(|path| path.order);
-        self.underlines.sort_by_key(|underline| underline.order);
+        self.shadows.sort_unstable_by_key(|shadow| shadow.order);
+        self.quads.sort_unstable_by_key(|quad| quad.order);
+        self.paths.sort_unstable_by_key(|path| path.order);
+        self.underlines
+            .sort_unstable_by_key(|underline| underline.order);
         self.monochrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+            .sort_unstable_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
         self.polychrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-        self.surfaces.sort_by_key(|surface| surface.order);
-        self.backdrop_blurs.sort_by_key(|blur| blur.order);
-        self.gpu_meshes_3d.sort_by_key(|mesh| mesh.order);
+            .sort_unstable_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+        self.surfaces.sort_unstable_by_key(|surface| surface.order);
+        self.backdrop_blurs.sort_unstable_by_key(|blur| blur.order);
+        self.gpu_meshes_3d.sort_unstable_by_key(|mesh| mesh.order);
         self.prepare_batches();
     }
 
@@ -558,5 +617,20 @@ impl Scene {
         self.prepared_batches.batch_count = self.prepared_batches.batches.len();
         self.prepared_batches.primitive_count = self.primitive_count();
         self.prepared_batches.retained_capacity = self.prepared_batches.batches.capacity();
+    }
+}
+
+fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation) -> bool {
+    match (current, previous) {
+        (PaintOperation::Primitive(current), PaintOperation::Primitive(previous)) => {
+            current.order() == previous.order()
+                && current.bounds().intersect(&current.content_mask().bounds)
+                    == previous.bounds().intersect(&previous.content_mask().bounds)
+        }
+        (PaintOperation::StartLayer(current), PaintOperation::StartLayer(previous)) => {
+            current == previous
+        }
+        (PaintOperation::EndLayer, PaintOperation::EndLayer) => true,
+        _ => false,
     }
 }

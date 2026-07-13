@@ -3,7 +3,7 @@ use crate::ui::components::color_picker::{
 };
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
-use crate::ui::theme::colors::{ThemeColors, parse_hex_color_to_hsla};
+use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::SettingsPageState;
 use gpui::*;
 
@@ -47,10 +47,7 @@ pub(super) fn render_theme_color_card(
                     state.theme_color = SharedString::from(normalized.clone());
                 });
 
-                cx.update_global(|theme: &mut ThemeState, cx| {
-                    theme.accent_hex = SharedString::from(normalized.clone());
-                    theme.accent = parse_hex_color_to_hsla(&normalized);
-                });
+                ThemeState::set_accent_hex(&normalized, cx);
 
                 schedule_theme_color_persist_debounced(cx);
             },

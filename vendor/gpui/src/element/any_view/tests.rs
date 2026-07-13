@@ -157,6 +157,30 @@ impl Render for DegradedCachedRootView {
     }
 }
 
+struct DeferredCachedLeafView;
+
+impl Render for DeferredCachedLeafView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div().child(crate::deferred(
+            crate::div().w(px(1.)).h(px(1.)).bg(crate::white()),
+        ))
+    }
+}
+
+struct DeferredCachedRootView {
+    leaf: Entity<DeferredCachedLeafView>,
+}
+
+impl Render for DeferredCachedRootView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div().child(
+            AnyView::from(self.leaf.clone())
+                .cached(StyleRefinement::default())
+                .reuse_on_window_refresh(),
+        )
+    }
+}
+
 #[gpui::test]
 fn cached_view_infers_stable_fingerprint(cx: &mut TestAppContext) {
     let view = cx.update(|cx| cx.new(|_| EmptyView));
@@ -419,6 +443,30 @@ fn degraded_draw_does_not_publish_discarded_cached_view_ranges(cx: &mut TestAppC
         window.draw(cx).clear();
         assert!(!window.draw_was_degraded());
         assert_eq!(window.rendered_frame.hitboxes.len(), 2);
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+fn cached_deferred_draw_reuse_records_one_scene_segment(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        let leaf = cx.new(|_| DeferredCachedLeafView);
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| DeferredCachedRootView { leaf })
+        })
+        .unwrap()
+    });
+    let window = AnyWindowHandle::from(window);
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+        assert_ne!(window.rendered_frame.scene.len(), 0);
+        assert_eq!(window.rendered_frame.retained_scene_segments.len(), 1);
+
+        window.refresh();
+        window.draw(cx).clear();
+        assert_ne!(window.rendered_frame.scene.len(), 0);
+        assert_eq!(window.rendered_frame.retained_scene_segments.len(), 1);
     })
     .unwrap();
 }

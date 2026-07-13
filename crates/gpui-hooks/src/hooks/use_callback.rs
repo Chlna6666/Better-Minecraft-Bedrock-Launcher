@@ -17,14 +17,17 @@ pub trait UseCallbackHook: HasHooks {
         D::Item: Dependency + Clone + 'static,
     {
         let deps = to_dependencies(deps);
-        let callback: Rc<dyn Fn() -> R> = Rc::new(callback);
+        let mut callback = Some(callback);
         let hook_index = self._next_hook_index();
         let mut hooks = self._hooks_storage().borrow_mut();
 
         if hook_index == hooks.len() {
+            let Some(new_callback) = callback.take() else {
+                panic!("gpui_hooks: callback already consumed at index {hook_index}");
+            };
             hooks.push(Box::new(CallbackHook {
                 deps: deps.clone(),
-                callback: callback.clone(),
+                callback: Rc::new(new_callback),
             }));
         }
 
@@ -41,7 +44,10 @@ pub trait UseCallbackHook: HasHooks {
 
         if dependencies_changed(&hook.deps, &deps) {
             hook.deps = deps;
-            hook.callback = callback.clone();
+            let Some(new_callback) = callback.take() else {
+                panic!("gpui_hooks: callback already consumed at index {hook_index}");
+            };
+            hook.callback = Rc::new(new_callback);
         }
 
         CallbackHandle {

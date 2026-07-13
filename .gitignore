@@ -10,3 +10,7 @@ build.log
 
 # Local Playwright MCP session artifacts.
 /.playwright-mcp/
+
+# Local Superpowers planning artifacts.
+/docs/superpowers/
+/vendor/gpui/docs/superpowers/

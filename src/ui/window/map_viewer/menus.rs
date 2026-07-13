@@ -1,5 +1,6 @@
 use super::editor::*;
 use super::helpers::*;
+use super::layout::top_toolbar_layout;
 use super::model::*;
 use super::prelude::*;
 use super::viewport::coordinate_text;
@@ -352,7 +353,60 @@ impl MapViewerWindowView {
             284.0,
             520.0,
         );
-        let groups = vec![
+        let toolbar_layout = top_toolbar_layout(self.window_width);
+        let mut groups = Vec::new();
+        let mut navigation_entries = Vec::new();
+        if !toolbar_layout.show_modes {
+            for (mode, label) in [
+                (ViewerMode::Surface, "模式：地形"),
+                (ViewerMode::Biome, "模式：群系"),
+                (ViewerMode::Height, "模式：高度"),
+                (ViewerMode::Layer, "模式：Y层"),
+                (ViewerMode::Cave, "模式：洞穴"),
+            ] {
+                let entity = cx.entity();
+                navigation_entries.push(ContextMenuEntry::item(
+                    ContextMenuItem::new(label)
+                        .checked(self.mode == mode)
+                        .on_click(move |cx| {
+                            entity.update(cx, |this, cx| {
+                                this.close_top_more();
+                                this.set_mode(mode, cx);
+                            })
+                        }),
+                ));
+            }
+        }
+        if !toolbar_layout.show_y_controls {
+            for (delta, label) in [(-1, "Y 层 -"), (1, "Y 层 +")] {
+                let entity = cx.entity();
+                navigation_entries.push(ContextMenuEntry::item(
+                    ContextMenuItem::new(label).on_click(move |cx| {
+                        entity.update(cx, |this, cx| {
+                            this.close_top_more();
+                            this.step_y(delta, cx);
+                        })
+                    }),
+                ));
+            }
+        }
+        if !toolbar_layout.show_zoom_controls {
+            for (factor, label) in [(0.87, "缩小"), (1.15, "放大")] {
+                let entity = cx.entity();
+                navigation_entries.push(ContextMenuEntry::item(
+                    ContextMenuItem::new(label).on_click(move |cx| {
+                        entity.update(cx, |this, cx| {
+                            this.close_top_more();
+                            this.zoom_by_center(factor, cx);
+                        })
+                    }),
+                ));
+            }
+        }
+        if !navigation_entries.is_empty() {
+            groups.push(ContextMenuGroup::titled("地图导航", navigation_entries));
+        }
+        groups.extend([
             ContextMenuGroup::titled(
                 "视图",
                 vec![
@@ -708,7 +762,7 @@ impl MapViewerWindowView {
                     })),
                 ],
             ),
-        ];
+        ]);
 
         div().child(
             ContextMenu::new(colors, groups)

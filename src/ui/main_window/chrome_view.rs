@@ -44,6 +44,19 @@ type MusicRenderSignature = (
 
 type ChromeRenderSignature = (bool, bool);
 type ChromeAnimationFlags = (bool, bool, bool, bool);
+type NavRenderSignature = (usize, Option<usize>, usize, usize, bool);
+type PluginNavigationPages = Vec<crate::plugins::runtime::PluginPage>;
+type PluginNavigationSignature = Vec<PluginNavigationSignatureEntry>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PluginNavigationSignatureEntry {
+    plugin_id: String,
+    page_id: String,
+    title: SharedString,
+    navigation_label: Option<String>,
+    navigation_order: Option<i32>,
+    icon_path: Option<std::path::PathBuf>,
+}
 
 fn ratio_bucket(value: f32) -> u16 {
     (value.clamp(0.0, 1.0) * 1000.0).round() as u16
@@ -101,6 +114,37 @@ fn build_chrome_render_signature(cx: &App) -> ChromeRenderSignature {
     )
 }
 
+fn build_nav_render_signature(cx: &App) -> NavRenderSignature {
+    cx.read_global(|nav: &NavState, _cx| {
+        (
+            nav.active_index,
+            nav.pending_route_index,
+            nav.pill_from_index,
+            nav.pill_to_index,
+            nav.labels_target_visible,
+        )
+    })
+}
+
+fn build_plugin_navigation_signature(
+    pages: &[crate::plugins::runtime::PluginPage],
+) -> PluginNavigationSignature {
+    pages
+        .iter()
+        .map(|page| PluginNavigationSignatureEntry {
+            plugin_id: page.plugin_id.clone(),
+            page_id: page.page_id.clone(),
+            title: page.title.clone(),
+            navigation_label: page
+                .navigation
+                .as_ref()
+                .map(|navigation| navigation.label.clone()),
+            navigation_order: page.navigation.as_ref().map(|navigation| navigation.order),
+            icon_path: page.icon_path.clone(),
+        })
+        .collect()
+}
+
 #[cfg(windows)]
 fn is_main_window_foreground() -> bool {
     unsafe {
@@ -130,6 +174,11 @@ pub(super) struct AppChromeView {
     last_update_available: bool,
     last_music_render_signature: MusicRenderSignature,
     last_chrome_render_signature: ChromeRenderSignature,
+    last_nav_render_signature: NavRenderSignature,
+    last_route_target: crate::ui::navigation::RouteTarget,
+    last_glass_effect_enabled: bool,
+    plugin_navigation_pages: PluginNavigationPages,
+    plugin_navigation_signature: PluginNavigationSignature,
     last_animation_flags: Option<ChromeAnimationFlags>,
 }
 
@@ -137,6 +186,14 @@ impl AppChromeView {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let initial_music_render_signature = build_music_render_signature(cx);
         let initial_chrome_render_signature = build_chrome_render_signature(cx);
+        let initial_nav_render_signature = build_nav_render_signature(cx);
+        let initial_route_target = crate::ui::navigation::current_route_target(cx);
+        let initial_glass_effect_enabled = cx
+            .global::<crate::ui::views::settings::state::SettingsPageState>()
+            .glass_effect_enabled;
+        let initial_plugin_navigation_pages = crate::plugins::runtime::navigation_pages(cx);
+        let initial_plugin_navigation_signature =
+            build_plugin_navigation_signature(&initial_plugin_navigation_pages);
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe_global::<MusicState>(|this, cx| {
             let music_available = cx.global::<MusicState>().snapshot.available;
@@ -160,12 +217,28 @@ impl AppChromeView {
             }),
         );
         subscriptions.push(cx.observe_global::<gpui_router::RouterState>(|this, cx| {
-            this.sync_layout_targets(this.last_window_width_px, Instant::now(), cx);
-            cx.notify();
+            let route = crate::ui::navigation::current_route_target(cx);
+            let route_changed = this.last_route_target != route;
+            let layout_changed =
+                this.sync_layout_targets(this.last_window_width_px, Instant::now(), cx);
+            if route_changed {
+                this.last_route_target = route;
+            }
+            if route_changed || layout_changed {
+                cx.notify();
+            }
         }));
         subscriptions.push(cx.observe_global::<NavState>(|this, cx| {
-            this.sync_layout_targets(this.last_window_width_px, Instant::now(), cx);
-            cx.notify();
+            let layout_changed =
+                this.sync_layout_targets(this.last_window_width_px, Instant::now(), cx);
+            let signature = build_nav_render_signature(cx);
+            let nav_changed = this.last_nav_render_signature != signature;
+            if nav_changed {
+                this.last_nav_render_signature = signature;
+            }
+            if layout_changed || nav_changed {
+                cx.notify();
+            }
         }));
         subscriptions.push(cx.observe_global::<ThemeState>(|_, cx| {
             cx.notify();
@@ -173,14 +246,32 @@ impl AppChromeView {
         subscriptions.push(cx.observe_global::<UpdateState>(|this, cx| {
             let update_available = cx.global::<UpdateState>().available.is_some();
             if this.last_update_available != update_available {
-                this.last_update_available = update_available;
                 this.sync_layout_targets(this.last_window_width_px, Instant::now(), cx);
                 cx.notify();
             }
         }));
         subscriptions.push(
-            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
-                cx.notify();
+            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(
+                |this, cx| {
+                    let glass_effect_enabled = cx
+                        .global::<crate::ui::views::settings::state::SettingsPageState>()
+                        .glass_effect_enabled;
+                    if this.last_glass_effect_enabled != glass_effect_enabled {
+                        this.last_glass_effect_enabled = glass_effect_enabled;
+                        cx.notify();
+                    }
+                },
+            ),
+        );
+        subscriptions.push(
+            cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|this, cx| {
+                let pages = crate::plugins::runtime::navigation_pages(cx);
+                let signature = build_plugin_navigation_signature(&pages);
+                if this.plugin_navigation_signature != signature {
+                    this.plugin_navigation_signature = signature;
+                    this.plugin_navigation_pages = pages;
+                    cx.notify();
+                }
             }),
         );
         subscriptions.push(cx.observe_window_bounds(window, |this, window, cx| {
@@ -482,10 +573,17 @@ impl AppChromeView {
             last_update_available: false,
             last_music_render_signature: initial_music_render_signature,
             last_chrome_render_signature: initial_chrome_render_signature,
+            last_nav_render_signature: initial_nav_render_signature,
+            last_route_target: initial_route_target,
+            last_glass_effect_enabled: initial_glass_effect_enabled,
+            plugin_navigation_pages: initial_plugin_navigation_pages,
+            plugin_navigation_signature: initial_plugin_navigation_signature,
             last_animation_flags: None,
         };
         let initial_window_width_px = this.last_window_width_px;
         this.sync_layout_targets(initial_window_width_px, Instant::now(), cx);
+        this.last_nav_render_signature = build_nav_render_signature(cx);
+        this.last_chrome_render_signature = build_chrome_render_signature(cx);
         this
     }
 
@@ -572,6 +670,10 @@ impl AppChromeView {
                 },
             );
         }
+        if layout_target_changed {
+            self.last_nav_render_signature = build_nav_render_signature(cx);
+            self.last_chrome_render_signature = build_chrome_render_signature(cx);
+        }
         layout_target_changed
     }
 
@@ -617,7 +719,7 @@ impl AppChromeView {
         let glass_effect_enabled = cx
             .global::<crate::ui::views::settings::state::SettingsPageState>()
             .glass_effect_enabled;
-        let plugin_navigation_pages = crate::plugins::runtime::navigation_pages(cx);
+        let plugin_navigation_pages = self.plugin_navigation_pages.clone();
 
         let (
             visual_active_index,

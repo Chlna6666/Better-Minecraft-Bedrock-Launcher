@@ -58,6 +58,7 @@ pub async fn download_file(
     headers: Option<HeaderMap>,
     md5_expected: Option<&str>,
 ) -> Result<CoreResult<()>, CoreError> {
+    crate::downloads::register_download_task_stage_labels();
     let dest_buf = dest.as_ref().to_path_buf();
     let should_check_zip_header = should_verify_zip_during_download(dest_buf.as_path());
     let mut retry = 0u8;

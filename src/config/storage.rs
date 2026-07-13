@@ -3,7 +3,7 @@ use super::config::{
     clamp_background_blur, clamp_music_volume, default_error_report_sentry_dsn,
     default_glass_effect_enabled, default_gpu_adapter_name, get_default_config,
     normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
-    normalize_renderer_backend,
+    normalize_renderer_backend, normalize_theme_mode,
 };
 use crate::{http::proxy, utils::file_ops};
 use once_cell::sync::Lazy;
@@ -112,6 +112,7 @@ fn load_config_from_disk() -> io::Result<Config> {
     let legacy_gpu_power_preference = extract_legacy_gpu_power_preference(&content);
     let has_background_blur = content.contains("background_blur");
     let has_glass_effect_enabled = content.contains("glass_effect_enabled");
+    let has_theme_mode = content.contains("theme_mode");
     let has_font_source = content.contains("font_source");
     let has_music_section = content.contains("[music]");
 
@@ -202,6 +203,14 @@ fn load_config_from_disk() -> io::Result<Config> {
     }
     if !has_glass_effect_enabled {
         config.custom_style.glass_effect_enabled = default_glass_effect_enabled();
+        migrated = true;
+    }
+    let normalized_theme_mode = normalize_theme_mode(&config.custom_style.theme_mode);
+    if normalized_theme_mode != config.custom_style.theme_mode {
+        config.custom_style.theme_mode = normalized_theme_mode;
+        migrated = true;
+    }
+    if !has_theme_mode {
         migrated = true;
     }
     let normalized_font_source = normalize_font_source(&config.custom_style.font_source);

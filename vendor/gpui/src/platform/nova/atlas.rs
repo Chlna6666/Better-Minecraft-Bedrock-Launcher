@@ -8,7 +8,7 @@ use super::upload_encoding::{atlas_kind_index, fallback_atlas_bytes};
 pub(super) use super::upload_queue::AtlasUploadStats;
 use super::upload_queue::PendingAtlasUpload;
 
-pub(super) const NOVA_DEFAULT_ATLAS_SIZE: u32 = 1024;
+pub(super) const NOVA_DEFAULT_ATLAS_SIZE: u32 = 2048;
 pub(super) const NOVA_MAX_ATLAS_SIZE: u32 = 16_384;
 pub(super) const NOVA_ATLAS_SIZE: u32 = NOVA_DEFAULT_ATLAS_SIZE;
 pub(super) const NOVA_ATLAS_BYTES_PER_PIXEL: usize = 4;
@@ -400,20 +400,28 @@ impl NovaAtlasState {
         texture_id: AtlasTextureId,
         allocation_id: AllocId,
     ) {
-        let list = &mut self.texture_lists[atlas_kind_index(texture_id.kind)];
-        let Some(index) = usize::try_from(texture_id.index).ok() else {
-            return;
+        let should_remove_pending_uploads = {
+            let list = &mut self.texture_lists[atlas_kind_index(texture_id.kind)];
+            let Some(index) = usize::try_from(texture_id.index).ok() else {
+                return;
+            };
+            let Some(texture) = list.textures.get_mut(index).and_then(Option::as_mut) else {
+                return;
+            };
+            texture.allocator.deallocate(allocation_id);
+            texture.live_tile_count = texture.live_tile_count.saturating_sub(1);
+            if texture.live_tile_count == 0
+                && let Some(texture_slot) = list.textures.get_mut(index)
+            {
+                *texture_slot = None;
+                list.free_list.push(index);
+                true
+            } else {
+                false
+            }
         };
-        let Some(texture) = list.textures.get_mut(index).and_then(Option::as_mut) else {
-            return;
-        };
-        texture.allocator.deallocate(allocation_id);
-        texture.live_tile_count = texture.live_tile_count.saturating_sub(1);
-        if texture.live_tile_count == 0
-            && let Some(texture_slot) = list.textures.get_mut(index)
-        {
-            *texture_slot = None;
-            list.free_list.push(index);
+        if should_remove_pending_uploads {
+            self.remove_pending_uploads_for_texture(texture_id);
         }
     }
 
@@ -422,5 +430,37 @@ impl NovaAtlasState {
             .iter()
             .flatten()
             .any(|fallback_tile| *fallback_tile == tile)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deallocating_last_texture_tile_removes_pending_uploads() {
+        let mut state = NovaAtlasState::default();
+        let tile = state
+            .allocate_and_upload_kind(
+                AtlasTextureKind::Rgba,
+                Size {
+                    width: DevicePixels(1),
+                    height: DevicePixels(1),
+                },
+                &[1, 2, 3, 4],
+            )
+            .expect("test tile should allocate");
+
+        assert_eq!(state.pending_uploads.len(), 1);
+
+        state.deallocate_texture_allocation(tile.texture_id, tile.tile_id.into());
+
+        assert!(state.pending_uploads.is_empty());
+        assert!(
+            state.texture_lists[atlas_kind_index(AtlasTextureKind::Rgba)]
+                .textures
+                .iter()
+                .all(Option::is_none)
+        );
     }
 }

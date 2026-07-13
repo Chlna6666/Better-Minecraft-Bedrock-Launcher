@@ -73,6 +73,12 @@ impl Preview3dChunkMesh {
         self.gpu_mesh
             .vertices
             .get(usize::try_from(index).ok()?)
-            .map(|vertex| vertex.position)
+            .map(|vertex| {
+                [
+                    vertex.position[0] + self.world_origin[0] as f32,
+                    vertex.position[1] + self.world_origin[1] as f32,
+                    vertex.position[2] + self.world_origin[2] as f32,
+                ]
+            })
     }
 }

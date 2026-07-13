@@ -127,7 +127,7 @@ pub(crate) use lifecycle::{
 pub(crate) use open::DEFAULT_WINDOW_SIZE;
 pub use options::*;
 pub use paint::{PaintQuad, fill, outline, quad};
-pub use paint_resources::ImagePaintRequest;
+pub use paint_resources::{ImagePaintProgress, ImagePaintRequest};
 pub use prompts::*;
 pub use state::Window;
 use state::{

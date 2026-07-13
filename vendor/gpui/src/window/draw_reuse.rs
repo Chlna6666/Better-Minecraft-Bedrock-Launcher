@@ -66,13 +66,19 @@ impl Window {
                 .set_active_node(deferred_draw.parent_node);
 
             let paint_start = self.paint_index();
+            let current_view = deferred_draw.current_view;
             if let Some(element) = deferred_draw.element.as_mut() {
-                self.with_rendered_view(deferred_draw.current_view, |window| {
+                self.with_rendered_view(current_view, |window| {
                     element.paint(window, cx);
                 })
-            } else if !self.reuse_paint(deferred_draw.paint_range.clone()) {
-                self.degrade_current_draw();
-                break;
+            } else {
+                let paint_range = deferred_draw.paint_range.clone();
+                let reused =
+                    self.with_rendered_view(current_view, |window| window.reuse_paint(paint_range));
+                if !reused {
+                    self.degrade_current_draw();
+                    break;
+                }
             }
             let paint_end = self.paint_index();
             deferred_draw.paint_range = paint_start..paint_end;
@@ -273,7 +279,6 @@ impl Window {
             return false;
         }
 
-        let retained_paint_start = self.paint_index();
         self.next_frame.cursor_styles.extend(
             self.rendered_frame.cursor_styles
                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
@@ -313,28 +318,9 @@ impl Window {
             range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
         );
         let old_scene_range = range.start.scene_index..range.end.scene_index;
-        let new_scene_start = self.next_frame.scene.len();
         self.next_frame
             .scene
             .replay(old_scene_range, &self.rendered_frame.scene);
-        let new_scene_range = new_scene_start..self.next_frame.scene.len();
-        if let Some(bounds) = self
-            .next_frame
-            .scene
-            .bounds_for_range(new_scene_range.clone())
-        {
-            let entity_id = self.current_view();
-            self.next_frame
-                .retained_scene_segments
-                .push(RetainedSceneSegment {
-                    bounds,
-                    scene_range: new_scene_range,
-                    paint_range: retained_paint_start..self.paint_index(),
-                    prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
-                    entity_id,
-                    dirty: false,
-                });
-        }
         true
     }
 }

@@ -242,14 +242,21 @@ pub(super) fn export_region_package_blocking(
     world_path: &Path,
     source_anchor: ChunkPos,
     chunks: Vec<ChunkPos>,
+    cancel: Option<&CancelFlag>,
     mut progress: impl FnMut(ChunkTransferProgress),
 ) -> Result<Vec<u8>, String> {
     let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
         .map_err(|error| error.to_string())?;
     let editor = MapWorldEditor::from_world(world);
-    let copied_chunk = copy_chunks_blocking(&editor, source_anchor, chunks, |transfer_progress| {
-        progress(transfer_progress);
-    })
+    let copied_chunk = copy_chunks_blocking(
+        &editor,
+        source_anchor,
+        chunks,
+        cancel,
+        |transfer_progress| {
+            progress(transfer_progress);
+        },
+    )
     .map_err(|error| error.to_string())?;
     drop(editor);
 

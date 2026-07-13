@@ -18,7 +18,6 @@ pub(super) enum AvailableSpaceKey {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RetainedLayoutNode {
-    pub(super) fingerprint: u64,
     pub(super) bounds: crate::Bounds<Pixels>,
     pub(super) measure_input: Option<(Size<Option<Pixels>>, Size<AvailableSpace>)>,
 }

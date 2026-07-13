@@ -10,13 +10,17 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::hooks::use_launcher::{
     cancel_launch_prereq, dismiss_launch_prereq, enable_launch_prereq_developer_mode,
     install_launch_prereq_game_input, install_launch_prereq_uwp_dependencies,
-    open_launch_prereq_developer_settings, recheck_launch_prereq,
+    install_launch_prereq_windows_app_sdk, open_launch_prereq_developer_settings,
+    recheck_launch_prereq,
 };
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::launch_prereq::{LaunchPrereqOperation, LaunchPrereqState};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
-use crate::utils::mc_dependency::{GAMEINPUT_RELEASES_URL, GameInputInstallerSource};
+use crate::utils::mc_dependency::{
+    GAMEINPUT_RELEASES_URL, GameInputInstallerSource, WINDOWS_APP_SDK_RELEASES_URL,
+    WindowsAppSdkInstallerSource,
+};
 
 pub fn render_launch_prereq_overlay(
     state: &LaunchPrereqState,
@@ -412,6 +416,84 @@ fn render_issue_sections(
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(colors.text_primary)
                                             .child(i18n.t("LaunchPrereq.issueGameInput.title")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(relative(1.45))
+                                            .text_color(colors.text_secondary)
+                                            .child(description),
+                                    )
+                                    .child(metadata_chip(colors, source_label)),
+                            ),
+                    )
+                    .child(install_button),
+            ),
+        );
+    }
+
+    if let Some(plan) = check.windows_app_sdk_plan.as_ref() {
+        let mut install_button = primary_button(
+            colors,
+            i18n.t("LaunchPrereq.issueWindowsAppSdk.install"),
+            close_enabled,
+        );
+        if close_enabled {
+            install_button = install_button
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    install_launch_prereq_windows_app_sdk(cx)
+                });
+        }
+
+        let description = match plan.source {
+            WindowsAppSdkInstallerSource::Local => {
+                i18n.t("LaunchPrereq.issueWindowsAppSdk.descriptionLocal")
+            }
+            WindowsAppSdkInstallerSource::Download => {
+                i18n.t("LaunchPrereq.issueWindowsAppSdk.descriptionDownload")
+            }
+        };
+        let source_label = match plan.source {
+            WindowsAppSdkInstallerSource::Local => {
+                SharedString::from(plan.installer_path.display().to_string())
+            }
+            WindowsAppSdkInstallerSource::Download => {
+                SharedString::from(WINDOWS_APP_SDK_RELEASES_URL)
+            }
+        };
+
+        sections = sections.child(
+            section_card(colors).child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .items_start()
+                            .gap(px(12.))
+                            .child(icon_shell(
+                                colors,
+                                lucide_icons::icon_package(),
+                                colors.stat_orange_text,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(colors.text_primary)
+                                            .child(i18n.t("LaunchPrereq.issueWindowsAppSdk.title")),
                                     )
                                     .child(
                                         div()
@@ -991,6 +1073,9 @@ fn operation_label(operation: LaunchPrereqOperation, i18n: &I18n) -> SharedStrin
         }
         LaunchPrereqOperation::InstallingGameInput => {
             i18n.t("LaunchPrereq.operation.installingGameInput")
+        }
+        LaunchPrereqOperation::InstallingWindowsAppSdk => {
+            i18n.t("LaunchPrereq.operation.installingWindowsAppSdk")
         }
     }
 }

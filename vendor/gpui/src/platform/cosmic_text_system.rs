@@ -112,6 +112,7 @@ struct LoadedFont {
     cache_key_flags: CacheKeyFlags,
     is_known_emoji_font: bool,
     user_fallback_chain: Arc<[(FontId, SharedString)]>,
+    automatic_system_fallback_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -297,6 +298,20 @@ impl CosmicTextSystemState {
         self.coverage_best_fallback_logged = false;
     }
 
+    fn load_platform_cjk_fallback_fonts(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            let paths = windows_cjk_fallback_font_paths()
+                .iter()
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+                .collect::<Vec<_>>();
+            if let Err(error) = self.add_font_paths(paths) {
+                log::warn!("gpui_system_font_fallback: failed to load Windows CJK fonts: {error}");
+            }
+        }
+    }
+
     fn loaded_font(&self, font_id: FontId) -> &LoadedFont {
         &self.loaded_fonts[font_id.0]
     }
@@ -343,6 +358,32 @@ impl CosmicTextSystemState {
         }
 
         Arc::from(Vec::new())
+    }
+
+    fn ensure_automatic_system_fallback_for_text(&mut self, font_id: FontId, text: &str) {
+        let Some((features, primary_family)) = self.loaded_fonts.get(font_id.0).and_then(|font| {
+            if !font.automatic_system_fallback_pending
+                || !text.chars().any(|character| {
+                    is_cjk_char(character) && font.font.as_swash().charmap().map(character) == 0
+                })
+            {
+                return None;
+            }
+
+            let face = self.font_system.db().face(font.font.id())?;
+            let family = face.families.first()?.0.clone();
+            Some((font.source_features.clone(), family))
+        }) else {
+            return;
+        };
+
+        self.load_platform_cjk_fallback_fonts();
+        let fallback_chain =
+            self.automatic_system_fallback_chain(&features, primary_family.as_str());
+        if let Some(font) = self.loaded_fonts.get_mut(font_id.0) {
+            font.user_fallback_chain = fallback_chain;
+            font.automatic_system_fallback_pending = false;
+        }
     }
 
     fn load_system_fallback_family(
@@ -498,6 +539,8 @@ impl CosmicTextSystemState {
         automatic_fallbacks: bool,
         source_selection: FontSourceSelection,
     ) -> Result<SmallVec<[FontId; 4]>> {
+        let automatic_system_fallback = automatic_fallbacks
+            && fallbacks.is_none_or(|fallbacks| fallbacks.fallback_list().is_empty());
         let user_fallback_chain: Arc<[(FontId, SharedString)]> = match fallbacks {
             Some(fallbacks) if !fallbacks.fallback_list().is_empty() => {
                 let mut chain = Vec::new();
@@ -539,6 +582,9 @@ impl CosmicTextSystemState {
             _ if automatic_fallbacks => self.automatic_system_fallback_chain(features, name),
             _ => Arc::from(Vec::new()),
         };
+        let automatic_system_fallback_pending = automatic_system_fallback
+            && user_fallback_chain.is_empty()
+            && !self.system_fonts_loaded;
 
         let name =
             crate::text_system::font_name_with_fallbacks(name, self.platform_font_family.as_ref())
@@ -574,6 +620,7 @@ impl CosmicTextSystemState {
                 features,
                 default_cache_key_flags(),
                 &user_fallback_chain,
+                automatic_system_fallback_pending,
             ) {
                 loaded_font_ids.push(existing_font_id);
                 continue;
@@ -608,6 +655,7 @@ impl CosmicTextSystemState {
                 cache_key_flags: default_cache_key_flags(),
                 is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
                 user_fallback_chain: Arc::clone(&user_fallback_chain),
+                automatic_system_fallback_pending,
             });
         }
 
@@ -621,6 +669,7 @@ impl CosmicTextSystemState {
         features: &FontFeatures,
         cache_key_flags: CacheKeyFlags,
         user_fallback_chain: &Arc<[(FontId, SharedString)]>,
+        automatic_system_fallback_pending: bool,
     ) -> Option<FontId> {
         self.loaded_fonts
             .iter()
@@ -631,6 +680,8 @@ impl CosmicTextSystemState {
                     && loaded_font.source_features == *features
                     && loaded_font.cache_key_flags == cache_key_flags
                     && loaded_font.user_fallback_chain.as_ref() == user_fallback_chain.as_ref()
+                    && loaded_font.automatic_system_fallback_pending
+                        == automatic_system_fallback_pending
             })
             .map(|(index, _)| FontId(index))
     }
@@ -699,6 +750,7 @@ impl CosmicTextSystemState {
             cache_key_flags: default_cache_key_flags(),
             is_known_emoji_font: check_is_known_emoji_font(&post_script_name),
             user_fallback_chain: Arc::from(Vec::new()),
+            automatic_system_fallback_pending: false,
         });
         Ok(font_id)
     }
@@ -883,6 +935,7 @@ impl CosmicTextSystemState {
                 cache_key_flags,
                 is_known_emoji_font: check_is_known_emoji_font(&post_script_name),
                 user_fallback_chain: Arc::from(Vec::new()),
+                automatic_system_fallback_pending: false,
             });
 
             Some(font_id)
@@ -895,6 +948,10 @@ impl CosmicTextSystemState {
         let mut offs = 0;
         for run in font_runs {
             let run_end = offs + run.len;
+            self.ensure_automatic_system_fallback_for_text(
+                run.font_id,
+                text.get(offs..run_end).unwrap_or_default(),
+            );
             let loaded_font = self.loaded_font(run.font_id);
             let Some(font) = self.font_system.db().face(loaded_font.font.id()) else {
                 log::warn!(
@@ -1395,12 +1452,14 @@ fn system_text_coverage_score(
             };
             let charmap = font.charmap();
             let mut score = 0;
+            let mut covers_non_ascii = false;
             for (character, weight) in SYSTEM_FALLBACK_COVERAGE_SAMPLE {
                 if charmap.map(*character) != 0 {
                     score += *weight;
+                    covers_non_ascii |= !character.is_ascii();
                 }
             }
-            score
+            if covers_non_ascii { score } else { 0 }
         })
         .unwrap_or(0)
 }
@@ -1689,6 +1748,19 @@ fn windows_startup_font_paths() -> &'static [&'static str] {
     ]
 }
 
+#[cfg(target_os = "windows")]
+fn windows_cjk_fallback_font_paths() -> &'static [&'static str] {
+    &[
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\msjh.ttc",
+        "C:\\Windows\\Fonts\\mingliu.ttc",
+        "C:\\Windows\\Fonts\\meiryo.ttc",
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+        "C:\\Windows\\Fonts\\malgun.ttf",
+    ]
+}
+
 #[cfg(target_os = "macos")]
 fn platform_font_fallbacks() -> &'static [&'static str] {
     &[".AppleSystemUIFont", "Helvetica Neue", "Arial"]
@@ -1712,6 +1784,30 @@ mod tests {
 
     use super::*;
     use crate::{FontWeight, Point, RenderGlyphParams, font, px};
+
+    fn use_segoe_ui_as_platform_font(text_system: &CosmicTextSystem) {
+        let mut state = text_system.0.write();
+        state.platform_font_family = "Segoe UI".into();
+        state.font_system.db_mut().set_sans_serif_family("Segoe UI");
+        state.font_ids_by_family_cache.clear();
+        state.loaded_fonts.clear();
+        state.system_coverage_fallback_face = None;
+        state.system_coverage_fallback_computed = false;
+    }
+
+    fn system_font_covers_character(state: &CosmicTextSystemState, character: char) -> bool {
+        state.font_system.db().faces().any(|face| {
+            FontSourceSelection::SystemOnly.matches(&face.source)
+                && state
+                    .font_system
+                    .db()
+                    .with_face_data(face.id, |data, index| {
+                        swash::FontRef::from_index(data, index as usize)
+                            .is_some_and(|font| font.charmap().map(character) != 0)
+                    })
+                    .unwrap_or(false)
+        })
+    }
 
     #[test]
     fn cjk_layout_uses_common_horizontal_baseline() {
@@ -2168,20 +2264,15 @@ mod tests {
 
     #[test]
     fn coverage_scored_system_fallback_is_used_when_platform_ui_font_does_not_cover_text() {
-        let mut text_system = CosmicTextSystem::new();
-        {
-            let mut state = text_system.0.write();
-            state.platform_font_family = "Segoe UI".into();
-            state.font_system.db_mut().set_sans_serif_family("Segoe UI");
-            state.font_ids_by_family_cache.clear();
-            state.loaded_fonts.clear();
-        }
+        let text_system = CosmicTextSystem::new();
+        use_segoe_ui_as_platform_font(&text_system);
 
         let primary_id = text_system
             .font_id(&font("Segoe UI"))
             .expect("primary font loads");
-        let mut state = text_system.0.write();
-        if state
+        if text_system
+            .0
+            .read()
             .loaded_font(primary_id)
             .font
             .as_swash()
@@ -2191,9 +2282,28 @@ mod tests {
         {
             return;
         }
-        let Some(best_face) = state.system_coverage_fallback_face() else {
+        assert!(
+            !text_system.0.read().system_fonts_loaded,
+            "minimal startup should not eagerly scan all system fonts"
+        );
+
+        text_system.layout_line(
+            "图",
+            px(14.),
+            &[FontRun {
+                len: "图".len(),
+                font_id: primary_id,
+            }],
+        );
+
+        let state = text_system.0.read();
+        assert!(
+            !state.system_fonts_loaded,
+            "targeted CJK fallback should not scan the complete system font catalog"
+        );
+        if !system_font_covers_character(&state, '图') {
             return;
-        };
+        }
 
         let loaded = state.loaded_font(primary_id);
         let chain_debug = loaded
@@ -2218,14 +2328,31 @@ mod tests {
                 .charmap()
                 .map('图')
                 != 0),
-            "coverage-scored fallback family {:?} did not add a CJK-capable system fallback; chain={:?}",
-            best_face.family,
-            // keep the local fallback chain visible when this machine has unusual fonts
-            // or fontdb/cosmic loading disagrees with face metadata.
-            // This is test-only diagnostics.
-            // The assertion still verifies the behavior users need.
-            // rustfmt keeps this compact enough for failure output.
+            "installed CJK fonts did not produce a CJK-capable fallback chain; chain={:?}",
             chain_debug
+        );
+    }
+
+    #[test]
+    fn ascii_layout_keeps_full_system_font_scan_deferred() {
+        let text_system = CosmicTextSystem::new();
+        use_segoe_ui_as_platform_font(&text_system);
+        let primary_id = text_system
+            .font_id(&font("Segoe UI"))
+            .expect("primary font loads");
+
+        text_system.layout_line(
+            "ASCII only",
+            px(14.),
+            &[FontRun {
+                len: "ASCII only".len(),
+                font_id: primary_id,
+            }],
+        );
+
+        assert!(
+            !text_system.0.read().system_fonts_loaded,
+            "ASCII layout should preserve lazy system font loading"
         );
     }
 

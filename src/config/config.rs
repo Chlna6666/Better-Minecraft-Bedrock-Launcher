@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,
-    default_glass_effect_enabled, default_gpu_adapter_name, get_default_config,
+    default_glass_effect_enabled, default_gpu_adapter_name, default_theme_mode, get_default_config,
 };
 use super::defaults::{
     default_config_version, default_error_report_sentry_enabled, default_music_volume,
@@ -17,6 +17,8 @@ pub const MAX_BACKGROUND_BLUR: f32 = 10.0;
 pub const FONT_SOURCE_DEFAULT: &str = "default";
 pub const FONT_SOURCE_LOCAL: &str = "local";
 pub const FONT_SOURCE_SYSTEM: &str = "system";
+pub const THEME_MODE_LIGHT: &str = "light";
+pub const THEME_MODE_DARK: &str = "dark";
 pub const DEFAULT_MUSIC_VOLUME: f32 = 0.5;
 
 pub fn get_config_file_path() -> std::path::PathBuf {
@@ -87,6 +89,13 @@ pub fn normalize_font_source(source: &str) -> String {
     }
 }
 
+pub fn normalize_theme_mode(mode: &str) -> String {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        THEME_MODE_DARK => THEME_MODE_DARK.to_string(),
+        _ => THEME_MODE_LIGHT.to_string(),
+    }
+}
+
 pub fn clamp_music_volume(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(0.0, 1.0)
@@ -98,6 +107,8 @@ pub fn clamp_music_volume(value: f32) -> f32 {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CustomStyle {
     pub theme_color: String,
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
     pub background_option: String,
     pub local_image_path: String,
     pub network_image_url: String,

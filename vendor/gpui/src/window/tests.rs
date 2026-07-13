@@ -244,6 +244,45 @@ fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn paint_images_budgeted_defers_uncached_images_after_the_frame_budget(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
+            .unwrap()
+    });
+    let first_image = Arc::new(
+        RenderImage::from_raw_pixels(1, 1, RenderImagePixelFormat::Rgba8, vec![255, 0, 0, 255])
+            .unwrap(),
+    );
+    let second_image = Arc::new(
+        RenderImage::from_raw_pixels(1, 1, RenderImagePixelFormat::Rgba8, vec![0, 255, 0, 255])
+            .unwrap(),
+    );
+
+    window
+        .update(cx, |_, window, _| {
+            let first_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1.0), px(1.0)));
+            let second_bounds = Bounds::new(point(px(2.0), px(0.0)), size(px(1.0), px(1.0)));
+            window.invalidator.set_phase(DrawPhase::Paint);
+
+            let progress = window
+                .paint_images_budgeted(
+                    [
+                        ImagePaintRequest::new(first_bounds, first_image.as_ref()),
+                        ImagePaintRequest::new(second_bounds, second_image.as_ref()),
+                    ],
+                    1,
+                )
+                .unwrap();
+
+            assert_eq!(progress.painted_requests, 1);
+            assert_eq!(progress.deferred_requests, 1);
+            assert_eq!(window.image_paint_tile_cache.len(), 1);
+            window.invalidator.set_phase(DrawPhase::None);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 fn repeated_refresh_windows_effects_are_coalesced(cx: &mut TestAppContext) {
     let before = performance_metrics_snapshot().coalesced_refresh_effect_count;
 
@@ -1746,6 +1785,7 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
         assert!(window.refreshing);
         assert!(window.dirty_frame_scheduled);
         assert!(window.frame_watchdog.get().platform_pending);
+        assert!(window.platform_frame_watchdog_task.is_some());
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         let stalled_generation = window.frame_watchdog.get().platform_generation;
 
@@ -1754,6 +1794,7 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
         assert!(!window.refreshing);
         assert!(!window.dirty_frame_scheduled);
         assert!(!window.frame_watchdog.get().platform_pending);
+        assert!(window.platform_frame_watchdog_task.is_none());
         assert_eq!(
             window.frame_watchdog.get().platform_generation,
             stalled_generation

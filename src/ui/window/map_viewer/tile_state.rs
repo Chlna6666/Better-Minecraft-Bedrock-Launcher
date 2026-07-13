@@ -35,6 +35,43 @@ pub(super) struct ReadyTile {
     pub(super) coord: (i32, i32),
     pub(super) tile: ViewerTile,
     pub(super) source: TileReadySource,
+    pub(super) chunk_positions: Option<TileChunkPositions>,
+}
+
+pub(super) type ActiveRenderTiles = BTreeMap<(i32, i32), usize>;
+
+pub(super) fn track_active_render_tiles(
+    active_tiles: &mut ActiveRenderTiles,
+    requested_tiles: &[(i32, i32)],
+) {
+    for coord in requested_tiles {
+        let count = active_tiles.entry(*coord).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+}
+
+pub(super) fn finish_active_render_tiles(
+    active_tiles: &mut ActiveRenderTiles,
+    requested_tiles: &[(i32, i32)],
+) {
+    for coord in requested_tiles {
+        let Some(count) = active_tiles.get_mut(coord) else {
+            continue;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            active_tiles.remove(coord);
+        }
+    }
+}
+
+pub(super) fn requeue_active_render_tiles_after_cancel(
+    tile_manager: &mut RegionManager,
+    active_tiles: &mut ActiveRenderTiles,
+) {
+    let active_coords = active_tiles.keys().copied().collect::<Vec<_>>();
+    tile_manager.requeue_cancelled_loading(&active_coords);
+    active_tiles.clear();
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,47 +119,39 @@ impl TileReadyBatcher {
         }
     }
 
-    pub(super) fn push(
-        &mut self,
-        sender: &Arc<Mutex<UnboundedSender<TileRenderEvent>>>,
-        tile: ReadyTile,
-    ) -> bool {
-        let is_memory_cache = matches!(&tile.source, TileReadySource::MemoryCache);
-        let is_disk_cache = matches!(
-            &tile.source,
-            TileReadySource::DiskCacheFresh | TileReadySource::DiskCacheStale
+    pub(super) fn push(&mut self, tile: ReadyTile) -> Option<Vec<ReadyTile>> {
+        let cache_hit = matches!(
+            tile.source,
+            TileReadySource::MemoryCache
+                | TileReadySource::DiskCacheFresh
+                | TileReadySource::DiskCacheStale
         );
         self.pending.push(tile);
-        if is_memory_cache {
-            return self.flush(sender);
-        }
-        let limit = if is_disk_cache {
-            CACHE_READY_BATCH_LIMIT
+        let limit = if cache_hit {
+            1
         } else if self.quick_reveal {
             FIRST_REVEAL_READY_BATCH_LIMIT
         } else {
             TILE_READY_BATCH_LIMIT
         };
-        let interval = if is_disk_cache {
-            CACHE_READY_BATCH_INTERVAL
-        } else if self.quick_reveal {
+        let interval = if self.quick_reveal {
             FIRST_REVEAL_READY_BATCH_INTERVAL
         } else {
             TILE_READY_BATCH_INTERVAL
         };
         if self.pending.len() >= limit || self.last_flush.elapsed() >= interval {
-            return self.flush(sender);
+            return self.flush();
         }
-        true
+        None
     }
 
-    pub(super) fn flush(&mut self, sender: &Arc<Mutex<UnboundedSender<TileRenderEvent>>>) -> bool {
+    pub(super) fn flush(&mut self) -> Option<Vec<ReadyTile>> {
         if self.pending.is_empty() {
-            return true;
+            return None;
         }
         let tiles = std::mem::take(&mut self.pending);
         self.last_flush = Instant::now();
-        send_tile_event(sender, TileRenderEvent::ReadyBatch { tiles })
+        Some(tiles)
     }
 }
 
@@ -134,6 +163,83 @@ pub(super) enum TileLoadState {
     Loaded,
     Failed,
     Invalid,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct TileLoadStateCounts {
+    pub(super) pending_manifest: usize,
+    pub(super) queued: usize,
+    pub(super) loading: usize,
+    pub(super) loaded: usize,
+    pub(super) failed: usize,
+    pub(super) invalid: usize,
+}
+
+impl TileLoadStateCounts {
+    fn increment(&mut self, state: TileLoadState) {
+        match state {
+            TileLoadState::PendingManifest => {
+                self.pending_manifest = self.pending_manifest.saturating_add(1);
+            }
+            TileLoadState::Queued => {
+                self.queued = self.queued.saturating_add(1);
+            }
+            TileLoadState::Loading => {
+                self.loading = self.loading.saturating_add(1);
+            }
+            TileLoadState::Loaded => {
+                self.loaded = self.loaded.saturating_add(1);
+            }
+            TileLoadState::Failed => {
+                self.failed = self.failed.saturating_add(1);
+            }
+            TileLoadState::Invalid => {
+                self.invalid = self.invalid.saturating_add(1);
+            }
+        }
+    }
+
+    fn decrement(&mut self, state: TileLoadState) {
+        match state {
+            TileLoadState::PendingManifest => {
+                self.pending_manifest = self.pending_manifest.saturating_sub(1);
+            }
+            TileLoadState::Queued => {
+                self.queued = self.queued.saturating_sub(1);
+            }
+            TileLoadState::Loading => {
+                self.loading = self.loading.saturating_sub(1);
+            }
+            TileLoadState::Loaded => {
+                self.loaded = self.loaded.saturating_sub(1);
+            }
+            TileLoadState::Failed => {
+                self.failed = self.failed.saturating_sub(1);
+            }
+            TileLoadState::Invalid => {
+                self.invalid = self.invalid.saturating_sub(1);
+            }
+        }
+    }
+
+    fn transition(&mut self, old_state: TileLoadState, new_state: TileLoadState) {
+        if old_state == new_state {
+            return;
+        }
+        self.decrement(old_state);
+        self.increment(new_state);
+    }
+
+    fn subtract(&mut self, removed: TileLoadStateCounts) {
+        self.pending_manifest = self
+            .pending_manifest
+            .saturating_sub(removed.pending_manifest);
+        self.queued = self.queued.saturating_sub(removed.queued);
+        self.loading = self.loading.saturating_sub(removed.loading);
+        self.loaded = self.loaded.saturating_sub(removed.loaded);
+        self.failed = self.failed.saturating_sub(removed.failed);
+        self.invalid = self.invalid.saturating_sub(removed.invalid);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -215,6 +321,7 @@ pub(super) struct RegionManager {
     pub(super) entries: BTreeMap<(i32, i32), TileEntry>,
     pub(super) next_sequence: u64,
     pub(super) loaded_estimated_bytes: usize,
+    pub(super) state_counts: TileLoadStateCounts,
 }
 
 impl RegionManager {
@@ -227,6 +334,7 @@ impl RegionManager {
         self.entries.clear();
         self.next_sequence = 0;
         self.loaded_estimated_bytes = 0;
+        self.state_counts = TileLoadStateCounts::default();
         dropped_images
     }
 
@@ -246,11 +354,14 @@ impl RegionManager {
                             .retry_after
                             .is_none_or(|retry_after| retry_after <= now)
                     {
+                        self.state_counts
+                            .transition(entry.state, TileLoadState::Queued);
                         entry.state = TileLoadState::Queued;
                         entry.retry_after = None;
                     }
                 }
                 None => {
+                    self.state_counts.increment(TileLoadState::Queued);
                     self.entries
                         .insert(*coord, TileEntry::queued(priority, sequence));
                 }
@@ -271,6 +382,9 @@ impl RegionManager {
             let previous_bytes = previous
                 .as_ref()
                 .map_or(0, tile_entry_loaded_estimated_bytes);
+            if let Some(previous) = previous.as_ref() {
+                self.state_counts.decrement(previous.state);
+            }
             if let Some(previous) = previous.as_mut()
                 && let Some(image) = tile_entry_take_render_image(previous)
             {
@@ -280,6 +394,7 @@ impl RegionManager {
             if let Some(previous) = previous {
                 entry.attempts = previous.attempts;
             }
+            self.state_counts.increment(entry.state);
             self.entries.insert(*coord, entry);
             self.loaded_estimated_bytes =
                 self.loaded_estimated_bytes.saturating_sub(previous_bytes);
@@ -298,7 +413,8 @@ impl RegionManager {
         &mut self,
         coords: &[(i32, i32)],
         priority: TilePriority,
-    ) {
+    ) -> bool {
+        let mut needs_cache_bypass = false;
         for coord in coords {
             let sequence = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
@@ -309,20 +425,33 @@ impl RegionManager {
                         entry.sequence = sequence;
                     }
                     if matches!(entry.state, TileLoadState::Queued | TileLoadState::Failed) {
+                        self.state_counts
+                            .transition(entry.state, TileLoadState::PendingManifest);
                         entry.state = TileLoadState::PendingManifest;
                         entry.retry_after = None;
+                    } else if entry.state == TileLoadState::Loaded {
+                        self.state_counts
+                            .transition(entry.state, TileLoadState::PendingManifest);
+                        entry.state = TileLoadState::PendingManifest;
+                        entry.source_status = TileSourceStatus::Miss;
+                        entry.retry_after = None;
+                        entry.last_error = None;
+                        needs_cache_bypass = true;
                     }
                 }
                 None => {
+                    self.state_counts.increment(TileLoadState::PendingManifest);
                     self.entries
                         .insert(*coord, TileEntry::pending_manifest(priority, sequence));
                 }
             }
         }
+        needs_cache_bypass
     }
 
     pub(super) fn remove_tile(&mut self, coord: (i32, i32)) -> Option<Arc<RenderImage>> {
         if let Some(mut entry) = self.entries.remove(&coord) {
+            self.state_counts.decrement(entry.state);
             self.loaded_estimated_bytes = self
                 .loaded_estimated_bytes
                 .saturating_sub(tile_entry_loaded_estimated_bytes(&entry));
@@ -332,29 +461,49 @@ impl RegionManager {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn retain_tiles(
         &mut self,
         retain_tiles: &BTreeSet<(i32, i32)>,
     ) -> Vec<Arc<RenderImage>> {
+        self.retain_tiles_by(|coord| retain_tiles.contains(&coord))
+    }
+
+    pub(super) fn retain_tiles_by(
+        &mut self,
+        mut should_retain: impl FnMut((i32, i32)) -> bool,
+    ) -> Vec<Arc<RenderImage>> {
         let mut dropped_images = Vec::new();
         let mut removed_bytes = 0usize;
+        let mut removed_counts = TileLoadStateCounts::default();
         self.entries.retain(|coord, entry| {
-            if retain_tiles.contains(coord) {
+            if should_retain(*coord) {
                 return true;
             }
+            removed_counts.increment(entry.state);
             removed_bytes = removed_bytes.saturating_add(tile_entry_loaded_estimated_bytes(entry));
             if let Some(image) = tile_entry_take_render_image(entry) {
                 dropped_images.push(image);
             }
             false
         });
+        self.state_counts.subtract(removed_counts);
         self.loaded_estimated_bytes = self.loaded_estimated_bytes.saturating_sub(removed_bytes);
         dropped_images
     }
 
+    #[cfg(test)]
     pub(super) fn trim_loaded_tiles_to_budget(
         &mut self,
         visible_tiles: &BTreeSet<(i32, i32)>,
+        budget: usize,
+    ) -> Vec<Arc<RenderImage>> {
+        self.trim_loaded_tiles_to_budget_by(|coord| visible_tiles.contains(&coord), budget)
+    }
+
+    pub(super) fn trim_loaded_tiles_to_budget_by(
+        &mut self,
+        mut should_retain: impl FnMut((i32, i32)) -> bool,
         budget: usize,
     ) -> Vec<Arc<RenderImage>> {
         let mut loaded_bytes = self.loaded_estimated_bytes;
@@ -366,7 +515,7 @@ impl RegionManager {
             .entries
             .iter()
             .filter_map(|(coord, entry)| {
-                if entry.state != TileLoadState::Loaded || visible_tiles.contains(coord) {
+                if entry.image.is_none() || should_retain(*coord) {
                     return None;
                 }
                 Some(Reverse((
@@ -381,11 +530,15 @@ impl RegionManager {
                 break;
             }
             if let Some(entry) = self.entries.get_mut(&coord) {
-                if entry.state == TileLoadState::Loaded {
+                if entry.image.is_some() {
                     if let Some(image) = tile_entry_take_render_image(entry) {
                         dropped_images.push(image);
                     }
-                    entry.state = TileLoadState::Queued;
+                    if entry.state == TileLoadState::Loaded {
+                        self.state_counts
+                            .transition(entry.state, TileLoadState::Queued);
+                        entry.state = TileLoadState::Queued;
+                    }
                     entry.source_status = TileSourceStatus::Miss;
                     loaded_bytes = loaded_bytes.saturating_sub(bytes);
                 }
@@ -423,48 +576,53 @@ impl RegionManager {
             return Vec::new();
         }
         let now = Instant::now();
-        let selected_priority = self
-            .entries
-            .iter()
-            .filter_map(|(_, entry)| queued_entry_is_ready(entry, now).then_some(entry.priority))
-            .min();
-        let Some(selected_priority) = selected_priority else {
-            return Vec::new();
-        };
-        if selected_priority > TilePriority::Visible && !allow_prefetch {
-            return Vec::new();
-        }
 
         if limit == usize::MAX {
-            let mut candidates = self
-                .entries
-                .iter()
-                .filter_map(|(coord, entry)| {
-                    let priority_matches = selected_priority > TilePriority::Visible
-                        || entry.priority == selected_priority;
-                    (priority_matches && queued_entry_is_ready(entry, now)).then_some((
+            let mut selected_priority = None;
+            let mut candidates = Vec::new();
+            for (coord, entry) in &self.entries {
+                if !queued_entry_is_ready(entry, now) {
+                    continue;
+                }
+                if queued_candidate_changes_priority(&mut selected_priority, entry.priority) {
+                    candidates.clear();
+                }
+                if !queued_candidate_priority_matches(selected_priority, entry.priority) {
+                    continue;
+                }
+                candidates.push((
+                    *coord,
+                    queued_tile_sort_key(
                         *coord,
-                        queued_tile_sort_key(
-                            *coord,
-                            entry.priority,
-                            entry.sequence,
-                            entry.state,
-                            center,
-                            visible_bounds,
-                            prioritize_center,
-                        ),
-                    ))
-                })
-                .collect::<Vec<_>>();
+                        entry.priority,
+                        entry.sequence,
+                        entry.state,
+                        center,
+                        visible_bounds,
+                        prioritize_center,
+                    ),
+                ));
+            }
+            let Some(selected_priority) = selected_priority else {
+                return Vec::new();
+            };
+            if selected_priority > TilePriority::Visible && !allow_prefetch {
+                return Vec::new();
+            }
             candidates.sort_by_key(|(_, sort_key)| *sort_key);
             return candidates.into_iter().map(|(coord, _)| coord).collect();
         }
 
+        let mut selected_priority = None;
         let mut candidates = BinaryHeap::<(QueuedTileSortKey, (i32, i32))>::with_capacity(limit);
         for (coord, entry) in &self.entries {
-            let priority_matches =
-                selected_priority > TilePriority::Visible || entry.priority == selected_priority;
-            if !priority_matches || !queued_entry_is_ready(entry, now) {
+            if !queued_entry_is_ready(entry, now) {
+                continue;
+            }
+            if queued_candidate_changes_priority(&mut selected_priority, entry.priority) {
+                candidates.clear();
+            }
+            if !queued_candidate_priority_matches(selected_priority, entry.priority) {
                 continue;
             }
             let sort_key = queued_tile_sort_key(
@@ -486,6 +644,85 @@ impl RegionManager {
                 candidates.push((sort_key, *coord));
             }
         }
+        let Some(selected_priority) = selected_priority else {
+            return Vec::new();
+        };
+        if selected_priority > TilePriority::Visible && !allow_prefetch {
+            return Vec::new();
+        }
+        let mut candidates = candidates.into_vec();
+        candidates.sort_by_key(|(sort_key, _)| *sort_key);
+        candidates.into_iter().map(|(_, coord)| coord).collect()
+    }
+
+    pub(super) fn queued_visible_coords_limited(
+        &self,
+        visible_tiles: &[(i32, i32)],
+        center: (i32, i32),
+        limit: usize,
+    ) -> Vec<(i32, i32)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        if tiles_are_sorted_center_first(visible_tiles, center) {
+            let now = Instant::now();
+            let mut coords = Vec::with_capacity(limit);
+            for priority in [TilePriority::EditRefresh, TilePriority::Visible] {
+                for include_failed in [false, true] {
+                    for coord in visible_tiles {
+                        if coords.len() >= limit {
+                            return coords;
+                        }
+                        let Some(entry) = self.entries.get(coord) else {
+                            continue;
+                        };
+                        if entry.priority != priority
+                            || matches!(entry.state, TileLoadState::Failed) != include_failed
+                            || !queued_entry_is_ready(entry, now)
+                        {
+                            continue;
+                        }
+                        coords.push(*coord);
+                    }
+                }
+            }
+            return coords;
+        }
+        let now = Instant::now();
+        let mut selected_priority = None;
+        let mut candidates = BinaryHeap::<(QueuedTileSortKey, (i32, i32))>::with_capacity(limit);
+        for coord in visible_tiles {
+            let Some(entry) = self.entries.get(coord) else {
+                continue;
+            };
+            if entry.priority > TilePriority::Visible || !queued_entry_is_ready(entry, now) {
+                continue;
+            }
+            if queued_candidate_changes_priority(&mut selected_priority, entry.priority) {
+                candidates.clear();
+            }
+            if !queued_candidate_priority_matches(selected_priority, entry.priority) {
+                continue;
+            }
+            let sort_key = queued_tile_sort_key(
+                *coord,
+                entry.priority,
+                entry.sequence,
+                entry.state,
+                center,
+                None,
+                true,
+            );
+            if candidates.len() < limit {
+                candidates.push((sort_key, *coord));
+            } else if candidates
+                .peek()
+                .is_some_and(|(worst_key, _)| sort_key < *worst_key)
+            {
+                candidates.pop();
+                candidates.push((sort_key, *coord));
+            }
+        }
         let mut candidates = candidates.into_vec();
         candidates.sort_by_key(|(sort_key, _)| *sort_key);
         candidates.into_iter().map(|(_, coord)| coord).collect()
@@ -494,7 +731,23 @@ impl RegionManager {
     pub(super) fn mark_loading(&mut self, coords: &[(i32, i32)]) {
         for coord in coords {
             if let Some(entry) = self.entries.get_mut(coord) {
+                self.state_counts
+                    .transition(entry.state, TileLoadState::Loading);
                 entry.state = TileLoadState::Loading;
+                entry.retry_after = None;
+                entry.last_error = None;
+            }
+        }
+    }
+
+    pub(super) fn requeue_cancelled_loading(&mut self, coords: &[(i32, i32)]) {
+        for coord in coords {
+            if let Some(entry) = self.entries.get_mut(coord)
+                && matches!(entry.state, TileLoadState::Loading)
+            {
+                self.state_counts
+                    .transition(entry.state, TileLoadState::Queued);
+                entry.state = TileLoadState::Queued;
                 entry.retry_after = None;
                 entry.last_error = None;
             }
@@ -504,20 +757,27 @@ impl RegionManager {
     pub(super) fn mark_manifest_ready(&mut self, coord: (i32, i32), priority: TilePriority) {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let entry = self
-            .entries
-            .entry(coord)
-            .or_insert_with(|| TileEntry::queued(priority, sequence));
-        if priority < entry.priority {
-            entry.priority = priority;
-        }
-        if matches!(
-            entry.state,
-            TileLoadState::PendingManifest | TileLoadState::Failed
-        ) {
-            entry.state = TileLoadState::Queued;
-            entry.retry_after = None;
-            entry.last_error = None;
+        match self.entries.get_mut(&coord) {
+            Some(entry) => {
+                if priority < entry.priority {
+                    entry.priority = priority;
+                }
+                if matches!(
+                    entry.state,
+                    TileLoadState::PendingManifest | TileLoadState::Failed
+                ) {
+                    self.state_counts
+                        .transition(entry.state, TileLoadState::Queued);
+                    entry.state = TileLoadState::Queued;
+                    entry.retry_after = None;
+                    entry.last_error = None;
+                }
+            }
+            None => {
+                self.state_counts.increment(TileLoadState::Queued);
+                self.entries
+                    .insert(coord, TileEntry::queued(priority, sequence));
+            }
         }
     }
 
@@ -539,6 +799,12 @@ impl RegionManager {
                 .get(coord)
                 .is_some_and(|entry| matches!(entry.state, TileLoadState::PendingManifest))
         })
+    }
+
+    pub(super) fn is_pending_manifest(&self, coord: (i32, i32)) -> bool {
+        self.entries
+            .get(&coord)
+            .is_some_and(|entry| matches!(entry.state, TileLoadState::PendingManifest))
     }
 
     pub(super) fn pending_manifest_coords_with_priority(
@@ -568,6 +834,8 @@ impl RegionManager {
         if let Some(entry) = self.entries.get_mut(&coord) {
             previous_bytes = tile_entry_loaded_estimated_bytes(entry);
             dropped_image = entry.image.replace(tile).map(|tile| tile.image);
+            self.state_counts
+                .transition(entry.state, TileLoadState::Loaded);
             entry.state = TileLoadState::Loaded;
             entry.source_status = TileSourceStatus::Fresh;
             entry.attempts = 0;
@@ -581,6 +849,7 @@ impl RegionManager {
             entry.state = TileLoadState::Loaded;
             entry.source_status = TileSourceStatus::Fresh;
             entry.image = Some(tile);
+            self.state_counts.increment(entry.state);
             self.entries.insert(coord, entry);
         }
         self.loaded_estimated_bytes = self
@@ -617,6 +886,8 @@ impl RegionManager {
         let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
         let new_bytes = tile.estimated_bytes;
         let dropped_image = entry.image.replace(tile).map(|tile| tile.image);
+        self.state_counts
+            .transition(entry.state, TileLoadState::Loaded);
         entry.state = TileLoadState::Loaded;
         entry.source_status = match freshness {
             TileSourceFreshness::Fresh => TileSourceStatus::Fresh,
@@ -632,6 +903,23 @@ impl RegionManager {
         (true, dropped_image)
     }
 
+    pub(super) fn requeue_stale_cache_for_refresh(&mut self, coord: (i32, i32)) -> bool {
+        let Some(entry) = self.entries.get_mut(&coord) else {
+            return false;
+        };
+        if entry.source_status != TileSourceStatus::DiskStale || entry.image.is_none() {
+            return false;
+        }
+        if entry.state != TileLoadState::Queued {
+            self.state_counts
+                .transition(entry.state, TileLoadState::Queued);
+            entry.state = TileLoadState::Queued;
+        }
+        entry.retry_after = None;
+        entry.last_error = None;
+        true
+    }
+
     pub(super) fn mark_failed(
         &mut self,
         coord: (i32, i32),
@@ -639,12 +927,20 @@ impl RegionManager {
     ) -> Option<Arc<RenderImage>> {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let entry = self
-            .entries
-            .entry(coord)
-            .or_insert_with(|| TileEntry::queued(TilePriority::Prefetch, sequence));
-        let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
-        let dropped_image = entry.mark_failed(message);
+        let (previous_bytes, dropped_image) = if let Some(entry) = self.entries.get_mut(&coord) {
+            let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+            let previous_state = entry.state;
+            let dropped_image = entry.mark_failed(message);
+            self.state_counts
+                .transition(previous_state, TileLoadState::Failed);
+            (previous_bytes, dropped_image)
+        } else {
+            let mut entry = TileEntry::queued(TilePriority::Prefetch, sequence);
+            let dropped_image = entry.mark_failed(message);
+            self.state_counts.increment(entry.state);
+            self.entries.insert(coord, entry);
+            (0, dropped_image)
+        };
         self.loaded_estimated_bytes = self.loaded_estimated_bytes.saturating_sub(previous_bytes);
         dropped_image
     }
@@ -656,48 +952,50 @@ impl RegionManager {
     ) -> Option<Arc<RenderImage>> {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let entry = self
-            .entries
-            .entry(coord)
-            .or_insert_with(|| TileEntry::queued(TilePriority::Prefetch, sequence));
-        let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
-        let dropped_image = tile_entry_take_render_image(entry);
-        entry.state = TileLoadState::Invalid;
-        entry.source_status = TileSourceStatus::Invalid;
-        entry.priority = TilePriority::Prefetch;
-        entry.attempts = 0;
-        entry.retry_after = None;
-        entry.last_error = Some(message);
+        let (previous_bytes, dropped_image) = if let Some(entry) = self.entries.get_mut(&coord) {
+            let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+            let dropped_image = tile_entry_take_render_image(entry);
+            self.state_counts
+                .transition(entry.state, TileLoadState::Invalid);
+            entry.state = TileLoadState::Invalid;
+            entry.source_status = TileSourceStatus::Invalid;
+            entry.priority = TilePriority::Prefetch;
+            entry.attempts = 0;
+            entry.retry_after = None;
+            entry.last_error = Some(message);
+            (previous_bytes, dropped_image)
+        } else {
+            let mut entry = TileEntry::queued(TilePriority::Prefetch, sequence);
+            entry.state = TileLoadState::Invalid;
+            entry.source_status = TileSourceStatus::Invalid;
+            entry.priority = TilePriority::Prefetch;
+            entry.attempts = 0;
+            entry.retry_after = None;
+            entry.last_error = Some(message);
+            self.state_counts.increment(entry.state);
+            self.entries.insert(coord, entry);
+            (0, None)
+        };
         self.loaded_estimated_bytes = self.loaded_estimated_bytes.saturating_sub(previous_bytes);
         dropped_image
     }
 
     pub(super) fn loaded_count(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.state == TileLoadState::Loaded)
-            .count()
+        self.state_counts.loaded
     }
 
     pub(super) fn queued_count(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| matches!(entry.state, TileLoadState::Queued | TileLoadState::Failed))
-            .count()
+        self.state_counts
+            .queued
+            .saturating_add(self.state_counts.failed)
     }
 
     pub(super) fn pending_manifest_count(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.state == TileLoadState::PendingManifest)
-            .count()
+        self.state_counts.pending_manifest
     }
 
     pub(super) fn loading_count(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.state == TileLoadState::Loading)
-            .count()
+        self.state_counts.loading
     }
 
     pub(super) fn cache_miss_count(&self) -> usize {
@@ -708,17 +1006,11 @@ impl RegionManager {
     }
 
     pub(super) fn failed_count(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.state == TileLoadState::Failed)
-            .count()
+        self.state_counts.failed
     }
 
     pub(super) fn invalid_count(&self) -> usize {
-        self.entries
-            .values()
-            .filter(|entry| entry.state == TileLoadState::Invalid)
-            .count()
+        self.state_counts.invalid
     }
 
     pub(super) fn loaded_estimated_bytes(&self) -> usize {
@@ -727,11 +1019,7 @@ impl RegionManager {
 }
 
 pub(super) fn tile_entry_loaded_estimated_bytes(entry: &TileEntry) -> usize {
-    if entry.state == TileLoadState::Loaded {
-        entry.image.as_ref().map_or(0, |tile| tile.estimated_bytes)
-    } else {
-        0
-    }
+    entry.image.as_ref().map_or(0, |tile| tile.estimated_bytes)
 }
 
 fn tile_entry_take_render_image(entry: &mut TileEntry) -> Option<Arc<RenderImage>> {
@@ -744,6 +1032,29 @@ fn queued_entry_is_ready(entry: &TileEntry, now: Instant) -> bool {
             && entry
                 .retry_after
                 .is_none_or(|retry_after| retry_after <= now))
+}
+
+fn queued_candidate_changes_priority(
+    selected_priority: &mut Option<TilePriority>,
+    candidate_priority: TilePriority,
+) -> bool {
+    match *selected_priority {
+        Some(selected) if candidate_priority >= selected => false,
+        _ => {
+            *selected_priority = Some(candidate_priority);
+            true
+        }
+    }
+}
+
+fn queued_candidate_priority_matches(
+    selected_priority: Option<TilePriority>,
+    candidate_priority: TilePriority,
+) -> bool {
+    let Some(selected_priority) = selected_priority else {
+        return false;
+    };
+    selected_priority > TilePriority::Visible || candidate_priority == selected_priority
 }
 
 type TrimLoadedTileSortKey = (u8, bool, u64);

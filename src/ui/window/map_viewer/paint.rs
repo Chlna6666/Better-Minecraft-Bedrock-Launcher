@@ -11,7 +11,7 @@ pub(super) fn draw_map_canvas(
     window: &mut Window,
 ) {
     let block_bounds = viewport_block_bounds(viewport, layout);
-    let tile_step = adjusted_grid_step(TILE_WORLD_BLOCKS, block_bounds.0, block_bounds.1, 140);
+    let tile_step = grid_step_for_block_bounds(TILE_WORLD_BLOCKS, block_bounds, 140);
     draw_grid_lines(
         bounds,
         viewport,
@@ -28,7 +28,7 @@ pub(super) fn draw_map_canvas(
     let chunk_pixels =
         16.0 * layout.pixels_per_block as f32 / layout.blocks_per_pixel as f32 * viewport.scale;
     if overlays.dense_grid || chunk_pixels >= 18.0 {
-        let chunk_step = adjusted_grid_step(16, block_bounds.0, block_bounds.1, 280);
+        let chunk_step = grid_step_for_block_bounds(16, block_bounds, 280);
         draw_grid_lines(
             bounds,
             viewport,
@@ -48,6 +48,16 @@ pub(super) fn draw_map_canvas(
     if overlays.ruler {
         draw_ruler(bounds, viewport, layout, colors, window);
     }
+}
+
+pub(super) fn grid_step_for_block_bounds(
+    base_step: i32,
+    block_bounds: (i32, i32, i32, i32),
+    max_lines: i32,
+) -> i32 {
+    adjusted_grid_step(base_step, block_bounds.0, block_bounds.2, max_lines).max(
+        adjusted_grid_step(base_step, block_bounds.1, block_bounds.3, max_lines),
+    )
 }
 
 pub(super) fn draw_professional_overlay_canvas(

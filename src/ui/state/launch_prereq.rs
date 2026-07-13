@@ -25,6 +25,7 @@ pub enum LaunchPrereqOperation {
     EnablingDeveloperMode,
     InstallingUwpDependencies,
     InstallingGameInput,
+    InstallingWindowsAppSdk,
 }
 
 pub struct LaunchPrereqState {
@@ -313,6 +314,7 @@ mod tests {
             developer_mode_required: false,
             missing_uwp_dependencies: Vec::new(),
             game_input_plan: None,
+            windows_app_sdk_plan: None,
         };
         state.set_check_if_matches(request_id, check);
 
@@ -328,6 +330,7 @@ mod tests {
             developer_mode_required: false,
             missing_uwp_dependencies: Vec::new(),
             game_input_plan: None,
+            windows_app_sdk_plan: None,
         };
 
         state.set_check_if_matches(request_id, check);

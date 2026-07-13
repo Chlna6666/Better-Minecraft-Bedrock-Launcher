@@ -37,6 +37,15 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         })
         .unwrap_or_default();
     let last_draw_micros = shared_metrics().last_draw_micros.load(Ordering::Relaxed);
+    let gpu_submission_wait_micros = shared_metrics()
+        .gpu_submission_wait_micros
+        .load(Ordering::Relaxed);
+    let gpu_submission_wait_total_micros = shared_metrics()
+        .gpu_submission_wait_total_micros
+        .load(Ordering::Relaxed);
+    let gpu_submission_wait_max_micros = shared_metrics()
+        .gpu_submission_wait_max_micros
+        .load(Ordering::Relaxed);
     let atlas_upload_micros = shared_metrics().atlas_upload_micros.load(Ordering::Relaxed);
     let image_decode_micros = shared_metrics().image_decode_micros.load(Ordering::Relaxed);
     let image_decode_total_micros = shared_metrics()
@@ -167,6 +176,18 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
             .load(Ordering::Relaxed) as usize,
         retained_present_count: shared_metrics()
             .retained_present_count
+            .load(Ordering::Relaxed) as usize,
+        gpu_submission_wait_time: (gpu_submission_wait_micros > 0)
+            .then(|| Duration::from_micros(gpu_submission_wait_micros)),
+        gpu_submission_wait_count: shared_metrics()
+            .gpu_submission_wait_count
+            .load(Ordering::Relaxed) as usize,
+        gpu_submission_wait_total_time: (gpu_submission_wait_total_micros > 0)
+            .then(|| Duration::from_micros(gpu_submission_wait_total_micros)),
+        gpu_submission_wait_max_time: (gpu_submission_wait_max_micros > 0)
+            .then(|| Duration::from_micros(gpu_submission_wait_max_micros)),
+        gpu_submission_slow_wait_count: shared_metrics()
+            .gpu_submission_slow_wait_count
             .load(Ordering::Relaxed) as usize,
         atlas_upload_time: (atlas_upload_micros > 0)
             .then(|| Duration::from_micros(atlas_upload_micros)),

@@ -1,7 +1,10 @@
 use crate::RendererBackend;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use super::super::state::shared_metrics;
+
+const SLOW_GPU_SUBMISSION_WAIT_THRESHOLD: Duration = Duration::from_millis(4);
 
 /// Records the selected renderer backend for diagnostics.
 pub fn record_renderer_backend(backend: RendererBackend) {
@@ -129,4 +132,27 @@ pub fn record_retained_present_count(count: usize) {
     shared_metrics()
         .retained_present_count
         .store(count as u64, Ordering::Relaxed);
+}
+
+/// Records a blocking wait for a GPU submission.
+pub fn record_gpu_submission_wait(elapsed: Duration) {
+    let metrics = shared_metrics();
+    let elapsed_micros = elapsed.as_micros().min(u64::MAX as u128) as u64;
+    metrics
+        .gpu_submission_wait_micros
+        .store(elapsed_micros, Ordering::Relaxed);
+    metrics
+        .gpu_submission_wait_count
+        .fetch_add(1, Ordering::Relaxed);
+    metrics
+        .gpu_submission_wait_total_micros
+        .fetch_add(elapsed_micros, Ordering::Relaxed);
+    metrics
+        .gpu_submission_wait_max_micros
+        .fetch_max(elapsed_micros, Ordering::Relaxed);
+    if elapsed >= SLOW_GPU_SUBMISSION_WAIT_THRESHOLD {
+        metrics
+            .gpu_submission_slow_wait_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
 }

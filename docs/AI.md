@@ -13,14 +13,26 @@ separate from BMCBL product behavior.
 - Keep UI components small, composable, and testable.
 - Ship a Windows-tested desktop executable with embedded assets.
 
+### Primary Docs
+
+- `docs/BMCBL_PROJECT_STRUCTURE.md`: current workspace and module structure.
+- `docs/ARCHITECTURE_BOUNDARIES.md`: ownership boundaries and change rules.
+- `docs/GPUI_VENDOR_RENDERING.md`: GPUI structure and rendering pipeline.
+- `src/ui/README.md`: UI placement rules and current UI tree.
+- `docs/PROJECT_SPEC.md`: product-level project specification.
+
 ### Layout
 
 - `src/app.rs`: application bootstrap, globals, fonts, windows, and startup
   policy.
 - `src/ui/views/`: top-level GPUI views and route screens.
+- `src/ui/window/`: standalone tool windows and window-specific internals.
 - `src/ui/components/`: reusable UI components.
 - `src/ui/theme/`: application theme tokens and helpers.
 - `crates/lucide-gpui`: Lucide icon asset crate built on GPUI.
+- `crates/gpui-hooks`: GPUI hook support.
+- `crates/nova-gfx`: cross-backend graphics abstraction used by the GPUI nova
+  renderer path.
 - `src/i18n/`: application-owned localization implementation.
 - `assets/locales/`: translation source of truth.
 - `assets/`: embedded resources.
@@ -93,13 +105,24 @@ GPUI 框架改动与 BMCBL 产品行为分离。
 - 保持 UI 组件小型、可组合、可测试。
 - 交付经过 Windows 验证、带嵌入资源的桌面可执行文件。
 
+### 主要文档
+
+- `docs/BMCBL_PROJECT_STRUCTURE.md`：当前 workspace 与模块结构。
+- `docs/ARCHITECTURE_BOUNDARIES.md`：职责边界与变更规则。
+- `docs/GPUI_VENDOR_RENDERING.md`：GPUI 结构与渲染管线。
+- `src/ui/README.md`：UI 放置规则与当前 UI 目录。
+- `docs/PROJECT_SPEC.md`：项目规格。
+
 ### 布局
 
 - `src/app.rs`：应用启动、globals、字体、窗口和启动策略。
 - `src/ui/views/`：顶层 GPUI view 和路由页面。
+- `src/ui/window/`：独立工具窗口和窗口专属内部模块。
 - `src/ui/components/`：可复用 UI 组件。
 - `src/ui/theme/`：应用主题 token 和 helper。
 - `crates/lucide-gpui`：基于 GPUI 的 Lucide 图标资源 crate。
+- `crates/gpui-hooks`：GPUI hooks 支持。
+- `crates/nova-gfx`：GPUI nova 渲染路径使用的跨后端图形抽象。
 - `src/i18n/`：应用拥有的本地化实现。
 - `assets/locales/`：翻译源数据。
 - `assets/`：嵌入资源。

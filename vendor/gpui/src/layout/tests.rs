@@ -49,6 +49,53 @@ fn retained_layout_cache_reuses_clean_style_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn retained_layout_cache_restores_large_tree_in_one_pass(cx: &mut TestAppContext) {
+    const CHILD_COUNT: usize = 1_500;
+
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+
+    let (cache_metrics, frame_metrics, restored_child_count) = window
+        .update(cx, |_, window, cx| {
+            let mut engine = TaffyLayoutEngine::new();
+            let children = (0..CHILD_COUNT)
+                .map(|_| engine.request_layout(Style::default(), px(16.), 1.0, &[]))
+                .collect::<Vec<_>>();
+            let root = engine.request_layout(Style::default(), px(16.), 1.0, &children);
+            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+            for child in &children {
+                engine.layout_bounds(*child, 1.0);
+            }
+            engine.layout_bounds(root, 1.0);
+            engine.clear();
+
+            let children = (0..CHILD_COUNT)
+                .map(|_| engine.request_layout(Style::default(), px(16.), 1.0, &[]))
+                .collect::<Vec<_>>();
+            let root = engine.request_layout(Style::default(), px(16.), 1.0, &children);
+            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+
+            let restored_child_count = children
+                .iter()
+                .filter(|child| engine.absolute_layout_bounds.contains_key(child))
+                .count();
+            (
+                engine.layout_cache_metrics(),
+                engine.frame_metrics(),
+                restored_child_count,
+            )
+        })
+        .unwrap();
+
+    assert_eq!(cache_metrics, (1, 0));
+    assert_eq!(frame_metrics.cache_reused_roots, 1);
+    assert_eq!(frame_metrics.cache_saved_roots, CHILD_COUNT);
+    assert_eq!(restored_child_count, CHILD_COUNT);
+}
+
+#[gpui::test]
 fn retained_layout_cache_misses_when_available_space_changes(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))

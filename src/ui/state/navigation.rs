@@ -1,4 +1,4 @@
-use crate::ui::animation::{ease_out_back, ease_out_cubic, eased_progress, is_running};
+use crate::ui::animation::{ease_out_back, ease_out_cubic, is_running, raw_progress};
 use gpui::Global;
 use std::time::{Duration, Instant};
 
@@ -99,7 +99,7 @@ impl NavState {
         let Some(t0) = self.pill_started_at else {
             return self.active_index as f32;
         };
-        let t = eased_progress(now, t0, self.pill_duration);
+        let t = raw_progress(now, t0, self.pill_duration);
         let eased = ease_out_back(t, 0.45);
 
         self.pill_from_steps + (self.pill_to_steps - self.pill_from_steps) * eased
@@ -113,7 +113,7 @@ impl NavState {
         let Some(t0) = self.pill_started_at else {
             return 1.0;
         };
-        let t = eased_progress(now, t0, self.pill_duration);
+        let t = raw_progress(now, t0, self.pill_duration);
         let advanced = (t / 0.68).clamp(0.0, 1.0);
         ease_out_back(advanced, 0.40).clamp(0.0, 1.10)
     }
@@ -122,7 +122,7 @@ impl NavState {
         let Some(t0) = self.pill_started_at else {
             return 1.0;
         };
-        let t = eased_progress(now, t0, self.pill_duration);
+        let t = raw_progress(now, t0, self.pill_duration);
         let delayed = ((t - 0.18) / 0.82).clamp(0.0, 1.0);
         let eased = if delayed < 0.70 {
             ease_out_cubic((delayed / 0.70).clamp(0.0, 1.0)) * 0.90
@@ -185,7 +185,7 @@ impl NavState {
         let Some(t0) = self.labels_started_at else {
             return if self.labels_target_visible { 1.0 } else { 0.0 };
         };
-        let t = eased_progress(now, t0, self.labels_duration);
+        let t = raw_progress(now, t0, self.labels_duration);
 
         // easeInOutCubic: smoother than back-easing for text width changes
         let eased = if t < 0.5 {

@@ -669,7 +669,11 @@ pub(super) fn compact_activity_label(view: &MapViewerWindowView) -> String {
         return "扫描中".to_string();
     }
     if view.render_batch_active {
-        return format!("加载 {}", view.tile_manager.loading_count());
+        let running_batches = view.render_cancels.len();
+        return format!(
+            "加载 {} · 批次 {running_batches}",
+            view.tile_manager.loading_count()
+        );
     }
     let queued = view.tile_manager.queued_count();
     if queued > 0 {

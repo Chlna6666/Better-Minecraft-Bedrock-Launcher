@@ -43,6 +43,16 @@ pub struct PerformanceMetricsSnapshot {
     pub gpu_surface_error_count: usize,
     /// Number of retained presents completed without rebuilding layout or paint.
     pub retained_present_count: usize,
+    /// Time spent waiting for a GPU submission during the latest blocking wait.
+    pub gpu_submission_wait_time: Option<Duration>,
+    /// Number of blocking waits for GPU submissions since process start.
+    pub gpu_submission_wait_count: usize,
+    /// Aggregate time spent waiting for GPU submissions since process start.
+    pub gpu_submission_wait_total_time: Option<Duration>,
+    /// Longest GPU submission wait observed since process start.
+    pub gpu_submission_wait_max_time: Option<Duration>,
+    /// Number of GPU submission waits that exceeded the frame-time threshold.
+    pub gpu_submission_slow_wait_count: usize,
     /// Time spent queueing platform atlas upload commands during the latest reported frame.
     pub atlas_upload_time: Option<Duration>,
     /// Compressed bytes in the most recently decoded image.

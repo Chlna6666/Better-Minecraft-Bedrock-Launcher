@@ -155,6 +155,7 @@ pub struct Window {
     pub(super) dirty_frame_deferred_pending: bool,
     pub(super) async_app: AsyncApp,
     pub(super) frame_watchdog: Rc<Cell<FrameWatchdog>>,
+    pub(super) platform_frame_watchdog_task: Option<Task<()>>,
     pub(super) frame_throttle: WindowFrameThrottle,
     pub(super) draw_deadline: Option<Instant>,
     pub(super) draw_was_degraded: bool,

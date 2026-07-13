@@ -1,6 +1,6 @@
 use super::model::{
     CopiedChunkData, CopiedChunkPreviewImage, CopiedChunkSnapshot, ImportedStructureData,
-    PasteRotation, PasteTransform,
+    MAP_OPERATION_CANCELLED_MESSAGE, PasteRotation, PasteTransform,
 };
 use super::prelude::*;
 use super::selection::ChunkSelection;
@@ -42,12 +42,14 @@ pub(super) fn export_selection_mcstructure_blocking(
     bounds: SlimeChunkBounds,
     center_y: i32,
     output_path: &Path,
+    cancel: Option<&CancelFlag>,
     mut progress: impl FnMut(ChunkTransferProgress),
 ) -> Result<PathBuf, String> {
     let chunk_count = bounds.chunk_count();
     if chunk_count == 0 {
         return Err("没有可导出的 chunk".to_string());
     }
+    check_mcstructure_export_cancelled(cancel)?;
     let total = chunk_count.max(1);
     progress(ChunkTransferProgress {
         phase: SharedString::from("读取结构"),
@@ -57,6 +59,7 @@ pub(super) fn export_selection_mcstructure_blocking(
 
     let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
         .map_err(|error| error.to_string())?;
+    check_mcstructure_export_cancelled(cancel)?;
     let min_x = bounds.min_chunk_x.saturating_mul(16);
     let min_z = bounds.min_chunk_z.saturating_mul(16);
     let width = bounds
@@ -82,6 +85,7 @@ pub(super) fn export_selection_mcstructure_blocking(
         size,
     )
     .map_err(|error| error.to_string())?;
+    check_mcstructure_export_cancelled(cancel)?;
     progress(ChunkTransferProgress {
         phase: SharedString::from("写入结构"),
         completed: total.saturating_sub(1),
@@ -89,12 +93,20 @@ pub(super) fn export_selection_mcstructure_blocking(
     });
     bedrock_world::write_mcstructure_file(output_path, &structure)
         .map_err(|error| error.to_string())?;
+    check_mcstructure_export_cancelled(cancel)?;
     progress(ChunkTransferProgress {
         phase: SharedString::from("写入结构"),
         completed: total,
         total,
     });
     Ok(output_path.to_path_buf())
+}
+
+fn check_mcstructure_export_cancelled(cancel: Option<&CancelFlag>) -> Result<(), String> {
+    if cancel.is_some_and(CancelFlag::is_cancelled) {
+        return Err(MAP_OPERATION_CANCELLED_MESSAGE.to_string());
+    }
+    Ok(())
 }
 
 pub(super) fn export_y_range(dimension: Dimension, _center_y: i32) -> (i32, i32) {
@@ -191,8 +203,10 @@ pub(super) fn paste_imported_structure_blocking(
     target_anchor: ChunkPos,
     transform: PasteTransform,
     guard: &WriteGuard,
+    cancel: Option<&CancelFlag>,
     progress: &mut impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+    check_mcstructure_paste_cancelled(cancel)?;
     let result = import.structure.write_to_world_blocking(
         world,
         bedrock_world::McStructurePlacement {
@@ -215,6 +229,7 @@ pub(super) fn paste_imported_structure_blocking(
             });
         },
     )?;
+    check_mcstructure_paste_cancelled(cancel)?;
 
     Ok((
         format!(
@@ -228,6 +243,15 @@ pub(super) fn paste_imported_structure_blocking(
         ),
         MapEditInvalidation::chunks(result.affected_chunks).with_metadata(),
     ))
+}
+
+fn check_mcstructure_paste_cancelled(cancel: Option<&CancelFlag>) -> bedrock_world::Result<()> {
+    if cancel.is_some_and(CancelFlag::is_cancelled) {
+        return Err(bedrock_world::BedrockWorldError::Validation(
+            MAP_OPERATION_CANCELLED_MESSAGE.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 const fn mcstructure_rotation(rotation: PasteRotation) -> bedrock_world::McStructureRotation {

@@ -16,6 +16,7 @@ const TASK_PROGRESS_IDLE_RESET_SECONDS: f64 = 2.0;
 const TASK_PROGRESS_EMA_ALPHA: f64 = 0.2;
 const TASK_VISUALIZATION_ENABLED: bool = true;
 const TASK_LOG_LIMIT: usize = 128;
+type TaskCancelHook = Box<dyn Fn() + Send + Sync + 'static>;
 
 static TASK_COUNTER: AtomicU64 = AtomicU64::new(1);
 static TASKS: Lazy<Mutex<HashMap<String, Task>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -25,6 +26,10 @@ static TASK_CONTROLS: Lazy<RwLock<HashMap<String, Arc<TaskControl>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static TASK_ABORT_HANDLES: Lazy<Mutex<HashMap<String, AbortHandle>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static TASK_CANCEL_HOOKS: Lazy<Mutex<HashMap<String, TaskCancelHook>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static TASK_STAGE_LABELS: Lazy<RwLock<HashMap<Arc<str>, Arc<str>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 static TASK_LOGS: Lazy<Mutex<HashMap<Arc<str>, VecDeque<Arc<str>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -253,37 +258,22 @@ impl Task {
 }
 
 fn localize_task_stage(stage: &str) -> Arc<str> {
+    if let Ok(stage_labels) = TASK_STAGE_LABELS.read()
+        && let Some(label) = stage_labels.get(stage)
+    {
+        return label.clone();
+    }
+
     match stage {
         "ready" => Arc::<str>::from("等待开始"),
         "queued" => Arc::<str>::from("排队中"),
         "starting" => Arc::<str>::from("准备中"),
-        "initializing" => Arc::<str>::from("初始化中"),
-        "downloading" => Arc::<str>::from("下载中"),
-        "merging" => Arc::<str>::from("合并文件"),
-        "verifying" => Arc::<str>::from("校验中"),
-        "renaming" => Arc::<str>::from("整理文件"),
-        "extracting" => Arc::<str>::from("解压中"),
-        "decrypting" => Arc::<str>::from("解密中"),
-        "preparing_files" => Arc::<str>::from("准备安装"),
-        "patching" => Arc::<str>::from("处理中"),
-        "resolving_url" => Arc::<str>::from("解析下载地址"),
-        "reading_body" => Arc::<str>::from("读取响应"),
-        "parsing" => Arc::<str>::from("解析中"),
-        "url_resolved" => Arc::<str>::from("已获取下载地址"),
         other => Arc::<str>::from(other),
     }
 }
 
-fn default_task_title(stage: &str) -> Arc<str> {
-    match stage {
-        "ready" | "queued" | "starting" | "downloading" | "merging" | "verifying" | "renaming" => {
-            Arc::<str>::from("下载任务")
-        }
-        "extracting" | "decrypting" | "initializing" | "preparing_files" | "patching" => {
-            Arc::<str>::from("安装任务")
-        }
-        _ => Arc::<str>::from("后台任务"),
-    }
+fn default_task_title(_stage: &str) -> Arc<str> {
+    Arc::<str>::from("后台任务")
 }
 
 fn is_terminal_status(status: &str) -> bool {
@@ -298,11 +288,30 @@ pub fn task_visualization_enabled() -> bool {
     TASK_VISUALIZATION_ENABLED
 }
 
+pub fn register_task_stage_labels(labels: impl IntoIterator<Item = (&'static str, &'static str)>) {
+    let Ok(mut stage_labels) = TASK_STAGE_LABELS.write() else {
+        return;
+    };
+    for (stage, label) in labels {
+        stage_labels.insert(Arc::<str>::from(stage), Arc::<str>::from(label));
+    }
+}
+
 pub fn register_task_abort_handle(task_id: impl Into<String>, abort_handle: AbortHandle) {
     TASK_ABORT_HANDLES
         .lock()
         .unwrap()
         .insert(task_id.into(), abort_handle);
+}
+
+pub fn register_task_cancel_hook(
+    task_id: impl Into<String>,
+    cancel_hook: impl Fn() + Send + Sync + 'static,
+) {
+    TASK_CANCEL_HOOKS
+        .lock()
+        .unwrap()
+        .insert(task_id.into(), Box::new(cancel_hook));
 }
 
 fn register_task_control(task_id: impl Into<String>, control: Arc<TaskControl>) {
@@ -330,6 +339,16 @@ pub fn abort_task(task_id: &str) -> bool {
 
 fn clear_task_abort_handle(task_id: &str) {
     TASK_ABORT_HANDLES.lock().unwrap().remove(task_id);
+}
+
+fn run_task_cancel_hook(task_id: &str) {
+    if let Some(cancel_hook) = TASK_CANCEL_HOOKS.lock().unwrap().remove(task_id) {
+        cancel_hook();
+    }
+}
+
+fn clear_task_cancel_hook(task_id: &str) {
+    TASK_CANCEL_HOOKS.lock().unwrap().remove(task_id);
 }
 
 pub fn create_task(id_opt: Option<String>, initial_stage: &str, total: Option<u64>) -> String {
@@ -658,10 +677,12 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
 
     if is_terminal_status(status) {
         clear_task_abort_handle(task_id);
+        clear_task_cancel_hook(task_id);
     }
 }
 
 pub fn cancel_task(task_id: &str) {
+    run_task_cancel_hook(task_id);
     let _ = abort_task(task_id);
     let mut snapshot_to_emit: Option<TaskSnapshot> = None;
     {
@@ -759,6 +780,7 @@ pub fn resume_task(task_id: &str) -> bool {
 
 pub fn remove_task(task_id: &str) -> bool {
     clear_task_abort_handle(task_id);
+    clear_task_cancel_hook(task_id);
     let _ = TASK_SNAPSHOTS.write().unwrap().remove(task_id);
     TASK_LOGS.lock().unwrap().remove(task_id);
     let _ = TASK_CONTROLS
@@ -989,4 +1011,73 @@ fn format_duration_hms(d: Duration) -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_task_runs_cancel_hook_and_clears_it() {
+        let task_id = format!(
+            "task-manager-cancel-hook-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let hook_ran = Arc::new(AtomicBool::new(false));
+        let hook_ran_for_hook = hook_ran.clone();
+        let created_task_id = create_task_with_details(
+            Some(task_id.clone()),
+            "取消 Hook 测试",
+            None,
+            "starting",
+            None,
+            false,
+        );
+        assert_eq!(created_task_id, task_id);
+
+        register_task_cancel_hook(task_id.clone(), move || {
+            hook_ran_for_hook.store(true, Ordering::SeqCst);
+        });
+
+        cancel_task(&task_id);
+
+        assert!(hook_ran.load(Ordering::SeqCst));
+        assert!(!TASK_CANCEL_HOOKS.lock().unwrap().contains_key(&task_id));
+        assert_eq!(
+            get_snapshot_arc(&task_id)
+                .expect("cancelled task snapshot")
+                .status
+                .as_ref(),
+            "cancelled"
+        );
+        assert!(remove_task(&task_id));
+    }
+
+    #[test]
+    fn registered_task_stage_label_localizes_snapshot() {
+        let task_id = format!(
+            "task-manager-stage-label-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let stage = "task_manager_registered_stage_label_test";
+        register_task_stage_labels([(stage, "注册阶段文案")]);
+
+        let created_task_id = create_task_with_details(
+            Some(task_id.clone()),
+            "阶段文案测试",
+            None,
+            stage,
+            None,
+            false,
+        );
+        assert_eq!(created_task_id, task_id);
+        assert_eq!(
+            get_snapshot_arc(&task_id)
+                .expect("task snapshot")
+                .stage
+                .as_ref(),
+            "注册阶段文案"
+        );
+        assert!(remove_task(&task_id));
+    }
 }

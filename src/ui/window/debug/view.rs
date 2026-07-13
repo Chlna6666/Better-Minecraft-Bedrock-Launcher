@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 const GLOBAL_IMAGE_ASSET_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 const DEBUG_INITIAL_REFRESH_DELAY: Duration = Duration::from_millis(500);
 const DEBUG_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+const DEBUG_CONSOLE_RENDER_LINE_LIMIT: usize = 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DebugTab {
@@ -44,6 +45,7 @@ enum ConsoleSource {
 
 pub struct DebugView {
     _refresh_task: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
     log_tail: SharedString,
     log_tail_last_updated: Option<Instant>,
     log_tail_error: Option<SharedString>,
@@ -57,9 +59,16 @@ pub struct DebugView {
 }
 
 impl DebugView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let log_path = file_ops::bmcbl_subdir("logs").join("latest.log");
         let stall_log_path = file_ops::bmcbl_subdir("logs").join("ui_foreground_stall.log");
+        record_debug_window_metrics(window);
+        let subscriptions = vec![cx.observe_window_bounds(window, |_, window, _cx| {
+            record_debug_window_metrics(window);
+        })];
+        cx.on_next_frame(window, |_, window, _cx| {
+            crate::ui::window::debug::state::record_debug_gpu_specs(window.gpu_specs());
+        });
 
         let refresh_task = cx.spawn(async move |handle, cx| {
             let mut refresh_delay = DEBUG_INITIAL_REFRESH_DELAY;
@@ -187,6 +196,7 @@ impl DebugView {
 
         Self {
             _refresh_task: Some(refresh_task),
+            _subscriptions: subscriptions,
             log_tail: SharedString::from(""),
             log_tail_last_updated: None,
             log_tail_error: None,
@@ -199,6 +209,12 @@ impl DebugView {
             console_source: ConsoleSource::LatestLog,
         }
     }
+}
+
+fn record_debug_window_metrics(window: &Window) {
+    let width_px = window.bounds().size.width / px(1.);
+    let height_px = window.bounds().size.height / px(1.);
+    crate::ui::window::debug::state::record_debug_window_frame(width_px, height_px);
 }
 
 fn apply_log_tail_refresh(
@@ -957,7 +973,7 @@ fn render_log_console(
         .lines()
         .filter(|line| log_matches_filter(detect_log_tone(line), filter))
         .rev()
-        .take(180)
+        .take(DEBUG_CONSOLE_RENDER_LINE_LIMIT)
         .collect();
     lines.reverse();
     div()
@@ -1042,11 +1058,6 @@ impl Render for DebugView {
         let update = cx.global::<UpdateState>();
         let debug_window_width = window.bounds().size.width / px(1.);
         let debug_window_height = window.bounds().size.height / px(1.);
-        crate::ui::window::debug::state::record_debug_window_frame(
-            debug_window_width,
-            debug_window_height,
-        );
-        crate::ui::window::debug::state::record_debug_gpu_specs(window.gpu_specs());
         let runtime = self.runtime.clone();
         let narrow_layout = debug_window_width < 1180.0;
         let compact_layout = debug_window_width < 1440.0;
@@ -1239,216 +1250,227 @@ impl Render for DebugView {
         let logs_dir = file_ops::bmcbl_subdir("logs");
         let latest_log_path = logs_dir.join("latest.log");
         let stall_log_path = logs_dir.join("ui_foreground_stall.log");
-        let overview = div()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .child(
-                div()
-                    .flex()
-                    .when(compact_layout, |this| this.flex_col())
-                    .gap(px(12.))
-                    .children([
-                        panel_card(
-                            card,
-                            border,
-                            copy.runtime,
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .child(line(
-                                    copy.enabled,
-                                    SharedString::from(format!("{}", debug.enabled)),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.window,
-                                    SharedString::from(format!(
-                                        "{:.0} x {:.0} px",
-                                        runtime.main_window_width_px, runtime.main_window_height_px
+        let overview = (self.tab == DebugTab::Overview).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .when(compact_layout, |this| this.flex_col())
+                        .gap(px(12.))
+                        .children([
+                            panel_card(
+                                card,
+                                border,
+                                copy.runtime,
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(line(
+                                        copy.enabled,
+                                        SharedString::from(format!("{}", debug.enabled)),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.window,
+                                        SharedString::from(format!(
+                                            "{:.0} x {:.0} px",
+                                            runtime.main_window_width_px,
+                                            runtime.main_window_height_px
+                                        )),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.debug_window,
+                                        SharedString::from(format!(
+                                            "{:.0} x {:.0} px",
+                                            displayed_debug_window_width,
+                                            displayed_debug_window_height
+                                        )),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.fps,
+                                        SharedString::from(format!("{:.1}", runtime.main_fps)),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.app_version,
+                                        SharedString::from(env!("CARGO_PKG_VERSION")),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.exe_size,
+                                        SharedString::from(bytes_to_human(debug.exe_size_bytes)),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.updates,
+                                        SharedString::from(update_modal.clone()),
+                                        muted,
                                     )),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.debug_window,
-                                    SharedString::from(format!(
-                                        "{:.0} x {:.0} px",
-                                        displayed_debug_window_width, displayed_debug_window_height
+                            )
+                            .flex_1()
+                            .into_any_element(),
+                            panel_card(
+                                card,
+                                border,
+                                copy.inspector,
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(line(
+                                        copy.enabled,
+                                        SharedString::from(format!("{}", debug.inspector.enabled)),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.picking,
+                                        SharedString::from(format!("{}", debug.inspector.picking)),
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.selection,
+                                        if debug.inspector.selected_label.is_empty() {
+                                            SharedString::from(copy.selection_empty)
+                                        } else {
+                                            SharedString::from(copy.selection_locked)
+                                        },
+                                        muted,
+                                    ))
+                                    .child(line(
+                                        copy.source,
+                                        if debug.inspector.source_location.is_empty() {
+                                            SharedString::from(copy.none)
+                                        } else {
+                                            debug.inspector.source_location.clone()
+                                        },
+                                        muted,
                                     )),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.fps,
-                                    SharedString::from(format!("{:.1}", runtime.main_fps)),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.app_version,
-                                    SharedString::from(env!("CARGO_PKG_VERSION")),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.exe_size,
-                                    SharedString::from(bytes_to_human(debug.exe_size_bytes)),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.updates,
-                                    SharedString::from(update_modal.clone()),
-                                    muted,
-                                )),
-                        )
-                        .flex_1()
-                        .into_any_element(),
-                        panel_card(
-                            card,
-                            border,
-                            copy.inspector,
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .child(line(
-                                    copy.enabled,
-                                    SharedString::from(format!("{}", debug.inspector.enabled)),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.picking,
-                                    SharedString::from(format!("{}", debug.inspector.picking)),
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.selection,
-                                    if debug.inspector.selected_label.is_empty() {
-                                        SharedString::from(copy.selection_empty)
-                                    } else {
-                                        SharedString::from(copy.selection_locked)
-                                    },
-                                    muted,
-                                ))
-                                .child(line(
-                                    copy.source,
-                                    if debug.inspector.source_location.is_empty() {
-                                        SharedString::from(copy.none)
-                                    } else {
-                                        debug.inspector.source_location.clone()
-                                    },
-                                    muted,
-                                )),
-                        )
-                        .flex_1()
-                        .into_any_element(),
-                    ]),
-            )
-            .child(
-                div()
-                    .flex()
-                    .when(compact_layout, |this| this.flex_col())
-                    .gap(px(12.))
-                    .children([
-                        panel_card(
-                            card,
-                            border,
-                            copy.paths,
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.))
-                                .child(path_block(copy.executable, debug.exe_path.clone()))
-                                .child(path_block(
-                                    copy.latest_log,
-                                    SharedString::from(
-                                        latest_log_path.to_string_lossy().to_string(),
+                            )
+                            .flex_1()
+                            .into_any_element(),
+                        ]),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .when(compact_layout, |this| this.flex_col())
+                        .gap(px(12.))
+                        .children([
+                            panel_card(
+                                card,
+                                border,
+                                copy.paths,
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .child(path_block(copy.executable, debug.exe_path.clone()))
+                                    .child(path_block(
+                                        copy.latest_log,
+                                        SharedString::from(
+                                            latest_log_path.to_string_lossy().to_string(),
+                                        ),
+                                    ))
+                                    .child(path_block(
+                                        copy.stall_log,
+                                        SharedString::from(
+                                            stall_log_path.to_string_lossy().to_string(),
+                                        ),
+                                    )),
+                            )
+                            .flex_1()
+                            .into_any_element(),
+                            panel_card(
+                                card,
+                                border,
+                                copy.actions,
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap(px(8.))
+                                    .child(
+                                        action_button("debug-copy-exe-path", copy.copy_path)
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                let exe_path =
+                                                    cx.read_global(|debug: &DebugState, _cx| {
+                                                        debug.exe_path.clone()
+                                                    });
+                                                copy_text_to_clipboard(
+                                                    exe_path.to_string(),
+                                                    SharedString::from(format!(
+                                                        "{}: {}",
+                                                        copy.copied, copy.executable
+                                                    )),
+                                                    cx,
+                                                );
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        action_button("debug-open-log-dir", copy.open_logs)
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                open_path_in_background(
+                                                    file_ops::bmcbl_subdir("logs"),
+                                                    SharedString::from(format!(
+                                                        "{}: {}",
+                                                        copy.opened, copy.open_logs
+                                                    )),
+                                                    cx,
+                                                );
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        action_button(
+                                            "debug-refresh-windows",
+                                            copy.refresh_windows,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |_, _, _, cx| {
+                                                tracing::debug!(
+                                                    "debug_window_click: action=refresh_windows"
+                                                );
+                                                cx.refresh_windows();
+                                                cx.notify();
+                                                toast::success(
+                                                    cx,
+                                                    SharedString::from(copy.refreshed),
+                                                );
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        action_button("debug-clear-history", copy.clear_history)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                tracing::debug!(
+                                                    "debug_window_click: action=clear_history"
+                                                );
+                                                let _ = cx.update_global(
+                                                    |debug: &mut DebugState, _cx| {
+                                                        debug.clear_inspector_history();
+                                                    },
+                                                );
+                                                this.log_tail_last_updated = Some(Instant::now());
+                                                cx.refresh_windows();
+                                                cx.notify();
+                                                toast::success(
+                                                    cx,
+                                                    SharedString::from(copy.history_cleared),
+                                                );
+                                            })),
                                     ),
-                                ))
-                                .child(path_block(
-                                    copy.stall_log,
-                                    SharedString::from(
-                                        stall_log_path.to_string_lossy().to_string(),
-                                    ),
-                                )),
-                        )
-                        .flex_1()
-                        .into_any_element(),
-                        panel_card(
-                            card,
-                            border,
-                            copy.actions,
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .child(
-                                    action_button("debug-copy-exe-path", copy.copy_path).on_click(
-                                        cx.listener(move |_, _, _, cx| {
-                                            let exe_path =
-                                                cx.read_global(|debug: &DebugState, _cx| {
-                                                    debug.exe_path.clone()
-                                                });
-                                            copy_text_to_clipboard(
-                                                exe_path.to_string(),
-                                                SharedString::from(format!(
-                                                    "{}: {}",
-                                                    copy.copied, copy.executable
-                                                )),
-                                                cx,
-                                            );
-                                            cx.notify();
-                                        }),
-                                    ),
-                                )
-                                .child(
-                                    action_button("debug-open-log-dir", copy.open_logs).on_click(
-                                        cx.listener(move |_, _, _, cx| {
-                                            open_path_in_background(
-                                                file_ops::bmcbl_subdir("logs"),
-                                                SharedString::from(format!(
-                                                    "{}: {}",
-                                                    copy.opened, copy.open_logs
-                                                )),
-                                                cx,
-                                            );
-                                            cx.notify();
-                                        }),
-                                    ),
-                                )
-                                .child(
-                                    action_button("debug-refresh-windows", copy.refresh_windows)
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            tracing::debug!(
-                                                "debug_window_click: action=refresh_windows"
-                                            );
-                                            cx.refresh_windows();
-                                            cx.notify();
-                                            toast::success(cx, SharedString::from(copy.refreshed));
-                                        })),
-                                )
-                                .child(
-                                    action_button("debug-clear-history", copy.clear_history)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            tracing::debug!(
-                                                "debug_window_click: action=clear_history"
-                                            );
-                                            let _ =
-                                                cx.update_global(|debug: &mut DebugState, _cx| {
-                                                    debug.clear_inspector_history();
-                                                });
-                                            this.log_tail_last_updated = Some(Instant::now());
-                                            cx.refresh_windows();
-                                            cx.notify();
-                                            toast::success(
-                                                cx,
-                                                SharedString::from(copy.history_cleared),
-                                            );
-                                        })),
-                                ),
-                        )
-                        .flex_1()
-                        .into_any_element(),
-                    ]),
-            );
+                            )
+                            .flex_1()
+                            .into_any_element(),
+                        ]),
+                )
+        });
 
         let inspector_controls = div()
             .flex()
@@ -1545,7 +1567,8 @@ impl Render for DebugView {
 
         let color_presets = ["#0ea5e9", "#22c55e", "#f97316", "#ef4444", "#111827"];
         let has_selection = !debug.inspector.selected_label.is_empty();
-        let elements = div()
+        let elements = (self.tab == DebugTab::Elements).then(|| {
+            div()
             .flex()
             .min_w(px(0.))
             .when(narrow_layout, |this| this.flex_col())
@@ -1963,7 +1986,8 @@ impl Render for DebugView {
                                 muted,
                             )),
                     )),
-            );
+            )
+        });
 
         let stall_preview = {
             let lines = self
@@ -1999,7 +2023,8 @@ impl Render for DebugView {
         let plugin_memory_details =
             SharedString::from(plugin_memory_summary(&runtime.plugin_memory));
 
-        let performance = div()
+        let performance = (self.tab == DebugTab::Performance).then(|| {
+            div()
             .flex()
             .flex_col()
             .min_h(px(0.))
@@ -2786,7 +2811,8 @@ impl Render for DebugView {
                             .whitespace_normal()
                             .child(stall_preview),
                     ),
-            ));
+            ))
+        });
 
         let active_console_path = match self.console_source {
             ConsoleSource::LatestLog => latest_log_path.clone(),
@@ -2809,242 +2835,261 @@ impl Render for DebugView {
             ConsoleSource::StallWatch => self.stall_log_last_updated,
         };
 
-        let console = panel_card(
-            card,
-            border,
-            copy.console,
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(muted)
-                                .child(copy.log_source),
-                        )
-                        .child(
-                            filter_button(
-                                copy.latest_log,
-                                self.console_source == ConsoleSource::LatestLog,
+        let console = (self.tab == DebugTab::Console).then(|| {
+            panel_card(
+                card,
+                border,
+                copy.console,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(muted)
+                                    .child(copy.log_source),
                             )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_source = ConsoleSource::LatestLog;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .child(
-                            filter_button(
-                                copy.stall_log,
-                                self.console_source == ConsoleSource::StallWatch,
-                            )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_source = ConsoleSource::StallWatch;
-                                    this.console_filter = ConsoleFilter::All;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .child(
-                            action_button("debug-open-current-log", copy.open_current_log)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let path = match this.console_source {
-                                        ConsoleSource::LatestLog => {
-                                            file_ops::bmcbl_subdir("logs").join("latest.log")
-                                        }
-                                        ConsoleSource::StallWatch => file_ops::bmcbl_subdir("logs")
-                                            .join("ui_foreground_stall.log"),
-                                    };
-                                    open_path_in_background(
-                                        path,
-                                        SharedString::from(format!(
-                                            "{}: {}",
-                                            copy.opened, copy.open_current_log
-                                        )),
-                                        cx,
-                                    );
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            action_button("debug-copy-console", copy.copy_console).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    let text = match this.console_source {
-                                        ConsoleSource::LatestLog => this.log_tail.to_string(),
-                                        ConsoleSource::StallWatch => {
-                                            this.stall_log_tail.to_string()
-                                        }
-                                    };
-                                    if text.trim().is_empty() {
-                                        toast::error(cx, SharedString::from(copy.console_empty));
-                                        return;
-                                    }
-                                    copy_text_to_clipboard(
-                                        text,
-                                        SharedString::from(format!(
-                                            "{}: {}",
-                                            copy.copied, copy.copy_console
-                                        )),
-                                        cx,
-                                    );
-                                    cx.notify();
-                                }),
-                            ),
-                        ),
-                )
-                .child(path_block(
-                    active_console_label,
-                    SharedString::from(active_console_path.to_string_lossy().to_string()),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(muted)
-                                .child(copy.console_filters),
-                        )
-                        .child(
-                            filter_button(
-                                copy.filter_all,
-                                self.console_filter == ConsoleFilter::All,
-                            )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_filter = ConsoleFilter::All;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .child(
-                            filter_button(
-                                copy.filter_errors,
-                                self.console_filter == ConsoleFilter::Error,
-                            )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_filter = ConsoleFilter::Error;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .child(
-                            filter_button(
-                                copy.filter_warnings,
-                                self.console_filter == ConsoleFilter::Warn,
-                            )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_filter = ConsoleFilter::Warn;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .child(
-                            filter_button(
-                                copy.filter_info,
-                                self.console_filter == ConsoleFilter::Info,
-                            )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_filter = ConsoleFilter::Info;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .child(
-                            filter_button(
-                                copy.filter_debug,
-                                self.console_filter == ConsoleFilter::Debug,
-                            )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_filter = ConsoleFilter::Debug;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .child(
-                            filter_button(
-                                copy.filter_trace,
-                                self.console_filter == ConsoleFilter::Trace,
-                            )
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.console_filter = ConsoleFilter::Trace;
-                                    cx.notify();
-                                }),
-                            ),
-                        ),
-                )
-                .children(active_console_error.map(|error| {
-                    div()
-                        .text_size(px(11.))
-                        .text_color(lerp_color(rgb(0xb91c1c), rgb(0xfca5a5), theme_k))
-                        .whitespace_normal()
-                        .child(error)
-                }))
-                .child(
-                    div().text_size(px(11.)).text_color(muted).child(
-                        active_console_updated_at
-                            .map(|updated_at| {
-                                copy.console_updated.replace(
-                                    "{ms}",
-                                    &now.saturating_duration_since(updated_at)
-                                        .as_millis()
-                                        .to_string(),
+                            .child(
+                                filter_button(
+                                    copy.latest_log,
+                                    self.console_source == ConsoleSource::LatestLog,
                                 )
-                            })
-                            .unwrap_or_else(|| copy.console_not_updated.to_string()),
-                    ),
-                )
-                .child(render_log_console(
-                    active_console_tail,
-                    text,
-                    border,
-                    muted,
-                    theme_k,
-                    mono,
-                    copy,
-                    self.console_filter,
-                    console_height,
-                )),
-        );
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_source = ConsoleSource::LatestLog;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                filter_button(
+                                    copy.stall_log,
+                                    self.console_source == ConsoleSource::StallWatch,
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_source = ConsoleSource::StallWatch;
+                                        this.console_filter = ConsoleFilter::All;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                action_button("debug-open-current-log", copy.open_current_log)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let path = match this.console_source {
+                                            ConsoleSource::LatestLog => {
+                                                file_ops::bmcbl_subdir("logs").join("latest.log")
+                                            }
+                                            ConsoleSource::StallWatch => {
+                                                file_ops::bmcbl_subdir("logs")
+                                                    .join("ui_foreground_stall.log")
+                                            }
+                                        };
+                                        open_path_in_background(
+                                            path,
+                                            SharedString::from(format!(
+                                                "{}: {}",
+                                                copy.opened, copy.open_current_log
+                                            )),
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                action_button("debug-copy-console", copy.copy_console).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        let text = match this.console_source {
+                                            ConsoleSource::LatestLog => this.log_tail.to_string(),
+                                            ConsoleSource::StallWatch => {
+                                                this.stall_log_tail.to_string()
+                                            }
+                                        };
+                                        if text.trim().is_empty() {
+                                            toast::error(
+                                                cx,
+                                                SharedString::from(copy.console_empty),
+                                            );
+                                            return;
+                                        }
+                                        copy_text_to_clipboard(
+                                            text,
+                                            SharedString::from(format!(
+                                                "{}: {}",
+                                                copy.copied, copy.copy_console
+                                            )),
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    }),
+                                ),
+                            ),
+                    )
+                    .child(path_block(
+                        active_console_label,
+                        SharedString::from(active_console_path.to_string_lossy().to_string()),
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(muted)
+                                    .child(copy.console_filters),
+                            )
+                            .child(
+                                filter_button(
+                                    copy.filter_all,
+                                    self.console_filter == ConsoleFilter::All,
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_filter = ConsoleFilter::All;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                filter_button(
+                                    copy.filter_errors,
+                                    self.console_filter == ConsoleFilter::Error,
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_filter = ConsoleFilter::Error;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                filter_button(
+                                    copy.filter_warnings,
+                                    self.console_filter == ConsoleFilter::Warn,
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_filter = ConsoleFilter::Warn;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                filter_button(
+                                    copy.filter_info,
+                                    self.console_filter == ConsoleFilter::Info,
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_filter = ConsoleFilter::Info;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                filter_button(
+                                    copy.filter_debug,
+                                    self.console_filter == ConsoleFilter::Debug,
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_filter = ConsoleFilter::Debug;
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .child(
+                                filter_button(
+                                    copy.filter_trace,
+                                    self.console_filter == ConsoleFilter::Trace,
+                                )
+                                .cursor_pointer()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.console_filter = ConsoleFilter::Trace;
+                                        cx.notify();
+                                    }),
+                                ),
+                            ),
+                    )
+                    .children(active_console_error.map(|error| {
+                        div()
+                            .text_size(px(11.))
+                            .text_color(lerp_color(rgb(0xb91c1c), rgb(0xfca5a5), theme_k))
+                            .whitespace_normal()
+                            .child(error)
+                    }))
+                    .child(
+                        div().text_size(px(11.)).text_color(muted).child(
+                            active_console_updated_at
+                                .map(|updated_at| {
+                                    copy.console_updated.replace(
+                                        "{ms}",
+                                        &now.saturating_duration_since(updated_at)
+                                            .as_millis()
+                                            .to_string(),
+                                    )
+                                })
+                                .unwrap_or_else(|| copy.console_not_updated.to_string()),
+                        ),
+                    )
+                    .child(render_log_console(
+                        active_console_tail,
+                        text,
+                        border,
+                        muted,
+                        theme_k,
+                        mono,
+                        copy,
+                        self.console_filter,
+                        console_height,
+                    )),
+            )
+        });
 
         let content = match self.tab {
-            DebugTab::Overview => overview.into_any_element(),
-            DebugTab::Elements => elements.into_any_element(),
-            DebugTab::Performance => performance.into_any_element(),
-            DebugTab::Console => console.into_any_element(),
+            DebugTab::Overview => overview.map_or_else(
+                || Empty {}.into_any_element(),
+                |content| content.into_any_element(),
+            ),
+            DebugTab::Elements => elements.map_or_else(
+                || Empty {}.into_any_element(),
+                |content| content.into_any_element(),
+            ),
+            DebugTab::Performance => performance.map_or_else(
+                || Empty {}.into_any_element(),
+                |content| content.into_any_element(),
+            ),
+            DebugTab::Console => console.map_or_else(
+                || Empty {}.into_any_element(),
+                |content| content.into_any_element(),
+            ),
         };
 
         div().size_full().bg(bg).text_color(text).p(px(14.)).child(

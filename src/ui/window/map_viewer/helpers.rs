@@ -81,6 +81,12 @@ pub(super) fn render_cpu_chunk_batch_size(worker_count: usize) -> usize {
     worker_count.saturating_mul(4).clamp(4, 32)
 }
 
+pub(super) fn manifest_probe_worker_count(cpu_budget: RenderCpuBudget) -> usize {
+    cpu_budget
+        .thread_count()
+        .clamp(1, TILE_MANIFEST_PROBE_MAX_WORKERS)
+}
+
 pub(super) fn tile_cache_memory_limit(cpu_budget: RenderCpuBudget) -> usize {
     cpu_budget.thread_count().saturating_mul(64).clamp(64, 512)
 }
@@ -94,10 +100,9 @@ pub(super) fn ui_tile_memory_budget_bytes(viewport: MapViewport) -> usize {
     let available_budget = usize::try_from(available_system_memory_bytes() / 32)
         .unwrap_or(MIN_UI_TILE_MEMORY_BUDGET_BYTES);
 
-    visible_budget.max(available_budget).clamp(
-        MIN_UI_TILE_MEMORY_BUDGET_BYTES,
-        MAX_UI_TILE_MEMORY_BUDGET_BYTES,
-    )
+    visible_budget
+        .max(available_budget)
+        .max(MIN_UI_TILE_MEMORY_BUDGET_BYTES)
 }
 
 pub(super) fn tile_count_for_viewport(viewport: MapViewport, radius: i32) -> Option<usize> {
@@ -126,15 +131,15 @@ pub(super) fn visible_render_batch_size(
         batch_size = batch_size.max(OVERVIEW_VISIBLE_BATCH_LIMIT);
     }
     if is_dragging {
-        batch_size = batch_size.max(DRAG_VISIBLE_BATCH_LIMIT);
+        batch_size = batch_size.min(DRAG_VISIBLE_BATCH_LIMIT.max(1));
     }
     if is_initial_load {
-        let first_limit = if visible_tile_count >= OVERVIEW_VISIBLE_TILE_THRESHOLD {
+        let first_floor = if visible_tile_count >= OVERVIEW_VISIBLE_TILE_THRESHOLD {
             OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT
         } else {
             FIRST_VISIBLE_BATCH_LIMIT
         };
-        batch_size = batch_size.min(first_limit.max(1));
+        batch_size = batch_size.max(first_floor.max(1));
     }
     batch_size
 }

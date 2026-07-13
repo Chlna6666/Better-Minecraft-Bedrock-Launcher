@@ -49,6 +49,7 @@ impl Render for MapViewerWindowView {
             .tick_motion(now, self.preview_3d_focus_handle.is_focused(window));
         let paste_preview_auto_pan_active = self.tick_paste_preview_auto_pan(cx);
         if self.update_viewport_size(window) {
+            self.ensure_visible_tiles(cx);
             self.refresh_professional_render_caches();
         }
         self.frame_stats.record_frame();
@@ -71,7 +72,7 @@ impl Render for MapViewerWindowView {
         menu_overlay_view.update(cx, |view, cx| {
             view.set_snapshot(menu_overlay_snapshot, cx);
         });
-        if self.drag.is_none() {
+        if !self.viewport_interaction_active() {
             self.sync_canvas_snapshot(colors, cx);
         }
 

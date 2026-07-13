@@ -4,13 +4,20 @@ use super::prelude::*;
 use super::tile_cache::*;
 use super::tile_state::*;
 use super::viewport::*;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+static MAP_RENDER_SESSION_OPEN_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn open_map_render_session(
     world_path: PathBuf,
     render_backend: RenderBackend,
     render_gpu_backend: RenderGpuBackend,
 ) -> Result<MapRenderSession, String> {
+    let open_count = MAP_RENDER_SESSION_OPEN_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
     tracing::debug!(
+        open_count,
         backend = ?render_backend,
         gpu_backend = ?render_gpu_backend,
         world = %world_path.display(),
@@ -18,12 +25,8 @@ pub(super) fn open_map_render_session(
     );
     let config =
         interactive_map_render_session_config(&world_path, render_backend, render_gpu_backend);
-    MapRenderSession::open_leveldb_read_only(
-        world_path,
-        config,
-        RenderPalette::builtin_shared().as_ref().clone(),
-    )
-    .map_err(|error| format!("打开地图渲染会话失败: {error}"))
+    MapRenderSession::open_leveldb_read_only(world_path, config, RenderPalette::builtin_shared())
+        .map_err(|error| format!("打开地图渲染会话失败: {error}"))
 }
 
 pub(super) fn interactive_map_render_session_config(
@@ -41,6 +44,7 @@ pub(super) fn interactive_map_render_session_config(
         ),
     );
     config.tile_cache_memory_limit = tile_cache_memory_limit(RenderCpuBudget::default());
+    config.region_bake_cache_memory_limit = RENDER_REGION_CACHE_ENTRIES;
     config.renderer_version = RENDERER_CACHE_VERSION;
     config.palette_version = DEFAULT_PALETTE_VERSION;
     config.cull_missing_chunks = true;
@@ -62,20 +66,25 @@ impl RenderTilePlan {
         coord: (i32, i32),
         chunk_positions: TileChunkPositions,
     ) -> Result<Self, String> {
-        if chunk_positions.is_empty() {
-            return Err(format!("瓦片 {}, {} 没有可渲染区块", coord.0, coord.1));
-        }
-        let chunk_positions = ui_tile_chunk_positions_for_render(
-            dimension,
-            coord.0,
-            coord.1,
-            layout,
-            Some(chunk_positions.as_ref()),
-        )?
-        .ok_or_else(|| format!("瓦片 {}, {} 尚未完成索引", coord.0, coord.1))?;
-        if chunk_positions.is_empty() {
-            return Err(format!("瓦片 {}, {} 没有可渲染区块", coord.0, coord.1));
-        }
+        Self::from_optional_chunk_positions(dimension, mode, layout, coord, Some(chunk_positions))
+    }
+
+    pub(super) fn from_optional_chunk_positions(
+        dimension: Dimension,
+        mode: RenderMode,
+        layout: RenderLayout,
+        coord: (i32, i32),
+        chunk_positions: Option<TileChunkPositions>,
+    ) -> Result<Self, String> {
+        let chunk_positions = match chunk_positions {
+            Some(chunk_positions) => Some(Self::normalize_known_chunk_positions(
+                dimension,
+                coord,
+                layout,
+                chunk_positions,
+            )?),
+            None => None,
+        };
         let job = RenderJob::chunk_tile(
             TileCoord {
                 x: coord.0,
@@ -93,9 +102,46 @@ impl RenderTilePlan {
                 job,
                 region,
                 layout,
-                chunk_positions: Some(TileChunkPositions::from(chunk_positions)),
+                chunk_positions,
             },
         })
+    }
+
+    fn normalize_known_chunk_positions(
+        dimension: Dimension,
+        coord: (i32, i32),
+        layout: RenderLayout,
+        chunk_positions: TileChunkPositions,
+    ) -> Result<TileChunkPositions, String> {
+        if chunk_positions.is_empty() {
+            return Err(format!("瓦片 {}, {} 没有可渲染区块", coord.0, coord.1));
+        }
+        let chunk_positions =
+            render_tile_chunk_positions(dimension, coord, layout, chunk_positions)?;
+        if chunk_positions.is_empty() {
+            return Err(format!("瓦片 {}, {} 没有可渲染区块", coord.0, coord.1));
+        }
+        Ok(chunk_positions)
+    }
+}
+
+fn render_tile_chunk_positions(
+    dimension: Dimension,
+    coord: (i32, i32),
+    layout: RenderLayout,
+    chunk_positions: TileChunkPositions,
+) -> Result<TileChunkPositions, String> {
+    if chunk_positions.is_empty() {
+        return Ok(chunk_positions);
+    }
+    let region = tile_chunk_region(dimension, coord.0, coord.1, layout)?;
+    if tile_chunk_positions_are_normalized(&region, chunk_positions.as_ref()) {
+        Ok(chunk_positions)
+    } else {
+        Ok(TileChunkPositions::from(normalize_chunk_positions(
+            &region,
+            chunk_positions.iter().copied(),
+        )))
     }
 }
 
@@ -144,6 +190,41 @@ pub(super) struct ChunkPatchRenderResult {
     pub(super) stats: RenderPipelineStats,
 }
 
+pub(super) struct ViewportCompositeRequest {
+    pub(super) render_session: Arc<MapRenderSession>,
+    pub(super) dimension: Dimension,
+    pub(super) layout: RenderLayout,
+    pub(super) viewport: MapViewport,
+    pub(super) center_tile: (i32, i32),
+    pub(super) cache_policy: RenderCachePolicy,
+    pub(super) plans: Vec<RenderTilePlan>,
+    pub(super) cpu_budget: RenderCpuBudget,
+    pub(super) render_backend: RenderBackend,
+    pub(super) render_gpu_backend: RenderGpuBackend,
+    pub(super) tile_cache_validation_seed: u64,
+    pub(super) render_cancel: RenderCancelFlag,
+}
+
+pub(super) struct ViewportCompositeFrame {
+    pub(super) image: Arc<RenderImage>,
+    pub(super) source_viewport: MapViewport,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) estimated_bytes: usize,
+    pub(super) rendered_tiles: usize,
+}
+
+pub(super) enum ViewportCompositeEvent {
+    Complete {
+        frame: Option<ViewportCompositeFrame>,
+        requested_tiles: Vec<(i32, i32)>,
+        rendered_tiles: usize,
+        failed_tiles: usize,
+        diagnostics: RenderDiagnostics,
+        stats: RenderPipelineStats,
+    },
+}
+
 pub(super) fn render_tile_batch_stream(
     request: TileBatchRequest,
     event_sender: UnboundedSender<TileRenderEvent>,
@@ -163,7 +244,6 @@ pub(super) fn render_tile_batch_stream(
         render_cancel,
     } = request;
     validate_ui_render_layout(layout)?;
-    let event_sender = Arc::new(Mutex::new(event_sender));
     let ready_batcher = Arc::new(Mutex::new(TileReadyBatcher::new(quick_reveal)));
     let requested_tiles = plans.iter().map(|plan| plan.coord).collect::<Vec<_>>();
     let requested_tile_count = requested_tiles.len();
@@ -176,23 +256,24 @@ pub(super) fn render_tile_batch_stream(
                 plan.coord.0, plan.coord.1
             ));
         }
-        let Some(chunk_positions) = plan.planned.chunk_positions.as_deref() else {
-            return Err(format!(
-                "瓦片 {}, {} 尚未完成索引",
-                plan.coord.0, plan.coord.1
-            ));
-        };
-        if chunk_positions.is_empty() {
-            return Err(format!(
-                "瓦片 {}, {} 没有可渲染区块",
-                plan.coord.0, plan.coord.1
-            ));
+        match plan.planned.chunk_positions.as_deref() {
+            Some([]) => {
+                return Err(format!(
+                    "瓦片 {}, {} 没有可渲染区块",
+                    plan.coord.0, plan.coord.1
+                ));
+            }
+            Some(chunk_positions) => {
+                tracing::trace!(
+                    tile = ?plan.coord,
+                    render_chunks = chunk_positions.len(),
+                    "map_viewer planned_tile"
+                );
+            }
+            None => {
+                tracing::trace!(tile = ?plan.coord, "map_viewer planned_tile_unculled");
+            }
         }
-        tracing::trace!(
-            tile = ?plan.coord,
-            render_chunks = chunk_positions.len(),
-            "map_viewer planned_tile"
-        );
         planned_tiles.push(plan.planned);
     }
 
@@ -213,15 +294,12 @@ pub(super) fn render_tile_batch_stream(
         pixel_format: TilePixelFormat::Rgba8,
     };
 
-    let render_planned_tiles = planned_tiles.clone();
-
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         render_session.render_web_tiles_streaming_blocking_v2(
-            &render_planned_tiles,
+            &planned_tiles,
             render_options,
             output_options,
             {
-                let event_sender = Arc::clone(&event_sender);
                 let ready_batcher = Arc::clone(&ready_batcher);
                 let requested_tiles = requested_tiles.clone();
                 move |event| {
@@ -268,26 +346,24 @@ pub(super) fn render_tile_batch_stream(
                                         );
                                     }
                                 };
-                            if !ready_batcher
-                                .lock()
-                                .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?
-                                .push(
-                                    &event_sender,
-                                    ReadyTile {
-                                        coord,
-                                        tile: ViewerTile {
-                                            image,
-                                            pixel_format: Some(pixel_format),
-                                            width,
-                                            height,
-                                            estimated_bytes,
-                                        },
-                                        source,
+                            let ready_tiles = {
+                                let mut ready_batcher = ready_batcher
+                                    .lock()
+                                    .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?;
+                                ready_batcher.push(ReadyTile {
+                                    coord,
+                                    tile: ViewerTile {
+                                        image,
+                                        pixel_format: Some(pixel_format),
+                                        width,
+                                        height,
+                                        estimated_bytes,
                                     },
-                                )
-                            {
-                                return cancel_render_stream(&stream_cancel);
-                            }
+                                    source,
+                                    chunk_positions: planned.chunk_positions.clone(),
+                                })
+                            };
+                            send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
                         }
                         TileStreamEventV2::Empty { planned } => {
                             let coord = (planned.job.coord.x, planned.job.coord.z);
@@ -321,13 +397,11 @@ pub(super) fn render_tile_batch_stream(
                             diagnostics,
                             mut stats,
                         } => {
-                            if !ready_batcher
+                            let ready_tiles = ready_batcher
                                 .lock()
                                 .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?
-                                .flush(&event_sender)
-                            {
-                                return cancel_render_stream(&stream_cancel);
-                            }
+                                .flush();
+                            send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
                             stats.planned_tiles = requested_tile_count;
                             send_tile_event_or_cancel(
                                 &event_sender,
@@ -349,6 +423,373 @@ pub(super) fn render_tile_batch_stream(
     .map_err(|error| format!("渲染瓦片失败: {error}"));
     render_result?;
     Ok(())
+}
+
+pub(super) fn empty_viewport_composite_frame(
+    viewport: MapViewport,
+) -> Result<ViewportCompositeFrame, String> {
+    let (image_width, image_height, _) = viewport_composite_image_size(viewport)?;
+    let byte_len = decoded_tile_byte_len(image_width, image_height)?;
+    let image = RenderImage::from_raw_pixels(
+        image_width,
+        image_height,
+        RenderImagePixelFormat::Rgba8,
+        vec![0; byte_len],
+    )
+    .map_err(|error| format!("视口合成空图创建失败: {error}"))?;
+    Ok(ViewportCompositeFrame {
+        image: Arc::new(image),
+        source_viewport: viewport,
+        width: image_width,
+        height: image_height,
+        estimated_bytes: byte_len,
+        rendered_tiles: 0,
+    })
+}
+
+pub(super) fn render_viewport_composite_stream(
+    request: ViewportCompositeRequest,
+    event_sender: UnboundedSender<ViewportCompositeEvent>,
+) -> Result<(), String> {
+    let ViewportCompositeRequest {
+        render_session,
+        dimension,
+        layout,
+        viewport,
+        center_tile,
+        cache_policy,
+        plans,
+        cpu_budget,
+        render_backend,
+        render_gpu_backend,
+        tile_cache_validation_seed,
+        render_cancel,
+    } = request;
+    validate_ui_render_layout(layout)?;
+    let render_range = region_render_range_for_viewport(viewport, layout)
+        .ok_or_else(|| "视口合成范围无效".to_string())?;
+    let (image_width, image_height, output_scale) = viewport_composite_image_size(viewport)?;
+    let compositor = Arc::new(Mutex::new(ViewportTileCompositor::new(
+        viewport,
+        layout,
+        render_range,
+        image_width,
+        image_height,
+        output_scale,
+    )?));
+
+    let requested_tiles = plans.iter().map(|plan| plan.coord).collect::<Vec<_>>();
+    let requested_tile_count = requested_tiles.len();
+    let mut planned_tiles = Vec::with_capacity(plans.len());
+    for plan in plans {
+        if plan.planned.job.coord.dimension != dimension {
+            return Err(format!(
+                "瓦片 {}, {} 维度与请求不匹配",
+                plan.coord.0, plan.coord.1
+            ));
+        }
+        if plan
+            .planned
+            .chunk_positions
+            .as_deref()
+            .is_some_and(|positions| positions.is_empty())
+        {
+            continue;
+        }
+        planned_tiles.push(plan.planned);
+    }
+    if planned_tiles.is_empty() {
+        let stats = RenderPipelineStats {
+            planned_tiles: requested_tile_count,
+            ..RenderPipelineStats::default()
+        };
+        send_viewport_composite_event_or_cancel(
+            &event_sender,
+            &render_cancel,
+            ViewportCompositeEvent::Complete {
+                frame: None,
+                requested_tiles,
+                rendered_tiles: 0,
+                failed_tiles: 0,
+                diagnostics: RenderDiagnostics::default(),
+                stats,
+            },
+        )
+        .map_err(|error| format!("视口合成完成事件发送失败: {error}"))?;
+        return Ok(());
+    }
+
+    let render_options = interactive_render_options(
+        render_backend,
+        render_gpu_backend,
+        cpu_budget,
+        RenderTilePriority::DistanceFrom {
+            tile_x: center_tile.0,
+            tile_z: center_tile.1,
+        },
+        render_cancel.clone(),
+        cache_policy,
+        tile_cache_validation_seed,
+        planned_tiles.len(),
+    );
+    let output_options = RenderTileOutputOptions {
+        pixel_format: TilePixelFormat::Rgba8,
+    };
+    let stream_cancel = render_cancel.clone();
+    let failed_tiles = Arc::new(AtomicUsize::new(0));
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        render_session.render_web_tiles_streaming_blocking_v2(
+            &planned_tiles,
+            render_options,
+            output_options,
+            {
+                let compositor = Arc::clone(&compositor);
+                let requested_tiles = requested_tiles.clone();
+                let failed_tiles = Arc::clone(&failed_tiles);
+                move |event| {
+                    if stream_cancel.is_cancelled() {
+                        return Err(bedrock_render::BedrockRenderError::Cancelled);
+                    }
+                    match event {
+                        TileStreamEventV2::Ready { planned, tile, .. } => {
+                            let coord = (planned.job.coord.x, planned.job.coord.z);
+                            let frame = {
+                                let mut compositor = compositor
+                                    .lock()
+                                    .map_err(|_| render_io_error("视口合成状态锁已损坏"))?;
+                                compositor
+                                    .blend_tile(coord, &tile)
+                                    .map_err(bedrock_render::BedrockRenderError::Validation)?;
+                            };
+                        }
+                        TileStreamEventV2::Empty { .. } => {}
+                        TileStreamEventV2::Failed { planned, error } => {
+                            failed_tiles.fetch_add(1, Ordering::Relaxed);
+                            tracing::debug!(
+                                tile = ?(planned.job.coord.x, planned.job.coord.z),
+                                %error,
+                                "map_viewer viewport_composite_tile_failed"
+                            );
+                        }
+                        TileStreamEventV2::Progress(_) => {}
+                        TileStreamEventV2::Complete {
+                            diagnostics,
+                            mut stats,
+                        } => {
+                            stats.planned_tiles = requested_tile_count;
+                            let (frame, rendered_tiles) = {
+                                let mut compositor = compositor
+                                    .lock()
+                                    .map_err(|_| render_io_error("视口合成状态锁已损坏"))?;
+                                let frame = compositor
+                                    .finish_frame()
+                                    .map_err(bedrock_render::BedrockRenderError::Validation)?;
+                                (frame, compositor.rendered_tiles())
+                            };
+                            send_viewport_composite_event_or_cancel(
+                                &event_sender,
+                                &stream_cancel,
+                                ViewportCompositeEvent::Complete {
+                                    frame,
+                                    requested_tiles: requested_tiles.clone(),
+                                    rendered_tiles,
+                                    failed_tiles: failed_tiles.load(Ordering::Relaxed),
+                                    diagnostics,
+                                    stats,
+                                },
+                            )?;
+                        }
+                    }
+                    Ok(())
+                }
+            },
+        )
+    }))
+    .map_err(|payload| format!("视口合成任务崩溃: {}", panic_payload_message(payload)))?
+    .map_err(|error| format!("视口合成失败: {error}"));
+    render_result?;
+    Ok(())
+}
+
+pub(super) fn viewport_composite_error_is_cancelled(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("cancel")
+}
+
+struct ViewportTileCompositor {
+    viewport: MapViewport,
+    layout: RenderLayout,
+    render_range: MapRenderRange,
+    width: u32,
+    height: u32,
+    output_scale: f32,
+    pixels: Vec<u8>,
+    rendered_tiles: usize,
+}
+
+impl ViewportTileCompositor {
+    fn new(
+        viewport: MapViewport,
+        layout: RenderLayout,
+        render_range: MapRenderRange,
+        width: u32,
+        height: u32,
+        output_scale: f32,
+    ) -> Result<Self, String> {
+        let byte_len = decoded_tile_byte_len(width, height)?;
+        Ok(Self {
+            viewport,
+            layout,
+            render_range,
+            width,
+            height,
+            output_scale,
+            pixels: vec![0; byte_len],
+            rendered_tiles: 0,
+        })
+    }
+
+    fn blend_tile(&mut self, coord: (i32, i32), tile: &DecodedTileImage) -> Result<(), String> {
+        if tile.pixel_format != TilePixelFormat::Rgba8 {
+            return Err(format!("视口合成不支持像素格式: {:?}", tile.pixel_format));
+        }
+        let expected_len = decoded_tile_byte_len(tile.width, tile.height)?;
+        let source_pixels = tile.pixels.as_ref();
+        if source_pixels.len() != expected_len {
+            return Err(format!(
+                "视口合成瓦片像素长度不匹配: expected {expected_len}, got {}",
+                source_pixels.len()
+            ));
+        }
+        let Some(rect) = tile_paint_rect(
+            self.viewport,
+            self.layout,
+            self.render_range,
+            coord.0,
+            coord.1,
+        ) else {
+            return Ok(());
+        };
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return Ok(());
+        }
+
+        let left = (rect.left * self.output_scale).floor().max(0.0) as u32;
+        let top = (rect.top * self.output_scale).floor().max(0.0) as u32;
+        let right = (rect.right * self.output_scale)
+            .ceil()
+            .min(self.width as f32)
+            .max(0.0) as u32;
+        let bottom = (rect.bottom * self.output_scale)
+            .ceil()
+            .min(self.height as f32)
+            .max(0.0) as u32;
+        if right <= left || bottom <= top {
+            return Ok(());
+        }
+
+        let output_stride = usize::try_from(self.width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or_else(|| "视口合成输出 stride 溢出".to_string())?;
+        let source_stride = usize::try_from(tile.width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or_else(|| "视口合成源 stride 溢出".to_string())?;
+        let source_width = tile.width.max(1);
+        let source_height = tile.height.max(1);
+
+        for output_y in top..bottom {
+            let screen_y = (output_y as f32 + 0.5) / self.output_scale;
+            let source_y = (((screen_y - rect.top) / rect.height()) * source_height as f32)
+                .floor()
+                .clamp(0.0, source_height.saturating_sub(1) as f32)
+                as u32;
+            let output_row = usize::try_from(output_y)
+                .ok()
+                .and_then(|row| row.checked_mul(output_stride))
+                .ok_or_else(|| "视口合成输出行偏移溢出".to_string())?;
+            let source_row = usize::try_from(source_y)
+                .ok()
+                .and_then(|row| row.checked_mul(source_stride))
+                .ok_or_else(|| "视口合成源行偏移溢出".to_string())?;
+            for output_x in left..right {
+                let screen_x = (output_x as f32 + 0.5) / self.output_scale;
+                let source_x = (((screen_x - rect.left) / rect.width()) * source_width as f32)
+                    .floor()
+                    .clamp(0.0, source_width.saturating_sub(1) as f32)
+                    as u32;
+                let output_index = output_row
+                    .checked_add(
+                        usize::try_from(output_x)
+                            .ok()
+                            .and_then(|column| column.checked_mul(4))
+                            .ok_or_else(|| "视口合成输出列偏移溢出".to_string())?,
+                    )
+                    .ok_or_else(|| "视口合成输出像素偏移溢出".to_string())?;
+                let source_index = source_row
+                    .checked_add(
+                        usize::try_from(source_x)
+                            .ok()
+                            .and_then(|column| column.checked_mul(4))
+                            .ok_or_else(|| "视口合成源列偏移溢出".to_string())?,
+                    )
+                    .ok_or_else(|| "视口合成源像素偏移溢出".to_string())?;
+                self.pixels
+                    .get_mut(output_index..output_index + 4)
+                    .ok_or_else(|| "视口合成输出像素越界".to_string())?
+                    .copy_from_slice(
+                        source_pixels
+                            .get(source_index..source_index + 4)
+                            .ok_or_else(|| "视口合成源像素越界".to_string())?,
+                    );
+            }
+        }
+        self.rendered_tiles = self.rendered_tiles.saturating_add(1);
+        Ok(())
+    }
+
+    fn finish_frame(&mut self) -> Result<Option<ViewportCompositeFrame>, String> {
+        if self.rendered_tiles == 0 {
+            return Ok(None);
+        }
+        let pixels = std::mem::take(&mut self.pixels);
+        let estimated_bytes = pixels.len();
+        let image = RenderImage::from_raw_pixels(
+            self.width,
+            self.height,
+            RenderImagePixelFormat::Rgba8,
+            pixels,
+        )
+        .map_err(|error| format!("视口合成图创建失败: {error}"))?;
+        Ok(Some(ViewportCompositeFrame {
+            image: Arc::new(image),
+            source_viewport: self.viewport,
+            width: self.width,
+            height: self.height,
+            estimated_bytes,
+            rendered_tiles: self.rendered_tiles,
+        }))
+    }
+
+    fn rendered_tiles(&self) -> usize {
+        self.rendered_tiles
+    }
+}
+
+fn viewport_composite_image_size(viewport: MapViewport) -> Result<(u32, u32, f32), String> {
+    if !viewport.width.is_finite() || !viewport.height.is_finite() {
+        return Err("视口合成尺寸无效".to_string());
+    }
+    let viewport_width = viewport.width.ceil().max(1.0);
+    let viewport_height = viewport.height.ceil().max(1.0);
+    let max_dimension = MAX_VIEWPORT_COMPOSITE_DIMENSION as f32;
+    let output_scale = (max_dimension / viewport_width)
+        .min(max_dimension / viewport_height)
+        .min(1.0)
+        .max(0.001);
+    let width = (viewport_width * output_scale).ceil().max(1.0) as u32;
+    let height = (viewport_height * output_scale).ceil().max(1.0) as u32;
+    Ok((width, height, output_scale))
 }
 
 pub(super) fn render_chunk_patches_blocking(
@@ -604,13 +1045,9 @@ pub(super) fn chunks_for_tile(
 }
 
 pub(super) fn send_tile_event(
-    sender: &Arc<Mutex<UnboundedSender<TileRenderEvent>>>,
+    sender: &UnboundedSender<TileRenderEvent>,
     event: TileRenderEvent,
 ) -> bool {
-    let Ok(sender) = sender.lock() else {
-        tracing::warn!("map tile event sender lock was poisoned");
-        return false;
-    };
     if sender.unbounded_send(event).is_err() {
         tracing::debug!("map tile event receiver was dropped");
         return false;
@@ -619,7 +1056,7 @@ pub(super) fn send_tile_event(
 }
 
 pub(super) fn send_tile_event_or_cancel(
-    sender: &Arc<Mutex<UnboundedSender<TileRenderEvent>>>,
+    sender: &UnboundedSender<TileRenderEvent>,
     cancel: &RenderCancelFlag,
     event: TileRenderEvent,
 ) -> Result<(), bedrock_render::BedrockRenderError> {
@@ -628,6 +1065,32 @@ pub(super) fn send_tile_event_or_cancel(
     } else {
         cancel_render_stream(cancel)
     }
+}
+
+pub(super) fn send_viewport_composite_event_or_cancel(
+    sender: &UnboundedSender<ViewportCompositeEvent>,
+    cancel: &RenderCancelFlag,
+    event: ViewportCompositeEvent,
+) -> Result<(), bedrock_render::BedrockRenderError> {
+    if cancel.is_cancelled() {
+        return Err(bedrock_render::BedrockRenderError::Cancelled);
+    }
+    if sender.unbounded_send(event).is_err() {
+        tracing::debug!("map viewport composite event receiver was dropped");
+        return cancel_render_stream(cancel);
+    }
+    Ok(())
+}
+
+fn send_ready_tiles_or_cancel(
+    sender: &UnboundedSender<TileRenderEvent>,
+    cancel: &RenderCancelFlag,
+    tiles: Option<Vec<ReadyTile>>,
+) -> Result<(), bedrock_render::BedrockRenderError> {
+    let Some(tiles) = tiles else {
+        return Ok(());
+    };
+    send_tile_event_or_cancel(sender, cancel, TileRenderEvent::ReadyBatch { tiles })
 }
 
 pub(super) fn cancel_render_stream(
@@ -743,44 +1206,37 @@ pub(super) fn resolve_interactive_tile_batch_size(
         .max(1)
 }
 
-pub(super) fn selected_tile_chunk_count(
-    selected_tiles: &[(i32, i32)],
-    layout: RenderLayout,
-    tile_chunk_index: &TileChunkIndex,
-) -> usize {
-    let mut estimated_chunks = 0usize;
-    for coord in selected_tiles {
-        match tile_chunk_index.get(coord) {
-            Some(positions) if positions.is_empty() => {}
-            Some(positions) => estimated_chunks = estimated_chunks.saturating_add(positions.len()),
-            None => {}
-        }
-    }
-    estimated_chunks
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct SelectedTileWorkEstimate {
+    pub(super) chunk_count: usize,
+    pub(super) region_count: usize,
 }
 
-pub(super) fn selected_tile_region_count(
+pub(super) fn selected_tile_work_estimate(
     selected_tiles: &[(i32, i32)],
-    _layout: RenderLayout,
     tile_chunk_index: &TileChunkIndex,
-) -> usize {
+) -> SelectedTileWorkEstimate {
     let chunks_per_region = i32::try_from(CHUNKS_PER_REGION).unwrap_or(32).max(1);
-    let mut regions = BTreeSet::new();
+    let mut chunk_count = 0usize;
+    let mut regions = Vec::with_capacity(selected_tiles.len().saturating_mul(2));
     for coord in selected_tiles {
-        match tile_chunk_index.get(coord) {
-            Some(positions) if positions.is_empty() => {}
-            Some(positions) => {
-                for position in positions.iter() {
-                    regions.insert((
-                        position.x.div_euclid(chunks_per_region),
-                        position.z.div_euclid(chunks_per_region),
-                    ));
-                }
-            }
-            None => {}
+        let Some(positions) = tile_chunk_index.get(coord) else {
+            continue;
+        };
+        chunk_count = chunk_count.saturating_add(positions.len());
+        for position in positions.iter() {
+            regions.push((
+                position.x.div_euclid(chunks_per_region),
+                position.z.div_euclid(chunks_per_region),
+            ));
         }
     }
-    regions.len()
+    regions.sort_unstable();
+    regions.dedup();
+    SelectedTileWorkEstimate {
+        chunk_count,
+        region_count: regions.len(),
+    }
 }
 
 pub(super) fn interactive_render_options(
@@ -825,6 +1281,14 @@ pub(super) fn interactive_render_options(
 
 pub(super) fn map_render_batch_tiles() -> usize {
     map_env_usize("BMCBL_MAP_RENDER_BATCH_TILES", RENDER_UI_BATCH_TILES).max(1)
+}
+
+pub(super) fn map_concurrent_render_batches() -> usize {
+    map_env_usize(
+        "BMCBL_MAP_CONCURRENT_RENDER_BATCHES",
+        MAX_CONCURRENT_RENDER_BATCHES,
+    )
+    .clamp(1, 4)
 }
 
 pub(super) fn map_viewer_prefetch_radius() -> i32 {
@@ -964,6 +1428,51 @@ pub(super) fn tile_bounds_contains(bounds: TileBounds, coord: (i32, i32)) -> boo
         && coord.1 <= bounds.max_z
 }
 
+pub(super) fn normalize_tile_chunk_positions(
+    dimension: Dimension,
+    coord: (i32, i32),
+    layout: RenderLayout,
+    positions: impl IntoIterator<Item = ChunkPos>,
+) -> Result<Vec<ChunkPos>, String> {
+    let region = tile_chunk_region(dimension, coord.0, coord.1, layout)?;
+    Ok(normalize_chunk_positions(&region, positions))
+}
+
+fn normalize_chunk_positions(
+    region: &ChunkRegion,
+    positions: impl IntoIterator<Item = ChunkPos>,
+) -> Vec<ChunkPos> {
+    let mut positions = positions
+        .into_iter()
+        .filter(|position| chunk_region_contains(region, *position))
+        .collect::<Vec<_>>();
+    positions.sort_unstable();
+    positions.dedup();
+    positions
+}
+
+fn tile_chunk_positions_are_normalized(region: &ChunkRegion, positions: &[ChunkPos]) -> bool {
+    let mut previous = None;
+    for position in positions {
+        if !chunk_region_contains(region, *position) {
+            return false;
+        }
+        if previous.is_some_and(|previous| previous >= *position) {
+            return false;
+        }
+        previous = Some(*position);
+    }
+    true
+}
+
+fn chunk_region_contains(region: &ChunkRegion, position: ChunkPos) -> bool {
+    position.dimension == region.dimension
+        && position.x >= region.min_chunk_x
+        && position.x <= region.max_chunk_x
+        && position.z >= region.min_chunk_z
+        && position.z <= region.max_chunk_z
+}
+
 pub(super) fn ui_tile_chunk_positions_for_render(
     dimension: Dimension,
     tile_x: i32,
@@ -975,20 +1484,14 @@ pub(super) fn ui_tile_chunk_positions_for_render(
         Some([]) => Ok(Some(Vec::new())),
         Some(positions) => {
             let region = tile_chunk_region(dimension, tile_x, tile_z, layout)?;
-            let mut positions = positions
-                .iter()
-                .copied()
-                .filter(|position| {
-                    position.dimension == dimension
-                        && position.x >= region.min_chunk_x
-                        && position.x <= region.max_chunk_x
-                        && position.z >= region.min_chunk_z
-                        && position.z <= region.max_chunk_z
-                })
-                .collect::<Vec<_>>();
-            positions.sort();
-            positions.dedup();
-            Ok(Some(positions))
+            if tile_chunk_positions_are_normalized(&region, positions) {
+                Ok(Some(positions.to_vec()))
+            } else {
+                Ok(Some(normalize_chunk_positions(
+                    &region,
+                    positions.iter().copied(),
+                )))
+            }
         }
         None => Ok(None),
     }

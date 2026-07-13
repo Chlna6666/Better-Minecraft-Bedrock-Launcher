@@ -6,25 +6,40 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 use reqwest::Client;
-use reqwest::header::CONTENT_LENGTH;
+use reqwest::header::{CONTENT_LENGTH, HeaderMap};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
+#[cfg(windows)]
 use url::Url;
+#[cfg(windows)]
 use windows::Foundation::Uri;
+#[cfg(windows)]
 use windows::Management::Deployment::{AddPackageOptions, PackageManager};
+#[cfg(windows)]
 use windows::Win32::System::ApplicationInstallationAndServicing::{
     INSTALLUILEVEL_NONE, MsiInstallProductW, MsiSetInternalUI,
 };
+#[cfg(windows)]
 use windows::core::{HRESULT, HSTRING, PCWSTR};
+#[cfg(windows)]
 use winreg::RegKey;
+#[cfg(windows)]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 
 use crate::http::proxy::get_client_for_proxy;
 use crate::http::request::GLOBAL_CLIENT;
 use crate::i18n::{Locale, Translator};
+#[cfg(windows)]
 use crate::utils::developer_mode;
+
+mod windows_app_sdk;
+pub use windows_app_sdk::{
+    WINDOWS_APP_SDK_RELEASES_URL, WindowsAppSdkInstallPlan, WindowsAppSdkInstallerSource,
+    install_windows_app_sdk_runtime, is_windows_app_sdk_runtime_installed,
+    plan_windows_app_sdk_install,
+};
 
 pub const GAMEINPUT_RELEASES_URL: &str = "https://github.com/microsoftconnect/GameInput/releases";
 pub const GAMEINPUT_LATEST_DOWNLOAD_URL: &str =
@@ -123,6 +138,10 @@ fn compare_versions(left: &str, right: &str) -> Ordering {
 }
 
 pub fn is_installed_with_min(prefix: &str, min_version: Option<&str>) -> bool {
+    if !cfg!(windows) {
+        return true;
+    }
+
     inspect_uwp_dependency(prefix, min_version).is_none()
 }
 
@@ -131,6 +150,7 @@ enum InstalledUwpDependencyState {
     Installed { version: Option<String> },
 }
 
+#[cfg(windows)]
 fn read_installed_uwp_dependency_state(prefix: &str) -> InstalledUwpDependencyState {
     let package_manager = match PackageManager::new() {
         Ok(package_manager) => package_manager,
@@ -186,6 +206,11 @@ fn read_installed_uwp_dependency_state(prefix: &str) -> InstalledUwpDependencySt
     }
 }
 
+#[cfg(not(windows))]
+fn read_installed_uwp_dependency_state(_prefix: &str) -> InstalledUwpDependencyState {
+    InstalledUwpDependencyState::Installed { version: None }
+}
+
 fn inspect_uwp_dependency(name: &str, min_version: Option<&str>) -> Option<MissingUwpDependency> {
     let installed_state = read_installed_uwp_dependency_state(name);
     let issue_kind = match (installed_state, min_version) {
@@ -229,6 +254,7 @@ fn uwp_deps_list() -> &'static [(&'static str, Option<&'static str>)] {
     ]
 }
 
+#[cfg(windows)]
 pub fn compute_missing_uwp_dependencies() -> Vec<MissingUwpDependency> {
     let missing = uwp_deps_list()
         .iter()
@@ -244,6 +270,12 @@ pub fn compute_missing_uwp_dependencies() -> Vec<MissingUwpDependency> {
         "已完成 UWP 依赖检查"
     );
     missing
+}
+
+#[cfg(not(windows))]
+pub fn compute_missing_uwp_dependencies() -> Vec<MissingUwpDependency> {
+    info!("非 Windows 平台跳过 UWP 依赖检查");
+    Vec::new()
 }
 
 fn select_best_candidate(
@@ -277,6 +309,7 @@ fn select_best_candidate(
     candidates.into_iter().next()
 }
 
+#[cfg(windows)]
 pub fn is_game_input_installed() -> bool {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let uninstall_paths = [
@@ -320,6 +353,11 @@ pub fn is_game_input_installed() -> bool {
 
     debug!("未检测到已安装的 GameInput Runtime");
     false
+}
+
+#[cfg(not(windows))]
+pub fn is_game_input_installed() -> bool {
+    true
 }
 
 pub fn plan_game_input_install(package_folder: &str) -> Option<GameInputInstallPlan> {
@@ -477,6 +515,7 @@ pub async fn install_missing_uwp_dependencies(
             translator.translate("McDeps.stages.download").into_owned(),
             Some(asset_name.clone()),
             sender.as_ref(),
+            None,
         )
         .await?;
 
@@ -566,22 +605,12 @@ pub async fn install_game_input_runtime(
             translator.translate("McDeps.stages.download").into_owned(),
             Some(installer_name.clone()),
             sender.as_ref(),
+            None,
         )
         .await?;
     }
 
-    if !developer_mode::is_process_elevated() {
-        warn!(
-            installer_path = %plan.installer_path.display(),
-            "安装 GameInput Runtime 可能需要管理员权限"
-        );
-        emit_admin_required(
-            sender.as_ref(),
-            translator
-                .translate("LaunchPrereq.adminRunRequired")
-                .into_owned(),
-        );
-    }
+    emit_game_input_admin_notice(sender.as_ref(), &translator, &plan);
 
     emit_progress(
         sender.as_ref(),
@@ -649,6 +678,34 @@ fn emit_admin_required(sender: Option<&UnboundedSender<DependencyEvent>>, messag
     }
 }
 
+#[cfg(windows)]
+fn emit_game_input_admin_notice(
+    sender: Option<&UnboundedSender<DependencyEvent>>,
+    translator: &Translator,
+    plan: &GameInputInstallPlan,
+) {
+    if !developer_mode::is_process_elevated() {
+        warn!(
+            installer_path = %plan.installer_path.display(),
+            "安装 GameInput Runtime 可能需要管理员权限"
+        );
+        emit_admin_required(
+            sender,
+            translator
+                .translate("LaunchPrereq.adminRunRequired")
+                .into_owned(),
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn emit_game_input_admin_notice(
+    _sender: Option<&UnboundedSender<DependencyEvent>>,
+    _translator: &Translator,
+    _plan: &GameInputInstallPlan,
+) {
+}
+
 async fn download_file_with_progress(
     client: &Client,
     url: &str,
@@ -656,6 +713,7 @@ async fn download_file_with_progress(
     stage_label: String,
     target: Option<String>,
     sender: Option<&UnboundedSender<DependencyEvent>>,
+    request_headers: Option<&HeaderMap>,
 ) -> Result<()> {
     const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(120);
 
@@ -665,8 +723,11 @@ async fn download_file_with_progress(
             .with_context(|| format!("创建目录失败: {}", parent.display()))?;
     }
 
-    let mut response = client
-        .get(url)
+    let mut request = client.get(url);
+    if let Some(headers) = request_headers {
+        request = request.headers(headers.clone());
+    }
+    let mut response = request
         .send()
         .await
         .with_context(|| format!("下载失败: {url}"))?;
@@ -725,6 +786,7 @@ async fn download_file_with_progress(
     Ok(())
 }
 
+#[cfg(windows)]
 async fn install_appx_package_from_file(package_path: &Path) -> Result<()> {
     let package_path = package_path.to_path_buf();
     tokio::task::spawn_blocking(move || install_appx_package_from_file_blocking(&package_path))
@@ -733,6 +795,12 @@ async fn install_appx_package_from_file(package_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
+async fn install_appx_package_from_file(_package_path: &Path) -> Result<()> {
+    Err(anyhow!("UWP 依赖只能在 Windows 上安装"))
+}
+
+#[cfg(windows)]
 fn install_appx_package_from_file_blocking(package_path: &Path) -> Result<()> {
     info!(package_path = %package_path.display(), "开始通过 PackageManager 安装 APPX 依赖");
     let package_manager = PackageManager::new().context("无法创建 PackageManager")?;
@@ -766,6 +834,7 @@ fn install_appx_package_from_file_blocking(package_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn install_game_input_with_msi(installer_path: &Path) -> Result<()> {
     info!(installer_path = %installer_path.display(), "开始执行 GameInput MSI 安装");
     let installer = HSTRING::from(installer_path.to_string_lossy().to_string());
@@ -784,6 +853,12 @@ fn install_game_input_with_msi(installer_path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(not(windows))]
+fn install_game_input_with_msi(_installer_path: &Path) -> Result<()> {
+    Err(anyhow!("GameInput Runtime 只能在 Windows 上安装"))
+}
+
+#[cfg(windows)]
 fn path_to_file_uri(path: &Path) -> Result<String> {
     let canonical_path = std::fs::canonicalize(path)
         .with_context(|| format!("获取文件绝对路径失败: {}", path.display()))?;
