@@ -54,7 +54,7 @@ pub fn default_music_volume() -> f32 {
 
 pub fn default_online_player_name() -> String {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
-    format!("BMCBL_USER_{}", &suffix[..6])
+    suffix[..6].to_string()
 }
 
 pub fn get_default_config() -> Config {

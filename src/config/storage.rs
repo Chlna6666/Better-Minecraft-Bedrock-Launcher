@@ -242,6 +242,7 @@ fn load_config_from_disk() -> io::Result<Config> {
     if !has_online_player_name
         || config.online.player_name.trim().is_empty()
         || config.online.player_name.trim() == "BMCBL_USER"
+        || config.online.player_name.trim().starts_with("BMCBL_USER_")
     {
         config.online.player_name = default_online_player_name();
         migrated = true;
