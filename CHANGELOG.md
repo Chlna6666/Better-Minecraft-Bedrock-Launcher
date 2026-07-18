@@ -60,6 +60,9 @@ Automatically generated from `v0.1.3` through `HEAD`.
 - keep GPUI inspector query available in release (`8313be9`, 2026-07-18)
 - improve nova resize and skin previews (`b765e6d`, 2026-07-06)
 
+### Changed
+- 统一联机与管理页面布局 (`3ec012e`, 2026-07-19)
+
 ### Documentation
 - specify version custom icon behavior (`264c06d`, 2026-07-13)
 
