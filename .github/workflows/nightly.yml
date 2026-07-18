@@ -45,27 +45,45 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "NAME=$default"
           Write-Host "Default branch: $default"
 
-      - name: Check for commits since the latest nightly tag
+      - name: Check for commits since the latest nightly and stable tags
         id: check_commits
         run: |
           $ErrorActionPreference = "Stop"
           $default = "${{ steps.default_branch.outputs.NAME }}"
 
           git fetch origin $default --tags
-          $latest = git tag -l "v*-nightly.*" --sort=-creatordate | Select-Object -First 1
-          if (-not $latest) {
-            Write-Host "No previous nightly tag found."
+          $latestNightly = git tag -l "v*-nightly.*" --sort=-creatordate |
+            Select-Object -First 1
+          if ($latestNightly) {
+            Write-Host "Latest nightly tag: $latestNightly"
+            $nightlyCommitCount = git rev-list "$latestNightly..origin/$default" --count
+            if ([int]$nightlyCommitCount -eq 0) {
+              Write-Host "No new commits on $default since nightly $latestNightly."
+              Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=false"
+              exit 0
+            }
+
+            Write-Host "$nightlyCommitCount commit(s) found on $default since nightly $latestNightly."
+          } else {
+            Write-Host "No nightly tag found; continuing with the stable release comparison."
+          }
+
+          $latestStable = git tag -l "v*" --sort=-version:refname |
+            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            Select-Object -First 1
+          if (-not $latestStable) {
+            Write-Host "No stable release tag found."
             Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=true"
             exit 0
           }
 
-          Write-Host "Latest nightly tag: $latest"
-          $commitCount = git rev-list "$latest..origin/$default" --count
-          if ([int]$commitCount -gt 0) {
-            Write-Host "$commitCount commit(s) found since $latest."
+          Write-Host "Latest stable tag: $latestStable"
+          $stableCommitCount = git rev-list "$latestStable..origin/$default" --count
+          if ([int]$stableCommitCount -gt 0) {
+            Write-Host "$stableCommitCount commit(s) found on $default since stable release $latestStable."
             Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=true"
           } else {
-            Write-Host "No new commits since $latest."
+            Write-Host "No new commits on $default since stable release $latestStable."
             Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=false"
           }
 
@@ -84,11 +102,9 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "VERSION=$version"
           Write-Host "Package version: $version"
 
-      - name: Create nightly tag
+      - name: Prepare nightly metadata
         id: nightly_tag
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
           $version = "${{ steps.package_version.outputs.VERSION }}"
@@ -96,17 +112,13 @@ jobs:
           $date = (Get-Date).ToUniversalTime().ToString("yyyyMMdd")
           $tag = "v$version-nightly.$date.${{ github.run_number }}"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin $default --tags
 
           $headCommit = git rev-parse "origin/$default"
-          git tag -a $tag $headCommit -m "Nightly build for $tag"
-          git push origin $tag
 
           Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "HEAD_COMMIT=$headCommit"
-          Write-Host "Created nightly tag: $tag -> $headCommit"
+          Write-Host "Prepared nightly release: $tag -> $headCommit"
 
       - name: Generate nightly release notes
         id: nightly_notes
@@ -121,7 +133,7 @@ jobs:
           & pwsh -NoProfile -File scripts/generate_changelog.ps1 `
             -ReleaseNotes `
             -OutputPath "${notesPath}.generated" `
-            -Until "${{ steps.nightly_tag.outputs.TAG_NAME }}"
+            -Until "${{ steps.nightly_tag.outputs.HEAD_COMMIT }}"
           Add-Content -Path $notesPath -Value (Get-Content "${notesPath}.generated")
           Add-Content -Path $env:GITHUB_OUTPUT -Value "PATH=$notesPath"
 
@@ -260,6 +272,15 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "PATH=$assetPath"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "NAME=$(Split-Path $assetPath -Leaf)"
 
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        with:
+          name: BMCBL-nightly-${{ steps.nightly_tag.outputs.TAG_NAME }}
+          path: ${{ steps.asset.outputs.PATH }}
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Publish nightly release
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         env:
@@ -298,6 +319,6 @@ jobs:
             }
           }
 
-      - name: No changes since last nightly
+      - name: No unpublished nightly changes
         if: ${{ steps.check_commits.outputs.changed != 'true' }}
-        run: Write-Host "Nightly build skipped because no new commits were found."
+        run: Write-Host "Nightly build skipped because master has no changes beyond the latest nightly and stable tags."

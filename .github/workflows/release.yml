@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "!v*-nightly.*"
   workflow_dispatch:
     inputs:
       tag:
@@ -44,6 +45,11 @@ jobs:
 
           if ([string]::IsNullOrWhiteSpace($tag)) {
             Write-Error "Manual release runs require an existing tag input, unless the workflow is run from a tag."
+            exit 1
+          }
+
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            Write-Error "Release tags must use the stable vX.Y.Z format: $tag"
             exit 1
           }
 
@@ -192,6 +198,15 @@ jobs:
 
           $assetPath = (Resolve-Path $asset).Path.Replace('\', '/')
           Add-Content -Path $env:GITHUB_OUTPUT -Value "PATH=$assetPath"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "NAME=$(Split-Path $assetPath -Leaf)"
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BMCBL-release-${{ steps.release_tag.outputs.TAG_NAME }}
+          path: ${{ steps.asset.outputs.PATH }}
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Publish GitHub release
         env:
