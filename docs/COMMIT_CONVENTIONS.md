@@ -1,9 +1,10 @@
 # 提交信息规范
 
-本项目统一使用 Conventional Commits 格式，描述内容使用中文：
+本项目采用 AngularJS 使用的 Conventional Commits 格式，并由 Rust 编写的
+Cocogitto (`cog`) 负责提交校验、规范提交和 CHANGELOG 管理。提交主题可以使用中文或英文。
 
 ```text
-类型(范围): 中文描述
+类型(范围) : 中文描述
 ```
 
 允许的类型：
@@ -27,10 +28,21 @@ fix(渲染): 修复关于页面渲染后端名称显示
 docs(规范): 补充提交信息与本地校验说明
 ```
 
-仓库提供轻量级 Git hook（无需 Husky）：执行一次即可启用：
+提交主题建议不超过 50 个字符。范围是可选的，不限制固定范围，便于 Rust crate、GPUI
+模块和 CI 工作流使用各自清晰的范围名称。
+
+安装 Cocogitto 并启用 Git hook：
 
 ```powershell
-git config core.hooksPath .githooks
+cargo install cocogitto --locked
+cog install-hook commit-msg
 ```
 
-提交时 hook 会调用 `scripts/validate-commit.js` 校验首行格式。Node.js 仅用于开发期提交校验，不参与 Rust 应用构建和运行。
+创建提交时可以直接使用：
+
+```powershell
+cog commit fix "修复关于页面渲染后端显示" "渲染"
+```
+
+也可以使用 `git commit`；已安装的 `commit-msg` hook 会执行 `cog verify` 和
+`cog check`。Cocogitto 是开发工具，不参与 Rust 应用构建和运行。

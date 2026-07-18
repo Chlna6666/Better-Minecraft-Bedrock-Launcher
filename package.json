@@ -1,7 +1,0 @@
-{
-  "name": "bmcbl-development-tools",
-  "private": true,
-  "scripts": {
-    "check:commit": "node scripts/validate-commit.js"
-  }
-}

@@ -1,0 +1,8 @@
+from_latest_tag = false
+ignore_merge_commits = true
+
+[changelog]
+path = "CHANGELOG.md"
+
+[git_hooks.commit-msg]
+script = "cog verify --file $1 && cog check"

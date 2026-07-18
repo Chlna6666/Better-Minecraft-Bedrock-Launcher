@@ -227,9 +227,9 @@ scripts/
 `类型(范围): 中文描述`。允许类型和 hook 使用方式见
 [docs/COMMIT_CONVENTIONS.md](docs/COMMIT_CONVENTIONS.md)。
 
-本仓库不引入 Husky，使用 `.githooks/commit-msg` 调用
-`scripts/validate-commit.js`。开发者首次使用时执行
-`git config core.hooksPath .githooks`；Node.js 只用于提交信息校验。
+本仓库使用 Rust 编写的 Cocogitto 管理提交规范和 Git hook。开发者首次使用时执行
+`cargo install cocogitto --locked` 和 `cog install-hook commit-msg`。详细规范见
+[docs/COMMIT_CONVENTIONS.md](docs/COMMIT_CONVENTIONS.md) 与根目录 `cog.toml`。
 
 GPUI is a UI framework which also provides primitives for state and concurrency management.
 
