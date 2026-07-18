@@ -37,21 +37,22 @@ inside that section are maintained automatically by
 Automatically generated from `v0.1.3` through `HEAD`.
 
 ### Added
-- optimize rendering and launcher workflows (`da8442c7`, 2026-07-13)
-- add custom skin previews and cover cache (`45489f88`, 2026-07-08)
-- update GPUI nova renderer stack (`fd1ffc5b`, 2026-07-05)
+- ship launcher rendering and release automation (`51aaeb3`, 2026-07-18)
+- optimize rendering and launcher workflows (`da8442c`, 2026-07-13)
+- add custom skin previews and cover cache (`45489f8`, 2026-07-08)
+- update GPUI nova renderer stack (`fd1ffc5`, 2026-07-05)
 
 ### Fixed
-- improve nova resize and skin previews (`b765e6d3`, 2026-07-06)
+- improve nova resize and skin previews (`b765e6d`, 2026-07-06)
 
 ### Documentation
-- specify version custom icon behavior (`264c06df`, 2026-07-13)
+- specify version custom icon behavior (`264c06d`, 2026-07-13)
 
 ### Maintenance
-- remove bundled skills directory (`fb0e5664`, 2026-06-22)
-- ignore playwright mcp artifacts (`7a18c26a`, 2026-06-22)
-- remove gpui-ce reference submodule (`9e26a814`, 2026-06-22)
-- establish GPUI workspace baseline (`e5c4d238`, 2026-06-22)
+- remove bundled skills directory (`fb0e566`, 2026-06-22)
+- ignore playwright mcp artifacts (`7a18c26`, 2026-06-22)
+- remove gpui-ce reference submodule (`9e26a81`, 2026-06-22)
+- establish GPUI workspace baseline (`e5c4d23`, 2026-06-22)
 
 <!-- changelog:generated:end -->
 
