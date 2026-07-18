@@ -482,15 +482,17 @@ pub fn resolve_executable_product_version_in_dir(
     }
 }
 
-async fn get_manifest_identity_from_manifest_path(
-    manifest_path: &Path,
+pub fn get_manifest_identity_from_dir_blocking(
+    appx_path: &Path,
 ) -> Result<(String, String), String> {
+    let manifest_path = appx_path.join("AppxManifest.xml");
     debug!("Manifest 路径: {}", manifest_path.display());
-
-    let xml = tokio::fs::read_to_string(&manifest_path)
-        .await
+    let xml = std::fs::read_to_string(&manifest_path)
         .map_err(|error| format!("无法打开/读取文件 {}: {}", manifest_path.display(), error))?;
+    parse_manifest_identity(&xml)
+}
 
+fn parse_manifest_identity(xml: &str) -> Result<(String, String), String> {
     // 找到第一个 <Identity ...> 或 <Identity/...>
     let start_idx = match xml.find("<Identity") {
         Some(i) => i,
@@ -534,7 +536,21 @@ async fn get_manifest_identity_from_manifest_path(
 }
 
 pub async fn get_manifest_identity_from_dir(appx_path: &Path) -> Result<(String, String), String> {
-    get_manifest_identity_from_manifest_path(&appx_path.join("AppxManifest.xml")).await
+    let appx_path = appx_path.to_path_buf();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("bmcbl-manifest-read".to_string())
+        .spawn(move || {
+            let result = get_manifest_identity_from_dir_blocking(&appx_path);
+            if sender.send(result).is_err() {
+                debug!("Manifest 读取结果接收端已关闭");
+            }
+        })
+        .map_err(|error| format!("无法启动 Manifest 读取线程: {error}"))?;
+
+    receiver
+        .await
+        .map_err(|error| format!("Manifest 读取线程异常退出: {error}"))?
 }
 
 /// 异步获取清单中的 Identity 信息

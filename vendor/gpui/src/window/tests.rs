@@ -851,7 +851,7 @@ fn refresh_requests_dirty_frame(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn inactive_retained_dirty_frames_are_coalesced_until_active(cx: &mut TestAppContext) {
+fn inactive_visible_dirty_frames_refresh_after_background_delay(cx: &mut TestAppContext) {
     let (_view, cx) = cx.add_window_view(|_, _| PaintedTestView);
     let (test_window, baseline) = cx.update(|window, _| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -870,19 +870,20 @@ fn inactive_retained_dirty_frames_are_coalesced_until_active(cx: &mut TestAppCon
         window.refresh();
 
         assert!(window.test_dirty_frame_deferred_pending());
-    });
+        assert_eq!(test_window.requested_frame_count(), baseline);
+        let retry_generation = window.frame_watchdog.get().generation;
+        window.retry_deferred_dirty_frame(retry_generation);
 
-    assert_eq!(test_window.requested_frame_count(), baseline);
-
-    cx.update(|window, _| {
-        window.active.set(true);
-        window.refresh();
+        assert!(!window.test_dirty_frame_deferred_pending());
     });
 
     assert_eq!(test_window.requested_frame_count(), baseline + 1);
     assert_eq!(
         test_window.last_requested_frame(),
-        Some(RequestFrameOptions::from_refresh())
+        Some(RequestFrameOptions {
+            require_presentation: true,
+            force_render: true,
+        })
     );
 }
 

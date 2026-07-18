@@ -10,10 +10,12 @@ impl MapViewerWindowView {
         self.players.error = None;
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
+        let query_budget = self.map_query_budget.clone();
         self.status = SharedString::from("正在读取玩家列表...");
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
+            let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
@@ -75,10 +77,12 @@ impl MapViewerWindowView {
         self.players.pending_save_confirmation = None;
         let generation = self.players.generation;
         let world_path = self.world_path.clone();
+        let query_budget = self.map_query_budget.clone();
         self.status = SharedString::from(format!("正在读取玩家 {}...", player_id_label(&id)));
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
+            let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
@@ -129,11 +133,6 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn run_player_quick_edit(&mut self, edit: PlayerQuickEdit, cx: &mut Context<Self>) {
-        if !self.professional.write_mode {
-            self.status = SharedString::from("修改玩家数据需要先开启写入模式");
-            cx.notify();
-            return;
-        }
         let Some(id) = self.players.selected.clone() else {
             self.status = SharedString::from("请先选择玩家记录");
             cx.notify();

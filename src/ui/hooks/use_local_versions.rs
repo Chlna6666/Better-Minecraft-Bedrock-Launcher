@@ -1,5 +1,6 @@
-use gpui::{App, AppContext, BorrowAppContext, Context, SharedString, Subscription};
+use gpui::{App, AppContext, BorrowAppContext, Context, ImageSource, SharedString, Subscription};
 use gpui_hooks::hooks::{UseRefHook, UseStateHook};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
@@ -14,8 +15,27 @@ pub struct LocalVersionsSnapshot {
     pub versions: Arc<[LaunchVersionEntry]>,
 }
 
-pub fn launch_version_icon_path(name: &str) -> &'static str {
-    if name.contains("EducationPreview") {
+#[derive(Debug, Eq, PartialEq)]
+pub enum LaunchVersionIcon {
+    Local(PathBuf),
+    Embedded(&'static str),
+}
+
+impl From<LaunchVersionIcon> for ImageSource {
+    fn from(value: LaunchVersionIcon) -> Self {
+        match value {
+            LaunchVersionIcon::Local(path) => Self::from(path),
+            LaunchVersionIcon::Embedded(path) => Self::from(path),
+        }
+    }
+}
+
+pub fn launch_version_icon_path(custom_icon_path: Option<&str>, name: &str) -> LaunchVersionIcon {
+    if let Some(custom_icon_path) = custom_icon_path {
+        return LaunchVersionIcon::Local(PathBuf::from(custom_icon_path));
+    }
+
+    LaunchVersionIcon::Embedded(if name.contains("EducationPreview") {
         "images/minecraft/EducationEditionPreview.png"
     } else if name.contains("Education") {
         "images/minecraft/EducationEdition.png"
@@ -23,7 +43,7 @@ pub fn launch_version_icon_path(name: &str) -> &'static str {
         "images/minecraft/Preview.png"
     } else {
         "images/minecraft/Release.png"
-    }
+    })
 }
 
 pub fn read_local_versions_snapshot(cx: &App) -> LocalVersionsSnapshot {
@@ -46,6 +66,10 @@ fn managed_versions_from_local_versions(state: &LocalVersionsSnapshot) -> Vec<Ma
             manifest_version: SharedString::from(version.manifest_version.clone()),
             path: SharedString::from(version.path.clone()),
             kind: SharedString::from(version.kind.clone()),
+            icon_path: version
+                .custom_icon_path
+                .as_ref()
+                .map(|icon_path| SharedString::from(icon_path.clone())),
         })
         .collect()
 }
@@ -143,14 +167,27 @@ pub fn remove_local_version(folder_name: &str, cx: &mut App) {
     sync_manage_page_state_from_local_versions(cx);
 }
 
+fn request_local_versions_refresh(state: &mut LocalVersionsState, force_refresh: bool) -> bool {
+    if state.loading {
+        state.refresh_pending |= force_refresh;
+        return false;
+    }
+    if state.loaded && !force_refresh {
+        return false;
+    }
+
+    state.loading = true;
+    state.error = None;
+    true
+}
+
+fn take_pending_local_versions_refresh(state: &mut LocalVersionsState) -> bool {
+    std::mem::take(&mut state.refresh_pending)
+}
+
 pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
     let should_spawn = cx.update_global(|state: &mut LocalVersionsState, _cx| {
-        if state.loading || (state.loaded && !force_refresh) {
-            return false;
-        }
-        state.loading = true;
-        state.error = None;
-        true
+        request_local_versions_refresh(state, force_refresh)
     });
 
     if !should_spawn {
@@ -166,32 +203,82 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         }
         .await;
 
-        match result {
+        let refresh_again = match result {
             Ok(versions) => {
-                if let Err(error) = cx.update_global(|state: &mut LocalVersionsState, _cx| {
+                match cx.update_global(|state: &mut LocalVersionsState, _cx| {
                     state.versions = Arc::from(versions);
                     state.loaded = true;
                     state.loading = false;
                     state.error = None;
+                    take_pending_local_versions_refresh(state)
                 }) {
-                    tracing::warn!("update local versions failed: {error:?}");
+                    Ok(refresh_again) => refresh_again,
+                    Err(error) => {
+                        tracing::warn!("update local versions failed: {error:?}");
+                        false
+                    }
                 }
             }
             Err(error) => {
-                if let Err(update_error) =
-                    cx.update_global(|state: &mut LocalVersionsState, _cx| {
-                        state.loaded = !state.versions.is_empty();
-                        state.loading = false;
-                        state.error = Some(SharedString::from(error.to_string()));
-                    })
-                {
-                    tracing::warn!("update local versions error failed: {update_error:?}");
+                match cx.update_global(|state: &mut LocalVersionsState, _cx| {
+                    state.loaded = !state.versions.is_empty();
+                    state.loading = false;
+                    state.error = Some(SharedString::from(error.to_string()));
+                    take_pending_local_versions_refresh(state)
+                }) {
+                    Ok(refresh_again) => refresh_again,
+                    Err(update_error) => {
+                        tracing::warn!("update local versions error failed: {update_error:?}");
+                        false
+                    }
                 }
             }
-        }
+        };
 
         cx.update(sync_manage_page_state_from_local_versions)?;
+        if refresh_again {
+            cx.update(|cx| ensure_local_versions_loaded(true, cx))?;
+        }
         Ok::<(), anyhow::Error>(())
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LaunchVersionIcon, launch_version_icon_path, request_local_versions_refresh,
+        take_pending_local_versions_refresh,
+    };
+    use crate::ui::state::local_versions::LocalVersionsState;
+    use std::path::PathBuf;
+
+    #[test]
+    fn launch_version_icon_path_prefers_saved_custom_icon() {
+        assert_eq!(
+            launch_version_icon_path(Some("C:\\Game\\icon.png"), "Minecraft"),
+            LaunchVersionIcon::Local(PathBuf::from("C:\\Game\\icon.png"))
+        );
+    }
+
+    #[test]
+    fn launch_version_icon_path_falls_back_to_preview_asset_without_custom_icon() {
+        assert_eq!(
+            launch_version_icon_path(None, "Minecraft Preview"),
+            LaunchVersionIcon::Embedded("images/minecraft/Preview.png")
+        );
+    }
+
+    #[test]
+    fn request_local_versions_refresh_queues_one_forced_refresh_while_loading() {
+        let mut state = LocalVersionsState {
+            loading: true,
+            ..Default::default()
+        };
+
+        assert!(!request_local_versions_refresh(&mut state, true));
+        assert!(state.refresh_pending);
+        assert!(take_pending_local_versions_refresh(&mut state));
+        assert!(!take_pending_local_versions_refresh(&mut state));
+    }
 }

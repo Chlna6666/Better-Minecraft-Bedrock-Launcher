@@ -52,7 +52,7 @@ impl MapViewerWindowView {
                     }
                 };
 
-                let mut batch = HashMap::new();
+                let mut batch = HashMap::default();
                 if is_map_window_task_snapshot(first_snapshot.as_ref()) {
                     batch.insert(first_snapshot.id.clone(), first_snapshot);
                 }

@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes to Better Minecraft Bedrock Launcher are documented here.
+The `Unreleased` section describes the current development line. Commit summaries
+inside that section are maintained automatically by
+`scripts/generate_changelog.ps1`.
+
+## [Unreleased]
+
+### Highlights
+
+- Added a version-management flow for custom icons, thumbnails, version settings,
+  and generated Minecraft entity icon assets.
+- Reworked the map viewer around visible-tile demand loading, render sessions,
+  viewport generations, query budgets, metadata caching, tile planning, 2D/3D
+  previews, editing history, structure import/export, and selection workflows.
+- Improved launcher workflows for local version discovery, AppX/GDK prerequisites,
+  task scheduling, archive handling, music playback ordering, and settings state.
+- Expanded GPUI/Nova rendering support for frame lifecycle, image painting,
+  upload/resource handling, DX12/Vulkan paths, native text backends, font catalogs,
+  and small-text rasterization.
+- Added localization and documentation updates covering architecture boundaries,
+  rendering internals, project structure, UI conventions, and version icon behavior.
+
+### Build And Release
+
+- Bumped the application package version to `0.2.0` and enabled WebP decoding for
+  image assets.
+- Updated GitHub Actions to checkout the public `BE-Community-Dev` crates in the
+  sibling layout required by the existing Cargo path dependencies, without tokens.
+- Removed bundled font files from the repository and kept local agent/planning
+  artifacts ignored.
+
+<!-- changelog:generated:start -->
+### Commit Summary
+
+Automatically generated from `v0.1.3` through `HEAD`.
+
+### Added
+- optimize rendering and launcher workflows (`da8442c7`, 2026-07-13)
+- add custom skin previews and cover cache (`45489f88`, 2026-07-08)
+- update GPUI nova renderer stack (`fd1ffc5b`, 2026-07-05)
+
+### Fixed
+- improve nova resize and skin previews (`b765e6d3`, 2026-07-06)
+
+### Documentation
+- specify version custom icon behavior (`264c06df`, 2026-07-13)
+
+### Maintenance
+- remove bundled skills directory (`fb0e5664`, 2026-06-22)
+- ignore playwright mcp artifacts (`7a18c26a`, 2026-06-22)
+- remove gpui-ce reference submodule (`9e26a814`, 2026-06-22)
+- establish GPUI workspace baseline (`e5c4d238`, 2026-06-22)
+
+<!-- changelog:generated:end -->
+
+## Release Notes
+
+- Stable tags matching `v<major>.<minor>.<patch>` trigger the Windows release
+  workflow.
+- Nightly tags are created weekly when the default branch has new commits and
+  are published as prereleases.
+- GitHub Actions generates release notes from commits since the previous stable
+  tag and uploads the Windows x86_64 executable to GitHub Releases.

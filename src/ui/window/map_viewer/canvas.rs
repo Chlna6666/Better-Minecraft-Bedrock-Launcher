@@ -3,9 +3,12 @@ use super::model::{
     ProfessionalOverlayPaintCache, SlimeOverlayRunCache,
 };
 use super::paint::{draw_map_canvas, draw_professional_overlay_canvas};
-use super::selection::ChunkSelection;
+use super::selection::{
+    ChunkSelection, ExistingSelectionTarget, SelectionResizeHandle, SelectionScreenBounds,
+    existing_selection_target,
+};
 use super::state::MIN_CENTER_HEIGHT;
-use super::tile_state::{MapRenderRange, PaintTile, RegionManager, TileLoadState};
+use super::tile_state::{PaintTile, RegionManager, TileLoadState};
 use super::viewport::{
     TileBounds, paint_tile_bounds_for_viewport, region_render_range_for_viewport, ruler_blocks,
     screen_x_for_block, screen_y_for_block, tile_coords_for_paint_order, tile_paint_rect,
@@ -17,9 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static MAP_TILE_PAINT_RESOURCES_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 const SCREEN_IMAGE_VIEWPORT_EPSILON: f32 = 0.01;
-const MAP_TILE_INTERACTION_NEW_IMAGE_BUDGET_PER_FRAME: usize = 1;
+const MAP_TILE_INTERACTION_NEW_IMAGE_BUDGET_PER_FRAME: usize = 16;
 const MAP_TILE_IDLE_NEW_IMAGE_BUDGET_PER_FRAME: usize = 8;
-use bedrock_world::SlimeChunkWindow;
+use bedrock_world::{Dimension, SlimeChunkWindow};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::sync::Arc;
@@ -66,8 +69,10 @@ impl Default for TilePaintSnapshot {
 
 #[derive(Clone)]
 pub(super) struct MapCanvasSnapshot {
+    pub(super) stage_origin: Point<Pixels>,
     pub(super) viewport: MapViewport,
     pub(super) layout: RenderLayout,
+    pub(super) dimension: Dimension,
     pub(super) colors: ThemeColors,
     pub(super) overlays: OverlayOptions,
     pub(super) dragging: bool,
@@ -167,27 +172,22 @@ pub(super) struct MapCanvasView {
     marker_layer: Entity<MapMarkerLayerView>,
     hud_layer: Entity<MapHudView>,
     paste_controls_layer: Entity<MapPasteControlsView>,
+    frame_revision: u64,
+    tile_revision: u64,
     map_focus_handle: FocusHandle,
+    selection_hit_snapshot: Option<SelectionHitSnapshot>,
+    last_pointer_position: Option<Point<Pixels>>,
+    last_pressed_button: Option<MouseButton>,
+    interaction_cursor: CursorStyle,
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct InteractionViewportLayerPolicy {
-    pub(super) overlay: bool,
-    pub(super) markers: bool,
-    pub(super) hud: bool,
-    pub(super) paste_controls: bool,
-}
-
-pub(super) const fn interaction_viewport_layer_policy(
-    has_paste_preview: bool,
-) -> InteractionViewportLayerPolicy {
-    InteractionViewportLayerPolicy {
-        overlay: true,
-        markers: true,
-        hud: false,
-        paste_controls: has_paste_preview,
-    }
+#[derive(Clone, Copy)]
+pub(super) struct SelectionHitSnapshot {
+    pub(super) stage_origin: Point<Pixels>,
+    pub(super) viewport: MapViewport,
+    pub(super) layout: RenderLayout,
+    pub(super) selection: ChunkSelection,
 }
 
 impl MapCanvasView {
@@ -205,12 +205,25 @@ impl MapCanvasView {
             marker_layer: cx.new(|_cx| MapMarkerLayerView::default()),
             hud_layer: cx.new(|_cx| MapHudView::default()),
             paste_controls_layer,
+            frame_revision: 0,
+            tile_revision: 0,
             map_focus_handle,
+            selection_hit_snapshot: None,
+            last_pointer_position: None,
+            last_pressed_button: None,
+            interaction_cursor: CursorStyle::Arrow,
             _subscriptions: subscriptions,
         }
     }
 
     pub(super) fn set_snapshot(&mut self, snapshot: MapCanvasSnapshot, cx: &mut Context<Self>) {
+        self.selection_hit_snapshot = snapshot.selection.map(|selection| SelectionHitSnapshot {
+            stage_origin: snapshot.stage_origin,
+            viewport: snapshot.viewport,
+            layout: snapshot.layout,
+            selection,
+        });
+        self.refresh_interaction_cursor(self.last_pressed_button);
         self.tile_layer.update(cx, |view, cx| {
             view.set_snapshot(TileLayerSnapshot::from_canvas(&snapshot), cx)
         });
@@ -226,6 +239,30 @@ impl MapCanvasView {
         self.paste_controls_layer.update(cx, |view, cx| {
             view.set_snapshot(PasteControlsSnapshot::from_canvas(&snapshot), cx)
         });
+        self.frame_revision = self.frame_revision.saturating_add(1);
+        self.tile_revision = self.tile_revision.saturating_add(1);
+        // The map canvas is itself cached as an absolute subtree. Child layer
+        // notifications do not always invalidate that cached root, so publish
+        // the parent notification after replacing all layer snapshots.
+        cx.notify();
+    }
+
+    fn refresh_interaction_cursor(&mut self, pressed_button: Option<MouseButton>) {
+        self.interaction_cursor = self
+            .last_pointer_position
+            .and_then(|position| {
+                self.selection_hit_snapshot
+                    .map(|snapshot| selection_cursor_at(position, snapshot, pressed_button))
+            })
+            .unwrap_or(CursorStyle::Arrow);
+    }
+
+    pub(super) fn set_interaction_snapshot(
+        &mut self,
+        snapshot: MapCanvasSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_snapshot(snapshot, cx);
     }
 
     pub(super) fn set_tile_snapshot(
@@ -251,33 +288,8 @@ impl MapCanvasView {
                 cx,
             )
         });
-    }
-
-    pub(super) fn sync_viewport_bound_layers(
-        &mut self,
-        viewport: MapViewport,
-        layout: RenderLayout,
-        policy: InteractionViewportLayerPolicy,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let overlay_changed = policy.overlay
-            && self
-                .overlay_layer
-                .update(cx, |view, cx| view.set_viewport(viewport, layout, cx));
-        let markers_changed = policy.markers
-            && self
-                .marker_layer
-                .update(cx, |view, cx| view.set_viewport(viewport, layout, cx));
-        let hud_changed = policy.hud
-            && self
-                .hud_layer
-                .update(cx, |view, cx| view.set_viewport(viewport, layout, cx));
-        let paste_controls_changed = policy.paste_controls
-            && self
-                .paste_controls_layer
-                .update(cx, |view, cx| view.set_viewport(viewport, layout, cx));
-
-        overlay_changed || markers_changed || hud_changed || paste_controls_changed
+        self.tile_revision = self.tile_revision.saturating_add(1);
+        cx.notify();
     }
 }
 
@@ -286,24 +298,36 @@ impl EventEmitter<MapCanvasAction> for MapCanvasView {}
 impl Render for MapCanvasView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme_colors(cx);
+        let frame_revision = self.frame_revision;
+        let tile_revision = (frame_revision, self.tile_revision);
         div()
             .relative()
             .flex_1()
             .min_h(px(MIN_CENTER_HEIGHT))
             .overflow_hidden()
             .bg(colors.surface)
-            .child(cached_absolute_layer(&self.tile_layer))
-            .child(cached_absolute_layer(&self.overlay_layer))
-            .child(cached_absolute_layer(&self.marker_layer))
-            .child(cached_absolute_layer(&self.hud_layer))
-            .child(render_interaction_layer(&self.map_focus_handle, cx))
-            .child(cached_absolute_layer(&self.paste_controls_layer))
+            .child(cached_absolute_layer(&self.tile_layer, tile_revision))
+            .child(cached_absolute_layer(&self.overlay_layer, frame_revision))
+            .child(cached_absolute_layer(&self.marker_layer, frame_revision))
+            .child(cached_absolute_layer(&self.hud_layer, frame_revision))
+            .child(render_interaction_layer(
+                &self.map_focus_handle,
+                self.interaction_cursor,
+                cx,
+            ))
+            .child(cached_absolute_layer(
+                &self.paste_controls_layer,
+                frame_revision,
+            ))
             .into_any_element()
     }
 }
 
-fn cached_absolute_layer<V: Render + 'static>(layer: &Entity<V>) -> AnyView {
-    let cache_key = layer.entity_id().as_u64();
+fn cached_absolute_layer<V: Render + 'static, R: std::hash::Hash>(
+    layer: &Entity<V>,
+    frame_revision: R,
+) -> AnyView {
+    let cache_key = (layer.entity_id().as_u64(), frame_revision);
     AnyView::from(layer.clone())
         .cached_absolute_by(&cache_key)
         .reuse_on_window_refresh()
@@ -374,6 +398,7 @@ impl Render for MapTileLayerView {
 struct OverlayLayerSnapshot {
     viewport: MapViewport,
     layout: RenderLayout,
+    dimension: Dimension,
     overlays: OverlayOptions,
     overlay_paint: Option<Arc<ProfessionalOverlayPaintCache>>,
     slime_runs: Option<Arc<SlimeOverlayRunCache>>,
@@ -392,6 +417,7 @@ impl OverlayLayerSnapshot {
         Self {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
+            dimension: snapshot.dimension,
             overlays: snapshot.overlays,
             overlay_paint: snapshot.overlay_paint.clone(),
             slime_runs: snapshot.slime_runs.clone(),
@@ -409,6 +435,7 @@ impl OverlayLayerSnapshot {
     fn same_as(&self, other: &Self) -> bool {
         self.viewport == other.viewport
             && self.layout == other.layout
+            && self.dimension == other.dimension
             && self.overlays == other.overlays
             && self.selection == other.selection
             && self.paste_preview == other.paste_preview
@@ -436,24 +463,6 @@ impl MapOverlayLayerView {
         }
         self.snapshot = Some(snapshot);
         cx.notify();
-    }
-
-    fn set_viewport(
-        &mut self,
-        viewport: MapViewport,
-        layout: RenderLayout,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mut snapshot) = self.snapshot.clone() else {
-            return false;
-        };
-        if snapshot.viewport == viewport && snapshot.layout == layout {
-            return false;
-        }
-        snapshot.viewport = viewport;
-        snapshot.layout = layout;
-        self.set_snapshot(snapshot, cx);
-        true
     }
 }
 
@@ -511,24 +520,6 @@ impl MapMarkerLayerView {
         self.snapshot = Some(snapshot);
         cx.notify();
     }
-
-    fn set_viewport(
-        &mut self,
-        viewport: MapViewport,
-        layout: RenderLayout,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mut snapshot) = self.snapshot.clone() else {
-            return false;
-        };
-        if snapshot.viewport == viewport && snapshot.layout == layout {
-            return false;
-        }
-        snapshot.viewport = viewport;
-        snapshot.layout = layout;
-        self.set_snapshot(snapshot, cx);
-        true
-    }
 }
 
 impl Render for MapMarkerLayerView {
@@ -582,24 +573,6 @@ impl MapHudView {
         }
         self.snapshot = Some(snapshot);
         cx.notify();
-    }
-
-    fn set_viewport(
-        &mut self,
-        viewport: MapViewport,
-        layout: RenderLayout,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mut snapshot) = self.snapshot.clone() else {
-            return false;
-        };
-        if snapshot.viewport == viewport && snapshot.layout == layout {
-            return false;
-        }
-        snapshot.viewport = viewport;
-        snapshot.layout = layout;
-        self.set_snapshot(snapshot, cx);
-        true
     }
 }
 
@@ -655,24 +628,6 @@ impl MapPasteControlsView {
         self.snapshot = Some(snapshot);
         cx.notify();
     }
-
-    fn set_viewport(
-        &mut self,
-        viewport: MapViewport,
-        layout: RenderLayout,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mut snapshot) = self.snapshot.clone() else {
-            return false;
-        };
-        if snapshot.viewport == viewport && snapshot.layout == layout {
-            return false;
-        }
-        snapshot.viewport = viewport;
-        snapshot.layout = layout;
-        self.set_snapshot(snapshot, cx);
-        true
-    }
 }
 
 impl EventEmitter<MapCanvasAction> for MapPasteControlsView {}
@@ -688,6 +643,7 @@ impl Render for MapPasteControlsView {
 
 fn render_interaction_layer(
     map_focus_handle: &FocusHandle,
+    cursor: CursorStyle,
     cx: &mut Context<MapCanvasView>,
 ) -> Div {
     let focus_for_scroll = map_focus_handle.clone();
@@ -698,6 +654,7 @@ fn render_interaction_layer(
         .inset_0()
         .key_context("MapViewer")
         .track_focus(map_focus_handle)
+        .cursor(cursor)
         .on_scroll_wheel(
             cx.listener(move |_this, event: &ScrollWheelEvent, window, cx| {
                 focus_for_scroll.focus(window);
@@ -725,34 +682,45 @@ fn render_interaction_layer(
         )
         .on_mouse_up(
             MouseButton::Right,
-            cx.listener(|_this, event: &MouseUpEvent, _window, cx| {
+            cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                this.last_pressed_button = None;
+                this.refresh_interaction_cursor(None);
                 cx.emit(MapCanvasAction::EndRightSelection(event.position));
                 cx.stop_propagation();
             }),
         )
         .on_mouse_up_out(
             MouseButton::Right,
-            cx.listener(|_this, event: &MouseUpEvent, _window, cx| {
+            cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                this.last_pressed_button = None;
+                this.refresh_interaction_cursor(None);
                 cx.emit(MapCanvasAction::EndRightSelection(event.position));
                 cx.stop_propagation();
             }),
         )
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(|_this, event: &MouseUpEvent, _window, cx| {
+            cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                this.last_pressed_button = None;
+                this.refresh_interaction_cursor(None);
                 cx.emit(MapCanvasAction::EndDrag(event.position));
                 cx.stop_propagation();
             }),
         )
         .on_mouse_up_out(
             MouseButton::Left,
-            cx.listener(|_this, event: &MouseUpEvent, _window, cx| {
+            cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                this.last_pressed_button = None;
+                this.refresh_interaction_cursor(None);
                 cx.emit(MapCanvasAction::EndDrag(event.position));
                 cx.stop_propagation();
             }),
         )
         .on_mouse_move(
-            cx.listener(move |_this, event: &MouseMoveEvent, _window, cx| {
+            cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                this.last_pointer_position = Some(event.position);
+                this.last_pressed_button = event.pressed_button;
+                this.refresh_interaction_cursor(event.pressed_button);
                 cx.emit(MapCanvasAction::PointerMoved {
                     position: event.position,
                     pressed_button: event.pressed_button,
@@ -762,11 +730,82 @@ fn render_interaction_layer(
         )
 }
 
+pub(super) fn selection_cursor_at(
+    position: Point<Pixels>,
+    snapshot: SelectionHitSnapshot,
+    pressed_button: Option<MouseButton>,
+) -> CursorStyle {
+    let local_position = point(
+        position.x - snapshot.stage_origin.x,
+        position.y - snapshot.stage_origin.y,
+    );
+    if local_position.x < px(0.0)
+        || local_position.y < px(0.0)
+        || local_position.x > px(snapshot.viewport.width)
+        || local_position.y > px(snapshot.viewport.height)
+    {
+        return CursorStyle::Arrow;
+    }
+    let Some(bounds) = selection_screen_bounds(snapshot) else {
+        return CursorStyle::Arrow;
+    };
+    let target = existing_selection_target(local_position, bounds, 4.0);
+    selection_cursor_for_target(target, pressed_button == Some(MouseButton::Left))
+}
+
+fn selection_screen_bounds(snapshot: SelectionHitSnapshot) -> Option<SelectionScreenBounds> {
+    let bounds = snapshot.selection.bounds();
+    let (left, top) = viewport_screen_for_block(
+        snapshot.viewport,
+        snapshot.layout,
+        bounds.min_chunk_x.saturating_mul(16),
+        bounds.min_chunk_z.saturating_mul(16),
+    )?;
+    let (right, bottom) = viewport_screen_for_block(
+        snapshot.viewport,
+        snapshot.layout,
+        bounds.max_chunk_x.saturating_add(1).saturating_mul(16),
+        bounds.max_chunk_z.saturating_add(1).saturating_mul(16),
+    )?;
+    Some(SelectionScreenBounds {
+        left,
+        top,
+        right,
+        bottom,
+    })
+}
+
+pub(super) const fn selection_cursor_for_target(
+    target: ExistingSelectionTarget,
+    moving: bool,
+) -> CursorStyle {
+    match target {
+        ExistingSelectionTarget::Outside => CursorStyle::Arrow,
+        ExistingSelectionTarget::Inside if moving => CursorStyle::ClosedHand,
+        ExistingSelectionTarget::Inside => CursorStyle::OpenHand,
+        ExistingSelectionTarget::Resize(
+            SelectionResizeHandle::North | SelectionResizeHandle::South,
+        ) => CursorStyle::ResizeUpDown,
+        ExistingSelectionTarget::Resize(
+            SelectionResizeHandle::East | SelectionResizeHandle::West,
+        ) => CursorStyle::ResizeLeftRight,
+        ExistingSelectionTarget::Resize(
+            SelectionResizeHandle::NorthWest | SelectionResizeHandle::SouthEast,
+        ) => CursorStyle::ResizeUpLeftDownRight,
+        ExistingSelectionTarget::Resize(
+            SelectionResizeHandle::NorthEast | SelectionResizeHandle::SouthWest,
+        ) => CursorStyle::ResizeUpRightDownLeft,
+    }
+}
+
 fn render_paste_controls(
     snapshot: &PasteControlsSnapshot,
     cx: &mut Context<MapPasteControlsView>,
 ) -> Option<Div> {
     let preview = snapshot.paste_preview.as_ref()?;
+    if preview.is_writing() {
+        return None;
+    }
     let rect = paste_preview_screen_rect(snapshot, preview)?;
     let controls_width = 292.0_f32.min((snapshot.viewport.width - 16.0).max(180.0));
     let controls_left = (rect.right() / px(1.0) + 10.0)
@@ -1171,6 +1210,7 @@ pub(super) fn screen_image_viewports_transformable(
 fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     let viewport = snapshot.viewport;
     let layout = snapshot.layout;
+    let dimension = snapshot.dimension;
     let overlays = snapshot.overlays;
     let overlay_paint = snapshot.overlay_paint.clone();
     let slime_runs = snapshot.slime_runs.clone();
@@ -1187,6 +1227,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                     bounds,
                     viewport,
                     layout,
+                    dimension,
                     overlays,
                     overlay_paint.as_deref(),
                     slime_runs.as_deref(),
@@ -1307,7 +1348,7 @@ pub(super) fn build_tile_paint_snapshot(
     let mut paint_tiles = Vec::new();
     let mut debug_overlays = Vec::new();
     let mut estimated_bytes = 0usize;
-    let Some(render_range) = region_render_range_for_viewport(viewport, layout) else {
+    if region_render_range_for_viewport(viewport, layout).is_none() {
         return TilePaintSnapshot {
             tiles: Arc::new(paint_tiles),
             screen_images: Arc::new(Vec::new()),
@@ -1354,15 +1395,8 @@ pub(super) fn build_tile_paint_snapshot(
             });
         }
     }
-    debug_assert!(paint_tiles.windows(2).all(|tiles| {
-        tile_paint_sort_key(tiles[0].coord, render_range)
-            <= tile_paint_sort_key(tiles[1].coord, render_range)
-    }));
-    debug_assert!(debug_overlays.windows(2).all(|overlays| {
-        tile_paint_sort_key(overlays[0].coord, render_range)
-            <= tile_paint_sort_key(overlays[1].coord, render_range)
-    }));
-
+    debug_assert!(paint_tiles_are_ordered(&paint_tiles));
+    debug_assert!(debug_overlays_are_ordered(&debug_overlays));
     TilePaintSnapshot {
         tiles: Arc::new(paint_tiles),
         screen_images: Arc::new(Vec::new()),
@@ -1386,7 +1420,7 @@ pub(super) fn patch_tile_paint_snapshot(
     if changed_tiles.is_empty() {
         return TilePaintSnapshotPatch::Unchanged;
     }
-    let Some(render_range) = region_render_range_for_viewport(viewport, layout) else {
+    if region_render_range_for_viewport(viewport, layout).is_none() {
         return TilePaintSnapshotPatch::Rebuild;
     };
     let Some(paint_bounds) = paint_tile_bounds_for_viewport(viewport, layout, paint_radius) else {
@@ -1413,31 +1447,31 @@ pub(super) fn patch_tile_paint_snapshot(
         } else {
             return TilePaintSnapshotPatch::Rebuild;
         };
+    if !paint_tiles_are_ordered(&tiles) {
+        tiles.sort_unstable_by_key(|tile| tile_paint_sort_key(tile.coord));
+    }
+    if !debug_overlays_are_ordered(&debug_overlays) {
+        debug_overlays.sort_unstable_by_key(|overlay| tile_paint_sort_key(overlay.coord));
+    }
     let mut changed = false;
     for coord in changed_tiles.iter().copied() {
         if !paint_bounds_contains(paint_bounds, coord) {
             continue;
         }
-        if let Some(change) = patch_paint_tile(&mut tiles, tile_manager, coord, render_range) {
+        if let Some(change) = patch_paint_tile(&mut tiles, tile_manager, coord) {
             estimated_bytes = estimated_bytes
                 .saturating_sub(change.old_bytes)
                 .saturating_add(change.new_bytes);
             changed = true;
         }
-        changed |= patch_debug_overlay(
-            &mut debug_overlays,
-            tile_manager,
-            coord,
-            diagnostics_open,
-            render_range,
-        );
+        changed |= patch_debug_overlay(&mut debug_overlays, tile_manager, coord, diagnostics_open);
     }
 
     if !changed {
         return TilePaintSnapshotPatch::Unchanged;
     }
-    debug_assert!(paint_tiles_are_ordered(&tiles, render_range));
-    debug_assert!(debug_overlays_are_ordered(&debug_overlays, render_range));
+    debug_assert!(paint_tiles_are_ordered(&tiles));
+    debug_assert!(debug_overlays_are_ordered(&debug_overlays));
     TilePaintSnapshotPatch::Patched(TilePaintSnapshot {
         tiles: Arc::new(tiles),
         screen_images: current.screen_images.clone(),
@@ -1458,10 +1492,9 @@ fn patch_paint_tile(
     tiles: &mut Vec<PaintTile>,
     tile_manager: &RegionManager,
     coord: (i32, i32),
-    render_range: MapRenderRange,
 ) -> Option<PaintTilePatchChange> {
     match paint_tile_for_coord(tile_manager, coord) {
-        Some(tile) => insert_or_replace_paint_tile(tiles, tile, render_range),
+        Some(tile) => insert_or_replace_paint_tile(tiles, tile),
         None => remove_paint_tile(tiles, coord),
     }
 }
@@ -1471,10 +1504,9 @@ fn patch_debug_overlay(
     tile_manager: &RegionManager,
     coord: (i32, i32),
     diagnostics_open: bool,
-    render_range: MapRenderRange,
 ) -> bool {
     match debug_overlay_for_coord(tile_manager, coord, diagnostics_open) {
-        Some(overlay) => insert_or_replace_debug_overlay(debug_overlays, overlay, render_range),
+        Some(overlay) => insert_or_replace_debug_overlay(debug_overlays, overlay),
         None => remove_debug_overlay(debug_overlays, coord),
     }
 }
@@ -1514,62 +1546,39 @@ fn debug_overlay_for_coord(
 fn insert_or_replace_paint_tile(
     tiles: &mut Vec<PaintTile>,
     tile: PaintTile,
-    render_range: MapRenderRange,
 ) -> Option<PaintTilePatchChange> {
-    if let Some(index) = tiles
-        .iter()
-        .position(|existing| existing.coord == tile.coord)
+    let key = tile_paint_sort_key(tile.coord);
+    if let Ok(index) =
+        tiles.binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
     {
         if paint_tile_same(&tiles[index], &tile) {
             return None;
         }
         let old_bytes = tiles[index].estimated_bytes;
         let new_bytes = tile.estimated_bytes;
-        tiles.remove(index);
-        let key = tile_paint_sort_key(tile.coord, render_range);
-        let insert_index = tiles
-            .binary_search_by_key(&key, |existing| {
-                tile_paint_sort_key(existing.coord, render_range)
-            })
-            .unwrap_or_else(|index| index);
-        tiles.insert(insert_index, tile);
+        tiles[index] = tile;
         return Some(PaintTilePatchChange {
             old_bytes,
             new_bytes,
         });
     }
-    let key = tile_paint_sort_key(tile.coord, render_range);
-    match tiles.binary_search_by_key(&key, |existing| {
-        tile_paint_sort_key(existing.coord, render_range)
-    }) {
-        Ok(index) => {
-            if paint_tile_same(&tiles[index], &tile) {
-                return None;
-            }
-            let old_bytes = tiles[index].estimated_bytes;
-            let new_bytes = tile.estimated_bytes;
-            tiles[index] = tile;
-            Some(PaintTilePatchChange {
-                old_bytes,
-                new_bytes,
-            })
-        }
-        Err(index) => {
-            let new_bytes = tile.estimated_bytes;
-            tiles.insert(index, tile);
-            Some(PaintTilePatchChange {
-                old_bytes: 0,
-                new_bytes,
-            })
-        }
-    }
+    let index = tiles
+        .binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
+        .unwrap_or_else(|index| index);
+    let new_bytes = tile.estimated_bytes;
+    tiles.insert(index, tile);
+    Some(PaintTilePatchChange {
+        old_bytes: 0,
+        new_bytes,
+    })
 }
 
 fn remove_paint_tile(
     tiles: &mut Vec<PaintTile>,
     coord: (i32, i32),
 ) -> Option<PaintTilePatchChange> {
-    let Some(index) = tiles.iter().position(|tile| tile.coord == coord) else {
+    let key = tile_paint_sort_key(coord);
+    let Ok(index) = tiles.binary_search_by_key(&key, |tile| tile_paint_sort_key(tile.coord)) else {
         return None;
     };
     let tile = tiles.remove(index);
@@ -1582,47 +1591,28 @@ fn remove_paint_tile(
 fn insert_or_replace_debug_overlay(
     debug_overlays: &mut Vec<TileDebugOverlay>,
     overlay: TileDebugOverlay,
-    render_range: MapRenderRange,
 ) -> bool {
-    if let Some(index) = debug_overlays
-        .iter()
-        .position(|existing| existing.coord == overlay.coord)
+    let key = tile_paint_sort_key(overlay.coord);
+    if let Ok(index) =
+        debug_overlays.binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
     {
         if debug_overlay_same(&debug_overlays[index], &overlay) {
             return false;
         }
-        debug_overlays.remove(index);
-        let key = tile_paint_sort_key(overlay.coord, render_range);
-        let insert_index = debug_overlays
-            .binary_search_by(|existing| {
-                tile_paint_sort_key(existing.coord, render_range).cmp(&key)
-            })
-            .unwrap_or_else(|index| index);
-        debug_overlays.insert(insert_index, overlay);
+        debug_overlays[index] = overlay;
         return true;
     }
-    let key = tile_paint_sort_key(overlay.coord, render_range);
-    match debug_overlays
-        .binary_search_by(|existing| tile_paint_sort_key(existing.coord, render_range).cmp(&key))
-    {
-        Ok(index) => {
-            if debug_overlay_same(&debug_overlays[index], &overlay) {
-                return false;
-            }
-            debug_overlays[index] = overlay;
-            true
-        }
-        Err(index) => {
-            debug_overlays.insert(index, overlay);
-            true
-        }
-    }
+    let index = debug_overlays
+        .binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
+        .unwrap_or_else(|index| index);
+    debug_overlays.insert(index, overlay);
+    true
 }
 
 fn remove_debug_overlay(debug_overlays: &mut Vec<TileDebugOverlay>, coord: (i32, i32)) -> bool {
-    let Some(index) = debug_overlays
-        .iter()
-        .position(|overlay| overlay.coord == coord)
+    let key = tile_paint_sort_key(coord);
+    let Ok(index) =
+        debug_overlays.binary_search_by_key(&key, |overlay| tile_paint_sort_key(overlay.coord))
     else {
         return false;
     };
@@ -1650,19 +1640,14 @@ fn debug_overlay_same(left: &TileDebugOverlay, right: &TileDebugOverlay) -> bool
     left.coord == right.coord && left.label == right.label
 }
 
-fn paint_tiles_are_ordered(tiles: &[PaintTile], render_range: MapRenderRange) -> bool {
-    tiles.windows(2).all(|tiles| {
-        tile_paint_sort_key(tiles[0].coord, render_range)
-            <= tile_paint_sort_key(tiles[1].coord, render_range)
-    })
+fn paint_tiles_are_ordered(tiles: &[PaintTile]) -> bool {
+    tiles
+        .windows(2)
+        .all(|tiles| tile_paint_sort_key(tiles[0].coord) <= tile_paint_sort_key(tiles[1].coord))
 }
 
-fn debug_overlays_are_ordered(
-    debug_overlays: &[TileDebugOverlay],
-    render_range: MapRenderRange,
-) -> bool {
+fn debug_overlays_are_ordered(debug_overlays: &[TileDebugOverlay]) -> bool {
     debug_overlays.windows(2).all(|overlays| {
-        tile_paint_sort_key(overlays[0].coord, render_range)
-            <= tile_paint_sort_key(overlays[1].coord, render_range)
+        tile_paint_sort_key(overlays[0].coord) <= tile_paint_sort_key(overlays[1].coord)
     })
 }

@@ -278,6 +278,22 @@ impl Window {
             return;
         }
         if self.should_defer_dirty_frame() {
+            if !self.platform_window.is_minimized() {
+                log::trace!(
+                    "gpui inactive visible dirty frame retry: window={} generation={} dirty={}",
+                    self.handle.window_id().as_u64(),
+                    generation,
+                    self.invalidator.is_dirty()
+                );
+                self.dirty_frame_deferred_pending = false;
+                self.refreshing = true;
+                self.dirty_frame_scheduled = true;
+                self.request_platform_frame(RequestFrameOptions {
+                    require_presentation: true,
+                    force_render: true,
+                });
+                return;
+            }
             log::trace!(
                 "gpui deferred dirty frame still deferred: window={} generation={} dirty={} active={} minimized={}",
                 self.handle.window_id().as_u64(),

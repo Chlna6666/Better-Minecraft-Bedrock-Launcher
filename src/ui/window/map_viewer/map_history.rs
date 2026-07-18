@@ -223,14 +223,41 @@ impl MapHistoryEntry {
 }
 
 pub(crate) fn capture_before(spec: MapHistoryCaptureSpec) -> Result<MapHistoryCapture, String> {
+    capture_before_with_progress(spec, |_| {})
+}
+
+pub(crate) fn capture_before_with_progress(
+    spec: MapHistoryCaptureSpec,
+    progress: impl FnMut(MapHistoryApplyProgress),
+) -> Result<MapHistoryCapture, String> {
+    let world = open_world_readonly(&spec.world_path)?;
+    capture_before_with_world_and_progress(spec, &world, progress)
+}
+
+pub(crate) fn capture_before_with_world_and_progress(
+    spec: MapHistoryCaptureSpec,
+    world: &BedrockWorld,
+    mut progress: impl FnMut(MapHistoryApplyProgress),
+) -> Result<MapHistoryCapture, String> {
     let mut raw_keys = spec.raw_keys.clone();
-    for chunk in &spec.chunks {
-        let keys = collect_chunk_raw_keys(&spec.world_path, *chunk)?;
+    let chunk_total = spec.chunks.len().max(1);
+    let phase = SharedString::from("创建写入前快照");
+    progress(MapHistoryApplyProgress {
+        phase: phase.clone(),
+        completed: 0,
+        total: chunk_total,
+    });
+    for (index, chunk) in spec.chunks.iter().enumerate() {
+        let keys = collect_chunk_raw_keys(world, *chunk)?;
         raw_keys.extend(keys);
+        progress(MapHistoryApplyProgress {
+            phase: phase.clone(),
+            completed: index.saturating_add(1),
+            total: chunk_total,
+        });
     }
 
     let history_dir = history_dir_for_world(&spec.world_path);
-    let world = open_world_readonly(&spec.world_path)?;
     let mut before_raw_records = BTreeMap::new();
     for key in &raw_keys {
         let value = world
@@ -265,13 +292,48 @@ pub(crate) fn complete_after(
     capture: MapHistoryCapture,
     message: impl Into<String>,
 ) -> Result<MapHistoryEntry, String> {
+    complete_after_with_progress(capture, message, |_| {})
+}
+
+pub(crate) fn complete_after_with_progress(
+    capture: MapHistoryCapture,
+    message: impl Into<String>,
+    progress: impl FnMut(MapHistoryApplyProgress),
+) -> Result<MapHistoryEntry, String> {
+    let world = open_world_readonly(&capture.world_path)?;
+    complete_after_with_world_and_progress(capture, &world, message, progress)
+}
+
+pub(crate) fn complete_after_with_world_and_progress(
+    capture: MapHistoryCapture,
+    world: &BedrockWorld,
+    message: impl Into<String>,
+    mut progress: impl FnMut(MapHistoryApplyProgress),
+) -> Result<MapHistoryEntry, String> {
     fs::create_dir_all(&capture.history_dir)
         .map_err(|error| format!("创建历史目录失败: {error}"))?;
-    let world = open_world_readonly(&capture.world_path)?;
     let mut raw_keys = capture.raw_keys.clone();
-    for chunk in &capture.chunks {
-        raw_keys.extend(collect_chunk_raw_keys(&capture.world_path, *chunk)?);
+    let chunk_total = capture.chunks.len().max(1);
+    let phase = SharedString::from("保存写入历史");
+    progress(MapHistoryApplyProgress {
+        phase: phase.clone(),
+        completed: 0,
+        total: chunk_total,
+    });
+    for (index, chunk) in capture.chunks.iter().enumerate() {
+        raw_keys.extend(collect_chunk_raw_keys(world, *chunk)?);
+        progress(MapHistoryApplyProgress {
+            phase: phase.clone(),
+            completed: index.saturating_add(1),
+            total: chunk_total,
+        });
     }
+    let write_phase = SharedString::from("写入历史文件");
+    progress(MapHistoryApplyProgress {
+        phase: write_phase.clone(),
+        completed: 0,
+        total: 1,
+    });
     let (raw_records, raw_delta_bytes) =
         build_raw_record_deltas(&capture.before_raw_records, &raw_keys, |key| {
             world
@@ -316,6 +378,11 @@ pub(crate) fn complete_after(
         HISTORY_MAX_AGE_SECS,
         HISTORY_MAX_BYTES,
     )?;
+    progress(MapHistoryApplyProgress {
+        phase: write_phase,
+        completed: 1,
+        total: 1,
+    });
     Ok(entry)
 }
 
@@ -733,8 +800,10 @@ fn complete_snapshot(
     Ok(entry)
 }
 
-fn collect_chunk_raw_keys(world_path: &Path, chunk: ChunkPos) -> Result<BTreeSet<Vec<u8>>, String> {
-    let world = open_world_readonly(world_path)?;
+fn collect_chunk_raw_keys(
+    world: &BedrockWorld,
+    chunk: ChunkPos,
+) -> Result<BTreeSet<Vec<u8>>, String> {
     let mut keys = BTreeSet::new();
     let records = world
         .get_chunk_blocking(chunk)

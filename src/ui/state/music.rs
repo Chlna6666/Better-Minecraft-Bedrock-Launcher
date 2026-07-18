@@ -6,6 +6,7 @@ use crate::ui::animation::{ease_out_cubic, raw_progress};
 use gpui::{App, Global, RenderImage};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex as AsyncMutex;
 
 pub use super::music_loader::spawn_library_load;
 use super::music_types::render_image_from_decoded_cover;
@@ -13,6 +14,7 @@ pub use super::music_types::{MusicDragTarget, MusicSnapshot};
 
 pub struct MusicState {
     controller: Arc<Mutex<MusicController>>,
+    controller_operation_gate: Arc<AsyncMutex<()>>,
     pub snapshot: MusicSnapshot,
     rendered_cover_generation: u64,
     rendered_cover_cache_key: Option<u64>,
@@ -39,6 +41,7 @@ impl Default for MusicState {
             .unwrap_or_default();
         let mut state = Self {
             controller,
+            controller_operation_gate: Arc::new(AsyncMutex::new(())),
             snapshot: MusicSnapshot::default(),
             rendered_cover_generation: 0,
             rendered_cover_cache_key: None,
@@ -137,7 +140,10 @@ impl MusicState {
         update_controller: impl FnOnce(&mut MusicController) + Send + 'static,
     ) {
         let controller = self.controller.clone();
+        let operation_gate = self.controller_operation_gate.clone();
         cx.spawn(async move |cx| {
+            // Keep user commands ordered while the potentially blocking work runs off the UI thread.
+            let _operation_guard = operation_gate.lock().await;
             let result = tokio::task::spawn_blocking(move || {
                 let mut controller = controller
                     .lock()

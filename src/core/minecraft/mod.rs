@@ -1,10 +1,12 @@
 pub mod appx;
 pub mod assets;
+pub mod entity_avatar;
 pub mod gdk;
 pub mod import;
 pub mod key_patcher;
 pub mod launcher;
 pub mod map;
+pub mod map_info_cache;
 pub mod mod_manager;
 pub mod mouse_lock;
 pub mod nbt;

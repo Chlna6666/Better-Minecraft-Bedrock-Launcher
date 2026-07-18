@@ -57,12 +57,50 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.release_tag.outputs.TAG_NAME }}
 
-      - name: Checkout BE-Community-Dev path dependencies
+      - name: Generate release notes
+        run: |
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          & pwsh -NoProfile -File scripts/generate_changelog.ps1 `
+            -ReleaseNotes `
+            -OutputPath $notesPath `
+            -Until "${{ steps.release_tag.outputs.TAG_NAME }}"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "PATH=$notesPath"
+        id: release_notes
+
+      - name: Checkout mc-motd path dependency
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.BE_COMMUNITY_DEV_REPOSITORY || 'Chlna6666/BE-Community-Dev' }}
-          token: ${{ secrets.BE_COMMUNITY_DEV_TOKEN || github.token }}
-          path: BE-Community-Dev
+          repository: BE-Community-Dev/mc-motd
+          path: BE-Community-Dev/mc-motd
+          persist-credentials: false
+
+      - name: Checkout bedrock-world path dependency
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-world
+          path: BE-Community-Dev/bedrock-world
+          persist-credentials: false
+
+      - name: Checkout bedrock-block-model path dependency
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-block-model
+          path: BE-Community-Dev/bedrock-block-model
+          persist-credentials: false
+
+      - name: Checkout bedrock-leveldb path dependency
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-leveldb
+          path: BE-Community-Dev/bedrock-leveldb
+          persist-credentials: false
+
+      - name: Checkout bedrock-render path dependency
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-render
+          path: BE-Community-Dev/bedrock-render
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -201,10 +239,11 @@ jobs:
           gh release view $tag --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag $assetPath --repo $env:GITHUB_REPOSITORY --clobber
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --notes-file "${{ steps.release_notes.outputs.PATH }}"
           } else {
             gh release create $tag $assetPath `
               --repo $env:GITHUB_REPOSITORY `
               --title "Release $tag" `
-              --notes "Automated release for $tag" `
+              --notes-file "${{ steps.release_notes.outputs.PATH }}" `
               --verify-tag
           }

@@ -5,6 +5,7 @@ use super::panels::*;
 use super::players::*;
 use super::prelude::*;
 use super::tile_state::*;
+use rayon::prelude::*;
 
 impl MapViewerWindowView {
     pub(super) fn handle_editor_event(
@@ -25,9 +26,7 @@ impl MapViewerWindowView {
             CodeEditorEvent::PointerInteractionStarted => {
                 self.cancel_pointer_captures_for_panel_interaction("code editor pointer down", cx);
             }
-            CodeEditorEvent::PointerInteractionEnded => {
-                self.release_pointer_captures("code editor pointer up", cx);
-            }
+            CodeEditorEvent::PointerInteractionEnded => {}
             CodeEditorEvent::SaveRequested => self.request_editor_save(cx),
             CodeEditorEvent::FormatRequested => self.format_editor_document(cx),
         }
@@ -65,10 +64,12 @@ impl MapViewerWindowView {
         let metadata_generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let target_for_task = target.clone();
+        let query_budget = self.map_query_budget.clone();
         self.status = SharedString::from(format!("正在读取 {}...", target.operation_label()));
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
+            let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
                     let editor = MapWorldEditor::open_with_options(
@@ -140,11 +141,6 @@ impl MapViewerWindowView {
         action: EditAction,
         cx: &mut Context<Self>,
     ) {
-        if !self.professional.write_mode {
-            self.status = SharedString::from("编辑世界记录需要先开启写入模式");
-            cx.notify();
-            return;
-        }
         let pending_matches = self
             .professional
             .pending_edit_confirmation
@@ -212,7 +208,12 @@ impl MapViewerWindowView {
                             Ok(invalidation)
                         }
                         (Ok(capture), Err(error)) => {
-                            let _ = complete_failed(capture, error.clone());
+                            if let Err(history_error) = complete_failed(capture, error.clone()) {
+                                tracing::warn!(
+                                    %history_error,
+                                    "failed to record quick write failure in map history"
+                                );
+                            }
                             Err(error)
                         }
                         (Err(error), Ok(invalidation)) => {
@@ -298,8 +299,7 @@ impl MapViewerWindowView {
             self.professional.overlays = None;
             self.professional.overlay_paint = None;
             self.professional.selection_stats = None;
-            self.professional.pending_overlay_refresh = true;
-            self.refresh_professional_overlays(cx);
+            self.invalidate_map_info_cache_after_edit(affected_chunks, cx);
         }
         self.set_professional_detail(None, cx);
         self.refresh_chunk_tree_if_selected();
@@ -396,6 +396,7 @@ impl MapViewerWindowView {
         window: SlimeChunkWindow,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_professional_overlay_for_viewport_change();
         self.viewport.center_on_block(
             window.center.x * 16 + 8,
             window.center.z * 16 + 8,
@@ -403,7 +404,7 @@ impl MapViewerWindowView {
         );
         self.professional.highlighted_window = Some(window);
         self.ensure_visible_tiles(cx);
-        self.refresh_professional_render_caches();
+        self.refresh_professional_render_caches(cx);
         self.refresh_professional_overlays(cx);
         cx.notify();
     }
@@ -417,7 +418,10 @@ impl MapViewerWindowView {
         cx.notify();
 
         let generation = self.metadata_generation;
+        let query_generation = self.professional.detail_generation.saturating_add(1);
+        self.professional.detail_generation = query_generation;
         let world_path = self.world_path.clone();
+        let query_budget = self.map_query_budget.clone();
         let dimension = self.dimension;
         let block = BlockPos {
             x: menu.block_x,
@@ -425,6 +429,7 @@ impl MapViewerWindowView {
             z: menu.block_z,
         };
         cx.spawn(async move |handle, cx| {
+            let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
@@ -441,7 +446,9 @@ impl MapViewerWindowView {
                 return Ok(());
             };
             view.update(cx, move |this, cx| {
-                if this.metadata_generation != generation {
+                if this.metadata_generation != generation
+                    || this.professional.detail_generation != query_generation
+                {
                     return;
                 }
                 match result {
@@ -468,8 +475,12 @@ impl MapViewerWindowView {
         cx.notify();
 
         let generation = self.metadata_generation;
+        let query_generation = self.professional.detail_generation.saturating_add(1);
+        self.professional.detail_generation = query_generation;
         let world_path = self.world_path.clone();
+        let query_budget = self.map_query_budget.clone();
         cx.spawn(async move |handle, cx| {
+            let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
@@ -486,7 +497,9 @@ impl MapViewerWindowView {
                 return Ok(());
             };
             view.update(cx, move |this, cx| {
-                if this.metadata_generation != generation {
+                if this.metadata_generation != generation
+                    || this.professional.detail_generation != query_generation
+                {
                     return;
                 }
                 match result {
@@ -514,9 +527,13 @@ impl MapViewerWindowView {
         cx.notify();
 
         let generation = self.metadata_generation;
+        let query_generation = self.professional.detail_generation.saturating_add(1);
+        self.professional.detail_generation = query_generation;
         let world_path = self.world_path.clone();
         let options = self.professional_overlay_query_options();
+        let query_budget = self.map_query_budget.clone();
         cx.spawn(async move |handle, cx| {
+            let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
@@ -533,7 +550,11 @@ impl MapViewerWindowView {
                 return Ok(());
             };
             view.update(cx, move |this, cx| {
-                if this.metadata_generation != generation {
+                if this.metadata_generation != generation
+                    || this.professional.detail_generation != query_generation
+                    || this.professional_query_bounds() != Some(bounds)
+                    || this.professional_overlay_query_options() != options
+                {
                     return;
                 }
                 match result {
@@ -552,25 +573,12 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn delete_selection_chunks(&mut self, cx: &mut Context<Self>) {
-        if !self.professional.write_mode {
-            self.status = SharedString::from("删除 chunk 需要先开启写入模式");
-            toast::error(cx, self.status.clone());
-            cx.notify();
-            return;
-        }
         let Some(selection) = self.professional.selection else {
             self.status = SharedString::from("删除 chunk 需要先设置选区");
             toast::error(cx, self.status.clone());
             cx.notify();
             return;
         };
-        if !self.professional.pending_delete_confirmation {
-            self.professional.pending_delete_confirmation = true;
-            self.status = SharedString::from("再次点击删除选区 chunk 以确认写入操作");
-            cx.notify();
-            return;
-        }
-        self.professional.pending_delete_confirmation = false;
         self.context_menu = None;
         let bounds = selection.bounds();
         let affected_chunks = (bounds.min_chunk_z..=bounds.max_chunk_z)
@@ -800,32 +808,24 @@ impl MapViewerWindowView {
         action: QuickWriteAction,
         cx: &mut Context<Self>,
     ) {
-        if !self.professional.write_mode && !action.is_paste() {
-            self.status = SharedString::from("快捷写入需要先开启写入模式");
-            toast::error(cx, self.status.clone());
-            cx.notify();
-            return;
+        let paste_progress_total = action
+            .progress_seed()
+            .filter(|(phase, _)| phase.starts_with("粘贴"))
+            .map(|(_, total)| total.max(1));
+        if let Some(total) = paste_progress_total {
+            if let Some(preview) = self.professional.paste_preview.as_mut() {
+                preview.drag = None;
+                preview.auto_pan = None;
+                preview.write_progress = Some(PastePreviewWriteProgress {
+                    completed: 0,
+                    total,
+                    awaiting_tile_refresh: false,
+                });
+            }
+        } else {
+            self.professional.paste_preview = None;
+            self.replace_paste_preview_images(Vec::new(), cx);
         }
-        let pending_matches = self
-            .professional
-            .pending_quick_write_confirmation
-            .as_ref()
-            .is_some_and(|pending| pending == &action);
-        if !pending_matches {
-            self.professional.pending_quick_write_confirmation = Some(action.clone());
-            self.professional.paste_preview = self.paste_preview_for_action(&action);
-            self.status = SharedString::from(format!(
-                "再次点击以确认 {} · 写入后会刷新对应瓦片",
-                action.label()
-            ));
-            let colors = self.theme_colors(cx);
-            self.sync_canvas_snapshot(colors, cx);
-            cx.notify();
-            return;
-        }
-        self.professional.pending_quick_write_confirmation = None;
-        self.professional.paste_preview = None;
-        self.replace_paste_preview_images(Vec::new(), cx);
         self.context_menu = None;
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
@@ -872,6 +872,7 @@ impl MapViewerWindowView {
             cx,
         );
         self.status = SharedString::from(format!("正在{}...", action.label()));
+        probe_tokio_blocking_pool("map_paste_start", None);
         cx.notify();
 
         let generation = self.metadata_generation;
@@ -885,9 +886,13 @@ impl MapViewerWindowView {
         let action_for_task = action.clone();
         let copied_chunk = self.professional.copied_chunk.clone();
         let imported_structure = self.professional.imported_structure.clone();
+        let tokio_runtime_handle = tokio::runtime::Handle::try_current().ok();
         cx.spawn(async move |handle, cx| {
             enum QuickWriteEvent {
-                Progress(ChunkTransferProgress),
+                Progress {
+                    progress: ChunkTransferProgress,
+                    paste_visual_progress: Option<(usize, usize)>,
+                },
                 Complete(Result<(String, MapEditInvalidation), String>),
             }
 
@@ -901,19 +906,52 @@ impl MapViewerWindowView {
                 let cancel_for_task = cancel_for_background;
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
+                    let mut progress_sync = ChunkTransferTaskProgressSync::default();
+                    let mut publish_progress = |progress: ChunkTransferProgress| {
+                        let Some(progress) =
+                            user_facing_quick_write_progress(progress, paste_progress_total)
+                        else {
+                            return;
+                        };
+                        let paste_visual_progress = paste_preview_write_progress(&progress);
+                        sync_map_operation_task_progress(
+                            &task_id_for_task,
+                            &mut progress_sync,
+                            &progress,
+                            task_stage,
+                        );
+                        if progress_sender
+                            .unbounded_send(QuickWriteEvent::Progress {
+                                progress,
+                                paste_visual_progress,
+                            })
+                            .is_err()
+                        {
+                            tracing::debug!("quick write progress receiver dropped");
+                        }
+                    };
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let operation = format!("{} via BMCBL map_viewer", action_for_task.label());
                     let guard = WriteGuard::confirmed(world_path.clone(), operation);
-                    let history_capture = capture_before(quick_write_history_spec(
-                        &world_path,
-                        &action_for_task,
-                        copied_chunk.as_ref(),
-                        imported_structure.as_ref(),
-                    )?);
-                    let mut progress_sync = ChunkTransferTaskProgressSync::default();
+                    let history_capture = capture_before_with_world_and_progress(
+                        quick_write_history_spec(
+                            &world_path,
+                            &action_for_task,
+                            copied_chunk.as_ref(),
+                            imported_structure.as_ref(),
+                        )?,
+                        &world,
+                        |progress| {
+                            publish_progress(ChunkTransferProgress {
+                                phase: progress.phase,
+                                completed: progress.completed,
+                                total: progress.total,
+                            });
+                        },
+                    );
                     let result = run_quick_write_action_blocking(
                         &world,
                         action_for_task.clone(),
@@ -921,21 +959,23 @@ impl MapViewerWindowView {
                         copied_chunk.as_ref(),
                         imported_structure.as_ref(),
                         Some(&cancel_for_task),
-                        |progress| {
-                            sync_map_operation_task_progress(
-                                &task_id_for_task,
-                                &mut progress_sync,
-                                &progress,
-                                task_stage,
-                            );
-                            let _ =
-                                progress_sender.unbounded_send(QuickWriteEvent::Progress(progress));
-                        },
+                        &mut publish_progress,
                     )
                     .map_err(|error| error.to_string());
                     match (history_capture, result) {
                         (Ok(capture), Ok((message, invalidation))) => {
-                            complete_after(capture, message.clone())?;
+                            complete_after_with_world_and_progress(
+                                capture,
+                                &world,
+                                message.clone(),
+                                |progress| {
+                                    publish_progress(ChunkTransferProgress {
+                                        phase: progress.phase,
+                                        completed: progress.completed,
+                                        total: progress.total,
+                                    });
+                                },
+                            )?;
                             Ok((message, invalidation))
                         }
                         (Ok(capture), Err(error)) => {
@@ -958,12 +998,28 @@ impl MapViewerWindowView {
                     (Err(error), _) => Some(error.clone()),
                     _ => None,
                 };
-                task_manager::finish_task(&task_id_for_task, status, message);
+                let completion_message = message.clone();
+                if quick_write_defers_task_completion(status, paste_progress_total) {
+                    task_manager::update_progress(&task_id_for_task, 0, None, Some("map_refresh"));
+                    probe_tokio_blocking_pool(
+                        "map_paste_write_complete",
+                        tokio_runtime_handle.clone(),
+                    );
+                } else {
+                    task_manager::finish_task(&task_id_for_task, status, message);
+                }
                 if completion_sender
                     .unbounded_send(QuickWriteEvent::Complete(result))
                     .is_err()
                 {
                     tracing::debug!("quick write completion receiver dropped");
+                    if quick_write_defers_task_completion(status, paste_progress_total) {
+                        task_manager::finish_task(
+                            &task_id_for_task,
+                            "completed",
+                            completion_message,
+                        );
+                    }
                 }
             });
             task.detach();
@@ -975,15 +1031,58 @@ impl MapViewerWindowView {
                 };
                 view.update(cx, move |this, cx| {
                     if this.metadata_generation != generation {
+                        if let QuickWriteEvent::Complete(Ok((message, _))) = &event
+                            && paste_progress_total.is_some()
+                        {
+                            task_manager::finish_task(
+                                &task_id_for_ui,
+                                "completed",
+                                Some(message.clone()),
+                            );
+                        }
                         return;
                     }
                     match event {
-                        QuickWriteEvent::Progress(progress) => {
+                        QuickWriteEvent::Progress {
+                            progress,
+                            paste_visual_progress,
+                        } => {
+                            if let Some((completed, total)) = paste_visual_progress
+                                && let Some(preview) = this.professional.paste_preview.as_mut()
+                                && let Some(write_progress) = preview.write_progress.as_mut()
+                            {
+                                write_progress.completed = completed;
+                                write_progress.total = total;
+                                let colors = this.theme_colors(cx);
+                                this.sync_canvas_snapshot(colors, cx);
+                            }
                             this.set_chunk_transfer_progress(progress);
                         }
                         QuickWriteEvent::Complete(result) => match result {
                             Ok((message, invalidation)) => {
                                 this.complete_chunk_transfer_progress();
+                                let waits_for_tile_refresh = paste_progress_total.is_some()
+                                    && invalidation.clear_tile_cache()
+                                    && !invalidation.affected_chunks().is_empty();
+                                if waits_for_tile_refresh {
+                                    this.pending_paste_task_completion =
+                                        Some(PendingPasteTaskCompletion {
+                                            task_id: task_id_for_ui.clone(),
+                                            message: message.clone(),
+                                        });
+                                } else if paste_progress_total.is_some() {
+                                    task_manager::finish_task(
+                                        &task_id_for_ui,
+                                        "completed",
+                                        Some(message.clone()),
+                                    );
+                                }
+                                if let Some(preview) = this.professional.paste_preview.as_mut()
+                                    && let Some(write_progress) = preview.write_progress.as_mut()
+                                {
+                                    write_progress.completed = write_progress.total;
+                                    write_progress.awaiting_tile_refresh = true;
+                                }
                                 this.apply_map_edit_invalidation_with_options(
                                     &invalidation,
                                     tile_refresh_priority,
@@ -1000,6 +1099,9 @@ impl MapViewerWindowView {
                             }
                             Err(error) => {
                                 this.finish_chunk_transfer_progress();
+                                if let Some(preview) = this.professional.paste_preview.as_mut() {
+                                    preview.write_progress = None;
+                                }
                                 if is_map_operation_cancelled_error(&error) {
                                     let message = SharedString::from("地图写入已取消");
                                     this.status = message.clone();
@@ -1031,40 +1133,98 @@ impl MapViewerWindowView {
         })
         .detach();
     }
+}
 
-    fn paste_preview_for_action(&self, action: &QuickWriteAction) -> Option<PastePreview> {
-        let (source_anchor, target_anchor, transform) = match action {
-            QuickWriteAction::PasteCopiedChunks {
-                source_anchor,
-                target_anchor,
-                transform,
-                ..
-            }
-            | QuickWriteAction::PasteImportedStructure {
-                source_anchor,
-                target_anchor,
-                transform,
-                ..
-            }
-            | QuickWriteAction::PasteCopiedChunk {
-                source: source_anchor,
-                target: target_anchor,
-                transform,
-            } => (*source_anchor, *target_anchor, *transform),
-            _ => return None,
+fn quick_write_defers_task_completion(status: &str, paste_progress_total: Option<usize>) -> bool {
+    status == "completed" && paste_progress_total.is_some()
+}
+
+fn paste_preview_write_progress(progress: &ChunkTransferProgress) -> Option<(usize, usize)> {
+    if progress.phase.as_ref() != "粘贴区块" {
+        return None;
+    }
+    let total = progress.total.max(1);
+    Some((progress.completed.min(total), total))
+}
+
+fn user_facing_quick_write_progress(
+    mut progress: ChunkTransferProgress,
+    paste_total: Option<usize>,
+) -> Option<ChunkTransferProgress> {
+    let Some(paste_total) = paste_total else {
+        return Some(progress);
+    };
+    match progress.phase.as_ref() {
+        "粘贴区块" | "粘贴结构" => {
+            progress.phase = SharedString::from("粘贴区块");
+            progress.total = paste_total.max(1);
+            progress.completed = progress.completed.min(progress.total);
+            Some(progress)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod paste_preview_progress_tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn atomic_paste_prepare_progress_keeps_chunks_pending_until_commit() {
+        let progress = ChunkTransferProgress {
+            phase: SharedString::from("准备粘贴区块"),
+            completed: 392,
+            total: 672,
         };
-        let copied_chunk = self.professional.copied_chunk.as_ref()?;
-        Some(PastePreview {
-            source_anchor,
-            target_anchor,
-            rotation: transform.rotation,
-            transform,
-            display_degrees: paste_rotation_degrees(transform.rotation),
-            drag: None,
-            targets: pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform),
-            tools_expanded: false,
-            auto_pan: None,
-        })
+
+        assert_eq!(paste_preview_write_progress(&progress), None);
+        assert_eq!(user_facing_quick_write_progress(progress, Some(672)), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn unrelated_phase_does_not_advance_chunk_visualization() {
+        let progress = ChunkTransferProgress {
+            phase: SharedString::from("提交区块写入"),
+            completed: 1,
+            total: 1,
+        };
+
+        assert_eq!(paste_preview_write_progress(&progress), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn record_level_paste_progress_is_hidden_from_ui() {
+        let progress = ChunkTransferProgress {
+            phase: SharedString::from("准备变换区块"),
+            completed: 49_152,
+            total: 98_304,
+        };
+
+        assert_eq!(user_facing_quick_write_progress(progress, Some(672)), None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn committed_structure_progress_drives_chunk_visualization() {
+        let progress = user_facing_quick_write_progress(
+            ChunkTransferProgress {
+                phase: SharedString::from("粘贴结构"),
+                completed: 16,
+                total: 32,
+            },
+            Some(32),
+        )
+        .expect("committed structure progress");
+
+        assert_eq!(progress.phase.as_ref(), "粘贴区块");
+        assert_eq!(paste_preview_write_progress(&progress), Some((16, 32)));
+    }
+
+    #[::core::prelude::v1::test]
+    fn only_successful_paste_waits_for_tile_refresh_before_terminal_status() {
+        assert!(quick_write_defers_task_completion("completed", Some(672)));
+        assert!(!quick_write_defers_task_completion("failed", Some(672)));
+        assert!(!quick_write_defers_task_completion("cancelled", Some(672)));
+        assert!(!quick_write_defers_task_completion("completed", None));
     }
 }
 
@@ -1578,7 +1738,6 @@ pub(super) fn render_edit_row(colors: &ThemeColors, row: &EditRow) -> Div {
 pub(super) fn editor_action_buttons(
     colors: &ThemeColors,
     target: EditTarget,
-    write_mode: bool,
     pending: Option<&PendingEditConfirmation>,
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<Div> {
@@ -1609,14 +1768,6 @@ pub(super) fn editor_action_buttons(
             MouseButton::Left,
             cx.listener(|this, _event, _window, cx| this.request_editor_delete(cx)),
         ));
-    }
-    if !write_mode {
-        buttons.push(
-            div()
-                .text_size(px(11.0))
-                .text_color(colors.text_muted)
-                .child("写入前需开启写入模式"),
-        );
     }
     buttons
 }
@@ -2077,10 +2228,13 @@ pub(super) fn copy_chunks_blocking(
     let mut copied_chunks = Vec::with_capacity(total);
     for (index, chunk) in chunks.into_iter().enumerate() {
         check_bedrock_operation_cancelled(cancel)?;
-        let records = copy_safe_chunk_records(editor.world().get_chunk_blocking(chunk)?.records);
-        let parsed_chunk = editor
-            .world()
-            .parse_chunk_with_options_blocking(chunk, copy_chunk_parse_options())?;
+        let chunk_data = editor.world().get_chunk_blocking(chunk)?;
+        let parsed_chunk = bedrock_world::parsed::parse_chunk_records_ref_with_options(
+            chunk,
+            &chunk_data.records,
+            copy_chunk_parse_options(),
+        );
+        let records = copy_safe_chunk_records(chunk_data.records);
         let mut block_entities = Vec::new();
         let mut hardcoded_spawn_areas = Vec::new();
         for record in parsed_chunk.records {
@@ -2149,38 +2303,25 @@ pub(super) fn paste_copied_chunk_blocking(
 
     let total = copied_chunk.chunks.len();
     let mut affected_chunks = BTreeSet::new();
+    let targets = pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform);
+    guard.validate(world)?;
+    const COMMIT_BATCH_SIZE: usize = 16;
+    let mut transaction = Some(world.transaction());
 
-    for (index, (snapshot, target_chunk)) in copied_chunk
-        .chunks
-        .iter()
-        .zip(pasted_chunk_targets(
-            copied_chunk,
-            source_anchor,
-            target_anchor,
-            transform,
-        ))
-        .enumerate()
-    {
+    for (index, (snapshot, target_chunk)) in copied_chunk.chunks.iter().zip(targets).enumerate() {
         check_bedrock_operation_cancelled(cancel)?;
-        delete_chunks_blocking(
-            world,
-            SlimeChunkBounds {
-                dimension: target_chunk.dimension,
-                min_chunk_x: target_chunk.x,
-                max_chunk_x: target_chunk.x,
-                min_chunk_z: target_chunk.z,
-                max_chunk_z: target_chunk.z,
-            },
-            guard,
-        )?;
+        let active_transaction = transaction.as_mut().ok_or_else(|| {
+            bedrock_world::BedrockWorldError::ConcurrentWrite(
+                "paste transaction is unavailable".to_string(),
+            )
+        })?;
+        active_transaction.delete_chunk(target_chunk)?;
 
-        let mut transaction = world.transaction();
         for record in &snapshot.records {
             let mut key = record.key.clone();
             key.pos = target_chunk;
-            transaction.put_raw_record(&key, record.value.clone());
+            active_transaction.put_raw_record(&key, record.value.clone());
         }
-        transaction.commit()?;
 
         let shifted_block_entities = snapshot
             .block_entities
@@ -2188,7 +2329,7 @@ pub(super) fn paste_copied_chunk_blocking(
             .map(|entity| pasted_block_entity_for_target(entity, snapshot.chunk, target_chunk))
             .collect::<Vec<_>>();
         if !shifted_block_entities.is_empty() {
-            world.put_block_entities_blocking(target_chunk, &shifted_block_entities)?;
+            active_transaction.put_block_entities(target_chunk, &shifted_block_entities)?;
         }
 
         let shifted_hsa = snapshot
@@ -2205,17 +2346,29 @@ pub(super) fn paste_copied_chunk_blocking(
             })
             .collect::<Vec<_>>();
         if !shifted_hsa.is_empty() {
-            world.put_hsa_for_chunk_blocking(target_chunk, &shifted_hsa)?;
+            active_transaction.put_hsa_for_chunk(target_chunk, &shifted_hsa)?;
         }
 
         affected_chunks.insert(target_chunk);
-        progress(ChunkTransferProgress {
-            phase: SharedString::from("粘贴区块"),
-            completed: index + 1,
-            total,
-        });
+        let completed = index + 1;
+        if completed.is_multiple_of(COMMIT_BATCH_SIZE) || completed == total {
+            check_bedrock_operation_cancelled(cancel)?;
+            let transaction_to_commit = transaction.take().ok_or_else(|| {
+                bedrock_world::BedrockWorldError::ConcurrentWrite(
+                    "paste transaction is unavailable".to_string(),
+                )
+            })?;
+            transaction_to_commit.commit()?;
+            progress(ChunkTransferProgress {
+                phase: SharedString::from("粘贴区块"),
+                completed,
+                total,
+            });
+            if completed != total {
+                transaction = Some(world.transaction());
+            }
+        }
     }
-    check_bedrock_operation_cancelled(cancel)?;
 
     Ok((
         format!(
@@ -2244,7 +2397,7 @@ pub(super) fn copied_chunk_snapshot_structure_placement(
     let source_origin_z = snapshot.chunk.z.saturating_mul(16);
     let mut structure =
         bedrock_world::McStructureFile::new_air(size, [source_origin_x, min_y, source_origin_z])?;
-    let mut palette_indices = HashMap::new();
+    let mut palette_indices = HashMap::default();
     let air_key = mcstructure_palette_key(&structure.palette[0]);
     palette_indices.insert(air_key, 0_i32);
     let chunk = bedrock_world::Chunk {
@@ -2321,80 +2474,86 @@ fn paste_transformed_copied_chunks_blocking(
     cancel: Option<&CancelFlag>,
     progress: &mut impl FnMut(ChunkTransferProgress),
 ) -> bedrock_world::Result<(String, MapEditInvalidation)> {
+    const PREPARE_BATCH_SIZE: usize = 4;
     check_bedrock_operation_cancelled(cancel)?;
     let targets = pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform);
     let total = targets.len().max(1);
     let mut affected_chunks = BTreeSet::new();
 
-    for (index, (snapshot, target_chunk)) in copied_chunk
-        .chunks
-        .iter()
-        .zip(targets.iter().copied())
-        .enumerate()
-    {
+    for (batch_index, snapshots) in copied_chunk.chunks.chunks(PREPARE_BATCH_SIZE).enumerate() {
         check_bedrock_operation_cancelled(cancel)?;
-        delete_chunks_blocking(
-            world,
-            SlimeChunkBounds {
-                dimension: target_chunk.dimension,
-                min_chunk_x: target_chunk.x,
-                max_chunk_x: target_chunk.x,
-                min_chunk_z: target_chunk.z,
-                max_chunk_z: target_chunk.z,
-            },
-            guard,
-        )?;
-        progress(ChunkTransferProgress {
-            phase: SharedString::from("清空目标区块"),
-            completed: index + 1,
-            total,
-        });
-
-        let structure_placement =
-            copied_chunk_snapshot_structure_placement(snapshot, target_chunk)?;
-        check_bedrock_operation_cancelled(cancel)?;
-        let result = structure_placement.structure.write_to_world_blocking(
-            world,
-            bedrock_world::McStructurePlacement {
-                source_anchor: structure_placement.source_anchor,
-                target_anchor: structure_placement.target_anchor,
-                origin_y: structure_placement.origin_y,
-                rotation: mcstructure_rotation_for_paste(transform.rotation),
-                mirror_x: transform.mirror_x,
-                mirror_z: transform.mirror_z,
-            },
-            guard,
-            |write_progress| {
-                progress(ChunkTransferProgress {
-                    phase: SharedString::from(match write_progress.phase {
-                        bedrock_world::McStructureWritePhase::Prepare => "准备变换区块",
-                        bedrock_world::McStructureWritePhase::WriteChunks => "写入变换区块",
-                    }),
-                    completed: write_progress.completed,
-                    total: write_progress.total,
-                });
-            },
-        )?;
-        check_bedrock_operation_cancelled(cancel)?;
-        let shifted_hsa = snapshot
-            .hardcoded_spawn_areas
-            .iter()
-            .cloned()
-            .map(|area| {
-                pasted_hardcoded_spawn_area_for_target(
-                    area,
-                    snapshot.chunk,
-                    target_chunk,
-                    transform,
-                )
+        let batch_start = batch_index * PREPARE_BATCH_SIZE;
+        let target_batch = &targets[batch_start..batch_start + snapshots.len()];
+        let prepared = snapshots
+            .par_iter()
+            .zip(target_batch.par_iter().copied())
+            .map(|(snapshot, target_chunk)| {
+                copied_chunk_snapshot_structure_placement(snapshot, target_chunk)
             })
-            .collect::<Vec<_>>();
-        if !shifted_hsa.is_empty() {
-            world.put_hsa_for_chunk_blocking(target_chunk, &shifted_hsa)?;
-        }
+            .collect::<bedrock_world::Result<Vec<_>>>()?;
 
-        affected_chunks.extend(result.affected_chunks);
-        affected_chunks.insert(target_chunk);
+        for (batch_offset, ((snapshot, target_chunk), structure_placement)) in snapshots
+            .iter()
+            .zip(target_batch.iter().copied())
+            .zip(prepared)
+            .enumerate()
+        {
+            check_bedrock_operation_cancelled(cancel)?;
+            mcstructure::replace_transformed_chunk_seed(
+                world,
+                snapshot,
+                target_chunk,
+                transform,
+                guard,
+            )?;
+            let result = structure_placement.structure.write_to_world_blocking(
+                world,
+                bedrock_world::McStructurePlacement {
+                    source_anchor: structure_placement.source_anchor,
+                    target_anchor: structure_placement.target_anchor,
+                    origin_y: structure_placement.origin_y,
+                    rotation: mcstructure_rotation_for_paste(transform.rotation),
+                    mirror_x: transform.mirror_x,
+                    mirror_z: transform.mirror_z,
+                },
+                guard,
+                |write_progress| {
+                    progress(ChunkTransferProgress {
+                        phase: SharedString::from(match write_progress.phase {
+                            bedrock_world::McStructureWritePhase::Prepare => "准备变换区块",
+                            bedrock_world::McStructureWritePhase::WriteChunks => "写入变换区块",
+                        }),
+                        completed: write_progress.completed,
+                        total: write_progress.total,
+                    });
+                },
+            )?;
+            check_bedrock_operation_cancelled(cancel)?;
+            let shifted_hsa = snapshot
+                .hardcoded_spawn_areas
+                .iter()
+                .cloned()
+                .map(|area| {
+                    pasted_hardcoded_spawn_area_for_target(
+                        area,
+                        snapshot.chunk,
+                        target_chunk,
+                        transform,
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !shifted_hsa.is_empty() {
+                world.put_hsa_for_chunk_blocking(target_chunk, &shifted_hsa)?;
+            }
+
+            affected_chunks.extend(result.affected_chunks);
+            affected_chunks.insert(target_chunk);
+            progress(ChunkTransferProgress {
+                phase: SharedString::from("粘贴区块"),
+                completed: batch_start + batch_offset + 1,
+                total,
+            });
+        }
     }
     check_bedrock_operation_cancelled(cancel)?;
 
@@ -2892,18 +3051,6 @@ pub(super) fn chunk_record_tag_is_clear_target(tag: ChunkRecordTag) -> bool {
     )
 }
 
-pub(super) fn confirming_quick_label(
-    pending: Option<&QuickWriteAction>,
-    action: QuickWriteAction,
-    label: &'static str,
-) -> String {
-    if pending == Some(&action) {
-        format!("确认{label}")
-    } else {
-        label.to_string()
-    }
-}
-
 pub(super) fn hsa_kind_label(kind: HardcodedSpawnAreaKind) -> String {
     match kind {
         HardcodedSpawnAreaKind::NetherFortress => "NetherFortress".to_string(),
@@ -3019,6 +3166,7 @@ pub(super) fn context_more_edit_entries(
         } else {
             "更多编辑操作"
         })
+        .keep_open()
         .on_click(on_toggle),
     )];
     if expanded {

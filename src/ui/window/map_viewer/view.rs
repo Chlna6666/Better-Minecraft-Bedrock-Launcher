@@ -7,9 +7,17 @@ pub use super::model::MapViewerWindowInit;
 
 impl Drop for MapViewerWindowView {
     fn drop(&mut self) {
+        if let Some(completion) = self.pending_paste_task_completion.take() {
+            task_manager::finish_task(
+                &completion.task_id,
+                "completed",
+                Some(format!("{}；地图窗口已关闭", completion.message)),
+            );
+        }
         self.cancel_metadata_scan();
         self.cancel_active_render();
         self.cancel_professional_overlay_query();
+        self.cancel_slime_window_candidate_query();
         self.preview_3d.clear_resources(true);
         self.session_generation = self.session_generation.saturating_add(1);
         self.metadata_generation = self.metadata_generation.saturating_add(1);
@@ -48,9 +56,13 @@ impl Render for MapViewerWindowView {
             .preview_3d
             .tick_motion(now, self.preview_3d_focus_handle.is_focused(window));
         let paste_preview_auto_pan_active = self.tick_paste_preview_auto_pan(cx);
-        if self.update_viewport_size(window) {
+        let viewport_size_changed = self.update_viewport_size(window);
+        let initial_tile_plan_pending = self.render_session.is_some()
+            && self.last_visible_tile_signature.is_none()
+            && !self.session_loading;
+        if viewport_size_changed || initial_tile_plan_pending {
             self.ensure_visible_tiles(cx);
-            self.refresh_professional_render_caches();
+            self.refresh_professional_render_caches(cx);
         }
         self.frame_stats.record_frame();
         self.sync_input_values(window, cx);
@@ -212,28 +224,6 @@ impl Render for MapViewerWindowView {
             })
             .child(self.render_menu_overlay(&colors, cx))
             .child(self.render_external_file_drop_target(cx));
-
-        let toast_state = cx.global::<toast::ToastState>();
-        if toast::has_visible_toasts(now, toast_state) {
-            root = root.child(toast::render_overlay_with_options(
-                window,
-                cx,
-                &colors,
-                now,
-                toast_state,
-                toast::ToastOverlayOptions::default()
-                    .with_bottom_inset(px(IDE_STATUS_BAR_HEIGHT + 18.0)),
-            ));
-        }
-        if toast::has_visible_breadcrumb(now, toast_state) {
-            root = root.child(toast::render_breadcrumb_overlay(
-                window,
-                cx,
-                &colors,
-                now,
-                toast_state,
-            ));
-        }
 
         root
     }

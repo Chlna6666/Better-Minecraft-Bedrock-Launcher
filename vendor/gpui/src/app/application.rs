@@ -5,8 +5,8 @@ use futures::FutureExt;
 use http_client::{HttpClient, Url};
 
 use crate::{
-    AssetSource, BackgroundExecutor, ForegroundExecutor, ImagePipelineConfig, RendererBackend,
-    RendererOptions, SharedString, SvgRenderer, TextSystem, current_platform,
+    AssetSource, BackgroundExecutor, FontFallbacks, ForegroundExecutor, ImagePipelineConfig,
+    RendererBackend, RendererOptions, SharedString, SvgRenderer, TextSystem, current_platform,
     record_renderer_backend,
 };
 
@@ -67,6 +67,63 @@ impl DefaultFontConfig {
         self.sources.push(FontSource::Embedded(bytes.into()));
         self
     }
+
+    /// Add system font families to use when the primary family is unavailable
+    /// or does not contain a requested glyph.
+    pub fn with_fallbacks<I, S>(mut self, families: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<SharedString>,
+    {
+        self.sources.extend(
+            families
+                .into_iter()
+                .map(|family| FontSource::SystemFamily(family.into())),
+        );
+        self
+    }
+}
+
+pub(super) struct LoadedDefaultFontConfig {
+    pub(super) family: SharedString,
+    pub(super) fallbacks: Option<FontFallbacks>,
+}
+
+pub(super) fn load_default_font_config(
+    text_system: &TextSystem,
+    config: DefaultFontConfig,
+) -> Result<LoadedDefaultFontConfig> {
+    let mut fonts = Vec::new();
+    let mut font_paths = Vec::new();
+    let mut fallback_families = Vec::new();
+    for source in config.sources {
+        match source {
+            FontSource::SystemFamily(family) => {
+                if !family.eq_ignore_ascii_case(&config.family) {
+                    fallback_families.push(family.to_string());
+                }
+            }
+            FontSource::Path(path) => font_paths.push(path),
+            FontSource::Embedded(bytes) => fonts.push(bytes),
+        }
+    }
+
+    if !font_paths.is_empty() {
+        text_system.add_font_paths(font_paths)?;
+    }
+    if !fonts.is_empty() {
+        text_system.add_fonts(fonts)?;
+    }
+    text_system.preload_font_family(config.family.clone())?;
+
+    let fallbacks = FontFallbacks::from_fonts(fallback_families);
+    text_system.set_system_font_family(config.family.clone());
+    text_system.set_fallback_font_families(fallbacks.fallback_list().iter().cloned().collect());
+
+    Ok(LoadedDefaultFontConfig {
+        family: config.family,
+        fallbacks: (!fallbacks.is_empty()).then_some(fallbacks),
+    })
 }
 
 /// Represents an application before it is fully launched. Once your app is
@@ -164,30 +221,10 @@ impl Application {
     }
 
     fn apply_default_font(&self, config: DefaultFontConfig) -> Result<()> {
-        let mut fonts = Vec::new();
-        let mut font_paths = Vec::new();
-        for source in config.sources {
-            match source {
-                FontSource::SystemFamily(_) => {}
-                FontSource::Path(path) => font_paths.push(path),
-                FontSource::Embedded(bytes) => fonts.push(bytes),
-            }
-        }
-
         let mut context_lock = self.0.borrow_mut();
-        if !font_paths.is_empty() {
-            context_lock.text_system.add_font_paths(font_paths)?;
-        }
-        if !fonts.is_empty() {
-            context_lock.text_system.add_fonts(fonts)?;
-        }
-        context_lock
-            .text_system
-            .preload_font_family(config.family.clone())?;
-        context_lock
-            .text_system
-            .set_system_font_family(config.family.clone());
-        context_lock.default_text_style.font_family = config.family;
+        let loaded = load_default_font_config(&context_lock.text_system, config)?;
+        context_lock.default_text_style.font_family = loaded.family;
+        context_lock.default_text_style.font_fallbacks = loaded.fallbacks;
         drop(context_lock);
         Ok(())
     }
@@ -311,5 +348,26 @@ impl HttpClient for NullHttpClient {
 
     fn type_name(&self) -> &'static str {
         type_name::<Self>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DefaultFontConfig, FontSource};
+
+    #[test]
+    fn default_font_config_records_fallback_families_in_order() {
+        let config = DefaultFontConfig::system_family("Primary")
+            .with_fallbacks(["Fallback A", "Fallback B"]);
+        let families = config
+            .sources
+            .iter()
+            .filter_map(|source| match source {
+                FontSource::SystemFamily(family) => Some(family.as_ref()),
+                FontSource::Path(_) | FontSource::Embedded(_) => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(families, ["Fallback A", "Fallback B"]);
     }
 }

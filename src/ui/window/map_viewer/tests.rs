@@ -11,6 +11,7 @@ use super::paint::*;
 use super::panels::*;
 use super::players::*;
 use super::prelude::*;
+use super::query_cache::*;
 use super::tile_cache::*;
 use super::tile_manifest::*;
 use super::tile_plan::*;
@@ -162,8 +163,26 @@ fn empty_viewport_composite_frame_is_transparent_rgba() {
 }
 
 #[::core::prelude::v1::test]
-fn viewport_composite_is_disabled_to_stream_cold_cache_tiles() {
+fn viewport_composite_does_not_take_over_tile_scheduling() {
     assert!(!VIEWPORT_COMPOSITE_ENABLED);
+    assert!(!viewport_composite_owns_viewport(false, false, false));
+    assert!(!viewport_composite_owns_viewport(false, true, false));
+    assert!(!viewport_composite_owns_viewport(false, false, true));
+    assert!(!viewport_composite_owns_viewport(true, true, true));
+}
+
+#[::core::prelude::v1::test]
+fn overlay_icons_grow_with_the_map_scale() {
+    let layout = web_relief_render_layout();
+    let mut viewport = test_viewport(0.0, 0.0, 512.0, 512.0);
+    viewport.scale = 0.25;
+    let overview_size = overlay_icon_size_px(viewport, layout);
+    viewport.scale = 2.0;
+    let detail_size = overlay_icon_size_px(viewport, layout);
+
+    assert_eq!(overview_size, 16.0);
+    assert!(detail_size > overview_size);
+    assert!(detail_size <= 52.0);
 }
 
 #[::core::prelude::v1::test]
@@ -573,16 +592,134 @@ fn zoom_input_clamps_to_expanded_minimum_scale() {
 }
 
 #[::core::prelude::v1::test]
-fn tile_rect_uses_chunk_aligned_render_origin() {
+fn empty_coordinate_input_uses_current_viewport_coordinate() {
+    assert_eq!(
+        parse_optional_i32_input("", "X", -128).expect("fallback coordinate"),
+        -128
+    );
+    assert_eq!(
+        parse_optional_i32_input(" 42 ", "Z", 0).expect("entered coordinate"),
+        42
+    );
+}
+
+#[::core::prelude::v1::test]
+fn selection_edges_use_directional_resize_cursors() {
+    assert_eq!(
+        selection_cursor_for_target(
+            ExistingSelectionTarget::Resize(SelectionResizeHandle::East),
+            false,
+        ),
+        CursorStyle::ResizeLeftRight
+    );
+    assert_eq!(
+        selection_cursor_for_target(
+            ExistingSelectionTarget::Resize(SelectionResizeHandle::North),
+            false,
+        ),
+        CursorStyle::ResizeUpDown
+    );
+    assert_eq!(
+        selection_cursor_for_target(
+            ExistingSelectionTarget::Resize(SelectionResizeHandle::NorthWest),
+            false,
+        ),
+        CursorStyle::ResizeUpLeftDownRight
+    );
+    assert_eq!(
+        selection_cursor_for_target(
+            ExistingSelectionTarget::Resize(SelectionResizeHandle::NorthEast),
+            false,
+        ),
+        CursorStyle::ResizeUpRightDownLeft
+    );
+}
+
+#[::core::prelude::v1::test]
+fn selection_cursor_uses_canvas_local_coordinates_and_tight_edge_tolerance() {
+    let snapshot = SelectionHitSnapshot {
+        stage_origin: point(px(100.0), px(50.0)),
+        viewport: test_viewport(0.0, 0.0, 320.0, 240.0),
+        layout: web_relief_render_layout(),
+        selection: ChunkSelection {
+            start: ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+            end: ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            },
+        },
+    };
+
+    assert_eq!(
+        selection_cursor_at(point(px(164.0), px(82.0)), snapshot, None),
+        CursorStyle::ResizeLeftRight
+    );
+    assert_eq!(
+        selection_cursor_at(point(px(95.0), px(82.0)), snapshot, None),
+        CursorStyle::Arrow
+    );
+    assert_eq!(
+        selection_cursor_at(point(px(169.0), px(82.0)), snapshot, None),
+        CursorStyle::Arrow
+    );
+}
+
+#[::core::prelude::v1::test]
+fn paste_preview_becomes_non_interactive_after_write_starts() {
+    let chunk = ChunkPos {
+        x: 3,
+        z: 4,
+        dimension: Dimension::Overworld,
+    };
+    let preview = PastePreview {
+        source_anchor: chunk,
+        target_anchor: chunk,
+        rotation: PasteRotation::NoRotation,
+        transform: PasteTransform::default(),
+        display_degrees: 0.0,
+        drag: None,
+        targets: vec![chunk],
+        tools_expanded: true,
+        auto_pan: None,
+        write_progress: Some(PastePreviewWriteProgress {
+            completed: 0,
+            total: 1,
+            awaiting_tile_refresh: false,
+        }),
+    };
+
+    assert!(preview.is_writing());
+}
+
+#[::core::prelude::v1::test]
+fn chunk_grid_is_enabled_by_default() {
+    assert!(OverlayOptions::default().dense_grid);
+}
+
+#[::core::prelude::v1::test]
+fn paste_completion_ignores_unrelated_render_batches() {
+    assert!(paste_tile_refresh_can_finish(false, false, true));
+    assert!(!paste_tile_refresh_can_finish(true, false, true));
+    assert!(!paste_tile_refresh_can_finish(false, true, true));
+    assert!(!paste_tile_refresh_can_finish(false, false, false));
+}
+
+#[::core::prelude::v1::test]
+fn tile_rect_stays_within_its_chunk_aligned_world_bounds() {
     let layout = web_relief_render_layout();
     let viewport = test_viewport(0.0, 0.0, 128.0, 128.0);
     let range = tile_render_range_for_viewport(viewport, layout).expect("render range");
     let rect = tile_paint_rect(viewport, layout, range, 0, 0).expect("visible tile");
 
-    assert_eq!(rect.left, -TILE_SEAM_BLEED_PX);
-    assert_eq!(rect.top, -TILE_SEAM_BLEED_PX);
-    assert_eq!(rect.right, DEFAULT_TILE_SIZE + TILE_SEAM_BLEED_PX);
-    assert_eq!(rect.bottom, DEFAULT_TILE_SIZE + TILE_SEAM_BLEED_PX);
+    assert_eq!(rect.left, 0.0);
+    assert_eq!(rect.top, 0.0);
+    assert_eq!(rect.right, DEFAULT_TILE_SIZE);
+    assert_eq!(rect.bottom, DEFAULT_TILE_SIZE);
 }
 
 #[::core::prelude::v1::test]
@@ -621,10 +758,10 @@ fn dragged_tile_rect_edges_stay_bound_to_grid_lines() {
     let next_x_grid = screen_x_for_block(bounds, viewport, layout, tile_blocks).floor();
     let next_z_grid = screen_y_for_block(bounds, viewport, layout, tile_blocks).floor();
 
-    assert!((rect.left + TILE_SEAM_BLEED_PX - left_grid).abs() < 0.001);
-    assert!((rect.top + TILE_SEAM_BLEED_PX - top_grid).abs() < 0.001);
-    assert!((next_x_rect.left + TILE_SEAM_BLEED_PX - next_x_grid).abs() < 0.001);
-    assert!((next_z_rect.top + TILE_SEAM_BLEED_PX - next_z_grid).abs() < 0.001);
+    assert!((rect.left - left_grid).abs() < 0.001);
+    assert!((rect.top - top_grid).abs() < 0.001);
+    assert!((next_x_rect.left - next_x_grid).abs() < 0.001);
+    assert!((next_z_rect.top - next_z_grid).abs() < 0.001);
 }
 
 #[::core::prelude::v1::test]
@@ -1116,7 +1253,7 @@ fn canvas_pointer_move_action_releases_stale_captures_without_matching_button() 
     );
     assert_eq!(
         canvas_pointer_move_action(Some(MouseButton::Left), false, true, false, false),
-        CanvasPointerMoveAction::ReleaseStaleCaptures
+        CanvasPointerMoveAction::UpdateRightSelection
     );
     assert_eq!(
         canvas_pointer_move_action(None, false, true, false, false),
@@ -1145,6 +1282,125 @@ fn canvas_pointer_move_action_releases_stale_captures_without_matching_button() 
     assert_eq!(
         canvas_pointer_move_action(Some(MouseButton::Right), false, true, false, false),
         CanvasPointerMoveAction::UpdateRightSelection
+    );
+}
+
+#[::core::prelude::v1::test]
+fn existing_selection_right_click_waits_for_release_and_respects_hit_target() {
+    let selection = ChunkSelection {
+        start: ChunkPos {
+            x: 3,
+            z: -4,
+            dimension: Dimension::Overworld,
+        },
+        end: ChunkPos {
+            x: 8,
+            z: 2,
+            dimension: Dimension::Overworld,
+        },
+    };
+    let screen_bounds = SelectionScreenBounds {
+        left: 100.0,
+        top: 80.0,
+        right: 300.0,
+        bottom: 260.0,
+    };
+    assert_eq!(
+        existing_selection_target(point(px(180.0), px(160.0)), screen_bounds, 7.0),
+        ExistingSelectionTarget::Inside
+    );
+    assert_eq!(
+        existing_selection_target(point(px(350.0), px(160.0)), screen_bounds, 7.0),
+        ExistingSelectionTarget::Outside
+    );
+    assert_eq!(
+        existing_selection_target(point(px(299.0), px(160.0)), screen_bounds, 7.0),
+        ExistingSelectionTarget::Resize(SelectionResizeHandle::East)
+    );
+    assert_eq!(
+        existing_selection_target(point(px(102.0), px(82.0)), screen_bounds, 7.0),
+        ExistingSelectionTarget::Resize(SelectionResizeHandle::NorthWest)
+    );
+    assert_eq!(
+        existing_selection_target(
+            point(px(104.0), px(104.0)),
+            SelectionScreenBounds {
+                left: 100.0,
+                top: 100.0,
+                right: 108.0,
+                bottom: 108.0,
+            },
+            7.0,
+        ),
+        ExistingSelectionTarget::Inside
+    );
+
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Right,
+            RightSelectionIntent::OpenMenu(selection),
+            false,
+        ),
+        RightSelectionReleaseAction::OpenMenu
+    );
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Right,
+            RightSelectionIntent::OpenMenu(selection),
+            true,
+        ),
+        RightSelectionReleaseAction::KeepSelection
+    );
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Right,
+            RightSelectionIntent::Cancel(selection),
+            false,
+        ),
+        RightSelectionReleaseAction::CancelSelection
+    );
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Left,
+            RightSelectionIntent::Cancel(selection),
+            true,
+        ),
+        RightSelectionReleaseAction::CancelSelection
+    );
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Right,
+            RightSelectionIntent::NewSelection,
+            false,
+        ),
+        RightSelectionReleaseAction::ApplySelectionAndOpenMenu
+    );
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Right,
+            RightSelectionIntent::Resize {
+                selection,
+                handle: SelectionResizeHandle::SouthEast,
+            },
+            true,
+        ),
+        RightSelectionReleaseAction::ApplySelection
+    );
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Left,
+            RightSelectionIntent::Move(selection),
+            false,
+        ),
+        RightSelectionReleaseAction::KeepSelection
+    );
+    assert_eq!(
+        right_selection_release_action(
+            SelectionPointerButton::Left,
+            RightSelectionIntent::Move(selection),
+            true,
+        ),
+        RightSelectionReleaseAction::ApplySelection
     );
 }
 
@@ -1230,6 +1486,18 @@ fn pointer_capture_release_clears_all_drag_state() {
 }
 
 #[::core::prelude::v1::test]
+fn preview_pointer_release_only_clears_preview_drag() {
+    let mut preview_drag = Some(Preview3dDragState {
+        mode: Preview3dDragMode::OrbitCamera,
+        position: point(px(5.0), px(6.0)),
+    });
+
+    assert!(take_preview_3d_pointer_capture(&mut preview_drag));
+    assert!(preview_drag.is_none());
+    assert!(!take_preview_3d_pointer_capture(&mut preview_drag));
+}
+
+#[::core::prelude::v1::test]
 fn slime_query_window_sizes_are_supported_ui_modes() {
     assert_eq!(SlimeQueryWindowSize::Three.value(), 3);
     assert_eq!(SlimeQueryWindowSize::Five.value(), 5);
@@ -1294,6 +1562,164 @@ fn overlay_result_acceptance_requires_matching_generation_and_request() {
 }
 
 #[::core::prelude::v1::test]
+fn map_info_query_scope_uses_sparse_world_index_after_metadata_load() {
+    let visible_bounds = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: 0,
+        max_chunk_x: 7,
+        min_chunk_z: 0,
+        max_chunk_z: 7,
+    };
+    let chunk_bounds = ChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: -64,
+        min_chunk_z: -32,
+        max_chunk_x: 95,
+        max_chunk_z: 127,
+        chunk_count: 3,
+    };
+    let available_tiles = BTreeSet::from([(-8, -4), (0, 0), (11, 15)]);
+
+    let scope = map_info_query_scope(
+        true,
+        Dimension::Overworld,
+        Some(chunk_bounds),
+        &available_tiles,
+        Some(visible_bounds),
+        8,
+    )
+    .expect("indexed query scope");
+
+    assert!(scope.indexed_world);
+    assert_eq!(scope.bounds.min_chunk_x, -64);
+    assert_eq!(scope.bounds.max_chunk_z, 127);
+    assert_eq!(scope.tile_coordinates, vec![(-8, -4), (0, 0), (11, 15)]);
+}
+
+#[::core::prelude::v1::test]
+fn map_info_query_scope_falls_back_to_visible_tiles_before_metadata_load() {
+    let visible_bounds = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: -1,
+        max_chunk_x: 8,
+        min_chunk_z: -1,
+        max_chunk_z: 8,
+    };
+
+    let scope = map_info_query_scope(
+        false,
+        Dimension::Overworld,
+        None,
+        &BTreeSet::new(),
+        Some(visible_bounds),
+        8,
+    )
+    .expect("visible query scope");
+
+    assert!(!scope.indexed_world);
+    assert_eq!(scope.bounds, visible_bounds);
+    assert_eq!(
+        scope.tile_coordinates,
+        vec![
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (0, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1)
+        ]
+    );
+}
+
+#[::core::prelude::v1::test]
+fn map_query_budget_limits_background_queries_and_releases_permits() {
+    let budget = MapQueryBudget::default();
+    let first = budget.try_acquire().expect("first query permit");
+    let second = budget.try_acquire().expect("second query permit");
+
+    assert_eq!(budget.active(), MAP_QUERY_CONCURRENCY);
+    assert!(budget.try_acquire().is_none());
+
+    drop(first);
+    assert_eq!(budget.active(), MAP_QUERY_CONCURRENCY - 1);
+    drop(second);
+    assert_eq!(budget.active(), 0);
+}
+
+#[::core::prelude::v1::test]
+fn map_query_coordinator_reuses_typed_memory_snapshots_and_generations() {
+    let coordinator = MapQueryBudget::default();
+    let key = MapQueryCacheKey::new(
+        MapQueryKind::Overlay,
+        std::path::Path::new("world-a"),
+        Dimension::Overworld.id(),
+        (-4, 4, -8, 8),
+        0,
+    );
+    coordinator.cache(key, Arc::new(String::from("cached overlay")));
+
+    assert_eq!(
+        coordinator
+            .cached::<String>(key)
+            .as_deref()
+            .map(String::as_str),
+        Some("cached overlay")
+    );
+    assert!(!coordinator.is_current(MapQueryKind::Overlay, 1));
+    let generation = coordinator.next_generation(MapQueryKind::Overlay);
+    assert!(coordinator.is_current(MapQueryKind::Overlay, generation));
+    assert!(!coordinator.is_current(MapQueryKind::Overlay, generation.saturating_sub(1)));
+    let village_generation = coordinator.next_generation(MapQueryKind::VillageIndex);
+    assert!(coordinator.is_current(MapQueryKind::Overlay, generation));
+    assert!(coordinator.is_current(MapQueryKind::VillageIndex, village_generation));
+}
+
+#[::core::prelude::v1::test]
+fn slime_window_candidate_result_acceptance_rejects_stale_viewport_queries() {
+    let bounds = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: -1,
+        max_chunk_x: 1,
+        min_chunk_z: -1,
+        max_chunk_z: 1,
+    };
+
+    assert!(accept_slime_window_candidate_result(
+        7,
+        11,
+        Some(bounds),
+        SlimeQueryWindowSize::Five,
+        7,
+        11,
+        bounds,
+        SlimeQueryWindowSize::Five,
+    ));
+    assert!(!accept_slime_window_candidate_result(
+        7,
+        12,
+        Some(bounds),
+        SlimeQueryWindowSize::Five,
+        7,
+        11,
+        bounds,
+        SlimeQueryWindowSize::Five,
+    ));
+    assert!(!accept_slime_window_candidate_result(
+        7,
+        11,
+        Some(bounds),
+        SlimeQueryWindowSize::Three,
+        7,
+        11,
+        bounds,
+        SlimeQueryWindowSize::Five,
+    ));
+}
+
+#[::core::prelude::v1::test]
 fn slime_overlay_runs_merge_adjacent_slime_chunks_on_same_row() {
     let bounds = SlimeChunkBounds {
         dimension: Dimension::Overworld,
@@ -1321,6 +1747,37 @@ fn slime_overlay_runs_merge_adjacent_slime_chunks_on_same_row() {
 
     assert_eq!(run_slime_chunks, naive_count);
     assert!(cache.runs.len() <= naive_count);
+}
+
+#[::core::prelude::v1::test]
+fn slime_overlay_runs_keep_exact_chunk_size_for_large_viewports() {
+    let bounds = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: -72,
+        max_chunk_x: 72,
+        min_chunk_z: -72,
+        max_chunk_z: 72,
+    };
+    assert!(bounds.chunk_count() > 20_000);
+    let cache = SlimeOverlayRunCache::build(bounds).expect("exact overworld cache");
+    let run_slime_chunks: usize = cache
+        .runs
+        .iter()
+        .map(|run| {
+            usize::try_from(run.max_chunk_x - run.min_chunk_x + 1).expect("positive exact run")
+        })
+        .sum();
+    let naive_count = (bounds.min_chunk_z..=bounds.max_chunk_z)
+        .flat_map(|z| (bounds.min_chunk_x..=bounds.max_chunk_x).map(move |x| (x, z)))
+        .filter(|(x, z)| {
+            is_slime_chunk(ChunkPos {
+                x: *x,
+                z: *z,
+                dimension: bounds.dimension,
+            })
+        })
+        .count();
+    assert_eq!(run_slime_chunks, naive_count);
 }
 
 #[::core::prelude::v1::test]
@@ -1354,25 +1811,24 @@ fn stage_position_clamps_window_coordinates_to_preview_canvas() {
 fn top_toolbar_moves_low_priority_commands_to_overflow() {
     let wide = top_toolbar_layout(1280.0);
     assert!(wide.show_modes);
-    assert!(wide.show_dock_commands);
+    assert!(wide.show_y_controls);
+    assert!(wide.show_zoom_controls);
     assert_eq!(wide.overflow_count, 0);
 
     let minimum = top_toolbar_layout(920.0);
     assert!(!minimum.show_modes);
-    assert!(!minimum.show_y_controls);
+    assert!(minimum.show_y_controls);
     assert!(minimum.show_zoom_controls);
-    assert!(!minimum.show_dock_commands);
-    assert!(minimum.overflow_count >= 10);
+    assert_eq!(minimum.overflow_count, 5);
 
     let medium = top_toolbar_layout(1080.0);
     assert!(medium.show_modes);
-    assert!(!medium.show_dock_commands);
-    assert!(medium.overflow_count >= 3);
+    assert_eq!(medium.overflow_count, 0);
 
     let small = top_toolbar_layout(480.0);
     assert!(!small.show_modes);
     assert!(!small.show_zoom_controls);
-    assert!(small.overflow_count >= 12);
+    assert_eq!(small.overflow_count, 9);
 }
 
 #[::core::prelude::v1::test]
@@ -1388,10 +1844,10 @@ fn center_stage_layout_accounts_for_stripe_and_docks() {
         MIN_CENTER_WIDTH,
         MIN_CENTER_HEIGHT,
     );
-    assert_eq!(rect.left(), px(282.0));
-    assert_eq!(rect.top(), px(58.0));
-    assert_eq!(rect.size.width, px(572.0));
-    assert_eq!(rect.size.height, px(506.0));
+    assert_eq!(rect.left(), px(354.0));
+    assert_eq!(rect.top(), px(62.0));
+    assert_eq!(rect.size.width, px(500.0));
+    assert_eq!(rect.size.height, px(502.0));
 
     let collapsed = center_stage_rect_for_layout(
         920.0,
@@ -1404,7 +1860,7 @@ fn center_stage_layout_accounts_for_stripe_and_docks() {
         MIN_CENTER_WIDTH,
         MIN_CENTER_HEIGHT,
     );
-    assert_eq!(collapsed.left(), px(43.0));
+    assert_eq!(collapsed.left(), px(77.0));
     assert!(collapsed.size.width >= px(MIN_CENTER_WIDTH));
 }
 
@@ -1425,18 +1881,84 @@ fn drag_tile_snapshot_sync_is_limited_to_display_refresh_rate() {
 }
 
 #[::core::prelude::v1::test]
-fn interaction_layer_policy_keeps_map_bound_content_without_refreshing_hud() {
-    let without_paste_preview = interaction_viewport_layer_policy(false);
-    assert!(without_paste_preview.overlay);
-    assert!(without_paste_preview.markers);
-    assert!(!without_paste_preview.hud);
-    assert!(!without_paste_preview.paste_controls);
+fn interaction_snapshot_refreshes_after_drag_movement_or_missing_tiles() {
+    assert!(interaction_needs_canvas_tile_snapshot_refresh(
+        false, false, false
+    ));
+    assert!(!interaction_needs_canvas_tile_snapshot_refresh(
+        true, false, true
+    ));
+    assert!(interaction_needs_canvas_tile_snapshot_refresh(
+        true, false, false
+    ));
+    assert!(!interaction_needs_canvas_tile_snapshot_refresh(
+        true, true, true
+    ));
+}
 
-    let with_paste_preview = interaction_viewport_layer_policy(true);
-    assert!(with_paste_preview.overlay);
-    assert!(with_paste_preview.markers);
-    assert!(!with_paste_preview.hud);
-    assert!(with_paste_preview.paste_controls);
+#[::core::prelude::v1::test]
+fn retained_paint_bounds_absorb_small_viewport_movements() {
+    let viewport = test_viewport(32.0, 32.0, 512.0, 512.0);
+    let mut panned = viewport;
+    panned.offset_x -= 8.0;
+    panned.offset_y += 8.0;
+    let layout = web_relief_render_layout();
+
+    assert_eq!(
+        paint_tile_bounds_for_viewport(viewport, layout, RETAIN_RADIUS),
+        paint_tile_bounds_for_viewport(panned, layout, RETAIN_RADIUS),
+    );
+}
+
+#[::core::prelude::v1::test]
+fn entity_avatar_keys_accept_namespaced_identifiers() {
+    assert_eq!(
+        normalize_entity_avatar_key("minecraft:zombie"),
+        Some("zombie".to_string())
+    );
+    assert_eq!(
+        normalize_entity_avatar_key("entity.minecraft:glow-squid"),
+        Some("glow_squid".to_string())
+    );
+    assert_eq!(normalize_entity_avatar_key("  "), None);
+}
+
+#[::core::prelude::v1::test]
+fn cached_visible_tile_is_not_treated_as_a_loading_gap() {
+    let mut manager = RegionManager::default();
+    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
+    let visible = TileBounds {
+        min_x: 0,
+        max_x: 0,
+        min_z: 0,
+        max_z: 0,
+    };
+
+    assert!(visible_loaded_tile_missing_from_snapshot(
+        &manager,
+        &[],
+        visible,
+    ));
+
+    let cached = manager
+        .entries
+        .get(&(0, 0))
+        .and_then(|entry| entry.image.as_ref())
+        .expect("cached tile");
+    let snapshot_tile = PaintTile {
+        coord: (0, 0),
+        image: cached.image.clone(),
+        pixel_format: cached.pixel_format,
+        width: cached.width,
+        height: cached.height,
+        estimated_bytes: cached.estimated_bytes,
+    };
+
+    assert!(!visible_loaded_tile_missing_from_snapshot(
+        &manager,
+        &[snapshot_tile],
+        visible,
+    ));
 }
 
 #[::core::prelude::v1::test]
@@ -1446,18 +1968,15 @@ fn interaction_layer_sync_requests_an_immediate_parent_refresh() {
 
 #[::core::prelude::v1::test]
 fn map_tile_upload_budget_prioritizes_viewport_interaction() {
-    assert_eq!(map_tile_new_image_budget(true), 1);
+    assert_eq!(map_tile_new_image_budget(true), 16);
     assert_eq!(map_tile_new_image_budget(false), 8);
 }
 
 #[::core::prelude::v1::test]
-fn paint_order_uses_bedrockmap_column_then_row_order() {
-    let layout = web_relief_render_layout();
-    let viewport = test_viewport(0.0, 0.0, 128.0, 128.0);
-    let range = tile_render_range_for_viewport(viewport, layout).expect("render range");
+fn paint_order_is_stable_spatial_order() {
     let mut coords = vec![(0, 1), (0, 0), (-1, 0), (-1, -1)];
 
-    coords.sort_by_key(|coord| tile_paint_sort_key(*coord, range));
+    coords.sort_by_key(|coord| tile_paint_sort_key(*coord));
 
     assert_eq!(coords, vec![(-1, -1), (-1, 0), (0, 0), (0, 1)]);
 }
@@ -1471,7 +1990,7 @@ fn paint_order_matches_visible_range_traversal() {
     let expected = coords.clone();
 
     coords.reverse();
-    coords.sort_by_key(|coord| tile_paint_sort_key(*coord, range));
+    coords.sort_by_key(|coord| tile_paint_sort_key(*coord));
 
     assert_eq!(coords, expected);
 }
@@ -1531,32 +2050,50 @@ fn tile_event_sender_reports_receiver_drop_without_external_lock() {
 }
 
 #[::core::prelude::v1::test]
-fn tile_ready_batcher_flushes_each_cache_hit_outside_quick_reveal() {
+fn tile_ready_batcher_batches_cache_hits_outside_quick_reveal() {
     let mut batcher = TileReadyBatcher::default();
 
-    let memory_tiles = batcher
-        .push(test_ready_tile((0, 0), TileReadySource::MemoryCache))
-        .expect("memory cache hits should not wait for another UI image upload");
-    assert_eq!(memory_tiles.len(), 1);
-    assert_eq!(memory_tiles[0].coord, (0, 0));
-
+    for index in 0..TILE_READY_BATCH_LIMIT.saturating_sub(1) {
+        assert!(
+            batcher
+                .push(test_ready_tile(
+                    (index as i32, 0),
+                    TileReadySource::MemoryCache
+                ))
+                .is_none()
+        );
+    }
     let disk_tiles = batcher
-        .push(test_ready_tile((1, 0), TileReadySource::DiskCacheFresh))
-        .expect("disk cache hits should not wait for another UI image upload");
-    assert_eq!(disk_tiles.len(), 1);
-    assert_eq!(disk_tiles[0].coord, (1, 0));
+        .push(test_ready_tile(
+            (TILE_READY_BATCH_LIMIT.saturating_sub(1) as i32, 0),
+            TileReadySource::DiskCacheFresh,
+        ))
+        .expect("cache hits should be flushed as one UI batch");
+    assert_eq!(disk_tiles.len(), TILE_READY_BATCH_LIMIT);
     assert!(batcher.pending.is_empty());
 }
 
 #[::core::prelude::v1::test]
-fn tile_ready_batcher_flushes_each_cache_hit_during_quick_reveal() {
+fn tile_ready_batcher_batches_cache_hits_during_quick_reveal() {
     let mut batcher = TileReadyBatcher::new(true);
 
+    for index in 0..FIRST_REVEAL_READY_BATCH_LIMIT.saturating_sub(1) {
+        assert!(
+            batcher
+                .push(test_ready_tile(
+                    (index as i32, 0),
+                    TileReadySource::DiskCacheFresh,
+                ))
+                .is_none()
+        );
+    }
     let tiles = batcher
-        .push(test_ready_tile((0, 0), TileReadySource::DiskCacheFresh))
-        .expect("quick reveal cache hits should flush a single frame-sized upload");
-    assert_eq!(tiles.len(), 1);
-    assert_eq!(tiles[0].coord, (0, 0));
+        .push(test_ready_tile(
+            (FIRST_REVEAL_READY_BATCH_LIMIT.saturating_sub(1) as i32, 0),
+            TileReadySource::DiskCacheFresh,
+        ))
+        .expect("quick reveal cache hits should flush a frame-sized upload batch");
+    assert_eq!(tiles.len(), FIRST_REVEAL_READY_BATCH_LIMIT);
     assert!(batcher.pending.is_empty());
 }
 
@@ -1622,6 +2159,21 @@ fn tile_ready_batcher_flushes_render_tiles_during_quick_reveal() {
         .flush()
         .expect("completion should flush the first tile");
     assert_eq!(tiles.len(), 1);
+}
+
+#[::core::prelude::v1::test]
+fn tile_ready_batcher_flushes_tiles_in_center_ring_order() {
+    let mut batcher = TileReadyBatcher::with_center(false, (0, 0));
+    batcher.push(test_ready_tile((1, 1), TileReadySource::Render));
+    batcher.push(test_ready_tile((0, -1), TileReadySource::Render));
+    batcher.push(test_ready_tile((0, 0), TileReadySource::Render));
+    batcher.push(test_ready_tile((1, 0), TileReadySource::Render));
+
+    let tiles = batcher.flush().expect("pending tiles should flush");
+    assert_eq!(
+        tiles.into_iter().map(|tile| tile.coord).collect::<Vec<_>>(),
+        vec![(0, 0), (0, -1), (1, 0), (1, 1)]
+    );
 }
 
 #[::core::prelude::v1::test]
@@ -2186,13 +2738,18 @@ fn render_tile_plan_reuses_normalized_chunk_positions() {
 
 #[::core::prelude::v1::test]
 fn interactive_session_config_culls_missing_chunks() {
+    let world_path = std::path::Path::new("world");
     let config = interactive_map_render_session_config(
-        std::path::Path::new("world"),
+        world_path,
         RenderBackend::Auto,
         RenderGpuBackend::Auto,
     );
 
     assert!(config.cull_missing_chunks);
+    assert_eq!(
+        config.world_signature,
+        bedrock_render::world_cache_signature(world_path)
+    );
     assert_eq!(
         config.region_bake_cache_memory_limit,
         RENDER_REGION_CACHE_ENTRIES
@@ -2201,17 +2758,17 @@ fn interactive_session_config_culls_missing_chunks() {
 
 #[::core::prelude::v1::test]
 fn interactive_tile_batch_defaults_are_conservative() {
-    assert_eq!(RENDER_UI_BATCH_TILES, 8);
-    assert_eq!(FIRST_VISIBLE_BATCH_LIMIT, 1);
+    assert_eq!(RENDER_UI_BATCH_TILES, 24);
+    assert_eq!(FIRST_VISIBLE_BATCH_LIMIT, 4);
     assert_eq!(FIRST_REVEAL_READY_BATCH_LIMIT, 4);
     assert_eq!(FIRST_REVEAL_READY_BATCH_INTERVAL, Duration::from_millis(16));
     assert_eq!(QUICK_REVEAL_TILE_FRAME_INTERVAL, Duration::from_millis(8));
-    assert_eq!(DRAG_VISIBLE_BATCH_LIMIT, 4);
-    assert_eq!(VISIBLE_TILE_FOREGROUND_WORK_LIMIT, 192);
+    assert_eq!(DRAG_VISIBLE_BATCH_LIMIT, 16);
+    assert_eq!(VISIBLE_TILE_FOREGROUND_WORK_LIMIT, 512);
     assert_eq!(INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT, 48);
     assert_eq!(VIEWPORT_WORK_REFRESH_INTERVAL, Duration::from_millis(16));
     assert_eq!(RENDER_STREAM_GROUP_TILES, 4);
-    assert_eq!(MAX_CONCURRENT_RENDER_BATCHES, 1);
+    assert_eq!(MAX_CONCURRENT_RENDER_BATCHES, 2);
     assert_eq!(
         resolve_interactive_tile_batch_size(RenderBackend::Auto, RenderCpuBudget::default(), 8),
         RenderCpuBudget::default().tile_batch_size().min(8)
@@ -2258,7 +2815,7 @@ fn render_image_eviction_waits_until_viewport_interaction_is_idle() {
 }
 
 #[::core::prelude::v1::test]
-fn loaded_tile_without_manifest_is_requeued_for_verified_refresh() {
+fn loaded_tile_without_manifest_keeps_cached_image_without_requeue() {
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
     manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
@@ -2269,10 +2826,32 @@ fn loaded_tile_without_manifest_is_requeued_for_verified_refresh() {
         .entries
         .get(&(0, 0))
         .expect("loaded tile should remain available while verification runs");
-    assert!(needs_cache_bypass);
-    assert_eq!(entry.state, TileLoadState::PendingManifest);
-    assert_eq!(entry.source_status, TileSourceStatus::Miss);
+    assert!(!needs_cache_bypass);
+    assert_eq!(entry.state, TileLoadState::Loaded);
+    assert_eq!(entry.source_status, TileSourceStatus::Fresh);
     assert!(entry.image.is_some());
+}
+
+#[::core::prelude::v1::test]
+fn loaded_tile_without_image_is_requeued_for_visible_render() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
+    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
+    manager
+        .entries
+        .get_mut(&(0, 0))
+        .expect("loaded tile entry")
+        .image = None;
+
+    manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
+
+    let entry = manager.entries.get(&(0, 0)).expect("requeued tile entry");
+    assert_eq!(entry.state, TileLoadState::Queued);
+    assert_eq!(entry.source_status, TileSourceStatus::Miss);
+    assert_eq!(
+        manager.queued_coords((0, 0), None, false, true),
+        vec![(0, 0)]
+    );
 }
 
 #[::core::prelude::v1::test]
@@ -2302,6 +2881,28 @@ fn stale_render_batch_yields_to_the_new_viewport_center() {
 }
 
 #[::core::prelude::v1::test]
+fn tile_request_plan_keeps_intersecting_batches_and_drops_far_batches() {
+    let visible_bounds = TileBounds {
+        min_x: 0,
+        max_x: 2,
+        min_z: 0,
+        max_z: 2,
+    };
+    let retained = RetainedTileFilter::new(visible_bounds, visible_bounds.expand(1), 1);
+
+    assert!(tile_request_intersects_plan(
+        &[(5, 5), (3, 2)],
+        Some(visible_bounds),
+        Some(retained),
+    ));
+    assert!(!tile_request_intersects_plan(
+        &[(5, 5), (6, 6)],
+        Some(visible_bounds),
+        Some(retained),
+    ));
+}
+
+#[::core::prelude::v1::test]
 fn visible_render_batch_size_expands_for_large_overviews() {
     assert_eq!(
         visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, false, true),
@@ -2325,6 +2926,10 @@ fn visible_render_batch_size_expands_for_large_overviews() {
 fn drag_render_batch_size_is_not_limited_by_first_reveal() {
     assert_eq!(
         visible_render_batch_size(8, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, true, false),
+        8
+    );
+    assert_eq!(
+        visible_render_batch_size(32, OVERVIEW_VISIBLE_TILE_THRESHOLD - 1, true, false),
         DRAG_VISIBLE_BATCH_LIMIT
     );
 }
@@ -2332,12 +2937,12 @@ fn drag_render_batch_size_is_not_limited_by_first_reveal() {
 #[::core::prelude::v1::test]
 fn map_cpu_budget_defaults_to_sixty_percent_with_interactive_cap() {
     let budget = RenderCpuBudget::default();
-    assert_eq!(budget.percent, 60);
+    assert_eq!(budget.percent(), 60);
     let threads = budget.thread_count();
     assert!(threads >= 1);
     let available = RenderCpuBudget::available_threads();
     let requested = available
-        .saturating_mul(usize::from(budget.percent))
+        .saturating_mul(usize::from(budget.percent()))
         .saturating_add(99)
         / 100;
     assert_eq!(
@@ -2348,8 +2953,7 @@ fn map_cpu_budget_defaults_to_sixty_percent_with_interactive_cap() {
 
 #[::core::prelude::v1::test]
 fn manifest_probe_worker_count_keeps_interaction_headroom() {
-    let mut budget = RenderCpuBudget::default();
-    budget.set_percent(MAX_CPU_PERCENT);
+    let budget = RenderCpuBudget::default();
 
     let workers = manifest_probe_worker_count(budget);
 
@@ -2405,13 +3009,56 @@ fn circular_tile_coords_are_generated_center_first() {
 }
 
 #[::core::prelude::v1::test]
+fn visible_tile_coords_keep_center_ring_order_when_center_is_outside_bounds() {
+    let visible = TileBounds {
+        min_x: 4,
+        max_x: 7,
+        min_z: -2,
+        max_z: 1,
+    };
+    let center = (0, 0);
+    let coords = tile_coords_for_visible_bounds(visible, center);
+
+    assert_eq!(coords.len(), 16);
+    assert!(tiles_are_sorted_center_first(&coords, center));
+}
+
+#[::core::prelude::v1::test]
+fn circular_tile_coords_rotate_clockwise_one_ring_at_a_time() {
+    let bounds = TileBounds {
+        min_x: -2,
+        max_x: 2,
+        min_z: -2,
+        max_z: 2,
+    };
+    let coords = collect_circular_tile_coords(bounds, bounds, 0, (0, 0));
+
+    assert_eq!(
+        &coords[..9],
+        &[
+            (0, 0),
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ]
+    );
+    assert_eq!(coords.len(), 25);
+    assert_eq!(coords.iter().collect::<BTreeSet<_>>().len(), coords.len());
+}
+
+#[::core::prelude::v1::test]
 fn center_first_order_detection_rejects_unsorted_tiles() {
     assert!(tiles_are_sorted_center_first(
-        &[(0, 0), (0, -1), (-1, 0), (1, 0)],
+        &[(0, 0), (0, -1), (1, -1), (1, 0)],
         (0, 0)
     ));
     assert!(!tiles_are_sorted_center_first(
-        &[(1, 0), (0, 0), (0, -1)],
+        &[(0, 0), (0, -1), (1, 0), (1, -1)],
         (0, 0)
     ));
 }
@@ -2526,7 +3173,7 @@ fn tile_order_uses_center_ring_sort_key() {
     let mut coords = vec![(2, 0), (1, 1), (0, 1), (0, 0), (1, 0)];
     sort_tiles_center_first(&mut coords, (0, 0));
 
-    assert_eq!(coords, vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 0)]);
+    assert_eq!(coords, vec![(0, 0), (1, 0), (1, 1), (0, 1), (2, 0)]);
 }
 
 #[::core::prelude::v1::test]
@@ -2552,7 +3199,7 @@ fn manifest_probe_selects_center_ring_before_outer_visible_tiles() {
 
     assert_eq!(
         selected,
-        vec![(0, 0), (0, -1), (-1, 0), (1, 0), (0, 1), (1, 1), (2, 0)]
+        vec![(0, 0), (0, -1), (1, 0), (1, 1), (0, 1), (-1, 0), (2, 0)]
     );
 }
 
@@ -2566,7 +3213,7 @@ fn manifest_probe_skips_scanned_center_and_batches_remaining_visible_tiles() {
 
     assert_eq!(
         selected,
-        vec![(0, -1), (-1, 0), (1, 0), (0, 1), (1, 1), (2, 0)]
+        vec![(0, -1), (1, 0), (1, 1), (0, 1), (-1, 0), (2, 0)]
     );
 }
 
@@ -2584,11 +3231,65 @@ fn manifest_probe_prioritizes_visible_pending_even_with_render_work() {
     assert!(should_probe_manifest_tiles(
         false, false, true, false, false, true
     ));
-    assert!(!should_probe_manifest_tiles(
+    assert!(should_probe_manifest_tiles(
         true, false, true, true, true, false
     ));
     assert!(!should_probe_manifest_tiles(
         false, true, true, true, true, false
+    ));
+}
+
+#[::core::prelude::v1::test]
+fn manifest_probe_allows_first_screen_visible_work_during_metadata_load() {
+    assert!(should_probe_manifest_tiles(
+        true, false, false, true, false, false
+    ));
+    assert!(!should_probe_manifest_tiles(
+        true, false, false, false, true, false
+    ));
+}
+
+#[::core::prelude::v1::test]
+fn cached_manifest_marks_all_scanned_tiles_without_reprobing_empty_tiles() {
+    let requested_tiles = vec![(0, 0), (1, 0)];
+    let mut tile_chunk_index = BTreeMap::new();
+    tile_chunk_index.insert(
+        (0, 0),
+        TileChunkPositions::from(vec![ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        }]),
+    );
+
+    let completed = complete_cached_tile_chunk_index(&requested_tiles, tile_chunk_index);
+
+    assert_eq!(completed.len(), 2);
+    assert!(
+        completed
+            .get(&(0, 0))
+            .is_some_and(|chunks| !chunks.is_empty())
+    );
+    assert!(
+        completed
+            .get(&(1, 0))
+            .is_some_and(|chunks| chunks.is_empty())
+    );
+}
+
+#[::core::prelude::v1::test]
+fn overlay_query_waits_for_visible_tile_pipeline_but_not_idle_viewport() {
+    assert!(should_defer_overlay_query_for_visible_tiles(
+        true, false, false
+    ));
+    assert!(should_defer_overlay_query_for_visible_tiles(
+        false, true, false
+    ));
+    assert!(should_defer_overlay_query_for_visible_tiles(
+        false, false, true
+    ));
+    assert!(!should_defer_overlay_query_for_visible_tiles(
+        false, false, false
     ));
 }
 
@@ -2808,6 +3509,80 @@ fn byte_budget_trim_by_filter_preserves_retained_tiles() {
 }
 
 #[::core::prelude::v1::test]
+fn byte_budget_trim_uses_last_access_for_warm_tile_lru() {
+    let mut manager = RegionManager::default();
+    let coords = [(0, 0), (1, 0)];
+    manager.ensure_tiles(&coords, TilePriority::Visible);
+    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
+    let recently_used = manager
+        .entries
+        .get(&(0, 0))
+        .map(|entry| entry.last_access)
+        .expect("first tile access stamp");
+    manager.mark_loaded((1, 0), test_tile([4, 5, 6, 255]));
+
+    // Re-entering a tile updates recency without changing its original request sequence.
+    manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
+    assert!(
+        manager
+            .entries
+            .get(&(0, 0))
+            .is_some_and(|entry| entry.last_access > recently_used)
+    );
+
+    let dropped_images = manager.trim_loaded_tiles_to_budget_by(|_| false, 4);
+
+    assert_eq!(dropped_images.len(), 1);
+    assert!(
+        manager
+            .entries
+            .get(&(0, 0))
+            .is_some_and(|entry| entry.image.is_some())
+    );
+    assert!(
+        manager
+            .entries
+            .get(&(1, 0))
+            .is_some_and(|entry| entry.image.is_none())
+    );
+}
+
+#[::core::prelude::v1::test]
+fn entry_capacity_trim_keeps_retained_and_recent_tiles() {
+    let mut manager = RegionManager::default();
+    let coords = [(0, 0), (1, 0), (2, 0), (3, 0)];
+    manager.ensure_tiles(&coords, TilePriority::Visible);
+    for (index, coord) in coords.into_iter().enumerate() {
+        manager.mark_loaded(coord, test_tile([index as u8, 0, 0, 255]));
+    }
+    manager.ensure_tiles(&[(2, 0)], TilePriority::Visible);
+
+    let dropped_images = manager.trim_entries_to_capacity_by(|coord| coord == (3, 0), 2);
+
+    assert_eq!(manager.entries.len(), 2);
+    assert!(manager.entries.contains_key(&(2, 0)));
+    assert!(manager.entries.contains_key(&(3, 0)));
+    assert_eq!(manager.loaded_count(), 2);
+    assert_eq!(dropped_images.len(), 2);
+}
+
+#[::core::prelude::v1::test]
+fn entry_capacity_trim_keeps_in_flight_state_ownership() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0), (1, 0)], TilePriority::Visible);
+    manager.mark_loading(&[(0, 0)]);
+    manager.mark_invalid((1, 0), SharedString::from("empty tile"));
+
+    manager.trim_entries_to_capacity_by(|_| false, 0);
+
+    assert_eq!(manager.entries.len(), 1);
+    assert_eq!(
+        manager.entries.get(&(0, 0)).map(|entry| entry.state),
+        Some(TileLoadState::Loading)
+    );
+}
+
+#[::core::prelude::v1::test]
 fn empty_manifest_tile_stays_invalid_negative_cache() {
     let mut manager = RegionManager::default();
     manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
@@ -2956,33 +3731,6 @@ fn editor_confirmation_requires_matching_target_and_action() {
 
     assert!(pending.target == target && pending.action == EditAction::Save);
     assert!(pending.action != EditAction::Delete);
-}
-
-#[::core::prelude::v1::test]
-fn quick_write_confirmation_label_requires_same_action() {
-    let chunk = ChunkPos {
-        x: 3,
-        z: -4,
-        dimension: Dimension::Overworld,
-    };
-    let pending = QuickWriteAction::DeleteCurrentChunk(chunk);
-
-    assert_eq!(
-        confirming_quick_label(
-            Some(&pending),
-            pending.clone(),
-            "删除当前 chunk（清空为空气）"
-        ),
-        "确认删除当前 chunk（清空为空气）"
-    );
-    assert_eq!(
-        confirming_quick_label(
-            Some(&pending),
-            QuickWriteAction::DeleteCurrentChunkActors(chunk),
-            "删除当前 chunk 实体"
-        ),
-        "删除当前 chunk 实体"
-    );
 }
 
 #[::core::prelude::v1::test]
@@ -3852,4 +4600,477 @@ fn hsa_structured_rows_keep_unknown_kind() {
     assert_eq!(rows[0].value.as_ref(), "Unknown(99)");
     assert_eq!(rows[1].value.as_ref(), "0,1,2");
     assert_eq!(rows[2].value.as_ref(), "3,4,5");
+}
+
+#[::core::prelude::v1::test]
+fn paste_672_chunks_reports_only_committed_batch_progress() {
+    let source_anchor = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    let target_anchor = ChunkPos {
+        x: 1_000,
+        z: -1_000,
+        dimension: Dimension::Overworld,
+    };
+    let chunks = (0..24)
+        .flat_map(|z| {
+            (0..28).map(move |x| {
+                let chunk = ChunkPos {
+                    x,
+                    z,
+                    dimension: Dimension::Overworld,
+                };
+                CopiedChunkSnapshot {
+                    chunk,
+                    records: vec![ChunkRecord {
+                        key: ChunkKey::new(chunk, ChunkRecordTag::Version),
+                        value: bytes::Bytes::from_static(b"\x2a"),
+                    }],
+                    block_entities: Vec::new(),
+                    hardcoded_spawn_areas: Vec::new(),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let copied_chunk = CopiedChunkData {
+        source: source_anchor,
+        chunks,
+    };
+    let storage = Arc::new(bedrock_world::MemoryStorage::new());
+    let world = BedrockWorld::from_storage(
+        "memory",
+        storage.clone(),
+        bedrock_world::OpenOptions {
+            read_only: false,
+            ..bedrock_world::OpenOptions::default()
+        },
+    );
+    let guard = WriteGuard::confirmed("memory", "paste 672 chunk test");
+    let mut progress = Vec::new();
+
+    let (_, invalidation) = paste_copied_chunk_blocking(
+        &world,
+        &copied_chunk,
+        source_anchor,
+        target_anchor,
+        PasteTransform::default(),
+        &guard,
+        None,
+        &mut |update| {
+            let committed_index = update.completed.saturating_sub(1);
+            let committed_target = ChunkPos {
+                x: target_anchor.x + i32::try_from(committed_index % 28).expect("target x"),
+                z: target_anchor.z + i32::try_from(committed_index / 28).expect("target z"),
+                dimension: target_anchor.dimension,
+            };
+            assert_eq!(
+                bedrock_world::WorldStorage::get(
+                    storage.as_ref(),
+                    &ChunkKey::new(committed_target, ChunkRecordTag::Version).encode(),
+                )
+                .expect("read committed progress chunk"),
+                Some(bytes::Bytes::from_static(b"\x2a"))
+            );
+            progress.push(update);
+        },
+    )
+    .expect("paste 672 chunks");
+
+    assert_eq!(invalidation.affected_chunks().len(), 672);
+    assert_eq!(progress.len(), 42);
+    assert!(progress.iter().enumerate().all(|(index, update)| {
+        update.phase.as_ref() == "粘贴区块"
+            && update.completed == (index + 1) * 16
+            && update.total == 672
+    }));
+    for target in [
+        target_anchor,
+        ChunkPos {
+            x: target_anchor.x + 27,
+            z: target_anchor.z + 23,
+            dimension: target_anchor.dimension,
+        },
+    ] {
+        assert_eq!(
+            bedrock_world::WorldStorage::get(
+                storage.as_ref(),
+                &ChunkKey::new(target, ChunkRecordTag::Version).encode(),
+            )
+            .expect("read pasted chunk record"),
+            Some(bytes::Bytes::from_static(b"\x2a"))
+        );
+    }
+}
+
+#[::core::prelude::v1::test]
+fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
+    let source = ChunkPos {
+        x: 2,
+        z: -3,
+        dimension: Dimension::Overworld,
+    };
+    let mut biome_indices = vec![0_u16; 4096];
+    biome_indices[bedrock_world::block_storage_index(1, 2, 3)] = 1;
+    let biome = Biome3d::new(
+        vec![64; 256],
+        vec![bedrock_world::ParsedBiomeStorage {
+            y: Some(-64),
+            palette: vec![1, 42],
+            indices: Some(biome_indices),
+            counts: vec![4095, 1],
+        }],
+    )
+    .expect("test biome");
+    let copied_chunk = CopiedChunkData {
+        source,
+        chunks: vec![CopiedChunkSnapshot {
+            chunk: source,
+            records: vec![
+                ChunkRecord {
+                    key: ChunkKey::new(source, ChunkRecordTag::Version),
+                    value: Bytes::from_static(b"\x2a"),
+                },
+                ChunkRecord {
+                    key: ChunkKey::new(source, ChunkRecordTag::Data3D),
+                    value: Bytes::from(biome.encode().expect("encode test biome")),
+                },
+                test_two_layer_subchunk_record(source, 0, (1, 2, 3)),
+            ],
+            block_entities: Vec::new(),
+            hardcoded_spawn_areas: Vec::new(),
+        }],
+    };
+    let storage = Arc::new(bedrock_world::MemoryStorage::new());
+    let world = BedrockWorld::from_storage(
+        "memory",
+        storage,
+        bedrock_world::OpenOptions {
+            read_only: false,
+            ..bedrock_world::OpenOptions::default()
+        },
+    );
+    let guard = WriteGuard::confirmed("memory", "rotated paste test");
+
+    let cases = [
+        (
+            PasteTransform {
+                mirror_x: true,
+                ..PasteTransform::default()
+            },
+            (14, 3),
+        ),
+        (
+            PasteTransform {
+                mirror_z: true,
+                ..PasteTransform::default()
+            },
+            (1, 12),
+        ),
+        (
+            PasteTransform::from_rotation(PasteRotation::Clockwise90),
+            (12, 1),
+        ),
+        (
+            PasteTransform::from_rotation(PasteRotation::CounterClockwise90),
+            (3, 14),
+        ),
+        (
+            PasteTransform::from_rotation(PasteRotation::Rotate180),
+            (14, 12),
+        ),
+        (
+            PasteTransform {
+                rotation: PasteRotation::Clockwise90,
+                mirror_x: true,
+                mirror_z: false,
+            },
+            (12, 14),
+        ),
+    ];
+
+    for (index, (transform, (target_x, target_z))) in cases.into_iter().enumerate() {
+        let target = ChunkPos {
+            x: 40 + i32::try_from(index).expect("target offset"),
+            z: 50,
+            dimension: Dimension::Overworld,
+        };
+        paste_copied_chunk_blocking(
+            &world,
+            &copied_chunk,
+            source,
+            target,
+            transform,
+            &guard,
+            None,
+            &mut |_| {},
+        )
+        .expect("transform and paste chunk");
+
+        let subchunk = world
+            .get_subchunk_blocking(target, 0)
+            .expect("read target subchunk")
+            .expect("target subchunk exists");
+        assert_eq!(
+            subchunk
+                .block_state_at(target_x, 2, target_z)
+                .map(|state| state.name.as_str()),
+            Some("minecraft:stone")
+        );
+        let heightmap = world
+            .get_heightmap_blocking(target)
+            .expect("read transformed target heightmap")
+            .expect("transformed target heightmap exists");
+        assert_ne!(
+            heightmap.values[usize::from(target_z) * 16 + usize::from(target_x)],
+            0
+        );
+        assert!(
+            world
+                .get_chunk_blocking(target)
+                .expect("read transformed target")
+                .records
+                .iter()
+                .any(|record| {
+                    record.key.tag == ChunkRecordTag::Version && record.value.as_ref() == b"\x2a"
+                })
+        );
+        assert_eq!(
+            world
+                .get_biome_storage_blocking(target, -62)
+                .expect("read transformed biome")
+                .and_then(|storage| storage.biome_id_at(target_x, 2, target_z)),
+            Some(42)
+        );
+    }
+}
+
+#[::core::prelude::v1::test]
+fn pasted_chunk_record_survives_leveldb_reopen() {
+    let unique = format!(
+        "bmcbl-map-paste-reopen-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    );
+    let world_path = std::env::temp_dir().join(unique);
+    let database_path = world_path.join("db");
+    let database =
+        bedrock_leveldb::Db::open(&database_path, bedrock_leveldb::OpenOptions::default())
+            .expect("initialize temporary world db");
+    drop(database);
+    let source = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    let target = ChunkPos {
+        x: 7,
+        z: -9,
+        dimension: Dimension::Overworld,
+    };
+    let copied_chunk = CopiedChunkData {
+        source,
+        chunks: vec![CopiedChunkSnapshot {
+            chunk: source,
+            records: vec![ChunkRecord {
+                key: ChunkKey::new(source, ChunkRecordTag::Version),
+                value: Bytes::from_static(b"\x2a"),
+            }],
+            block_entities: Vec::new(),
+            hardcoded_spawn_areas: Vec::new(),
+        }],
+    };
+    {
+        let world = BedrockWorld::open_blocking(
+            &world_path,
+            bedrock_world::OpenOptions {
+                read_only: false,
+                format: bedrock_world::WorldFormatHint::LevelDb,
+                ..bedrock_world::OpenOptions::default()
+            },
+        )
+        .expect("open temporary writable world");
+        let guard = WriteGuard::confirmed(&world_path, "persistent paste test");
+        paste_copied_chunk_blocking(
+            &world,
+            &copied_chunk,
+            source,
+            target,
+            PasteTransform::default(),
+            &guard,
+            None,
+            &mut |_| {},
+        )
+        .expect("paste into temporary world");
+    }
+    {
+        let reopened =
+            BedrockWorld::open_blocking(&world_path, bedrock_world::OpenOptions::default())
+                .expect("reopen temporary world");
+        let target_chunk = reopened
+            .get_chunk_blocking(target)
+            .expect("read persisted target chunk");
+        assert!(target_chunk.records.iter().any(|record| {
+            record.key.tag == ChunkRecordTag::Version && record.value.as_ref() == b"\x2a"
+        }));
+    }
+    std::fs::remove_dir_all(&world_path).expect("remove temporary world");
+}
+
+#[::core::prelude::v1::test]
+#[ignore = "requires BMCBL_REAL_WORLD and reads an installed Bedrock world"]
+fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
+    let source_world_path = std::env::var_os("BMCBL_REAL_WORLD")
+        .map(PathBuf::from)
+        .expect("BMCBL_REAL_WORLD must point to a Bedrock world root");
+    let source_editor = MapWorldEditor::open_with_options(
+        &source_world_path,
+        bedrock_world::OpenOptions {
+            read_only: true,
+            format: bedrock_world::WorldFormatHint::LevelDb,
+        },
+    )
+    .expect("open real source world read-only");
+    let source = [(-14, -5), (16, 40), (0, 0), (-34, 4), (31, -1)]
+        .into_iter()
+        .map(|(x, z)| ChunkPos {
+            x,
+            z,
+            dimension: Dimension::Overworld,
+        })
+        .find(|chunk| {
+            source_editor
+                .world()
+                .get_chunk_blocking(*chunk)
+                .is_ok_and(|data| {
+                    data.records
+                        .iter()
+                        .any(|record| record.key.tag == ChunkRecordTag::SubChunkPrefix)
+                })
+        })
+        .expect("a real candidate chunk must contain subchunk data");
+    let copied = copy_chunks_blocking(&source_editor, source, vec![source], None, |_| {})
+        .expect("copy real source chunk");
+    let expected_records = copied.chunks[0].records.clone();
+
+    let unique = format!(
+        "bmcbl-real-map-paste-reopen-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    );
+    let world_path = std::env::temp_dir().join(unique);
+    let database = bedrock_leveldb::Db::open(
+        world_path.join("db"),
+        bedrock_leveldb::OpenOptions::default(),
+    )
+    .expect("initialize temporary target db");
+    drop(database);
+    let target = ChunkPos {
+        x: 20_000,
+        z: -20_000,
+        dimension: Dimension::Overworld,
+    };
+    let transformed_target = ChunkPos {
+        x: 20_001,
+        z: -20_000,
+        dimension: Dimension::Overworld,
+    };
+    {
+        let target_world = BedrockWorld::open_blocking(
+            &world_path,
+            bedrock_world::OpenOptions {
+                read_only: false,
+                format: bedrock_world::WorldFormatHint::LevelDb,
+            },
+        )
+        .expect("open temporary target world");
+        let guard = WriteGuard::confirmed(&world_path, "real world paste persistence test");
+        paste_copied_chunk_blocking(
+            &target_world,
+            &copied,
+            source,
+            target,
+            PasteTransform::default(),
+            &guard,
+            None,
+            &mut |_| {},
+        )
+        .expect("paste real chunk into temporary world");
+        paste_copied_chunk_blocking(
+            &target_world,
+            &copied,
+            source,
+            transformed_target,
+            PasteTransform::from_rotation(PasteRotation::Rotate180),
+            &guard,
+            None,
+            &mut |_| {},
+        )
+        .expect("transform real chunk into temporary world");
+    }
+    {
+        let reopened = BedrockWorld::open_blocking(
+            &world_path,
+            bedrock_world::OpenOptions {
+                read_only: true,
+                format: bedrock_world::WorldFormatHint::LevelDb,
+            },
+        )
+        .expect("reopen temporary target world read-only");
+        let actual = reopened
+            .get_chunk_blocking(target)
+            .expect("read persisted real target chunk");
+        for expected in &expected_records {
+            assert!(actual.records.iter().any(|record| {
+                record.key.tag == expected.key.tag
+                    && record.key.subchunk_y == expected.key.subchunk_y
+                    && record.value == expected.value
+            }));
+        }
+        let transformed = reopened
+            .get_chunk_blocking(transformed_target)
+            .expect("read persisted transformed target chunk");
+        for version_tag in [
+            ChunkRecordTag::Version,
+            ChunkRecordTag::VersionOld,
+            ChunkRecordTag::LegacyVersion,
+        ] {
+            for expected in expected_records
+                .iter()
+                .filter(|record| record.key.tag == version_tag)
+            {
+                assert!(transformed.records.iter().any(|record| {
+                    record.key.tag == version_tag && record.value == expected.value
+                }));
+            }
+        }
+        assert!(
+            transformed
+                .records
+                .iter()
+                .any(|record| record.key.tag == ChunkRecordTag::Data3D)
+        );
+        assert!(
+            transformed
+                .records
+                .iter()
+                .any(|record| record.key.tag == ChunkRecordTag::SubChunkPrefix)
+        );
+        let renderer = bedrock_render::MapRenderer::new(
+            Arc::new(reopened),
+            bedrock_render::RenderPalette::default(),
+        );
+        let bake = renderer
+            .bake_chunk_blocking(transformed_target, bedrock_render::BakeOptions::default())
+            .expect("bake persisted transformed chunk");
+        assert_eq!(bake.pos, transformed_target);
+    }
+    std::fs::remove_dir_all(&world_path).expect("remove temporary target world");
 }

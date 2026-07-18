@@ -1,5 +1,6 @@
 mod clipboard;
 mod destination_list;
+mod direct_write;
 mod dispatcher;
 mod display;
 mod input;
@@ -10,6 +11,7 @@ mod window;
 
 pub(crate) use clipboard::*;
 pub(crate) use destination_list::*;
+pub(crate) use direct_write::*;
 pub(crate) use dispatcher::*;
 pub(crate) use display::*;
 pub(crate) use input::*;

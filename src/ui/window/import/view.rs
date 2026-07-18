@@ -645,10 +645,11 @@ impl Render for ImportWindowView {
         }
 
         let toast_state = cx.global::<toast::ToastState>();
-        if toast::has_visible_toasts(now, toast_state) {
+        let window_id = window.window_handle().window_id();
+        if toast::has_visible_toasts(window_id, now, toast_state) {
             root = root.child(toast::render_overlay(window, cx, &colors, now, toast_state));
         }
-        if toast::has_visible_breadcrumb(now, toast_state) {
+        if toast::has_visible_breadcrumb(window_id, now, toast_state) {
             root = root.child(toast::render_breadcrumb_overlay(
                 window,
                 cx,

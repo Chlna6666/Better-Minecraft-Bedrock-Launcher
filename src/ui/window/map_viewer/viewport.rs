@@ -151,10 +151,8 @@ pub(super) fn screen_x_for_block(
     block_x: i32,
 ) -> f32 {
     bounds.left() / px(1.0)
-        + region_render_range_for_viewport(viewport, layout).map_or_else(
-            || viewport.offset_x + block_to_map_pixel(block_x, layout) * viewport.scale,
-            |range| range.screen_x_for_block(block_x),
-        )
+        + viewport.offset_x
+        + block_to_map_pixel(block_x, layout) * viewport.scale
 }
 
 pub(super) fn screen_y_for_block(
@@ -164,10 +162,8 @@ pub(super) fn screen_y_for_block(
     block_z: i32,
 ) -> f32 {
     bounds.top() / px(1.0)
-        + region_render_range_for_viewport(viewport, layout).map_or_else(
-            || viewport.offset_y + block_to_map_pixel(block_z, layout) * viewport.scale,
-            |range| range.screen_y_for_block(block_z),
-        )
+        + viewport.offset_y
+        + block_to_map_pixel(block_z, layout) * viewport.scale
 }
 
 pub(super) fn viewport_screen_for_block(
@@ -332,30 +328,32 @@ pub(super) fn aligned_camera_chunk(
     (min_chunk, render_origin)
 }
 
-pub(super) fn tile_paint_sort_key(
-    coord: (i32, i32),
-    range: MapRenderRange,
-) -> (i64, i64, i32, i32) {
-    let bounds = range.tile_bounds();
-    (
-        i64::from(coord.0) - i64::from(bounds.min_x),
-        i64::from(coord.1) - i64::from(bounds.min_z),
-        coord.0,
-        coord.1,
-    )
+pub(super) const fn tile_paint_sort_key(coord: (i32, i32)) -> (i32, i32) {
+    (coord.1, coord.0)
 }
 
 pub(super) fn tile_coords_for_paint_order(bounds: TileBounds) -> Vec<(i32, i32)> {
     if bounds.min_x > bounds.max_x || bounds.min_z > bounds.max_z {
         return Vec::new();
     }
-    let mut coords = Vec::new();
-    for x in bounds.min_x..=bounds.max_x {
-        for z in bounds.min_z..=bounds.max_z {
+    let mut coords = Vec::with_capacity(tile_bounds_count(bounds));
+    for z in bounds.min_z..=bounds.max_z {
+        for x in bounds.min_x..=bounds.max_x {
             coords.push((x, z));
         }
     }
     coords
+}
+
+pub(super) fn tile_bounds_center(bounds: TileBounds) -> (i32, i32) {
+    let center_x = i64::from(bounds.min_x)
+        .saturating_add((i64::from(bounds.max_x) - i64::from(bounds.min_x)) / 2);
+    let center_z = i64::from(bounds.min_z)
+        .saturating_add((i64::from(bounds.max_z) - i64::from(bounds.min_z)) / 2);
+    (
+        center_x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        center_z.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+    )
 }
 
 pub(super) fn tile_paint_rect(
@@ -379,10 +377,10 @@ pub(super) fn tile_paint_rect(
         return None;
     }
     Some(TilePaintRect {
-        left: left.floor() - TILE_SEAM_BLEED_PX,
-        top: top.floor() - TILE_SEAM_BLEED_PX,
-        right: right.ceil() + TILE_SEAM_BLEED_PX,
-        bottom: bottom.ceil() + TILE_SEAM_BLEED_PX,
+        left: left.floor(),
+        top: top.floor(),
+        right: right.ceil(),
+        bottom: bottom.ceil(),
     })
 }
 
@@ -526,6 +524,18 @@ impl RetainedTileFilter {
                 || squared_distance_to_tile_bounds(coord.0, coord.1, self.visible)
                     <= i64::from(self.radius).saturating_mul(i64::from(self.radius)))
     }
+
+    pub(super) const fn visible_only(self) -> Self {
+        Self {
+            visible: self.visible,
+            retained: self.visible,
+            radius: 0,
+        }
+    }
+
+    pub(super) fn maximum_tile_count(self) -> usize {
+        tile_bounds_count(self.retained)
+    }
 }
 
 #[cfg(test)]
@@ -656,18 +666,15 @@ pub(super) fn collect_circular_tile_coords(
             );
             continue;
         }
-        for minor in 0..=ring {
-            push_ring_minor_tiles(
-                &mut coords,
-                center,
-                ring,
-                minor,
-                visible,
-                expanded,
-                radius,
-                radius_squared,
-            );
-        }
+        push_ring_clockwise_tiles(
+            &mut coords,
+            center,
+            ring,
+            visible,
+            expanded,
+            radius,
+            radius_squared,
+        );
     }
     coords
 }
@@ -708,13 +715,33 @@ pub(super) fn tile_distance_sort_key(
     let dz = i64::from(coord.1) - i64::from(center.1);
     let absolute_x = dx.abs();
     let absolute_z = dz.abs();
+    let ring = absolute_x.max(absolute_z);
     (
-        absolute_x.max(absolute_z),
+        ring,
+        tile_ring_rotation_rank(dx, dz, ring),
         dx.saturating_mul(dx).saturating_add(dz.saturating_mul(dz)),
-        absolute_x.saturating_add(absolute_z),
         coord.1,
         coord.0,
     )
+}
+
+fn tile_ring_rotation_rank(dx: i64, dz: i64, ring: i64) -> i64 {
+    if ring == 0 {
+        return 0;
+    }
+    if dz == -ring && dx >= 0 {
+        return dx;
+    }
+    if dx == ring && dz > -ring {
+        return ring + (dz + ring);
+    }
+    if dz == ring && dx < ring {
+        return ring.saturating_mul(3).saturating_add(ring - dx);
+    }
+    if dx == -ring && dz < ring {
+        return ring.saturating_mul(5).saturating_add(ring - dz);
+    }
+    ring.saturating_mul(7).saturating_add(-dx)
 }
 
 pub(super) fn select_manifest_probe_tiles(
@@ -740,23 +767,23 @@ pub(super) fn select_manifest_probe_tiles(
         if scanned_tiles.contains(&coord) || !seen.insert(coord) {
             continue;
         }
-        let (ring, distance_squared, manhattan, z, x) = tile_distance_sort_key(coord, center);
-        candidates.push((0_u8, ring, distance_squared, 0_i64, manhattan, z, x, coord));
+        let (ring, rotation, distance_squared, z, x) = tile_distance_sort_key(coord, center);
+        candidates.push((0_u8, ring, rotation, distance_squared, 0_i64, z, x, coord));
     }
     for coord in prefetch_tiles.iter().copied() {
         if scanned_tiles.contains(&coord) || !seen.insert(coord) {
             continue;
         }
-        let (ring, distance_squared, manhattan, z, x) = tile_distance_sort_key(coord, center);
+        let (ring, rotation, distance_squared, z, x) = tile_distance_sort_key(coord, center);
         let visible_distance = visible_bounds
             .map(|bounds| squared_distance_to_tile_bounds(coord.0, coord.1, bounds))
             .unwrap_or(distance_squared);
         candidates.push((
             1_u8,
             ring,
+            rotation,
             distance_squared,
             visible_distance,
-            manhattan,
             z,
             x,
             coord,
@@ -807,50 +834,69 @@ fn max_tile_ring_for_bounds(bounds: TileBounds, center: (i32, i32)) -> i32 {
         .min(i64::from(i32::MAX)) as i32
 }
 
-fn push_ring_minor_tiles(
+fn push_ring_clockwise_tiles(
     coords: &mut Vec<(i32, i32)>,
     center: (i32, i32),
     ring: i32,
-    minor: i32,
     visible: TileBounds,
     expanded: TileBounds,
     radius: i32,
     radius_squared: i64,
 ) {
-    if minor == 0 {
-        push_candidate_tiles(
+    for offset_x in 0..=ring {
+        push_ring_coordinate(
             coords,
-            &[(0, -ring), (-ring, 0), (ring, 0), (0, ring)],
             center,
+            offset_x,
+            -ring,
             visible,
             expanded,
             radius,
             radius_squared,
         );
-    } else if minor == ring {
-        push_candidate_tiles(
+    }
+    for offset_z in (-ring + 1)..=ring {
+        push_ring_coordinate(
             coords,
-            &[(-ring, -ring), (ring, -ring), (-ring, ring), (ring, ring)],
             center,
+            ring,
+            offset_z,
             visible,
             expanded,
             radius,
             radius_squared,
         );
-    } else {
-        push_candidate_tiles(
+    }
+    for offset_x in (-ring..ring).rev() {
+        push_ring_coordinate(
             coords,
-            &[
-                (-minor, -ring),
-                (minor, -ring),
-                (-ring, -minor),
-                (ring, -minor),
-                (-ring, minor),
-                (ring, minor),
-                (-minor, ring),
-                (minor, ring),
-            ],
             center,
+            offset_x,
+            ring,
+            visible,
+            expanded,
+            radius,
+            radius_squared,
+        );
+    }
+    for offset_z in (-ring + 1..ring).rev() {
+        push_ring_coordinate(
+            coords,
+            center,
+            -ring,
+            offset_z,
+            visible,
+            expanded,
+            radius,
+            radius_squared,
+        );
+    }
+    for offset_x in -ring..0 {
+        push_ring_coordinate(
+            coords,
+            center,
+            offset_x,
+            -ring,
             visible,
             expanded,
             radius,
@@ -859,24 +905,23 @@ fn push_ring_minor_tiles(
     }
 }
 
-fn push_candidate_tiles(
+fn push_ring_coordinate(
     coords: &mut Vec<(i32, i32)>,
-    offsets: &[(i32, i32)],
     center: (i32, i32),
+    offset_x: i32,
+    offset_z: i32,
     visible: TileBounds,
     expanded: TileBounds,
     radius: i32,
     radius_squared: i64,
 ) {
-    for &(offset_x, offset_z) in offsets {
-        let Some(x) = center.0.checked_add(offset_x) else {
-            continue;
-        };
-        let Some(z) = center.1.checked_add(offset_z) else {
-            continue;
-        };
-        push_tile_if_selected(coords, (x, z), visible, expanded, radius, radius_squared);
-    }
+    let Some(x) = center.0.checked_add(offset_x) else {
+        return;
+    };
+    let Some(z) = center.1.checked_add(offset_z) else {
+        return;
+    };
+    push_tile_if_selected(coords, (x, z), visible, expanded, radius, radius_squared);
 }
 
 fn push_tile_if_selected(

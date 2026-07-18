@@ -193,8 +193,64 @@ impl PlatformAtlas for NovaAtlas {
         let key = AtlasKey::from(params.clone());
         let mut build_tile = || match build()? {
             GlyphRasterization::Bitmap { size, bytes } => Ok(Some((size, Cow::Owned(bytes)))),
-            GlyphRasterization::ColorLayers { fallback, .. } => {
-                Ok(Some((fallback.size, Cow::Owned(fallback.bytes))))
+            GlyphRasterization::ColorLayers {
+                size,
+                layers,
+                fallback,
+            } => {
+                let width = usize::try_from(size.width.0).ok();
+                let height = usize::try_from(size.height.0).ok();
+                let Some((width, height)) = width.zip(height) else {
+                    return Ok(Some((fallback.size, Cow::Owned(fallback.bytes))));
+                };
+                let mut pixels = vec![[0.0f32; 4]; width.saturating_mul(height)];
+                for layer in layers {
+                    let layer_width = usize::try_from(layer.bounds.size.width.0).unwrap_or(0);
+                    let layer_height = usize::try_from(layer.bounds.size.height.0).unwrap_or(0);
+                    for layer_y in 0..layer_height {
+                        let destination_y = layer.bounds.origin.y.0 + layer_y as i32;
+                        if destination_y < 0 || destination_y >= size.height.0 {
+                            continue;
+                        }
+                        for layer_x in 0..layer_width {
+                            let destination_x = layer.bounds.origin.x.0 + layer_x as i32;
+                            if destination_x < 0 || destination_x >= size.width.0 {
+                                continue;
+                            }
+                            let alpha_index = layer_y * layer_width + layer_x;
+                            let Some(mask) = layer.alpha.get(alpha_index) else {
+                                continue;
+                            };
+                            let source_alpha = f32::from(*mask) / 255.0 * layer.color.a;
+                            let destination_index =
+                                destination_y as usize * width + destination_x as usize;
+                            let destination = &mut pixels[destination_index];
+                            let destination_alpha = destination[3];
+                            let output_alpha =
+                                source_alpha + destination_alpha * (1.0 - source_alpha);
+                            if output_alpha > 0.0 {
+                                let retained = destination_alpha * (1.0 - source_alpha);
+                                destination[0] = (layer.color.b * source_alpha
+                                    + destination[0] * retained)
+                                    / output_alpha;
+                                destination[1] = (layer.color.g * source_alpha
+                                    + destination[1] * retained)
+                                    / output_alpha;
+                                destination[2] = (layer.color.r * source_alpha
+                                    + destination[2] * retained)
+                                    / output_alpha;
+                            }
+                            destination[3] = output_alpha;
+                        }
+                    }
+                }
+                let bytes = pixels
+                    .into_iter()
+                    .flat_map(|pixel| {
+                        pixel.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    })
+                    .collect();
+                Ok(Some((size, Cow::Owned(bytes))))
             }
         };
         self.ensure_tile_with(&key, &mut build_tile)

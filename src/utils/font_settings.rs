@@ -39,15 +39,7 @@ pub fn font_config_for_selection(
         }
         crate::config::config::FONT_SOURCE_SYSTEM => {
             if let Some(family) = non_empty(system_font_family) {
-                if let Some(paths) = system_font_paths_for_family(&family) {
-                    paths
-                        .into_iter()
-                        .fold(DefaultFontConfig::system_family(family), |config, path| {
-                            config.with_path(path)
-                        })
-                } else {
-                    default_app_font_config()
-                }
+                DefaultFontConfig::system_family(family)
             } else {
                 default_app_font_config()
             }
@@ -66,14 +58,6 @@ pub fn read_local_font_family(path: &str) -> Result<String> {
     Ok(font_family_from_bytes(&bytes)
         .or_else(|| font_family_fallback_from_path(path))
         .unwrap_or_else(|| DEFAULT_APP_FONT_FAMILY.to_string()))
-}
-
-pub fn preload_system_font_catalog() -> usize {
-    system_font_catalog().families.len()
-}
-
-pub fn system_font_families() -> &'static [String] {
-    &system_font_catalog().families
 }
 
 pub fn is_system_font_family(family: &str) -> bool {
@@ -516,6 +500,19 @@ fn family_catalog_key(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_font_selection_uses_native_family_without_file_registration() {
+        let config = font_config_for_selection(
+            crate::config::config::FONT_SOURCE_SYSTEM,
+            "",
+            "",
+            "Segoe UI",
+        );
+
+        assert_eq!(config.family.as_ref(), "Segoe UI");
+        assert!(config.sources.is_empty());
+    }
 
     #[test]
     fn registry_font_name_strips_file_type_suffix() {

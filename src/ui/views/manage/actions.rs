@@ -74,8 +74,21 @@ impl ManagePageView {
         modal_state.saving = true;
         let version = modal_state.version.clone();
         let config = modal_state.config.clone();
+        let icon_source_path = modal_state.icon_source_path.clone();
         cx.spawn(async move |handle, cx| {
-            let result = data::save_manage_version_config(&version, &config).await;
+            let result = async {
+                data::save_manage_version_config(&version, &config).await?;
+                if let Some(icon_source_path) = icon_source_path {
+                    crate::core::version::icons::copy_version_icon(
+                        std::path::Path::new(icon_source_path.as_ref()),
+                        std::path::Path::new(version.path.as_ref()),
+                    )
+                    .await
+                    .map_err(|error| format!("保存版本图标失败: {error}"))?;
+                }
+                Ok::<(), String>(())
+            }
+            .await;
             let _ = handle.update(cx, |this, cx| {
                 if let Some(modal) = this.version_settings_modal.as_mut() {
                     modal.saving = false;
@@ -87,6 +100,7 @@ impl ManagePageView {
                             state.version_config = config.clone();
                             state.version_config_error = None;
                         });
+                        ensure_local_versions_loaded(true, cx);
                         toast::success(cx, SharedString::from("版本设置已保存"));
                         this.version_settings_modal = None;
                         this.invalidate_version_dependent_data(cx);
@@ -113,8 +127,22 @@ impl ManagePageView {
         self.version_settings_modal = Some(version_settings::VersionSettingsModalState {
             version,
             config: state.version_config.clone(),
+            icon_source_path: None,
             saving: false,
         });
+        cx.notify();
+    }
+
+    pub fn select_version_icon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(icon_source_path) =
+            pick_file_path_with_filter_for_window(window, "PNG Image", &["png"])
+        else {
+            return;
+        };
+        let Some(modal_state) = self.version_settings_modal.as_mut() else {
+            return;
+        };
+        modal_state.icon_source_path = Some(SharedString::from(icon_source_path));
         cx.notify();
     }
 

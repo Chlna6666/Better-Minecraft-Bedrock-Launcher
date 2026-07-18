@@ -157,7 +157,7 @@ impl MapViewerWindowView {
             .px(px(12.0))
             .bg(colors.surface)
             .overflow_y_scrollbar()
-            .child(panel_title(colors, "工具"))
+            .child(panel_title(colors, "地图工具"))
             .child(self.render_viewport_inputs(colors))
             .child(
                 panel_section_body(colors)
@@ -166,35 +166,62 @@ impl MapViewerWindowView {
                         lucide_icons::icon_map(),
                         "维度",
                     ))
-                    .children(dimension_buttons(
-                        self.dimension,
-                        self.custom_dimension_id,
-                        colors,
-                        cx,
-                    )),
-            )
-            .child(
-                panel_section_body(colors)
-                    .child(panel_section_header(
-                        colors,
-                        lucide_icons::icon_gauge(),
-                        "CPU",
-                    ))
-                    .child(self.render_cpu_budget_control(colors, cx)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(8.0))
+                            .children(dimension_buttons(
+                                self.dimension,
+                                self.custom_dimension_id,
+                                colors,
+                                cx,
+                            )),
+                    )
+                    .when(matches!(self.dimension, Dimension::Unknown(_)), |this| {
+                        this.child(self.render_map_input(
+                            colors,
+                            MapInputField::DimensionId,
+                            "自定义维度 ID",
+                            px(252.0),
+                        ))
+                    }),
             )
             .child(self.render_overlay_section(colors, cx))
     }
 
     pub(super) fn render_viewport_inputs(&self, colors: &ThemeColors) -> Div {
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(6.0))
-            .child(self.render_map_input(colors, MapInputField::CenterX, "X", px(88.0)))
-            .child(self.render_map_input(colors, MapInputField::CenterZ, "Z", px(88.0)))
-            .child(self.render_map_input(colors, MapInputField::ZoomPercent, "Zoom", px(78.0)))
-            .child(self.render_map_input(colors, MapInputField::DimensionId, "Dim", px(72.0)))
+        panel_section_body(colors)
+            .child(panel_section_header(
+                colors,
+                lucide_icons::icon_search(),
+                "定位与缩放",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(self.render_map_input(
+                        colors,
+                        MapInputField::CenterX,
+                        "中心 X",
+                        px(122.0),
+                    ))
+                    .child(self.render_map_input(
+                        colors,
+                        MapInputField::CenterZ,
+                        "中心 Z",
+                        px(122.0),
+                    ))
+                    .child(self.render_map_input(
+                        colors,
+                        MapInputField::ZoomPercent,
+                        "缩放百分比",
+                        px(122.0),
+                    )),
+            )
     }
 
     pub(super) fn render_map_input(
@@ -206,9 +233,11 @@ impl MapViewerWindowView {
     ) -> Div {
         let invalid = self.input_fields.validation.invalid_field == Some(field);
         div()
+            .w(width)
             .flex()
-            .items_center()
-            .gap(px(4.0))
+            .flex_col()
+            .items_start()
+            .gap(px(5.0))
             .child(
                 div()
                     .text_size(px(11.0))
@@ -221,7 +250,7 @@ impl MapViewerWindowView {
             )
             .child(
                 div()
-                    .w(width)
+                    .w_full()
                     .h(px(30.0))
                     .px(px(8.0))
                     .rounded(px(8.0))
@@ -240,231 +269,199 @@ impl MapViewerWindowView {
                     })
                     .child(
                         Input::new(self.input_fields.entity(field))
-                            .with_size(InputSize::Small)
                             .appearance(false)
                             .bordered(false)
                             .focus_bordered(false)
-                            .w(width - px(16.0)),
+                            .cleanable(false)
+                            .w_full()
+                            .h_full()
+                            .px(px(0.0))
+                            .text_size(px(13.0)),
                     ),
             )
     }
 
-    pub(super) fn render_cpu_budget_control(
-        &self,
-        colors: &ThemeColors,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let normalized = (f32::from(self.cpu_budget.percent - MIN_CPU_PERCENT)
-            / f32::from(MAX_CPU_PERCENT - MIN_CPU_PERCENT))
-        .clamp(0.0, 1.0);
-        div()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .child(toolbar_button(colors, "CPU -").on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.step_cpu_budget(-1, cx)),
-            ))
-            .child(
-                div()
-                    .relative()
-                    .w(px(118.0))
-                    .h(px(12.0))
-                    .rounded(px(6.0))
-                    .bg(colors.progress_track)
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(0.0))
-                            .top(px(0.0))
-                            .h(px(12.0))
-                            .w(px(118.0 * normalized))
-                            .rounded(px(6.0))
-                            .bg(colors.progress_fill),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(108.0 * normalized))
-                            .top(px(-3.0))
-                            .w(px(18.0))
-                            .h(px(18.0))
-                            .rounded_full()
-                            .border_2()
-                            .border_color(colors.accent)
-                            .bg(colors.accent_hover),
-                    ),
-            )
-            .child(toolbar_button(colors, "CPU +").on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| this.step_cpu_budget(1, cx)),
-            ))
-            .child(status_badge(
-                colors,
-                format!("{}%", self.cpu_budget.percent),
-            ))
-    }
-
-    /// Overlays section, regrouped into two labeled sub-sections ("显示" / "查询")
-    /// plus a selection-actions row, replacing the old single cluttered flex_wrap.
     pub(super) fn render_overlay_section(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(CHROME_SECTION_GAP))
+            .child(self.render_display_options(colors, cx))
+            .child(self.render_data_overlays(colors, cx))
+            .child(self.render_slime_analysis(colors, cx))
+            .child(self.render_selection_tools(colors, cx))
+    }
+
+    fn render_display_options(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         panel_section_body(colors)
             .child(panel_section_header(
                 colors,
                 lucide_icons::icon_eye(),
-                "叠加层",
+                "地图显示",
             ))
             .child(
-                // 显示 — display toggles
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors.text_muted)
-                            .child("显示"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                mode_button(colors, "坐标轴", self.overlay_options.axis)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_axis(cx)
-                                        }),
-                                    ),
-                            )
-                            .child(
-                                mode_button(colors, "密网格", self.overlay_options.dense_grid)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_dense_grid(cx)
-                                        }),
-                                    ),
-                            )
-                            .child(
-                                mode_button(colors, "标尺", self.overlay_options.ruler)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_ruler(cx)
-                                        }),
-                                    ),
-                            ),
-                    ),
-            )
-            .child(
-                // 查询 — professional query overlays
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors.text_muted)
-                            .child("查询"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                mode_button(colors, "史莱姆", self.overlay_options.slime_chunks)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_slime_overlay(cx)
-                                        }),
-                                    ),
-                            )
-                            .child(
-                                mode_button(colors, "实体", self.overlay_options.entities)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_entity_overlay(cx)
-                                        }),
-                                    ),
-                            )
-                            .child(
-                                mode_button(
-                                    colors,
-                                    "方块实体",
-                                    self.overlay_options.block_entities,
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.toggle_block_entity_overlay(cx)
-                                    }),
-                                ),
-                            )
-                            .child(
-                                mode_button(colors, "村庄", self.overlay_options.villages)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_village_overlay(cx)
-                                        }),
-                                    ),
-                            )
-                            .child(
-                                mode_button(
-                                    colors,
-                                    "生成区",
-                                    self.overlay_options.hardcoded_spawn_areas,
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.toggle_hsa_overlay(cx)
-                                    }),
-                                ),
-                            )
-                            .child(
-                                mode_button(colors, "写入模式", self.professional.write_mode)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_write_mode(cx)
-                                        }),
-                                    ),
-                            )
-                            .children(slime_query_window_buttons(
-                                self.slime_query_window_size,
-                                colors,
-                                cx,
-                            ))
-                            .children(self.slime_window_candidate_buttons(colors, cx)),
-                    ),
-            )
-            .child(
-                // 选区操作 — selection actions row
                 div()
                     .flex()
                     .flex_wrap()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        mode_button(colors, "坐标轴", self.overlay_options.axis).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| this.toggle_axis(cx)),
+                        ),
+                    )
+                    .child(
+                        mode_button(colors, "区块网格", self.overlay_options.dense_grid)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| this.toggle_dense_grid(cx)),
+                            ),
+                    )
+                    .child(
+                        mode_button(colors, "地图标尺", self.overlay_options.ruler).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| this.toggle_ruler(cx)),
+                        ),
+                    ),
+            )
+    }
+
+    fn render_data_overlays(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        panel_section_body(colors)
+            .child(panel_section_header(
+                colors,
+                lucide_icons::icon_layers(),
+                "数据叠加",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        mode_button(colors, "生物实体", self.overlay_options.entities)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_entity_overlay(cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        mode_button(colors, "方块实体", self.overlay_options.block_entities)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_block_entity_overlay(cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        mode_button(colors, "村庄范围", self.overlay_options.villages)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_village_overlay(cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        mode_button(colors, "计划刻队列", self.overlay_options.pending_ticks)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_pending_tick_overlay(cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        mode_button(
+                            colors,
+                            "硬编码生成区",
+                            self.overlay_options.hardcoded_spawn_areas,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| this.toggle_hsa_overlay(cx)),
+                        ),
+                    ),
+            )
+    }
+
+    fn render_slime_analysis(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let candidate_count = self
+            .professional
+            .slime_window_candidates
+            .as_ref()
+            .map_or(0, |cache| cache.windows.len());
+        panel_section_body(colors)
+            .child(panel_section_header(
+                colors,
+                lucide_icons::icon_search(),
+                "史莱姆群落分析",
+            ))
+            .child(
+                mode_button(colors, "显示史莱姆区块", self.overlay_options.slime_chunks)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| this.toggle_slime_overlay(cx)),
+                    ),
+            )
+            .child(panel_field_label(colors, "连续窗口大小（区块）"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .children(slime_query_window_buttons(
+                        self.slime_query_window_size,
+                        colors,
+                        cx,
+                    )),
+            )
+            .when(self.professional.slime_window_candidates_loading, |this| {
+                this.child(status_badge(colors, "正在计算候选窗口"))
+            })
+            .when(candidate_count > 0, |this| {
+                this.child(status_badge(colors, format!("候选窗口 {candidate_count}")))
+            })
+            .children(self.slime_window_candidate_buttons(colors, cx))
+    }
+
+    fn render_selection_tools(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
+        let selection = self.professional.selection.map_or_else(
+            || "未选择区块".to_string(),
+            |selection| {
+                let bounds = selection.bounds();
+                format!(
+                    "chunk {},{} 至 {},{}",
+                    bounds.min_chunk_x, bounds.min_chunk_z, bounds.max_chunk_x, bounds.max_chunk_z
+                )
+            },
+        );
+        panel_section_body(colors)
+            .child(panel_section_header(
+                colors,
+                lucide_icons::icon_box(),
+                "当前选区",
+            ))
+            .child(status_badge(colors, selection))
+            .child(
+                div()
+                    .flex()
                     .items_center()
                     .gap(px(6.0))
                     .child(toolbar_button(colors, "统计选区").on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| this.query_selection_stats(cx)),
                     ))
-                    .child(toolbar_button(colors, "清选区").on_mouse_down(
+                    .child(toolbar_button(colors, "清除选区").on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| {
                             this.clear_professional_selection(cx)
@@ -481,7 +478,9 @@ impl MapViewerWindowView {
         let Some(cache) = self.professional.slime_window_candidates.as_ref() else {
             return Vec::new();
         };
-        if cache.size != self.slime_query_window_size {
+        if cache.size != self.slime_query_window_size
+            || self.professional_query_bounds() != Some(cache.bounds)
+        {
             return Vec::new();
         }
         cache
@@ -491,7 +490,7 @@ impl MapViewerWindowView {
             .enumerate()
             .map(|(index, window)| {
                 let label = format!(
-                    "#{} {}/{} @ {},{}",
+                    "候选 {} · {}/{} 史莱姆 · 中心 {},{}",
                     index + 1,
                     window.slime_count,
                     window.total_count,
@@ -499,6 +498,7 @@ impl MapViewerWindowView {
                     window.center.z
                 );
                 toolbar_button(colors, label)
+                    .w_full()
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
@@ -728,6 +728,37 @@ pub(super) fn panel_section_header(
             colors.text_muted,
         ))
         .child(title.into())
+}
+
+pub(super) fn panel_field_label(colors: &ThemeColors, label: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(px(11.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(colors.text_secondary)
+        .child(label.into())
+}
+
+pub(super) fn dock_close_button(colors: &ThemeColors) -> Div {
+    div()
+        .size(px(30.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .cursor(CursorStyle::PointingHand)
+        .text_color(colors.text_secondary)
+        .hover(|style| {
+            style.bg(Hsla {
+                a: CHROME_ELEVATED_ALPHA,
+                ..colors.surface_hover
+            })
+        })
+        .child(themed_icon(
+            lucide_icons::icon_x(),
+            CHROME_TAB_ICON_SIZE,
+            colors.text_secondary,
+        ))
 }
 
 /// Tab button variant with a leading icon (for the bottom dock tab strip).

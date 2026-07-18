@@ -29,7 +29,8 @@ use crate::ui::views::manage::state::{
     ManageTab, ManageVersionConfig, ManagedVersionEntry,
 };
 use crate::utils::file_picker::{
-    pick_file_path_with_filter, pick_file_paths_with_filter, pick_save_path_with_filter,
+    pick_file_path_with_filter, pick_file_path_with_filter_for_window, pick_file_paths_with_filter,
+    pick_save_path_with_filter,
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -58,6 +59,7 @@ mod servers_tab;
 mod shared;
 mod skin_pack_data;
 pub mod state;
+mod thumbnail;
 mod version_settings;
 mod view;
 
@@ -72,6 +74,7 @@ use screenshots_tab::*;
 use servers_tab::*;
 use shared::*;
 use skin_pack_data::*;
+use thumbnail::*;
 
 pub use dialogs::render_manage_overlay;
 pub use view::ManagePageView;

@@ -638,6 +638,11 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
             t.cancel_requested = status == "cancelled";
             t.message = message.map(Arc::<str>::from);
             t.paused = false;
+            if status == "completed"
+                && let Some(total) = t.total
+            {
+                t.done = total;
+            }
             if is_terminal_status(status) {
                 t.speed_ema = 0.0;
                 t.last_done = t.done;
@@ -1016,6 +1021,31 @@ fn format_duration_hms(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_task_finishes_known_progress_total() {
+        let task_id = format!(
+            "task-manager-complete-progress-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task_with_details(
+            Some(task_id.clone()),
+            "完成进度测试",
+            None,
+            "testing",
+            Some(672),
+            false,
+        );
+        update_progress(&task_id, 671, Some(672), Some("testing"));
+
+        finish_task(&task_id, "completed", None);
+
+        let snapshot = get_snapshot_arc(&task_id).expect("completed task snapshot");
+        assert_eq!(snapshot.status.as_ref(), "completed");
+        assert_eq!(snapshot.done, 672);
+        assert_eq!(snapshot.total, Some(672));
+        assert!(remove_task(&task_id));
+    }
 
     #[test]
     fn cancel_task_runs_cancel_hook_and_clears_it() {

@@ -25,6 +25,8 @@ mod attributed_string;
 
 mod open_type;
 
+mod text_system;
+
 mod platform;
 mod window;
 mod window_appearance;
@@ -46,6 +48,7 @@ pub(crate) use display::*;
 pub(crate) use display_link::*;
 pub(crate) use keyboard::*;
 pub(crate) use platform::*;
+pub(crate) use text_system::*;
 pub(crate) use window::*;
 
 /// A frame of video captured from a screen.

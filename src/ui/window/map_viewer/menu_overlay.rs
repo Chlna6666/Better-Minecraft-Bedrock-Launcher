@@ -1,7 +1,7 @@
 use super::actions::MapViewerAction;
 use gpui::{
-    Context, EventEmitter, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, Render,
-    ScrollWheelEvent, Styled, Window, div, px,
+    Context, EventEmitter, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseUpEvent, Render, ScrollWheelEvent, Styled, Window, div, px,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -45,8 +45,22 @@ impl Render for MapMenuOverlayView {
             )
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
-                    cx.emit(MapViewerAction::CloseMenus);
+                cx.listener(|_this, event: &MouseDownEvent, _window, cx| {
+                    cx.emit(MapViewerAction::BeginRightSelectionAt(event.position));
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|_this, event: &MouseUpEvent, _window, cx| {
+                    cx.emit(MapViewerAction::EndRightSelectionAt(event.position));
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Right,
+                cx.listener(|_this, event: &MouseUpEvent, _window, cx| {
+                    cx.emit(MapViewerAction::EndRightSelectionAt(event.position));
                     cx.stop_propagation();
                 }),
             )

@@ -189,7 +189,7 @@ impl MacPlatform {
     pub(crate) fn new(headless: bool) -> Self {
         let dispatcher = Arc::new(MacDispatcher);
 
-        let text_system = Arc::new(crate::CosmicTextSystem::new());
+        let text_system = Arc::new(crate::MacTextSystem::new());
 
         let keyboard_layout = MacKeyboardLayout::new();
         let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));

@@ -2,6 +2,33 @@ use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 
+pub(super) fn probe_tokio_blocking_pool(
+    stage: &'static str,
+    runtime_handle: Option<tokio::runtime::Handle>,
+) {
+    let runtime_handle = match runtime_handle {
+        Some(handle) => handle,
+        None => match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle,
+            Err(_) => {
+                tracing::debug!(stage, "tokio blocking pool probe unavailable");
+                return;
+            }
+        },
+    };
+    runtime_handle.spawn(async move {
+        let queued_at = Instant::now();
+        match tokio::task::spawn_blocking(|| {}).await {
+            Ok(()) => tracing::debug!(
+                stage,
+                queue_delay_ms = queued_at.elapsed().as_millis(),
+                "tokio blocking pool probe complete"
+            ),
+            Err(error) => tracing::warn!(stage, %error, "tokio blocking pool probe failed"),
+        }
+    });
+}
+
 pub(super) fn render_io_error(message: impl Into<String>) -> bedrock_render::BedrockRenderError {
     let message = message.into();
     bedrock_render::BedrockRenderError::io(message.clone(), std::io::Error::other(message))
@@ -340,6 +367,19 @@ pub(super) fn map_input_subscriptions(
     .collect()
 }
 
+pub(super) fn initialize_map_input_values(
+    input_fields: &MapInputFields,
+    values: [(MapInputField, String); 4],
+    window: &mut Window,
+    cx: &mut Context<MapViewerWindowView>,
+) {
+    for (field, value) in values {
+        input_fields.entity(field).update(cx, |input, cx| {
+            input.set_value(SharedString::from(value), window, cx);
+        });
+    }
+}
+
 pub(super) fn parse_i32_input(value: &str, label: &'static str) -> Result<i32, SharedString> {
     if value.is_empty() {
         return Err(SharedString::from(format!("{label} 不能为空")));
@@ -347,6 +387,19 @@ pub(super) fn parse_i32_input(value: &str, label: &'static str) -> Result<i32, S
     value
         .parse::<i32>()
         .map_err(|_| SharedString::from(format!("{label} 必须是整数")))
+}
+
+pub(super) fn parse_optional_i32_input(
+    value: &str,
+    label: &'static str,
+    fallback: i32,
+) -> Result<i32, SharedString> {
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(fallback)
+    } else {
+        parse_i32_input(value, label)
+    }
 }
 
 pub(super) fn parse_zoom_scale(value: &str) -> Result<f32, SharedString> {
@@ -378,6 +431,8 @@ pub(super) fn dimension_buttons(
     .into_iter()
     .map(|(dimension, label)| {
         mode_button(colors, label, active == dimension)
+            .w(px(122.0))
+            .justify_center()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| this.set_dimension(dimension, cx)),
@@ -399,7 +454,10 @@ pub(super) fn slime_query_window_buttons(
     ]
     .into_iter()
     .map(|size| {
-        mode_button(colors, size.label(), active == size)
+        let value = size.value();
+        mode_button(colors, format!("{value} × {value}"), active == size)
+            .w(px(80.0))
+            .justify_center()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {

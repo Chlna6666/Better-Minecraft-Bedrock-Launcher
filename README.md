@@ -20,6 +20,16 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 | 渲染后端 | GPUI nova-gfx 路径，Windows 默认 Nova DX12，可配置 Nova Vulkan |
 | 插件系统 | WASM 沙箱插件，API 版本 `0.4` |
 | 许可证 | GPL-3.0-only |
+| 变更记录 | [CHANGELOG.md](CHANGELOG.md) |
+
+## 版本与发布
+
+- 稳定版本使用 `v<major>.<minor>.<patch>` tag，并由 GitHub Actions 自动构建
+  Windows x86_64 发布附件。
+- 每周有新提交时会生成 nightly 预发布版本，适合测试，不代表稳定版本。
+- GitHub Release 的说明会根据提交记录自动生成；主分支推送后也会自动更新
+  `CHANGELOG.md` 的提交摘要。
+- [查看 GitHub Releases](https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher/releases)
 
 ## 核心功能
 

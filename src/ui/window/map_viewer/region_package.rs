@@ -260,11 +260,31 @@ pub(super) fn export_region_package_blocking(
     .map_err(|error| error.to_string())?;
     drop(editor);
 
+    progress(ChunkTransferProgress {
+        phase: SharedString::from("序列化区域包"),
+        completed: 0,
+        total: 1,
+    });
     let package = RegionPackageDisk::from_copied_chunk(&copied_chunk);
     let json =
         serde_json::to_vec(&package).map_err(|error| format!("区域包序列化失败：{error}"))?;
+    progress(ChunkTransferProgress {
+        phase: SharedString::from("序列化区域包"),
+        completed: 1,
+        total: 1,
+    });
+    progress(ChunkTransferProgress {
+        phase: SharedString::from("压缩区域包"),
+        completed: 0,
+        total: 1,
+    });
     let compressed = zstd::stream::encode_all(std::io::Cursor::new(json), 3)
         .map_err(|error| format!("区域包压缩失败：{error}"))?;
+    progress(ChunkTransferProgress {
+        phase: SharedString::from("压缩区域包"),
+        completed: 1,
+        total: 1,
+    });
     let mut bytes = Vec::with_capacity(REGION_PACKAGE_MAGIC.len() + compressed.len());
     bytes.extend_from_slice(REGION_PACKAGE_MAGIC);
     bytes.extend_from_slice(&compressed);
@@ -355,6 +375,7 @@ fn nbt_block_position(nbt: &NbtTag) -> Option<[i32; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[::core::prelude::v1::test]
     fn recognizes_region_package_extensions() {
@@ -365,5 +386,54 @@ mod tests {
             "selection.bmcbl-region"
         )));
         assert!(!is_region_package_path(&PathBuf::from("selection.png")));
+    }
+
+    #[::core::prelude::v1::test]
+    #[ignore = "requires BMCBL_TEST_WORLD to point to a local Bedrock world"]
+    fn real_world_region_export_round_trips_without_writing_source_world() {
+        let world_path = std::env::var_os("BMCBL_TEST_WORLD")
+            .map(PathBuf::from)
+            .expect("BMCBL_TEST_WORLD must point to a Bedrock world");
+        let chunks = (319..=326)
+            .flat_map(|z| {
+                (124..=132).map(move |x| ChunkPos {
+                    x,
+                    z,
+                    dimension: Dimension::Overworld,
+                })
+            })
+            .collect::<Vec<_>>();
+        let source_anchor = chunks[0];
+        let mut progress = Vec::new();
+
+        let bytes =
+            export_region_package_blocking(&world_path, source_anchor, chunks, None, |update| {
+                progress.push(update)
+            })
+            .expect("export real-world region package");
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let package_path = std::env::temp_dir().join(format!(
+            "bmcbl-real-world-region-{nonce}.{REGION_PACKAGE_EXTENSION}"
+        ));
+        write_region_package(&package_path, &bytes).expect("write temporary region package");
+        let imported = read_region_package(&package_path).expect("read temporary region package");
+        let preview_images =
+            super::super::import_preview::copied_chunk_preview_images_for_import(&imported)
+                .expect("render imported region previews");
+        std::fs::remove_file(&package_path).expect("remove temporary region package");
+
+        assert_eq!(imported.chunk_count(), 72);
+        assert_eq!(imported.anchor_chunk(), source_anchor);
+        assert!(!preview_images.is_empty());
+        assert!(progress.iter().any(|update| {
+            update.phase.as_ref() == "复制区块" && update.completed == 72 && update.total == 72
+        }));
+        assert!(progress.last().is_some_and(|update| {
+            update.phase.as_ref() == "压缩区域包" && update.completed == 1 && update.total == 1
+        }));
     }
 }

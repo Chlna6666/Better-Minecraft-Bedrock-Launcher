@@ -103,6 +103,7 @@ impl Render for SettingsPageView {
         let window_size = window.bounds().size;
         let render_engine = about::render_engine_label(window);
         plugins::ensure_plugin_resources(window, cx);
+        let system_font_names = cx.text_system().font_names();
         let plugin_model =
             plugins::PluginSettingsModel::snapshot(cx, cx.global::<SettingsPageState>());
         render_settings_page(
@@ -114,7 +115,7 @@ impl Render for SettingsPageView {
             cx.global::<SettingsPageState>(),
             plugin_model,
             cx.global::<UpdateState>(),
-            crate::utils::font_settings::system_font_families(),
+            system_font_names.as_ref(),
         )
     }
 }
@@ -129,7 +130,7 @@ pub fn render_settings_page(
     plugin_model: plugins::PluginSettingsModel,
     update: &UpdateState,
     system_font_names: &[String],
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     common::page_shell(
         div()
             .size_full()

@@ -857,7 +857,7 @@ pub(super) fn render_asset_row(
             div()
                 .w(px(32.))
                 .h(px(32.))
-                .rounded(px(MANAGE_ASSET_THUMBNAIL_RADIUS_PX))
+                .rounded(px(MANAGE_LIST_THUMBNAIL_RADIUS_PX))
                 .bg(Hsla {
                     a: 0.10,
                     ..colors.surface
@@ -883,7 +883,7 @@ pub(super) fn render_asset_row(
                 state::ManageAssetKind::SkinPack => lucide_icons::icon_user(),
                 state::ManageAssetKind::Map => lucide_icons::icon_map(),
             };
-            rounded_asset_thumbnail(colors, &icon_path, icon.into(), thumbnail_background)
+            rounded_manage_thumbnail(colors, &icon_path, icon.into(), thumbnail_background)
         },
     );
 

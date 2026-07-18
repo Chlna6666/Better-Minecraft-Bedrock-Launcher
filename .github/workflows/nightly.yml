@@ -69,13 +69,45 @@ jobs:
             Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=false"
           }
 
-      - name: Checkout BE-Community-Dev path dependencies
+      - name: Checkout mc-motd path dependency
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.BE_COMMUNITY_DEV_REPOSITORY || 'Chlna6666/BE-Community-Dev' }}
-          token: ${{ secrets.BE_COMMUNITY_DEV_TOKEN || github.token }}
-          path: BE-Community-Dev
+          repository: BE-Community-Dev/mc-motd
+          path: BE-Community-Dev/mc-motd
+          persist-credentials: false
+
+      - name: Checkout bedrock-world path dependency
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-world
+          path: BE-Community-Dev/bedrock-world
+          persist-credentials: false
+
+      - name: Checkout bedrock-block-model path dependency
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-block-model
+          path: BE-Community-Dev/bedrock-block-model
+          persist-credentials: false
+
+      - name: Checkout bedrock-leveldb path dependency
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-leveldb
+          path: BE-Community-Dev/bedrock-leveldb
+          persist-credentials: false
+
+      - name: Checkout bedrock-render path dependency
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: BE-Community-Dev/bedrock-render
+          path: BE-Community-Dev/bedrock-render
+          persist-credentials: false
 
       - name: Read package version
         id: package_version
@@ -115,6 +147,23 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "HEAD_COMMIT=$headCommit"
           Write-Host "Created nightly tag: $tag -> $headCommit"
+
+      - name: Generate nightly release notes
+        id: nightly_notes
+        if: ${{ steps.check_commits.outputs.changed == 'true' }}
+        run: |
+          $notesPath = Join-Path $env:RUNNER_TEMP "nightly-notes.md"
+          @"
+          This is an automated nightly pre-release build.
+
+          It may contain unstable changes and is intended for testing only.
+          "@ | Set-Content -Path $notesPath -Encoding UTF8
+          & pwsh -NoProfile -File scripts/generate_changelog.ps1 `
+            -ReleaseNotes `
+            -OutputPath "${notesPath}.generated" `
+            -Until "${{ steps.nightly_tag.outputs.TAG_NAME }}"
+          Add-Content -Path $notesPath -Value (Get-Content "${notesPath}.generated")
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "PATH=$notesPath"
 
       - name: Setup Rust
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
@@ -259,13 +308,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = "${{ steps.nightly_tag.outputs.TAG_NAME }}"
           $assetPath = "${{ steps.asset.outputs.PATH }}"
-          $notesPath = Join-Path $env:RUNNER_TEMP "nightly-notes.md"
-
-          @"
-          This is an automated nightly pre-release build.
-
-          It may contain unstable changes and is intended for testing only.
-          "@ | Set-Content -Path $notesPath -Encoding UTF8
+          $notesPath = "${{ steps.nightly_notes.outputs.PATH }}"
 
           gh release create $tag $assetPath `
             --repo $env:GITHUB_REPOSITORY `

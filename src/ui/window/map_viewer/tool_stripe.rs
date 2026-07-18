@@ -60,68 +60,84 @@ impl Render for MapToolStripeView {
                 "stripe-tools",
                 &colors,
                 lucide_icons::icon_wrench(),
+                "工具",
                 snapshot.left_panel_open,
                 cx.listener(|_this, _event, _window, cx| {
                     cx.emit(MapViewerAction::ToggleLeftPanel);
                 }),
             ))
             .child(stripe_button(
-                "stripe-panel",
-                &colors,
-                lucide_icons::icon_panel_bottom(),
-                snapshot.bottom_panel_open,
-                cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::ToggleBottomPanel);
-                }),
-            ))
-            .child(stripe_button(
                 "stripe-chunks",
                 &colors,
                 lucide_icons::icon_layers(),
+                "区块",
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::ChunkTree,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::SetBottomTab(MapViewerBottomTab::ChunkTree));
+                    cx.emit(MapViewerAction::ToggleBottomTab(
+                        MapViewerBottomTab::ChunkTree,
+                    ));
                 }),
             ))
             .child(stripe_button(
                 "stripe-players",
                 &colors,
                 lucide_icons::icon_users(),
+                "玩家",
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::Players,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::SetBottomTab(MapViewerBottomTab::Players));
+                    cx.emit(MapViewerAction::ToggleBottomTab(
+                        MapViewerBottomTab::Players,
+                    ));
+                }),
+            ))
+            .child(stripe_button(
+                "stripe-details",
+                &colors,
+                lucide_icons::icon_info(),
+                "详情",
+                snapshot.bottom_panel_open
+                    && snapshot.active_bottom_tab == MapViewerBottomTab::Details,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(MapViewerAction::ToggleBottomTab(
+                        MapViewerBottomTab::Details,
+                    ));
                 }),
             ))
             .child(stripe_button(
                 "stripe-3d",
                 &colors,
                 lucide_icons::icon_box(),
+                "3D",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Preview3d,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::OpenRightPreview3d);
+                    cx.emit(MapViewerAction::ToggleRightPanel(
+                        MapViewerRightPanel::Preview3d,
+                    ));
                 }),
             ))
             .child(stripe_button(
                 "stripe-nbt",
                 &colors,
                 lucide_icons::icon_file_text(),
+                "NBT",
                 snapshot.right_panel_open
                     && snapshot.active_right_panel == MapViewerRightPanel::Nbt,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::OpenRightNbt);
+                    cx.emit(MapViewerAction::ToggleRightPanel(MapViewerRightPanel::Nbt));
                 }),
             ))
             .child(stripe_button(
                 "stripe-diagnostics",
                 &colors,
                 lucide_icons::icon_activity(),
+                "诊断",
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::Diagnostics,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::SetBottomTab(
+                    cx.emit(MapViewerAction::ToggleBottomTab(
                         MapViewerBottomTab::Diagnostics,
                     ));
                 }),
@@ -130,10 +146,13 @@ impl Render for MapToolStripeView {
                 "stripe-history",
                 &colors,
                 lucide_icons::icon_history(),
+                "历史",
                 snapshot.bottom_panel_open
                     && snapshot.active_bottom_tab == MapViewerBottomTab::History,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::SetBottomTab(MapViewerBottomTab::History));
+                    cx.emit(MapViewerAction::ToggleBottomTab(
+                        MapViewerBottomTab::History,
+                    ));
                 }),
             ))
             .child(div().flex_1())
@@ -154,6 +173,7 @@ fn stripe_button(
     id: &'static str,
     colors: &ThemeColors,
     icon_path: &'static str,
+    label: &'static str,
     active: bool,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -167,19 +187,17 @@ fn stripe_button(
         a: super::layout::CHROME_ELEVATED_ALPHA * 0.55,
         ..accent
     };
-    let icon = crate::ui::components::icon::themed_icon(
-        icon_path,
-        super::layout::CHROME_ICON_SIZE,
-        if active { accent } else { muted },
-    );
+    let foreground = if active { accent } else { muted };
     div()
         .id(id)
         .relative()
-        .w(px(IDE_LEFT_STRIPE_WIDTH - 8.0))
-        .h(px(40.0))
+        .w(px(IDE_LEFT_STRIPE_WIDTH - 10.0))
+        .h(px(46.0))
         .flex()
+        .flex_col()
         .items_center()
         .justify_center()
+        .gap(px(3.0))
         .rounded(px(8.0))
         .cursor(CursorStyle::PointingHand)
         .bg(if active {
@@ -199,6 +217,17 @@ fn stripe_button(
                     .bg(accent),
             )
         })
-        .child(icon)
+        .child(crate::ui::components::icon::themed_icon(
+            icon_path,
+            super::layout::CHROME_ICON_SIZE,
+            foreground,
+        ))
+        .child(
+            div()
+                .text_size(px(10.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(foreground)
+                .child(label),
+        )
         .on_mouse_down(MouseButton::Left, on_click)
 }

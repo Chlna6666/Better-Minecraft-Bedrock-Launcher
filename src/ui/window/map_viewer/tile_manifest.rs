@@ -15,9 +15,11 @@ pub(super) fn load_tile_manifest_from_disk(
     layout: RenderLayout,
     cancel: RenderTaskControl,
 ) -> Result<Option<TileManifestProbeResult>, String> {
+    let started = Instant::now();
     validate_ui_render_layout(layout)?;
     check_metadata_cancelled(&cancel)?;
     let cache_root = file_ops::cache_subdir("bedrock-render");
+    let identity_started = Instant::now();
     let key = bedrock_render::TileManifestCacheKey::new(
         &world_path,
         render_backend,
@@ -26,22 +28,55 @@ pub(super) fn load_tile_manifest_from_disk(
         dimension,
         layout,
     );
+    let identity_ms = identity_started.elapsed().as_millis();
     let cache = bedrock_render::TileManifestCache::new(cache_root);
+    let cache_read_started = Instant::now();
     let result = cache
         .load(&key)
         .map_err(|error| format!("读取地图索引缓存失败: {error}"))?;
+    let cache_read_ms = cache_read_started.elapsed().as_millis();
     check_metadata_cancelled(&cancel)?;
     let Some(snapshot) = result else {
+        tracing::debug!(
+            identity_ms,
+            cache_read_ms,
+            elapsed_ms = started.elapsed().as_millis(),
+            "map_viewer manifest_cache_miss"
+        );
         return Ok(None);
     };
-    let tile_chunk_index = shared_tile_chunk_index(dimension, layout, snapshot.tile_chunk_index)?;
+    let requested_tiles = snapshot.requested_tiles;
+    let tile_chunk_index = complete_cached_tile_chunk_index(
+        &requested_tiles,
+        shared_tile_chunk_index(dimension, layout, snapshot.tile_chunk_index)?,
+    );
+    tracing::debug!(
+        requested = requested_tiles.len(),
+        indexed = tile_chunk_index.len(),
+        identity_ms,
+        cache_read_ms,
+        elapsed_ms = started.elapsed().as_millis(),
+        "map_viewer manifest_cache_hit"
+    );
     Ok(Some(TileManifestProbeResult {
-        requested_tiles: snapshot.requested_tiles,
+        requested_tiles,
         tile_chunk_index,
         bounds: snapshot.bounds,
         center_block_x: snapshot.center_block_x,
         center_block_z: snapshot.center_block_z,
     }))
+}
+
+pub(super) fn complete_cached_tile_chunk_index(
+    requested_tiles: &[(i32, i32)],
+    mut tile_chunk_index: TileChunkIndex,
+) -> TileChunkIndex {
+    for coord in requested_tiles {
+        tile_chunk_index
+            .entry(*coord)
+            .or_insert_with(|| TileChunkPositions::from(Vec::<ChunkPos>::new()));
+    }
+    tile_chunk_index
 }
 
 pub(super) fn load_tile_manifest_probe(

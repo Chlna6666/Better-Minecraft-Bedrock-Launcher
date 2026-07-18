@@ -36,34 +36,6 @@ impl MapViewerWindowView {
                     cx.stop_propagation();
                 }),
             )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("right dock mouse up", cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("right dock mouse up out", cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Right,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("right dock right mouse up", cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Right,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("right dock right mouse up out", cx);
-                    cx.stop_propagation();
-                }),
-            )
             .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation())
             .child(match self.ui_state.active_right_panel {
                 MapViewerRightPanel::Nbt => self.render_nbt_right_panel(colors, cx),
@@ -112,6 +84,10 @@ impl MapViewerWindowView {
                             .child(self.editor_document.title.clone()),
                     )
                     .child(status_badge(colors, dirty_label))
+                    .child(dock_close_button(colors).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| this.close_right_panel(cx)),
+                    ))
                     .child(
                         div()
                             .id("nbt-save")
@@ -177,20 +153,6 @@ impl MapViewerWindowView {
                                 "code editor wrapper right mouse down",
                                 cx,
                             );
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                            this.release_pointer_captures("code editor wrapper mouse up", cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_mouse_up_out(
-                        MouseButton::Left,
-                        cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                            this.release_pointer_captures("code editor wrapper mouse up out", cx);
                             cx.stop_propagation();
                         }),
                     )

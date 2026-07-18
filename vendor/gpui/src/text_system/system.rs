@@ -5,7 +5,6 @@ use crate::{
 use anyhow::{Context as _, anyhow};
 use collections::FxHashMap;
 use derive_more::Deref;
-use itertools::Itertools;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::{SmallVec, smallvec};
 use std::{
@@ -21,7 +20,7 @@ use std::{
 use super::{
     DecorationRun, Font, FontId, FontMetrics, FontRun, FontWeight, LineLayout, LineLayoutCache,
     LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, RenderGlyphParams, ShapedLine, TextRun,
-    WrappedLine, font,
+    WrappedLine, font, font_catalog::FontCatalog,
 };
 
 pub(super) const MAX_WRAPPER_POOL_KEYS: usize = 128;
@@ -37,12 +36,18 @@ pub struct TextSystem {
     pub(super) platform_text_system: Arc<dyn PlatformTextSystem>,
     system_font_family: RwLock<Option<SharedString>>,
     pub(super) font_decision_logged: RwLock<bool>,
-    font_ids_by_font: RwLock<FxHashMap<Font, Result<FontId>>>,
+    font_id_cache: RwLock<FontIdCache>,
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
     raster_bounds: RwLock<FxHashMap<RenderGlyphParams, Bounds<DevicePixels>>>,
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, VecDeque<LineWrapper>>>,
     font_runs_pool: Mutex<VecDeque<Vec<FontRun>>>,
-    fallback_font_stack: SmallVec<[Font; 2]>,
+    font_catalog: FontCatalog,
+}
+
+#[derive(Default)]
+struct FontIdCache {
+    ids_by_font: FxHashMap<Font, Result<FontId>>,
+    fonts_by_id: FxHashMap<FontId, Font>,
 }
 
 impl TextSystem {
@@ -53,42 +58,47 @@ impl TextSystem {
             font_decision_logged: RwLock::new(false),
             font_metrics: RwLock::default(),
             raster_bounds: RwLock::default(),
-            font_ids_by_font: RwLock::default(),
+            font_id_cache: RwLock::default(),
             wrapper_pool: Mutex::default(),
             font_runs_pool: Mutex::default(),
-            fallback_font_stack: smallvec![
-                // TODO: Remove this when Linux have implemented setting fallbacks.
-                font(".ZedMono"),
-                font(".ZedSans"),
-                font("Helvetica"),
-                font("Segoe UI"),     // Windows
-                font("Ubuntu"),       // Gnome (Ubuntu)
-                font("Adwaita Sans"), // Gnome 47
-                font("Cantarell"),    // Gnome
-                font("Noto Sans"),    // KDE
-                font("DejaVu Sans"),
-                font("Arial"), // macOS, Windows
-            ],
+            font_catalog: FontCatalog::default(),
         }
+    }
+
+    /// Returns a shared snapshot of all available font names.
+    pub fn font_names(&self) -> Arc<[String]> {
+        self.font_catalog
+            .available_font_names(|| self.platform_text_system.all_font_names())
     }
 
     /// Get a list of all available font names from the operating system.
     pub fn all_font_names(&self) -> Vec<String> {
-        let mut names = self.platform_text_system.all_font_names();
-        names.extend(
-            self.fallback_font_stack
-                .iter()
-                .map(|font| font.family.to_string()),
-        );
-        names.push(".SystemUIFont".to_string());
-        names.sort();
-        names.dedup();
-        names
+        self.font_names().as_ref().to_vec()
+    }
+
+    /// Returns whether a font family can be selected by the platform text system.
+    pub fn is_font_family_available(&self, family: &str) -> bool {
+        let family = family.trim();
+        !family.is_empty() && self.font_id(&font(family.to_owned())).is_ok()
+    }
+
+    /// Returns the application default font family, or the platform default when unset.
+    pub fn default_font_family(&self) -> SharedString {
+        self.system_font_family
+            .read()
+            .clone()
+            .unwrap_or_else(|| self.platform_font_family())
+    }
+
+    /// Returns the effective fallback families in resolution order.
+    pub fn fallback_font_families(&self) -> Arc<[SharedString]> {
+        self.font_catalog.fallback_families()
     }
 
     /// Add a font's data to the text system.
     pub fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
         self.platform_text_system.add_fonts(fonts)?;
+        self.font_catalog.invalidate_available_names();
         self.clear_caches();
         Ok(())
     }
@@ -96,6 +106,7 @@ impl TextSystem {
     /// Add font files to the text system by path.
     pub fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()> {
         self.platform_text_system.add_font_paths(paths)?;
+        self.font_catalog.invalidate_available_names();
         self.clear_caches();
         Ok(())
     }
@@ -149,6 +160,12 @@ impl TextSystem {
         self.clear_caches();
     }
 
+    pub(crate) fn set_fallback_font_families(&self, families: Vec<SharedString>) {
+        if self.font_catalog.set_fallback_families(families) {
+            self.clear_caches();
+        }
+    }
+
     pub(crate) fn preload_font_family(&self, family: SharedString) -> Result<()> {
         let mut font = font(family);
         font.weight = FontWeight::NORMAL;
@@ -157,7 +174,10 @@ impl TextSystem {
     }
 
     pub(crate) fn clear_caches(&self) {
-        self.font_ids_by_font.write().clear();
+        let mut font_id_cache = self.font_id_cache.write();
+        font_id_cache.ids_by_font.clear();
+        font_id_cache.fonts_by_id.clear();
+        drop(font_id_cache);
         self.font_metrics.write().clear();
         self.raster_bounds.write().clear();
         self.wrapper_pool.lock().clear();
@@ -188,53 +208,85 @@ impl TextSystem {
             }
         }
 
-        let font_id = self.font_ids_by_font.read().get(font).map(clone_font_id);
+        let font_id_cache = self.font_id_cache.upgradable_read();
+        let font_id = font_id_cache.ids_by_font.get(font).map(clone_font_id);
         if let Some(font_id) = font_id {
             font_id
         } else {
             let font_id = self.platform_text_system.font_id(font);
-            self.font_ids_by_font
-                .write()
+            let mut font_id_cache = RwLockUpgradableReadGuard::upgrade(font_id_cache);
+            font_id_cache
+                .ids_by_font
                 .insert(font.clone(), clone_font_id(&font_id));
+            if let Ok(font_id) = font_id.as_ref() {
+                font_id_cache
+                    .fonts_by_id
+                    .entry(*font_id)
+                    .or_insert_with(|| font.clone());
+            }
             font_id
         }
     }
 
     /// Get the Font for the Font Id.
     pub fn font_for_id(&self, id: FontId) -> Option<Font> {
-        let lock = self.font_ids_by_font.read();
-        lock.iter()
-            .filter_map(|(font, result)| match result {
-                Ok(font_id) if *font_id == id => Some(font.clone()),
-                _ => None,
-            })
-            .next()
+        self.font_id_cache.read().fonts_by_id.get(&id).cloned()
     }
 
-    /// Resolves the specified font, falling back to the default font stack if
+    /// Tries to resolve the specified font, preserving its weight, style, and
+    /// OpenType features while checking configured fallback families.
+    pub fn try_resolve_font(&self, font: &Font) -> Result<FontId> {
+        let mut attempted_families = SmallVec::<[SharedString; 8]>::new();
+        attempted_families.push(font.family.clone());
+        let mut last_error = match self.font_id(font) {
+            Ok(font_id) => return Ok(font_id),
+            Err(error) => error,
+        };
+
+        let configured_fallbacks = self.fallback_font_families();
+        let run_fallbacks = font
+            .fallbacks
+            .as_ref()
+            .map(|fallbacks| fallbacks.fallback_list())
+            .unwrap_or_default();
+        for family in run_fallbacks.iter().chain(configured_fallbacks.iter()) {
+            if attempted_families
+                .iter()
+                .any(|attempted| attempted.eq_ignore_ascii_case(family.as_ref()))
+            {
+                continue;
+            }
+            let family = family.clone();
+            attempted_families.push(family.clone());
+            let mut fallback = font.clone();
+            fallback.family = family.clone();
+            fallback.fallbacks = None;
+            match self.font_id(&fallback) {
+                Ok(font_id) => return Ok(font_id),
+                Err(error) => last_error = error,
+            }
+        }
+
+        let attempted_families = attempted_families
+            .iter()
+            .map(SharedString::as_ref)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(last_error.context(format!(
+            "failed to resolve font '{}' using families [{attempted_families}]",
+            font.family
+        )))
+    }
+
+    /// Resolves the specified font, falling back to the configured font stack if
     /// the font fails to load.
     ///
     /// # Panics
     ///
     /// Panics if the font and none of the fallbacks can be resolved.
     pub fn resolve_font(&self, font: &Font) -> FontId {
-        if let Ok(font_id) = self.font_id(font) {
-            return font_id;
-        }
-        for fallback in &self.fallback_font_stack {
-            if let Ok(font_id) = self.font_id(fallback) {
-                return font_id;
-            }
-        }
-
-        panic!(
-            "failed to resolve font '{}' or any of the fallbacks: {}",
-            font.family,
-            self.fallback_font_stack
-                .iter()
-                .map(|fallback| &fallback.family)
-                .join(", ")
-        );
+        self.try_resolve_font(font)
+            .unwrap_or_else(|error| panic!("{error}"))
     }
 
     /// Get the bounding box for the given font and font size.

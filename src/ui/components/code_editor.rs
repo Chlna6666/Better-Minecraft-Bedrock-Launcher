@@ -1,7 +1,7 @@
 use crate::ui::theme::colors::ThemeColors;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
     GlobalElementId, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels,
     Point, ScrollWheelEvent, ShapedLine, SharedString, Size, Style, Styled, TextRun,
@@ -153,7 +153,14 @@ pub struct CodeEditorState {
     marked_range: Option<Range<usize>>,
     last_bounds: Option<Bounds<Pixels>>,
     last_line_ranges: Vec<LineRange>,
+    last_visual_lines: Vec<VisualLine>,
     last_line_layouts: Vec<ShapedLine>,
+    layout_revision: u64,
+    last_layout_revision: u64,
+    last_layout_colors: Option<ThemeColors>,
+    last_layout_font: Option<Font>,
+    last_layout_font_size: Pixels,
+    last_content_width: Pixels,
     last_line_height: Pixels,
     last_gutter_width: Pixels,
     is_selecting: bool,
@@ -212,7 +219,14 @@ impl CodeEditorState {
             marked_range: None,
             last_bounds: None,
             last_line_ranges: Vec::new(),
+            last_visual_lines: Vec::new(),
             last_line_layouts: Vec::new(),
+            layout_revision: 1,
+            last_layout_revision: 0,
+            last_layout_colors: None,
+            last_layout_font: None,
+            last_layout_font_size: px(0.0),
+            last_content_width: px(MIN_EDITOR_WIDTH),
             last_line_height: px(20.0),
             last_gutter_width: px(40.0),
             is_selecting: false,
@@ -235,7 +249,11 @@ impl CodeEditorState {
     }
 
     pub fn set_language(&mut self, language: CodeEditorLanguage, cx: &mut Context<Self>) {
+        if self.language == language {
+            return;
+        }
         self.language = language;
+        self.invalidate_layout();
         cx.notify();
     }
 
@@ -251,6 +269,7 @@ impl CodeEditorState {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.collapsed_lines.clear();
+        self.invalidate_layout();
         self.clamp_scroll_offset();
         self.ensure_cursor_visible();
         cx.notify();
@@ -262,6 +281,10 @@ impl CodeEditorState {
         } else {
             self.selected_range.end
         }
+    }
+
+    fn invalidate_layout(&mut self) {
+        self.layout_revision = self.layout_revision.saturating_add(1);
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -484,6 +507,7 @@ impl CodeEditorState {
         self.marked_range = None;
         self.preferred_column = None;
         self.cursor_blink_started_at = Some(Instant::now());
+        self.invalidate_layout();
         self.ensure_cursor_visible();
         cx.emit(CodeEditorEvent::Change);
         cx.notify();
@@ -525,6 +549,7 @@ impl CodeEditorState {
         self.marked_range = None;
         self.preferred_column = None;
         self.cursor_blink_started_at = Some(Instant::now());
+        self.invalidate_layout();
         self.ensure_cursor_visible();
         cx.emit(CodeEditorEvent::Change);
         cx.notify();
@@ -1172,6 +1197,7 @@ impl CodeEditorState {
             self.collapsed_lines.sort_unstable();
             self.collapsed_lines.dedup();
         }
+        self.invalidate_layout();
         self.clamp_scroll_offset();
         self.show_scrollbars();
         cx.notify();
@@ -1231,6 +1257,7 @@ impl EntityInputHandler for CodeEditorState {
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         self.marked_range = None;
+        self.invalidate_layout();
     }
 
     fn replace_text_in_range(
@@ -1274,6 +1301,7 @@ impl EntityInputHandler for CodeEditorState {
         self.selection_reversed = false;
         self.preferred_column = None;
         self.cursor_blink_started_at = Some(Instant::now());
+        self.invalidate_layout();
         self.ensure_cursor_visible();
         cx.emit(CodeEditorEvent::Change);
         cx.notify();
@@ -1323,13 +1351,20 @@ struct PrepaintState {
     line_ranges: Vec<LineRange>,
     visual_lines: Vec<VisualLine>,
     line_layouts: Vec<ShapedLine>,
-    line_numbers: Vec<ShapedLine>,
+    line_numbers: Vec<(usize, ShapedLine)>,
+    visible_lines: Range<usize>,
+    layout_revision: u64,
+    layout_colors: ThemeColors,
+    layout_font: Font,
+    layout_font_size: Pixels,
+    content_width: Pixels,
 }
 
 struct EditorLayoutSnapshot {
     line_ranges: Vec<LineRange>,
     visual_lines: Vec<VisualLine>,
     line_layouts: Vec<ShapedLine>,
+    diagnostic_ranges: Vec<DiagnosticRange>,
     gutter_width: Pixels,
     line_height: Pixels,
     content_width: Pixels,
@@ -1342,6 +1377,7 @@ impl Default for EditorLayoutSnapshot {
             line_ranges: Vec::new(),
             visual_lines: Vec::new(),
             line_layouts: Vec::new(),
+            diagnostic_ranges: Vec::new(),
             gutter_width: px(0.0),
             line_height: px(0.0),
             content_width: px(0.0),
@@ -1415,9 +1451,13 @@ impl Element for EditorElement {
             editor.clamp_scroll_offset();
         });
         let editor = self.editor.read(cx);
-        let palette = syntax_palette(&self.colors);
-        let diagnostic_ranges =
-            format_diagnostics(editor.value.as_ref(), editor.language, &palette);
+        let visible_lines = visible_line_range(
+            editor.scroll_offset.y,
+            bounds.size.height,
+            line_height,
+            line_ranges.len(),
+        );
+        let diagnostic_ranges = layout_snapshot.diagnostic_ranges;
         let scroll_offset = editor.scroll_offset;
         let content_x = bounds.left() + gutter_width + px(GUTTER_GAP) + px(HORIZONTAL_PADDING)
             - scroll_offset.x;
@@ -1451,7 +1491,7 @@ impl Element for EditorElement {
             ),
         ));
 
-        let mut line_numbers = Vec::with_capacity(line_ranges.len());
+        let mut line_numbers = Vec::with_capacity(visible_lines.len());
         let mut selection = Vec::new();
         let mut diagnostics = Vec::new();
         let cursor_line = line_index_for_offset(&line_ranges, editor.cursor_offset());
@@ -1464,13 +1504,10 @@ impl Element for EditorElement {
                         < CURSOR_VISIBLE_WINDOW.as_millis()
             });
 
-        for (index, ((line, visual_line), layout)) in line_ranges
-            .iter()
-            .copied()
-            .zip(visual_lines.iter().copied())
-            .zip(line_layouts.iter())
-            .enumerate()
-        {
+        for index in visible_lines.clone() {
+            let line = line_ranges[index];
+            let visual_line = visual_lines[index];
+            let layout = &line_layouts[index];
             if !selection_range.is_empty() {
                 let overlap_start = selection_range.start.max(line.start);
                 let overlap_end = selection_range.end.min(line.end);
@@ -1525,24 +1562,27 @@ impl Element for EditorElement {
             };
             let number_text =
                 SharedString::from(format!("{}{}", marker, visual_line.source_line + 1));
-            line_numbers.push(window.text_system().shape_line(
-                number_text,
-                font_size,
-                &[TextRun {
-                    len: marker.len() + (visual_line.source_line + 1).to_string().len(),
-                    font: text_style.font(),
-                    color: if index == cursor_line {
-                        self.colors.text_primary
-                    } else {
-                        self.colors.text_muted
-                    },
-                    background_color: None,
-                    background_corner_radius: None,
-                    background_padding: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
+            line_numbers.push((
+                index,
+                window.text_system().shape_line(
+                    number_text,
+                    font_size,
+                    &[TextRun {
+                        len: marker.len() + (visual_line.source_line + 1).to_string().len(),
+                        font: text_style.font(),
+                        color: if index == cursor_line {
+                            self.colors.text_primary
+                        } else {
+                            self.colors.text_muted
+                        },
+                        background_color: None,
+                        background_corner_radius: None,
+                        background_padding: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                ),
             ));
         }
 
@@ -1589,6 +1629,12 @@ impl Element for EditorElement {
             visual_lines,
             line_layouts,
             line_numbers,
+            visible_lines,
+            layout_revision: editor.layout_revision,
+            layout_colors: self.colors,
+            layout_font: text_style.font(),
+            layout_font_size: font_size,
+            content_width: layout_snapshot.content_width,
         }
     }
 
@@ -1635,13 +1681,15 @@ impl Element for EditorElement {
                 window.paint_quad(quad);
             }
 
-            for (index, layout) in prepaint.line_layouts.iter().enumerate() {
+            for index in prepaint.visible_lines.clone() {
+                let layout = &prepaint.line_layouts[index];
                 let origin_y = content_y + prepaint.line_height * index as f32;
-                if origin_y + prepaint.line_height < bounds.top() || origin_y > bounds.bottom() {
-                    continue;
-                }
                 let _ = layout.paint(point(content_x, origin_y), prepaint.line_height, window, cx);
-                if let Some(number) = prepaint.line_numbers.get(index) {
+                if let Some((_, number)) = prepaint
+                    .line_numbers
+                    .iter()
+                    .find(|(line_index, _)| *line_index == index)
+                {
                     let _ = number.paint(
                         point(number_x - number.width, origin_y),
                         prepaint.line_height,
@@ -1659,13 +1707,19 @@ impl Element for EditorElement {
         self.paint_scrollbars(bounds, window, cx);
 
         let line_ranges = std::mem::take(&mut prepaint.line_ranges);
-        let _visual_lines = std::mem::take(&mut prepaint.visual_lines);
+        let visual_lines = std::mem::take(&mut prepaint.visual_lines);
         let line_layouts = std::mem::take(&mut prepaint.line_layouts);
 
         self.editor.update(cx, |editor, _cx| {
             editor.last_bounds = Some(bounds);
             editor.last_line_ranges = line_ranges;
+            editor.last_visual_lines = visual_lines;
             editor.last_line_layouts = line_layouts;
+            editor.last_layout_revision = prepaint.layout_revision;
+            editor.last_layout_colors = Some(prepaint.layout_colors);
+            editor.last_layout_font = Some(prepaint.layout_font.clone());
+            editor.last_layout_font_size = prepaint.layout_font_size;
+            editor.last_content_width = prepaint.content_width;
             editor.last_line_height = prepaint.line_height;
             editor.last_gutter_width = prepaint.gutter_width;
         });
@@ -1930,6 +1984,31 @@ fn build_layout_snapshot(
     let text_style = window.text_style();
     let line_height = text_style.line_height_in_pixels(window.rem_size());
     let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let font = text_style.font();
+    if editor.last_layout_revision == editor.layout_revision
+        && editor.last_layout_colors == Some(*colors)
+        && editor.last_layout_font.as_ref() == Some(&font)
+        && editor.last_layout_font_size == font_size
+        && !editor.last_line_ranges.is_empty()
+        && editor.last_line_ranges.len() == editor.last_visual_lines.len()
+        && editor.last_line_ranges.len() == editor.last_line_layouts.len()
+    {
+        let line_count = editor.last_line_ranges.len().max(1);
+        return EditorLayoutSnapshot {
+            line_ranges: editor.last_line_ranges.clone(),
+            visual_lines: editor.last_visual_lines.clone(),
+            line_layouts: editor.last_line_layouts.clone(),
+            diagnostic_ranges: format_diagnostics(
+                editor.value.as_ref(),
+                editor.language,
+                &syntax_palette(colors),
+            ),
+            gutter_width: editor.last_gutter_width,
+            line_height,
+            content_width: editor.last_content_width,
+            content_height: line_height * line_count as f32 + px(VERTICAL_PADDING * 2.0),
+        };
+    }
     let all_line_ranges = collect_line_ranges(editor.value.as_ref());
     let fold_regions = collect_fold_regions(editor.value.as_ref(), &all_line_ranges);
     let visual_lines =
@@ -1944,6 +2023,7 @@ fn build_layout_snapshot(
         px(18.0 + FOLD_MARKER_WIDTH + digits as f32 * MONO_ADVANCE_PX + HORIZONTAL_PADDING);
     let palette = syntax_palette(colors);
     let highlights = code_highlights(editor.value.as_ref(), editor.language, &palette);
+    let diagnostic_ranges = format_diagnostics(editor.value.as_ref(), editor.language, &palette);
     let line_layouts = line_ranges
         .iter()
         .zip(visual_lines.iter())
@@ -1959,7 +2039,7 @@ fn build_layout_snapshot(
                 line.start,
                 editor.marked_range.as_ref(),
                 &highlights,
-                text_style.font(),
+                font.clone(),
                 text_style.color,
             );
             window
@@ -1977,6 +2057,7 @@ fn build_layout_snapshot(
         line_ranges,
         visual_lines,
         line_layouts,
+        diagnostic_ranges,
         gutter_width,
         line_height,
         content_width: (widest_line_width
@@ -2050,6 +2131,26 @@ fn clamp_scroll_offset(
         offset.x.min(max_x).max(px(0.0)),
         offset.y.min(max_y).max(px(0.0)),
     )
+}
+
+fn visible_line_range(
+    scroll_y: Pixels,
+    viewport_height: Pixels,
+    line_height: Pixels,
+    line_count: usize,
+) -> Range<usize> {
+    if line_count == 0 || line_height <= px(0.0) || viewport_height <= px(0.0) {
+        return 0..0;
+    }
+    const OVERSCAN_LINES: usize = 2;
+    let content_y = (scroll_y - px(VERTICAL_PADDING)).max(px(0.0));
+    let first = (content_y / line_height) as usize;
+    let visible_count = (viewport_height / line_height) as usize + 1;
+    first.saturating_sub(OVERSCAN_LINES)
+        ..first
+            .saturating_add(visible_count)
+            .saturating_add(OVERSCAN_LINES)
+            .min(line_count)
 }
 
 fn scroll_offset_delta_from_wheel_delta(delta: Point<Pixels>, shift: bool) -> Point<Pixels> {
@@ -2716,6 +2817,15 @@ mod tests {
             clamp_scroll_offset(offset, content, viewport),
             point(px(680.0), px(0.0))
         );
+    }
+
+    #[test]
+    fn visible_line_range_limits_work_to_viewport_with_overscan() {
+        assert_eq!(
+            visible_line_range(px(2_000.0), px(200.0), px(20.0), 10_000),
+            97..112
+        );
+        assert_eq!(visible_line_range(px(0.0), px(200.0), px(20.0), 5), 0..5);
     }
 
     #[test]

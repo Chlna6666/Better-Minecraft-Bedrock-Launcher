@@ -3,6 +3,7 @@ use super::helpers::*;
 use super::panels::*;
 use super::players::*;
 use super::prelude::*;
+pub(super) use super::query_cache::{MAP_QUERY_CONCURRENCY, MapQueryBudget};
 use super::tile_state::*;
 use super::viewport::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,9 +27,6 @@ pub(super) const MAX_VIEWPORT_COMPOSITE_DIMENSION: u32 = 4096;
 pub(super) const MIN_VIEWPORT_COMPOSITE_OVERSCAN_PX: f32 = 64.0;
 pub(super) const MAX_VIEWPORT_COMPOSITE_OVERSCAN_PX: f32 = 256.0;
 pub(super) const DEFAULT_CPU_PERCENT: u8 = 60;
-pub(super) const MIN_CPU_PERCENT: u8 = 10;
-pub(super) const MAX_CPU_PERCENT: u8 = 90;
-pub(super) const CPU_PERCENT_STEP: u8 = 5;
 pub(super) const RENDER_PIPELINE_DEPTH: usize = 32;
 pub(super) const RENDER_REGION_CACHE_ENTRIES: usize = 32;
 pub(super) const MIN_UI_TILE_MEMORY_BUDGET_BYTES: usize = 16 * 1024 * 1024;
@@ -37,8 +35,9 @@ pub(super) const MAX_RENDER_MEMORY_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const MIN_RENDER_STAGING_POOL_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_RENDER_STAGING_POOL_BYTES: usize = 128 * 1024 * 1024;
 pub(super) const RENDER_CPU_ENCODE_WORKERS: usize = 1;
-pub(super) const RENDER_UI_BATCH_TILES: usize = 8;
-pub(super) const MAX_CONCURRENT_RENDER_BATCHES: usize = 1;
+pub(super) const RENDER_UI_BATCH_TILES: usize = 24;
+// Keep cache probing and cold-tile rendering in separate bounded batches.
+pub(super) const MAX_CONCURRENT_RENDER_BATCHES: usize = 2;
 pub(super) const RENDER_STREAM_GROUP_TILES: usize = 4;
 pub(super) const TILE_MANIFEST_PROBE_BATCH_TILES: usize = 16;
 pub(super) const TILE_MANIFEST_PROBE_MAX_WORKERS: usize = 2;
@@ -50,18 +49,17 @@ pub(super) const TILE_READY_BATCH_INTERVAL: Duration = Duration::from_millis(33)
 pub(super) const FIRST_REVEAL_READY_BATCH_LIMIT: usize = 4;
 pub(super) const FIRST_REVEAL_READY_BATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub(super) const QUICK_REVEAL_TILE_FRAME_INTERVAL: Duration = Duration::from_millis(8);
-pub(super) const FIRST_VISIBLE_BATCH_LIMIT: usize = 1;
+pub(super) const FIRST_VISIBLE_BATCH_LIMIT: usize = 4;
 pub(super) const OVERVIEW_VISIBLE_TILE_THRESHOLD: usize = 256;
 pub(super) const OVERVIEW_VISIBLE_BATCH_LIMIT: usize = 24;
 pub(super) const OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT: usize = 16;
-pub(super) const VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = 192;
+pub(super) const VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = 512;
 pub(super) const INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = 48;
 
 pub(super) type TileChunkPositions = Arc<[ChunkPos]>;
 pub(super) type TileChunkIndex = BTreeMap<(i32, i32), TileChunkPositions>;
-pub(super) const DRAG_VISIBLE_BATCH_LIMIT: usize = 4;
+pub(super) const DRAG_VISIBLE_BATCH_LIMIT: usize = 16;
 pub(super) const VIEWPORT_WORK_REFRESH_INTERVAL: Duration = Duration::from_millis(16);
-
 #[derive(Clone, Default)]
 pub(super) struct PhysicalRenderBatchBudget {
     active: Arc<AtomicUsize>,
@@ -93,6 +91,7 @@ impl Drop for PhysicalRenderBatchPermit {
         self.active.fetch_sub(1, Ordering::AcqRel);
     }
 }
+
 pub(super) const VIEWPORT_TILE_SYNC_INTERVAL: Duration = Duration::from_millis(80);
 pub(super) const VISIBLE_TILE_LOG_INTERVAL: Duration = Duration::from_millis(250);
 pub(super) const TILE_MEMORY_TRIM_INTERVAL: Duration = Duration::from_millis(250);
@@ -117,32 +116,17 @@ pub enum ViewerMode {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct RenderCpuBudget {
-    pub(super) percent: u8,
-}
+pub(super) struct RenderCpuBudget;
 
 impl Default for RenderCpuBudget {
     fn default() -> Self {
-        Self {
-            percent: DEFAULT_CPU_PERCENT,
-        }
+        Self
     }
 }
 
 impl RenderCpuBudget {
-    pub(super) fn set_percent(&mut self, percent: u8) {
-        self.percent = percent.clamp(MIN_CPU_PERCENT, MAX_CPU_PERCENT);
-    }
-
-    pub(super) fn step(&mut self, delta: i8) {
-        let next = if delta.is_negative() {
-            self.percent
-                .saturating_sub(delta.unsigned_abs().saturating_mul(CPU_PERCENT_STEP))
-        } else {
-            self.percent
-                .saturating_add((delta as u8).saturating_mul(CPU_PERCENT_STEP))
-        };
-        self.set_percent(next);
+    pub(super) const fn percent(self) -> u8 {
+        DEFAULT_CPU_PERCENT
     }
 
     pub(super) fn available_threads() -> usize {
@@ -155,7 +139,7 @@ impl RenderCpuBudget {
     pub(super) fn thread_count(self) -> usize {
         let available = Self::available_threads();
         let requested = available
-            .saturating_mul(usize::from(self.percent))
+            .saturating_mul(usize::from(self.percent()))
             .saturating_add(99)
             / 100;
         let interactive_cap = available.saturating_sub(1).max(1);
@@ -366,6 +350,7 @@ pub(super) struct OverlayOptions {
     pub(super) slime_chunks: bool,
     pub(super) entities: bool,
     pub(super) block_entities: bool,
+    pub(super) pending_ticks: bool,
     pub(super) villages: bool,
     pub(super) hardcoded_spawn_areas: bool,
 }
@@ -374,11 +359,12 @@ impl Default for OverlayOptions {
     fn default() -> Self {
         Self {
             axis: true,
-            dense_grid: false,
+            dense_grid: true,
             ruler: true,
             slime_chunks: false,
             entities: false,
             block_entities: false,
+            pending_ticks: false,
             villages: false,
             hardcoded_spawn_areas: false,
         }
@@ -842,15 +828,6 @@ impl QuickWriteAction {
         }
     }
 
-    pub(super) const fn is_paste(&self) -> bool {
-        matches!(
-            self,
-            Self::PasteCopiedChunk { .. }
-                | Self::PasteCopiedChunks { .. }
-                | Self::PasteImportedStructure { .. }
-        )
-    }
-
     pub(super) const fn prioritizes_tile_refresh(&self) -> bool {
         matches!(
             self,
@@ -1035,6 +1012,25 @@ pub(super) struct PastePreview {
     pub(super) targets: Vec<ChunkPos>,
     pub(super) tools_expanded: bool,
     pub(super) auto_pan: Option<PastePreviewAutoPan>,
+    pub(super) write_progress: Option<PastePreviewWriteProgress>,
+}
+
+impl PastePreview {
+    pub(super) const fn is_writing(&self) -> bool {
+        self.write_progress.is_some()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PastePreviewWriteProgress {
+    pub(super) completed: usize,
+    pub(super) total: usize,
+    pub(super) awaiting_tile_refresh: bool,
+}
+
+pub(super) struct PendingPasteTaskCompletion {
+    pub(super) task_id: String,
+    pub(super) message: String,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -1122,9 +1118,11 @@ pub(super) struct ProfessionalQueryState {
     pub(super) overlay_bounds: Option<SlimeChunkBounds>,
     pub(super) overlays: Option<RegionOverlayQuery>,
     pub(super) overlay_paint: Option<Arc<ProfessionalOverlayPaintCache>>,
+    pub(super) entity_avatar_pool: BTreeMap<String, Arc<RenderImage>>,
     pub(super) overlay_loading: bool,
     pub(super) overlay_generation: u64,
     pub(super) overlay_cancel: Option<CancelFlag>,
+    pub(super) map_info_invalidation_generation: u64,
     pub(super) pending_overlay_refresh: bool,
     pub(super) last_overlay_request_bounds: Option<SlimeChunkBounds>,
     pub(super) last_overlay_request_options: Option<RegionOverlayQueryOptions>,
@@ -1133,15 +1131,22 @@ pub(super) struct ProfessionalQueryState {
     pub(super) village_index_generation: u64,
     pub(super) village_index_cancel: Option<CancelFlag>,
     pub(super) slime_overlay_runs: Option<Arc<SlimeOverlayRunCache>>,
+    pub(super) slime_overlay_runs_loading: bool,
+    pub(super) slime_overlay_runs_generation: u64,
+    pub(super) slime_overlay_runs_cancel: Option<CancelFlag>,
+    pub(super) slime_overlay_runs_request_bounds: Option<SlimeChunkBounds>,
     pub(super) slime_window_candidates: Option<SlimeWindowCandidateCache>,
+    pub(super) slime_window_candidates_loading: bool,
+    pub(super) slime_window_candidates_generation: u64,
+    pub(super) slime_window_candidates_cancel: Option<CancelFlag>,
+    pub(super) slime_window_candidates_request_bounds: Option<SlimeChunkBounds>,
+    pub(super) slime_window_candidates_request_size: Option<SlimeQueryWindowSize>,
     pub(super) selection: Option<ChunkSelection>,
     pub(super) highlighted_window: Option<SlimeChunkWindow>,
     pub(super) selection_stats: Option<SelectionStats>,
     pub(super) detail: Option<ProfessionalDetail>,
-    pub(super) write_mode: bool,
-    pub(super) pending_delete_confirmation: bool,
+    pub(super) detail_generation: u64,
     pub(super) pending_edit_confirmation: Option<PendingEditConfirmation>,
-    pub(super) pending_quick_write_confirmation: Option<QuickWriteAction>,
     pub(super) copied_chunk: Option<CopiedChunkData>,
     pub(super) imported_region_package: bool,
     pub(super) imported_structure: Option<ImportedStructureData>,
@@ -1203,19 +1208,90 @@ impl PlayerQuickEdit {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ProfessionalOverlayPaintCache {
+    pub(super) entity_avatars: BTreeMap<String, Arc<RenderImage>>,
     pub(super) hardcoded_spawn_rects: Vec<BlockOverlayRect>,
     pub(super) village_rects: Vec<ChunkOverlayRect>,
-    pub(super) entity_points: Vec<BlockOverlayPoint>,
+    pub(super) entity_points: Vec<EntityOverlayPoint>,
     pub(super) block_entity_points: Vec<BlockOverlayPoint>,
-    pub(super) entity_chunk_markers: Vec<ChunkOverlayMarker>,
-    pub(super) block_entity_chunk_markers: Vec<ChunkOverlayMarker>,
+    pub(super) pending_tick_chunk_markers: Vec<ChunkOverlayMarker>,
 }
 
 impl ProfessionalOverlayPaintCache {
-    pub(super) fn from_query(query: &RegionOverlayQuery) -> Self {
-        let mut entity_chunks = BTreeMap::<(i32, i32), usize>::new();
-        let mut block_entity_chunks = BTreeMap::<(i32, i32), usize>::new();
+    pub(super) fn bind_entity_avatars(&mut self, avatar_pool: &BTreeMap<String, Arc<RenderImage>>) {
+        self.entity_avatars = self
+            .entity_points
+            .iter()
+            .filter_map(|point| {
+                let identifier = point.identifier.as_ref()?;
+                let avatar_key = normalize_entity_avatar_key(identifier)?;
+                avatar_pool
+                    .get(&avatar_key)
+                    .or_else(|| {
+                        entity_avatar_alias(&avatar_key).and_then(|alias| avatar_pool.get(alias))
+                    })
+                    .map(|image| (identifier.clone(), image.clone()))
+            })
+            .collect();
+    }
+
+    pub(super) fn from_map_info_snapshot(
+        snapshot: &MapInfoOverlaySnapshot,
+        villages: &[VillageOverlay],
+    ) -> Self {
         let mut cache = Self {
+            entity_avatars: BTreeMap::new(),
+            hardcoded_spawn_rects: snapshot
+                .hardcoded_spawn_areas
+                .iter()
+                .map(|area| BlockOverlayRect {
+                    min_block_x: area.min_block_x,
+                    min_block_z: area.min_block_z,
+                    max_block_x: area.max_block_x,
+                    max_block_z: area.max_block_z,
+                })
+                .collect(),
+            village_rects: villages
+                .iter()
+                .filter_map(|village| village.bounds)
+                .map(|bounds| ChunkOverlayRect {
+                    min_chunk_x: bounds.min_chunk_x,
+                    min_chunk_z: bounds.min_chunk_z,
+                    max_chunk_x: bounds.max_chunk_x,
+                    max_chunk_z: bounds.max_chunk_z,
+                })
+                .collect(),
+            entity_points: Vec::with_capacity(snapshot.entities.len()),
+            block_entity_points: Vec::with_capacity(snapshot.block_entities.len()),
+            pending_tick_chunk_markers: snapshot
+                .pending_tick_counts
+                .iter()
+                .map(|marker| ChunkOverlayMarker {
+                    chunk_x: marker.chunk_x,
+                    chunk_z: marker.chunk_z,
+                    count: marker.count as usize,
+                })
+                .collect(),
+        };
+        for entity in &snapshot.entities {
+            cache.entity_points.push(EntityOverlayPoint {
+                block_x: entity.block_x,
+                block_z: entity.block_z,
+                identifier: entity.identifier.clone(),
+            });
+        }
+        for entity in &snapshot.block_entities {
+            cache.block_entity_points.push(BlockOverlayPoint {
+                block_x: entity.block_x as f32,
+                block_z: entity.block_z as f32,
+            });
+        }
+        cache
+    }
+
+    pub(super) fn from_query(query: &RegionOverlayQuery) -> Self {
+        let mut pending_tick_chunks = BTreeMap::<(i32, i32), usize>::new();
+        let mut cache = Self {
+            entity_avatars: BTreeMap::new(),
             hardcoded_spawn_rects: query
                 .hardcoded_spawn_areas
                 .iter()
@@ -1239,36 +1315,27 @@ impl ProfessionalOverlayPaintCache {
                 .collect(),
             entity_points: Vec::with_capacity(query.entities.len()),
             block_entity_points: Vec::with_capacity(query.block_entities.len()),
-            entity_chunk_markers: Vec::new(),
-            block_entity_chunk_markers: Vec::new(),
+            pending_tick_chunk_markers: Vec::new(),
         };
         for entity in &query.entities {
-            cache.entity_points.push(BlockOverlayPoint {
+            cache.entity_points.push(EntityOverlayPoint {
                 block_x: entity.position[0] as f32,
                 block_z: entity.position[2] as f32,
+                identifier: entity.identifier.clone(),
             });
-            *entity_chunks
-                .entry((entity.chunk.x, entity.chunk.z))
-                .or_default() += 1;
         }
         for block_entity in &query.block_entities {
             cache.block_entity_points.push(BlockOverlayPoint {
                 block_x: block_entity.position[0] as f32,
                 block_z: block_entity.position[2] as f32,
             });
-            *block_entity_chunks
-                .entry((block_entity.chunk.x, block_entity.chunk.z))
+        }
+        for pending_tick in &query.pending_ticks {
+            *pending_tick_chunks
+                .entry((pending_tick.chunk.x, pending_tick.chunk.z))
                 .or_default() += 1;
         }
-        cache.entity_chunk_markers = entity_chunks
-            .into_iter()
-            .map(|((chunk_x, chunk_z), count)| ChunkOverlayMarker {
-                chunk_x,
-                chunk_z,
-                count,
-            })
-            .collect();
-        cache.block_entity_chunk_markers = block_entity_chunks
+        cache.pending_tick_chunk_markers = pending_tick_chunks
             .into_iter()
             .map(|((chunk_x, chunk_z), count)| ChunkOverlayMarker {
                 chunk_x,
@@ -1277,6 +1344,28 @@ impl ProfessionalOverlayPaintCache {
             })
             .collect();
         cache
+    }
+}
+
+pub(super) fn normalize_entity_avatar_key(identifier: &str) -> Option<String> {
+    let identifier = identifier.trim();
+    if identifier.is_empty() {
+        return None;
+    }
+    let identifier = identifier.rsplit(':').next().unwrap_or(identifier);
+    let identifier = identifier
+        .strip_prefix("entity.")
+        .unwrap_or(identifier)
+        .strip_prefix("minecraft_")
+        .unwrap_or(identifier);
+    Some(identifier.to_ascii_lowercase().replace('-', "_"))
+}
+
+fn entity_avatar_alias(identifier: &str) -> Option<&'static str> {
+    match identifier {
+        "experience_orb" => Some("xp_orb"),
+        "experience_bottle" => Some("xp_bottle"),
+        _ => None,
     }
 }
 
@@ -1302,6 +1391,13 @@ pub(super) struct BlockOverlayPoint {
     pub(super) block_z: f32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct EntityOverlayPoint {
+    pub(super) block_x: f32,
+    pub(super) block_z: f32,
+    pub(super) identifier: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ChunkOverlayMarker {
     pub(super) chunk_x: i32,
@@ -1317,8 +1413,13 @@ pub(super) struct SlimeOverlayRunCache {
 
 impl SlimeOverlayRunCache {
     pub(super) fn build(bounds: SlimeChunkBounds) -> Option<Self> {
-        if bounds.dimension != Dimension::Overworld || bounds.chunk_count() > 20_000 {
-            return None;
+        const MAX_EXACT_SLIME_CHUNKS: usize = 1_000_000;
+        if bounds.dimension != Dimension::Overworld || bounds.chunk_count() > MAX_EXACT_SLIME_CHUNKS
+        {
+            return Some(Self {
+                bounds,
+                runs: Vec::new(),
+            });
         }
         let mut runs = Vec::new();
         for chunk_z in bounds.min_chunk_z..=bounds.max_chunk_z {
@@ -1542,8 +1643,6 @@ pub struct MapViewerWindowView {
     pub(super) preview_3d: Preview3dState,
     pub(super) map_focus_handle: FocusHandle,
     pub(super) preview_3d_focus_handle: FocusHandle,
-    pub(super) edit_toast_id: Option<toast::ToastId>,
-    pub(super) edit_task_toast_ids: HashMap<String, toast::ToastId>,
     pub(super) toolbar_state: ToolbarState,
     pub(super) input_fields: MapInputFields,
     pub(super) ui_state: MapViewerUiState,
@@ -1555,6 +1654,7 @@ pub struct MapViewerWindowView {
     pub(super) editor_state: Entity<CodeEditorState>,
     pub(super) db_tree: DbTreeState,
     pub(super) task_snapshots: HashMap<Arc<str>, Arc<TaskSnapshot>>,
+    pub(super) pending_paste_task_completion: Option<PendingPasteTaskCompletion>,
     pub(super) task_updates_task: Option<Task<anyhow::Result<()>>>,
     pub(super) frame_stats: FrameStats,
     pub(super) tile_reveal_state: TileRevealState,
@@ -1595,15 +1695,18 @@ pub struct MapViewerWindowView {
     pub(super) render_cancels: BTreeMap<u64, RenderCancelFlag>,
     pub(super) active_render_tiles: ActiveRenderTiles,
     pub(super) active_render_center_tiles: BTreeMap<u64, (i32, i32)>,
+    pub(super) active_render_request_tiles: BTreeMap<u64, Vec<(i32, i32)>>,
     pub(super) manifest_probe_request_id: Option<u64>,
     pub(super) pending_viewport_refresh: bool,
     pub(super) viewport_work_refresh_scheduled: bool,
     pub(super) viewport_idle_generation: u64,
     pub(super) viewport_idle_task: Option<Task<anyhow::Result<()>>>,
     pub(super) physical_render_batches: PhysicalRenderBatchBudget,
+    pub(super) map_query_budget: MapQueryBudget,
     pub(super) last_viewport_interaction: Option<Instant>,
     pub(super) last_viewport_tile_sync: Option<Instant>,
     pub(super) last_drag_canvas_snapshot_sync: Option<Instant>,
+    pub(super) last_interaction_visible_bounds: Option<TileBounds>,
     pub(super) pending_interaction_ready_tiles: Vec<(i32, i32)>,
     pub(super) last_interaction_ready_flush: Option<Instant>,
     pub(super) last_visible_tile_log: Option<Instant>,
@@ -1612,6 +1715,7 @@ pub struct MapViewerWindowView {
     pub(super) pending_render_image_evictions: Vec<(Instant, Arc<RenderImage>)>,
     pub(super) pending_render_image_eviction_generation: u64,
     pub(super) last_visible_tile_signature: Option<ViewportTileSignature>,
+    pub(super) viewport_plan_generation: u64,
     pub(super) viewport_composite_signature: Option<ViewportCompositeSignature>,
     pub(super) viewport_composite_request_id: Option<u64>,
     pub(super) last_ready_status_update: Option<Instant>,

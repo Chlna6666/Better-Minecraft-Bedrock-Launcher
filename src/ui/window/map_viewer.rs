@@ -24,6 +24,7 @@ mod preview_3d_obj;
 mod preview_panel;
 mod preview_panel_render;
 mod professional_panel;
+mod query_cache;
 mod region_package;
 mod right_panel;
 mod selection;

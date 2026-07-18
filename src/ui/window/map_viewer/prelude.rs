@@ -8,7 +8,8 @@ pub(super) use super::actions::{
 pub(super) use super::canvas::{
     MapCanvasAction, MapCanvasSnapshot, MapCanvasView, ScreenPaintImage, TilePaintSnapshot,
     TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot,
-    screen_image_viewports_transformable, take_map_tile_paint_resources_unavailable,
+    screen_image_viewports_transformable, selection_cursor_for_target,
+    take_map_tile_paint_resources_unavailable,
 };
 pub(super) use super::layout::{
     CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_ICON_SIZE, CHROME_SECTION_GAP,
@@ -18,9 +19,10 @@ pub(super) use super::layout::{
 pub(super) use super::map_history::{
     MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryEntry,
     MapHistoryEntryKind, MapHistoryEntryStatus, MapHistoryState, apply_redo_with_progress,
-    apply_undo_with_progress, capture_before, complete_after, complete_failed,
-    create_restore_protection_point, history_dir_for_world, list_history,
-    restore_history_entry_with_progress,
+    apply_undo_with_progress, capture_before, capture_before_with_progress,
+    capture_before_with_world_and_progress, complete_after, complete_after_with_progress,
+    complete_after_with_world_and_progress, complete_failed, create_restore_protection_point,
+    history_dir_for_world, list_history, restore_history_entry_with_progress,
 };
 pub(super) use super::menu_overlay::{MapMenuOverlaySnapshot, MapMenuOverlayView};
 pub(super) use super::model::ChunkTransferProgress;
@@ -35,7 +37,10 @@ pub(super) use super::preview_3d::{
 };
 pub(super) use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
 pub(super) use super::selection::{
-    ChunkSelection, RightSelectionDrag, chunk_from_block, right_selection_moved,
+    ChunkSelection, ExistingSelectionTarget, RightSelectionDrag, RightSelectionIntent,
+    RightSelectionReleaseAction, SelectionPointerButton, SelectionResizeHandle,
+    SelectionScreenBounds, chunk_from_block, existing_selection_target, right_selection_moved,
+    right_selection_release_action,
 };
 pub(super) use super::state::{
     BOTTOM_PANEL_MIN_HEIGHT, DbTreeNode, DbTreeNodeKind, DbTreeState, DockDrag, DockDragState,
@@ -45,6 +50,11 @@ pub(super) use super::state::{
 };
 pub(super) use super::tool_stripe::{MapToolStripeSnapshot, MapToolStripeView};
 pub(super) use super::top_bar::{MapTopBarSnapshot, MapTopBarView};
+pub(super) use crate::core::minecraft::entity_avatar::load_generated_entity_avatars_rgba;
+pub(super) use crate::core::minecraft::map_info_cache::{
+    MapInfoOverlaySnapshot, invalidate_map_info_tiles_for_chunks,
+    load_cached_map_info_tiles_blocking, load_map_info_tiles_blocking,
+};
 pub(super) use crate::tasks::task_manager::{self, TaskSnapshot};
 pub(super) use crate::ui::animation::request_animation_frame_if;
 pub(super) use crate::ui::components::code_editor::{
@@ -89,7 +99,7 @@ pub(super) use bedrock_world::{
     ActorDigestKey, BedrockWorld, BlockPos, CancelFlag, ChunkDetail, ChunkKey, ChunkRecord,
     ChunkRecordTag, ChunkVersion, ParsedBlockEntity, PlayerData, PlayerId, RegionOverlayQuery,
     RegionOverlayQueryOptions, SelectionStats, SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize,
-    VillageOverlayIndex, WriteGuard, delete_chunks_blocking, is_slime_chunk,
+    VillageOverlay, VillageOverlayIndex, WriteGuard, delete_chunks_blocking, is_slime_chunk,
     query_block_tip_blocking, query_chunk_detail_blocking,
     query_region_overlays_blocking_with_control, query_selection_stats_blocking,
     query_slime_chunk_windows,
@@ -99,8 +109,9 @@ pub(super) use futures::channel::mpsc::{UnboundedSender, unbounded};
 pub(super) use futures_util::StreamExt as _;
 pub(super) use gpui::prelude::FluentBuilder as _;
 pub(super) use gpui::*;
+pub(super) use rustc_hash::FxHashMap as HashMap;
 pub(super) use serde::{Deserialize, Serialize};
-pub(super) use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+pub(super) use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub(super) use std::hash::Hash;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::sync::{Arc, Mutex, OnceLock};

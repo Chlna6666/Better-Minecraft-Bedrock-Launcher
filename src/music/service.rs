@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -184,11 +184,18 @@ impl MusicController {
             anyhow::bail!("no track selected")
         };
 
-        let file = File::open(track.path.as_ref())
-            .with_context(|| format!("failed to open track: {}", track.path.display()))?;
+        let track_path = track.path.clone();
+        let file = File::open(track_path.as_ref())
+            .with_context(|| format!("failed to open track: {}", track_path.display()))?;
         let decoder =
             Decoder::try_from(BufReader::new(file)).context("failed to decode audio file")?;
+        if let Some(duration) = decoder.total_duration()
+            && let Some(track) = self.tracks.get_mut(self.current_index)
+        {
+            track.duration = duration;
+        }
         let sink = Player::connect_new(output_stream.mixer());
+        sink.set_speed(1.0);
         sink.append(decoder);
         if self.last_position > Duration::ZERO {
             if let Err(err) = sink.try_seek(self.last_position) {
@@ -203,7 +210,7 @@ impl MusicController {
         self.sink = Some(sink);
         self.last_error = None;
         debug!(
-            path = %track.path.display(),
+            path = %track_path.display(),
             paused,
             seek_seconds = self.last_position.as_secs_f32(),
             generation = self.generation,

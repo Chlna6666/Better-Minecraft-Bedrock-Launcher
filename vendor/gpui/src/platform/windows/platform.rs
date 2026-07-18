@@ -40,7 +40,7 @@ use windows::{
     core::*,
 };
 use winit::application::ApplicationHandler;
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 
 use super::{
     apply_cursor_style_to_window, keystroke_from_winit, modifiers_from_winit,
@@ -161,11 +161,8 @@ impl WindowsPlatformState {
     }
 }
 
-fn create_windows_text_system(
-    renderer_backend: RendererBackend,
-) -> Result<Arc<dyn PlatformTextSystem>> {
-    let _ = renderer_backend;
-    Ok(Arc::new(CosmicTextSystem::new()))
+fn create_windows_text_system() -> Result<Arc<dyn PlatformTextSystem>> {
+    Ok(Arc::new(DirectWriteTextSystem::new()?))
 }
 
 fn become_dpi_aware() {
@@ -231,7 +228,7 @@ impl WindowsPlatform {
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
             Self::new_common_parts();
         let renderer_backend = RendererBackend::HeadlessTest;
-        let text_system = create_windows_text_system(renderer_backend)
+        let text_system = create_windows_text_system()
             .unwrap_or_else(|_| Arc::new(NoopTextSystem) as Arc<dyn PlatformTextSystem>);
 
         Self {
@@ -296,7 +293,7 @@ impl WindowsPlatform {
                 renderer_backend
             );
         }
-        let text_system = create_windows_text_system(renderer_backend)?;
+        let text_system = create_windows_text_system()?;
         let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
             .is_ok_and(|value| value == "true" || value == "1");
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
@@ -875,12 +872,26 @@ impl Platform for WindowsPlatform {
 impl WindowsPlatformInner {
     #[inline]
     fn run_foreground_tasks(&self) -> bool {
-        self.main_thread_wakeup_pending
-            .store(false, Ordering::Release);
-        drain_foreground_tasks(
+        let has_pending_tasks = drain_foreground_tasks(
             || self.main_receiver.try_recv().ok(),
             || !self.main_receiver.is_empty(),
-        )
+        );
+        if has_pending_tasks {
+            return true;
+        }
+
+        // Keep the wakeup coalesced while polling tasks. A runnable may schedule itself again;
+        // clearing this flag before the drain would post another winit user event for every
+        // batch and can prevent the Windows message queue from reaching input and redraw events.
+        self.main_thread_wakeup_pending
+            .store(false, Ordering::Release);
+        if self.main_receiver.is_empty() {
+            false
+        } else {
+            self.main_thread_wakeup_pending
+                .store(true, Ordering::Release);
+            true
+        }
     }
 
     pub(crate) fn handle_dock_action_event(&self, action_idx: usize) -> Option<isize> {
@@ -916,10 +927,13 @@ struct WindowsApplication {
 }
 
 impl WindowsApplication {
-    fn run_foreground_tasks(&self) {
-        if self.inner.run_foreground_tasks() {
-            self.request_main_thread_task_wakeup();
-        }
+    fn run_foreground_tasks(&self, event_loop: &ActiveEventLoop) {
+        let control_flow = if self.inner.run_foreground_tasks() {
+            ControlFlow::Poll
+        } else {
+            ControlFlow::Wait
+        };
+        event_loop.set_control_flow(control_flow);
     }
 
     fn dispatch_pending_frame_requests(&self) {
@@ -928,36 +942,6 @@ impl WindowsApplication {
             let options = window.take_pending_frame_request();
             if options.requires_frame() {
                 window.invoke_request_frame(options);
-            }
-        }
-    }
-
-    fn request_main_thread_task_wakeup(&self) {
-        if !self
-            .inner
-            .main_thread_wakeup_pending
-            .swap(true, Ordering::AcqRel)
-        {
-            let event_loop_proxy = self.event_loop_proxy.lock().unwrap().clone();
-            if let Some(event_loop_proxy) = event_loop_proxy {
-                if let Err(error) =
-                    event_loop_proxy.send_event(WindowsUserEvent::RunMainThreadTasks)
-                {
-                    self.inner
-                        .main_thread_wakeup_pending
-                        .store(false, Ordering::Release);
-                    log::error!(
-                        "WindowsApplication::request_main_thread_task_wakeup send failed: {:?}",
-                        error
-                    );
-                }
-            } else {
-                self.inner
-                    .main_thread_wakeup_pending
-                    .store(false, Ordering::Release);
-                log::warn!(
-                    "WindowsApplication::request_main_thread_task_wakeup dropped wakeup before event loop initialization"
-                );
             }
         }
     }
@@ -1057,9 +1041,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
         });
         match event {
-            WindowsUserEvent::RunMainThreadTasks => {
-                self.run_foreground_tasks();
-            }
+            // Drain in `about_to_wait`, after winit has dispatched the current batch of native
+            // window messages. This keeps mouse, non-client drag, and redraw events responsive.
+            WindowsUserEvent::RunMainThreadTasks => {}
             WindowsUserEvent::DockMenuAction(action_index) => {
                 self.inner.handle_dock_action_event(action_index);
             }
@@ -1074,13 +1058,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
         });
-        if self
-            .inner
-            .main_thread_wakeup_pending
-            .load(Ordering::Acquire)
-        {
-            self.run_foreground_tasks();
-        }
+        self.run_foreground_tasks(event_loop);
         // `RedrawRequested` can be suppressed while a native window is being mapped or when
         // Windows coalesces redraws. Consume any request that survived the event cycle so the
         // frame watchdog does not become the normal delivery path.

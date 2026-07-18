@@ -166,13 +166,7 @@ impl MainWindowView {
         );
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::components::toast::ToastState>(|_this, cx| {
-                let now = Instant::now();
-                let state = cx.global::<crate::ui::components::toast::ToastState>();
-                if crate::ui::components::toast::has_visible_toasts(now, state)
-                    || crate::ui::components::toast::has_visible_breadcrumb(now, state)
-                {
-                    cx.notify();
-                }
+                cx.notify();
             }),
         );
         self._reactor_subscriptions.push(

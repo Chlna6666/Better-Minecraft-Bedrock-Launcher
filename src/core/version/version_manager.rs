@@ -1,14 +1,14 @@
 use crate::core::minecraft::appx::utils::{
-    find_any_game_executable_in_dir, get_executable_product_version, get_manifest_identity_from_dir,
+    find_any_game_executable_in_dir, get_executable_product_version,
+    get_manifest_identity_from_dir_blocking,
 };
 use crate::core::version::launch_versions::LaunchVersionEntry;
-use futures::StreamExt;
+use rayon::prelude::*;
 use std::cmp::Ordering;
+use std::fs::DirEntry;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::fs::read_dir;
-use tokio_stream::wrappers::ReadDirStream;
 use tracing::debug;
 
 fn next_version_number(version: &str, cursor: &mut usize) -> Option<u64> {
@@ -89,11 +89,8 @@ fn determine_kind_from_version(version: &str) -> &'static str {
     }
 }
 
-async fn read_appx_version_entry(
-    entry: tokio::fs::DirEntry,
-    root: &Path,
-) -> Option<LaunchVersionEntry> {
-    let file_type = match entry.file_type().await {
+fn read_appx_version_entry(entry: DirEntry, root: &Path) -> Option<LaunchVersionEntry> {
+    let file_type = match entry.file_type() {
         Ok(file_type) => file_type,
         Err(error) => {
             debug!("获取文件类型失败: {}", error);
@@ -121,11 +118,8 @@ async fn read_appx_version_entry(
         }
     };
 
-    let manifest_future = get_manifest_identity_from_dir(&path);
-    let pe_executable_path = executable_path.clone();
-    let pe_future =
-        tokio::task::spawn_blocking(move || get_executable_product_version(&pe_executable_path));
-    let (manifest_result, pe_result) = tokio::join!(manifest_future, pe_future);
+    let manifest_result = get_manifest_identity_from_dir_blocking(&path);
+    let pe_result = get_executable_product_version(&executable_path);
 
     let (name, manifest_version) = match manifest_result {
         Ok(identity) => identity,
@@ -141,22 +135,11 @@ async fn read_appx_version_entry(
     };
 
     let pe_version = match pe_result {
-        Ok(Ok(Some(version))) => Some(version),
-        Ok(Ok(None)) => None,
-        Ok(Err(error)) => {
-            debug!(
-                "PE 版本解析失败，使用 manifest 版本: dir={}, exe={}, identity={}, manifest_version={}, error={}",
-                path.display(),
-                executable_path.display(),
-                name,
-                manifest_version,
-                error
-            );
-            None
-        }
+        Ok(Some(version)) => Some(version),
+        Ok(None) => None,
         Err(error) => {
             debug!(
-                "PE 解析任务失败，使用 manifest 版本: dir={}, exe={}, identity={}, manifest_version={}, error={}",
+                "PE 版本解析失败，使用 manifest 版本: dir={}, exe={}, identity={}, manifest_version={}, error={}",
                 path.display(),
                 executable_path.display(),
                 name,
@@ -193,6 +176,8 @@ async fn read_appx_version_entry(
         manifest_version,
         path: Arc::<str>::from(display_path),
         kind: Arc::<str>::from(kind),
+        custom_icon_path: crate::core::version::icons::custom_version_icon_path(&path)
+            .map(|icon_path| Arc::<str>::from(icon_path.to_string_lossy().into_owned())),
     })
 }
 
@@ -205,10 +190,35 @@ fn absolute_display_path(root: &Path, path: &Path) -> String {
 }
 
 pub async fn get_appx_version_list(folder: &Path) -> Vec<LaunchVersionEntry> {
+    let folder = folder.to_path_buf();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let thread = std::thread::Builder::new()
+        .name("bmcbl-version-scan".to_string())
+        .spawn(move || {
+            let versions = get_appx_version_list_blocking(&folder);
+            if sender.send(versions).is_err() {
+                debug!("版本扫描结果接收端已关闭");
+            }
+        });
+    if let Err(error) = thread {
+        debug!("启动版本扫描线程失败: {error}");
+        return Vec::new();
+    }
+
+    match receiver.await {
+        Ok(versions) => versions,
+        Err(error) => {
+            debug!("版本扫描线程异常退出: {error}");
+            Vec::new()
+        }
+    }
+}
+
+fn get_appx_version_list_blocking(folder: &Path) -> Vec<LaunchVersionEntry> {
     let start = Instant::now();
     debug!("开始读取目录: {}", folder.display());
 
-    let read_dir = match read_dir(folder).await {
+    let read_dir = match std::fs::read_dir(folder) {
         Ok(read_dir) => read_dir,
         Err(error) => {
             debug!("读取目录失败: {}", error);
@@ -216,26 +226,35 @@ pub async fn get_appx_version_list(folder: &Path) -> Vec<LaunchVersionEntry> {
         }
     };
 
-    let concurrency = num_cpus::get().clamp(2, 4);
-    let root = Arc::new(folder.to_path_buf());
-    let versions = ReadDirStream::new(read_dir)
-        .filter_map(|entry| async move {
-            match entry {
-                Ok(entry) => Some(entry),
-                Err(error) => {
-                    debug!("遍历目录项出错: {}", error);
-                    None
-                }
+    let entries = read_dir
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                debug!("遍历目录项出错: {}", error);
+                None
             }
         })
-        .map(move |entry| {
-            let root = Arc::clone(&root);
-            async move { read_appx_version_entry(entry, root.as_path()).await }
-        })
-        .buffer_unordered(concurrency)
-        .filter_map(|entry| async move { entry })
-        .collect::<Vec<_>>()
-        .await;
+        .collect::<Vec<_>>();
+    let concurrency = num_cpus::get().clamp(2, 4);
+    let versions = match rayon::ThreadPoolBuilder::new()
+        .num_threads(concurrency)
+        .thread_name(|index| format!("bmcbl-version-parse-{index}"))
+        .build()
+    {
+        Ok(pool) => pool.install(|| {
+            entries
+                .into_par_iter()
+                .filter_map(|entry| read_appx_version_entry(entry, folder))
+                .collect::<Vec<_>>()
+        }),
+        Err(error) => {
+            debug!("创建版本解析线程池失败，改用顺序解析: {error}");
+            entries
+                .into_iter()
+                .filter_map(|entry| read_appx_version_entry(entry, folder))
+                .collect::<Vec<_>>()
+        }
+    };
 
     debug!(
         "get_appx_version_list 完成，用时: {:?}, 并发度: {}, 条目数: {}",
@@ -244,4 +263,58 @@ pub async fn get_appx_version_list(folder: &Path) -> Vec<LaunchVersionEntry> {
         versions.len()
     );
     versions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_appx_version_list;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn version_scan_does_not_wait_for_tokio_blocking_pool() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .expect("test runtime should build");
+        let (blocking_started_sender, blocking_started_receiver) = mpsc::channel();
+        let (release_blocking_sender, release_blocking_receiver) = mpsc::channel();
+        let blocker = runtime.spawn_blocking(move || {
+            blocking_started_sender
+                .send(())
+                .expect("test should observe blocking worker startup");
+            release_blocking_receiver
+                .recv()
+                .expect("test should release blocking worker");
+        });
+        blocking_started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocking worker should be occupied");
+
+        let test_dir = std::env::temp_dir().join(format!(
+            "bmcbl-version-scan-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let result = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(500), get_appx_version_list(&test_dir)).await
+        });
+
+        release_blocking_sender
+            .send(())
+            .expect("blocking worker should be released");
+        runtime
+            .block_on(blocker)
+            .expect("blocking worker should finish");
+        std::fs::remove_dir_all(&test_dir).expect("test directory should be removed");
+
+        assert!(
+            result
+                .expect("version scan should bypass blocking pool")
+                .is_empty()
+        );
+    }
 }

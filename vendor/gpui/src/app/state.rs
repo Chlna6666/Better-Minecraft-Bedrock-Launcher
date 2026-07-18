@@ -13,7 +13,7 @@ use futures::{Future, FutureExt, future::LocalBoxFuture};
 use parking_lot::RwLock;
 use slotmap::SlotMap;
 
-use super::{AppCell, KeystrokeObserver};
+use super::{AppCell, KeystrokeObserver, application::load_default_font_config};
 use ::util::debug_panic;
 use collections::{FxHashMap, FxHashSet, VecDeque};
 use http_client::HttpClient;
@@ -23,10 +23,10 @@ use crate::InspectorElementRegistry;
 use crate::{
     ActionRegistry, AnyDrag, AnyEntity, AnyView, AnyWindowHandle, AssetSource, AsyncApp,
     BackgroundExecutor, Context, DefaultFontConfig, DispatchPhase, Effect, Entity, EntityId,
-    EntityMap, EventEmitter, FocusMap, FontSource, ForegroundExecutor, ImagePipelineConfig, Keymap,
-    LayoutId, Platform, PlatformKeyboardLayout, PlatformKeyboardMapper, PromptBuilder, Render,
-    SubscriberSet, Subscription, SvgRenderer, SystemWindowTabController, Task, TextStyle,
-    TextSystem, Window, WindowHandle, WindowId, WindowInvalidator,
+    EntityMap, EventEmitter, FocusMap, FontFallbacks, ForegroundExecutor, ImagePipelineConfig,
+    Keymap, LayoutId, Platform, PlatformKeyboardLayout, PlatformKeyboardMapper, PromptBuilder,
+    Render, SharedString, SubscriberSet, Subscription, SvgRenderer, SystemWindowTabController,
+    Task, TextStyle, TextSystem, Window, WindowHandle, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
     init_app_menus, record_coalesced_refresh_effect,
 };
@@ -366,33 +366,43 @@ impl App {
 
     /// Updates the application-wide default font family and synchronizes existing windows.
     pub fn set_default_font(&mut self, config: DefaultFontConfig) -> Result<()> {
-        let mut fonts = Vec::new();
-        let mut font_paths = Vec::new();
-        for source in config.sources {
-            match source {
-                FontSource::SystemFamily(_) => {}
-                FontSource::Path(path) => font_paths.push(path),
-                FontSource::Embedded(bytes) => fonts.push(bytes),
-            }
-        }
+        let loaded = load_default_font_config(&self.text_system, config)?;
+        self.default_text_style.font_family = loaded.family;
+        self.default_text_style.font_fallbacks = loaded.fallbacks;
+        self.synchronize_default_text_style();
+        Ok(())
+    }
 
-        if !font_paths.is_empty() {
-            self.text_system.add_font_paths(font_paths)?;
-        }
-        if !fonts.is_empty() {
-            self.text_system.add_fonts(fonts)?;
-        }
+    /// Changes the application-wide default family without replacing configured fallbacks.
+    pub fn set_default_font_family(&mut self, family: impl Into<SharedString>) -> Result<()> {
+        let family = family.into();
+        self.text_system.preload_font_family(family.clone())?;
+        self.text_system.set_system_font_family(family.clone());
+        self.default_text_style.font_family = family;
+        self.synchronize_default_text_style();
+        Ok(())
+    }
+
+    /// Changes the application-wide fallback families and synchronizes existing windows.
+    pub fn set_default_font_fallbacks<I, S>(&mut self, families: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<SharedString>,
+    {
+        let fallbacks =
+            FontFallbacks::from_families(families.into_iter().map(Into::into).collect());
         self.text_system
-            .preload_font_family(config.family.clone())?;
-        self.text_system
-            .set_system_font_family(config.family.clone());
-        self.default_text_style.font_family = config.family;
+            .set_fallback_font_families(fallbacks.fallback_list().iter().cloned().collect());
+        self.default_text_style.font_fallbacks = (!fallbacks.is_empty()).then_some(fallbacks);
+        self.synchronize_default_text_style();
+    }
+
+    fn synchronize_default_text_style(&mut self) {
         let default_text_style = self.default_text_style.clone();
         for window in self.windows.values_mut().flatten() {
             window.set_default_text_style(default_text_style.clone());
         }
         self.refresh_windows();
-        Ok(())
     }
 
     /// Register a callback to be invoked when the application is about to quit.

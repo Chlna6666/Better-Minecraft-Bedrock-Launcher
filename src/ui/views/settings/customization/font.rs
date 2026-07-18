@@ -155,7 +155,7 @@ fn local_font_row(
                                 };
 
                                 if let Err(error) = cx.update(move |cx| {
-                                    persist_font_settings_and_prompt_restart(snapshot, cx);
+                                    persist_font_settings_and_apply(snapshot, cx);
                                 }) {
                                     warn!("persist picked font schedule failed: {error:?}");
                                 }
@@ -204,7 +204,7 @@ fn system_font_row(
                                 SharedString::from(crate::config::config::FONT_SOURCE_DEFAULT);
                             snapshot_from_state(state)
                         });
-                        persist_font_settings_and_prompt_restart(snapshot, cx);
+                        persist_font_settings_and_apply(snapshot, cx);
                         return;
                     }
 
@@ -225,7 +225,7 @@ fn system_font_row(
                             snapshot_from_state(state)
                         });
                         if has_local_font {
-                            persist_font_settings_and_prompt_restart(snapshot, cx);
+                            persist_font_settings_and_apply(snapshot, cx);
                         } else {
                             cx.refresh_windows();
                         }
@@ -238,22 +238,28 @@ fn system_font_row(
                         state.system_font_family = SharedString::from(selected.clone());
                         snapshot_from_state(state)
                     });
-                    persist_font_settings_and_prompt_restart(snapshot, cx);
+                    persist_font_settings_and_apply(snapshot, cx);
                 },
             )),
     )
 }
 
-fn persist_font_settings_and_prompt_restart(
+fn persist_font_settings_and_apply(
     snapshot: crate::ui::views::settings::common::SettingsSnapshot,
     cx: &mut App,
 ) {
+    let font_config = crate::utils::font_settings::font_config_for_selection(
+        &snapshot.font_source,
+        &snapshot.local_font_path,
+        &snapshot.local_font_family,
+        &snapshot.system_font_family,
+    );
     spawn_persist_settings_with_success(
         snapshot,
-        Some(Rc::new(|cx| {
-            cx.update_global(|state: &mut SettingsPageState, _cx| {
-                state.open_font_restart_confirm();
-            });
+        Some(Rc::new(move |cx| {
+            if let Err(error) = cx.set_default_font(font_config.clone()) {
+                warn!("apply font selection failed: {error:#}");
+            }
         })),
         cx,
     );

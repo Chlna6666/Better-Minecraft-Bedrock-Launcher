@@ -12,9 +12,12 @@ use super::tile_render::{
     RenderTilePlan, TileBatchRequest, open_map_render_session, render_tile_batch_stream,
 };
 use super::tile_state::ReadyTile;
+use super::viewport::viewport_screen_for_block;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use std::io::Cursor;
+
+const SELECTION_RESIZE_HIT_TOLERANCE_PX: f32 = 12.0;
 
 struct CopyChunkComplete {
     copied_chunk: CopiedChunkData,
@@ -28,52 +31,39 @@ impl MapViewerWindowView {
         message: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(toast_id) = self.edit_toast_id.take() {
-            toast::dismiss(cx, toast_id);
-        }
-        self.edit_toast_id = Some(toast::pending(cx, message.into()));
+        self.status = message.into();
+        cx.notify();
     }
 
     pub(super) fn resolve_edit_toast(
         &mut self,
-        kind: toast::ToastKind,
+        _kind: toast::ToastKind,
         message: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        let message = message.into();
-        if let Some(toast_id) = self.edit_toast_id.take() {
-            toast::resolve(cx, toast_id, kind, message);
-        } else {
-            toast::push_kind(cx, kind, message);
-        }
+        self.status = message.into();
+        cx.notify();
     }
 
     pub(super) fn begin_task_toast(
         &mut self,
-        task_id: &str,
+        _task_id: &str,
         message: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(toast_id) = self.edit_task_toast_ids.remove(task_id) {
-            toast::dismiss(cx, toast_id);
-        }
-        self.edit_task_toast_ids
-            .insert(task_id.to_string(), toast::pending(cx, message.into()));
+        self.status = message.into();
+        cx.notify();
     }
 
     pub(super) fn resolve_task_toast(
         &mut self,
-        task_id: &str,
-        kind: toast::ToastKind,
+        _task_id: &str,
+        _kind: toast::ToastKind,
         message: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        let message = message.into();
-        if let Some(toast_id) = self.edit_task_toast_ids.remove(task_id) {
-            toast::resolve(cx, toast_id, kind, message);
-        } else {
-            toast::push_kind(cx, kind, message);
-        }
+        self.status = message.into();
+        cx.notify();
     }
 
     pub(super) fn map_shortcuts_allowed(&self, window: &Window, cx: &App) -> bool {
@@ -97,6 +87,7 @@ impl MapViewerWindowView {
         self.dimension = dimension;
         self.context_menu = None;
         self.cancel_professional_overlay_query();
+        self.cancel_slime_window_candidate_query();
         self.professional = ProfessionalQueryState::default();
         self.replace_paste_preview_images(Vec::new(), cx);
         self.set_professional_detail(None, cx);
@@ -121,6 +112,7 @@ impl MapViewerWindowView {
         self.mark_viewport_interaction();
         self.viewport.zoom_at(position, factor);
         self.cancel_viewport_render_for_interaction();
+        self.invalidate_professional_overlay_for_viewport_change();
         self.context_menu = None;
         self.ensure_visible_tiles_throttled(cx);
         self.professional.pending_overlay_refresh = true;
@@ -153,16 +145,6 @@ impl MapViewerWindowView {
         self.bypass_cache_active = true;
         self.invalidate_tiles(cx);
         self.ensure_visible_tiles(cx);
-        cx.notify();
-    }
-
-    pub(super) fn step_cpu_budget(&mut self, delta: i8, cx: &mut Context<Self>) {
-        self.cpu_budget.step(delta);
-        self.status = SharedString::from(format!(
-            "CPU预算已设为 {}% · 下个批次生效",
-            self.cpu_budget.percent
-        ));
-        self.schedule_next_tile_batch(cx);
         cx.notify();
     }
 
@@ -233,10 +215,26 @@ impl MapViewerWindowView {
             MapViewerAction::ImportStructureFile => self.open_import_structure_dialog(cx),
             MapViewerAction::ToggleTopMore => self.toggle_top_more(cx),
             MapViewerAction::ToggleLeftPanel => self.toggle_left_panel(cx),
-            MapViewerAction::ToggleBottomPanel => self.toggle_bottom_panel(cx),
-            MapViewerAction::SetBottomTab(tab) => self.set_bottom_tab(tab, cx),
-            MapViewerAction::OpenRightNbt => self.open_right_nbt_panel(cx),
-            MapViewerAction::OpenRightPreview3d => self.open_right_preview_3d_panel(cx),
+            MapViewerAction::ToggleBottomTab(tab) => self.toggle_bottom_tab(tab, cx),
+            MapViewerAction::ToggleRightPanel(panel) => self.toggle_right_panel_kind(panel, cx),
+            MapViewerAction::BeginRightSelectionAt(position) => {
+                let stage_bounds = Bounds::new(
+                    self.center_stage_origin(),
+                    size(px(self.viewport.width), px(self.viewport.height)),
+                );
+                if stage_bounds.contains(&position) {
+                    self.begin_right_selection(position, cx);
+                } else {
+                    self.close_all_menus(cx);
+                }
+            }
+            MapViewerAction::EndRightSelectionAt(position) => {
+                if self.right_selection_drag.is_some() {
+                    self.end_right_selection(position, cx);
+                } else {
+                    self.release_pointer_captures("menu overlay right mouse up", cx);
+                }
+            }
             MapViewerAction::CloseMenus => self.close_all_menus(cx),
         }
     }
@@ -257,17 +255,24 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn toggle_right_panel(&mut self, cx: &mut Context<Self>) {
-        let open = !self.ui_state.right_panel_open;
-        if !open && self.ui_state.active_right_panel == MapViewerRightPanel::Preview3d {
+        if self.ui_state.right_panel_open {
+            self.close_right_panel(cx);
+            return;
+        }
+        self.ui_state.set_right_panel_open(true);
+        self.update_viewport_after_dock_change(cx);
+        cx.notify();
+    }
+
+    pub(super) fn close_right_panel(&mut self, cx: &mut Context<Self>) {
+        if !self.ui_state.right_panel_open {
+            return;
+        }
+        if self.ui_state.active_right_panel == MapViewerRightPanel::Preview3d {
             self.clear_preview_3d_resources(false);
         }
-        self.ui_state.set_right_panel_open(open);
-        let size = size(px(self.window_width), px(self.window_height));
-        if self.viewport.set_size(self.center_stage_size(size)) {
-            self.ensure_visible_tiles(cx);
-            self.refresh_professional_render_caches();
-            self.refresh_professional_overlays(cx);
-        }
+        self.ui_state.set_right_panel_open(false);
+        self.update_viewport_after_dock_change(cx);
         cx.notify();
     }
 
@@ -297,8 +302,9 @@ impl MapViewerWindowView {
             .clamp_sizes(self.window_width, self.window_height);
         let size = size(px(self.window_width), px(self.window_height));
         if self.viewport.set_size(self.center_stage_size(size)) {
+            self.invalidate_professional_overlay_for_viewport_change();
             self.ensure_visible_tiles(cx);
-            self.refresh_professional_render_caches();
+            self.refresh_professional_render_caches(cx);
             self.refresh_professional_overlays(cx);
         }
     }
@@ -307,8 +313,9 @@ impl MapViewerWindowView {
         self.ui_state.left_panel_open = !self.ui_state.left_panel_open;
         let size = size(px(self.window_width), px(self.window_height));
         if self.viewport.set_size(self.center_stage_size(size)) {
+            self.invalidate_professional_overlay_for_viewport_change();
             self.ensure_visible_tiles(cx);
-            self.refresh_professional_render_caches();
+            self.refresh_professional_render_caches(cx);
             self.refresh_professional_overlays(cx);
         }
         cx.notify();
@@ -318,8 +325,9 @@ impl MapViewerWindowView {
         self.ui_state.bottom_panel_open = !self.ui_state.bottom_panel_open;
         let size = size(px(self.window_width), px(self.window_height));
         if self.viewport.set_size(self.center_stage_size(size)) {
+            self.invalidate_professional_overlay_for_viewport_change();
             self.ensure_visible_tiles(cx);
-            self.refresh_professional_render_caches();
+            self.refresh_professional_render_caches(cx);
             self.refresh_professional_overlays(cx);
         }
         cx.notify();
@@ -335,6 +343,29 @@ impl MapViewerWindowView {
             self.refresh_history(cx);
         }
         cx.notify();
+    }
+
+    pub(super) fn toggle_bottom_tab(&mut self, tab: MapViewerBottomTab, cx: &mut Context<Self>) {
+        if self.ui_state.bottom_panel_open && self.ui_state.active_bottom_tab == tab {
+            self.toggle_bottom_panel(cx);
+        } else {
+            self.set_bottom_tab(tab, cx);
+        }
+    }
+
+    pub(super) fn toggle_right_panel_kind(
+        &mut self,
+        panel: MapViewerRightPanel,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ui_state.right_panel_open && self.ui_state.active_right_panel == panel {
+            self.close_right_panel(cx);
+            return;
+        }
+        match panel {
+            MapViewerRightPanel::Nbt => self.open_right_nbt_panel(cx),
+            MapViewerRightPanel::Preview3d => self.open_right_preview_3d_panel(cx),
+        }
     }
 
     pub(super) fn toggle_context_more(&mut self, cx: &mut Context<Self>) {
@@ -415,6 +446,7 @@ impl MapViewerWindowView {
                     clamp_right_panel_width(drag.start_size + delta, self.window_width);
                 let size = size(px(self.window_width), px(self.window_height));
                 if self.viewport.set_size(self.center_stage_size(size)) {
+                    self.invalidate_professional_overlay_for_viewport_change();
                     self.ensure_visible_tiles_throttled(cx);
                     self.professional.pending_overlay_refresh = true;
                     self.schedule_viewport_idle_refresh(cx);
@@ -429,6 +461,7 @@ impl MapViewerWindowView {
                     clamp_bottom_panel_height(drag.start_size + delta, self.window_height);
                 let size = size(px(self.window_width), px(self.window_height));
                 if self.viewport.set_size(self.center_stage_size(size)) {
+                    self.invalidate_professional_overlay_for_viewport_change();
                     self.ensure_visible_tiles_throttled(cx);
                     self.professional.pending_overlay_refresh = true;
                     self.schedule_viewport_idle_refresh(cx);
@@ -473,11 +506,15 @@ impl MapViewerWindowView {
                 #[cfg(target_os = "windows")]
                 self.preview_3d.clear_surface();
             }
-            if release.map_drag || release.dock_drag {
+            if release.map_drag {
+                self.mark_viewport_interaction();
+            } else if release.dock_drag {
                 self.last_viewport_interaction = None;
+            }
+            if release.map_drag || release.dock_drag {
                 self.ensure_visible_tiles(cx);
-                self.refresh_professional_render_caches();
-                self.refresh_professional_overlays(cx);
+                self.refresh_professional_render_caches(cx);
+                self.schedule_viewport_idle_refresh(cx);
                 self.last_drag_canvas_snapshot_sync = None;
                 let colors = self.theme_colors(cx);
                 self.sync_canvas_snapshot(colors, cx);
@@ -505,11 +542,15 @@ impl MapViewerWindowView {
                 #[cfg(target_os = "windows")]
                 self.preview_3d.clear_surface();
             }
-            if release.map_drag || release.dock_drag {
+            if release.map_drag {
+                self.mark_viewport_interaction();
+            } else if release.dock_drag {
                 self.last_viewport_interaction = None;
+            }
+            if release.map_drag || release.dock_drag {
                 self.ensure_visible_tiles(cx);
-                self.refresh_professional_render_caches();
-                self.refresh_professional_overlays(cx);
+                self.refresh_professional_render_caches(cx);
+                self.schedule_viewport_idle_refresh(cx);
                 self.last_drag_canvas_snapshot_sync = None;
                 let colors = self.theme_colors(cx);
                 self.sync_canvas_snapshot(colors, cx);
@@ -517,6 +558,23 @@ impl MapViewerWindowView {
             cx.notify();
         }
         changed
+    }
+
+    pub(super) fn release_preview_3d_pointer_capture(
+        &mut self,
+        source: &'static str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !take_preview_3d_pointer_capture(&mut self.preview_3d.drag) {
+            return false;
+        }
+        tracing::debug!(
+            target: "bmcbl::ui::window::map_viewer::view",
+            source,
+            "map_viewer preview_3d_pointer_capture_released"
+        );
+        cx.notify();
+        true
     }
 
     pub(super) fn begin_exclusive_pointer_interaction(&mut self) {
@@ -530,6 +588,14 @@ impl MapViewerWindowView {
 
     pub(super) fn begin_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         if self.ui_state.dock_drag.is_some() {
+            return;
+        }
+        if let Some(drag) = self.existing_selection_drag(position, SelectionPointerButton::Left) {
+            self.mark_viewport_interaction();
+            self.begin_exclusive_pointer_interaction();
+            self.cancel_manifest_probe_for_interaction();
+            self.right_selection_drag = Some(drag);
+            cx.notify();
             return;
         }
         self.mark_viewport_interaction();
@@ -567,10 +633,13 @@ impl MapViewerWindowView {
         };
         let dx = (position.x - drag.start.x) / px(1.0);
         let dy = (position.y - drag.start.y) / px(1.0);
+        let mut overlay_invalidated = false;
         if !drag.moved && dx.hypot(dy) > MAP_CLICK_DRAG_THRESHOLD_PX {
             drag.moved = true;
             self.drag = Some(drag);
             self.cancel_viewport_render_for_interaction();
+            self.invalidate_professional_overlay_for_viewport_change();
+            overlay_invalidated = true;
         }
         if let Some(active_drag) = self.drag.as_mut() {
             let movement_x = position.x - active_drag.last_position.x;
@@ -593,9 +662,15 @@ impl MapViewerWindowView {
         });
         if should_sync {
             self.last_drag_canvas_snapshot_sync = Some(now);
-            if self.sync_interaction_tile_layer_snapshot(colors, cx)
-                && should_notify_parent_after_interaction_layer_sync()
-            {
+            let snapshot_changed = if overlay_invalidated {
+                self.last_synced_canvas_snapshot_key = None;
+                self.last_synced_tile_layer_snapshot_key = None;
+                self.sync_canvas_snapshot(colors, cx);
+                true
+            } else {
+                self.sync_interaction_tile_layer_snapshot(colors, cx)
+            };
+            if snapshot_changed && should_notify_parent_after_interaction_layer_sync() {
                 cx.notify();
             }
             self.ensure_visible_tiles_throttled(cx);
@@ -607,7 +682,7 @@ impl MapViewerWindowView {
             return;
         }
         if let Some(drag) = self.drag.take() {
-            self.last_viewport_interaction = None;
+            self.mark_viewport_interaction();
             let dx = (position.x - drag.start.x) / px(1.0);
             let dy = (position.y - drag.start.y) / px(1.0);
             if !drag.moved && dx.hypot(dy) <= MAP_CLICK_DRAG_THRESHOLD_PX {
@@ -615,8 +690,8 @@ impl MapViewerWindowView {
                 return;
             }
             self.ensure_visible_tiles(cx);
-            self.refresh_professional_render_caches();
-            self.refresh_professional_overlays(cx);
+            self.refresh_professional_render_caches(cx);
+            self.schedule_viewport_idle_refresh(cx);
             self.last_drag_canvas_snapshot_sync = None;
             let colors = self.theme_colors(cx);
             self.sync_canvas_snapshot(colors, cx);
@@ -629,12 +704,59 @@ impl MapViewerWindowView {
         chunk_from_block(block_x, block_z, self.dimension)
     }
 
+    fn selection_screen_bounds(&self, selection: ChunkSelection) -> Option<SelectionScreenBounds> {
+        let bounds = selection.bounds();
+        let (left, top) = viewport_screen_for_block(
+            self.viewport,
+            self.active_layout,
+            bounds.min_chunk_x.saturating_mul(16),
+            bounds.min_chunk_z.saturating_mul(16),
+        )?;
+        let (right, bottom) = viewport_screen_for_block(
+            self.viewport,
+            self.active_layout,
+            bounds.max_chunk_x.saturating_add(1).saturating_mul(16),
+            bounds.max_chunk_z.saturating_add(1).saturating_mul(16),
+        )?;
+        Some(SelectionScreenBounds {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
+    fn existing_selection_drag(
+        &self,
+        local_position: Point<Pixels>,
+        button: SelectionPointerButton,
+    ) -> Option<RightSelectionDrag> {
+        let selection = self.professional.selection?;
+        let chunk = self.chunk_at_stage_position(local_position);
+        let target = self.selection_screen_bounds(selection).map_or(
+            ExistingSelectionTarget::Outside,
+            |bounds| {
+                existing_selection_target(local_position, bounds, SELECTION_RESIZE_HIT_TOLERANCE_PX)
+            },
+        );
+        Some(RightSelectionDrag::existing_for_button(
+            local_position,
+            chunk,
+            selection,
+            target,
+            button,
+        ))
+    }
+
     pub(super) fn set_selection_from_drag(
         &mut self,
         drag: RightSelectionDrag,
         cx: &mut Context<Self>,
     ) {
         self.professional.selection = Some(drag.selection());
+        self.professional.detail_generation = self.professional.detail_generation.saturating_add(1);
+        self.cancel_slime_window_candidate_query();
+        self.professional.slime_window_candidates = None;
         self.professional.selection_stats = None;
         self.clear_paste_preview_state(cx);
         self.invalidate_preview_3d_mesh();
@@ -655,19 +777,21 @@ impl MapViewerWindowView {
         if self.ui_state.dock_drag.is_some() {
             return;
         }
-        self.begin_exclusive_pointer_interaction();
-        self.cancel_manifest_probe_for_interaction();
         let local_position = self.stage_local_position(position);
         let chunk = self.chunk_at_stage_position(local_position);
-        self.right_selection_drag = Some(RightSelectionDrag::new(local_position, chunk));
+        let drag = self
+            .existing_selection_drag(local_position, SelectionPointerButton::Right)
+            .unwrap_or_else(|| RightSelectionDrag::new(local_position, chunk));
+        self.begin_exclusive_pointer_interaction();
+        self.cancel_manifest_probe_for_interaction();
+        self.right_selection_drag = Some(drag);
         tracing::debug!(
             target: "bmcbl::ui::window::map_viewer::view",
             chunk_x = chunk.x,
             chunk_z = chunk.z,
+            intent = ?drag.intent,
             "map_viewer right_selection_begin"
         );
-        let colors = self.theme_colors(cx);
-        self.sync_canvas_snapshot(colors, cx);
         cx.notify();
     }
 
@@ -688,13 +812,18 @@ impl MapViewerWindowView {
         ) {
             drag.moved = true;
         }
-        if drag.current_chunk == chunk && self.professional.selection == Some(drag.selection()) {
+        if drag.current_chunk == chunk {
             self.right_selection_drag = Some(drag);
             return;
         }
         drag.current_chunk = chunk;
         self.right_selection_drag = Some(drag);
-        self.set_selection_from_drag(drag, cx);
+        if drag.moved
+            && drag.changes_selection()
+            && self.professional.selection != Some(drag.selection())
+        {
+            self.set_selection_from_drag(drag, cx);
+        }
         tracing::debug!(
             target: "bmcbl::ui::window::map_viewer::view",
             start_x = drag.start_chunk.x,
@@ -720,7 +849,6 @@ impl MapViewerWindowView {
         ) {
             drag.moved = true;
         }
-        self.set_selection_from_drag(drag, cx);
         tracing::debug!(
             target: "bmcbl::ui::window::map_viewer::view",
             start_x = drag.start_chunk.x,
@@ -730,11 +858,30 @@ impl MapViewerWindowView {
             moved = drag.moved,
             "map_viewer right_selection_end"
         );
-        if !drag.moved {
-            self.open_context_menu(position, cx);
-        } else {
-            self.set_selection_from_drag(drag, cx);
-            self.open_context_menu(position, cx);
+        match right_selection_release_action(drag.button, drag.intent, drag.moved) {
+            RightSelectionReleaseAction::CancelSelection => {
+                self.clear_professional_selection(cx);
+                self.status = SharedString::from("已取消区块选区");
+                tracing::debug!(
+                    target: "bmcbl::ui::window::map_viewer::view",
+                    "map_viewer right_selection_cancelled"
+                );
+                cx.notify();
+            }
+            RightSelectionReleaseAction::OpenMenu => {
+                self.open_context_menu(position, cx);
+            }
+            RightSelectionReleaseAction::ApplySelectionAndOpenMenu => {
+                self.set_selection_from_drag(drag, cx);
+                self.open_context_menu(position, cx);
+            }
+            RightSelectionReleaseAction::ApplySelection => {
+                self.set_selection_from_drag(drag, cx);
+                cx.notify();
+            }
+            RightSelectionReleaseAction::KeepSelection => {
+                cx.notify();
+            }
         }
     }
 
@@ -758,7 +905,7 @@ impl MapViewerWindowView {
                 if this.pending_viewport_refresh {
                     this.ensure_visible_tiles(cx);
                 }
-                this.refresh_professional_render_caches();
+                this.refresh_professional_render_caches(cx);
                 this.refresh_professional_overlays(cx);
                 let colors = this.theme_colors(cx);
                 this.sync_canvas_snapshot(colors, cx);
@@ -769,21 +916,25 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn sync_input_values(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (center_x, center_z) = self.viewport.center_block(self.active_layout);
-        self.sync_input_value(MapInputField::CenterX, center_x.to_string(), window, cx);
-        self.sync_input_value(MapInputField::CenterZ, center_z.to_string(), window, cx);
-        self.sync_input_value(
+        for field in [
+            MapInputField::CenterX,
+            MapInputField::CenterZ,
             MapInputField::ZoomPercent,
-            format!("{:.0}", self.viewport.scale * 100.0),
-            window,
-            cx,
-        );
-        self.sync_input_value(
             MapInputField::DimensionId,
-            self.dimension.id().to_string(),
-            window,
-            cx,
-        );
+        ] {
+            let value = self.map_input_display_value(field);
+            self.sync_input_value(field, value, window, cx);
+        }
+    }
+
+    fn map_input_display_value(&self, field: MapInputField) -> String {
+        let (center_x, center_z) = self.viewport.center_block(self.active_layout);
+        match field {
+            MapInputField::CenterX => center_x.to_string(),
+            MapInputField::CenterZ => center_z.to_string(),
+            MapInputField::ZoomPercent => format!("{:.0}", self.viewport.scale * 100.0),
+            MapInputField::DimensionId => self.dimension.id().to_string(),
+        }
     }
 
     pub(super) fn sync_input_value(
@@ -820,6 +971,10 @@ impl MapViewerWindowView {
                 cx.notify();
             }
             InputEvent::Change => {
+                if input.read(cx).value().as_ref() == self.map_input_display_value(field) {
+                    self.input_fields.dirty_fields.remove(&field);
+                    return;
+                }
                 self.input_fields.dirty_fields.insert(field);
                 if self.input_fields.validation.invalid_field == Some(field) {
                     self.input_fields.validation = InputValidationState::default();
@@ -849,53 +1004,98 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         let trimmed = value.as_ref().trim();
-        let result = match field {
-            MapInputField::CenterX => parse_i32_input(trimmed, "X").map(|block_x| {
-                let (_, block_z) = self.viewport.center_block(self.active_layout);
-                self.viewport
-                    .center_on_block(block_x, block_z, self.active_layout);
-                self.context_menu = None;
-                self.ensure_visible_tiles(cx);
-                format!("已跳转到 X {block_x}")
-            }),
-            MapInputField::CenterZ => parse_i32_input(trimmed, "Z").map(|block_z| {
-                let (block_x, _) = self.viewport.center_block(self.active_layout);
-                self.viewport
-                    .center_on_block(block_x, block_z, self.active_layout);
-                self.context_menu = None;
-                self.ensure_visible_tiles(cx);
-                format!("已跳转到 Z {block_z}")
-            }),
-            MapInputField::ZoomPercent => parse_zoom_scale(trimmed).map(|scale| {
-                let factor = scale / self.viewport.scale.max(f32::EPSILON);
-                self.zoom_by_center(factor, cx);
-                format!("缩放已设为 {:.0}%", self.viewport.scale * 100.0)
-            }),
-            MapInputField::DimensionId => parse_i32_input(trimmed, "维度ID").map(|dimension_id| {
-                self.custom_dimension_id = dimension_id;
-                let dimension = Dimension::from_id(dimension_id);
-                if self.dimension != dimension {
-                    self.set_dimension(dimension, cx);
-                }
-                format!("维度已设为 {}", dimension_label(dimension))
-            }),
+        let result: Result<String, (MapInputField, SharedString)> = match field {
+            MapInputField::CenterX | MapInputField::CenterZ => {
+                self.apply_coordinate_inputs(field, trimmed, cx)
+            }
+            MapInputField::ZoomPercent => {
+                let scale = if trimmed.is_empty() {
+                    Ok(self.viewport.scale)
+                } else {
+                    parse_zoom_scale(trimmed)
+                };
+                scale
+                    .map(|scale| {
+                        let factor = scale / self.viewport.scale.max(f32::EPSILON);
+                        self.zoom_by_center(factor, cx);
+                        format!("缩放已设为 {:.0}%", self.viewport.scale * 100.0)
+                    })
+                    .map_err(|message| (field, message))
+            }
+            MapInputField::DimensionId => parse_i32_input(trimmed, "维度ID")
+                .map(|dimension_id| {
+                    self.custom_dimension_id = dimension_id;
+                    let dimension = Dimension::from_id(dimension_id);
+                    if self.dimension != dimension {
+                        self.set_dimension(dimension, cx);
+                    }
+                    format!("维度已设为 {}", dimension_label(dimension))
+                })
+                .map_err(|message| (field, message)),
         };
 
         match result {
             Ok(message) => {
-                self.input_fields.dirty_fields.remove(&field);
-                if self.input_fields.validation.invalid_field == Some(field) {
-                    self.input_fields.validation = InputValidationState::default();
+                if matches!(field, MapInputField::CenterX | MapInputField::CenterZ) {
+                    self.input_fields
+                        .dirty_fields
+                        .remove(&MapInputField::CenterX);
+                    self.input_fields
+                        .dirty_fields
+                        .remove(&MapInputField::CenterZ);
+                } else {
+                    self.input_fields.dirty_fields.remove(&field);
                 }
+                self.input_fields.validation = InputValidationState::default();
                 self.status = SharedString::from(message);
             }
-            Err(message) => {
-                self.input_fields.validation.invalid_field = Some(field);
+            Err((invalid_field, message)) => {
+                self.input_fields.validation.invalid_field = Some(invalid_field);
                 self.input_fields.validation.message = Some(message.clone());
-                self.input_fields.dirty_fields.insert(field);
+                self.input_fields.dirty_fields.insert(invalid_field);
                 self.status = message;
             }
         }
+    }
+
+    fn apply_coordinate_inputs(
+        &mut self,
+        active_field: MapInputField,
+        active_value: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<String, (MapInputField, SharedString)> {
+        let (current_x, current_z) = self.viewport.center_block(self.active_layout);
+        let x_value = if active_field == MapInputField::CenterX {
+            SharedString::from(active_value.to_string())
+        } else {
+            self.input_fields.center_x.read(cx).value()
+        };
+        let z_value = if active_field == MapInputField::CenterZ {
+            SharedString::from(active_value.to_string())
+        } else {
+            self.input_fields.center_z.read(cx).value()
+        };
+        let block_x = parse_optional_i32_input(x_value.as_ref().trim(), "X", current_x)
+            .map_err(|message| (MapInputField::CenterX, message))?;
+        let block_z = parse_optional_i32_input(z_value.as_ref().trim(), "Z", current_z)
+            .map_err(|message| (MapInputField::CenterZ, message))?;
+        self.center_viewport_on_block(block_x, block_z, cx);
+        Ok(format!("已跳转到 X {block_x} · Z {block_z}"))
+    }
+
+    fn center_viewport_on_block(&mut self, block_x: i32, block_z: i32, cx: &mut Context<Self>) {
+        self.mark_viewport_interaction();
+        self.viewport
+            .center_on_block(block_x, block_z, self.active_layout);
+        self.cancel_viewport_render_for_interaction();
+        self.invalidate_professional_overlay_for_viewport_change();
+        self.context_menu = None;
+        self.ensure_visible_tiles(cx);
+        self.professional.pending_overlay_refresh = true;
+        self.refresh_professional_render_caches(cx);
+        self.schedule_viewport_idle_refresh(cx);
+        let colors = self.theme_colors(cx);
+        self.sync_canvas_snapshot(colors, cx);
     }
 
     pub(super) fn update_hover_block(&mut self, position: Point<Pixels>) -> bool {
@@ -981,7 +1181,7 @@ impl MapViewerWindowView {
             self.paste_preview_images_generation.saturating_add(1);
     }
 
-    fn clear_paste_preview_state(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn clear_paste_preview_state(&mut self, cx: &mut Context<Self>) {
         self.professional.paste_preview = None;
         self.replace_paste_preview_images(Vec::new(), cx);
     }
@@ -993,9 +1193,6 @@ impl MapViewerWindowView {
         let Some(copied_chunk) = self.professional.copied_chunk.as_ref() else {
             return Vec::new();
         };
-        if copied_chunk.chunk_count() > import_preview::PREVIEW_IMAGE_CHUNK_LIMIT {
-            return Vec::new();
-        }
         let source_bounds = copied_chunk_chunk_bounds(copied_chunk);
         copied_chunk
             .chunks
@@ -1099,7 +1296,24 @@ impl MapViewerWindowView {
             .paste_preview
             .as_ref()
             .and_then(|preview| preview.auto_pan);
-        let targets = pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform);
+        let write_progress = self
+            .professional
+            .paste_preview
+            .as_ref()
+            .and_then(|preview| preview.write_progress);
+        let targets = self
+            .professional
+            .imported_structure
+            .as_ref()
+            .map(|import| {
+                mcstructure::imported_structure_targets(import, target_anchor, transform)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            })
+            .filter(|targets| !targets.is_empty())
+            .unwrap_or_else(|| {
+                pasted_chunk_targets(copied_chunk, source_anchor, target_anchor, transform)
+            });
         self.professional.paste_preview = Some(PastePreview {
             source_anchor,
             target_anchor,
@@ -1110,8 +1324,8 @@ impl MapViewerWindowView {
             targets,
             tools_expanded,
             auto_pan,
+            write_progress,
         });
-        self.professional.pending_quick_write_confirmation = None;
         self.context_menu = None;
         self.ui_state.context_paste_open = false;
         self.rebuild_paste_preview_images(cx);
@@ -1236,7 +1450,6 @@ impl MapViewerWindowView {
                 transform: preview.transform,
             }
         };
-        self.professional.pending_quick_write_confirmation = Some(action.clone());
         self.run_quick_write_action(action, cx);
     }
 
@@ -1244,7 +1457,6 @@ impl MapViewerWindowView {
         let changed =
             self.professional.paste_preview.is_some() || !self.paste_preview_images.is_empty();
         self.clear_paste_preview_state(cx);
-        self.professional.pending_quick_write_confirmation = None;
         if changed {
             self.status = SharedString::from("已取消粘贴预览");
             let colors = self.theme_colors(cx);
@@ -1343,6 +1555,9 @@ impl MapViewerWindowView {
         let Some(preview) = self.professional.paste_preview.as_ref() else {
             return false;
         };
+        if preview.is_writing() {
+            return false;
+        }
         let local_position = self.stage_local_position(window_position);
         let chunk = self.chunk_at_stage_position(local_position);
         if !preview.targets.contains(&chunk) {
@@ -1357,7 +1572,12 @@ impl MapViewerWindowView {
     }
 
     fn begin_paste_preview_move_from_toolbar(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.professional.paste_preview.is_none() {
+        if self
+            .professional
+            .paste_preview
+            .as_ref()
+            .is_none_or(PastePreview::is_writing)
+        {
             return false;
         }
         self.begin_exclusive_pointer_interaction();
@@ -1476,6 +1696,8 @@ impl MapViewerWindowView {
                     .and_then(|preview| preview.drag);
                 if matches!(paste_drag, Some(PastePreviewDrag::Move)) {
                     self.set_paste_preview_drag(None, cx);
+                } else if self.right_selection_drag.is_some() {
+                    self.end_right_selection(position, cx);
                 } else if self.drag.is_some() || self.ui_state.dock_drag.is_some() {
                     self.end_drag(self.stage_local_position(position), cx);
                 } else {
@@ -1962,6 +2184,7 @@ impl MapViewerWindowView {
         self.status = SharedString::from("正在导出跨地图区域包...");
         let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
+        let query_budget = self.map_query_budget.clone();
         cx.notify();
 
         cx.spawn(async move |handle, cx| {
@@ -1970,6 +2193,7 @@ impl MapViewerWindowView {
                 Complete(Result<PathBuf, String>),
             }
 
+            let _query_permit = query_budget.acquire().await;
             let (event_sender, mut event_receiver) = unbounded::<RegionPackageExportEvent>();
             let progress_sender = event_sender.clone();
             let completion_sender = event_sender.clone();
@@ -2119,6 +2343,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn open_import_structure_dialog(&mut self, cx: &mut Context<Self>) {
+        let target = self.viewport_center_chunk_pos();
         let Some(path) = pick_file_path_with_filter(
             "Bedrock Region / Structure",
             &[
@@ -2131,7 +2356,6 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
-        let target = self.active_target_chunk_pos();
         let path = PathBuf::from(path);
         if region_package::is_region_package_path(&path) {
             self.import_region_package_at(path, target, cx);
@@ -2190,7 +2414,14 @@ impl MapViewerWindowView {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
                     region_package::read_region_package(&path).and_then(|copied_chunk| {
                         check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                        Ok((path, copied_chunk))
+                        let (preview_images, preview_error) =
+                            match import_preview::copied_chunk_preview_images_for_import(
+                                &copied_chunk,
+                            ) {
+                                Ok(images) => (images, None),
+                                Err(error) => (BTreeMap::new(), Some(error)),
+                            };
+                        Ok((path, copied_chunk, preview_images, preview_error))
                     })
                 })
                 .await;
@@ -2199,7 +2430,7 @@ impl MapViewerWindowView {
                 task_manager::update_progress(&task_id, 1, Some(1), Some("map_import"));
             }
             let message = match (&result, status) {
-                (Ok((path, copied_chunk)), "completed") => Some(format!(
+                (Ok((path, copied_chunk, _, _)), "completed") => Some(format!(
                     "区域包导入完成 · {} 个 chunk · {}",
                     copied_chunk.chunk_count(),
                     path.display()
@@ -2217,12 +2448,9 @@ impl MapViewerWindowView {
                     return;
                 }
                 match result {
-                    Ok((path, copied_chunk)) => {
+                    Ok((path, copied_chunk, preview_images, preview_error)) => {
                         this.complete_chunk_transfer_progress();
                         let chunk_count = copied_chunk.chunk_count();
-                        let preview_images =
-                            import_preview::copied_chunk_preview_images_for_import(&copied_chunk)
-                                .unwrap_or_default();
                         this.professional.copied_chunk = Some(copied_chunk);
                         this.professional.imported_region_package = true;
                         this.professional.imported_structure = None;
@@ -2238,8 +2466,11 @@ impl MapViewerWindowView {
                         ) {
                             this.center_paste_preview_in_view(cx);
                             let message = SharedString::from(format!(
-                                "已导入 {} 个 chunk 区域包，目标 {},{} · 确认后写入",
-                                chunk_count, target.x, target.z
+                                "已导入 {} 个 chunk 区域包，预览 {} 个 · 目标 {},{} · 确认后写入",
+                                chunk_count,
+                                this.professional.copied_chunk_preview_images.len(),
+                                target.x,
+                                target.z
                             ));
                             this.status = message.clone();
                             this.resolve_task_toast(
@@ -2252,6 +2483,12 @@ impl MapViewerWindowView {
                                 "bmcbl-region {}",
                                 path.display()
                             )));
+                            if let Some(error) = preview_error {
+                                toast::error(
+                                    cx,
+                                    SharedString::from(format!("部分导入预览生成失败：{error}")),
+                                );
+                            }
                         }
                     }
                     Err(error) => {
@@ -3149,28 +3386,26 @@ impl MapViewerWindowView {
 
     pub(super) fn toggle_entity_overlay(&mut self, cx: &mut Context<Self>) {
         self.overlay_options.entities = !self.overlay_options.entities;
-        self.professional.overlay_bounds = None;
-        self.professional.overlays = None;
-        self.professional.overlay_paint = None;
         self.refresh_professional_overlays(cx);
         cx.notify();
     }
 
     pub(super) fn toggle_block_entity_overlay(&mut self, cx: &mut Context<Self>) {
         self.overlay_options.block_entities = !self.overlay_options.block_entities;
-        self.professional.overlay_bounds = None;
-        self.professional.overlays = None;
-        self.professional.overlay_paint = None;
+        self.refresh_professional_overlays(cx);
+        cx.notify();
+    }
+
+    pub(super) fn toggle_pending_tick_overlay(&mut self, cx: &mut Context<Self>) {
+        self.overlay_options.pending_ticks = !self.overlay_options.pending_ticks;
         self.refresh_professional_overlays(cx);
         cx.notify();
     }
 
     pub(super) fn toggle_village_overlay(&mut self, cx: &mut Context<Self>) {
         self.overlay_options.villages = !self.overlay_options.villages;
-        self.professional.overlay_bounds = None;
-        self.professional.overlays = None;
-        self.professional.overlay_paint = None;
         if self.overlay_options.villages {
+            self.professional.overlay_bounds = None;
             self.refresh_village_index_if_needed(cx);
         }
         self.refresh_professional_overlays(cx);
@@ -3179,27 +3414,7 @@ impl MapViewerWindowView {
 
     pub(super) fn toggle_hsa_overlay(&mut self, cx: &mut Context<Self>) {
         self.overlay_options.hardcoded_spawn_areas = !self.overlay_options.hardcoded_spawn_areas;
-        self.professional.overlay_bounds = None;
-        self.professional.overlays = None;
-        self.professional.overlay_paint = None;
         self.refresh_professional_overlays(cx);
-        cx.notify();
-    }
-
-    pub(super) fn toggle_write_mode(&mut self, cx: &mut Context<Self>) {
-        self.professional.write_mode = !self.professional.write_mode;
-        self.professional.pending_delete_confirmation = false;
-        self.professional.pending_edit_confirmation = None;
-        self.professional.pending_quick_write_confirmation = None;
-        self.clear_paste_preview_state(cx);
-        self.players.pending_save_confirmation = None;
-        self.status = if self.professional.write_mode {
-            SharedString::from("写入模式已开启 · 修改存档前请确认已备份")
-        } else {
-            SharedString::from("写入模式已关闭")
-        };
-        let colors = self.theme_colors(cx);
-        self.sync_canvas_snapshot(colors, cx);
         cx.notify();
     }
 
@@ -3210,7 +3425,7 @@ impl MapViewerWindowView {
     ) {
         self.slime_query_window_size = size;
         self.professional.highlighted_window = None;
-        self.refresh_professional_render_caches();
+        self.refresh_professional_render_caches(cx);
         cx.notify();
     }
 
@@ -3227,9 +3442,8 @@ impl MapViewerWindowView {
                 .selection
                 .map_or(chunk, |selection| selection.end),
         });
-        self.professional.pending_delete_confirmation = false;
         self.invalidate_preview_3d_mesh();
-        self.refresh_professional_render_caches();
+        self.refresh_professional_render_caches(cx);
         self.context_menu = None;
         self.status = SharedString::from(format!("选区起点已设为 chunk {}, {}", chunk.x, chunk.z));
         cx.notify();
@@ -3248,9 +3462,8 @@ impl MapViewerWindowView {
                 .map_or(chunk, |selection| selection.start),
             end: chunk,
         });
-        self.professional.pending_delete_confirmation = false;
         self.invalidate_preview_3d_mesh();
-        self.refresh_professional_render_caches();
+        self.refresh_professional_render_caches(cx);
         self.context_menu = None;
         self.status = SharedString::from(format!("选区终点已设为 chunk {}, {}", chunk.x, chunk.z));
         cx.notify();
@@ -3258,15 +3471,18 @@ impl MapViewerWindowView {
 
     pub(super) fn clear_professional_selection(&mut self, cx: &mut Context<Self>) {
         self.professional.selection = None;
+        self.professional.detail_generation = self.professional.detail_generation.saturating_add(1);
+        self.cancel_slime_window_candidate_query();
+        self.professional.slime_window_candidates = None;
         self.professional.highlighted_window = None;
         self.professional.selection_stats = None;
-        self.professional.pending_delete_confirmation = false;
         self.professional.pending_edit_confirmation = None;
-        self.professional.pending_quick_write_confirmation = None;
         self.clear_paste_preview_state(cx);
         self.clear_preview_3d_resources(true);
-        self.refresh_professional_render_caches();
+        self.refresh_professional_render_caches(cx);
         self.status = SharedString::from("已清除专业查询选区");
+        let colors = self.theme_colors(cx);
+        self.sync_canvas_snapshot(colors, cx);
         cx.notify();
     }
 
@@ -3349,6 +3565,7 @@ impl MapViewerWindowView {
         detail: Option<ProfessionalDetail>,
         cx: &mut Context<Self>,
     ) {
+        self.professional.detail_generation = self.professional.detail_generation.saturating_add(1);
         self.professional.detail = detail;
         self.editor_document.loading = false;
         self.editor_document.saving = false;
@@ -3381,7 +3598,7 @@ pub(super) fn canvas_pointer_move_action(
         Some(MouseButton::Left) if map_drag_active || dock_drag_active => {
             CanvasPointerMoveAction::UpdateMapPointer
         }
-        Some(MouseButton::Right) | None if right_selection_active => {
+        Some(MouseButton::Left | MouseButton::Right) | None if right_selection_active => {
             CanvasPointerMoveAction::UpdateRightSelection
         }
         Some(MouseButton::Left | MouseButton::Right) if preview_3d_drag_active => {
@@ -3438,6 +3655,12 @@ pub(super) fn take_pointer_captures(
         preview_3d_drag: preview_3d_drag.take().is_some(),
         dock_drag: dock_drag.take().is_some(),
     }
+}
+
+pub(super) fn take_preview_3d_pointer_capture(
+    preview_3d_drag: &mut Option<Preview3dDragState>,
+) -> bool {
+    preview_3d_drag.take().is_some()
 }
 
 pub(super) fn log_pointer_capture_release(source: &'static str, release: PointerCaptureRelease) {

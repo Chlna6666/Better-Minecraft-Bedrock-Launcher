@@ -1,3 +1,4 @@
+mod font_catalog;
 mod font_fallbacks;
 mod font_features;
 mod line;

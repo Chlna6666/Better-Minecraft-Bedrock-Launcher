@@ -240,7 +240,7 @@ pub(super) fn render_screenshot_row(
     let row_background = colors.surface;
     let thumbnail_background = colors.surface.blend(row_background).alpha(1.0);
     let leading = if render_heavy {
-        rounded_asset_thumbnail(
+        rounded_manage_thumbnail(
             colors,
             &entry.image_path,
             lucide_icons::icon_image().into(),
@@ -250,7 +250,7 @@ pub(super) fn render_screenshot_row(
         div()
             .w(px(32.))
             .h(px(32.))
-            .rounded(px(MANAGE_ASSET_THUMBNAIL_RADIUS_PX))
+            .rounded(px(MANAGE_LIST_THUMBNAIL_RADIUS_PX))
             .bg(colors.surface_hover)
             .flex()
             .items_center()

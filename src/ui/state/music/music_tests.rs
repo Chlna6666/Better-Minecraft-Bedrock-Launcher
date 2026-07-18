@@ -6,6 +6,7 @@ impl MusicState {
     fn from_controller_for_test(controller: MusicController) -> Self {
         Self {
             controller: Arc::new(Mutex::new(controller)),
+            controller_operation_gate: Arc::new(tokio::sync::Mutex::new(())),
             snapshot: MusicSnapshot::default(),
             rendered_cover_generation: 0,
             rendered_cover_cache_key: None,

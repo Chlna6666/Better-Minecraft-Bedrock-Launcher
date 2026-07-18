@@ -1,7 +1,8 @@
 use crate::{
     AnyImageCache, App, AssetLogger, Bounds, DefiniteLength, Element, ElementId, Entity,
     GlobalElementId, Hitbox, ImageCache, InspectorElementId, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, Length, Pixels, RenderImage, StyleRefinement, Styled, Task, Window, px,
+    IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, StyleRefinement, Styled, Task,
+    Window, px,
 };
 use anyhow::Result;
 
@@ -385,10 +386,27 @@ impl Element for Img {
                     let corner_radii = style
                         .corner_radii
                         .to_pixels(window.rem_size())
-                        .clamp_radii_for_quad_size(new_bounds.size);
-                    window
-                        .paint_image_frame(new_bounds, corner_radii, data, frame, grayscale)
-                        .log_err();
+                        .clamp_radii_for_quad_size(if object_fit == ObjectFit::Cover {
+                            bounds.size
+                        } else {
+                            new_bounds.size
+                        });
+                    if object_fit == ObjectFit::Cover {
+                        window
+                            .paint_image_frame_clipped(
+                                new_bounds,
+                                bounds,
+                                corner_radii,
+                                data,
+                                frame,
+                                grayscale,
+                            )
+                            .log_err();
+                    } else {
+                        window
+                            .paint_image_frame(new_bounds, corner_radii, data, frame, grayscale)
+                            .log_err();
+                    }
                     return;
                 }
 
@@ -440,10 +458,27 @@ impl Element for Img {
                     let corner_radii = style
                         .corner_radii
                         .to_pixels(window.rem_size())
-                        .clamp_radii_for_quad_size(new_bounds.size);
-                    window
-                        .paint_image_frame(new_bounds, corner_radii, data, frame, grayscale)
-                        .log_err();
+                        .clamp_radii_for_quad_size(if object_fit == ObjectFit::Cover {
+                            bounds.size
+                        } else {
+                            new_bounds.size
+                        });
+                    if object_fit == ObjectFit::Cover {
+                        window
+                            .paint_image_frame_clipped(
+                                new_bounds,
+                                bounds,
+                                corner_radii,
+                                data,
+                                frame,
+                                grayscale,
+                            )
+                            .log_err();
+                    } else {
+                        window
+                            .paint_image_frame(new_bounds, corner_radii, data, frame, grayscale)
+                            .log_err();
+                    }
                 } else if let Some(replacement) = &mut layout_state.replacement {
                     replacement.paint(window, cx);
                 }

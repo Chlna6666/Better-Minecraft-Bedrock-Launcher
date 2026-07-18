@@ -5,6 +5,7 @@ use gpui::{
     App, Bounds, BoxShadow, CursorStyle, Div, Hsla, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Pixels, Point, RenderOnce, SharedString, Styled, div, hsla, point, px, rgb,
 };
+use std::rc::Rc;
 
 const MENU_MARGIN: f32 = 8.0;
 const DEFAULT_WIDTH: f32 = 268.0;
@@ -90,6 +91,7 @@ pub struct ContextMenuItem {
     pub checked: bool,
     pub disabled: bool,
     pub danger: bool,
+    dismisses: bool,
     on_click: Option<Box<dyn Fn(&mut App) + 'static>>,
 }
 
@@ -102,6 +104,7 @@ impl ContextMenuItem {
             checked: false,
             disabled: false,
             danger: false,
+            dismisses: true,
             on_click: None,
         }
     }
@@ -127,6 +130,12 @@ impl ContextMenuItem {
     #[must_use]
     pub const fn danger(mut self, danger: bool) -> Self {
         self.danger = danger;
+        self
+    }
+
+    #[must_use]
+    pub const fn keep_open(mut self) -> Self {
+        self.dismisses = false;
         self
     }
 
@@ -195,6 +204,7 @@ pub struct ContextMenu {
     groups: Vec<ContextMenuGroup>,
     colors: ThemeColors,
     placement: ContextMenuPlacement,
+    on_dismiss: Option<Rc<dyn Fn(&mut App) + 'static>>,
 }
 
 impl ContextMenu {
@@ -210,6 +220,7 @@ impl ContextMenu {
                 width: DEFAULT_WIDTH,
                 max_height: DEFAULT_MAX_HEIGHT,
             },
+            on_dismiss: None,
         }
     }
 
@@ -224,11 +235,18 @@ impl ContextMenu {
         self.placement = placement;
         self
     }
+
+    #[must_use]
+    pub fn on_dismiss(mut self, on_dismiss: impl Fn(&mut App) + 'static) -> Self {
+        self.on_dismiss = Some(Rc::new(on_dismiss));
+        self
+    }
 }
 
 impl RenderOnce for ContextMenu {
     fn render(self, _window: &mut gpui::Window, _cx: &mut App) -> impl IntoElement {
         let colors = self.colors;
+        let on_dismiss = self.on_dismiss;
         div()
             .absolute()
             .left(px(self.placement.left))
@@ -304,14 +322,20 @@ impl RenderOnce for ContextMenu {
                             .into_iter()
                             .enumerate()
                             .map(move |(index, group)| {
-                                render_group(colors, group, index > 0).into_any_element()
+                                render_group(colors, group, index > 0, on_dismiss.clone())
+                                    .into_any_element()
                             }),
                     ),
             )
     }
 }
 
-fn render_group(colors: ThemeColors, group: ContextMenuGroup, separated: bool) -> Div {
+fn render_group(
+    colors: ThemeColors,
+    group: ContextMenuGroup,
+    separated: bool,
+    on_dismiss: Option<Rc<dyn Fn(&mut App) + 'static>>,
+) -> Div {
     div()
         .flex()
         .flex_col()
@@ -334,16 +358,19 @@ fn render_group(colors: ThemeColors, group: ContextMenuGroup, separated: bool) -
             )
         })
         .children(
-            group
-                .items
-                .into_iter()
-                .map(move |entry| render_entry(colors, entry).into_any_element()),
+            group.items.into_iter().map(move |entry| {
+                render_entry(colors, entry, on_dismiss.clone()).into_any_element()
+            }),
         )
 }
 
-fn render_entry(colors: ThemeColors, entry: ContextMenuEntry) -> Div {
+fn render_entry(
+    colors: ThemeColors,
+    entry: ContextMenuEntry,
+    on_dismiss: Option<Rc<dyn Fn(&mut App) + 'static>>,
+) -> Div {
     match entry {
-        ContextMenuEntry::Item(item) => render_item(colors, item),
+        ContextMenuEntry::Item(item) => render_item(colors, item, on_dismiss),
         ContextMenuEntry::Submenu {
             label,
             expanded,
@@ -367,19 +394,24 @@ fn render_entry(colors: ThemeColors, entry: ContextMenuEntry) -> Div {
                         }),
                 )
                 .when(expanded, |this| {
-                    this.children(
-                        items.into_iter().map(move |item| {
-                            render_item(colors, item).pl(px(22.0)).into_any_element()
-                        }),
-                    )
+                    this.children(items.into_iter().map(move |item| {
+                        render_item(colors, item, on_dismiss.clone())
+                            .pl(px(22.0))
+                            .into_any_element()
+                    }))
                 })
         }
     }
 }
 
-fn render_item(colors: ThemeColors, item: ContextMenuItem) -> Div {
+fn render_item(
+    colors: ThemeColors,
+    item: ContextMenuItem,
+    on_dismiss: Option<Rc<dyn Fn(&mut App) + 'static>>,
+) -> Div {
     let disabled = item.disabled;
     let danger = item.danger;
+    let dismisses = item.dismisses;
     let on_click = item.on_click;
     menu_row(colors, disabled, danger)
         .child(indicator(if item.checked { "✓" } else { "" }, colors))
@@ -404,6 +436,9 @@ fn render_item(colors: ThemeColors, item: ContextMenuItem) -> Div {
                 cx.stop_propagation();
                 if let Some(on_click) = on_click.as_ref() {
                     on_click(cx);
+                }
+                if dismisses && let Some(on_dismiss) = on_dismiss.as_ref() {
+                    on_dismiss(cx);
                 }
             })
         })
@@ -480,5 +515,11 @@ mod tests {
 
         assert!(placement.left + placement.width <= 792.0);
         assert!(placement.top >= 48.0);
+    }
+
+    #[test]
+    fn context_menu_items_dismiss_unless_kept_open() {
+        assert!(ContextMenuItem::new("运行").dismisses);
+        assert!(!ContextMenuItem::new("展开").keep_open().dismisses);
     }
 }

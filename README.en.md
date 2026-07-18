@@ -21,6 +21,17 @@ single desktop application.
 | Renderer | GPUI nova-gfx path, Nova DX12 by default on Windows, configurable Nova Vulkan |
 | Plugin system | WASM sandbox plugins, API version `0.4` |
 | License | GPL-3.0-only |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
+
+## Versions And Releases
+
+- Stable versions use `v<major>.<minor>.<patch>` tags. GitHub Actions builds a
+  Windows x86_64 release asset automatically.
+- A nightly prerelease is generated weekly when the default branch has new
+  commits. Nightlies are for testing and are not stable releases.
+- Release notes are generated from commit history, and pushes to the default
+  branch update the generated commit summary in `CHANGELOG.md`.
+- [View GitHub Releases](https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher/releases)
 
 ## Features
 

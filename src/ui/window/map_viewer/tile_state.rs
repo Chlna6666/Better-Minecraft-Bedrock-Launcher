@@ -99,6 +99,7 @@ pub(super) struct TileReadyBatcher {
     pub(super) pending: Vec<ReadyTile>,
     pub(super) last_flush: Instant,
     pub(super) quick_reveal: bool,
+    pub(super) center_tile: (i32, i32),
 }
 
 impl Default for TileReadyBatcher {
@@ -107,6 +108,7 @@ impl Default for TileReadyBatcher {
             pending: Vec::new(),
             last_flush: Instant::now(),
             quick_reveal: false,
+            center_tile: (0, 0),
         }
     }
 }
@@ -115,6 +117,14 @@ impl TileReadyBatcher {
     pub(super) fn new(quick_reveal: bool) -> Self {
         Self {
             quick_reveal,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_center(quick_reveal: bool, center_tile: (i32, i32)) -> Self {
+        Self {
+            quick_reveal,
+            center_tile,
             ..Self::default()
         }
     }
@@ -128,7 +138,11 @@ impl TileReadyBatcher {
         );
         self.pending.push(tile);
         let limit = if cache_hit {
-            1
+            if self.quick_reveal {
+                FIRST_REVEAL_READY_BATCH_LIMIT
+            } else {
+                TILE_READY_BATCH_LIMIT
+            }
         } else if self.quick_reveal {
             FIRST_REVEAL_READY_BATCH_LIMIT
         } else {
@@ -149,6 +163,8 @@ impl TileReadyBatcher {
         if self.pending.is_empty() {
             return None;
         }
+        self.pending
+            .sort_unstable_by_key(|tile| tile_distance_sort_key(tile.coord, self.center_tile));
         let tiles = std::mem::take(&mut self.pending);
         self.last_flush = Instant::now();
         Some(tiles)
@@ -270,6 +286,7 @@ pub(super) struct TileEntry {
     pub(super) image: Option<ViewerTile>,
     pub(super) priority: TilePriority,
     pub(super) sequence: u64,
+    pub(super) last_access: u64,
     pub(super) attempts: u8,
     pub(super) retry_after: Option<Instant>,
     pub(super) last_error: Option<SharedString>,
@@ -283,6 +300,7 @@ impl TileEntry {
             image: None,
             priority,
             sequence,
+            last_access: sequence,
             attempts: 0,
             retry_after: None,
             last_error: None,
@@ -296,6 +314,7 @@ impl TileEntry {
             image: None,
             priority,
             sequence,
+            last_access: sequence,
             attempts: 0,
             retry_after: None,
             last_error: None,
@@ -320,6 +339,7 @@ impl TileEntry {
 pub(super) struct RegionManager {
     pub(super) entries: BTreeMap<(i32, i32), TileEntry>,
     pub(super) next_sequence: u64,
+    pub(super) next_access: u64,
     pub(super) loaded_estimated_bytes: usize,
     pub(super) state_counts: TileLoadStateCounts,
 }
@@ -333,6 +353,7 @@ impl RegionManager {
             .collect::<Vec<_>>();
         self.entries.clear();
         self.next_sequence = 0;
+        self.next_access = 0;
         self.loaded_estimated_bytes = 0;
         self.state_counts = TileLoadStateCounts::default();
         dropped_images
@@ -343,8 +364,10 @@ impl RegionManager {
         for coord in coords {
             let sequence = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
+            let last_access = self.allocate_access_stamp();
             match self.entries.get_mut(coord) {
                 Some(entry) => {
+                    entry.last_access = last_access;
                     if priority < entry.priority {
                         entry.priority = priority;
                         entry.sequence = sequence;
@@ -358,12 +381,22 @@ impl RegionManager {
                             .transition(entry.state, TileLoadState::Queued);
                         entry.state = TileLoadState::Queued;
                         entry.retry_after = None;
+                    } else if entry.state == TileLoadState::Loaded && entry.image.is_none() {
+                        // A GPU/LRU eviction can leave the manifest entry intact while the
+                        // render image is gone. Treat it as a cold queue item immediately.
+                        self.state_counts
+                            .transition(entry.state, TileLoadState::Queued);
+                        entry.state = TileLoadState::Queued;
+                        entry.source_status = TileSourceStatus::Miss;
+                        entry.retry_after = None;
+                        entry.last_error = None;
                     }
                 }
                 None => {
                     self.state_counts.increment(TileLoadState::Queued);
-                    self.entries
-                        .insert(*coord, TileEntry::queued(priority, sequence));
+                    let mut entry = TileEntry::queued(priority, sequence);
+                    entry.last_access = last_access;
+                    self.entries.insert(*coord, entry);
                 }
             }
         }
@@ -378,6 +411,7 @@ impl RegionManager {
         for coord in coords {
             let sequence = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
+            let last_access = self.allocate_access_stamp();
             let mut previous = self.entries.remove(coord);
             let previous_bytes = previous
                 .as_ref()
@@ -391,6 +425,7 @@ impl RegionManager {
                 dropped_images.push(image);
             }
             let mut entry = TileEntry::queued(priority, sequence);
+            entry.last_access = last_access;
             if let Some(previous) = previous {
                 entry.attempts = previous.attempts;
             }
@@ -418,8 +453,10 @@ impl RegionManager {
         for coord in coords {
             let sequence = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
+            let last_access = self.allocate_access_stamp();
             match self.entries.get_mut(coord) {
                 Some(entry) => {
+                    entry.last_access = last_access;
                     if priority < entry.priority {
                         entry.priority = priority;
                         entry.sequence = sequence;
@@ -429,7 +466,7 @@ impl RegionManager {
                             .transition(entry.state, TileLoadState::PendingManifest);
                         entry.state = TileLoadState::PendingManifest;
                         entry.retry_after = None;
-                    } else if entry.state == TileLoadState::Loaded {
+                    } else if entry.state == TileLoadState::Loaded && entry.image.is_none() {
                         self.state_counts
                             .transition(entry.state, TileLoadState::PendingManifest);
                         entry.state = TileLoadState::PendingManifest;
@@ -441,8 +478,9 @@ impl RegionManager {
                 }
                 None => {
                     self.state_counts.increment(TileLoadState::PendingManifest);
-                    self.entries
-                        .insert(*coord, TileEntry::pending_manifest(priority, sequence));
+                    let mut entry = TileEntry::pending_manifest(priority, sequence);
+                    entry.last_access = last_access;
+                    self.entries.insert(*coord, entry);
                 }
             }
         }
@@ -492,6 +530,45 @@ impl RegionManager {
         dropped_images
     }
 
+    pub(super) fn trim_entries_to_capacity_by(
+        &mut self,
+        mut should_retain: impl FnMut((i32, i32)) -> bool,
+        capacity: usize,
+    ) -> Vec<Arc<RenderImage>> {
+        if self.entries.len() <= capacity {
+            return Vec::new();
+        }
+
+        // Keep active render ownership until its completion event has updated the state
+        // machine. Pending manifest entries are cheap and can be probed again after eviction.
+        let mut candidates = self
+            .entries
+            .iter()
+            .filter_map(|(coord, entry)| {
+                (!should_retain(*coord) && entry.state != TileLoadState::Loading)
+                    .then_some((entry.last_access, *coord))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+
+        let mut dropped_images = Vec::new();
+        for (_, coord) in candidates {
+            if self.entries.len() <= capacity {
+                break;
+            }
+            if let Some(mut entry) = self.entries.remove(&coord) {
+                self.state_counts.decrement(entry.state);
+                self.loaded_estimated_bytes = self
+                    .loaded_estimated_bytes
+                    .saturating_sub(tile_entry_loaded_estimated_bytes(&entry));
+                if let Some(image) = tile_entry_take_render_image(&mut entry) {
+                    dropped_images.push(image);
+                }
+            }
+        }
+        dropped_images
+    }
+
     #[cfg(test)]
     pub(super) fn trim_loaded_tiles_to_budget(
         &mut self,
@@ -519,7 +596,12 @@ impl RegionManager {
                     return None;
                 }
                 Some(Reverse((
-                    trim_loaded_tile_sort_key(entry.priority, entry.sequence, entry.source_status),
+                    trim_loaded_tile_sort_key(
+                        entry.last_access,
+                        entry.priority,
+                        entry.sequence,
+                        entry.source_status,
+                    ),
                     *coord,
                     tile_entry_loaded_estimated_bytes(entry),
                 )))
@@ -665,28 +747,7 @@ impl RegionManager {
             return Vec::new();
         }
         if tiles_are_sorted_center_first(visible_tiles, center) {
-            let now = Instant::now();
-            let mut coords = Vec::with_capacity(limit);
-            for priority in [TilePriority::EditRefresh, TilePriority::Visible] {
-                for include_failed in [false, true] {
-                    for coord in visible_tiles {
-                        if coords.len() >= limit {
-                            return coords;
-                        }
-                        let Some(entry) = self.entries.get(coord) else {
-                            continue;
-                        };
-                        if entry.priority != priority
-                            || matches!(entry.state, TileLoadState::Failed) != include_failed
-                            || !queued_entry_is_ready(entry, now)
-                        {
-                            continue;
-                        }
-                        coords.push(*coord);
-                    }
-                }
-            }
-            return coords;
+            return self.queued_visible_coords_limited_ordered(visible_tiles, limit);
         }
         let now = Instant::now();
         let mut selected_priority = None;
@@ -726,6 +787,38 @@ impl RegionManager {
         let mut candidates = candidates.into_vec();
         candidates.sort_by_key(|(sort_key, _)| *sort_key);
         candidates.into_iter().map(|(_, coord)| coord).collect()
+    }
+
+    pub(super) fn queued_visible_coords_limited_ordered(
+        &self,
+        visible_tiles: &[(i32, i32)],
+        limit: usize,
+    ) -> Vec<(i32, i32)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        let mut coords = Vec::with_capacity(limit.min(visible_tiles.len()));
+        for priority in [TilePriority::EditRefresh, TilePriority::Visible] {
+            for include_failed in [false, true] {
+                for coord in visible_tiles {
+                    if coords.len() >= limit {
+                        return coords;
+                    }
+                    let Some(entry) = self.entries.get(coord) else {
+                        continue;
+                    };
+                    if entry.priority != priority
+                        || matches!(entry.state, TileLoadState::Failed) != include_failed
+                        || !queued_entry_is_ready(entry, now)
+                    {
+                        continue;
+                    }
+                    coords.push(*coord);
+                }
+            }
+        }
+        coords
     }
 
     pub(super) fn mark_loading(&mut self, coords: &[(i32, i32)]) {
@@ -831,9 +924,11 @@ impl RegionManager {
         let new_bytes = tile.estimated_bytes;
         let previous_bytes;
         let mut dropped_image = None;
+        let last_access = self.allocate_access_stamp();
         if let Some(entry) = self.entries.get_mut(&coord) {
             previous_bytes = tile_entry_loaded_estimated_bytes(entry);
             dropped_image = entry.image.replace(tile).map(|tile| tile.image);
+            entry.last_access = last_access;
             self.state_counts
                 .transition(entry.state, TileLoadState::Loaded);
             entry.state = TileLoadState::Loaded;
@@ -845,6 +940,7 @@ impl RegionManager {
             let sequence = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
             let mut entry = TileEntry::queued(TilePriority::Prefetch, sequence);
+            entry.last_access = last_access;
             previous_bytes = 0;
             entry.state = TileLoadState::Loaded;
             entry.source_status = TileSourceStatus::Fresh;
@@ -875,6 +971,7 @@ impl RegionManager {
         tile: ViewerTile,
         freshness: TileSourceFreshness,
     ) -> (bool, Option<Arc<RenderImage>>) {
+        let last_access = self.allocate_access_stamp();
         let Some(entry) = self.entries.get_mut(&coord) else {
             return (false, None);
         };
@@ -886,6 +983,7 @@ impl RegionManager {
         let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
         let new_bytes = tile.estimated_bytes;
         let dropped_image = entry.image.replace(tile).map(|tile| tile.image);
+        entry.last_access = last_access;
         self.state_counts
             .transition(entry.state, TileLoadState::Loaded);
         entry.state = TileLoadState::Loaded;
@@ -1016,6 +1114,12 @@ impl RegionManager {
     pub(super) fn loaded_estimated_bytes(&self) -> usize {
         self.loaded_estimated_bytes
     }
+
+    fn allocate_access_stamp(&mut self) -> u64 {
+        let access = self.next_access;
+        self.next_access = self.next_access.saturating_add(1);
+        access
+    }
 }
 
 pub(super) fn tile_entry_loaded_estimated_bytes(entry: &TileEntry) -> usize {
@@ -1057,9 +1161,10 @@ fn queued_candidate_priority_matches(
     selected_priority > TilePriority::Visible || candidate_priority == selected_priority
 }
 
-type TrimLoadedTileSortKey = (u8, bool, u64);
+type TrimLoadedTileSortKey = (u64, u8, bool, u64);
 
 fn trim_loaded_tile_sort_key(
+    last_access: u64,
     priority: TilePriority,
     sequence: u64,
     source_status: TileSourceStatus,
@@ -1070,6 +1175,7 @@ fn trim_loaded_tile_sort_key(
         TilePriority::EditRefresh => 2_u8,
     };
     (
+        last_access,
         priority_rank,
         matches!(source_status, TileSourceStatus::Fresh),
         sequence,

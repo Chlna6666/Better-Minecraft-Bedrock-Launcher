@@ -12,12 +12,15 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::rc::Rc;
 
+mod icon;
+
 const HOTKEY_OPTIONS: [&str; 5] = ["ALT", "CTRL", "SHIFT", "LWIN", "RWIN"];
 
 #[derive(Clone)]
 pub struct VersionSettingsModalState {
     pub version: ManagedVersionEntry,
     pub config: ManageVersionConfig,
+    pub icon_source_path: Option<SharedString>,
     pub saving: bool,
 }
 
@@ -78,6 +81,12 @@ pub fn render(
                     .flex()
                     .flex_col()
                     .gap(px(10.))
+                    .child(icon::render_icon_card(
+                        state,
+                        colors,
+                        i18n,
+                        view_handle.clone(),
+                    ))
                     .child(render_toggle_card(
                         "settings-debug-console",
                         colors,

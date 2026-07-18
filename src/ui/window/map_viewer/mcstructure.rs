@@ -127,11 +127,7 @@ pub(super) fn read_mcstructure_as_copied_chunk(
         .map_err(|error| format!("读取 .mcstructure 失败（{}）：{}", path.display(), error))?;
     let copied_chunk = structure_to_copied_chunk(&structure, anchor_chunk)?;
     let preview_images =
-        if copied_chunk.chunk_count() <= super::import_preview::PREVIEW_IMAGE_CHUNK_LIMIT {
-            super::import_preview::mcstructure_preview_images(&structure, anchor_chunk)?
-        } else {
-            BTreeMap::new()
-        };
+        super::import_preview::mcstructure_preview_images(&structure, anchor_chunk)?;
     let size = structure.size;
     let imported_structure = ImportedStructureData {
         structure: Arc::new(structure),
@@ -243,6 +239,123 @@ pub(super) fn paste_imported_structure_blocking(
         ),
         MapEditInvalidation::chunks(result.affected_chunks).with_metadata(),
     ))
+}
+
+pub(super) fn replace_transformed_chunk_seed(
+    world: &BedrockWorld,
+    snapshot: &CopiedChunkSnapshot,
+    target_chunk: ChunkPos,
+    transform: PasteTransform,
+    guard: &WriteGuard,
+) -> bedrock_world::Result<()> {
+    guard.validate(world)?;
+    let mut transaction = world.transaction();
+    transaction.delete_chunk(target_chunk)?;
+    for record in &snapshot.records {
+        let Some(value) = transformed_chunk_seed_value(record, transform)? else {
+            continue;
+        };
+        let mut key = record.key.clone();
+        key.pos = target_chunk;
+        transaction.put_raw_record(&key, value);
+    }
+    transaction.commit()
+}
+
+fn transformed_chunk_seed_value(
+    record: &ChunkRecord,
+    transform: PasteTransform,
+) -> bedrock_world::Result<Option<Bytes>> {
+    let value = match record.key.tag {
+        ChunkRecordTag::Data3D => {
+            let mut biome = Biome3d::parse(&record.value)?;
+            transform_horizontal_values(&mut biome.height_map, transform)?;
+            for storage in &mut biome.storages {
+                transform_biome_storage(storage, transform)?;
+            }
+            Bytes::from(biome.encode()?)
+        }
+        ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => {
+            let mut biome = bedrock_world::Biome2d::parse(&record.value)?;
+            transform_horizontal_values(&mut biome.height_map, transform)?;
+            transform_horizontal_values(&mut biome.biomes, transform)?;
+            Bytes::from(biome.encode()?)
+        }
+        ChunkRecordTag::Version | ChunkRecordTag::VersionOld | ChunkRecordTag::LegacyVersion => {
+            record.value.clone()
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}
+
+fn transform_horizontal_values<T: Copy>(
+    values: &mut Vec<T>,
+    transform: PasteTransform,
+) -> bedrock_world::Result<()> {
+    if values.len() != 256 {
+        return Err(bedrock_world::BedrockWorldError::Validation(format!(
+            "horizontal chunk data must contain 256 values, got {}",
+            values.len()
+        )));
+    }
+    let source = values.clone();
+    for source_z in 0..16_u8 {
+        for source_x in 0..16_u8 {
+            let (target_x, target_z) = transformed_local_xz(source_x, source_z, transform);
+            values[usize::from(target_z) * 16 + usize::from(target_x)] =
+                source[usize::from(source_z) * 16 + usize::from(source_x)];
+        }
+    }
+    Ok(())
+}
+
+fn transform_biome_storage(
+    storage: &mut bedrock_world::ParsedBiomeStorage,
+    transform: PasteTransform,
+) -> bedrock_world::Result<()> {
+    let Some(indices) = storage.indices.as_mut() else {
+        return Ok(());
+    };
+    if storage.y.is_none() {
+        return transform_horizontal_values(indices, transform);
+    }
+    if indices.len() != 4096 {
+        return Err(bedrock_world::BedrockWorldError::Validation(format!(
+            "3D biome storage must contain 4096 indices, got {}",
+            indices.len()
+        )));
+    }
+    let source = indices.clone();
+    for source_z in 0..16_u8 {
+        for source_x in 0..16_u8 {
+            let (target_x, target_z) = transformed_local_xz(source_x, source_z, transform);
+            for local_y in 0..16_u8 {
+                indices[bedrock_world::block_storage_index(target_x, local_y, target_z)] =
+                    source[bedrock_world::block_storage_index(source_x, local_y, source_z)];
+            }
+        }
+    }
+    Ok(())
+}
+
+const fn transformed_local_xz(source_x: u8, source_z: u8, transform: PasteTransform) -> (u8, u8) {
+    let source_x = if transform.mirror_x {
+        15 - source_x
+    } else {
+        source_x
+    };
+    let source_z = if transform.mirror_z {
+        15 - source_z
+    } else {
+        source_z
+    };
+    match transform.rotation {
+        PasteRotation::NoRotation => (source_x, source_z),
+        PasteRotation::Clockwise90 => (15 - source_z, source_x),
+        PasteRotation::Rotate180 => (15 - source_x, 15 - source_z),
+        PasteRotation::CounterClockwise90 => (source_z, 15 - source_x),
+    }
 }
 
 fn check_mcstructure_paste_cancelled(cancel: Option<&CancelFlag>) -> bedrock_world::Result<()> {

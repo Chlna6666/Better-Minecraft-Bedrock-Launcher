@@ -37,6 +37,7 @@ impl MapViewerWindowView {
                 "粘贴已复制 chunk..."
             })
             .disabled(disabled)
+            .keep_open()
             .on_click(move |cx| entity.update(cx, |this, cx| this.toggle_context_paste(cx))),
         )];
         if expanded {
@@ -75,6 +76,53 @@ impl MapViewerWindowView {
         }
     }
 
+    fn current_chunk_write_entries(
+        &self,
+        chunk: ChunkPos,
+        cx: &mut Context<Self>,
+    ) -> Vec<ContextMenuEntry> {
+        [
+            (
+                "删除当前 chunk（清空为空气）",
+                QuickWriteAction::DeleteCurrentChunk(chunk),
+            ),
+            (
+                "重置当前 chunk（删除记录重新加载）",
+                QuickWriteAction::ResetCurrentChunk(chunk),
+            ),
+            (
+                "删除当前 chunk 方块实体",
+                QuickWriteAction::DeleteCurrentChunkBlockEntities(chunk),
+            ),
+            (
+                "删除当前 chunk 实体",
+                QuickWriteAction::DeleteCurrentChunkActors(chunk),
+            ),
+        ]
+        .into_iter()
+        .map(|(label, action)| {
+            let entity = cx.entity();
+            ContextMenuEntry::item(
+                ContextMenuItem::new(label)
+                    .danger(true)
+                    .on_click(move |cx| {
+                        let action = action.clone();
+                        entity.update(cx, move |this, cx| this.run_quick_write_action(action, cx))
+                    }),
+            )
+        })
+        .collect()
+    }
+
+    fn selection_delete_entry(&self, cx: &mut Context<Self>) -> ContextMenuEntry {
+        let entity = cx.entity();
+        ContextMenuEntry::item(
+            ContextMenuItem::new("删除选区 chunk")
+                .danger(true)
+                .on_click(move |cx| entity.update(cx, |this, cx| this.delete_selection_chunks(cx))),
+        )
+    }
+
     pub(super) fn render_context_menu(
         &self,
         colors: &ThemeColors,
@@ -88,11 +136,6 @@ impl MapViewerWindowView {
             284.0,
             460.0,
         );
-        let destructive_label = if self.professional.pending_delete_confirmation {
-            "确认删除选区 chunk"
-        } else {
-            "删除选区 chunk"
-        };
         let has_selection = self.professional.selection.is_some();
         let more_items = vec![
             ContextMenuItem::new("编辑 HSA 生成区").on_click({
@@ -213,120 +256,25 @@ impl MapViewerWindowView {
             ContextMenuGroup::titled("选区", selection_entries),
             ContextMenuGroup::titled("编辑", more_edit_entries),
         ];
-        if self.professional.write_mode {
+        {
             let Some(chunk) = self.context_chunk_pos() else {
                 return div().child(
                     ContextMenu::new(colors, groups)
                         .header(coordinate_text(menu.block_x, menu.block_z))
-                        .placement(placement),
+                        .placement(placement)
+                        .on_dismiss({
+                            let entity = cx.entity();
+                            move |cx| entity.update(cx, |this, cx| this.close_context_menu(cx))
+                        }),
                 );
             };
-            let pending_quick = self.professional.pending_quick_write_confirmation.as_ref();
-            groups.push(ContextMenuGroup::titled(
-                "写入",
-                self.paste_rotation_entries(chunk, cx)
-                    .into_iter()
-                    .chain(vec![
-                        ContextMenuEntry::item(
-                            ContextMenuItem::new(confirming_quick_label(
-                                pending_quick,
-                                QuickWriteAction::DeleteCurrentChunk(chunk),
-                                "删除当前 chunk（清空为空气）",
-                            ))
-                            .danger(true)
-                            .on_click({
-                                let entity = cx.entity();
-                                move |cx| {
-                                    entity.update(cx, move |this, cx| {
-                                        this.run_quick_write_action(
-                                            QuickWriteAction::DeleteCurrentChunk(chunk),
-                                            cx,
-                                        )
-                                    })
-                                }
-                            }),
-                        ),
-                        ContextMenuEntry::item(
-                            ContextMenuItem::new(confirming_quick_label(
-                                pending_quick,
-                                QuickWriteAction::ResetCurrentChunk(chunk),
-                                "重置当前 chunk（删除记录重新加载）",
-                            ))
-                            .danger(true)
-                            .on_click({
-                                let entity = cx.entity();
-                                move |cx| {
-                                    entity.update(cx, move |this, cx| {
-                                        this.run_quick_write_action(
-                                            QuickWriteAction::ResetCurrentChunk(chunk),
-                                            cx,
-                                        )
-                                    })
-                                }
-                            }),
-                        ),
-                        ContextMenuEntry::item(
-                            ContextMenuItem::new(confirming_quick_label(
-                                pending_quick,
-                                QuickWriteAction::DeleteCurrentChunkBlockEntities(chunk),
-                                "删除当前 chunk 方块实体",
-                            ))
-                            .danger(true)
-                            .on_click({
-                                let entity = cx.entity();
-                                move |cx| {
-                                    entity.update(cx, move |this, cx| {
-                                        this.run_quick_write_action(
-                                            QuickWriteAction::DeleteCurrentChunkBlockEntities(
-                                                chunk,
-                                            ),
-                                            cx,
-                                        )
-                                    })
-                                }
-                            }),
-                        ),
-                        ContextMenuEntry::item(
-                            ContextMenuItem::new(confirming_quick_label(
-                                pending_quick,
-                                QuickWriteAction::DeleteCurrentChunkActors(chunk),
-                                "删除当前 chunk 实体",
-                            ))
-                            .danger(true)
-                            .on_click({
-                                let entity = cx.entity();
-                                move |cx| {
-                                    entity.update(cx, move |this, cx| {
-                                        this.run_quick_write_action(
-                                            QuickWriteAction::DeleteCurrentChunkActors(chunk),
-                                            cx,
-                                        )
-                                    })
-                                }
-                            }),
-                        ),
-                        ContextMenuEntry::item(
-                            ContextMenuItem::new(destructive_label)
-                                .danger(true)
-                                .on_click({
-                                    let entity = cx.entity();
-                                    move |cx| {
-                                        entity
-                                            .update(cx, |this, cx| this.delete_selection_chunks(cx))
-                                    }
-                                }),
-                        ),
-                    ])
-                    .collect(),
-            ));
-        }
-        if has_selection && !self.professional.write_mode {
-            groups.push(ContextMenuGroup::titled(
-                "危险操作",
-                vec![ContextMenuEntry::item(
-                    ContextMenuItem::new("开启写入模式后可删除选区").danger(true),
-                )],
-            ));
+            let mut write_entries = self.paste_rotation_entries(chunk, cx);
+            if write_targets_selection(self.professional.selection) {
+                write_entries.push(self.selection_delete_entry(cx));
+            } else {
+                write_entries.extend(self.current_chunk_write_entries(chunk, cx));
+            }
+            groups.push(ContextMenuGroup::titled("写入", write_entries));
         }
         groups.push(ContextMenuGroup::new(vec![ContextMenuEntry::item(
             ContextMenuItem::new("关闭菜单").on_click({
@@ -338,7 +286,11 @@ impl MapViewerWindowView {
         div().child(
             ContextMenu::new(colors, groups)
                 .header(coordinate_text(menu.block_x, menu.block_z))
-                .placement(placement),
+                .placement(placement)
+                .on_dismiss({
+                    let entity = cx.entity();
+                    move |cx| entity.update(cx, |this, cx| this.close_context_menu(cx))
+                }),
         )
     }
 
@@ -447,7 +399,7 @@ impl MapViewerWindowView {
                                 move |cx| {
                                     entity.update(cx, |this, cx| {
                                         this.close_top_more();
-                                        this.open_right_nbt_panel(cx);
+                                        this.toggle_right_panel_kind(MapViewerRightPanel::Nbt, cx);
                                     })
                                 }
                             }),
@@ -464,7 +416,10 @@ impl MapViewerWindowView {
                                 move |cx| {
                                     entity.update(cx, |this, cx| {
                                         this.close_top_more();
-                                        this.open_right_preview_3d_panel(cx);
+                                        this.toggle_right_panel_kind(
+                                            MapViewerRightPanel::Preview3d,
+                                            cx,
+                                        );
                                     })
                                 }
                             }),
@@ -474,7 +429,7 @@ impl MapViewerWindowView {
                         move |cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_top_more();
-                                this.set_bottom_tab(MapViewerBottomTab::ChunkTree, cx);
+                                this.toggle_bottom_tab(MapViewerBottomTab::ChunkTree, cx);
                             })
                         }
                     })),
@@ -483,7 +438,7 @@ impl MapViewerWindowView {
                         move |cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_top_more();
-                                this.set_bottom_tab(MapViewerBottomTab::Details, cx);
+                                this.toggle_bottom_tab(MapViewerBottomTab::Details, cx);
                             })
                         }
                     })),
@@ -492,7 +447,7 @@ impl MapViewerWindowView {
                         move |cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_top_more();
-                                this.set_bottom_tab(MapViewerBottomTab::Diagnostics, cx);
+                                this.toggle_bottom_tab(MapViewerBottomTab::Diagnostics, cx);
                             })
                         }
                     })),
@@ -501,7 +456,7 @@ impl MapViewerWindowView {
                         move |cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_top_more();
-                                this.set_bottom_tab(MapViewerBottomTab::History, cx);
+                                this.toggle_bottom_tab(MapViewerBottomTab::History, cx);
                             })
                         }
                     })),
@@ -573,24 +528,6 @@ impl MapViewerWindowView {
                             entity.update(cx, |this, cx| {
                                 this.close_top_more();
                                 this.recenter_to_spawn(cx);
-                            })
-                        }
-                    })),
-                    ContextMenuEntry::item(ContextMenuItem::new("CPU 预算 +").on_click({
-                        let entity = cx.entity();
-                        move |cx| {
-                            entity.update(cx, |this, cx| {
-                                this.close_top_more();
-                                this.step_cpu_budget(1, cx);
-                            })
-                        }
-                    })),
-                    ContextMenuEntry::item(ContextMenuItem::new("CPU 预算 -").on_click({
-                        let entity = cx.entity();
-                        move |cx| {
-                            entity.update(cx, |this, cx| {
-                                this.close_top_more();
-                                this.step_cpu_budget(-1, cx);
                             })
                         }
                     })),
@@ -728,20 +665,6 @@ impl MapViewerWindowView {
                             }
                         },
                     )),
-                    ContextMenuEntry::item(
-                        ContextMenuItem::new("写入模式")
-                            .checked(self.professional.write_mode)
-                            .danger(self.professional.write_mode)
-                            .on_click({
-                                let entity = cx.entity();
-                                move |cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.close_top_more();
-                                        this.toggle_write_mode(cx);
-                                    })
-                                }
-                            }),
-                    ),
                     ContextMenuEntry::item(ContextMenuItem::new("统计选区").on_click({
                         let entity = cx.entity();
                         move |cx| {
@@ -769,5 +692,38 @@ impl MapViewerWindowView {
                 .header("地图编辑器")
                 .placement(placement),
         )
+    }
+}
+
+fn write_targets_selection(selection: Option<ChunkSelection>) -> bool {
+    selection.is_some_and(|selection| selection.chunk_count() > 1)
+}
+
+#[cfg(test)]
+mod context_write_scope_tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn multi_chunk_selection_replaces_current_chunk_write_actions() {
+        let single = ChunkSelection {
+            start: ChunkPos {
+                x: 1,
+                z: 2,
+                dimension: Dimension::Overworld,
+            },
+            end: ChunkPos {
+                x: 1,
+                z: 2,
+                dimension: Dimension::Overworld,
+            },
+        };
+        let multiple = ChunkSelection {
+            end: ChunkPos { x: 3, ..single.end },
+            ..single
+        };
+
+        assert!(!write_targets_selection(None));
+        assert!(!write_targets_selection(Some(single)));
+        assert!(write_targets_selection(Some(multiple)));
     }
 }

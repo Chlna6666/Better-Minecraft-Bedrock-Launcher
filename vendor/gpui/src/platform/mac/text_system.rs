@@ -215,6 +215,8 @@ impl MacTextSystemState {
             })
             .collect::<Result<Vec<_>>>()?;
         self.memory_source.add_fonts(fonts.into_iter())?;
+        self.font_selections.clear();
+        self.font_ids_by_font_key.clear();
         Ok(())
     }
 
@@ -224,6 +226,8 @@ impl MacTextSystemState {
             .map(|path| Ok(Handle::from_path(path, 0)))
             .collect::<Result<Vec<_>>>()?;
         self.memory_source.add_fonts(fonts.into_iter())?;
+        self.font_selections.clear();
+        self.font_ids_by_font_key.clear();
         Ok(())
     }
 
@@ -706,10 +710,7 @@ mod lenient_font_attributes {
         unsafe { string_attribute(descriptor, kCTFontFamilyNameAttribute) }
     }
 
-    fn string_attribute(
-        descriptor: &CTFontDescriptor,
-        attribute: CFStringRef,
-    ) -> Option<String> {
+    fn string_attribute(descriptor: &CTFontDescriptor, attribute: CFStringRef) -> Option<String> {
         unsafe {
             let value = CTFontDescriptorCopyAttribute(descriptor.as_concrete_TypeRef(), attribute);
             if value.is_null() {

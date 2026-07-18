@@ -1,6 +1,6 @@
 use super::model::ViewerMode;
-use super::state::MapViewerBottomTab;
-use gpui::{App, KeyBinding, actions};
+use super::state::{MapViewerBottomTab, MapViewerRightPanel};
+use gpui::{App, KeyBinding, Pixels, Point, actions};
 
 actions!(
     map_viewer,
@@ -49,9 +49,9 @@ pub enum MapViewerAction {
     ImportStructureFile,
     ToggleTopMore,
     ToggleLeftPanel,
-    ToggleBottomPanel,
-    SetBottomTab(MapViewerBottomTab),
-    OpenRightNbt,
-    OpenRightPreview3d,
+    ToggleBottomTab(MapViewerBottomTab),
+    ToggleRightPanel(MapViewerRightPanel),
+    BeginRightSelectionAt(Point<Pixels>),
+    EndRightSelectionAt(Point<Pixels>),
     CloseMenus,
 }

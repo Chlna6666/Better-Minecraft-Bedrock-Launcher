@@ -2,7 +2,7 @@ use crate::launch::{LaunchMode, parse_launch_mode};
 use anyhow::Result;
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, process};
 use tracing::{debug, error, info};
 
@@ -110,8 +110,9 @@ fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard
 }
 
 pub fn run() -> Result<()> {
+    let startup_started = Instant::now();
     crate::utils::memory::configure_mimalloc_optimizer();
-    build_launcher_runtime()?.block_on(async_main())
+    build_launcher_runtime()?.block_on(async_main(startup_started))
 }
 
 fn build_launcher_runtime() -> Result<tokio::runtime::Runtime> {
@@ -119,7 +120,7 @@ fn build_launcher_runtime() -> Result<tokio::runtime::Runtime> {
         .map(NonZeroUsize::get)
         .unwrap_or(2);
     let worker_threads = available_threads.clamp(2, 4);
-    let blocking_threads = available_threads.saturating_add(2).clamp(4, 8);
+    let blocking_threads = available_threads.saturating_mul(2).max(4);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -131,7 +132,7 @@ fn build_launcher_runtime() -> Result<tokio::runtime::Runtime> {
         .map_err(Into::into)
 }
 
-async fn async_main() -> Result<()> {
+async fn async_main(startup_started: Instant) -> Result<()> {
     let launch_mode = parse_launch_mode();
 
     if let Some(working_dir) = launch_working_dir(&launch_mode)
@@ -168,42 +169,52 @@ async fn async_main() -> Result<()> {
     };
     crate::utils::logger::init_logging(config.launcher.debug);
     debug!(
+        elapsed_ms = startup_started.elapsed().as_millis(),
         debug_enabled = config.launcher.debug,
         language = %config.launcher.language,
         renderer_backend = %config.launcher.renderer_backend,
         "configuration loaded and debug logging state applied"
     );
 
-    if launch_mode.is_main()
-        && let Err(error) = crate::utils::diagnostics::prepare_previous_run_reports()
-    {
-        error!(?error, "failed to prepare previous run diagnostics");
-    }
-    if launch_mode.is_main()
-        && let Err(error) = crate::utils::diagnostics::mark_session_started()
-    {
-        error!(?error, "failed to mark diagnostics session as started");
-    }
-
-    if launch_mode.is_main() {
-        crate::utils::updater_child::clean_old_versions();
-        crate::utils::registry::register_file_associations();
-    }
-
     if launch_mode.is_main() && config.launcher.stats_upload {
         crate::utils::stats::spawn_startup_ingest();
     }
 
     if launch_mode.is_main() {
-        log_system_info();
+        spawn_noncritical_startup_work();
     } else {
         info!("Import-mode preinit done");
     }
 
     let bootstrap = crate::app::AppBootstrap::from_config(&config, launch_mode).await;
+    info!(
+        elapsed_ms = startup_started.elapsed().as_millis(),
+        "startup critical path complete; entering GPUI"
+    );
     crate::app::run(bootstrap)?;
 
     Ok(())
+}
+
+fn spawn_noncritical_startup_work() {
+    let result = std::thread::Builder::new()
+        .name("bmcbl-startup-maintenance".to_string())
+        .spawn(|| {
+            if let Err(error) = crate::utils::diagnostics::prepare_previous_run_reports() {
+                error!(?error, "failed to prepare previous run diagnostics");
+            }
+            if let Err(error) = crate::utils::diagnostics::mark_session_started() {
+                error!(?error, "failed to mark diagnostics session as started");
+            }
+            crate::utils::updater_child::clean_old_versions();
+            crate::utils::registry::register_file_associations();
+            log_system_info();
+        });
+    if let Err(error) = result {
+        error!(?error, "failed to start noncritical startup work");
+    } else {
+        debug!("noncritical startup work scheduled");
+    }
 }
 
 fn launch_working_dir(launch_mode: &LaunchMode) -> Option<std::path::PathBuf> {

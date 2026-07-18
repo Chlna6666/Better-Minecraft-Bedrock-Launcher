@@ -10,18 +10,19 @@ use bedrock_block_model::{
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
 use bedrock_world::{
-    BedrockWorld, BlockState, CancelFlag, ExactSurfaceBiomeLoad, ExactSurfaceSubchunkPolicy,
-    ParsedBiomeStorage, ParsedChunkRecordValue, RenderChunkData, RenderChunkLoadOptions,
-    RenderChunkPriority, RenderChunkRequest, SlimeChunkBounds, SubChunkDecodeMode,
-    TerrainColumnBiome, WorldPipelineOptions, WorldThreadingOptions,
+    BedrockWorld, BiomeDataRequirement, BlockState, CancelFlag, ChunkData, ChunkDataRequest,
+    ChunkLoadOptions, ChunkLoadPriority, ExactSurfaceSubchunkPolicy, ParsedBiomeStorage,
+    ParsedChunkRecordValue, SlimeChunkBounds, SubChunkDecodeMode, TerrainColumnBiome,
+    WorldPipelineOptions, WorldThreadingOptions,
 };
 use gpui::{
     GpuMesh3d, GpuMesh3dDrawParameters, GpuMesh3dDrawRanges, GpuMesh3dRange, GpuMesh3dShader,
     GpuMesh3dVertex, Pixels, Point, SharedString, WgslShaderSource,
 };
 use rayon::prelude::*;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -785,7 +786,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
         let batch_size = preview_3d_incremental_batch_size(completed_chunks, chunk_total);
         let next_completed_chunks = completed_chunks.saturating_add(batch_size).min(chunk_total);
         let chunks = world
-            .load_render_chunks_blocking(
+            .query_chunk_data_many_blocking(
                 positions[completed_chunks..next_completed_chunks].to_vec(),
                 options.clone(),
             )
@@ -830,7 +831,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
     for chunk_positions in positions.chunks(preview_3d_incremental_mesh_batch_size(chunk_total)) {
         check_preview_3d_cancelled(cancel.as_ref())?;
         let chunks = world
-            .load_render_chunks_blocking(chunk_positions.to_vec(), options.clone())
+            .query_chunk_data_many_blocking(chunk_positions.to_vec(), options.clone())
             .map_err(|error| error.to_string())?;
         let processed_chunks = chunks
             .par_iter()
@@ -887,7 +888,7 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
     let blocks = structure
         .blocks()
         .map_err(|error| format!("结构方块索引无效：{error}"))?;
-    let mut chunk_builders = HashMap::<ChunkKey, Preview3dStructureChunkBuilder>::new();
+    let mut chunk_builders = HashMap::<ChunkKey, Preview3dStructureChunkBuilder>::default();
     let origin_x = anchor_chunk.x.saturating_mul(16);
     let origin_z = anchor_chunk.z.saturating_mul(16);
 
@@ -948,13 +949,12 @@ fn preview_3d_render_chunk_load_options(
     total_chunks: usize,
     bounds: SlimeChunkBounds,
     cancel: Option<CancelFlag>,
-) -> RenderChunkLoadOptions {
-    RenderChunkLoadOptions {
-        request: RenderChunkRequest::ExactSurface {
-            subchunks: ExactSurfaceSubchunkPolicy::Full,
-            biome: ExactSurfaceBiomeLoad::All,
-            block_entities: false,
-        },
+) -> ChunkLoadOptions {
+    ChunkLoadOptions {
+        data_request: ChunkDataRequest::new()
+            .surface_columns(ExactSurfaceSubchunkPolicy::Full)
+            .full_3d_indices()
+            .biome(BiomeDataRequirement::All),
         subchunk_decode: SubChunkDecodeMode::FullIndices,
         threading: preview_3d_world_threading(total_chunks),
         pipeline: WorldPipelineOptions {
@@ -964,11 +964,11 @@ fn preview_3d_render_chunk_load_options(
             ..WorldPipelineOptions::default()
         },
         cancel,
-        priority: RenderChunkPriority::DistanceFrom {
+        priority: ChunkLoadPriority::DistanceFrom {
             chunk_x: bounds.min_chunk_x + preview_3d_bounds_width(bounds) / 2,
             chunk_z: bounds.min_chunk_z + preview_3d_bounds_depth(bounds) / 2,
         },
-        ..RenderChunkLoadOptions::default()
+        ..ChunkLoadOptions::default()
     }
 }
 
@@ -1147,8 +1147,8 @@ impl Preview3dMeshBuilder {
             culled_face_count: 0,
             omitted_face_count: 0,
             truncated_chunk_count,
-            block_chunks: HashMap::new(),
-            processed_chunk_keys: HashSet::new(),
+            block_chunks: HashMap::default(),
+            processed_chunk_keys: HashSet::default(),
         }
     }
 
@@ -1624,13 +1624,13 @@ fn preview_3d_selection_frame(bounds: SlimeChunkBounds) -> ([f32; 3], f32, f32) 
 }
 
 fn preview_3d_collect_chunk_blocks_result(
-    chunk: &RenderChunkData,
+    chunk: &ChunkData,
 ) -> Result<Preview3dProcessedChunk, String> {
     preview_3d_collect_chunk_blocks_result_with_block_models(chunk, None)
 }
 
 fn preview_3d_collect_chunk_blocks_result_with_block_models(
-    chunk: &RenderChunkData,
+    chunk: &ChunkData,
     block_models: Option<&BlockModelRepository>,
 ) -> Result<Preview3dProcessedChunk, String> {
     let chunk_key = ChunkKey::from_pos(chunk.pos);
@@ -1652,7 +1652,7 @@ fn preview_3d_collect_chunk_blocks_result_with_block_models(
     })
 }
 
-fn render_chunk_from_copied_snapshot(snapshot: &CopiedChunkSnapshot) -> RenderChunkData {
+fn render_chunk_from_copied_snapshot(snapshot: &CopiedChunkSnapshot) -> ChunkData {
     let parsed = bedrock_world::parsed::parse_chunk_records_with_options(
         snapshot.chunk,
         snapshot.records.clone(),
@@ -1678,7 +1678,7 @@ fn render_chunk_from_copied_snapshot(snapshot: &CopiedChunkSnapshot) -> RenderCh
             _ => {}
         }
     }
-    RenderChunkData {
+    ChunkData {
         pos: snapshot.chunk,
         is_loaded: !subchunks.is_empty() || legacy_terrain.is_some(),
         height_map: None,
@@ -1730,22 +1730,30 @@ fn copied_chunk_preview_3d_parse_options() -> bedrock_world::WorldParseOptions {
     }
 }
 
-fn preview_3d_collect_chunk_blocks(
-    chunk: &RenderChunkData,
-) -> Result<Preview3dChunkBlocks, String> {
+fn preview_3d_collect_chunk_blocks(chunk: &ChunkData) -> Result<Preview3dChunkBlocks, String> {
     preview_3d_collect_chunk_blocks_with_block_models(chunk, None)
 }
 
 fn preview_3d_collect_chunk_blocks_with_block_models(
-    chunk: &RenderChunkData,
+    chunk: &ChunkData,
     block_models: Option<&BlockModelRepository>,
 ) -> Result<Preview3dChunkBlocks, String> {
     let palette = RenderPalette::default();
     let initial_block_capacity = chunk.subchunks.len().saturating_mul(16 * 16 * 16);
-    let mut occupied = HashSet::<BlockKey>::with_capacity(initial_block_capacity);
-    let mut glass = HashSet::<BlockKey>::with_capacity(initial_block_capacity / 8);
-    let mut water = HashSet::<BlockKey>::with_capacity(initial_block_capacity / 8);
-    let mut lava = HashSet::<BlockKey>::with_capacity(initial_block_capacity / 16);
+    let mut occupied =
+        HashSet::<BlockKey>::with_capacity_and_hasher(initial_block_capacity, Default::default());
+    let mut glass = HashSet::<BlockKey>::with_capacity_and_hasher(
+        initial_block_capacity / 8,
+        Default::default(),
+    );
+    let mut water = HashSet::<BlockKey>::with_capacity_and_hasher(
+        initial_block_capacity / 8,
+        Default::default(),
+    );
+    let mut lava = HashSet::<BlockKey>::with_capacity_and_hasher(
+        initial_block_capacity / 16,
+        Default::default(),
+    );
     let mut opaque_blocks = Vec::<Preview3dBlockRecord>::with_capacity(initial_block_capacity);
     let mut glass_blocks = Vec::<Preview3dBlockRecord>::with_capacity(initial_block_capacity / 8);
     let mut detail_blocks = Vec::<Preview3dDetailBlock>::with_capacity(initial_block_capacity / 8);
@@ -1901,7 +1909,7 @@ fn preview_3d_collect_chunk_blocks_with_block_models(
         glass,
         water,
         lava,
-        detail_connectors: HashSet::new(),
+        detail_connectors: HashSet::default(),
         opaque_blocks,
         glass_blocks,
         detail_blocks,
@@ -2447,11 +2455,11 @@ struct Preview3dFluidBlock {
 impl Default for Preview3dChunkBlocks {
     fn default() -> Self {
         Self {
-            occupied: HashSet::new(),
-            glass: HashSet::new(),
-            water: HashSet::new(),
-            lava: HashSet::new(),
-            detail_connectors: HashSet::new(),
+            occupied: HashSet::default(),
+            glass: HashSet::default(),
+            water: HashSet::default(),
+            lava: HashSet::default(),
+            detail_connectors: HashSet::default(),
             opaque_blocks: Vec::new(),
             glass_blocks: Vec::new(),
             detail_blocks: Vec::new(),
@@ -2524,7 +2532,7 @@ fn structure_palette_state(palette: &[BlockState], index: i32) -> Option<&BlockS
 }
 
 fn preview_3d_structure_subchunk_count(blocks: &Preview3dChunkBlocks) -> usize {
-    let mut subchunks = HashSet::new();
+    let mut subchunks = HashSet::default();
     for block in &blocks.opaque_blocks {
         subchunks.insert(block.key.y.div_euclid(16));
     }
@@ -3802,7 +3810,7 @@ fn preview_3d_material_block_name_for_state<'a>(
 }
 
 fn preview_3d_biome_at_or_top(
-    chunk: &RenderChunkData,
+    chunk: &ChunkData,
     local_x: u8,
     local_z: u8,
     y: i32,
@@ -3841,7 +3849,7 @@ fn preview_3d_terrain_biome_sample(biome: TerrainColumnBiome) -> Preview3dBiomeS
 }
 
 fn preview_3d_biome_id_at_or_top(
-    chunk: &RenderChunkData,
+    chunk: &ChunkData,
     local_x: u8,
     local_z: u8,
     y: i32,
@@ -3858,12 +3866,7 @@ fn preview_3d_biome_id_at_or_top(
     })
 }
 
-fn preview_3d_biome_id_at(
-    chunk: &RenderChunkData,
-    local_x: u8,
-    local_z: u8,
-    y: i32,
-) -> Option<u32> {
+fn preview_3d_biome_id_at(chunk: &ChunkData, local_x: u8, local_z: u8, y: i32) -> Option<u32> {
     chunk
         .biome_data
         .get(&preview_3d_biome_storage_bucket_y(y))
@@ -5024,8 +5027,8 @@ mod tests {
 
     fn test_render_chunk_with_subchunks(
         subchunks: BTreeMap<i8, bedrock_world::SubChunk>,
-    ) -> RenderChunkData {
-        RenderChunkData {
+    ) -> ChunkData {
+        ChunkData {
             pos: ChunkPos {
                 x: 0,
                 z: 0,
@@ -5188,7 +5191,7 @@ mod tests {
             subchunk_count: 1,
             internally_culled_blocks: 0,
             blocks: Some(Preview3dChunkBlocks {
-                occupied: HashSet::from([block]),
+                occupied: HashSet::from_iter([block]),
                 opaque_blocks: vec![test_block_record(
                     block,
                     [0.4, 0.5, 0.6, 1.0],
@@ -5228,7 +5231,7 @@ mod tests {
             subchunk_count: 1,
             internally_culled_blocks: 0,
             blocks: Some(Preview3dChunkBlocks {
-                occupied: HashSet::from([block]),
+                occupied: HashSet::from_iter([block]),
                 opaque_blocks: vec![test_block_record(
                     block,
                     [0.4, 0.5, 0.6, 1.0],
@@ -5340,7 +5343,7 @@ mod tests {
             subchunk_count: 1,
             internally_culled_blocks: 0,
             blocks: Some(Preview3dChunkBlocks {
-                water: HashSet::from([block]),
+                water: HashSet::from_iter([block]),
                 water_blocks: vec![Preview3dFluidBlock {
                     key: block,
                     color: test_water_color(),
@@ -5369,7 +5372,7 @@ mod tests {
     #[test]
     fn map_viewer_preview_3d_filters_fully_hidden_internal_blocks() {
         let mut opaque_blocks = Vec::new();
-        let mut occupied = HashSet::new();
+        let mut occupied = HashSet::default();
         for y in 0..3 {
             for z in 0..3 {
                 for x in 0..3 {
@@ -5594,7 +5597,7 @@ mod tests {
             max_chunk_z: 0,
         };
         let occupied =
-            HashSet::from([BlockKey { x: 0, y: 0, z: 0 }, BlockKey { x: 1, y: 0, z: 0 }]);
+            HashSet::from_iter([BlockKey { x: 0, y: 0, z: 0 }, BlockKey { x: 1, y: 0, z: 0 }]);
         let mut faces = Vec::new();
         let mut culled = 0usize;
         for block in occupied.iter().copied() {
@@ -5629,14 +5632,14 @@ mod tests {
                 y: 0,
                 format: bedrock_world::SubChunkFormat::Paletted {
                     version: 8,
-                    storages: vec![bedrock_world::BlockPalette {
-                        states: vec![
+                    storages: vec![bedrock_world::BlockPalette::with_unpacked_indices(
+                        vec![
                             test_block_state("minecraft:air"),
                             test_block_state("minecraft:sand"),
                         ],
-                        indices: Some(indices),
-                        counts: vec![4094, 2],
-                    }],
+                        indices,
+                        Some(vec![4094, 2]),
+                    )],
                 },
             },
         );
@@ -5655,7 +5658,7 @@ mod tests {
                 source: bedrock_world::TerrainSampleSource::Subchunk,
             },
         );
-        let chunk = RenderChunkData {
+        let chunk = ChunkData {
             pos: ChunkPos {
                 x: 0,
                 z: 0,
@@ -5697,22 +5700,22 @@ mod tests {
                 format: bedrock_world::SubChunkFormat::Paletted {
                     version: 9,
                     storages: vec![
-                        bedrock_world::BlockPalette {
-                            states: vec![
+                        bedrock_world::BlockPalette::with_unpacked_indices(
+                            vec![
                                 test_block_state("minecraft:air"),
                                 test_block_state("minecraft:water"),
                             ],
-                            indices: Some(water_indices),
-                            counts: vec![4095, 1],
-                        },
-                        bedrock_world::BlockPalette {
-                            states: vec![
+                            water_indices,
+                            Some(vec![4095, 1]),
+                        ),
+                        bedrock_world::BlockPalette::with_unpacked_indices(
+                            vec![
                                 test_block_state("minecraft:air"),
                                 test_block_state("minecraft:seagrass"),
                             ],
-                            indices: Some(detail_indices),
-                            counts: vec![4095, 1],
-                        },
+                            detail_indices,
+                            Some(vec![4095, 1]),
+                        ),
                     ],
                 },
             },
@@ -6355,7 +6358,7 @@ mod tests {
             max_chunk_z: 0,
         };
         let water_blocks =
-            HashSet::from([BlockKey { x: 0, y: 0, z: 0 }, BlockKey { x: 1, y: 0, z: 0 }]);
+            HashSet::from_iter([BlockKey { x: 0, y: 0, z: 0 }, BlockKey { x: 1, y: 0, z: 0 }]);
         let mut water_faces = Vec::new();
         let mut culled = 0usize;
         for block in water_blocks.iter().copied() {
@@ -6390,7 +6393,7 @@ mod tests {
             max_chunk_z: 0,
         };
         let lava_blocks =
-            HashSet::from([BlockKey { x: 0, y: 0, z: 0 }, BlockKey { x: 1, y: 0, z: 0 }]);
+            HashSet::from_iter([BlockKey { x: 0, y: 0, z: 0 }, BlockKey { x: 1, y: 0, z: 0 }]);
         let mut lava_faces = Vec::new();
         let mut culled = 0usize;
         for block in lava_blocks.iter().copied() {

@@ -180,7 +180,7 @@ pub struct MemoryManager {
 impl MemoryManager {
     pub fn new(cleanup_interval_secs: u64, memory_threshold_kb: u64) -> Self {
         Self {
-            last_cleanup: Arc::new(AtomicU64::new(0)),
+            last_cleanup: Arc::new(AtomicU64::new(current_unix_seconds())),
             cleanup_interval_secs,
             memory_threshold_kb,
         }
@@ -188,10 +188,7 @@ impl MemoryManager {
 
     /// 检查是否需要清理内存
     pub fn should_cleanup(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_unix_seconds();
 
         let last = self.last_cleanup.load(Ordering::Relaxed);
         now - last >= self.cleanup_interval_secs
@@ -199,10 +196,7 @@ impl MemoryManager {
 
     /// 执行内存清理
     pub fn cleanup(&self) -> MemoryStats {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_unix_seconds();
 
         self.last_cleanup.store(now, Ordering::Relaxed);
 
@@ -235,6 +229,13 @@ impl MemoryManager {
             None
         }
     }
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// 启动后台内存清理任务

@@ -86,10 +86,10 @@ impl MapViewerWindowView {
                                         this.reset_preview_3d_camera(cx)
                                     }),
                                 ))
-                                .child(toolbar_button(colors, "收起").on_mouse_down(
+                                .child(dock_close_button(colors).on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
-                                        this.toggle_right_panel(cx)
+                                        this.close_right_panel(cx)
                                     }),
                                 )),
                         ),
@@ -180,34 +180,39 @@ impl MapViewerWindowView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("preview_3d mouse up", cx);
-                    cx.stop_propagation();
+                    if this.release_preview_3d_pointer_capture("preview_3d mouse up", cx) {
+                        cx.stop_propagation();
+                    }
                 }),
             )
             .on_mouse_up(
                 MouseButton::Right,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("preview_3d right mouse up", cx);
-                    cx.stop_propagation();
+                    if this.release_preview_3d_pointer_capture("preview_3d right mouse up", cx) {
+                        cx.stop_propagation();
+                    }
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("preview_3d mouse up out", cx);
-                    cx.stop_propagation();
+                    if this.release_preview_3d_pointer_capture("preview_3d mouse up out", cx) {
+                        cx.stop_propagation();
+                    }
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Right,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    this.release_pointer_captures("preview_3d right mouse up out", cx);
-                    cx.stop_propagation();
+                    if this.release_preview_3d_pointer_capture("preview_3d right mouse up out", cx)
+                    {
+                        cx.stop_propagation();
+                    }
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                 if event.pressed_button.is_none() {
-                    this.release_pointer_captures(
+                    this.release_preview_3d_pointer_capture(
                         "preview_3d mouse move without pressed button",
                         cx,
                     );
@@ -215,7 +220,10 @@ impl MapViewerWindowView {
                     return;
                 }
                 if this.preview_3d.drag.is_none() {
-                    this.release_pointer_captures("preview_3d mouse move without preview drag", cx);
+                    this.release_preview_3d_pointer_capture(
+                        "preview_3d mouse move without preview drag",
+                        cx,
+                    );
                     cx.stop_propagation();
                     return;
                 }
@@ -223,7 +231,7 @@ impl MapViewerWindowView {
                     Some(MouseButton::Left) => this.preview_3d_rotate_model_to(event.position, cx),
                     Some(MouseButton::Right) => this.preview_3d_orbit_camera_to(event.position, cx),
                     _ => {
-                        this.release_pointer_captures(
+                        this.release_preview_3d_pointer_capture(
                             "preview_3d mouse move with unsupported button",
                             cx,
                         );

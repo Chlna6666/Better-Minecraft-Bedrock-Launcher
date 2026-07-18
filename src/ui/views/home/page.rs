@@ -357,7 +357,8 @@ impl HomePageView {
                 rgb(0x64748b).into(),
             )
         };
-        let icon = launch_version_icon_path(version.name.as_ref());
+        let icon =
+            launch_version_icon_path(version.custom_icon_path.as_deref(), version.name.as_ref());
 
         div()
             .relative()

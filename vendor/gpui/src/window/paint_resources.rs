@@ -46,6 +46,55 @@ struct ImagePaintContext {
     animation_config: crate::AnimatedImageConfig,
 }
 
+fn source_crop_axis(
+    source_length: i32,
+    image_origin: Pixels,
+    image_length: Pixels,
+    visible_origin: Pixels,
+    visible_length: Pixels,
+) -> (i32, i32) {
+    if source_length <= 0 || image_length.0 <= 0.0 {
+        return (0, source_length.max(1));
+    }
+
+    let source_start = ((visible_origin.0 - image_origin.0) / image_length.0 * source_length as f32)
+        .round() as i32;
+    let source_end = ((visible_origin.0 + visible_length.0 - image_origin.0) / image_length.0
+        * source_length as f32)
+        .round() as i32;
+    let source_start = source_start.clamp(0, source_length - 1);
+    let source_end = source_end.clamp(source_start + 1, source_length);
+
+    (source_start, source_end - source_start)
+}
+
+fn crop_image_tile_to_visible_bounds(
+    mut tile: AtlasTile,
+    image_bounds: Bounds<Pixels>,
+    visible_bounds: Bounds<Pixels>,
+) -> AtlasTile {
+    let (source_x, source_width) = source_crop_axis(
+        tile.bounds.size.width.0,
+        image_bounds.origin.x,
+        image_bounds.size.width,
+        visible_bounds.origin.x,
+        visible_bounds.size.width,
+    );
+    let (source_y, source_height) = source_crop_axis(
+        tile.bounds.size.height.0,
+        image_bounds.origin.y,
+        image_bounds.size.height,
+        visible_bounds.origin.y,
+        visible_bounds.size.height,
+    );
+
+    tile.bounds.origin.x += DevicePixels(source_x);
+    tile.bounds.origin.y += DevicePixels(source_y);
+    tile.bounds.size.width = DevicePixels(source_width);
+    tile.bounds.size.height = DevicePixels(source_height);
+    tile
+}
+
 impl Window {
     /// Paint a monochrome SVG into the scene for the next frame at the current stacking context.
     ///
@@ -140,6 +189,7 @@ impl Window {
             self.paint_image_frame_in_context(
                 &context,
                 request.bounds,
+                request.bounds,
                 request.corner_radii,
                 request.image,
                 frame,
@@ -190,6 +240,7 @@ impl Window {
             self.paint_image_frame_in_context(
                 &context,
                 request.bounds,
+                request.bounds,
                 request.corner_radii,
                 request.image,
                 frame,
@@ -218,6 +269,30 @@ impl Window {
         self.paint_image_frame_in_context(
             &context,
             bounds,
+            bounds,
+            corner_radii,
+            data.as_ref(),
+            frame,
+            grayscale,
+        )
+    }
+
+    pub(crate) fn paint_image_frame_clipped(
+        &mut self,
+        image_bounds: Bounds<Pixels>,
+        visible_bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<RenderImage>,
+        frame: AnimatedFrame,
+        grayscale: bool,
+    ) -> Result<()> {
+        self.invalidator.debug_assert_paint();
+
+        let context = self.image_paint_context();
+        self.paint_image_frame_in_context(
+            &context,
+            image_bounds,
+            visible_bounds,
             corner_radii,
             data.as_ref(),
             frame,
@@ -238,13 +313,14 @@ impl Window {
     fn paint_image_frame_in_context(
         &mut self,
         context: &ImagePaintContext,
-        bounds: Bounds<Pixels>,
+        image_bounds: Bounds<Pixels>,
+        visible_bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
         data: &RenderImage,
         frame: AnimatedFrame,
         grayscale: bool,
     ) -> Result<()> {
-        let bounds = bounds.scale(context.scale_factor);
+        let bounds = visible_bounds.scale(context.scale_factor);
         let frame_sequence = frame.sequence();
         let frame_slot = data.gpu_frame_slot_for_frame(frame_sequence, context.animation_config);
         let pixel_format = frame.pixel_format();
@@ -301,6 +377,7 @@ impl Window {
             self.image_paint_tile_cache
                 .insert(image_tile_cache_key, tile);
         }
+        let tile = crop_image_tile_to_visible_bounds(tile, image_bounds, visible_bounds);
         let corner_radii = corner_radii.scale(context.scale_factor);
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
@@ -442,5 +519,19 @@ impl Window {
         self.rendered_frame.trim_retained_capacity_for_level(level);
         self.next_frame.trim_retained_capacity_for_level(level);
         self.text_system.trim_retained_capacity_for_level(level);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_crop_axis;
+    use crate::px;
+
+    #[test]
+    fn source_crop_axis_selects_the_visible_center_of_a_cover_image() {
+        assert_eq!(
+            source_crop_axis(200, px(-25.0), px(100.0), px(0.0), px(50.0)),
+            (50, 100),
+        );
     }
 }

@@ -15,6 +15,8 @@ use std::{
 #[derive(Default)]
 struct RecordingTextSystem {
     requested_fonts: StdMutex<Vec<Font>>,
+    available_families: StdMutex<Option<Vec<SharedString>>>,
+    font_names: StdMutex<Vec<String>>,
 }
 
 impl PlatformTextSystem for RecordingTextSystem {
@@ -31,7 +33,7 @@ impl PlatformTextSystem for RecordingTextSystem {
     }
 
     fn all_font_names(&self) -> Vec<String> {
-        Vec::new()
+        self.font_names.lock().unwrap().clone()
     }
 
     fn font_id(&self, descriptor: &Font) -> Result<FontId> {
@@ -39,6 +41,13 @@ impl PlatformTextSystem for RecordingTextSystem {
             .lock()
             .unwrap()
             .push(descriptor.clone());
+        if let Some(available_families) = self.available_families.lock().unwrap().as_ref()
+            && !available_families
+                .iter()
+                .any(|family| family.eq_ignore_ascii_case(&descriptor.family))
+        {
+            anyhow::bail!("font family '{}' is unavailable", descriptor.family);
+        }
         Ok(FontId(1))
     }
 
@@ -105,6 +114,98 @@ impl PlatformTextSystem for RecordingTextSystem {
             len: text.len(),
         }
     }
+}
+
+#[test]
+fn font_enumeration_removes_blank_and_case_insensitive_duplicates() {
+    let platform_text_system = Arc::new(RecordingTextSystem::default());
+    *platform_text_system.font_names.lock().unwrap() = vec![
+        " Noto Sans ".to_owned(),
+        "noto sans".to_owned(),
+        String::new(),
+        "Arial".to_owned(),
+    ];
+    let text_system = TextSystem::new(platform_text_system);
+
+    assert_eq!(
+        text_system.all_font_names(),
+        [".SystemUIFont", "Arial", "Noto Sans"]
+    );
+}
+
+#[test]
+fn font_name_snapshot_is_reused_and_invalidated_after_registration() -> anyhow::Result<()> {
+    let platform_text_system = Arc::new(RecordingTextSystem::default());
+    *platform_text_system.font_names.lock().unwrap() = vec!["Test Sans".to_owned()];
+    let text_system = TextSystem::new(platform_text_system.clone());
+
+    let first = text_system.font_names();
+    *platform_text_system.font_names.lock().unwrap() = vec!["Other Sans".to_owned()];
+    let cached = text_system.font_names();
+    assert!(Arc::ptr_eq(&first, &cached));
+
+    text_system.add_fonts(Vec::new())?;
+    let refreshed = text_system.font_names();
+    assert!(!Arc::ptr_eq(&first, &refreshed));
+    assert!(refreshed.iter().any(|name| name == "Other Sans"));
+    Ok(())
+}
+
+#[test]
+fn resolved_font_descriptor_is_available_by_id() -> anyhow::Result<()> {
+    let text_system = TextSystem::new(Arc::new(RecordingTextSystem::default()));
+    let descriptor = font("Test Sans").bold().italic();
+
+    let font_id = text_system.font_id(&descriptor)?;
+
+    assert_eq!(text_system.font_for_id(font_id), Some(descriptor));
+    Ok(())
+}
+
+#[test]
+fn try_resolve_font_preserves_style_across_fallbacks() -> anyhow::Result<()> {
+    let platform_text_system = Arc::new(RecordingTextSystem::default());
+    *platform_text_system.available_families.lock().unwrap() = Some(vec!["App Fallback".into()]);
+    let text_system = TextSystem::new(platform_text_system.clone());
+    text_system.set_fallback_font_families(vec!["App Fallback".into()]);
+    let mut requested_font = font("Missing Primary").bold().italic();
+    requested_font.fallbacks = Some(FontFallbacks::from_fonts(vec![
+        "Missing Run Fallback".to_owned(),
+    ]));
+
+    assert_eq!(text_system.try_resolve_font(&requested_font)?, FontId(1));
+    let requested_fonts = platform_text_system.requested_fonts.lock().unwrap();
+    let resolved_font = requested_fonts
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("no fallback font was requested"))?;
+    assert_eq!(resolved_font.family, SharedString::from("App Fallback"));
+    assert_eq!(resolved_font.weight, FontWeight::BOLD);
+    assert_eq!(resolved_font.style, FontStyle::Italic);
+    assert_eq!(resolved_font.features, requested_font.features);
+    assert!(resolved_font.fallbacks.is_none());
+    Ok(())
+}
+
+#[test]
+fn configured_fallbacks_are_ordered_before_platform_defaults() {
+    let text_system = TextSystem::new(Arc::new(RecordingTextSystem::default()));
+
+    text_system.set_fallback_font_families(vec![
+        "Custom Sans".into(),
+        "custom sans".into(),
+        "Noto Sans".into(),
+    ]);
+
+    let families = text_system.fallback_font_families();
+    assert_eq!(families[0], SharedString::from("Custom Sans"));
+    assert_eq!(families[1], SharedString::from("Noto Sans"));
+    assert_eq!(
+        families
+            .iter()
+            .filter(|family| family.eq_ignore_ascii_case("Noto Sans"))
+            .count(),
+        1
+    );
 }
 
 #[test]

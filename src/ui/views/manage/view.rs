@@ -247,7 +247,13 @@ impl ManagePageView {
                             .is_some_and(|folder| folder == &version.folder);
                         let folder = version.folder.clone();
                         let version_badge = if version.is_gdk() { "GDK" } else { "UWP" };
-                        let icon = launch_version_icon_path(version.name.as_ref());
+                        let icon = launch_version_icon_path(
+                            version
+                                .icon_path
+                                .as_ref()
+                                .map(|icon_path| icon_path.as_ref()),
+                            version.name.as_ref(),
+                        );
                         let (badge_bg, badge_fg): (Hsla, Hsla) = if version.is_gdk() {
                             (
                                 Hsla {
@@ -331,7 +337,6 @@ impl ManagePageView {
                                                 a: 0.22,
                                                 ..colors.border
                                             })
-                                            .bg(rgb(0xffffff))
                                             .shadow(vec![BoxShadow {
                                                 color: Hsla {
                                                     h: 0.0,

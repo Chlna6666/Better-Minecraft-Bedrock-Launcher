@@ -27,6 +27,8 @@ impl AtlasKey {
             AtlasKey::Glyph(params) => {
                 if params.is_emoji {
                     AtlasTextureKind::Bgra
+                } else if cfg!(target_os = "windows") {
+                    AtlasTextureKind::Subpixel
                 } else {
                     AtlasTextureKind::Monochrome
                 }
@@ -102,20 +104,12 @@ pub(crate) struct GlyphBitmap {
     pub(crate) bytes: Vec<u8>,
 }
 
-#[expect(
-    dead_code,
-    reason = "color glyph layers are used by the Metal renderer"
-)]
 pub(crate) struct ColorGlyphLayer {
     pub(crate) bounds: Bounds<DevicePixels>,
     pub(crate) color: Rgba,
     pub(crate) alpha: Vec<u8>,
 }
 
-#[expect(
-    dead_code,
-    reason = "color glyph rasterization is used by the Metal renderer"
-)]
 pub(crate) enum GlyphRasterization {
     Bitmap {
         size: Size<DevicePixels>,

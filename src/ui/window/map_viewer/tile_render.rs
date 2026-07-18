@@ -31,17 +31,14 @@ pub(super) fn open_map_render_session(
 
 pub(super) fn interactive_map_render_session_config(
     world_path: &std::path::Path,
-    render_backend: RenderBackend,
+    _render_backend: RenderBackend,
     render_gpu_backend: RenderGpuBackend,
 ) -> MapRenderSessionConfig {
+    let cache_identity = bedrock_render::world_cache_identity(world_path);
     let mut config = MapRenderSessionConfig::max_speed(
         file_ops::cache_subdir("bedrock-render"),
-        bedrock_render::world_cache_id(world_path),
-        bedrock_render::render_preset_cache_signature(
-            world_path,
-            render_backend,
-            render_gpu_backend,
-        ),
+        cache_identity.world_id,
+        cache_identity.world_signature,
     );
     config.tile_cache_memory_limit = tile_cache_memory_limit(RenderCpuBudget::default());
     config.region_bake_cache_memory_limit = RENDER_REGION_CACHE_ENTRIES;
@@ -244,7 +241,10 @@ pub(super) fn render_tile_batch_stream(
         render_cancel,
     } = request;
     validate_ui_render_layout(layout)?;
-    let ready_batcher = Arc::new(Mutex::new(TileReadyBatcher::new(quick_reveal)));
+    let ready_batcher = Arc::new(Mutex::new(TileReadyBatcher::with_center(
+        quick_reveal,
+        center_tile,
+    )));
     let requested_tiles = plans.iter().map(|plan| plan.coord).collect::<Vec<_>>();
     let requested_tile_count = requested_tiles.len();
     let stream_cancel = render_cancel.clone();

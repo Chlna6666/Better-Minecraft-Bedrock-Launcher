@@ -14,3 +14,7 @@ build.log
 # Local Superpowers planning artifacts.
 /docs/superpowers/
 /vendor/gpui/docs/superpowers/
+
+/.ai
+/.agents
+/.codex

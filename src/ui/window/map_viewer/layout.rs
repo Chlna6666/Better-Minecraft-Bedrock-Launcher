@@ -1,11 +1,10 @@
 use gpui::{Bounds, Pixels, point, px, size};
 
-pub const IDE_TOP_BAR_HEIGHT: f32 = 58.0;
-pub const IDE_LEFT_STRIPE_WIDTH: f32 = 42.0;
-pub const IDE_LEFT_DOCK_WIDTH: f32 = 238.0;
+pub const IDE_TOP_BAR_HEIGHT: f32 = 62.0;
+pub const IDE_LEFT_STRIPE_WIDTH: f32 = 76.0;
+pub const IDE_LEFT_DOCK_WIDTH: f32 = 276.0;
 pub const IDE_SPLITTER_WIDTH: f32 = 6.0;
 pub const IDE_DIVIDER_WIDTH: f32 = 1.0;
-pub const IDE_TOP_TITLE_WIDTH: f32 = 172.0;
 pub const IDE_STATUS_BAR_HEIGHT: f32 = 30.0;
 
 // Chrome design tokens — unify the alpha layers scattered across the map_viewer
@@ -26,24 +25,16 @@ pub struct TopToolbarLayout {
     pub show_modes: bool,
     pub show_y_controls: bool,
     pub show_zoom_controls: bool,
-    pub show_dock_commands: bool,
     pub overflow_count: usize,
 }
 
 #[must_use]
 pub fn top_toolbar_layout(window_width: f32) -> TopToolbarLayout {
     TopToolbarLayout {
-        title_width: if window_width < 620.0 {
-            96.0
-        } else if window_width < 760.0 {
-            128.0
-        } else {
-            IDE_TOP_TITLE_WIDTH
-        },
-        show_modes: window_width >= 1080.0,
-        show_y_controls: window_width >= 980.0,
-        show_zoom_controls: window_width >= 720.0,
-        show_dock_commands: window_width >= 1180.0,
+        title_width: if window_width < 1_080.0 { 144.0 } else { 184.0 },
+        show_modes: window_width >= 1_040.0,
+        show_y_controls: window_width >= 920.0,
+        show_zoom_controls: window_width >= 920.0,
         overflow_count: toolbar_overflow_count(window_width),
     }
 }
@@ -51,16 +42,11 @@ pub fn top_toolbar_layout(window_width: f32) -> TopToolbarLayout {
 #[must_use]
 pub fn toolbar_overflow_count(window_width: f32) -> usize {
     let mut count = 0;
-    if window_width < 1180.0 {
-        count += 3;
-    }
-    if window_width < 1080.0 {
+    if window_width < 1_040.0 {
         count += 5;
     }
-    if window_width < 980.0 {
+    if window_width < 920.0 {
         count += 2;
-    }
-    if window_width < 720.0 {
         count += 2;
     }
     count

@@ -9,6 +9,7 @@ pub(crate) struct LaunchVersionEntry {
     pub(crate) manifest_version: Arc<str>,
     pub(crate) path: Arc<str>,
     pub(crate) kind: Arc<str>,
+    pub(crate) custom_icon_path: Option<Arc<str>>,
 }
 
 fn next_version_number(version: &str, cursor: &mut usize) -> Option<u64> {

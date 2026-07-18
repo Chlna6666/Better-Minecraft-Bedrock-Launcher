@@ -13,6 +13,7 @@ fn force_atlas_full(atlas: &NovaAtlas) {
         AtlasTextureKind::Monochrome,
         AtlasTextureKind::Bgra,
         AtlasTextureKind::Rgba,
+        AtlasTextureKind::Subpixel,
     ] {
         state.disable_allocator_for_test(texture_kind);
     }
@@ -25,6 +26,22 @@ fn fallback_tile(atlas: &NovaAtlas, texture_kind: AtlasTextureKind) -> AtlasTile
         .expect("nova atlas lock poisoned")
         .fallback_tile(texture_kind)
         .expect("fallback tile should be initialized")
+}
+
+fn glyph_test_bytes(texture_kind: AtlasTextureKind, pixel_count: usize, coverage: u8) -> Vec<u8> {
+    match texture_kind {
+        AtlasTextureKind::Monochrome => vec![coverage; pixel_count],
+        AtlasTextureKind::Subpixel => {
+            std::iter::repeat_n([coverage, coverage, coverage, 255], pixel_count)
+                .flatten()
+                .collect()
+        }
+        AtlasTextureKind::Bgra | AtlasTextureKind::Rgba => {
+            std::iter::repeat_n([coverage; 4], pixel_count)
+                .flatten()
+                .collect()
+        }
+    }
 }
 
 fn test_sprite_resource_set(
@@ -101,11 +118,12 @@ fn glyph_atlas_insert_update_remove() {
         is_emoji: false,
         is_cjk: false,
     });
+    let texture_kind = key.texture_kind();
     let inserted = atlas
         .ensure_tile_with(&key, &mut || {
             Ok(Some((
                 size(DevicePixels(2), DevicePixels(2)),
-                Cow::Borrowed(&[255; 4]),
+                Cow::Owned(glyph_test_bytes(texture_kind, 4, 255)),
             )))
         })
         .expect("insert should succeed");
@@ -114,7 +132,7 @@ fn glyph_atlas_insert_update_remove() {
         .refresh_tile_with(&key, &mut || {
             Ok(Some((
                 size(DevicePixels(4), DevicePixels(4)),
-                Cow::Borrowed(&[128; 16]),
+                Cow::Owned(glyph_test_bytes(texture_kind, 16, 128)),
             )))
         })
         .expect("update should succeed")
@@ -141,11 +159,12 @@ fn glyph_atlas_preserves_existing_tiles_when_full() {
         is_emoji: false,
         is_cjk: false,
     });
+    let existing_texture_kind = existing_key.texture_kind();
     atlas
         .ensure_tile_with(&existing_key, &mut || {
             Ok(Some((
                 size(DevicePixels(2), DevicePixels(2)),
-                Cow::Borrowed(&[255; 4]),
+                Cow::Owned(glyph_test_bytes(existing_texture_kind, 4, 255)),
             )))
         })
         .expect("existing glyph insert should not error")
@@ -162,20 +181,18 @@ fn glyph_atlas_preserves_existing_tiles_when_full() {
         is_emoji: false,
         is_cjk: false,
     };
+    let texture_kind = AtlasKey::from(small_params.clone()).texture_kind();
     let missing = atlas
         .ensure_glyph_with(&small_params, &mut || {
             Ok(GlyphRasterization::Bitmap {
                 size: size(DevicePixels(2), DevicePixels(2)),
-                bytes: vec![128; 4],
+                bytes: glyph_test_bytes(texture_kind, 4, 128),
             })
         })
         .expect("full atlas should not error");
 
     let fallback = missing.expect("full atlas should return fallback glyph tile");
-    assert_eq!(
-        fallback,
-        fallback_tile(&atlas, AtlasTextureKind::Monochrome)
-    );
+    assert_eq!(fallback, fallback_tile(&atlas, texture_kind));
     assert!(
         atlas
             .ensure_tile_with(&existing_key, &mut || Ok(None))
@@ -261,12 +278,13 @@ fn atlas_fallback_tiles_are_not_deallocated_through_cached_keys() {
     };
     let first_key = AtlasKey::from(first_parameters.clone());
     let second_key = AtlasKey::from(second_params.clone());
+    let texture_kind = first_key.texture_kind();
 
     let first = atlas
         .ensure_glyph_with(&first_parameters, &mut || {
             Ok(GlyphRasterization::Bitmap {
                 size: size(DevicePixels(2), DevicePixels(2)),
-                bytes: vec![128; 4],
+                bytes: glyph_test_bytes(texture_kind, 4, 128),
             })
         })
         .expect("full atlas should return fallback")
@@ -275,18 +293,18 @@ fn atlas_fallback_tiles_are_not_deallocated_through_cached_keys() {
         .ensure_glyph_with(&second_params, &mut || {
             Ok(GlyphRasterization::Bitmap {
                 size: size(DevicePixels(2), DevicePixels(2)),
-                bytes: vec![128; 4],
+                bytes: glyph_test_bytes(texture_kind, 4, 128),
             })
         })
         .expect("full atlas should return fallback")
         .expect("fallback tile should exist");
 
-    assert_eq!(first, fallback_tile(&atlas, AtlasTextureKind::Monochrome));
+    assert_eq!(first, fallback_tile(&atlas, texture_kind));
     assert_eq!(second, first);
     atlas.remove(&first_key);
     atlas.remove(&second_key);
 
-    assert_eq!(fallback_tile(&atlas, AtlasTextureKind::Monochrome), first);
+    assert_eq!(fallback_tile(&atlas, texture_kind), first);
 }
 
 #[test]
@@ -307,21 +325,19 @@ fn full_color_atlas_does_not_starve_monochrome_glyphs() {
         is_emoji: false,
         is_cjk: false,
     };
+    let texture_kind = AtlasKey::from(glyph_params.clone()).texture_kind();
     let glyph_tile = atlas
         .ensure_glyph_with(&glyph_params, &mut || {
             Ok(GlyphRasterization::Bitmap {
                 size: size(DevicePixels(2), DevicePixels(2)),
-                bytes: vec![255; 4],
+                bytes: glyph_test_bytes(texture_kind, 4, 255),
             })
         })
         .expect("monochrome glyph insert should not error")
         .expect("monochrome glyph should still allocate");
 
-    assert_eq!(glyph_tile.texture_id.kind, AtlasTextureKind::Monochrome);
-    assert_ne!(
-        glyph_tile,
-        fallback_tile(&atlas, AtlasTextureKind::Monochrome)
-    );
+    assert_eq!(glyph_tile.texture_id.kind, texture_kind);
+    assert_ne!(glyph_tile, fallback_tile(&atlas, texture_kind));
 }
 
 #[test]

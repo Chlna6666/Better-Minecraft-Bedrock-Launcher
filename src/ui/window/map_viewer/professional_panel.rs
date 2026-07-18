@@ -47,7 +47,6 @@ impl MapViewerWindowView {
                     editor_action_buttons(
                         colors,
                         target,
-                        self.professional.write_mode,
                         self.professional.pending_edit_confirmation.as_ref(),
                         cx,
                     ),

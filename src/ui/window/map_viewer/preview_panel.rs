@@ -63,7 +63,9 @@ impl MapViewerWindowView {
         self.status = SharedString::from("正在加载 3D 预览...");
         cx.notify();
 
+        let query_budget = self.map_query_budget.clone();
         cx.spawn(async move |handle, cx| {
+            let _query_permit = query_budget.acquire().await;
             let (event_sender, mut event_receiver) = unbounded::<Preview3dLoadEvent>();
             let complete_sender = event_sender.clone();
             let load_task = cx.background_spawn(async move {

@@ -252,8 +252,5 @@ impl MapViewerWindowView {
                     this.run_player_quick_edit(PlayerQuickEdit::ClearInventory, cx)
                 }),
             ))
-            .when(!self.professional.write_mode, |this| {
-                this.child(status_badge(colors, "写入前需开启写入模式"))
-            })
     }
 }

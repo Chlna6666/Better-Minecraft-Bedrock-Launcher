@@ -3,7 +3,7 @@ use crate::utils::mc_dependency::{
     GameInputInstallPlan, MissingUwpDependency, WindowsAppSdkInstallPlan,
     compute_missing_uwp_dependencies, plan_game_input_install, plan_windows_app_sdk_install,
 };
-use tracing::{debug, info};
+use tracing::info;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LaunchPlatform {
@@ -30,13 +30,11 @@ impl LaunchPrerequisiteCheck {
 }
 
 pub fn detect_launch_platform(kind: &str) -> LaunchPlatform {
-    let platform = if kind.eq_ignore_ascii_case("gdk") {
+    if kind.eq_ignore_ascii_case("gdk") {
         LaunchPlatform::Gdk
     } else {
         LaunchPlatform::Uwp
-    };
-    debug!(kind, platform = ?platform, "已识别启动平台");
-    platform
+    }
 }
 
 pub fn check_launch_prerequisites(kind: &str, package_folder: &str) -> LaunchPrerequisiteCheck {
@@ -69,4 +67,17 @@ pub fn check_launch_prerequisites(kind: &str, package_folder: &str) -> LaunchPre
         "启动前检查已完成"
     );
     check
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LaunchPlatform, detect_launch_platform};
+
+    #[test]
+    fn detects_platform_without_changing_the_mapping() {
+        assert_eq!(detect_launch_platform("GDK"), LaunchPlatform::Gdk);
+        assert_eq!(detect_launch_platform("gdk"), LaunchPlatform::Gdk);
+        assert_eq!(detect_launch_platform("UWP"), LaunchPlatform::Uwp);
+        assert_eq!(detect_launch_platform("release"), LaunchPlatform::Uwp);
+    }
 }

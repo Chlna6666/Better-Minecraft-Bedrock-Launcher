@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "bedrock-leveldb"
-version = "0.2.2"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "flate2",
@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "bedrock-render"
-version = "0.2.1"
+version = "0.3.3"
 dependencies = [
  "bedrock-leveldb",
  "bedrock-world",
@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "bedrock-world"
-version = "0.2.2"
+version = "0.3.4"
 dependencies = [
  "bedrock-leveldb",
  "bytes",
@@ -731,6 +731,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "walkdir",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -935,11 +936,12 @@ dependencies = [
 
 [[package]]
 name = "bmcbl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "anyhow",
  "bedrock-block-model",
+ "bedrock-leveldb",
  "bedrock-render",
  "bedrock-world",
  "bmcbl_plugin_api",
@@ -978,6 +980,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rfd",
  "rodio",
+ "rustc-hash 2.1.1",
  "scraper",
  "semver",
  "sentry",
@@ -1003,6 +1006,7 @@ dependencies = [
  "winreg 0.56.0",
  "winres",
  "xmltree",
+ "xxhash-rust",
  "zip 9.0.0-pre2",
  "zstd",
 ]

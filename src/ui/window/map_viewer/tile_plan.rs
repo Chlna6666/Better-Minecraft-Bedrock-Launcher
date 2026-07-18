@@ -50,8 +50,8 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
             prefetch_radius,
             drag,
         ));
-        prefetch.sort_unstable();
-        prefetch.dedup();
+        let mut seen = BTreeSet::new();
+        prefetch.retain(|coord| seen.insert(*coord));
     }
     ViewportTilePlan {
         visible,

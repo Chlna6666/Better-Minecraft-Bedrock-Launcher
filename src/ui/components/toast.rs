@@ -167,6 +167,7 @@ pub struct ToastId(u64);
 #[derive(Clone)]
 struct ToastItem {
     id: ToastId,
+    target_window: Option<WindowId>,
     kind: ToastKind,
     message: SharedString,
     created_at: Instant,
@@ -205,6 +206,7 @@ impl Global for ToastState {}
 impl ToastState {
     fn push(
         &mut self,
+        target_window: Option<WindowId>,
         kind: ToastKind,
         message: SharedString,
         duration: Duration,
@@ -221,6 +223,7 @@ impl ToastState {
 
         self.items.push_back(ToastItem {
             id,
+            target_window,
             kind,
             message,
             created_at: now,
@@ -261,12 +264,18 @@ impl ToastState {
         id
     }
 
-    fn push_breadcrumb(&mut self, message: SharedString, now: Instant) -> ToastId {
+    fn push_breadcrumb(
+        &mut self,
+        target_window: Option<WindowId>,
+        message: SharedString,
+        now: Instant,
+    ) -> ToastId {
         if message.as_ref().trim().is_empty() {
             return ToastId(0);
         }
 
         let id = if let Some(item) = self.breadcrumb.as_mut() {
+            item.target_window = target_window;
             item.message = message;
             item.created_at = now;
             item.anim_delay = Duration::ZERO;
@@ -278,6 +287,7 @@ impl ToastState {
             self.next_id = self.next_id.saturating_add(1);
             self.breadcrumb = Some(ToastItem {
                 id,
+                target_window,
                 kind: ToastKind::Info,
                 message,
                 created_at: now,
@@ -317,10 +327,11 @@ impl ToastState {
         }
     }
 
-    fn next_static_deadline(&self, now: Instant) -> Option<Instant> {
+    fn next_static_deadline(&self, window_id: WindowId, now: Instant) -> Option<Instant> {
         self.items
             .iter()
             .chain(self.breadcrumb.iter())
+            .filter(|item| item.target_window == Some(window_id))
             .filter_map(|item| {
                 if Self::is_expired(item, now) {
                     return None;
@@ -375,6 +386,16 @@ impl ToastState {
             item.dismissed_at = None;
         }
     }
+}
+
+fn target_window(cx: &App) -> Option<WindowId> {
+    cx.active_window()
+        .or_else(|| {
+            cx.window_stack()
+                .and_then(|windows| windows.first().copied())
+        })
+        .or_else(|| cx.windows().first().copied())
+        .map(|window| window.window_id())
 }
 
 pub fn set_placement(cx: &mut App, placement: ToastPlacement) {
@@ -432,9 +453,10 @@ pub fn push_kind_duration(
     duration: Duration,
 ) -> ToastId {
     let now = Instant::now();
+    let target_window = target_window(cx);
     cx.update_global(|state: &mut ToastState, cx| {
         state.prune_expired(now);
-        let id = state.push(kind, message, duration, now);
+        let id = state.push(target_window, kind, message, duration, now);
         id
     })
 }
@@ -472,18 +494,23 @@ pub fn push_breadcrumb(cx: &mut App, parts: &[SharedString]) -> ToastId {
     }
 
     let now = Instant::now();
+    let target_window = target_window(cx);
     cx.update_global(|state: &mut ToastState, cx| {
         state.prune_expired(now);
-        let id = state.push_breadcrumb(SharedString::from(message), now);
+        let id = state.push_breadcrumb(target_window, SharedString::from(message), now);
         id
     })
 }
 
 pub fn push_async(cx: &mut AsyncApp, kind: ToastKind, message: SharedString) -> ToastId {
     let now = Instant::now();
+    let target_window = cx
+        .read_global::<ToastState, _>(|_, cx| target_window(cx))
+        .ok()
+        .flatten();
     match cx.update_global(|state: &mut ToastState, cx| {
         state.prune_expired(now);
-        let id = state.push(kind, message, DEFAULT_DURATION, now);
+        let id = state.push(target_window, kind, message, DEFAULT_DURATION, now);
         id
     }) {
         Ok(id) => id,
@@ -496,9 +523,19 @@ pub fn push_async(cx: &mut AsyncApp, kind: ToastKind, message: SharedString) -> 
 
 pub fn pending_async(cx: &mut AsyncApp, message: SharedString) -> ToastId {
     let now = Instant::now();
+    let target_window = cx
+        .read_global::<ToastState, _>(|_, cx| target_window(cx))
+        .ok()
+        .flatten();
     match cx.update_global(|state: &mut ToastState, cx| {
         state.prune_expired(now);
-        let id = state.push(ToastKind::Info, message, Duration::from_secs(60), now);
+        let id = state.push(
+            target_window,
+            ToastKind::Info,
+            message,
+            Duration::from_secs(60),
+            now,
+        );
         id
     }) {
         Ok(id) => id,
@@ -535,9 +572,13 @@ pub fn push_breadcrumb_async(cx: &mut AsyncApp, parts: &[SharedString]) -> Toast
         }
     }
     let now = Instant::now();
+    let target_window = cx
+        .read_global::<ToastState, _>(|_, cx| target_window(cx))
+        .ok()
+        .flatten();
     match cx.update_global(|state: &mut ToastState, cx| {
         state.prune_expired(now);
-        let id = state.push_breadcrumb(SharedString::from(message), now);
+        let id = state.push_breadcrumb(target_window, SharedString::from(message), now);
         id
     }) {
         Ok(id) => id,
@@ -566,7 +607,8 @@ pub fn render_overlay_with_options(
     state: &ToastState,
     options: ToastOverlayOptions,
 ) -> AnyElement {
-    if !has_visible_toasts(now, state) {
+    let window_id = window.window_handle().window_id();
+    if !has_visible_toasts(window_id, now, state) {
         return div().into_any_element();
     }
 
@@ -594,7 +636,7 @@ pub fn render_overlay_with_options(
         ToastStackDirection::Down => Box::new(state.items.iter().rev()),
     };
     let visible_items: Vec<&ToastItem> = toast_iter
-        .filter(|item| !ToastState::is_expired(item, now))
+        .filter(|item| item.target_window == Some(window_id) && !ToastState::is_expired(item, now))
         .collect();
     let mut layout_items = Vec::with_capacity(visible_items.len());
     for item in visible_items.iter().copied() {
@@ -710,7 +752,7 @@ pub fn render_overlay_with_options(
     }
 
     request_animation_frame_if(window, any_animating);
-    if !any_animating && let Some(deadline) = state.next_static_deadline(now) {
+    if !any_animating && let Some(deadline) = state.next_static_deadline(window_id, now) {
         window.request_invalidation_at(deadline + TOAST_WAKE_EPSILON, cx);
     }
     outer.child(lane).into_any_element()
@@ -727,11 +769,11 @@ impl ToastState {
     }
 }
 
-pub fn has_visible_toasts(now: Instant, state: &ToastState) -> bool {
+pub fn has_visible_toasts(window_id: WindowId, now: Instant, state: &ToastState) -> bool {
     state
         .items
         .iter()
-        .any(|item| !ToastState::is_expired(item, now))
+        .any(|item| item.target_window == Some(window_id) && !ToastState::is_expired(item, now))
 }
 
 pub fn render_breadcrumb_overlay(
@@ -744,7 +786,8 @@ pub fn render_breadcrumb_overlay(
     let Some(item) = state.breadcrumb.as_ref() else {
         return div().into_any_element();
     };
-    if ToastState::is_expired(item, now) {
+    let window_id = window.window_handle().window_id();
+    if item.target_window != Some(window_id) || ToastState::is_expired(item, now) {
         return div().into_any_element();
     }
 
@@ -794,32 +837,33 @@ pub fn render_breadcrumb_overlay(
     request_animation_frame_if(window, appear_t < 1.0 || disappear_t < 1.0);
     if appear_t >= 1.0
         && disappear_t <= 0.0
-        && let Some(deadline) = state.next_static_deadline(now)
+        && let Some(deadline) = state.next_static_deadline(window_id, now)
     {
         window.request_invalidation_at(deadline + TOAST_WAKE_EPSILON, cx);
     }
     toast.into_any_element()
 }
 
-pub fn has_visible_breadcrumb(now: Instant, state: &ToastState) -> bool {
-    state
-        .breadcrumb
-        .as_ref()
-        .is_some_and(|item| !ToastState::is_expired(item, now))
+pub fn has_visible_breadcrumb(window_id: WindowId, now: Instant, state: &ToastState) -> bool {
+    state.breadcrumb.as_ref().is_some_and(|item| {
+        item.target_window == Some(window_id) && !ToastState::is_expired(item, now)
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_DURATION, FADE_IN, FADE_OUT, ToastKind, ToastState};
-    use gpui::SharedString;
+    use super::{DEFAULT_DURATION, FADE_IN, FADE_OUT, ToastKind, ToastState, has_visible_toasts};
+    use gpui::{SharedString, WindowId};
     use std::time::{Duration, Instant};
 
     #[test]
     fn static_toast_wake_deadline_is_fade_start() {
         let mut state = ToastState::default();
         let now = Instant::now();
+        let window_id = WindowId::from(1);
 
         state.push(
+            Some(window_id),
             ToastKind::Info,
             SharedString::from("ready"),
             DEFAULT_DURATION,
@@ -828,7 +872,7 @@ mod tests {
         let steady = now + FADE_IN + Duration::from_millis(1);
 
         assert_eq!(
-            state.next_static_deadline(steady),
+            state.next_static_deadline(window_id, steady),
             Some(now + DEFAULT_DURATION)
         );
     }
@@ -839,6 +883,7 @@ mod tests {
         let now = Instant::now();
 
         state.push(
+            Some(WindowId::from(1)),
             ToastKind::Info,
             SharedString::from("done"),
             Duration::ZERO,
@@ -847,6 +892,24 @@ mod tests {
         state.prune_expired(now + FADE_OUT + Duration::from_millis(1));
 
         assert!(state.items.is_empty());
+    }
+
+    #[test]
+    fn toast_is_visible_only_in_its_target_window() {
+        let mut state = ToastState::default();
+        let now = Instant::now();
+        let target = WindowId::from(1);
+
+        state.push(
+            Some(target),
+            ToastKind::Info,
+            SharedString::from("targeted"),
+            DEFAULT_DURATION,
+            now,
+        );
+
+        assert!(has_visible_toasts(target, now, &state));
+        assert!(!has_visible_toasts(WindowId::from(2), now, &state));
     }
 }
 

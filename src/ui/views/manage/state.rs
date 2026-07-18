@@ -278,6 +278,7 @@ pub struct ManagedVersionEntry {
     pub manifest_version: SharedString,
     pub path: SharedString,
     pub kind: SharedString,
+    pub icon_path: Option<SharedString>,
 }
 
 impl ManagedVersionEntry {

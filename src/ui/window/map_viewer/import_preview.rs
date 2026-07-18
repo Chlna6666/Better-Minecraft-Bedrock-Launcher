@@ -1,14 +1,9 @@
 use super::model::{CopiedChunkData, CopiedChunkPreviewImage};
 use super::prelude::*;
 
-pub(super) const PREVIEW_IMAGE_CHUNK_LIMIT: usize = 192;
-
 pub(super) fn copied_chunk_preview_images_for_import(
     copied_chunk: &CopiedChunkData,
 ) -> Result<BTreeMap<ChunkPos, CopiedChunkPreviewImage>, String> {
-    if copied_chunk.chunk_count() > PREVIEW_IMAGE_CHUNK_LIMIT {
-        return Ok(BTreeMap::new());
-    }
     copied_chunk_preview_images_from_records(copied_chunk)
 }
 
@@ -59,9 +54,9 @@ pub(super) fn mcstructure_preview_images(
 fn copied_chunk_preview_image_from_snapshot(
     snapshot: &super::model::CopiedChunkSnapshot,
 ) -> Result<Option<CopiedChunkPreviewImage>, String> {
-    let parsed = bedrock_world::parsed::parse_chunk_records_with_options(
+    let parsed = bedrock_world::parsed::parse_chunk_records_ref_with_options(
         snapshot.chunk,
-        snapshot.records.clone(),
+        &snapshot.records,
         import_preview_parse_options(),
     );
     let mut columns = vec![None; 16 * 16];
@@ -303,26 +298,26 @@ fn import_preview_visible_state<'state>(
 fn import_preview_color_for_state(state: ImportPreviewState<'_>) -> [u8; 4] {
     let palette = import_preview_palette();
     match state.block_class {
-        ImportPreviewBlockClass::Water => [45, 118, 190, 198],
+        ImportPreviewBlockClass::Water => [45, 118, 190, 232],
         ImportPreviewBlockClass::Lava => {
             let mut color = palette
                 .surface_block_color(state.name, None, true)
                 .to_array();
-            color[3] = 224;
+            color[3] = 255;
             color
         }
         ImportPreviewBlockClass::TransparentGlass => {
             let mut color = palette
                 .surface_block_color(state.name, None, true)
                 .to_array();
-            color[3] = 172;
+            color[3] = 204;
             color
         }
         ImportPreviewBlockClass::Opaque => {
             let mut color = palette
                 .surface_block_color(state.name, None, true)
                 .to_array();
-            color[3] = 222;
+            color[3] = 255;
             color
         }
         ImportPreviewBlockClass::Air | ImportPreviewBlockClass::SkipTransparent => [0, 0, 0, 0],
@@ -499,5 +494,35 @@ fn legacy_preview_block_name(id: u8) -> Option<&'static str> {
         174 => Some("minecraft:packed_ice"),
         179 => Some("minecraft:red_sandstone"),
         _ => Some("minecraft:stone"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn import_preview_uses_opaque_alpha_for_solid_blocks() {
+        let color = import_preview_color_for_state(ImportPreviewState {
+            name: "minecraft:stone",
+            block_class: ImportPreviewBlockClass::Opaque,
+        });
+
+        assert_eq!(color[3], 255);
+    }
+
+    #[::core::prelude::v1::test]
+    fn import_preview_preserves_material_specific_transparency() {
+        let water = import_preview_color_for_state(ImportPreviewState {
+            name: "minecraft:water",
+            block_class: ImportPreviewBlockClass::Water,
+        });
+        let glass = import_preview_color_for_state(ImportPreviewState {
+            name: "minecraft:glass",
+            block_class: ImportPreviewBlockClass::TransparentGlass,
+        });
+
+        assert_eq!(water[3], 232);
+        assert_eq!(glass[3], 204);
     }
 }

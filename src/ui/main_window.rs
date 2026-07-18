@@ -361,9 +361,10 @@ impl MainWindowView {
         };
         let (toast_visible, toast_breadcrumb_visible) = {
             let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
+            let window_id = window.window_handle().window_id();
             (
-                crate::ui::components::toast::has_visible_toasts(now, toast_state),
-                crate::ui::components::toast::has_visible_breadcrumb(now, toast_state),
+                crate::ui::components::toast::has_visible_toasts(window_id, now, toast_state),
+                crate::ui::components::toast::has_visible_breadcrumb(window_id, now, toast_state),
             )
         };
         let dropdown_visible = {
