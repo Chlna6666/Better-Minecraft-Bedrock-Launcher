@@ -195,6 +195,17 @@ impl Window {
         self.pending_list_measured_items = self.pending_list_measured_items.saturating_add(count);
     }
 
+    /// Returns true if the window is in inspector mode.
+    pub fn is_inspector_picking(&self, _cx: &App) -> bool {
+        #[cfg(any(feature = "inspector", debug_assertions))]
+        {
+            if let Some(inspector) = &self.inspector {
+                return inspector.read(_cx).is_picking();
+            }
+        }
+        false
+    }
+
     /// Replaces the root entity of the window with a new one.
     pub fn replace_root<E>(
         &mut self,

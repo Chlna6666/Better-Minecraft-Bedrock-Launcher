@@ -11,17 +11,6 @@ impl Window {
         self.refresh();
     }
 
-    /// Returns true if the window is in inspector mode.
-    pub fn is_inspector_picking(&self, _cx: &App) -> bool {
-        #[cfg(any(feature = "inspector", debug_assertions))]
-        {
-            if let Some(inspector) = &self.inspector {
-                return inspector.read(_cx).is_picking();
-            }
-        }
-        false
-    }
-
     /// Executes the provided function with mutable access to an inspector state.
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub fn with_inspector_state<T: 'static, R>(
