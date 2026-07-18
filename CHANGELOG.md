@@ -55,6 +55,7 @@ Automatically generated from `v0.1.3` through `HEAD`.
 - update GPUI nova renderer stack (`fd1ffc5`, 2026-07-05)
 
 ### Fixed
+- 更新联机玩家名迁移规则 (`42614ce`, 2026-07-19)
 - unify async tasks and loading state (`37277ff`, 2026-07-18)
 - 修复圆角裁切字体显示与后端标识 (`c9c030c`, 2026-07-18)
 - keep GPUI inspector query available in release (`8313be9`, 2026-07-18)
