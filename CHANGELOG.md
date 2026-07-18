@@ -48,6 +48,7 @@ inside that section are maintained automatically by
 Automatically generated from `v0.1.3` through `HEAD`.
 
 ### Added
+- enable p2p by default (`09d0469`, 2026-07-18)
 - ship launcher rendering and release automation (`51aaeb3`, 2026-07-18)
 - optimize rendering and launcher workflows (`da8442c`, 2026-07-13)
 - add custom skin previews and cover cache (`45489f8`, 2026-07-08)
