@@ -69,37 +69,6 @@ jobs:
             Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=false"
           }
 
-      - name: Clone public path dependencies
-        if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $env:GIT_TERMINAL_PROMPT = "0"
-          $workspaceRoot = Split-Path -Parent ((Get-Location).Path)
-          $dependencyRoot = Join-Path $workspaceRoot "BE-Community-Dev"
-          $repositories = @(
-            "mc-motd",
-            "bedrock-world",
-            "bedrock-block-model",
-            "bedrock-leveldb",
-            "bedrock-render"
-          )
-
-          Push-Location $workspaceRoot
-          try {
-            New-Item -ItemType Directory -Force -Path $dependencyRoot | Out-Null
-            foreach ($repository in $repositories) {
-              $destination = Join-Path $dependencyRoot $repository
-              $remote = "https://github.com/BE-Community-Dev/$repository.git"
-              git -c credential.helper= clone --depth 1 --branch main --single-branch $remote $destination
-              if ($LASTEXITCODE -ne 0) {
-                throw "Failed to clone $remote"
-              }
-            }
-          } finally {
-            Pop-Location
-          }
-
       - name: Read package version
         id: package_version
         if: ${{ steps.check_commits.outputs.changed == 'true' }}

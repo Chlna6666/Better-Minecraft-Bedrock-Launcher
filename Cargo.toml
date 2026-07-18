@@ -34,9 +34,9 @@ gpui-router = { version = "0.3.0", default-features = false, features = [] }
 gpui_hooks = { path = "crates/gpui-hooks" }
 lucide-gpui = { path = "crates/lucide-gpui" }
 image = { version = "0.25.9", default-features = false, features = ["png", "tga", "jpeg", "webp"] }
-mc-motd = { path = "../BE-Community-Dev/mc-motd" }
-bedrock-world = { path = "../BE-Community-Dev/bedrock-world" }
-bedrock-block-model = { path = "../BE-Community-Dev/bedrock-block-model" }
+mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main" }
+bedrock-world = { git = "https://github.com/BE-Community-Dev/bedrock-world.git", branch = "main" }
+bedrock-block-model = { git = "https://github.com/BE-Community-Dev/bedrock-block-model.git", branch = "main" }
 
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 cidr = "0.3.1"
@@ -127,7 +127,7 @@ members = [
 ]
 
 [target.'cfg(windows)'.dependencies]
-bedrock-render = { path = "../BE-Community-Dev/bedrock-render", default-features = false, features = ["async", "webp", "gpu-dx11"] }
+bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }
 windows = { version = "0.62.2", features = ["ApplicationModel", "ApplicationModel_Activation", "Foundation", "Foundation_Collections", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Management", "Management_Deployment", "Storage_Search", "System", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.56.0"
 
@@ -135,10 +135,10 @@ winreg = "0.56.0"
 winres = "0.1"
 
 [target.'cfg(not(windows))'.dependencies]
-bedrock-render = { path = "../BE-Community-Dev/bedrock-render", default-features = false, features = ["async", "webp"] }
+bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp"] }
 
 [dev-dependencies]
-bedrock-leveldb = { path = "../BE-Community-Dev/bedrock-leveldb" }
+bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main" }
 
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
