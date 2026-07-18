@@ -49,6 +49,7 @@ Automatically generated from `v0.1.3` through `HEAD`.
 - specify version custom icon behavior (`264c06d`, 2026-07-13)
 
 ### Maintenance
+- clone public dependencies without checkout tokens (`81b09aa`, 2026-07-18)
 - use anonymous Node 24 dependency checkouts (`0015513`, 2026-07-18)
 - remove bundled skills directory (`fb0e566`, 2026-06-22)
 - ignore playwright mcp artifacts (`7a18c26`, 2026-06-22)
