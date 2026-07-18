@@ -221,6 +221,16 @@ scripts/
 
 # GPUI
 
+## Git 提交规范
+
+提交信息统一使用 Conventional Commits，描述内容使用中文，格式为
+`类型(范围): 中文描述`。允许类型和 hook 使用方式见
+[docs/COMMIT_CONVENTIONS.md](docs/COMMIT_CONVENTIONS.md)。
+
+本仓库不引入 Husky，使用 `.githooks/commit-msg` 调用
+`scripts/validate-commit.js`。开发者首次使用时执行
+`git config core.hooksPath .githooks`；Node.js 只用于提交信息校验。
+
 GPUI is a UI framework which also provides primitives for state and concurrency management.
 
 ## Project boundaries

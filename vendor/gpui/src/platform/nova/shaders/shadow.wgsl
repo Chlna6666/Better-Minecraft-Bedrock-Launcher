@@ -26,7 +26,7 @@ struct Shadow {
     blur_radius: f32,
     bounds: Bounds,
     corner_radii: Corners,
-    content_mask: Bounds,
+    content_mask: ContentMask,
     color: Hsla,
 }
 @group(0) @binding(2) var<storage, read> b_shadows: array<Shadow>;
@@ -39,6 +39,8 @@ struct ShadowVarying {
     @location(3) @interpolate(flat) corner_radii: vec4<f32>,
     // TODO: use `clip_distance` once Naga supports it.
     @location(4) clip_distances: vec4<f32>,
+    @location(5) @interpolate(flat) content_mask_bounds: vec4<f32>,
+    @location(6) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
 
 @vertex
@@ -64,14 +66,20 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
         shadow.corner_radii.bottom_right,
         shadow.corner_radii.bottom_left,
     );
-    out.clip_distances = distance_from_clip_rect(unit_vertex, shadow.bounds, shadow.content_mask);
+    out.clip_distances = distance_from_clip_rect(unit_vertex, shadow.bounds, shadow.content_mask.bounds);
+    out.content_mask_bounds = vec4<f32>(shadow.content_mask.corner_bounds.origin, shadow.content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(shadow.content_mask.corner_radii.top_left, shadow.content_mask.corner_radii.top_right, shadow.content_mask.corner_radii.bottom_right, shadow.content_mask.corner_radii.bottom_left);
     return out;
 }
 
 @fragment
 fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
     // Alpha clip first, since we don't have `clip_distance`.
+    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
     if (input.color.a <= 0.0) {
@@ -112,5 +120,5 @@ fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
         y += step;
     }
 
-    return blend_color(input.color, alpha);
+    return blend_color(input.color, alpha * clip_coverage);
 }

@@ -858,7 +858,7 @@ impl AppChromeView {
         route: crate::ui::navigation::RouteTarget,
     ) -> AnyElement {
         crate::ui::main_window::chrome::render_app_chrome(
-            format!("v{}", env!("CARGO_PKG_VERSION")).into(),
+            format!("v{}", crate::utils::app_info::get_version()).into(),
             topbar_state.visual_active_index,
             topbar_state.pill_steps,
             topbar_state.pill_direction,

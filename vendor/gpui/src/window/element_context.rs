@@ -215,6 +215,7 @@ impl Window {
                     origin: Point::default(),
                     size: self.viewport_size,
                 },
+                ..Default::default()
             })
     }
 

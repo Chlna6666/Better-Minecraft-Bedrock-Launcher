@@ -1,6 +1,6 @@
 use crate::{
-    App, Background, BackgroundTag, BorderStyle, Bounds, ContentMask, DevicePixels, Edges, Hsla,
-    Pixels, Point, Rgba, Size, Style, TextStyleRefinement, Window, point, quad, size,
+    App, Background, BackgroundTag, BorderStyle, Bounds, ContentMask, Corners, DevicePixels, Edges,
+    Hsla, Pixels, Point, Rgba, Size, Style, TextStyleRefinement, Window, point, quad, size,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -207,7 +207,37 @@ impl Style {
                     (false, false) => Bounds::from_corners(min, max),
                 };
 
-                Some(ContentMask { bounds })
+                let mut corner_radii =
+                    if self.overflow.x == Overflow::Hidden && self.overflow.y == Overflow::Hidden {
+                        self.corner_radii.to_pixels(rem_size)
+                    } else {
+                        Corners::default()
+                    };
+                if self
+                    .border_color
+                    .is_some_and(|color| !color.is_transparent())
+                {
+                    let border_widths = self.border_widths.to_pixels(rem_size);
+                    corner_radii.top_left = (corner_radii.top_left
+                        - border_widths.top.max(border_widths.left))
+                    .max(Pixels::ZERO);
+                    corner_radii.top_right = (corner_radii.top_right
+                        - border_widths.top.max(border_widths.right))
+                    .max(Pixels::ZERO);
+                    corner_radii.bottom_right = (corner_radii.bottom_right
+                        - border_widths.bottom.max(border_widths.right))
+                    .max(Pixels::ZERO);
+                    corner_radii.bottom_left = (corner_radii.bottom_left
+                        - border_widths.bottom.max(border_widths.left))
+                    .max(Pixels::ZERO);
+                }
+                corner_radii = corner_radii.clamp_radii_for_quad_size(bounds.size);
+
+                Some(ContentMask {
+                    bounds,
+                    corner_bounds: bounds,
+                    corner_radii,
+                })
             }
         }
     }
@@ -298,12 +328,19 @@ impl Style {
                 self.border_style,
             );
 
-            window.with_content_mask(Some(ContentMask { bounds: top_bounds }), |window| {
-                window.paint_quad(quad.clone());
-            });
+            window.with_content_mask(
+                Some(ContentMask {
+                    bounds: top_bounds,
+                    ..Default::default()
+                }),
+                |window| {
+                    window.paint_quad(quad.clone());
+                },
+            );
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: right_bounds,
+                    ..Default::default()
                 }),
                 |window| {
                     window.paint_quad(quad.clone());
@@ -312,6 +349,7 @@ impl Style {
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: bottom_bounds,
+                    ..Default::default()
                 }),
                 |window| {
                     window.paint_quad(quad.clone());
@@ -320,6 +358,7 @@ impl Style {
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: left_bounds,
+                    ..Default::default()
                 }),
                 |window| {
                     window.paint_quad(quad);
@@ -337,6 +376,36 @@ impl Style {
         self.border_color
             .is_some_and(|color| !color.is_transparent())
             && self.border_widths.any(|length| !length.is_zero())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Overflow, bounds, px};
+
+    #[test]
+    fn hidden_overflow_uses_element_corner_radii() {
+        let radius = px(12.0).into();
+        let style = Style {
+            overflow: point(Overflow::Hidden, Overflow::Hidden),
+            corner_radii: Corners {
+                top_left: radius,
+                top_right: radius,
+                bottom_right: radius,
+                bottom_left: radius,
+            },
+            ..Style::default()
+        };
+
+        let mask = style
+            .overflow_mask(
+                bounds(point(px(0.0), px(0.0)), size(px(80.0), px(40.0))),
+                px(16.0),
+            )
+            .expect("hidden overflow should create a mask");
+
+        assert_eq!(mask.corner_radii, Corners::from(px(12.0)));
     }
 }
 

@@ -11,6 +11,40 @@ const RELEASE_CIK_GUID_BYTES_LE_HEX: &str = "91e7b9bd7cc93437e1a8bc602552df06";
 const PREVIEW_CIK_GUID_BYTES_LE_HEX: &str = "3fd6491ff58b8d1fed7edbd89477dad9";
 const UTF8_REPLACEMENT_BYTES: &[u8] = &[0xef, 0xbf, 0xbd];
 
+fn resolve_build_version() -> String {
+    let version = env::var("BMCBL_BUILD_VERSION")
+        .ok()
+        .filter(|version| !version.trim().is_empty())
+        .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".to_string()));
+    let version = version.trim().trim_start_matches(['v', 'V']);
+    assert!(
+        !version.is_empty() && !version.contains('\r') && !version.contains('\n'),
+        "BMCBL_BUILD_VERSION must be a non-empty single-line version"
+    );
+    version.to_string()
+}
+
+fn resolve_build_channel(build_version: &str) -> &'static str {
+    match env::var("BMCBL_BUILD_CHANNEL") {
+        Ok(channel) => match channel.trim().to_ascii_lowercase().as_str() {
+            "stable" => "stable",
+            "nightly" => "nightly",
+            _ => panic!("BMCBL_BUILD_CHANNEL must be either stable or nightly"),
+        },
+        Err(env::VarError::NotPresent) => {
+            if build_version
+                .split_once('-')
+                .is_some_and(|(_, prerelease)| prerelease.starts_with("nightly."))
+            {
+                "nightly"
+            } else {
+                "stable"
+            }
+        }
+        Err(error) => panic!("failed to read BMCBL_BUILD_CHANNEL: {error}"),
+    }
+}
+
 #[cfg(windows)]
 fn compile_windows_resources() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -24,19 +58,21 @@ fn compile_windows_resources() {
         .join("gpui.manifest.xml");
 
     // 获取包信息
-    let pkg_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
+    let pkg_version = resolve_build_version();
     let pkg_description = env::var("CARGO_PKG_DESCRIPTION").unwrap_or_else(|_| String::new());
     let pkg_authors = env::var("CARGO_PKG_AUTHORS").unwrap_or_else(|_| String::new());
 
     // 解析版本号 (major.minor.patch.build)
-    let version_parts: Vec<&str> = pkg_version.split('.').collect();
+    let version_core = pkg_version.split('-').next().unwrap_or(&pkg_version);
+    let version_core = version_core.split('+').next().unwrap_or(version_core);
+    let version_parts: Vec<&str> = version_core.split('.').collect();
     let file_version = if version_parts.len() >= 3 {
         format!(
             "{}.{}.{}.0",
             version_parts[0], version_parts[1], version_parts[2]
         )
     } else {
-        format!("{}.0", pkg_version)
+        format!("{}.0", version_core)
     };
 
     // 获取 Git 提交哈希
@@ -77,7 +113,7 @@ fn compile_windows_resources() {
 
     // 设置版本信息
     res.set("FileVersion", &file_version);
-    res.set("ProductVersion", &file_version);
+    res.set("ProductVersion", &pkg_version);
 
     // 设置应用程序信息
     res.set("FileDescription", &pkg_description);
@@ -921,6 +957,13 @@ fn load_key_hex(
 }
 
 fn main() {
+    let build_version = resolve_build_version();
+    let build_channel = resolve_build_channel(&build_version);
+    println!("cargo:rerun-if-env-changed=BMCBL_BUILD_VERSION");
+    println!("cargo:rerun-if-env-changed=BMCBL_BUILD_CHANNEL");
+    println!("cargo:rustc-env=BMCBL_BUILD_VERSION={build_version}");
+    println!("cargo:rustc-env=BMCBL_BUILD_CHANNEL={build_channel}");
+
     #[cfg(windows)]
     compile_windows_resources();
 

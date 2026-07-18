@@ -174,7 +174,10 @@ fn present_copy_sprite(current_size: DrawableSize) -> PolychromeSprite {
         opacity: 1.0,
         animation_id: None,
         bounds,
-        content_mask: crate::ContentMask { bounds },
+        content_mask: crate::ContentMask {
+            bounds,
+            ..Default::default()
+        },
         corner_radii: Default::default(),
         tile: AtlasTile {
             texture_id: AtlasTextureId {

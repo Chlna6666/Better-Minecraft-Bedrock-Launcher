@@ -94,6 +94,7 @@ fn monochrome_sprite(order: DrawOrder, pad: u32) -> MonochromeSprite {
                 point(ScaledPixels(0.0), ScaledPixels(0.0)),
                 size(ScaledPixels(10.0), ScaledPixels(10.0)),
             ),
+            ..Default::default()
         },
         color: Hsla::default(),
         tile: AtlasTile {
@@ -121,7 +122,10 @@ fn backdrop_blur_does_not_force_scene_full_redraw_fallback() {
         order: 0,
         animation_id: None,
         bounds,
-        content_mask: ContentMask { bounds },
+        content_mask: ContentMask {
+            bounds,
+            ..Default::default()
+        },
         corner_radii: Default::default(),
         radius: ScaledPixels(8.0),
         downsample: 2,
@@ -160,7 +164,10 @@ fn monochrome_sprite_batches_split_by_sampling() {
 #[test]
 fn scene_batches_use_draw_order_then_primitive_kind() {
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
-    let content_mask = ContentMask { bounds };
+    let content_mask = ContentMask {
+        bounds,
+        ..Default::default()
+    };
     let mut scene = Scene::default();
 
     scene.push_layer(bounds);
@@ -214,6 +221,7 @@ fn retained_prefix_replay_preserves_draw_orders() {
         bounds: first_bounds,
         content_mask: ContentMask {
             bounds: layer_bounds,
+            ..Default::default()
         },
         ..Quad::default()
     });
@@ -222,6 +230,7 @@ fn retained_prefix_replay_preserves_draw_orders() {
         bounds: second_bounds,
         content_mask: ContentMask {
             bounds: layer_bounds,
+            ..Default::default()
         },
         ..Quad::default()
     });
@@ -253,6 +262,7 @@ fn retained_prefix_replay_preserves_draw_orders() {
         bounds: following_bounds,
         content_mask: ContentMask {
             bounds: layer_bounds,
+            ..Default::default()
         },
         ..Quad::default()
     };
@@ -272,6 +282,7 @@ fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
         bounds: Bounds::new(point(px(2.0), px(2.0)), size(px(12.0), px(12.0))).scale(1.0),
         content_mask: ContentMask {
             bounds: content_bounds,
+            ..Default::default()
         },
         ..Quad::default()
     };
@@ -279,6 +290,7 @@ fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
         bounds: Bounds::new(point(px(8.0), px(8.0)), size(px(12.0), px(12.0))).scale(1.0),
         content_mask: ContentMask {
             bounds: content_bounds,
+            ..Default::default()
         },
         ..Quad::default()
     };
@@ -314,6 +326,7 @@ fn retained_suffix_replay_recomputes_after_prefix_bounds_change() {
         bounds: Bounds::new(point(px(2.0), px(2.0)), size(px(12.0), px(12.0))).scale(1.0),
         content_mask: ContentMask {
             bounds: content_bounds,
+            ..Default::default()
         },
         ..Quad::default()
     };
@@ -325,6 +338,7 @@ fn retained_suffix_replay_recomputes_after_prefix_bounds_change() {
         bounds: Bounds::new(point(px(8.0), px(8.0)), size(px(12.0), px(12.0))).scale(1.0),
         content_mask: ContentMask {
             bounds: content_bounds,
+            ..Default::default()
         },
         ..Quad::default()
     };
@@ -343,7 +357,10 @@ fn retained_suffix_replay_recomputes_after_prefix_bounds_change() {
 #[test]
 fn prepared_quad_runs_split_solid_and_bordered_quads() {
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
-    let content_mask = ContentMask { bounds };
+    let content_mask = ContentMask {
+        bounds,
+        ..Default::default()
+    };
     let mut scene = Scene::default();
     scene.insert_primitive(Quad {
         bounds,
@@ -397,7 +414,10 @@ fn scene_batches_gpu_mesh_3d_in_draw_order() {
         test_gpu_mesh_3d_shader(),
     ));
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
-    let content_mask = ContentMask { bounds };
+    let content_mask = ContentMask {
+        bounds,
+        ..Default::default()
+    };
     let parameters = GpuMesh3dDrawParameters {
         view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
     };

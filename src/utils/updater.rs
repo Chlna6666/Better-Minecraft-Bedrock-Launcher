@@ -3,6 +3,7 @@ use crate::downloads::manager::DownloaderManager;
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{create_task_with_details, finish_task};
+use crate::utils::app_info::{self, BuildChannel};
 use crate::utils::cloudflare::get_optimized_ip;
 use crate::utils::file_ops;
 use anyhow::Result;
@@ -81,6 +82,25 @@ fn extract_semver_substring(tag: &str) -> Option<String> {
     let re = Regex::new(r"(?i)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)").unwrap();
     re.captures(&s)
         .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+}
+
+fn nightly_update_available(
+    candidate: &Version,
+    current: &Version,
+    build_channel: BuildChannel,
+) -> bool {
+    if candidate > current {
+        return true;
+    }
+    if build_channel == BuildChannel::Nightly {
+        return false;
+    }
+
+    candidate.major == current.major
+        && candidate.minor == current.minor
+        && candidate.patch == current.patch
+        && !candidate.pre.is_empty()
+        && current.pre.is_empty()
 }
 
 /// 使用阻塞式 TCP 连接测试 GitHub 连接质量
@@ -258,7 +278,8 @@ pub async fn check_updates(
         format!("解析 JSON 失败：{}", e)
     })?;
 
-    let current = env!("CARGO_PKG_VERSION");
+    let current = app_info::get_version();
+    let current_build_channel = app_info::build_channel();
     let current_ver = Version::parse(current).unwrap_or_else(|_| Version::new(0, 0, 0));
 
     let mut latest_stable: Option<ReleaseSummary> = None;
@@ -333,17 +354,7 @@ pub async fn check_updates(
     let mut selected_release: Option<ReleaseSummary> = None;
     if channel == "nightly" {
         if let Some(ref npv) = latest_prerelease_ver {
-            let newer = if npv > &current_ver {
-                true
-            } else {
-                let same_core = npv.major == current_ver.major
-                    && npv.minor == current_ver.minor
-                    && npv.patch == current_ver.patch;
-                let np_has_pre = !npv.pre.is_empty();
-                let cur_has_pre = !current_ver.pre.is_empty();
-                same_core && np_has_pre && !cur_has_pre
-            };
-            if newer {
+            if nightly_update_available(npv, &current_ver, current_build_channel) {
                 update_available = true;
             }
             selected_release = latest_prerelease.clone();
@@ -374,12 +385,17 @@ pub async fn check_updates(
     let latest_stable_changelog = latest_stable.as_ref().and_then(|s| s.body.clone());
     let latest_prerelease_changelog = latest_prerelease.as_ref().and_then(|s| s.body.clone());
 
-    debug!("当前版本：{}", current);
+    debug!(
+        "当前版本：{} (build_channel={})",
+        current,
+        current_build_channel.as_str()
+    );
     debug!("是否有更新：{} (channel={})", update_available, channel);
 
     Ok(serde_json::json!({
         "current_version": current,
         "current_semver_parsed": current_ver.to_string(),
+        "current_build_channel": current_build_channel.as_str(),
         "selected_channel": channel,
         "selected_release": selected_release,
         "latest_stable": latest_stable,
@@ -607,4 +623,48 @@ pub fn download_and_apply_update_blocking(
     args: DownloadAndApplyArgs,
 ) -> Result<serde_json::Value, String> {
     block_on_tokio(download_and_apply_update(args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_nightly_does_not_offer_itself() {
+        let current =
+            Version::parse("0.2.0-nightly.20260718.60").expect("test nightly version should parse");
+
+        assert!(!nightly_update_available(
+            &current,
+            &current,
+            BuildChannel::Nightly
+        ));
+    }
+
+    #[test]
+    fn newer_nightly_is_available_to_nightly_build() {
+        let current = Version::parse("0.2.0-nightly.20260718.60")
+            .expect("test current nightly version should parse");
+        let candidate = Version::parse("0.2.0-nightly.20260719.61")
+            .expect("test candidate nightly version should parse");
+
+        assert!(nightly_update_available(
+            &candidate,
+            &current,
+            BuildChannel::Nightly
+        ));
+    }
+
+    #[test]
+    fn stable_build_can_opt_into_same_core_nightly() {
+        let current = Version::parse("0.2.0").expect("test stable version should parse");
+        let candidate =
+            Version::parse("0.2.0-nightly.20260718.60").expect("test nightly version should parse");
+
+        assert!(nightly_update_available(
+            &candidate,
+            &current,
+            BuildChannel::Stable
+        ));
+    }
 }

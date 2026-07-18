@@ -599,6 +599,7 @@ fn window_control_drag_waits_for_drag_threshold(cx: &mut TestAppContext) {
             bounds: Bounds::new(point(px(0.), px(0.)), size(px(120.), px(32.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::Normal,
         };
@@ -643,6 +644,7 @@ fn covered_window_control_drag_does_not_steal_mouse_down(cx: &mut TestAppContext
             bounds: Bounds::new(point(px(0.), px(0.)), size(px(120.), px(32.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::Normal,
         };
@@ -652,6 +654,7 @@ fn covered_window_control_drag_does_not_steal_mouse_down(cx: &mut TestAppContext
             bounds: Bounds::new(point(px(8.), px(4.)), size(px(48.), px(24.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::BlockMouse,
         };
@@ -773,6 +776,7 @@ fn transparent_caption_uses_observed_height_without_hitbox(cx: &mut TestAppConte
             bounds: Bounds::new(point(px(0.), px(0.)), size(px(360.), px(60.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::Normal,
         };
@@ -1384,6 +1388,7 @@ fn inert_hitbox_pointer_button_does_not_extend_recent_input_present(cx: &mut Tes
             bounds: Bounds::new(point(px(0.), px(0.)), size(px(16.), px(16.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::Normal,
         };
@@ -1426,6 +1431,7 @@ fn handled_pointer_button_does_not_extend_recent_input_present(cx: &mut TestAppC
             bounds: Bounds::new(point(px(0.), px(0.)), size(px(16.), px(16.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::Normal,
         };
@@ -1498,6 +1504,7 @@ fn passive_mouse_move_entering_hitbox_still_dispatches(cx: &mut TestAppContext) 
             bounds: Bounds::new(point(px(0.), px(0.)), size(px(16.), px(16.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::Normal,
         };
@@ -1538,6 +1545,7 @@ fn mouse_dispatch_skips_unrelated_listener_types(cx: &mut TestAppContext) {
             bounds: Bounds::new(point(px(0.), px(0.)), size(px(16.), px(16.))),
             content_mask: ContentMask {
                 bounds: Bounds::new(Point::default(), window.viewport_size),
+                ..Default::default()
             },
             behavior: HitboxBehavior::Normal,
         };

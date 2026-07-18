@@ -1668,7 +1668,7 @@ impl Element for EditorElement {
         let content_y = bounds.top() + px(VERTICAL_PADDING) - self.editor.read(cx).scroll_offset.y;
         let number_x = bounds.left() + prepaint.gutter_width - px(HORIZONTAL_PADDING * 0.5);
 
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        window.with_content_mask(Some(ContentMask::new(bounds)), |window| {
             if let Some(current_line) = prepaint.current_line.take() {
                 window.paint_quad(current_line);
             }

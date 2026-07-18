@@ -228,6 +228,7 @@ pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<
         .relative()
         .w_full()
         .rounded(px(14.))
+        .overflow_hidden()
         .border_1()
         .border_color(Hsla {
             a: 0.24,

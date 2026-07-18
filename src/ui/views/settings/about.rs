@@ -162,19 +162,29 @@ pub(super) fn render_engine_label(window: &Window) -> SharedString {
 }
 
 fn gpui_backend_name() -> &'static str {
+    match gpui::performance_metrics_snapshot().renderer_backend {
+        gpui::RendererBackend::NovaDx12 => "DirectX 12",
+        gpui::RendererBackend::NovaVulkan => "Vulkan",
+        gpui::RendererBackend::NovaMetal => "Metal",
+        gpui::RendererBackend::HeadlessTest => "Headless",
+        gpui::RendererBackend::Auto => platform_backend_fallback_name(),
+    }
+}
+
+fn platform_backend_fallback_name() -> &'static str {
     #[cfg(target_os = "windows")]
     {
-        "GPUI / DirectX 11"
+        "DirectX 12"
     }
 
     #[cfg(target_os = "macos")]
     {
-        "GPUI / Metal"
+        "Metal"
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
-        "GPUI / Vulkan"
+        "Vulkan"
     }
 
     #[cfg(not(any(
@@ -184,7 +194,7 @@ fn gpui_backend_name() -> &'static str {
         target_os = "freebsd"
     )))]
     {
-        "GPUI"
+        "Unknown"
     }
 }
 

@@ -732,7 +732,7 @@ fn path_rasterization_vertex_packer_matches_shader_storage_stride() {
         &mut bytes,
         &vertex,
         &crate::Background::default(),
-        &Bounds::default(),
+        &crate::ContentMask::default(),
     );
 
     assert_eq!(bytes.len(), PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
@@ -846,7 +846,10 @@ fn frame_upload_records_scene_animation_bindings() {
     scene.insert_animated_primitive(
         Quad {
             bounds,
-            content_mask: crate::ContentMask { bounds },
+            content_mask: crate::ContentMask {
+                bounds,
+                ..Default::default()
+            },
             ..Quad::default()
         },
         animation_id,
@@ -935,6 +938,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
                 height: px(16.0),
             },
         },
+        ..Default::default()
     };
 
     let mut scene = crate::Scene::default();
@@ -1076,7 +1080,7 @@ fn reduced_backdrop_blur_quality_lowers_uploaded_blur_parameters() {
 
     assert_eq!(upload.backdrop_blur_downsample(), 4);
     assert_eq!(upload.backdrop_blur_levels(), 1);
-    assert_eq!(read_f32_at(&upload.backdrop_blurs, 80), 6.0);
+    assert_eq!(read_f32_at(&upload.backdrop_blurs, 112), 6.0);
 }
 
 #[test]
@@ -1140,7 +1144,10 @@ fn frame_upload_lists_repeated_custom_gpu_mesh_once() {
         crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
         crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
     );
-    let content_mask = crate::ContentMask { bounds };
+    let content_mask = crate::ContentMask {
+        bounds,
+        ..Default::default()
+    };
     let parameters = GpuMesh3dDrawParameters {
         view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
     };
@@ -1217,7 +1224,10 @@ fn frame_upload_skips_custom_gpu_mesh_with_out_of_bounds_index() {
         crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
         crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
     );
-    let content_mask = crate::ContentMask { bounds };
+    let content_mask = crate::ContentMask {
+        bounds,
+        ..Default::default()
+    };
     let mut scene = crate::Scene::default();
     scene.insert_primitive(PaintGpuMesh3d {
         order: 0,
@@ -2258,7 +2268,7 @@ fn nova_fragment_shaders_skip_fully_transparent_instances() {
         &[
             "if (any(input.clip_distances < vec4<f32>(0.0)))",
             "if (input.color.a <= 0.0)",
-            "return blend_color(input.color, 1.0)",
+            "return blend_color(input.color, clip_coverage)",
         ],
     );
     assert_fragment_contains_in_order(
@@ -2306,7 +2316,7 @@ fn nova_fragment_shaders_skip_fully_transparent_instances() {
             "if (input.color.a <= 0.0)",
             "let underline_height = input.bounds.w",
             "if ((input.wavy & 0xFFu) == 0u)",
-            "return blend_color(input.color, 1.0)",
+            "return blend_color(input.color, clip_coverage)",
         ],
     );
 }
@@ -2339,9 +2349,9 @@ fn nova_underline_alpha_is_applied_once() {
         "fs_underline",
         &[
             "if ((input.wavy & 0xFFu) == 0u)",
-            "return blend_color(input.color, 1.0)",
+            "return blend_color(input.color, clip_coverage)",
             "let alpha = saturate(SDF_ANTIALIAS_THRESHOLD - stroke_distance)",
-            "return blend_color(input.color, alpha)",
+            "return blend_color(input.color, alpha * clip_coverage)",
         ],
     );
     assert_fragment_function_omits("underline.wgsl", source, "fs_underline", "input.color.a)");
@@ -2647,6 +2657,15 @@ fn nova_fragment_shaders_avoid_redundant_instance_ssbo_reads() {
         include_str!("shaders/underline.wgsl"),
         "fs_underline",
         "b_underlines",
+    );
+}
+
+#[test]
+fn zero_radius_content_masks_keep_rectangular_clip_coverage() {
+    assert_shader_contains(
+        "core.wgsl",
+        include_str!("shaders/core.wgsl"),
+        &["if (all(packed_radii == vec4<f32>(0.0)))", "return 1.0"],
     );
 }
 
@@ -3141,7 +3160,10 @@ fn backdrop_blur_scene(tint: Option<crate::Hsla>) -> crate::Scene {
         order: 0,
         animation_id: None,
         bounds,
-        content_mask: crate::ContentMask { bounds },
+        content_mask: crate::ContentMask {
+            bounds,
+            ..Default::default()
+        },
         corner_radii: Default::default(),
         radius: crate::ScaledPixels(12.0),
         downsample: 2,

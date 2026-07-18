@@ -54,6 +54,7 @@ jobs:
           }
 
           Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "BUILD_VERSION=$($tag.Substring(1))"
           Write-Host "Release tag: $tag"
 
       - name: Checkout BMCBL
@@ -179,6 +180,8 @@ jobs:
 
       - name: Build BMCBL
         env:
+          BMCBL_BUILD_VERSION: ${{ steps.release_tag.outputs.BUILD_VERSION }}
+          BMCBL_BUILD_CHANNEL: stable
           GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
           GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
         run: cargo build --release --bin BMCBL --locked

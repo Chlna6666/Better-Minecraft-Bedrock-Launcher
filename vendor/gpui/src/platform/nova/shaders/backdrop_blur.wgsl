@@ -13,7 +13,7 @@ struct BackdropBlur {
     levels: u32,
     pad0: u32,
     bounds: Bounds,
-    content_mask: Bounds,
+    content_mask: ContentMask,
     corner_radii: Corners,
     tint: Hsla,
     radius: f32,
@@ -39,6 +39,8 @@ struct BackdropBlurVarying {
     @location(3) @interpolate(flat) corner_radii: vec4<f32>,
     @location(4) @interpolate(flat) saturation: f32,
     @location(5) @interpolate(flat) tint: vec4<f32>,
+    @location(6) @interpolate(flat) content_mask_bounds: vec4<f32>,
+    @location(7) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
 
 @vertex
@@ -99,7 +101,9 @@ fn vs_backdrop_blur(@builtin(vertex_index) vertex_id: u32, @builtin(instance_ind
     var out = BackdropBlurVarying();
     out.position = to_device_position(unit_vertex, blur.bounds);
     out.texture_coords = screen_position / max(blur.blurred_size, vec2<f32>(1.0));
-    out.clip_distances = distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask);
+    out.clip_distances = distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask.bounds);
+    out.content_mask_bounds = vec4<f32>(blur.content_mask.corner_bounds.origin, blur.content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(blur.content_mask.corner_radii.top_left, blur.content_mask.corner_radii.top_right, blur.content_mask.corner_radii.bottom_right, blur.content_mask.corner_radii.bottom_left);
     out.bounds = vec4<f32>(blur.bounds.origin, blur.bounds.size);
     out.corner_radii = vec4<f32>(
         blur.corner_radii.top_left,
@@ -119,7 +123,11 @@ fn saturate_color(color: vec3<f32>, saturation: f32) -> vec3<f32> {
 
 @fragment
 fn fs_backdrop_blur(input: BackdropBlurVarying) -> @location(0) vec4<f32> {
+    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
     let distance = quad_sdf_from_packed(input.position.xy, input.bounds, input.corner_radii);
@@ -138,5 +146,5 @@ fn fs_backdrop_blur(input: BackdropBlurVarying) -> @location(0) vec4<f32> {
     if (input.tint.a > 0.0) {
         color = over(color, input.tint);
     }
-    return blend_color(color, alpha);
+    return blend_color(color, alpha * clip_coverage);
 }

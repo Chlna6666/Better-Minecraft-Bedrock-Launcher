@@ -11,7 +11,7 @@ struct Quad {
     order: u32,
     border_style: u32,
     bounds: Bounds,
-    content_mask: Bounds,
+    content_mask: ContentMask,
     background: Background,
     border_color: Hsla,
     corner_radii: Corners,
@@ -29,6 +29,8 @@ struct QuadVarying {
     @location(4) @interpolate(flat) background_color0: vec4<f32>,
     @location(5) @interpolate(flat) background_color1: vec4<f32>,
     @location(6) @interpolate(flat) background_tag: u32,
+    @location(7) @interpolate(flat) content_mask_bounds: vec4<f32>,
+    @location(8) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
 
 @vertex
@@ -51,7 +53,9 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     out.background_tag = quad.background.tag;
     out.border_color = hsla_to_rgba(quad.border_color);
     out.quad_id = instance_id;
-    out.clip_distances = distance_from_clip_rect(unit_vertex, quad.bounds, quad.content_mask);
+    out.clip_distances = distance_from_clip_rect(unit_vertex, quad.bounds, quad.content_mask.bounds);
+    out.content_mask_bounds = vec4<f32>(quad.content_mask.corner_bounds.origin, quad.content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(quad.content_mask.corner_radii.top_left, quad.content_mask.corner_radii.top_right, quad.content_mask.corner_radii.bottom_right, quad.content_mask.corner_radii.bottom_left);
     return out;
 }
 
@@ -59,6 +63,10 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
 fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
     // Alpha clip first, since we don't have `clip_distance`.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
+    if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
 
@@ -69,6 +77,7 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
     }
 
     let quad = b_quads[input.quad_id];
+
     var background_color = input.background_solid;
     if (input.background_tag != 0u) {
         background_color = gradient_color(quad.background, input.position.xy, quad.bounds,

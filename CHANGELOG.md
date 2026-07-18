@@ -31,6 +31,11 @@ inside that section are maintained automatically by
 - Removed bundled font files from the repository and kept local agent/planning
   artifacts ignored.
 
+### Maintenance
+
+- Added a repository-local commit message hook and Chinese Conventional Commits
+  documentation for consistent contribution history.
+
 <!-- changelog:generated:start -->
 ### Commit Summary
 

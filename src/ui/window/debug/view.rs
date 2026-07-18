@@ -1299,7 +1299,7 @@ impl Render for DebugView {
                                     ))
                                     .child(line(
                                         copy.app_version,
-                                        SharedString::from(env!("CARGO_PKG_VERSION")),
+                                        SharedString::from(crate::utils::app_info::get_version()),
                                         muted,
                                     ))
                                     .child(line(
@@ -3136,7 +3136,7 @@ impl Render for DebugView {
                             div()
                                 .text_size(px(12.))
                                 .text_color(muted)
-                                .child(env!("CARGO_PKG_VERSION")),
+                                .child(crate::utils::app_info::get_version()),
                         ),
                 )
                 .child(

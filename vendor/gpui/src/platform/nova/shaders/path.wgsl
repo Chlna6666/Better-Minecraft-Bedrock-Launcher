@@ -4,7 +4,7 @@ struct PathRasterizationVertex {
     xy_position: vec2<f32>,
     st_position: vec2<f32>,
     color: Background,
-    bounds: Bounds,
+    content_mask: ContentMask,
 }
 
 @group(0) @binding(3) var<storage, read> b_path_vertices: array<PathRasterizationVertex>;
@@ -22,6 +22,8 @@ struct PathRasterizationVarying {
     @location(8) @interpolate(flat) bounds: vec4<f32>,
     // TODO: use `clip_distance` once Naga supports it.
     @location(9) clip_distances: vec4<f32>,
+    @location(10) @interpolate(flat) content_mask_radii: vec4<f32>,
+    @location(11) @interpolate(flat) content_mask_corner_bounds: vec4<f32>,
 }
 
 @vertex
@@ -47,14 +49,25 @@ fn vs_path_rasterization(@builtin(vertex_index) vertex_id: u32) -> PathRasteriza
         v.color.colors[0].percentage,
         v.color.colors[1].percentage,
     );
-    out.bounds = vec4<f32>(v.bounds.origin, v.bounds.size);
-    out.clip_distances = distance_from_clip_rect_impl(v.xy_position, v.bounds);
+    out.bounds = vec4<f32>(v.content_mask.bounds.origin, v.content_mask.bounds.size);
+    out.content_mask_corner_bounds = vec4<f32>(v.content_mask.corner_bounds.origin, v.content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(
+        v.content_mask.corner_radii.top_left,
+        v.content_mask.corner_radii.top_right,
+        v.content_mask.corner_radii.bottom_right,
+        v.content_mask.corner_radii.bottom_left,
+    );
+    out.clip_distances = distance_from_clip_rect_impl(v.xy_position, v.content_mask.bounds);
     return out;
 }
 
 @fragment
 fn fs_path_rasterization(input: PathRasterizationVarying) -> @location(0) vec4<f32> {
+    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_corner_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
 
@@ -64,12 +77,12 @@ fn fs_path_rasterization(input: PathRasterizationVarying) -> @location(0) vec4<f
     var alpha: f32;
     if (length(edge_gradient) < 0.001) {
         // If the gradient is too small, return a solid color.
-        alpha = 1.0;
+        alpha = clip_coverage;
     } else {
         let gradient = 2.0 * input.st_position.xx * edge_gradient - vec2<f32>(dx.y, dy.y);
         let f = input.st_position.x * input.st_position.x - input.st_position.y;
         let distance = f / max(length(gradient), SHADER_EPSILON);
-        alpha = saturate(SDF_ANTIALIAS_THRESHOLD - distance);
+        alpha = saturate(SDF_ANTIALIAS_THRESHOLD - distance) * clip_coverage;
     }
     if (alpha <= 0.0) {
         return vec4<f32>(0.0);

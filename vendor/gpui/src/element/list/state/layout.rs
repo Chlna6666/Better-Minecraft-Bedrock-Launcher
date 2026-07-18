@@ -275,9 +275,15 @@ impl StateInner {
                 let mut item_origin = bounds.origin + Point::new(px(0.), padding.top);
                 item_origin.y -= layout_response.scroll_top.offset_in_item;
                 for item in &mut layout_response.item_layouts {
-                    window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                        item.element.prepaint_at(item_origin, window, cx);
-                    });
+                    window.with_content_mask(
+                        Some(ContentMask {
+                            bounds,
+                            ..Default::default()
+                        }),
+                        |window| {
+                            item.element.prepaint_at(item_origin, window, cx);
+                        },
+                    );
 
                     if let Some(autoscroll_bounds) = window.take_autoscroll()
                         && autoscroll

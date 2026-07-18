@@ -32,6 +32,53 @@ struct Corners {
     bottom_left: f32,
 }
 
+struct ContentMask {
+    bounds: Bounds,
+    corner_bounds: Bounds,
+    corner_radii: Corners,
+}
+
+fn pick_corner_radius(center_to_point: vec2<f32>, radii: Corners) -> f32 {
+    let top_side = center_to_point.y < 0.0;
+    let left_radius = select(radii.bottom_left, radii.top_left, top_side);
+    let right_radius = select(radii.bottom_right, radii.top_right, top_side);
+    return select(right_radius, left_radius, center_to_point.x < 0.0);
+}
+
+fn pick_corner_radius_from_packed(center_to_point: vec2<f32>, packed_radii: vec4<f32>) -> f32 {
+    let top_side = center_to_point.y < 0.0;
+    let left_radius = select(packed_radii.w, packed_radii.x, top_side);
+    let right_radius = select(packed_radii.z, packed_radii.y, top_side);
+    return select(right_radius, left_radius, center_to_point.x < 0.0);
+}
+
+fn quad_sdf(point: vec2<f32>, bounds: Bounds, corner_radii: Corners) -> f32 {
+    let half_size = bounds.size / 2.0;
+    let center = bounds.origin + half_size;
+    let center_to_point = point - center;
+    let corner_radius = pick_corner_radius(center_to_point, corner_radii);
+    let corner_to_point = abs(center_to_point) - half_size;
+    return quad_sdf_impl(corner_to_point + corner_radius, corner_radius);
+}
+
+fn quad_sdf_from_packed(point: vec2<f32>, packed_bounds: vec4<f32>, packed_corner_radii: vec4<f32>) -> f32 {
+    let half_size = packed_bounds.zw / 2.0;
+    let center_to_point = point - (packed_bounds.xy + half_size);
+    let corner_radius = pick_corner_radius_from_packed(center_to_point, packed_corner_radii);
+    let corner_to_point = abs(center_to_point) - half_size;
+    return quad_sdf_impl(corner_to_point + corner_radius, corner_radius);
+}
+
+fn quad_sdf_impl(corner_center_to_point: vec2<f32>, corner_radius: f32) -> f32 {
+    if (corner_radius == 0.0) {
+        return max(corner_center_to_point.x, corner_center_to_point.y);
+    }
+    let signed_distance_to_inset_quad =
+        length(max(vec2<f32>(0.0), corner_center_to_point)) +
+        min(0.0, max(corner_center_to_point.x, corner_center_to_point.y));
+    return signed_distance_to_inset_quad - corner_radius;
+}
+
 struct Edges {
     top: f32,
     right: f32,
@@ -129,6 +176,25 @@ fn distance_from_clip_rect_transformed(unit_vertex: vec2<f32>, bounds: Bounds, c
     let position = unit_vertex * vec2<f32>(bounds.size) + bounds.origin;
     let transformed = transpose(transform.rotation_scale) * position + transform.translation;
     return distance_from_clip_rect_impl(transformed, clip_bounds);
+}
+
+fn content_mask_coverage(position: vec2<f32>, content_mask: ContentMask) -> f32 {
+    let packed_bounds = vec4<f32>(content_mask.corner_bounds.origin, content_mask.corner_bounds.size);
+    let packed_radii = vec4<f32>(
+        content_mask.corner_radii.top_left,
+        content_mask.corner_radii.top_right,
+        content_mask.corner_radii.bottom_right,
+        content_mask.corner_radii.bottom_left,
+    );
+    return content_mask_coverage_from_packed(position, packed_bounds, packed_radii);
+}
+
+fn content_mask_coverage_from_packed(position: vec2<f32>, packed_bounds: vec4<f32>, packed_radii: vec4<f32>) -> f32 {
+    if (all(packed_radii == vec4<f32>(0.0))) {
+        return 1.0;
+    }
+    let distance = quad_sdf_from_packed(position, packed_bounds, packed_radii);
+    return saturate(SDF_ANTIALIAS_THRESHOLD - distance);
 }
 
 /// Hsla to linear RGBA conversion.

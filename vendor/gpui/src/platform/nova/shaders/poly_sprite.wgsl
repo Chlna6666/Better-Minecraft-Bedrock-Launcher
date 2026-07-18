@@ -6,7 +6,7 @@ struct PolychromeSprite {
     grayscale: u32,
     opacity: f32,
     bounds: Bounds,
-    content_mask: Bounds,
+    content_mask: ContentMask,
     corner_radii: Corners,
     tile: AtlasTile,
 }
@@ -20,6 +20,8 @@ struct PolySpriteVarying {
     @location(3) clip_distances: vec4<f32>,
     @location(4) @interpolate(flat) bounds: vec4<f32>,
     @location(5) @interpolate(flat) corner_radii: vec4<f32>,
+    @location(6) @interpolate(flat) content_mask_bounds: vec4<f32>,
+    @location(7) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
 
 @vertex
@@ -32,7 +34,9 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
     out.grayscale = sprite.grayscale;
     out.opacity = sprite.opacity;
-    out.clip_distances = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
+    out.clip_distances = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask.bounds);
+    out.content_mask_bounds = vec4<f32>(sprite.content_mask.corner_bounds.origin, sprite.content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(sprite.content_mask.corner_radii.top_left, sprite.content_mask.corner_radii.top_right, sprite.content_mask.corner_radii.bottom_right, sprite.content_mask.corner_radii.bottom_left);
     out.bounds = vec4<f32>(sprite.bounds.origin, sprite.bounds.size);
     out.corner_radii = vec4<f32>(
         sprite.corner_radii.top_left,
@@ -45,7 +49,11 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
 
 @fragment
 fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
+    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
     if (input.opacity <= 0.0) {
@@ -66,5 +74,5 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     let grayscale = dot(sample.rgb, GRAYSCALE_FACTORS);
     let grayscale_factor = select(0.0, 1.0, (input.grayscale & 0xFFu) != 0u);
     let color = vec4<f32>(mix(sample.rgb, vec3<f32>(grayscale), grayscale_factor), sample.a);
-    return blend_color(color, input.opacity * coverage);
+    return blend_color(color, input.opacity * coverage * clip_coverage);
 }

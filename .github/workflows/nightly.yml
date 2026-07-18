@@ -111,12 +111,14 @@ jobs:
           $default = "${{ steps.default_branch.outputs.NAME }}"
           $date = (Get-Date).ToUniversalTime().ToString("yyyyMMdd")
           $tag = "v$version-nightly.$date.${{ github.run_number }}"
+          $buildVersion = $tag.Substring(1)
 
           git fetch origin $default --tags
 
           $headCommit = git rev-parse "origin/$default"
 
           Add-Content -Path $env:GITHUB_OUTPUT -Value "TAG_NAME=$tag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "BUILD_VERSION=$buildVersion"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "HEAD_COMMIT=$headCommit"
           Write-Host "Prepared nightly release: $tag -> $headCommit"
 
@@ -250,6 +252,8 @@ jobs:
       - name: Build BMCBL
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
         env:
+          BMCBL_BUILD_VERSION: ${{ steps.nightly_tag.outputs.BUILD_VERSION }}
+          BMCBL_BUILD_CHANNEL: nightly
           GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
           GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
         run: cargo build --release --bin BMCBL --locked

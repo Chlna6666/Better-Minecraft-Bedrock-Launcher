@@ -1556,11 +1556,7 @@ fn should_use_subpixel_rendering_for_size(
     font_size: f32,
     scale_factor: f32,
 ) -> bool {
-    // Nova samples the subpixel atlas through a single-channel mono pipeline. For
-    // small text, ClearType's three filtered channels otherwise accumulate into
-    // visibly heavier stems after that reduction. Keep native ClearType for larger
-    // glyphs while using grayscale coverage at UI-sized pixel heights.
-    system_subpixel_rendering && !is_emoji && font_size * scale_factor >= 14.0
+    system_subpixel_rendering && !is_emoji && font_size * scale_factor >= 10.0
 }
 
 fn get_system_ui_font_name() -> SharedString {
@@ -1647,15 +1643,18 @@ mod tests {
     };
 
     #[test]
-    fn small_ui_text_uses_grayscale_coverage() {
+    fn ui_text_uses_system_subpixel_rendering() {
         assert!(!should_use_subpixel_rendering_for_size(
-            true, false, 12.5, 1.0
+            true, false, 9.5, 1.0
         ));
         assert!(!should_use_subpixel_rendering_for_size(
             true, true, 24.0, 1.0
         ));
         assert!(should_use_subpixel_rendering_for_size(
-            true, false, 16.0, 1.0
+            true, false, 11.0, 1.0
+        ));
+        assert!(should_use_subpixel_rendering_for_size(
+            true, false, 8.0, 1.25
         ));
         assert!(!should_use_subpixel_rendering_for_size(
             false, false, 16.0, 1.0

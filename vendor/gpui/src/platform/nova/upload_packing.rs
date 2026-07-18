@@ -80,7 +80,7 @@ pub(super) fn write_backdrop_blur(
     write_u32_vec(bytes, u32::from(blur.levels.clamp(1, 6)));
     write_u32_vec(bytes, 0);
     write_bounds_scaled(bytes, &blur.bounds);
-    write_bounds_scaled(bytes, &blur.content_mask.bounds);
+    write_content_mask(bytes, &blur.content_mask);
     write_corners(bytes, &blur.corner_radii);
     write_hsla(
         bytes,
@@ -104,7 +104,7 @@ pub(super) fn write_quad(bytes: &mut Vec<u8>, quad: &Quad) {
     write_u32_vec(bytes, quad.order);
     write_u32_vec(bytes, quad.border_style as u32);
     write_bounds_scaled(bytes, &quad.bounds);
-    write_bounds_scaled(bytes, &quad.content_mask.bounds);
+    write_content_mask(bytes, &quad.content_mask);
     write_background(bytes, &quad.background);
     write_hsla(bytes, quad.border_color);
     write_corners(bytes, &quad.corner_radii);
@@ -116,7 +116,7 @@ pub(super) fn write_shadow(bytes: &mut Vec<u8>, shadow: &Shadow) {
     write_f32_vec(bytes, shadow.blur_radius.0);
     write_bounds_scaled(bytes, &shadow.bounds);
     write_corners(bytes, &shadow.corner_radii);
-    write_bounds_scaled(bytes, &shadow.content_mask.bounds);
+    write_content_mask(bytes, &shadow.content_mask);
     write_hsla(bytes, shadow.color);
 }
 
@@ -124,14 +124,14 @@ pub(super) fn write_path_rasterization_vertex(
     bytes: &mut Vec<u8>,
     vertex: &crate::PathVertex_ScaledPixels,
     background: &crate::Background,
-    bounds: &Bounds<crate::ScaledPixels>,
+    content_mask: &crate::ContentMask<crate::ScaledPixels>,
 ) {
     write_f32_vec(bytes, vertex.xy_position.x.0);
     write_f32_vec(bytes, vertex.xy_position.y.0);
     write_f32_vec(bytes, vertex.st_position.x);
     write_f32_vec(bytes, vertex.st_position.y);
     write_background(bytes, background);
-    write_bounds_scaled(bytes, bounds);
+    write_content_mask(bytes, content_mask);
 }
 
 pub(super) fn write_path_sprite(bytes: &mut Vec<u8>, bounds: &Bounds<crate::ScaledPixels>) {
@@ -142,7 +142,7 @@ pub(super) fn write_monochrome_sprite(bytes: &mut Vec<u8>, sprite: &MonochromeSp
     write_u32_vec(bytes, sprite.order);
     write_u32_vec(bytes, sprite.pad);
     write_bounds_scaled(bytes, &sprite.bounds);
-    write_bounds_scaled(bytes, &sprite.content_mask.bounds);
+    write_content_mask(bytes, &sprite.content_mask);
     write_hsla(bytes, sprite.color);
     write_atlas_tile(bytes, &sprite.tile);
     write_transformation(bytes, &sprite.transformation);
@@ -154,7 +154,7 @@ pub(super) fn write_polychrome_sprite(bytes: &mut Vec<u8>, sprite: &PolychromeSp
     write_u32_vec(bytes, u32::from(sprite.grayscale));
     write_f32_vec(bytes, sprite.opacity);
     write_bounds_scaled(bytes, &sprite.bounds);
-    write_bounds_scaled(bytes, &sprite.content_mask.bounds);
+    write_content_mask(bytes, &sprite.content_mask);
     write_corners(bytes, &sprite.corner_radii);
     write_atlas_tile(bytes, &sprite.tile);
 }
@@ -163,7 +163,7 @@ pub(super) fn write_underline(bytes: &mut Vec<u8>, underline: &Underline) {
     write_u32_vec(bytes, underline.order);
     write_u32_vec(bytes, underline.pad);
     write_bounds_scaled(bytes, &underline.bounds);
-    write_bounds_scaled(bytes, &underline.content_mask.bounds);
+    write_content_mask(bytes, &underline.content_mask);
     write_hsla(bytes, underline.color);
     write_f32_vec(bytes, underline.thickness.0);
     write_u32_vec(bytes, underline.wavy);
@@ -200,6 +200,15 @@ pub(super) fn write_corners(bytes: &mut Vec<u8>, corners: &crate::Corners<crate:
     write_f32_vec(bytes, corners.top_right.0);
     write_f32_vec(bytes, corners.bottom_right.0);
     write_f32_vec(bytes, corners.bottom_left.0);
+}
+
+pub(super) fn write_content_mask(
+    bytes: &mut Vec<u8>,
+    content_mask: &crate::ContentMask<crate::ScaledPixels>,
+) {
+    write_bounds_scaled(bytes, &content_mask.bounds);
+    write_bounds_scaled(bytes, &content_mask.corner_bounds);
+    write_corners(bytes, &content_mask.corner_radii);
 }
 
 pub(super) fn write_edges(bytes: &mut Vec<u8>, edges: &crate::Edges<crate::ScaledPixels>) {

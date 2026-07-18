@@ -4,7 +4,7 @@ struct Underline {
     order: u32,
     pad: u32,
     bounds: Bounds,
-    content_mask: Bounds,
+    content_mask: ContentMask,
     color: Hsla,
     thickness: f32,
     wavy: u32,
@@ -19,6 +19,8 @@ struct UnderlineVarying {
     @location(3) @interpolate(flat) wavy: u32,
     // TODO: use `clip_distance` once Naga supports it.
     @location(4) clip_distances: vec4<f32>,
+    @location(5) @interpolate(flat) content_mask_bounds: vec4<f32>,
+    @location(6) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
 
 @vertex
@@ -32,7 +34,9 @@ fn vs_underline(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) 
     out.bounds = vec4<f32>(underline.bounds.origin, underline.bounds.size);
     out.thickness = underline.thickness;
     out.wavy = underline.wavy;
-    out.clip_distances = distance_from_clip_rect(unit_vertex, underline.bounds, underline.content_mask);
+    out.clip_distances = distance_from_clip_rect(unit_vertex, underline.bounds, underline.content_mask.bounds);
+    out.content_mask_bounds = vec4<f32>(underline.content_mask.corner_bounds.origin, underline.content_mask.corner_bounds.size);
+    out.content_mask_radii = vec4<f32>(underline.content_mask.corner_radii.top_left, underline.content_mask.corner_radii.top_right, underline.content_mask.corner_radii.bottom_right, underline.content_mask.corner_radii.bottom_left);
     return out;
 }
 
@@ -42,7 +46,11 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
     const WAVE_HEIGHT_RATIO: f32 = 0.8;
 
     // Alpha clip first, since we don't have `clip_distance`.
+    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    if (clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
     if (input.color.a <= 0.0) {
@@ -56,7 +64,7 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
 
     if ((input.wavy & 0xFFu) == 0u)
     {
-        return blend_color(input.color, 1.0);
+        return blend_color(input.color, clip_coverage);
     }
 
     let half_thickness = input.thickness * 0.5;
@@ -73,5 +81,5 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
     let distance_from_bottom_border = distance_in_pixels + half_thickness;
     let stroke_distance = max(-distance_from_bottom_border, distance_from_top_border);
     let alpha = saturate(SDF_ANTIALIAS_THRESHOLD - stroke_distance);
-    return blend_color(input.color, alpha);
+    return blend_color(input.color, alpha * clip_coverage);
 }

@@ -467,9 +467,18 @@ impl NovaFrameUpload {
             return None;
         }
 
-        let bounds = path.clipped_bounds();
+        let clipped_bounds = path.clipped_bounds();
+        let content_mask = crate::ContentMask {
+            bounds: clipped_bounds,
+            corner_bounds: path.content_mask.corner_bounds,
+            corner_radii: if clipped_bounds == path.content_mask.bounds {
+                path.content_mask.corner_radii
+            } else {
+                Default::default()
+            },
+        };
         let mut paint_key = Vec::with_capacity(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
-        write_bounds_scaled(&mut paint_key, &bounds);
+        write_content_mask(&mut paint_key, &content_mask);
         write_background(&mut paint_key, &path.color);
         let key = NovaPathRasterizationCacheKey {
             path_id: path.cache_id,
@@ -487,7 +496,7 @@ impl NovaFrameUpload {
         let mut bytes =
             Vec::with_capacity(path.vertices.len() * PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
         for vertex in &path.vertices {
-            write_path_rasterization_vertex(&mut bytes, vertex, &path.color, &bounds);
+            write_path_rasterization_vertex(&mut bytes, vertex, &path.color, &content_mask);
         }
         let entry = NovaPathRasterizationCacheEntry {
             bytes: Arc::<[u8]>::from(bytes.into_boxed_slice()),
