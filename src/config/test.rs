@@ -65,7 +65,7 @@ fn missing_glass_effect_enabled_defaults_to_true() {
     assert!(config.online.player_name.starts_with("BMCBL_USER_"));
     assert_eq!(config.online.player_name.len(), "BMCBL_USER_".len() + 6);
     assert_eq!(config.online.game_ports, "7551");
-    assert!(config.online.disable_p2p);
+    assert!(!config.online.disable_p2p);
     assert!(config.online.no_tun);
 }
 

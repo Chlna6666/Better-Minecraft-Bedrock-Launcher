@@ -378,7 +378,7 @@ fn build_embedded_easytier_config(
     flags.bind_device = false;
     flags.no_tun = true;
     flags.use_smoltcp = true;
-    flags.disable_p2p = true;
+    flags.disable_p2p = false;
     flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
 
     let mut ipv4: Option<cidr::Ipv4Inet> = None;

@@ -54,7 +54,7 @@ impl Default for ToolsPageState {
             game_ports_input: None,
             game_ports: SharedString::from("7551"),
             easytier_settings_open: false,
-            disable_p2p: true,
+            disable_p2p: false,
             no_tun: true,
             online_loading: false,
             online_error: None,

@@ -222,7 +222,7 @@ impl Default for OnlineConfig {
             bootstrap_peers: String::new(),
             player_name: default_online_player_name(),
             game_ports: "7551".to_string(),
-            disable_p2p: true,
+            disable_p2p: false,
             no_tun: true,
         }
     }
