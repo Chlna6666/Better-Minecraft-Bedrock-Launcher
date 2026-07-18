@@ -51,7 +51,7 @@ jobs:
           Write-Host "Release tag: $tag"
 
       - name: Checkout BMCBL
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: BMCBL
           fetch-depth: 0
@@ -72,34 +72,44 @@ jobs:
         with:
           repository: BE-Community-Dev/mc-motd
           path: BE-Community-Dev/mc-motd
+          ref: main
+          token: ""
           persist-credentials: false
 
       - name: Checkout bedrock-world path dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: BE-Community-Dev/bedrock-world
           path: BE-Community-Dev/bedrock-world
+          ref: main
+          token: ""
           persist-credentials: false
 
       - name: Checkout bedrock-block-model path dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: BE-Community-Dev/bedrock-block-model
           path: BE-Community-Dev/bedrock-block-model
+          ref: main
+          token: ""
           persist-credentials: false
 
       - name: Checkout bedrock-leveldb path dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: BE-Community-Dev/bedrock-leveldb
           path: BE-Community-Dev/bedrock-leveldb
+          ref: main
+          token: ""
           persist-credentials: false
 
       - name: Checkout bedrock-render path dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: BE-Community-Dev/bedrock-render
           path: BE-Community-Dev/bedrock-render
+          ref: main
+          token: ""
           persist-credentials: false
 
       - name: Setup Rust
@@ -145,7 +155,7 @@ jobs:
           & (Join-Path $sevenZipDir "7z.exe") -h | Out-Null
 
       - name: Cache VC-LTL and YY-Thunks
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ${{ runner.temp }}\thunk-cache\VC-LTL-5.2.2
