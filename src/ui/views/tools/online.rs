@@ -554,6 +554,7 @@ fn toggle_field(
             cx.update_global(|state: &mut ToolsPageState, _cx| {
                 on_toggle(state);
             });
+            online_controls::persist_tools_online_settings(cx);
         }))
 }
 

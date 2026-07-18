@@ -150,7 +150,14 @@ impl ManagePageView {
             }
             ConfirmAction::DeleteScreenshot { entry } => {
                 cx.spawn(async move |handle, cx| {
-                    let result = data::delete_screenshot(&entry).await;
+                    let result = crate::tasks::runtime::run_blocking(
+                        crate::tasks::runtime::BlockingTaskOptions::hidden("删除截图"),
+                        {
+                            let entry = entry.clone();
+                            move || data::delete_screenshot(&entry)
+                        },
+                    )
+                    .await;
                     let _ = handle.update(cx, |this, cx| {
                         match result {
                             Ok(()) => {
@@ -182,11 +189,19 @@ impl ManagePageView {
                 entry,
             } => {
                 cx.spawn(async move |handle, cx| {
-                    let result = data::delete_external_server(
-                        &version,
-                        &config,
-                        selected_gdk_user.as_ref().map(SharedString::as_ref),
-                        entry.key.as_ref(),
+                    let result = crate::tasks::runtime::run_blocking(
+                        crate::tasks::runtime::BlockingTaskOptions::hidden("删除服务器"),
+                        {
+                            let entry = entry.clone();
+                            move || {
+                                data::delete_external_server(
+                                    &version,
+                                    &config,
+                                    selected_gdk_user.as_ref().map(SharedString::as_ref),
+                                    entry.key.as_ref(),
+                                )
+                            }
+                        },
                     )
                     .await;
                     let _ = handle.update(cx, |this, cx| {

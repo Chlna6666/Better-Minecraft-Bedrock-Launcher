@@ -5,11 +5,11 @@ impl ManagePageView {
         let map_name = asset.display_name.to_string();
         let folder_path = asset.file_path.to_string();
         cx.spawn(async move |_handle, cx| {
-            let result =
-                tokio::task::spawn_blocking(move || data::backup_map(&folder_path, &map_name))
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|result| result);
+            let result = crate::tasks::runtime::run_blocking(
+                crate::tasks::runtime::BlockingTaskOptions::hidden("备份地图"),
+                move || data::backup_map(&folder_path, &map_name),
+            )
+            .await;
 
             let _ = cx.update(|cx| match result {
                 Ok(path) => {
@@ -33,22 +33,25 @@ impl ManagePageView {
         window.defer(cx, move |_window, cx| {
             cx.spawn(async move |cx| {
                 let default_file_name = format!("{}.mcworld", asset.display_name);
-                let target = tokio::task::spawn_blocking(move || {
-                    pick_save_path_with_filter("Minecraft World", &["mcworld"], &default_file_name)
-                })
-                .await
-                .ok()
-                .flatten();
+                let target = cx
+                    .background_spawn_blocking(move || {
+                        pick_save_path_with_filter(
+                            "Minecraft World",
+                            &["mcworld"],
+                            &default_file_name,
+                        )
+                    })
+                    .await;
 
                 let Some(target) = target else {
                     return Ok::<(), anyhow::Error>(());
                 };
                 let folder_path = asset.file_path.to_string();
-                let result =
-                    tokio::task::spawn_blocking(move || data::export_map(&folder_path, &target))
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|result| result);
+                let result = crate::tasks::runtime::run_blocking(
+                    crate::tasks::runtime::BlockingTaskOptions::hidden("导出地图"),
+                    move || data::export_map(&folder_path, &target),
+                )
+                .await;
 
                 cx.update(|cx| match result {
                     Ok(()) => {

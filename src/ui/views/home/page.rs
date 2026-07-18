@@ -178,7 +178,7 @@ impl HomePageView {
         }
 
         self.active_at = Some(Instant::now());
-        self.ensure_versions_loaded(true, cx);
+        self.ensure_versions_loaded(false, cx);
         cx.notify();
     }
 
@@ -472,32 +472,13 @@ impl HomePageView {
                     .flex_col()
                     .gap(px(2.0))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .when(loading, |style| {
-                                let angle =
-                                    now.saturating_duration_since(self.created_at).as_secs_f32()
-                                        * 2.0
-                                        * std::f32::consts::PI
-                                        * 1.5;
-                                style.child(
-                                    icon_path(lucide_icons::icon_loader_circle())
-                                        .size(px(18.0))
-                                        .text_color(rgb(0xffffff))
-                                        .with_transformation(Transformation::rotate(radians(
-                                            angle,
-                                        ))),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xffffff))
-                                    .child(launch_label),
-                            ),
+                        div().flex().items_center().child(
+                            div()
+                                .text_size(px(18.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xffffff))
+                                .child(launch_label),
+                        ),
                     )
                     .child(
                         div()
@@ -786,7 +767,8 @@ impl Render for HomePageView {
             .unwrap_or(1.0);
         let entrance_eased = ease_out_elastic(entrance_factor);
 
-        let is_empty = self.versions.is_empty() && !self.versions_loading;
+        let initial_versions_loading = self.versions_loading && self.versions.is_empty();
+        let is_empty = self.versions.is_empty() && !initial_versions_loading;
         let selected_version = self.selected_folder.as_ref().and_then(|folder| {
             self.versions
                 .iter()
@@ -800,14 +782,14 @@ impl Render for HomePageView {
             path: version.path.clone().into(),
             launch_args: None,
         });
-        let launch_label = if self.versions_loading {
+        let launch_label = if initial_versions_loading {
             SharedString::from("加载中")
         } else if is_empty {
             i18n.t("common.not_installed")
         } else {
             i18n.t("Sidebar.launch")
         };
-        let launch_sub = if self.versions_loading {
+        let launch_sub = if initial_versions_loading {
             SharedString::from("请稍候...")
         } else if is_empty {
             i18n.t("common.go_download")
@@ -899,7 +881,7 @@ impl Render for HomePageView {
             );
         }
 
-        let loading_pulse = if self.versions_loading {
+        let loading_pulse = if initial_versions_loading {
             let pulse_progress = (now
                 .duration_since(self.active_at.unwrap_or(now))
                 .as_secs_f32()
@@ -937,7 +919,7 @@ impl Render for HomePageView {
                         launch_label,
                         launch_sub.clone(),
                         selected_launch_version,
-                        self.versions_loading,
+                        initial_versions_loading,
                         now,
                         cx,
                     ))
@@ -980,7 +962,7 @@ impl Render for HomePageView {
 
         request_animation_frame_if(
             window,
-            self.dropdown_animating || entrance_factor < 1.0 || self.versions_loading,
+            self.dropdown_animating || entrance_factor < 1.0 || initial_versions_loading,
         );
 
         overlay.into_any_element()

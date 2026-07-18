@@ -1,6 +1,5 @@
 use crate::launch::{LaunchMode, parse_launch_mode};
 use anyhow::Result;
-use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use std::{env, process};
@@ -112,24 +111,7 @@ fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard
 pub fn run() -> Result<()> {
     let startup_started = Instant::now();
     crate::utils::memory::configure_mimalloc_optimizer();
-    build_launcher_runtime()?.block_on(async_main(startup_started))
-}
-
-fn build_launcher_runtime() -> Result<tokio::runtime::Runtime> {
-    let available_threads = std::thread::available_parallelism()
-        .map(NonZeroUsize::get)
-        .unwrap_or(2);
-    let worker_threads = available_threads.clamp(2, 4);
-    let blocking_threads = available_threads.saturating_mul(2).max(4);
-
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(worker_threads)
-        .max_blocking_threads(blocking_threads)
-        .thread_stack_size(1024 * 1024)
-        .thread_name("bmcbl-runtime")
-        .build()
-        .map_err(Into::into)
+    crate::tasks::runtime::build_launcher_runtime()?.block_on(async_main(startup_started))
 }
 
 async fn async_main(startup_started: Instant) -> Result<()> {

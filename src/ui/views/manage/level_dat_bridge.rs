@@ -326,46 +326,52 @@ impl ManagePageView {
         editor.saving = true;
         let folder_path = editor.asset.file_path.to_string();
         cx.spawn(async move |handle, cx| {
-            let result = tokio::task::spawn_blocking(move || {
-                let world_path = std::path::PathBuf::from(&folder_path);
-                let history_capture = crate::ui::window::map_viewer::map_history::capture_before(
-                    crate::ui::window::map_viewer::map_history::MapHistoryCaptureSpec {
-                        kind: crate::ui::window::map_viewer::map_history::MapHistoryEntryKind::LevelDatSave,
-                        label: "保存 level.dat".to_string(),
-                        world_path: world_path.clone(),
-                        chunks: std::collections::BTreeSet::new(),
-                        raw_keys: std::collections::BTreeSet::new(),
-                        include_level_dat: true,
-                    },
-                );
-                let result = data::write_level_dat_document(&folder_path, &document);
-                match (history_capture, result) {
-                    (Ok(capture), Ok(())) => {
-                        crate::ui::window::map_viewer::map_history::complete_after(
-                            capture,
-                            "level.dat 已保存",
-                        )?;
-                        Ok(())
-                    }
-                    (Ok(capture), Err(error)) => {
-                        let _ = crate::ui::window::map_viewer::map_history::complete_failed(
-                            capture,
-                            error.clone(),
+            let result = crate::tasks::runtime::run_blocking(
+                crate::tasks::runtime::BlockingTaskOptions::hidden("保存 level.dat"),
+                move || {
+                    let world_path = std::path::PathBuf::from(&folder_path);
+                    let history_capture =
+                        crate::ui::window::map_viewer::map_history::capture_before(
+                            crate::ui::window::map_viewer::map_history::MapHistoryCaptureSpec {
+                                kind: crate::ui::window::map_viewer::map_history::MapHistoryEntryKind::LevelDatSave,
+                                label: "保存 level.dat".to_string(),
+                                world_path: world_path.clone(),
+                                chunks: std::collections::BTreeSet::new(),
+                                raw_keys: std::collections::BTreeSet::new(),
+                                include_level_dat: true,
+                            },
                         );
-                        Err(error)
+                    let result = data::write_level_dat_document(&folder_path, &document);
+                    match (history_capture, result) {
+                        (Ok(capture), Ok(())) => {
+                            crate::ui::window::map_viewer::map_history::complete_after(
+                                capture,
+                                "level.dat 已保存",
+                            )?;
+                            Ok(())
+                        }
+                        (Ok(capture), Err(error)) => {
+                            if let Err(history_error) =
+                                crate::ui::window::map_viewer::map_history::complete_failed(
+                                    capture,
+                                    error.clone(),
+                                )
+                            {
+                                tracing::warn!(%history_error, "map history failure recording failed");
+                            }
+                            Err(error)
+                        }
+                        (Err(error), Ok(())) => {
+                            tracing::warn!(%error, "map history capture failed after level.dat save");
+                            Ok(())
+                        }
+                        (Err(history_error), Err(write_error)) => {
+                            Err(format!("{write_error}；历史捕获失败: {history_error}"))
+                        }
                     }
-                    (Err(error), Ok(())) => {
-                        tracing::warn!(%error, "map history capture failed after level.dat save");
-                        Ok(())
-                    }
-                    (Err(history_error), Err(write_error)) => {
-                        Err(format!("{write_error}；历史捕获失败: {history_error}"))
-                    }
-                }
-            })
-            .await
-            .map_err(|error| error.to_string())
-            .and_then(|result| result);
+                },
+            )
+                .await;
 
             let _ = handle.update(cx, |this, cx| {
                 if let Some(editor) = this.level_dat_editor.as_mut() {
@@ -555,11 +561,11 @@ impl ManagePageView {
         };
         let folder_path = asset.file_path.to_string();
         cx.spawn_in(window, async move |handle, cx| {
-            let result =
-                tokio::task::spawn_blocking(move || data::read_level_dat_document(&folder_path))
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|result| result);
+            let result = crate::tasks::runtime::run_blocking(
+                crate::tasks::runtime::BlockingTaskOptions::hidden("读取 level.dat"),
+                move || data::read_level_dat_document(&folder_path),
+            )
+            .await;
 
             let _ = handle.update_in(cx, |this, window, cx| {
                 match result {

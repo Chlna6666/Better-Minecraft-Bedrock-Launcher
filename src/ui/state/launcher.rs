@@ -230,6 +230,7 @@ mod tests {
             started_at_unix: 0,
             last_update_unix: 0,
             sequence: 0,
+            visibility: crate::tasks::task_manager::TaskVisibility::Visible,
         })
     }
 }

@@ -190,7 +190,21 @@ async fn fetch_public_bootstrap_peers() -> anyhow::Result<Vec<String>> {
 }
 
 async fn default_bootstrap_peers() -> Vec<String> {
-    let peers = fallback_bootstrap_peers();
+    if let Ok(cache_guard) = BOOTSTRAP_PEERS_CACHE.lock() {
+        if let Some(cache) = cache_guard.as_ref()
+            && cache.fetched_at.elapsed() < BOOTSTRAP_PEERS_CACHE_TTL
+        {
+            return cache.peers.clone();
+        }
+    }
+
+    let peers = match fetch_public_bootstrap_peers().await {
+        Ok(peers) => peers,
+        Err(error) => {
+            tracing::warn!("public bootstrap peer source unavailable: {error:#}; using fallback");
+            fallback_bootstrap_peers()
+        }
+    };
     if let Ok(mut cache_guard) = BOOTSTRAP_PEERS_CACHE.lock() {
         *cache_guard = Some(BootstrapPeersCache {
             fetched_at: Instant::now(),
@@ -699,4 +713,46 @@ pub async fn online_debug_snapshot() -> serde_json::Value {
         "ts": now_ms(),
         "running": ONLINE_STATE.easytier_instance_id.lock().unwrap().is_some(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_bootstrap_peers, sanitize_bootstrap_peers};
+
+    #[test]
+    fn bootstrap_sources_are_combined_without_duplicates() {
+        let merged = merge_bootstrap_peers(
+            vec!["tcp://fallback.example:54321".to_string()],
+            vec![
+                "tcp://fallback.example:54321".to_string(),
+                "udp://public.example:54321".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            merged,
+            vec![
+                "tcp://fallback.example:54321".to_string(),
+                "udp://public.example:54321".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn bootstrap_peer_sanitization_keeps_supported_transports_only() {
+        let peers = sanitize_bootstrap_peers(vec![
+            " tcp://node.example:54321 ".to_string(),
+            "udp://node.example:54321".to_string(),
+            "https://node.example/peers".to_string(),
+            "".to_string(),
+        ]);
+
+        assert_eq!(
+            peers,
+            vec![
+                "tcp://node.example:54321".to_string(),
+                "udp://node.example:54321".to_string(),
+            ]
+        );
+    }
 }

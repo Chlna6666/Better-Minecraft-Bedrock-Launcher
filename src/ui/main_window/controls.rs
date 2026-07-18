@@ -165,6 +165,7 @@ impl MainWindowView {
                             s.bootstrap_peers = value;
                         },
                     );
+                    crate::ui::views::tools::online_controls::persist_tools_online_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });
@@ -180,6 +181,7 @@ impl MainWindowView {
                             s.player_name = value;
                         },
                     );
+                    crate::ui::views::tools::online_controls::persist_tools_online_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });
@@ -195,6 +197,7 @@ impl MainWindowView {
                             s.game_ports = value;
                         },
                     );
+                    crate::ui::views::tools::online_controls::persist_tools_online_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });

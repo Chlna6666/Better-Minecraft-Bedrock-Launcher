@@ -50,7 +50,7 @@ impl Default for ToolsPageState {
             bootstrap_peers_input: None,
             bootstrap_peers: SharedString::from(""),
             player_name_input: None,
-            player_name: SharedString::from("BMCBL_USER"),
+            player_name: SharedString::from(crate::config::config::default_online_player_name()),
             game_ports_input: None,
             game_ports: SharedString::from("7551"),
             easytier_settings_open: false,
@@ -68,6 +68,16 @@ impl Default for ToolsPageState {
             peers_loading: false,
             peers: Vec::new(),
         }
+    }
+}
+
+impl ToolsPageState {
+    pub(crate) fn apply_config(&mut self, config: &crate::config::config::OnlineConfig) {
+        self.bootstrap_peers = SharedString::from(config.bootstrap_peers.clone());
+        self.player_name = SharedString::from(config.player_name.clone());
+        self.game_ports = SharedString::from(config.game_ports.clone());
+        self.disable_p2p = config.disable_p2p;
+        self.no_tun = config.no_tun;
     }
 }
 

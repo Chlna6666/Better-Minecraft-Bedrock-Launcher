@@ -400,6 +400,7 @@ impl ManagePageView {
         if self.last_version_config_signature.as_ref() != Some(&config_signature) {
             self.last_version_config_signature = Some(config_signature);
             self.request_version_config(selected_version.clone(), cx);
+            return;
         }
 
         if version_config_loading {
@@ -496,26 +497,32 @@ impl ManagePageView {
 
         cx.spawn(async move |handle, cx| {
             let result = data::load_version_config(&version).await;
-            let _ = handle.update(cx, |_this, cx| {
-                cx.update_global(|state: &mut ManagePageState, _cx| {
-                    if state.version_config_request_id != request_id
-                        || state.selected_folder.as_ref() != Some(&version.folder)
-                    {
-                        return;
+            let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
+                if state.version_config_request_id != request_id
+                    || state.selected_folder.as_ref() != Some(&version.folder)
+                {
+                    return false;
+                }
+                state.version_config_loading = false;
+                match result {
+                    Ok(ref config) => {
+                        state.version_config = config.clone();
+                        state.version_config_error = None;
                     }
-                    state.version_config_loading = false;
-                    match result {
-                        Ok(ref config) => {
-                            state.version_config = config.clone();
-                            state.version_config_error = None;
-                        }
-                        Err(ref error) => {
-                            state.version_config_error = Some(SharedString::from(error.clone()));
-                        }
+                    Err(ref error) => {
+                        state.version_config_error = Some(SharedString::from(error.clone()));
                     }
-                });
-                cx.notify();
-            });
+                }
+                true
+            })?;
+            if applied
+                && let Err(error) = handle.update(cx, |this, cx| {
+                    this.sync_data_requests(cx);
+                    cx.notify();
+                })
+            {
+                tracing::debug!("manage view was released after version config loaded: {error:?}");
+            }
             Ok::<(), anyhow::Error>(())
         })
         .detach();
@@ -535,49 +542,48 @@ impl ManagePageView {
         });
 
         cx.spawn(async move |handle, cx| {
-            let result = tokio::task::spawn_blocking({
-                let version = version.clone();
-                let config = config.clone();
-                move || data::load_gdk_users(&version, &config)
-            })
-            .await
-            .map_err(|error| error.to_string())
-            .and_then(|result| result);
+            let result = data::load_gdk_users(&version, &config).await;
 
-            let _ = handle.update(cx, |_this, cx| {
-                cx.update_global(|state: &mut ManagePageState, _cx| {
-                    if state.gdk_users_request_id != request_id
-                        || state.selected_folder.as_ref() != Some(&version.folder)
-                    {
-                        return;
-                    }
-                    state.gdk_users_loading = false;
-                    match result {
-                        Ok(users) => {
-                            let preferred_user = Self::preferred_gdk_user(&users);
-                            let has_selected =
-                                state.selected_gdk_user.as_ref().is_some_and(|selected| {
-                                    users
-                                        .iter()
-                                        .any(|user| user.folder_name.as_ref() == selected.as_ref())
-                                });
-                            let selected_is_shared =
-                                state.selected_gdk_user.as_ref().is_some_and(|selected| {
-                                    selected.as_ref().eq_ignore_ascii_case("shared")
-                                });
-                            if !has_selected || selected_is_shared {
-                                state.selected_gdk_user = preferred_user;
-                            }
-                            state.gdk_users = Arc::from(users);
-                            state.gdk_users_error = None;
+            let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
+                if state.gdk_users_request_id != request_id
+                    || state.selected_folder.as_ref() != Some(&version.folder)
+                {
+                    return false;
+                }
+                state.gdk_users_loading = false;
+                match result {
+                    Ok(users) => {
+                        let preferred_user = Self::preferred_gdk_user(&users);
+                        let has_selected =
+                            state.selected_gdk_user.as_ref().is_some_and(|selected| {
+                                users
+                                    .iter()
+                                    .any(|user| user.folder_name.as_ref() == selected.as_ref())
+                            });
+                        let selected_is_shared =
+                            state.selected_gdk_user.as_ref().is_some_and(|selected| {
+                                selected.as_ref().eq_ignore_ascii_case("shared")
+                            });
+                        if !has_selected || selected_is_shared {
+                            state.selected_gdk_user = preferred_user;
                         }
-                        Err(error) => {
-                            state.gdk_users_error = Some(SharedString::from(error));
-                        }
+                        state.gdk_users = Arc::from(users);
+                        state.gdk_users_error = None;
                     }
-                });
-                cx.notify();
-            });
+                    Err(error) => {
+                        state.gdk_users_error = Some(SharedString::from(error));
+                    }
+                }
+                true
+            })?;
+            if applied
+                && let Err(error) = handle.update(cx, |this, cx| {
+                    this.sync_data_requests(cx);
+                    cx.notify();
+                })
+            {
+                tracing::debug!("manage view was released after GDK users loaded: {error:?}");
+            }
             Ok::<(), anyhow::Error>(())
         })
         .detach();
@@ -660,8 +666,8 @@ impl ManagePageView {
             )
             .await;
 
-            let _ = handle.update(cx, |this, cx| {
-                let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
+            let applied = cx
+                .update_global(|state: &mut ManagePageState, _cx| {
                     if state.assets_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
@@ -684,12 +690,20 @@ impl ManagePageView {
                         }
                     }
                     true
+                })
+                .unwrap_or_else(|error| {
+                    tracing::warn!("failed to apply loaded manage assets: {error:?}");
+                    false
                 });
-                if applied {
+
+            if applied
+                && let Err(error) = handle.update(cx, |this, cx| {
                     this.reset_asset_list_view();
                     cx.notify();
-                }
-            });
+                })
+            {
+                tracing::debug!("manage view was released after assets loaded: {error:?}");
+            }
             Ok::<(), anyhow::Error>(())
         })
         .detach();
@@ -717,8 +731,8 @@ impl ManagePageView {
             )
             .await;
 
-            let _ = handle.update(cx, |this, cx| {
-                let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
+            let applied = cx
+                .update_global(|state: &mut ManagePageState, _cx| {
                     if state.screenshots_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
@@ -737,12 +751,20 @@ impl ManagePageView {
                         }
                     }
                     true
+                })
+                .unwrap_or_else(|error| {
+                    tracing::warn!("failed to apply loaded screenshots: {error:?}");
+                    false
                 });
-                if applied {
+
+            if applied
+                && let Err(error) = handle.update(cx, |this, cx| {
                     this.reset_screenshot_list_view();
                     cx.notify();
-                }
-            });
+                })
+            {
+                tracing::debug!("manage view was released after screenshots loaded: {error:?}");
+            }
             Ok::<(), anyhow::Error>(())
         })
         .detach();
@@ -770,9 +792,9 @@ impl ManagePageView {
             )
             .await;
 
-            let _ = handle.update(cx, |this, cx| {
-                let mut servers_for_motd = Vec::new();
-                let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
+            let mut servers_for_motd = Vec::new();
+            let applied = cx
+                .update_global(|state: &mut ManagePageState, _cx| {
                     if state.servers_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
@@ -795,15 +817,23 @@ impl ManagePageView {
                         }
                     }
                     true
+                })
+                .unwrap_or_else(|error| {
+                    tracing::warn!("failed to apply loaded servers: {error:?}");
+                    false
                 });
-                if applied {
+
+            if applied
+                && let Err(error) = handle.update(cx, |this, cx| {
                     this.reset_server_list_view();
                     if !servers_for_motd.is_empty() {
                         this.request_server_motds(servers_for_motd, cx);
                     }
                     cx.notify();
-                }
-            });
+                })
+            {
+                tracing::debug!("manage view was released after servers loaded: {error:?}");
+            }
             Ok::<(), anyhow::Error>(())
         })
         .detach();
@@ -845,22 +875,19 @@ impl ManagePageView {
             state.server_motd_request_id
         });
 
-        cx.spawn(async move |handle, cx| {
+        cx.spawn(async move |_handle, cx| {
             let result = data::query_server_motd_batch(servers).await;
-            let _ = handle.update(cx, |_this, cx| {
-                cx.update_global(|state: &mut ManagePageState, _cx| {
-                    if state.server_motd_request_id != request_id {
-                        return;
-                    }
-                    let mut motd = (*state.server_motd).clone();
-                    for (key, status) in result {
-                        motd.insert(key, status);
-                    }
-                    state.server_motd = Arc::new(motd);
-                    state.server_motd_loading = false;
-                });
-                cx.notify();
-            });
+            cx.update_global(|state: &mut ManagePageState, _cx| {
+                if state.server_motd_request_id != request_id {
+                    return;
+                }
+                let mut motd = (*state.server_motd).clone();
+                for (key, status) in result {
+                    motd.insert(key, status);
+                }
+                state.server_motd = Arc::new(motd);
+                state.server_motd_loading = false;
+            })?;
             Ok::<(), anyhow::Error>(())
         })
         .detach();

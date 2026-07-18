@@ -28,6 +28,9 @@ pub struct ManagePageView {
 
 impl ManagePageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        cx.update_global(|state: &mut ManagePageState, _cx| {
+            state.reset_transient_requests();
+        });
         let initial_render_signature =
             ManageRenderSignature::from_state(cx.global::<ManagePageState>());
         let subscriptions = vec![
@@ -212,7 +215,7 @@ impl ManagePageView {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .when(state.loading, |this| {
+                    .when(state.loading && state.versions.is_empty(), |this| {
                         this.child(subtle_badge(colors, "正在加载版本列表"))
                     })
                     .when_some(state.error.clone(), |this, error| {
@@ -652,43 +655,58 @@ impl ManagePageView {
                                     .children(render_active_toolbar_actions(colors, state, cx)),
                             ),
                     )
-                    .child(div().flex_1().min_h(px(0.)).child(match state.tab {
-                        ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => {
-                            render_asset_list(
-                                colors,
-                                version,
-                                state,
-                                filtered_assets,
-                                &self.asset_scroll_handle,
-                                cx,
-                            )
-                        }
-                        ManageTab::SkinPack => render_skin_pack_management(
-                            colors,
-                            version,
-                            state,
-                            filtered_assets,
-                            &self.asset_scroll_handle,
-                            window,
-                            cx,
-                        ),
-                        ManageTab::Screenshot => render_screenshot_list(
-                            colors,
-                            version,
-                            state,
-                            filtered_screenshots,
-                            &self.screenshot_scroll_handle,
-                            cx,
-                        ),
-                        ManageTab::Server => render_server_list(
-                            colors,
-                            version,
-                            state,
-                            filtered_servers,
-                            &self.server_scroll_handle,
-                            cx,
-                        ),
-                    })),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .child(if state.version_config_loading {
+                                empty_state(
+                                    colors,
+                                    "images/manage/empty.svg",
+                                    "正在读取版本配置",
+                                    "请稍候，BMCBL 正在准备当前实例的管理设置。",
+                                )
+                                .into_any_element()
+                            } else {
+                                match state.tab {
+                                    ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => {
+                                        render_asset_list(
+                                            colors,
+                                            version,
+                                            state,
+                                            filtered_assets,
+                                            &self.asset_scroll_handle,
+                                            cx,
+                                        )
+                                    }
+                                    ManageTab::SkinPack => render_skin_pack_management(
+                                        colors,
+                                        version,
+                                        state,
+                                        filtered_assets,
+                                        &self.asset_scroll_handle,
+                                        window,
+                                        cx,
+                                    ),
+                                    ManageTab::Screenshot => render_screenshot_list(
+                                        colors,
+                                        version,
+                                        state,
+                                        filtered_screenshots,
+                                        &self.screenshot_scroll_handle,
+                                        cx,
+                                    ),
+                                    ManageTab::Server => render_server_list(
+                                        colors,
+                                        version,
+                                        state,
+                                        filtered_servers,
+                                        &self.server_scroll_handle,
+                                        cx,
+                                    ),
+                                }
+                            }),
+                    ),
             );
 
         main_panel

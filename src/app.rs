@@ -290,6 +290,11 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
     cx.default_global::<crate::ui::views::manage::state::ManagePageState>();
     cx.default_global::<crate::ui::views::tools::state::ToolsPageState>();
+    cx.update_global(
+        |state: &mut crate::ui::views::tools::state::ToolsPageState, _cx| {
+            state.apply_config(&bootstrap.config.online);
+        },
+    );
     cx.default_global::<crate::ui::views::settings::state::SettingsPageState>();
     cx.default_global::<crate::ui::state::quit::QuitState>();
     cx.default_global::<crate::ui::state::theme::ThemeState>();

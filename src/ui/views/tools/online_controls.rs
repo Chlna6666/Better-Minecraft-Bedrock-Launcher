@@ -8,6 +8,39 @@ use tracing::warn;
 use super::online::{append_online_log, online_state_text};
 use super::online_widgets::pill_button;
 
+pub(crate) fn persist_tools_online_settings(cx: &mut App) {
+    let (bootstrap_peers, player_name, game_ports, disable_p2p, no_tun) =
+        cx.read_global(|state: &ToolsPageState, _cx| {
+            (
+                state.bootstrap_peers.to_string(),
+                state.player_name.to_string(),
+                state.game_ports.to_string(),
+                state.disable_p2p,
+                state.no_tun,
+            )
+        });
+
+    cx.spawn(async move |_cx| {
+        let result = tokio::task::spawn_blocking(move || {
+            crate::config::config::update_config(|config| {
+                config.online.bootstrap_peers = bootstrap_peers;
+                config.online.player_name = player_name;
+                config.online.game_ports = game_ports;
+                config.online.disable_p2p = disable_p2p;
+                config.online.no_tun = no_tun;
+            })
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!("persist online settings failed: {error}"),
+            Err(error) => tracing::warn!("persist online settings task failed: {error}"),
+        }
+    })
+    .detach();
+}
+
 pub(super) fn render_controls_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     let nat_label = if state.nat_checking {
         SharedString::from("正在检测 NAT...")
