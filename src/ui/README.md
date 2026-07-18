@@ -345,8 +345,14 @@ inside their focused submodules rather than expanding the root files.
 All network work must happen off the UI thread. Preferred patterns:
 
 - call existing core/service APIs from a background task;
-- use `tokio::spawn`, `tokio::task::spawn_blocking`, or GPUI background work
-  where appropriate;
+- call `src/tasks` services for business filesystem access, parsing, decoding,
+  networking, processes, timers, and other Tokio work;
+- reserve GPUI `background_spawn_blocking` for bounded UI-only helpers such as
+  native dialogs and small presentation preparation;
+- do not call `tokio::spawn` or `tokio::task::spawn_blocking` directly from a
+  GPUI page or view;
+- mark short service-owned queries as hidden tasks so they retain cancellation,
+  timeout, logging, and error handling without appearing in task-page lists;
 - return results to UI through `cx.update_global`, `entity.update`, or a
   service-owned subscription;
 - store cancellable tasks when the work should stop with the view;

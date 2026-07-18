@@ -1,8 +1,8 @@
 use super::config::{
     CURRENT_CONFIG_VERSION, Config, FONT_SOURCE_DEFAULT, FONT_SOURCE_LOCAL, FONT_SOURCE_SYSTEM,
     clamp_background_blur, clamp_music_volume, default_error_report_sentry_dsn,
-    default_glass_effect_enabled, default_gpu_adapter_name, get_default_config,
-    normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
+    default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
+    get_default_config, normalize_font_source, normalize_gpu_adapter_name, normalize_language_code,
     normalize_renderer_backend, normalize_theme_mode,
 };
 use crate::{http::proxy, utils::file_ops};
@@ -115,6 +115,8 @@ fn load_config_from_disk() -> io::Result<Config> {
     let has_theme_mode = content.contains("theme_mode");
     let has_font_source = content.contains("font_source");
     let has_music_section = content.contains("[music]");
+    let has_online_section = content.contains("[online]");
+    let has_online_player_name = content.contains("player_name");
 
     let config: Config = match toml::from_str(&content) {
         Ok(parsed_config) => parsed_config,
@@ -234,6 +236,16 @@ fn load_config_from_disk() -> io::Result<Config> {
         migrated = true;
     }
     migrated |= normalize_music_settings(&mut config, has_music_section);
+    if !has_online_section {
+        migrated = true;
+    }
+    if !has_online_player_name
+        || config.online.player_name.trim().is_empty()
+        || config.online.player_name.trim() == "BMCBL_USER"
+    {
+        config.online.player_name = default_online_player_name();
+        migrated = true;
+    }
     migrated |=
         normalize_update_check_settings(&mut config, has_auto_check_updates, has_check_on_start);
     if has_legacy_keep_appx {

@@ -183,12 +183,11 @@ impl ManagePageView {
     pub(super) fn import_version_package(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.defer(cx, move |_window, cx| {
             cx.spawn(async move |cx| {
-                let selected = tokio::task::spawn_blocking(|| {
-                    pick_file_path_with_filter("Packages", &["appx", "zip", "msixvc"])
-                })
-                .await
-                .ok()
-                .flatten();
+                let selected = cx
+                    .background_spawn_blocking(|| {
+                        pick_file_path_with_filter("Packages", &["appx", "zip", "msixvc"])
+                    })
+                    .await;
 
                 let Some(path) = selected else {
                     return Ok::<(), anyhow::Error>(());

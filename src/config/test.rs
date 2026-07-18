@@ -62,6 +62,23 @@ fn missing_glass_effect_enabled_defaults_to_true() {
     assert!(config.music.auto_play_on_startup);
     assert_eq!(config.music.volume, super::defaults::default_music_volume());
     assert_eq!(config.music.playback_mode, MusicPlaybackMode::Repeat);
+    assert!(config.online.player_name.starts_with("BMCBL_USER_"));
+    assert_eq!(config.online.player_name.len(), "BMCBL_USER_".len() + 6);
+    assert_eq!(config.online.game_ports, "7551");
+    assert!(config.online.disable_p2p);
+    assert!(config.online.no_tun);
+}
+
+#[test]
+fn default_online_player_name_has_random_suffix() {
+    let name = super::config::default_online_player_name();
+    assert!(name.starts_with("BMCBL_USER_"));
+    assert_eq!(name.len(), "BMCBL_USER_".len() + 6);
+    assert!(
+        name["BMCBL_USER_".len()..]
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric())
+    );
 }
 
 #[test]

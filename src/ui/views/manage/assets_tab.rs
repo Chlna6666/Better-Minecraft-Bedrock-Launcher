@@ -147,11 +147,11 @@ impl ManagePageView {
 
         window.defer(cx, move |_window, cx| {
             cx.spawn(async move |cx| {
-                let files = tokio::task::spawn_blocking(move || {
-                    pick_file_paths_with_filter(filter_name, extensions)
-                })
-                .await
-                .unwrap_or_default();
+                let files = cx
+                    .background_spawn_blocking(move || {
+                        pick_file_paths_with_filter(filter_name, extensions)
+                    })
+                    .await;
 
                 if files.is_empty() {
                     return Ok::<(), anyhow::Error>(());
@@ -645,7 +645,11 @@ pub(super) fn render_asset_list(
     let missing_gdk_user =
         version.is_gdk() && is_gdk_user_scoped_tab(state.tab) && state.selected_gdk_user.is_none();
 
-    if state.gdk_users_loading && is_gdk_user_scoped_tab(state.tab) && version.is_gdk() {
+    if state.gdk_users_loading
+        && state.gdk_users.is_empty()
+        && is_gdk_user_scoped_tab(state.tab)
+        && version.is_gdk()
+    {
         return empty_state(
             colors,
             "images/manage/empty.svg",
@@ -683,7 +687,7 @@ pub(super) fn render_asset_list(
         .into_any_element();
     }
 
-    if state.assets_loading {
+    if state.assets_loading && state.assets.is_empty() {
         return empty_state(
             colors,
             "images/manage/empty.svg",

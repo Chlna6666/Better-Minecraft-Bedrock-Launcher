@@ -126,7 +126,7 @@ pub(super) fn render_screenshot_list(
     scroll_handle: &ScrollHandle,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
-    if state.gdk_users_loading && version.is_gdk() {
+    if state.gdk_users_loading && state.gdk_users.is_empty() && version.is_gdk() {
         return empty_state(
             colors,
             "images/manage/empty.svg",
@@ -146,7 +146,7 @@ pub(super) fn render_screenshot_list(
         .into_any_element();
     }
 
-    if state.screenshots_loading {
+    if state.screenshots_loading && state.screenshots.is_empty() {
         return empty_state(
             colors,
             "images/manage/empty.svg",

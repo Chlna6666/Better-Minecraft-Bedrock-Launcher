@@ -80,6 +80,17 @@ pub trait AppContext {
     where
         R: Send + 'static;
 
+    /// Spawn synchronous work on a background thread.
+    fn background_spawn_blocking<R>(
+        &self,
+        operation: impl FnOnce() -> R + Send + 'static,
+    ) -> Task<R>
+    where
+        R: Send + 'static,
+    {
+        self.background_spawn(async move { operation() })
+    }
+
     /// Read a global from this app context
     fn read_global<G, R>(&self, callback: impl FnOnce(&G, &App) -> R) -> Self::Result<R>
     where

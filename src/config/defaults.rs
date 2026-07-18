@@ -1,7 +1,7 @@
 use super::config::{
     CURRENT_CONFIG_VERSION, Config, CustomStyle, DEFAULT_ERROR_REPORT_SENTRY_DSN,
     DEFAULT_MUSIC_VOLUME, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, Launcher, MusicConfig,
-    ProxyConfig, ProxyType, UpdateChannel,
+    OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
 };
 
 pub(super) fn default_true() -> bool {
@@ -50,6 +50,11 @@ pub fn default_theme_mode() -> String {
 
 pub fn default_music_volume() -> f32 {
     DEFAULT_MUSIC_VOLUME
+}
+
+pub fn default_online_player_name() -> String {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("BMCBL_USER_{}", &suffix[..6])
 }
 
 pub fn get_default_config() -> Config {
@@ -104,6 +109,7 @@ pub fn get_default_config() -> Config {
             uwp_minimize_fix: true,
         },
         music: MusicConfig::default(),
+        online: OnlineConfig::default(),
         agreement_accepted: false,
     }
 }

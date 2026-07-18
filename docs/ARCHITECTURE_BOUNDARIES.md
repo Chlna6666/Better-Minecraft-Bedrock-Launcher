@@ -105,6 +105,27 @@ Network IO, durable cache storage, image decoding, archive extraction, download
 pipelines, filesystem mutation, launcher workflows, and long-lived background
 tasks must stay outside render methods.
 
+GPUI owns the foreground UI executor and UI-specific helper work. Small native
+dialogs and bounded UI-only preparation may use `background_spawn_blocking`.
+BMCBL business work—including filesystem access, version/resource parsing,
+decoding, downloads, networking, processes, and long-lived timers—must be
+scheduled through `src/tasks` on the Tokio runtime. Page and view code calls a
+service and commits its result back to GPUI; it must not select a Tokio blocking
+pool directly. Route-scoped request state must invalidate outstanding request
+identifiers and clear transient loading flags when its owning view is released
+or recreated.
+
+`src/tasks/runtime.rs` owns construction of the application Tokio runtime and
+the bounded blocking-work queue. Its async workers, blocking-thread pool, and
+business-work semaphore share one limit set to twice the available logical CPU
+count.
+The semaphore permit remains owned by the blocking operation until that
+operation actually exits, including after a caller timeout or cancellation.
+`src/tasks/task_manager.rs` owns cancellation,
+progress, logs, errors, and task visibility. User-facing work is `Visible`;
+short internal service queries are `Hidden`, remain observable to diagnostics,
+and are excluded from GUI task broadcasts and render snapshots.
+
 ## UI Boundary
 
 `src/ui` renders and coordinates UI state. It may read global UI state, call

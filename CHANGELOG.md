@@ -16,6 +16,12 @@ inside that section are maintained automatically by
   previews, editing history, structure import/export, and selection workflows.
 - Improved launcher workflows for local version discovery, AppX/GDK prerequisites,
   task scheduling, archive handling, music playback ordering, and settings state.
+- Moved management-page business reads and parsing into hidden Tokio services,
+  while invalidating route-scoped requests when views are released or recreated,
+  so completed version/resource scans cannot leave the UI stuck loading or flood
+  the task page. Tokio async and blocking capacity now scale to twice the
+  available logical CPU count, and capacity is released only when the underlying
+  blocking operation actually exits.
 - Expanded GPUI/Nova rendering support for frame lifecycle, image painting,
   upload/resource handling, DX12/Vulkan paths, native text backends, font catalogs,
   and small-text rasterization.

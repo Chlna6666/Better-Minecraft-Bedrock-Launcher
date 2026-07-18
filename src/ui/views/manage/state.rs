@@ -219,6 +219,35 @@ pub struct ManagePageState {
     pub server_motd_request_id: u64,
 }
 
+impl ManagePageState {
+    pub fn has_transient_requests(&self) -> bool {
+        self.loading
+            || self.version_config_loading
+            || self.gdk_users_loading
+            || self.assets_loading
+            || self.screenshots_loading
+            || self.servers_loading
+            || self.server_motd_loading
+    }
+
+    pub fn reset_transient_requests(&mut self) {
+        self.loading = false;
+        self.version_config_loading = false;
+        self.gdk_users_loading = false;
+        self.assets_loading = false;
+        self.screenshots_loading = false;
+        self.servers_loading = false;
+        self.server_motd_loading = false;
+
+        self.version_config_request_id = self.version_config_request_id.wrapping_add(1);
+        self.gdk_users_request_id = self.gdk_users_request_id.wrapping_add(1);
+        self.assets_request_id = self.assets_request_id.wrapping_add(1);
+        self.screenshots_request_id = self.screenshots_request_id.wrapping_add(1);
+        self.servers_request_id = self.servers_request_id.wrapping_add(1);
+        self.server_motd_request_id = self.server_motd_request_id.wrapping_add(1);
+    }
+}
+
 impl Default for ManagePageState {
     fn default() -> Self {
         Self {
@@ -269,6 +298,41 @@ impl Default for ManagePageState {
 }
 
 impl Global for ManagePageState {}
+
+#[cfg(test)]
+mod tests {
+    use super::ManagePageState;
+
+    #[test]
+    fn reset_transient_requests_clears_loading_and_invalidates_results() {
+        let mut state = ManagePageState {
+            loading: true,
+            version_config_loading: true,
+            gdk_users_loading: true,
+            assets_loading: true,
+            screenshots_loading: true,
+            servers_loading: true,
+            server_motd_loading: true,
+            version_config_request_id: 10,
+            gdk_users_request_id: 20,
+            assets_request_id: 30,
+            screenshots_request_id: 40,
+            servers_request_id: 50,
+            server_motd_request_id: 60,
+            ..ManagePageState::default()
+        };
+
+        state.reset_transient_requests();
+
+        assert!(!state.has_transient_requests());
+        assert_eq!(state.version_config_request_id, 11);
+        assert_eq!(state.gdk_users_request_id, 21);
+        assert_eq!(state.assets_request_id, 31);
+        assert_eq!(state.screenshots_request_id, 41);
+        assert_eq!(state.servers_request_id, 51);
+        assert_eq!(state.server_motd_request_id, 61);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ManagedVersionEntry {

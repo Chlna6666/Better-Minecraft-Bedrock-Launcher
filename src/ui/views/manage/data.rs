@@ -1,7 +1,7 @@
 use anyhow::Context as _;
 use gpui::SharedString;
 use serde::{Deserialize, Serialize};
-use std::fs::{self as std_fs, File};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,12 +21,13 @@ use crate::core::minecraft::nbt::{
     read_level_dat_document as read_level_dat_file_document,
     write_level_dat_document as write_level_dat_file_document,
 };
-use crate::core::minecraft::paths::{GamePathOptions, get_game_root};
+use crate::core::minecraft::paths::GamePathOptions;
 use crate::core::minecraft::resource_packs::{Header, McPackInfo};
 use crate::core::minecraft::skin_packs::McSkinPackInfo;
 use crate::core::version::settings::{
     VANILLA_SKIN_PACK_REDIRECTION_SOURCE, VersionConfig, get_version_config, save_version_config,
 };
+use crate::tasks::manage_service::{self, ManagedModInfo, PackKind};
 use crate::ui::views::manage::state::{
     ManageAssetEntry, ManageAssetKind, ManageGdkUser, ManagePackSubtype, ManageScreenshotEntry,
     ManageServerEntry, ManageServerMotd, ManageServerMotdStatus, ManageServerMotdTarget,
@@ -54,7 +55,7 @@ struct ModManifest {
 pub async fn load_version_config(
     version: &ManagedVersionEntry,
 ) -> Result<ManageVersionConfig, String> {
-    let config = get_version_config(version.folder.to_string()).await?;
+    let config = manage_service::load_version_config(version.folder.to_string()).await?;
     Ok(manage_version_config_from_core(config))
 }
 
@@ -82,7 +83,7 @@ pub async fn save_manage_version_config(
     save_version_config(version.folder.to_string(), core_config).await
 }
 
-pub fn load_gdk_users(
+pub async fn load_gdk_users(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
 ) -> Result<Vec<ManageGdkUser>, String> {
@@ -94,38 +95,13 @@ pub fn load_gdk_users(
         user_id: None,
         allow_shared_fallback: true,
     };
-    let root = get_game_root(&options).ok_or_else(|| "无法解析 Minecraft 根目录".to_string())?;
-    let users_dir = root.join("Users");
-    if !users_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut users = Vec::new();
-    let entries =
-        std_fs::read_dir(&users_dir).map_err(|error| format!("读取 GDK 用户目录失败: {error}"))?;
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let folder_name = entry.file_name().to_string_lossy().to_string();
-        if folder_name.eq_ignore_ascii_case("public") {
-            continue;
-        }
-        users.push(ManageGdkUser {
+    Ok(manage_service::load_gdk_users(options)
+        .await?
+        .into_iter()
+        .map(|folder_name| ManageGdkUser {
             folder_name: SharedString::from(folder_name),
-        });
-    }
-    users.sort_by(|left, right| {
-        let left_shared = left.folder_name.as_ref().eq_ignore_ascii_case("shared");
-        let right_shared = right.folder_name.as_ref().eq_ignore_ascii_case("shared");
-        left_shared
-            .cmp(&right_shared)
-            .then_with(|| left.folder_name.as_ref().cmp(right.folder_name.as_ref()))
-    });
-    Ok(users)
+        })
+        .collect())
 }
 
 pub async fn load_assets(
@@ -209,12 +185,7 @@ pub async fn load_screenshots(
         user_id: selected_gdk_user.map(ToString::to_string),
         allow_shared_fallback: false,
     };
-    let entries = tokio::task::spawn_blocking(move || {
-        crate::core::minecraft::screenshots::list_screenshots_standard(&options)
-    })
-    .await
-    .map_err(|error| format!("读取截图任务失败: {error:?}"))?
-    .map_err(|error| format!("读取截图失败: {error:?}"))?;
+    let entries = manage_service::load_screenshots(options).await?;
 
     Ok(entries
         .into_iter()
@@ -222,40 +193,36 @@ pub async fn load_screenshots(
         .collect())
 }
 
-pub async fn delete_screenshot(entry: &ManageScreenshotEntry) -> Result<(), String> {
+pub fn delete_screenshot(entry: &ManageScreenshotEntry) -> Result<(), String> {
     let image_path = entry.image_path.to_string();
     let folder_path = entry.folder_path.to_string();
     let file_name = entry.file_name.to_string();
-    tokio::task::spawn_blocking(move || {
-        let path = PathBuf::from(&image_path);
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        let json_path = PathBuf::from(&folder_path).join(format!("{stem}.json"));
-        let mc_path = PathBuf::from(&folder_path).join(format!("{stem}.mc"));
-        crate::core::minecraft::screenshots::delete_screenshot(
-            &crate::core::minecraft::screenshots::McScreenshotInfo {
-                key: format!("screenshot:{image_path}"),
-                image_path,
-                folder_path,
-                file_name,
-                capture_time: None,
-                modified: None,
-                size_bytes: None,
-                json_path: json_path
-                    .exists()
-                    .then(|| json_path.to_string_lossy().to_string()),
-                mc_path: mc_path
-                    .exists()
-                    .then(|| mc_path.to_string_lossy().to_string()),
-                source_root: None,
-                gdk_user: None,
-            },
-        )
-    })
-    .await
-    .map_err(|error| format!("删除截图任务失败: {error:?}"))?
+    let path = PathBuf::from(&image_path);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let json_path = PathBuf::from(&folder_path).join(format!("{stem}.json"));
+    let mc_path = PathBuf::from(&folder_path).join(format!("{stem}.mc"));
+    crate::core::minecraft::screenshots::delete_screenshot(
+        &crate::core::minecraft::screenshots::McScreenshotInfo {
+            key: format!("screenshot:{image_path}"),
+            image_path,
+            folder_path,
+            file_name,
+            capture_time: None,
+            modified: None,
+            size_bytes: None,
+            json_path: json_path
+                .exists()
+                .then(|| json_path.to_string_lossy().to_string()),
+            mc_path: mc_path
+                .exists()
+                .then(|| mc_path.to_string_lossy().to_string()),
+            source_root: None,
+            gdk_user: None,
+        },
+    )
     .map_err(|error| format!("删除截图失败: {error:?}"))
 }
 
@@ -265,17 +232,12 @@ pub async fn load_external_servers(
     selected_gdk_user: Option<&str>,
 ) -> Result<Vec<ManageServerEntry>, String> {
     let options = external_server_options(version, config, selected_gdk_user);
-    let entries = tokio::task::spawn_blocking(move || {
-        crate::core::minecraft::servers::read_external_servers(&options)
-    })
-    .await
-    .map_err(|error| format!("读取服务器任务失败: {error:?}"))?
-    .map_err(|error| format!("读取服务器失败: {error:?}"))?;
+    let entries = manage_service::load_external_servers(options).await?;
 
     Ok(entries.into_iter().map(manage_server_from_core).collect())
 }
 
-pub async fn add_external_server(
+pub fn add_external_server(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
@@ -286,16 +248,12 @@ pub async fn add_external_server(
     let options = external_server_options(version, config, selected_gdk_user);
     let name = name.to_string();
     let address = address.to_string();
-    tokio::task::spawn_blocking(move || {
-        crate::core::minecraft::servers::add_external_server(&options, &name, &address, port)
-    })
-    .await
-    .map_err(|error| format!("添加服务器任务失败: {error:?}"))?
-    .map(manage_server_from_core)
-    .map_err(|error| format!("添加服务器失败: {error:?}"))
+    crate::core::minecraft::servers::add_external_server(&options, &name, &address, port)
+        .map(manage_server_from_core)
+        .map_err(|error| format!("添加服务器失败: {error:?}"))
 }
 
-pub async fn update_external_server(
+pub fn update_external_server(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
@@ -308,18 +266,12 @@ pub async fn update_external_server(
     let key = key.to_string();
     let name = name.to_string();
     let address = address.to_string();
-    tokio::task::spawn_blocking(move || {
-        crate::core::minecraft::servers::update_external_server(
-            &options, &key, &name, &address, port,
-        )
-    })
-    .await
-    .map_err(|error| format!("编辑服务器任务失败: {error:?}"))?
-    .map(manage_server_from_core)
-    .map_err(|error| format!("编辑服务器失败: {error:?}"))
+    crate::core::minecraft::servers::update_external_server(&options, &key, &name, &address, port)
+        .map(manage_server_from_core)
+        .map_err(|error| format!("编辑服务器失败: {error:?}"))
 }
 
-pub async fn delete_external_server(
+pub fn delete_external_server(
     version: &ManagedVersionEntry,
     config: &ManageVersionConfig,
     selected_gdk_user: Option<&str>,
@@ -327,12 +279,8 @@ pub async fn delete_external_server(
 ) -> Result<(), String> {
     let options = external_server_options(version, config, selected_gdk_user);
     let key = key.to_string();
-    tokio::task::spawn_blocking(move || {
-        crate::core::minecraft::servers::delete_external_server(&options, &key)
-    })
-    .await
-    .map_err(|error| format!("删除服务器任务失败: {error:?}"))?
-    .map_err(|error| format!("删除服务器失败: {error:?}"))
+    crate::core::minecraft::servers::delete_external_server(&options, &key)
+        .map_err(|error| format!("删除服务器失败: {error:?}"))
 }
 
 pub async fn query_server_motd_batch(
@@ -698,113 +646,11 @@ fn manage_version_config_from_core(config: VersionConfig) -> ManageVersionConfig
 }
 
 async fn load_mod_assets(version: &ManagedVersionEntry) -> Result<Vec<ManageAssetEntry>, String> {
-    let version_folder = version.folder.to_string();
-    tokio::task::spawn_blocking(move || load_mod_assets_blocking(&version_folder))
-        .await
-        .map_err(|error| format!("读取 Mod 任务失败: {error:?}"))?
-}
-
-fn load_mod_assets_blocking(version_folder: &str) -> Result<Vec<ManageAssetEntry>, String> {
-    let mods_dir = version_mods_dir(version_folder);
-    if !mods_dir.exists() {
-        std_fs::create_dir_all(&mods_dir)
-            .map_err(|error| format!("创建 mods 目录失败: {error}"))?;
-        return Ok(Vec::new());
-    }
-
-    let entries =
-        std_fs::read_dir(&mods_dir).map_err(|error| format!("读取 mods 目录失败: {error}"))?;
-    let mut assets = Vec::new();
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                warn!(
-                    "read mod directory entry failed {}: {error}",
-                    mods_dir.display()
-                );
-                continue;
-            }
-        };
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let folder_name = entry.file_name().to_string_lossy().to_string();
-        let enabled_manifest_path = path.join("manifest.json");
-        let disabled_manifest_path = path.join(".manifest.json");
-        let (enabled, manifest_path) = if enabled_manifest_path.exists() {
-            (true, enabled_manifest_path)
-        } else if disabled_manifest_path.exists() {
-            (false, disabled_manifest_path)
-        } else {
-            continue;
-        };
-
-        let content = match std_fs::read_to_string(&manifest_path) {
-            Ok(content) => content,
-            Err(error) => {
-                warn!(
-                    "read mod manifest failed {}: {error}",
-                    manifest_path.display()
-                );
-                continue;
-            }
-        };
-        let manifest: ModManifest = match serde_json::from_str(&content) {
-            Ok(manifest) => manifest,
-            Err(error) => {
-                warn!(
-                    "parse mod manifest failed {}: {error}",
-                    manifest_path.display()
-                );
-                continue;
-            }
-        };
-
-        let file_path = path.join(&manifest.entry);
-        let detail = if manifest.mod_type == "hot-inject" {
-            Some(SharedString::from(format!(
-                "{} · {} ms",
-                manifest.mod_type,
-                manifest.inject_delay_ms.unwrap_or(0)
-            )))
-        } else {
-            Some(SharedString::from(manifest.mod_type.clone()))
-        };
-
-        assets.push(ManageAssetEntry {
-            key: SharedString::from(format!("mod:{folder_name}")),
-            folder_name: SharedString::from(folder_name.clone()),
-            display_name: SharedString::from(manifest.name),
-            detail,
-            description: None,
-            file_path: SharedString::from(file_path.to_string_lossy().to_string()),
-            open_path: SharedString::from(path.to_string_lossy().to_string()),
-            icon_path: None,
-            modified_iso: None,
-            modified_label: None,
-            size_bytes: None,
-            size_label: None,
-            source: None,
-            edition: None,
-            gdk_user: None,
-            enabled: Some(enabled),
-            mod_type: Some(SharedString::from(manifest.mod_type)),
-            inject_delay_ms: Some(manifest.inject_delay_ms.unwrap_or(0)),
-            resource_pack_count: None,
-            behavior_pack_count: None,
-            skin_count: None,
-            first_skin_full_texture_path: None,
-            first_skin_model_label: None,
-            skin_previews: None,
-            kind: ManageAssetKind::Mod,
-        });
-    }
-
-    Ok(assets)
+    Ok(manage_service::load_mods(version.folder.to_string())
+        .await?
+        .into_iter()
+        .map(manage_asset_from_mod)
+        .collect())
 }
 
 async fn load_pack_assets(
@@ -822,22 +668,11 @@ async fn load_pack_assets(
         user_id: None,
         allow_shared_fallback: false,
     };
-    let locale = locale_code.to_string();
-    let entries = tokio::task::spawn_blocking(move || match pack_subtype {
-        ManagePackSubtype::Resource => crate::core::minecraft::resource_packs::read_packs_standard(
-            "resource_packs",
-            &locale,
-            &options,
-        ),
-        ManagePackSubtype::Behavior => crate::core::minecraft::resource_packs::read_packs_standard(
-            "behavior_packs",
-            &locale,
-            &options,
-        ),
-    })
-    .await
-    .map_err(|error| format!("读取资源包任务失败: {error:?}"))?
-    .map_err(|error| format!("读取资源包失败: {error:?}"))?;
+    let kind = match pack_subtype {
+        ManagePackSubtype::Resource => PackKind::Resource,
+        ManagePackSubtype::Behavior => PackKind::Behavior,
+    };
+    let entries = manage_service::load_packs(kind, locale_code.to_string(), options).await?;
 
     Ok(entries
         .into_iter()
@@ -858,13 +693,7 @@ async fn load_skin_pack_assets(
         user_id: None,
         allow_shared_fallback: false,
     };
-    let locale = locale_code.to_string();
-    let entries = tokio::task::spawn_blocking(move || {
-        crate::core::minecraft::skin_packs::read_skin_packs_standard(&locale, &options)
-    })
-    .await
-    .map_err(|error| format!("读取皮肤包任务失败: {error:?}"))?
-    .map_err(|error| format!("读取皮肤包失败: {error:?}"))?;
+    let entries = manage_service::load_skin_packs(locale_code.to_string(), options).await?;
 
     Ok(entries
         .into_iter()
@@ -885,14 +714,47 @@ async fn load_map_assets(
         user_id: selected_gdk_user.map(ToString::to_string),
         allow_shared_fallback: false,
     };
-    let entries = tokio::task::spawn_blocking(move || {
-        crate::core::minecraft::map::list_worlds_standard(&options)
-    })
-    .await
-    .map_err(|error| format!("读取地图任务失败: {error:?}"))?
-    .map_err(|error| format!("读取地图失败: {error:?}"))?;
+    let entries = manage_service::load_maps(options).await?;
 
     Ok(entries.into_iter().map(manage_asset_from_map).collect())
+}
+
+fn manage_asset_from_mod(managed_mod: ManagedModInfo) -> ManageAssetEntry {
+    let detail = if managed_mod.mod_type == "hot-inject" {
+        SharedString::from(format!(
+            "{} · {} ms",
+            managed_mod.mod_type, managed_mod.inject_delay_ms
+        ))
+    } else {
+        SharedString::from(managed_mod.mod_type.clone())
+    };
+    ManageAssetEntry {
+        key: SharedString::from(format!("mod:{}", managed_mod.folder_name)),
+        folder_name: SharedString::from(managed_mod.folder_name),
+        display_name: SharedString::from(managed_mod.name),
+        detail: Some(detail),
+        description: None,
+        file_path: SharedString::from(managed_mod.file_path.to_string_lossy().into_owned()),
+        open_path: SharedString::from(managed_mod.folder_path.to_string_lossy().into_owned()),
+        icon_path: None,
+        modified_iso: None,
+        modified_label: None,
+        size_bytes: None,
+        size_label: None,
+        source: None,
+        edition: None,
+        gdk_user: None,
+        enabled: Some(managed_mod.enabled),
+        mod_type: Some(SharedString::from(managed_mod.mod_type)),
+        inject_delay_ms: Some(managed_mod.inject_delay_ms),
+        resource_pack_count: None,
+        behavior_pack_count: None,
+        skin_count: None,
+        first_skin_full_texture_path: None,
+        first_skin_model_label: None,
+        skin_previews: None,
+        kind: ManageAssetKind::Mod,
+    }
 }
 
 fn manage_asset_from_pack(pack: McPackInfo, pack_subtype: ManagePackSubtype) -> ManageAssetEntry {

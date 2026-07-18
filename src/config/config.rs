@@ -4,7 +4,8 @@ use std::str::FromStr;
 
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,
-    default_glass_effect_enabled, default_gpu_adapter_name, default_theme_mode, get_default_config,
+    default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
+    default_theme_mode, get_default_config,
 };
 use super::defaults::{
     default_config_version, default_error_report_sentry_enabled, default_music_volume,
@@ -205,6 +206,28 @@ pub struct MusicConfig {
     pub last_track_path: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct OnlineConfig {
+    pub bootstrap_peers: String,
+    pub player_name: String,
+    pub game_ports: String,
+    pub disable_p2p: bool,
+    pub no_tun: bool,
+}
+
+impl Default for OnlineConfig {
+    fn default() -> Self {
+        Self {
+            bootstrap_peers: String::new(),
+            player_name: default_online_player_name(),
+            game_ports: "7551".to_string(),
+            disable_p2p: true,
+            no_tun: true,
+        }
+    }
+}
+
 impl Default for MusicConfig {
     fn default() -> Self {
         Self {
@@ -257,6 +280,8 @@ pub struct Config {
     pub game: GameConfig,
     #[serde(default)]
     pub music: MusicConfig,
+    #[serde(default)]
+    pub online: OnlineConfig,
     pub agreement_accepted: bool,
 }
 

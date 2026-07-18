@@ -7,7 +7,7 @@ use gpui::*;
 
 mod common;
 mod online;
-mod online_controls;
+pub(crate) mod online_controls;
 mod online_peers;
 mod online_room;
 mod online_widgets;

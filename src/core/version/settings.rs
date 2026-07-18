@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fs as std_fs;
 use std::path::Path;
 use tokio::fs;
 use tracing::{error, info};
@@ -142,44 +143,58 @@ fn normalize_redirection_source(source: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn parse_version_config(content: &str) -> VersionConfig {
+    let mut config: VersionConfig = match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                let has_disable = object
+                    .get("disable_mod_loading")
+                    .and_then(serde_json::Value::as_bool)
+                    .is_some();
+                if !has_disable
+                    && let Some(inject) = object
+                        .get("inject_on_launch")
+                        .and_then(serde_json::Value::as_bool)
+                {
+                    object.insert(
+                        "disable_mod_loading".to_string(),
+                        serde_json::Value::Bool(!inject),
+                    );
+                }
+            }
+            serde_json::from_value(value).unwrap_or_default()
+        }
+        Err(_) => serde_json::from_str(content).unwrap_or_default(),
+    };
+    config.normalize_managed_redirections();
+    config
+}
+
+pub fn get_version_config_blocking(folder_name: &str) -> Result<VersionConfig, String> {
+    let versions_root = Path::new("./BMCBL/versions");
+    let config_path = versions_root.join(folder_name).join("config.json");
+
+    if !config_path.exists() {
+        return Ok(VersionConfig::default());
+    }
+
+    let content = std_fs::read_to_string(&config_path)
+        .map_err(|error| format!("无法读取配置文件: {error}"))?;
+    Ok(parse_version_config(&content))
+}
+
 pub async fn get_version_config(folder_name: String) -> Result<VersionConfig, String> {
     let versions_root = Path::new("./BMCBL/versions");
     let config_path = versions_root.join(folder_name).join("config.json");
 
-    if (!config_path.exists()) {
-        // 如果文件不存在，返回默认配置
+    if !config_path.exists() {
         return Ok(VersionConfig::default());
     }
 
     let content = fs::read_to_string(&config_path)
         .await
-        .map_err(|e| format!("无法读取配置文件: {}", e))?;
-
-    // Small migration: older builds used `inject_on_launch` (true = load mods).
-    // Now we use `disable_mod_loading` (true = disable mod loading/injection).
-    let mut config: VersionConfig = match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(mut v) => {
-            if let Some(obj) = v.as_object_mut() {
-                let has_disable = obj
-                    .get("disable_mod_loading")
-                    .and_then(|x| x.as_bool())
-                    .is_some();
-                if !has_disable {
-                    if let Some(inject) = obj.get("inject_on_launch").and_then(|x| x.as_bool()) {
-                        obj.insert(
-                            "disable_mod_loading".to_string(),
-                            serde_json::Value::Bool(!inject),
-                        );
-                    }
-                }
-            }
-            serde_json::from_value(v).unwrap_or_else(|_| VersionConfig::default())
-        }
-        Err(_) => serde_json::from_str(&content).unwrap_or_else(|_| VersionConfig::default()),
-    };
-    config.normalize_managed_redirections();
-
-    Ok(config)
+        .map_err(|error| format!("无法读取配置文件: {error}"))?;
+    Ok(parse_version_config(&content))
 }
 
 pub async fn save_version_config(folder_name: String, config: VersionConfig) -> Result<(), String> {
@@ -204,6 +219,13 @@ pub async fn save_version_config(folder_name: String, config: VersionConfig) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_version_config_migrates_legacy_inject_setting() {
+        let config = parse_version_config(r#"{"inject_on_launch":false}"#);
+
+        assert!(config.disable_mod_loading);
+    }
 
     #[test]
     fn vanilla_skin_pack_redirect_updates_managed_file_redirection() {

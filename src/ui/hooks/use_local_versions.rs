@@ -169,7 +169,9 @@ pub fn remove_local_version(folder_name: &str, cx: &mut App) {
 
 fn request_local_versions_refresh(state: &mut LocalVersionsState, force_refresh: bool) -> bool {
     if state.loading {
-        state.refresh_pending |= force_refresh;
+        if force_refresh && !state.loading_force_refresh {
+            state.refresh_pending = true;
+        }
         return false;
     }
     if state.loaded && !force_refresh {
@@ -177,6 +179,7 @@ fn request_local_versions_refresh(state: &mut LocalVersionsState, force_refresh:
     }
 
     state.loading = true;
+    state.loading_force_refresh = force_refresh;
     state.error = None;
     true
 }
@@ -209,6 +212,7 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
                     state.versions = Arc::from(versions);
                     state.loaded = true;
                     state.loading = false;
+                    state.loading_force_refresh = false;
                     state.error = None;
                     take_pending_local_versions_refresh(state)
                 }) {
@@ -223,6 +227,7 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
                 match cx.update_global(|state: &mut LocalVersionsState, _cx| {
                     state.loaded = !state.versions.is_empty();
                     state.loading = false;
+                    state.loading_force_refresh = false;
                     state.error = Some(SharedString::from(error.to_string()));
                     take_pending_local_versions_refresh(state)
                 }) {
@@ -270,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn request_local_versions_refresh_queues_one_forced_refresh_while_loading() {
+    fn request_local_versions_refresh_queues_forced_refresh_after_initial_load() {
         let mut state = LocalVersionsState {
             loading: true,
             ..Default::default()
@@ -280,5 +285,17 @@ mod tests {
         assert!(state.refresh_pending);
         assert!(take_pending_local_versions_refresh(&mut state));
         assert!(!take_pending_local_versions_refresh(&mut state));
+    }
+
+    #[test]
+    fn request_local_versions_refresh_coalesces_duplicate_forced_refreshes() {
+        let mut state = LocalVersionsState {
+            loading: true,
+            loading_force_refresh: true,
+            ..Default::default()
+        };
+
+        assert!(!request_local_versions_refresh(&mut state, true));
+        assert!(!state.refresh_pending);
     }
 }

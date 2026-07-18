@@ -138,6 +138,16 @@ pub struct TaskSnapshot {
     pub last_update_unix: u64,
     #[serde(default)]
     pub sequence: u64,
+    #[serde(default)]
+    pub visibility: TaskVisibility,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskVisibility {
+    #[default]
+    Visible,
+    Hidden,
 }
 
 pub struct TaskRenderSnapshotLists {
@@ -166,6 +176,7 @@ struct Task {
     visualization: TaskVisualization,
     last_emit_instant: Instant,
     sequence: u64,
+    visibility: TaskVisibility,
 }
 
 impl Task {
@@ -176,6 +187,7 @@ impl Task {
         stage: &str,
         total: Option<u64>,
         supports_pause: bool,
+        visibility: TaskVisibility,
     ) -> Self {
         let now = Instant::now();
         Self {
@@ -197,6 +209,7 @@ impl Task {
             visualization: TaskVisualization::default(),
             last_emit_instant: now,
             sequence: 0,
+            visibility,
         }
     }
 
@@ -245,6 +258,7 @@ impl Task {
                 .saturating_sub(self.start_instant.elapsed().as_secs()),
             last_update_unix: unix_now_seconds(),
             sequence: self.sequence,
+            visibility: self.visibility,
         }
     }
 
@@ -363,6 +377,26 @@ pub fn create_task_with_details(
     total: Option<u64>,
     supports_pause: bool,
 ) -> String {
+    create_task_with_details_and_visibility(
+        id_opt,
+        title,
+        detail,
+        initial_stage,
+        total,
+        supports_pause,
+        TaskVisibility::Visible,
+    )
+}
+
+pub fn create_task_with_details_and_visibility(
+    id_opt: Option<String>,
+    title: impl Into<String>,
+    detail: Option<String>,
+    initial_stage: &str,
+    total: Option<u64>,
+    supports_pause: bool,
+    visibility: TaskVisibility,
+) -> String {
     let id = id_opt.unwrap_or_else(|| {
         let id_num = TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
         format!("task-{}-{}", id_num, unix_now_seconds())
@@ -376,6 +410,7 @@ pub fn create_task_with_details(
         initial_stage,
         total,
         supports_pause,
+        visibility,
     );
     let mut task = task;
     task.touch();
@@ -903,6 +938,9 @@ fn collect_render_snapshots_limited<'a>(
     let mut finished_total = 0;
 
     for snapshot in snapshots {
+        if snapshot.visibility == TaskVisibility::Hidden {
+            continue;
+        }
         match snapshot.status.as_ref() {
             "running" | "paused" | "cancelling" => {
                 active_total += 1;
@@ -995,7 +1033,7 @@ fn emit_task_update(snapshot: TaskSnapshot) {
         map.insert(snapshot.id.clone(), snapshot.clone());
     }
 
-    if TASK_UPDATES.receiver_count() == 0 {
+    if snapshot.visibility == TaskVisibility::Hidden || TASK_UPDATES.receiver_count() == 0 {
         return;
     }
 
@@ -1107,6 +1145,34 @@ mod tests {
                 .stage
                 .as_ref(),
             "注册阶段文案"
+        );
+        assert!(remove_task(&task_id));
+    }
+
+    #[test]
+    fn hidden_task_is_excluded_from_render_snapshots() {
+        let task_id = format!(
+            "task-manager-hidden-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task_with_details_and_visibility(
+            Some(task_id.clone()),
+            "隐藏任务",
+            None,
+            "running",
+            None,
+            false,
+            TaskVisibility::Hidden,
+        );
+
+        let snapshots = render_snapshots_limited(64, 64, 64);
+
+        assert!(
+            snapshots
+                .active
+                .iter()
+                .chain(&snapshots.finished)
+                .all(|snapshot| snapshot.id.as_ref() != task_id)
         );
         assert!(remove_task(&task_id));
     }

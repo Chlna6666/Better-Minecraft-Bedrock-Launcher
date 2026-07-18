@@ -187,28 +187,32 @@ impl ManagePageView {
         let selected_gdk_user = dialog.selected_gdk_user.clone();
         let editing_key = dialog.editing_key.clone();
         cx.spawn(async move |handle, cx| {
-            let result = if let Some(key) = editing_key.as_ref() {
-                data::update_external_server(
-                    &version,
-                    &config,
-                    selected_gdk_user.as_ref().map(SharedString::as_ref),
-                    key.as_ref(),
-                    &name,
-                    &address,
-                    port,
-                )
-                .await
-            } else {
-                data::add_external_server(
-                    &version,
-                    &config,
-                    selected_gdk_user.as_ref().map(SharedString::as_ref),
-                    &name,
-                    &address,
-                    port,
-                )
-                .await
-            };
+            let result = crate::tasks::runtime::run_blocking(
+                crate::tasks::runtime::BlockingTaskOptions::hidden("保存服务器"),
+                move || {
+                    if let Some(key) = editing_key.as_ref() {
+                        data::update_external_server(
+                            &version,
+                            &config,
+                            selected_gdk_user.as_ref().map(SharedString::as_ref),
+                            key.as_ref(),
+                            &name,
+                            &address,
+                            port,
+                        )
+                    } else {
+                        data::add_external_server(
+                            &version,
+                            &config,
+                            selected_gdk_user.as_ref().map(SharedString::as_ref),
+                            &name,
+                            &address,
+                            port,
+                        )
+                    }
+                },
+            )
+            .await;
             let _ = handle.update(cx, |this, cx| {
                 match result {
                     Ok(_) => {
@@ -317,7 +321,7 @@ pub(super) fn render_server_list(
     scroll_handle: &ScrollHandle,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
-    if state.gdk_users_loading && version.is_gdk() {
+    if state.gdk_users_loading && state.gdk_users.is_empty() && version.is_gdk() {
         return empty_state(
             colors,
             "images/manage/empty.svg",
@@ -337,7 +341,7 @@ pub(super) fn render_server_list(
         .into_any_element();
     }
 
-    if state.servers_loading {
+    if state.servers_loading && state.servers.is_empty() {
         return empty_state(
             colors,
             "images/manage/empty.svg",
