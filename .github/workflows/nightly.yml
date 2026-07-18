@@ -69,55 +69,36 @@ jobs:
             Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=false"
           }
 
-      - name: Checkout mc-motd path dependency
+      - name: Clone public path dependencies
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        uses: actions/checkout@v5
-        with:
-          repository: BE-Community-Dev/mc-motd
-          path: BE-Community-Dev/mc-motd
-          ref: main
-          token: ""
-          persist-credentials: false
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:GIT_TERMINAL_PROMPT = "0"
+          $workspaceRoot = Split-Path -Parent ((Get-Location).Path)
+          $dependencyRoot = Join-Path $workspaceRoot "BE-Community-Dev"
+          $repositories = @(
+            "mc-motd",
+            "bedrock-world",
+            "bedrock-block-model",
+            "bedrock-leveldb",
+            "bedrock-render"
+          )
 
-      - name: Checkout bedrock-world path dependency
-        if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        uses: actions/checkout@v5
-        with:
-          repository: BE-Community-Dev/bedrock-world
-          path: BE-Community-Dev/bedrock-world
-          ref: main
-          token: ""
-          persist-credentials: false
-
-      - name: Checkout bedrock-block-model path dependency
-        if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        uses: actions/checkout@v5
-        with:
-          repository: BE-Community-Dev/bedrock-block-model
-          path: BE-Community-Dev/bedrock-block-model
-          ref: main
-          token: ""
-          persist-credentials: false
-
-      - name: Checkout bedrock-leveldb path dependency
-        if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        uses: actions/checkout@v5
-        with:
-          repository: BE-Community-Dev/bedrock-leveldb
-          path: BE-Community-Dev/bedrock-leveldb
-          ref: main
-          token: ""
-          persist-credentials: false
-
-      - name: Checkout bedrock-render path dependency
-        if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        uses: actions/checkout@v5
-        with:
-          repository: BE-Community-Dev/bedrock-render
-          path: BE-Community-Dev/bedrock-render
-          ref: main
-          token: ""
-          persist-credentials: false
+          Push-Location $workspaceRoot
+          try {
+            New-Item -ItemType Directory -Force -Path $dependencyRoot | Out-Null
+            foreach ($repository in $repositories) {
+              $destination = Join-Path $dependencyRoot $repository
+              $remote = "https://github.com/BE-Community-Dev/$repository.git"
+              git -c credential.helper= clone --depth 1 --branch main --single-branch $remote $destination
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed to clone $remote"
+              }
+            }
+          } finally {
+            Pop-Location
+          }
 
       - name: Read package version
         id: package_version
@@ -275,7 +256,7 @@ jobs:
 
       - name: Cache cargo
         if: ${{ steps.check_commits.outputs.changed == 'true' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
