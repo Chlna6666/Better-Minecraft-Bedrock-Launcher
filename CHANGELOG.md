@@ -56,6 +56,7 @@ Automatically generated from `v0.1.3` through `HEAD`.
 - specify version custom icon behavior (`264c06d`, 2026-07-13)
 
 ### Maintenance
+- 使用 Cocogitto 统一提交校验 (`a78facd`, 2026-07-18)
 - harden nightly and release publishing (`a9a4b21`, 2026-07-18)
 - use git sources for Bedrock dependencies (`9da2dea`, 2026-07-18)
 - clone public dependencies without checkout tokens (`81b09aa`, 2026-07-18)
