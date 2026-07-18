@@ -4,24 +4,11 @@ use gpui::*;
 
 pub fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
     let _ = colors;
-    div()
-        .absolute()
-        .left(px(22.))
-        .right(px(22.))
-        .top(px(92.))
-        .bottom(px(20.))
-        .child(content)
+    crate::ui::components::page_shell::page_frame(content)
 }
 
 pub fn panel_shell(colors: &ThemeColors) -> Div {
-    div()
-        .rounded(px(18.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.20,
-            ..colors.border
-        })
-        .bg(colors.settings_panel_bg)
+    crate::ui::components::page_shell::panel_surface(colors)
 }
 
 pub fn icon_action(

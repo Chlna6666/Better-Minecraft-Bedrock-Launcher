@@ -5,94 +5,185 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
+struct ToolNavigationItem {
+    id: &'static str,
+    tab: ToolsTab,
+    label: &'static str,
+    description: &'static str,
+    icon: &'static str,
+}
+
+struct NavigationPalette {
+    accent: Hsla,
+    background: Hsla,
+    border: Hsla,
+}
+
 pub(super) fn render_sidebar(colors: &ThemeColors, active: ToolsTab) -> Div {
-    let item = |id: &'static str,
-                tab: ToolsTab,
-                name: &'static str,
-                desc: &'static str,
-                icon: &'static str,
-                active: ToolsTab| {
-        let is_active = tab == active;
-        let bg = if is_active {
-            Hsla {
-                a: 0.16,
-                ..colors.accent
-            }
-        } else {
-            colors.surface
-        };
-        let border = if is_active {
-            colors.accent
-        } else {
-            colors.border
-        };
+    let items = [ToolNavigationItem {
+        id: "tools-online",
+        tab: ToolsTab::Online,
+        label: "联机大厅",
+        description: "创建或加入 EasyTier 房间",
+        icon: lucide_icons::icon_users(),
+    }];
 
-        div()
-            .id(id)
-            .w_full()
-            .rounded(px(14.))
-            .border_1()
-            .border_color(border)
-            .bg(bg)
-            .p(px(12.))
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .cursor_pointer()
-            .child(themed_icon(icon, 18.0, colors.text_secondary))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(colors.text_primary)
-                            .child(name),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(colors.text_secondary)
-                            .child(desc),
-                    ),
-            )
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.update_global(|s: &mut ToolsPageState, cx| {
-                    s.tab = tab;
-                });
-            })
-    };
-
-    div()
-        .w(px(280.))
-        .h_full()
-        .rounded_xl()
-        .border_1()
-        .border_color(colors.border)
-        .bg(Hsla {
-            a: 0.70,
-            ..colors.surface
-        })
+    crate::ui::components::page_shell::split_sidebar_panel(colors)
         .p(px(14.))
         .flex()
         .flex_col()
-        .gap(px(12.))
+        .gap(px(16.))
+        .child(render_sidebar_header(colors))
+        .child(
+            div().w_full().flex().flex_col().gap(px(8.)).children(
+                items
+                    .into_iter()
+                    .map(|item| render_navigation_item(colors, item, active)),
+            ),
+        )
+}
+
+fn render_sidebar_header(colors: &ThemeColors) -> Div {
+    div()
+        .w_full()
+        .px(px(4.))
+        .py(px(3.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
         .child(
             div()
-                .text_size(px(14.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors.text_secondary)
-                .child("工具列表"),
+                .size(px(36.))
+                .rounded(px(12.))
+                .bg(Hsla {
+                    a: 0.14,
+                    ..colors.accent
+                })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(themed_icon(
+                    lucide_icons::icon_layout_grid(),
+                    17.0,
+                    colors.accent,
+                )),
         )
-        .child(item(
-            "tools-online",
-            ToolsTab::Online,
-            "联机",
-            "创建/加入大厅并查看房间状态",
-            lucide_icons::icon_users(),
-            active,
-        ))
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_primary)
+                        .child("工具中心"),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.text_muted)
+                        .child("选择要使用的工具"),
+                ),
+        )
+}
+
+fn render_navigation_item(
+    colors: &ThemeColors,
+    item: ToolNavigationItem,
+    active: ToolsTab,
+) -> Stateful<Div> {
+    let selected = item.tab == active;
+    let palette = navigation_palette(colors, selected);
+
+    div()
+        .id(item.id)
+        .w_full()
+        .rounded(px(15.))
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.background)
+        .px(px(12.))
+        .py(px(12.))
+        .cursor_pointer()
+        .when(!selected, |this| {
+            this.hover(|style| style.bg(colors.surface_hover))
+        })
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .child(render_navigation_icon(item.icon, palette.accent))
+        .child(render_navigation_copy(colors, &item, selected))
+        .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+            cx.update_global(|state: &mut ToolsPageState, _cx| {
+                state.tab = item.tab;
+            });
+        })
+}
+
+fn navigation_palette(colors: &ThemeColors, selected: bool) -> NavigationPalette {
+    if selected {
+        NavigationPalette {
+            accent: colors.accent,
+            background: Hsla {
+                a: 0.13,
+                ..colors.accent
+            },
+            border: Hsla {
+                a: 0.30,
+                ..colors.accent
+            },
+        }
+    } else {
+        NavigationPalette {
+            accent: colors.text_secondary,
+            background: Hsla {
+                a: 0.40,
+                ..colors.surface
+            },
+            border: Hsla {
+                a: 0.12,
+                ..colors.border
+            },
+        }
+    }
+}
+
+fn render_navigation_icon(icon: &'static str, accent: Hsla) -> Div {
+    div()
+        .size(px(34.))
+        .rounded(px(11.))
+        .bg(Hsla { a: 0.12, ..accent })
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(themed_icon(icon, 17.0, accent))
+}
+
+fn render_navigation_copy(colors: &ThemeColors, item: &ToolNavigationItem, selected: bool) -> Div {
+    div()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .child(
+            div()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child(item.label),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(if selected {
+                    colors.text_secondary
+                } else {
+                    colors.text_muted
+                })
+                .line_height(px(16.))
+                .child(item.description),
+        )
 }

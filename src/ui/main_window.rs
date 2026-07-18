@@ -1,6 +1,6 @@
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
-use crate::ui::animation::request_animation_frame_if;
+use crate::ui::animation::{ease_out_back, request_animation_frame_if};
 use crate::ui::components::color_picker::normalize_hex_color;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{InputEvent, InputState};
@@ -14,6 +14,7 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
 use crate::utils::updater::ReleaseSummary;
+use gpui::AnimationExt as _;
 use gpui::*;
 use std::any::type_name;
 use std::path::PathBuf;
@@ -178,6 +179,7 @@ struct MainWindowRenderModel {
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
     dropdown_visible: bool,
+    route_transition_direction: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -372,6 +374,9 @@ impl MainWindowView {
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             crate::ui::components::dropdown::has_visible_overlay(now, dropdown_state)
         };
+        let route_transition_direction = cx
+            .global::<crate::ui::state::navigation::NavState>()
+            .pill_direction();
 
         MainWindowRenderModel {
             now,
@@ -398,11 +403,12 @@ impl MainWindowView {
             toast_visible,
             toast_breadcrumb_visible,
             dropdown_visible,
+            route_transition_direction,
         }
     }
 
-    fn render_active_page(&self, route: &RouteTarget) -> AnyElement {
-        match route {
+    fn render_active_page(&self, route: &RouteTarget, transition_direction: f32) -> AnyElement {
+        let page = match route {
             RouteTarget::Builtin(AppRoute::Home) => {
                 optional_page_view_element(AppRoute::Home.pathname(), self.home_page_view.clone())
             }
@@ -428,7 +434,24 @@ impl MainWindowView {
                 let route_key = route.pathname();
                 optional_page_view_element(route_key.as_str(), self.plugin_page_view.clone())
             }
-        }
+        };
+        let route_key = SharedString::from(format!("main-route-page-enter:{}", route.pathname()));
+        let animated_page = div().size_full().child(page).with_animation(
+            route_key,
+            Animation::new(Duration::from_millis(260)),
+            move |page, progress| {
+                let progress = ease_out_back(progress, 0.22);
+                page.opacity(progress.clamp(0.0, 1.0))
+                    .relative()
+                    .left(px((1.0 - progress) * 18.0 * transition_direction))
+            },
+        );
+        div()
+            .absolute()
+            .inset_0()
+            .size_full()
+            .child(animated_page)
+            .into_any_element()
     }
 
     fn compose_root(
@@ -1563,7 +1586,7 @@ impl Render for MainWindowView {
             );
         }
 
-        let page = self.render_active_page(&model.route);
+        let page = self.render_active_page(&model.route, model.route_transition_direction);
         let root = self.compose_root(&model, page, window, cx);
 
         let render_elapsed = render_started.elapsed();

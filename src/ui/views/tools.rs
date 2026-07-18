@@ -2,15 +2,9 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::settings::state::SettingsPageState;
 use crate::ui::views::tools::state::{ToolsPageState, ToolsTab};
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
-mod common;
-mod online;
-pub(crate) mod online_controls;
-mod online_peers;
-mod online_room;
-mod online_widgets;
+pub(crate) mod online;
 mod sidebar;
 pub mod state;
 
@@ -48,19 +42,13 @@ impl Render for ToolsPageView {
             theme.accent,
         );
         let window_size = window.bounds().size;
-        render_tools_page(
-            colors,
-            window_size.width,
-            window_size.height,
-            cx.global::<ToolsPageState>(),
-        )
+        render_tools_page(colors, window_size.width, cx.global::<ToolsPageState>())
     }
 }
 
 pub fn render_tools_page(
     colors: ThemeColors,
     window_width: Pixels,
-    _window_height: Pixels,
     state: &ToolsPageState,
 ) -> impl IntoElement {
     let sidebar = sidebar::render_sidebar(&colors, state.tab);
@@ -70,16 +58,9 @@ pub fn render_tools_page(
         }
     };
 
-    common::page_shell(
-        div()
-            .size_full()
-            .flex()
-            .min_h(px(0.))
-            .gap(px(16.))
-            .child(sidebar)
-            .child(div().flex_1().min_w(px(0.)).min_h(px(0.)).child(content)),
-        &colors,
-    )
+    crate::ui::components::page_shell::page_frame(crate::ui::components::page_shell::split_page(
+        sidebar, content,
+    ))
 }
 
 pub fn render_tools_overlay(

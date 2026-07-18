@@ -124,4 +124,11 @@ mod tests {
         assert_eq!(raw, 0.5);
         assert!(eased > raw);
     }
+
+    #[test]
+    fn back_easing_reaches_the_target_after_overshoot() {
+        assert!(ease_out_back(0.0, 0.22).abs() < f32::EPSILON);
+        assert!((ease_out_back(1.0, 0.22) - 1.0).abs() < f32::EPSILON);
+        assert!(ease_out_back(0.8, 0.22) > 0.8);
+    }
 }

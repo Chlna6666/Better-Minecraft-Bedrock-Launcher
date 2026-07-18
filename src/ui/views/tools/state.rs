@@ -7,6 +7,34 @@ pub enum ToolsTab {
     Online,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OnlineOperation {
+    #[default]
+    Idle,
+    CreatingRoom,
+    JoiningRoom,
+    Refreshing,
+    RefreshingPeers,
+    Stopping,
+}
+
+impl OnlineOperation {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "",
+            Self::CreatingRoom => "正在创建房间",
+            Self::JoiningRoom => "正在加入房间",
+            Self::Refreshing => "正在刷新状态",
+            Self::RefreshingPeers => "正在刷新节点",
+            Self::Stopping => "正在断开连接",
+        }
+    }
+
+    pub(crate) fn is_busy(self) -> bool {
+        self != Self::Idle
+    }
+}
+
 pub struct ToolsPageState {
     pub tab: ToolsTab,
     pub nat_checking: bool,
@@ -21,10 +49,12 @@ pub struct ToolsPageState {
     pub player_name: SharedString,
     pub game_ports_input: Option<Entity<InputState>>,
     pub game_ports: SharedString,
+    pub room_advanced_open: bool,
     pub easytier_settings_open: bool,
     pub disable_p2p: bool,
     pub no_tun: bool,
-    pub online_loading: bool,
+    pub online_operation: OnlineOperation,
+    online_operation_generation: u64,
     pub online_error: Option<SharedString>,
     pub online_log: SharedString,
     pub easytier_running: bool,
@@ -53,10 +83,12 @@ impl Default for ToolsPageState {
             player_name: SharedString::from(crate::config::config::default_online_player_name()),
             game_ports_input: None,
             game_ports: SharedString::from("7551"),
+            room_advanced_open: false,
             easytier_settings_open: false,
             disable_p2p: false,
             no_tun: true,
-            online_loading: false,
+            online_operation: OnlineOperation::Idle,
+            online_operation_generation: 0,
             online_error: None,
             online_log: SharedString::from(""),
             easytier_running: false,
@@ -79,6 +111,41 @@ impl ToolsPageState {
         self.disable_p2p = config.disable_p2p;
         self.no_tun = config.no_tun;
     }
+
+    pub(crate) fn begin_online_operation(&mut self, operation: OnlineOperation) -> Option<u64> {
+        if self.online_operation.is_busy() {
+            return None;
+        }
+
+        self.online_operation_generation = self.online_operation_generation.wrapping_add(1);
+        self.online_operation = operation;
+        self.online_error = None;
+        Some(self.online_operation_generation)
+    }
+
+    pub(crate) fn is_current_online_operation(&self, generation: u64) -> bool {
+        self.online_operation.is_busy() && self.online_operation_generation == generation
+    }
+
+    pub(crate) fn finish_online_operation(&mut self, generation: u64) -> bool {
+        if !self.is_current_online_operation(generation) {
+            return false;
+        }
+
+        self.online_operation = OnlineOperation::Idle;
+        true
+    }
+
+    pub(crate) fn clear_online_session(&mut self) {
+        self.easytier_running = false;
+        self.easytier_hostname = SharedString::from("");
+        self.easytier_ipv4 = None;
+        self.active_room_code = SharedString::from("");
+        self.active_network_name = SharedString::from("");
+        self.host_room_code = SharedString::from("");
+        self.peers.clear();
+        self.peers_loading = false;
+    }
 }
 
 impl Global for ToolsPageState {}
@@ -87,4 +154,27 @@ impl Global for ToolsPageState {}
 pub struct OnlinePeerEntry {
     pub ipv4: Option<SharedString>,
     pub hostname: SharedString,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn online_operation_rejects_overlap_and_stale_completion() {
+        let mut state = ToolsPageState::default();
+        let generation = state
+            .begin_online_operation(OnlineOperation::CreatingRoom)
+            .expect("idle state accepts an operation");
+
+        assert!(
+            state
+                .begin_online_operation(OnlineOperation::JoiningRoom)
+                .is_none()
+        );
+        assert!(!state.finish_online_operation(generation.wrapping_add(1)));
+        assert_eq!(state.online_operation, OnlineOperation::CreatingRoom);
+        assert!(state.finish_online_operation(generation));
+        assert_eq!(state.online_operation, OnlineOperation::Idle);
+    }
 }

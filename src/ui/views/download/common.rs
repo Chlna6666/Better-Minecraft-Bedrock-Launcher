@@ -50,16 +50,7 @@ pub(crate) fn panel_shell(colors: &ThemeColors) -> Div {
 
 pub(crate) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
     let _ = colors;
-    div()
-        .absolute()
-        .left(px(22.))
-        .right(px(22.))
-        .top(px(92.))
-        .bottom(px(20.))
-        .flex()
-        .min_h(px(0.))
-        .min_w(px(0.))
-        .child(div().flex_1().min_h(px(0.)).min_w(px(0.)).child(content))
+    crate::ui::components::page_shell::page_frame(content)
 }
 
 pub(crate) fn format_bytes(bytes: u64) -> String {

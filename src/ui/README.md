@@ -171,6 +171,7 @@ or update installation internals here.
 | `components/markdown_renderer.rs` | Markdown rendering and highlighter warmup support. |
 | `components/minecraft_text.rs` | Minecraft-formatted text rendering. |
 | `components/modal.rs` | Modal layer and dialog helpers. |
+| `components/page_shell.rs` | Shared main-route insets plus the manage/tools split-page, sidebar, and content-panel shells. |
 | `components/scroll.rs` | Scroll container helpers. |
 | `components/slider.rs` | Slider UI component. |
 | `components/split_pane.rs` | Split-pane UI component. |
@@ -295,14 +296,17 @@ stay in non-UI modules. Settings UI should present and commit choices.
 
 | Path | Responsibility |
 | --- | --- |
-| `views/tools/state.rs` | Tools page and online UI state. |
-| `views/tools/sidebar.rs` | Tools page sidebar. |
-| `views/tools/online.rs` | Online tool page entry. |
-| `views/tools/online_controls.rs` | Online controls and actions. |
-| `views/tools/online_peers.rs` | Peer list UI. |
-| `views/tools/online_room.rs` | Room details UI. |
-| `views/tools/online_widgets.rs` | Online composite widgets. |
-| `views/tools/common.rs` | Tools page helpers. |
+| `views/tools/state.rs` | Tools page state and online operation state machine. |
+| `views/tools/sidebar.rs` | Extensible tools navigation sidebar. |
+| `views/tools/online.rs` | Thin online tool module entry and scoped exports. |
+| `views/tools/online/actions.rs` | Create, join, refresh, disconnect, NAT, and stale-result guards. |
+| `views/tools/online/layout.rs` | Online business-content composition inside the shared split content panel. |
+| `views/tools/online/room.rs` | Primary create/join room workflow. |
+| `views/tools/online/room_options.rs` | Progressive room option fields. |
+| `views/tools/online/controls.rs` | Session controls and online preference persistence bridge. |
+| `views/tools/online/peers.rs` | Peer list UI. |
+| `views/tools/online/settings.rs` | EasyTier settings modal. |
+| `views/tools/online/widgets.rs` | Online-scoped buttons and visual primitives. |
 | `views/tasks/data.rs` | Task page data projection. |
 | `views/tasks/render.rs`, `views/tasks/render/` | Task page render shell, progress, card, overlay, and page rendering. |
 

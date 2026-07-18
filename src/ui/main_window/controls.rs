@@ -110,7 +110,7 @@ impl MainWindowView {
                     let initial = s.player_name.to_string();
                     let input = cx.new(|cx| {
                         let mut st = InputState::new(window, cx);
-                        st.set_placeholder(SharedString::from("BMCBL_USER"), window, cx);
+                        st.set_placeholder(SharedString::from("留空自动生成随机名称"), window, cx);
                         if !initial.trim().is_empty() {
                             st.set_value(SharedString::from(initial), window, cx);
                         }
@@ -165,7 +165,7 @@ impl MainWindowView {
                             s.bootstrap_peers = value;
                         },
                     );
-                    crate::ui::views::tools::online_controls::persist_tools_online_settings(cx);
+                    crate::ui::views::tools::online::persist_tools_online_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });
@@ -181,7 +181,7 @@ impl MainWindowView {
                             s.player_name = value;
                         },
                     );
-                    crate::ui::views::tools::online_controls::persist_tools_online_settings(cx);
+                    crate::ui::views::tools::online::persist_tools_online_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });
@@ -197,7 +197,7 @@ impl MainWindowView {
                             s.game_ports = value;
                         },
                     );
-                    crate::ui::views::tools::online_controls::persist_tools_online_settings(cx);
+                    crate::ui::views::tools::online::persist_tools_online_settings(cx);
                     this.notify_tools_page(cx);
                 }
             });

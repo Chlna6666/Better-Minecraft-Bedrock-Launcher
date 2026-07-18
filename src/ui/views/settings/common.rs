@@ -592,20 +592,12 @@ pub(super) fn settings_sub_input_row(
 }
 
 pub(super) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
-    div()
-        .absolute()
-        .left(px(18.))
-        .right(px(18.))
-        .top(px(88.))
-        .bottom(px(18.))
-        .flex()
-        .justify_center()
-        .child(
+    crate::ui::components::page_shell::page_frame(
+        div().size_full().flex().justify_center().child(
             div()
                 .relative()
                 .w_full()
                 .h_full()
-                .max_w(px(960.))
                 .rounded(px(18.))
                 .overflow_hidden()
                 .border_1()
@@ -663,5 +655,6 @@ pub(super) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div
                 )
                 .p(px(14.))
                 .child(content),
-        )
+        ),
+    )
 }

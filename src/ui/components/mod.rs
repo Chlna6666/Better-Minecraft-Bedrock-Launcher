@@ -10,6 +10,7 @@ pub mod input;
 pub mod markdown_renderer;
 pub mod minecraft_text;
 pub mod modal;
+pub mod page_shell;
 pub mod scroll;
 pub mod slider;
 pub mod split_pane;

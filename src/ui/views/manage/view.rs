@@ -140,12 +140,10 @@ impl ManagePageView {
                 .child(self.render_main(window, colors, state, cx));
         }
 
-        div()
-            .size_full()
-            .flex()
-            .gap(px(16.))
-            .child(self.render_sidebar(colors, state, cx))
-            .child(self.render_main(window, colors, state, cx))
+        crate::ui::components::page_shell::split_page(
+            self.render_sidebar(colors, state, cx),
+            self.render_main(window, colors, state, cx),
+        )
     }
 
     fn render_sidebar(
@@ -155,9 +153,7 @@ impl ManagePageView {
         cx: &mut Context<Self>,
     ) -> Div {
         let filtered_versions = filtered_versions(state);
-        panel_shell(colors)
-            .w(px(280.))
-            .h_full()
+        crate::ui::components::page_shell::split_sidebar_panel(colors)
             .bg(colors.settings_panel_bg)
             .p(px(10.))
             .flex()
@@ -455,12 +451,14 @@ impl ManagePageView {
         }
 
         let Some(version) = self.selected_version(state) else {
-            return panel_shell(colors).flex_1().h_full().child(empty_state(
-                colors,
-                "images/manage/empty.svg",
-                "请选择一个版本",
-                "左侧列表会展示所有本地已导入的游戏实例。",
-            ));
+            return crate::ui::components::page_shell::split_content_panel(colors).child(
+                empty_state(
+                    colors,
+                    "images/manage/empty.svg",
+                    "请选择一个版本",
+                    "左侧列表会展示所有本地已导入的游戏实例。",
+                ),
+            );
         };
 
         if is_asset_tab(state.tab) && self.asset_list_cache.refresh(state) {
@@ -484,20 +482,7 @@ impl ManagePageView {
             ManageTab::Server => filtered_servers.len(),
         };
 
-        let main_panel = div()
-            .flex_1()
-            .h_full()
-            .relative()
-            .overflow_hidden()
-            .rounded(px(12.))
-            .border_1()
-            .border_color(Hsla {
-                a: 0.18,
-                ..colors.border
-            })
-            .bg(colors.settings_panel_bg)
-            .flex()
-            .flex_col()
+        let main_panel = crate::ui::components::page_shell::split_content_panel(colors)
             .child(
                 div()
                     .px(px(18.))

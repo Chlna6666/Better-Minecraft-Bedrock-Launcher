@@ -1,6 +1,5 @@
 use super::*;
 use crate::ui::components::icon::themed_icon;
-use gpui::prelude::FluentBuilder as _;
 use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -85,24 +84,22 @@ pub(crate) fn task_status_accent(status: &str, kind: TaskVisualKind, colors: &Th
 }
 
 pub(crate) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
-    div()
-        .absolute()
-        .left(px(22.))
-        .right(px(22.))
-        .top(px(92.))
-        .bottom(px(20.))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.16,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.78,
-            ..colors.settings_panel_bg
-        })
-        .overflow_hidden()
-        .child(content)
+    crate::ui::components::page_shell::page_frame(
+        div()
+            .size_full()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(Hsla {
+                a: 0.16,
+                ..colors.border
+            })
+            .bg(Hsla {
+                a: 0.78,
+                ..colors.settings_panel_bg
+            })
+            .overflow_hidden()
+            .child(content),
+    )
 }
 
 pub(crate) fn task_icon_button(
