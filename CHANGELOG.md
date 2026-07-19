@@ -48,6 +48,7 @@ inside that section are maintained automatically by
 Automatically generated from `v0.1.3` through `HEAD`.
 
 ### Added
+- 完善 PaperConnect 联机核心链路 (`fc29763`, 2026-07-19)
 - enable p2p by default (`09d0469`, 2026-07-18)
 - ship launcher rendering and release automation (`51aaeb3`, 2026-07-18)
 - optimize rendering and launcher workflows (`da8442c`, 2026-07-13)
@@ -55,6 +56,7 @@ Automatically generated from `v0.1.3` through `HEAD`.
 - update GPUI nova renderer stack (`fd1ffc5`, 2026-07-05)
 
 ### Fixed
+- 传播本地版本扫描错误 (`38f5580`, 2026-07-19)
 - 更新联机玩家名迁移规则 (`42614ce`, 2026-07-19)
 - unify async tasks and loading state (`37277ff`, 2026-07-18)
 - 修复圆角裁切字体显示与后端标识 (`c9c030c`, 2026-07-18)
@@ -62,6 +64,7 @@ Automatically generated from `v0.1.3` through `HEAD`.
 - improve nova resize and skin previews (`b765e6d`, 2026-07-06)
 
 ### Changed
+- 完善联机页面状态与周期刷新 (`8ceca67`, 2026-07-19)
 - 统一联机与管理页面布局 (`3ec012e`, 2026-07-19)
 
 ### Documentation
