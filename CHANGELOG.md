@@ -1,9 +1,10 @@
 # Changelog
 
 All notable changes to Better Minecraft Bedrock Launcher are documented here.
-The `Unreleased` section describes the current development line. Commit summaries
-inside that section are maintained automatically by
-`scripts/generate_changelog.ps1`.
+The `Unreleased` section is a short, manually curated preview of the next stable
+release. Stable release sections are archived automatically when a stable tag is
+published. Nightly release notes are generated only on GitHub Releases and are
+not copied into this file.
 
 ## [Unreleased]
 
@@ -41,47 +42,6 @@ inside that section are maintained automatically by
 
 - Added a repository-local commit message hook and Chinese Conventional Commits
   documentation for consistent contribution history.
-
-<!-- changelog:generated:start -->
-### Commit Summary
-
-Automatically generated from `v0.1.3` through `HEAD`.
-
-### Added
-- 完善 PaperConnect 联机核心链路 (`fc29763`, 2026-07-19)
-- enable p2p by default (`09d0469`, 2026-07-18)
-- ship launcher rendering and release automation (`51aaeb3`, 2026-07-18)
-- optimize rendering and launcher workflows (`da8442c`, 2026-07-13)
-- add custom skin previews and cover cache (`45489f8`, 2026-07-08)
-- update GPUI nova renderer stack (`fd1ffc5`, 2026-07-05)
-
-### Fixed
-- 传播本地版本扫描错误 (`38f5580`, 2026-07-19)
-- 更新联机玩家名迁移规则 (`42614ce`, 2026-07-19)
-- unify async tasks and loading state (`37277ff`, 2026-07-18)
-- 修复圆角裁切字体显示与后端标识 (`c9c030c`, 2026-07-18)
-- keep GPUI inspector query available in release (`8313be9`, 2026-07-18)
-- improve nova resize and skin previews (`b765e6d`, 2026-07-06)
-
-### Changed
-- 完善联机页面状态与周期刷新 (`8ceca67`, 2026-07-19)
-- 统一联机与管理页面布局 (`3ec012e`, 2026-07-19)
-
-### Documentation
-- specify version custom icon behavior (`264c06d`, 2026-07-13)
-
-### Maintenance
-- 使用 Cocogitto 统一提交校验 (`a78facd`, 2026-07-18)
-- harden nightly and release publishing (`a9a4b21`, 2026-07-18)
-- use git sources for Bedrock dependencies (`9da2dea`, 2026-07-18)
-- clone public dependencies without checkout tokens (`81b09aa`, 2026-07-18)
-- use anonymous Node 24 dependency checkouts (`0015513`, 2026-07-18)
-- remove bundled skills directory (`fb0e566`, 2026-06-22)
-- ignore playwright mcp artifacts (`7a18c26`, 2026-06-22)
-- remove gpui-ce reference submodule (`9e26a81`, 2026-06-22)
-- establish GPUI workspace baseline (`e5c4d23`, 2026-06-22)
-
-<!-- changelog:generated:end -->
 
 ## Release Notes
 

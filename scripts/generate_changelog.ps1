@@ -3,8 +3,11 @@ param(
     [string]$OutputPath = "CHANGELOG.md",
     [string]$SinceTag,
     [string]$Until = "HEAD",
+    [string]$Version,
+    [string]$ReleaseDate,
     [switch]$ReplaceUnreleased,
-    [switch]$ReleaseNotes
+    [switch]$ReleaseNotes,
+    [switch]$ArchiveRelease
 )
 
 $ErrorActionPreference = "Stop"
@@ -194,6 +197,31 @@ function Update-UnreleasedSection {
     return $updated.TrimEnd() + "`r`n"
 }
 
+function Archive-UnreleasedSection {
+    param(
+        [Parameter(Mandatory)] [string]$Content,
+        [Parameter(Mandatory)] [string]$ReleaseVersion,
+        [Parameter(Mandatory)] [string]$Date
+    )
+
+    if ($ReleaseVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "Release version must use MAJOR.MINOR.PATCH format: $ReleaseVersion"
+    }
+
+    $sectionPattern = '(?ms)^## \[Unreleased\].*?(?=^## \[|\z)'
+    $sectionMatch = [regex]::Match($Content, $sectionPattern)
+    if (-not $sectionMatch.Success) {
+        throw "CHANGELOG.md does not contain an [Unreleased] section."
+    }
+
+    $section = $sectionMatch.Value.Trim()
+    $section = [regex]::Replace($section, '(?m)^## \[Unreleased\]\s*', "## [$ReleaseVersion] - $Date`r`n")
+    $replacement = "## [Unreleased]`r`n`r`n$($section.Trim())`r`n"
+    $updated = $Content.Substring(0, $sectionMatch.Index) + $replacement +
+        $Content.Substring($sectionMatch.Index + $sectionMatch.Length)
+    return $updated.TrimEnd() + "`r`n"
+}
+
 $resolvedSinceTag = $SinceTag
 if ([string]::IsNullOrWhiteSpace($resolvedSinceTag)) {
     $resolvedSinceTag = Resolve-LatestStableTag -ExcludedTag $Until
@@ -204,6 +232,26 @@ if ($ReleaseNotes) {
     $notes = Build-ChangeText -Commits $commits -StartTag $resolvedSinceTag -EndReference $Until
     $notes | Set-Content -Path $OutputPath -Encoding utf8
     Write-Host "Generated release notes at $OutputPath"
+    exit 0
+}
+
+if ($ArchiveRelease) {
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        throw "-ArchiveRelease requires -Version."
+    }
+
+    $date = if ([string]::IsNullOrWhiteSpace($ReleaseDate)) {
+        (Get-Date).ToString("yyyy-MM-dd")
+    } else { $ReleaseDate }
+    if (-not (Test-Path $OutputPath)) {
+        throw "CHANGELOG file does not exist: $OutputPath"
+    }
+
+    $existing = Get-Content -Raw -Path $OutputPath -Encoding utf8
+    $updated = Archive-UnreleasedSection -Content $existing -ReleaseVersion $Version -Date $date
+    $writePath = (Resolve-Path $OutputPath).Path
+    [System.IO.File]::WriteAllText($writePath, $updated, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "Archived [Unreleased] as [$Version] - $date"
     exit 0
 }
 
