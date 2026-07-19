@@ -3,6 +3,9 @@ use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_
 use crate::ui::views::settings::state::SettingsPageState;
 use crate::ui::views::tools::state::{ToolsPageState, ToolsTab};
 use gpui::*;
+use std::time::Duration;
+
+use crate::ui::views::tools::online::actions;
 
 pub(crate) mod online;
 mod sidebar;
@@ -10,6 +13,7 @@ pub mod state;
 
 pub struct ToolsPageView {
     _subscriptions: Vec<Subscription>,
+    _online_refresh_task: Task<()>,
 }
 
 impl ToolsPageView {
@@ -25,8 +29,20 @@ impl ToolsPageView {
                 cx.notify();
             }),
         ];
+        let online_refresh_task = cx.spawn(async move |_this, cx| {
+            loop {
+                Timer::after(Duration::from_secs(3)).await;
+                if let Err(error) = cx.update(|cx| {
+                    actions::refresh_status(cx);
+                    actions::check_nat(cx);
+                }) {
+                    tracing::warn!("online refresh task update failed: {error:?}");
+                }
+            }
+        });
         Self {
             _subscriptions: subscriptions,
+            _online_refresh_task: online_refresh_task,
         }
     }
 }

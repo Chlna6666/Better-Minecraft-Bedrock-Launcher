@@ -13,7 +13,7 @@ pub(in crate::ui::views::tools) fn render_online_panel(
     state: &ToolsPageState,
     window_width: Pixels,
 ) -> impl IntoElement {
-    let compact = window_width <= px(1080.);
+    let compact = window_width <= px(1280.);
     crate::ui::components::page_shell::split_content_panel(colors)
         .overflow_y_scrollbar()
         .scrollbar_width(px(0.))
@@ -23,13 +23,13 @@ pub(in crate::ui::views::tools) fn render_online_panel(
 
 fn render_online_body(colors: &ThemeColors, state: &ToolsPageState, compact: bool) -> Div {
     let primary = div()
+        .when(compact, |this| this.w_full())
         .flex_1()
         .min_w(px(0.))
         .flex()
         .flex_col()
         .gap(px(14.))
-        .child(room::render_room_card(colors, state))
-        .child(render_activity_card(colors, state));
+        .child(room::render_room_card(colors, state));
     let secondary = div()
         .min_w(px(0.))
         .when(!compact, |this| this.w(px(330.)).flex_none())
@@ -37,8 +37,12 @@ fn render_online_body(colors: &ThemeColors, state: &ToolsPageState, compact: boo
         .flex()
         .flex_col()
         .gap(px(14.))
+        .when(state.easytier_running, |this| {
+            this.child(peers::render_room_members_card(colors, state))
+        })
+        .child(render_activity_card(colors, state))
         .child(controls::render_session_card(colors, state))
-        .child(peers::render_peers_card(colors, state));
+        .child(peers::render_network_nodes_card(colors, state));
 
     div()
         .w_full()
@@ -128,15 +132,8 @@ fn render_activity_hint(colors: &ThemeColors) -> Div {
 }
 
 fn render_log_lines(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoElement {
-    div()
-        .w_full()
-        .max_h(px(150.))
-        .overflow_y_scrollbar()
-        .scrollbar_width(px(0.))
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .children(state.online_log.as_ref().lines().rev().take(8).map(|line| {
+    div().w_full().flex().flex_col().gap(px(6.)).children(
+        state.online_log.as_ref().lines().rev().take(8).map(|line| {
             div()
                 .w_full()
                 .rounded(px(10.))
@@ -149,7 +146,8 @@ fn render_log_lines(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoEl
                 .text_size(px(11.5))
                 .text_color(colors.text_secondary)
                 .child(line.to_string())
-        }))
+        }),
+    )
 }
 
 pub(in crate::ui::views::tools) fn render_online_overlay(
@@ -173,7 +171,13 @@ pub(in crate::ui::views::tools) fn primary_game_port(state: &ToolsPageState) -> 
     state
         .game_ports
         .split(|character: char| character.is_whitespace() || matches!(character, ',' | ';'))
-        .find_map(|value| value.trim().parse::<u16>().ok().filter(|port| *port > 0))
+        .find_map(|value| {
+            value
+                .trim()
+                .parse::<u16>()
+                .ok()
+                .filter(|port| (1025..=65535).contains(port))
+        })
         .unwrap_or(7551)
 }
 
@@ -238,6 +242,13 @@ mod tests {
     fn primary_port_skips_invalid_and_zero_values() {
         let mut state = ToolsPageState::default();
         state.game_ports = SharedString::from("invalid, 0; 19132");
+        assert_eq!(primary_game_port(&state), 19132);
+    }
+
+    #[test]
+    fn primary_port_skips_reserved_system_ports() {
+        let mut state = ToolsPageState::default();
+        state.game_ports = SharedString::from("1024, 19132");
         assert_eq!(primary_game_port(&state), 19132);
     }
 }

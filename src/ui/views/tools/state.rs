@@ -60,10 +60,14 @@ pub struct ToolsPageState {
     pub easytier_running: bool,
     pub easytier_hostname: SharedString,
     pub easytier_ipv4: Option<SharedString>,
+    pub easytier_game_host: SharedString,
+    pub easytier_game_port: Option<u16>,
     pub active_room_code: SharedString,
     pub active_network_name: SharedString,
     pub host_room_code: SharedString,
     pub peers_loading: bool,
+    pub network_nodes_expanded: bool,
+    pub players: Vec<OnlinePlayerEntry>,
     pub peers: Vec<OnlinePeerEntry>,
 }
 
@@ -86,7 +90,7 @@ impl Default for ToolsPageState {
             room_advanced_open: false,
             easytier_settings_open: false,
             disable_p2p: false,
-            no_tun: true,
+            no_tun: false,
             online_operation: OnlineOperation::Idle,
             online_operation_generation: 0,
             online_error: None,
@@ -94,10 +98,14 @@ impl Default for ToolsPageState {
             easytier_running: false,
             easytier_hostname: SharedString::from(""),
             easytier_ipv4: None,
+            easytier_game_host: SharedString::from(""),
+            easytier_game_port: None,
             active_room_code: SharedString::from(""),
             active_network_name: SharedString::from(""),
             host_room_code: SharedString::from(""),
             peers_loading: false,
+            network_nodes_expanded: false,
+            players: Vec::new(),
             peers: Vec::new(),
         }
     }
@@ -112,6 +120,24 @@ impl ToolsPageState {
         self.no_tun = config.no_tun;
     }
 
+    pub fn host_or_avg_latency(&self) -> Option<u64> {
+        if !self.easytier_running {
+            return None;
+        }
+        if let Some(server_peer) = self.peers.iter().find(|p| p.role == OnlinePeerRole::Server) {
+            if let Some(latency) = server_peer.latency_ms {
+                return Some(latency);
+            }
+        }
+        let latencies: Vec<u64> = self.peers.iter().filter_map(|p| p.latency_ms).collect();
+        if latencies.is_empty() {
+            None
+        } else {
+            let sum: u64 = latencies.iter().sum();
+            Some(sum / latencies.len() as u64)
+        }
+    }
+
     pub(crate) fn begin_online_operation(&mut self, operation: OnlineOperation) -> Option<u64> {
         if self.online_operation.is_busy() {
             return None;
@@ -123,8 +149,31 @@ impl ToolsPageState {
         Some(self.online_operation_generation)
     }
 
+    pub(crate) fn begin_stop_operation(&mut self) -> Option<u64> {
+        if self.online_operation.is_busy() {
+            if self.online_operation == OnlineOperation::Stopping {
+                return None;
+            }
+            self.online_operation = OnlineOperation::Stopping;
+            return Some(self.online_operation_generation);
+        }
+        self.begin_online_operation(OnlineOperation::Stopping)
+    }
+
     pub(crate) fn is_current_online_operation(&self, generation: u64) -> bool {
         self.online_operation.is_busy() && self.online_operation_generation == generation
+    }
+
+    pub(crate) fn is_current_room_operation(&self, generation: u64) -> bool {
+        self.is_current_online_operation(generation)
+            && self.online_operation != OnlineOperation::Stopping
+    }
+
+    pub(crate) fn finish_room_operation(&mut self, generation: u64) -> bool {
+        self.is_current_room_operation(generation) && {
+            self.online_operation = OnlineOperation::Idle;
+            true
+        }
     }
 
     pub(crate) fn finish_online_operation(&mut self, generation: u64) -> bool {
@@ -137,12 +186,19 @@ impl ToolsPageState {
     }
 
     pub(crate) fn clear_online_session(&mut self) {
+        self.nat_checking = false;
+        self.nat_udp_type = None;
+        self.nat_tcp_type = None;
+        self.nat_error = None;
         self.easytier_running = false;
         self.easytier_hostname = SharedString::from("");
         self.easytier_ipv4 = None;
+        self.easytier_game_host = SharedString::from("");
+        self.easytier_game_port = None;
         self.active_room_code = SharedString::from("");
         self.active_network_name = SharedString::from("");
         self.host_room_code = SharedString::from("");
+        self.players.clear();
         self.peers.clear();
         self.peers_loading = false;
     }
@@ -154,6 +210,27 @@ impl Global for ToolsPageState {}
 pub struct OnlinePeerEntry {
     pub ipv4: Option<SharedString>,
     pub hostname: SharedString,
+    pub role: OnlinePeerRole,
+    pub connection_kind: crate::core::online::EasyTierConnectionKind,
+    pub protocol: Option<SharedString>,
+    pub remote_endpoint: Option<SharedString>,
+    pub latency_ms: Option<u64>,
+    pub via_hostname: Option<SharedString>,
+}
+
+#[derive(Clone, Debug)]
+pub struct OnlinePlayerEntry {
+    pub player_name: SharedString,
+    pub client_id: SharedString,
+    pub is_room_host: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OnlinePeerRole {
+    User,
+    Relay,
+    Server,
+    Unknown,
 }
 
 #[cfg(test)]
@@ -174,6 +251,20 @@ mod tests {
         );
         assert!(!state.finish_online_operation(generation.wrapping_add(1)));
         assert_eq!(state.online_operation, OnlineOperation::CreatingRoom);
+        assert!(state.finish_online_operation(generation));
+        assert_eq!(state.online_operation, OnlineOperation::Idle);
+    }
+
+    #[test]
+    fn stopping_operation_rejects_room_completion() {
+        let mut state = ToolsPageState::default();
+        let generation = state
+            .begin_online_operation(OnlineOperation::CreatingRoom)
+            .expect("idle state accepts an operation");
+
+        assert_eq!(state.begin_stop_operation(), Some(generation));
+        assert!(!state.is_current_room_operation(generation));
+        assert!(!state.finish_room_operation(generation));
         assert!(state.finish_online_operation(generation));
         assert_eq!(state.online_operation, OnlineOperation::Idle);
     }

@@ -32,15 +32,30 @@ pub(super) fn render_room_card(colors: &ThemeColors, state: &ToolsPageState) -> 
         .flex_col()
         .gap(px(18.))
         .child(render_header(colors, state))
-        .child(render_create_action(colors, actions_disabled))
-        .child(render_join_action(colors, state, actions_disabled))
-        .child(room_options::render_advanced_section(colors, state))
+        .when(!busy && !state.easytier_running, |this| {
+            this.child(render_create_action(colors, actions_disabled))
+                .child(render_join_action(colors, state, actions_disabled))
+                .child(room_options::render_advanced_section(colors, state))
+        })
+        .when(busy, |this| {
+            this.child(render_connecting_state(colors, state))
+        })
+        .when(!busy && state.easytier_running, |this| {
+            this.child(render_connected_state(colors, state))
+        })
         .when(!state.host_room_code.as_ref().trim().is_empty(), |this| {
             this.child(render_host_room_code(colors, state.host_room_code.clone()))
         })
 }
 
 fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+    let latency = state.host_or_avg_latency();
+    let player_count = if state.players.is_empty() && state.easytier_running {
+        1
+    } else {
+        state.players.len()
+    };
+
     div()
         .w_full()
         .flex()
@@ -54,10 +69,71 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                 .gap(px(5.))
                 .child(
                     div()
-                        .text_size(px(19.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(colors.text_primary)
-                        .child("开始联机"),
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .text_size(px(19.))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(colors.text_primary)
+                                .child("开始联机"),
+                        )
+                        .when(state.easytier_running, |this| {
+                            this.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .rounded(px(999.))
+                                            .bg(Hsla {
+                                                a: 0.12,
+                                                ..colors.accent
+                                            })
+                                            .px(px(8.))
+                                            .py(px(2.))
+                                            .text_size(px(11.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(colors.accent)
+                                            .child(themed_icon(
+                                                lucide_icons::icon_wifi(),
+                                                13.0,
+                                                colors.accent,
+                                            ))
+                                            .child(match latency {
+                                                Some(ms) => format!("延迟 {ms} ms"),
+                                                None => "延迟 -- ms".to_string(),
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .rounded(px(999.))
+                                            .bg(Hsla {
+                                                a: 0.12,
+                                                ..colors.accent
+                                            })
+                                            .px(px(8.))
+                                            .py(px(2.))
+                                            .text_size(px(11.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(colors.accent)
+                                            .child(themed_icon(
+                                                lucide_icons::icon_users(),
+                                                13.0,
+                                                colors.accent,
+                                            ))
+                                            .child(format!("玩家 {player_count} 人")),
+                                    ),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -67,27 +143,135 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                         .child("创建新房间，或使用好友分享的联机码直接加入。"),
                 ),
         )
-        .when(state.online_operation.is_busy(), |this| {
-            this.child(
-                div()
-                    .flex_none()
-                    .rounded(px(999.))
-                    .border_1()
-                    .border_color(Hsla {
-                        a: 0.24,
-                        ..colors.accent
-                    })
-                    .bg(Hsla {
-                        a: 0.12,
-                        ..colors.accent
-                    })
-                    .px(px(11.))
-                    .py(px(7.))
-                    .text_size(px(12.))
-                    .text_color(colors.accent)
-                    .child(state.online_operation.label()),
-            )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .when(state.online_operation.is_busy(), |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .rounded(px(999.))
+                            .border_1()
+                            .border_color(Hsla {
+                                a: 0.24,
+                                ..colors.accent
+                            })
+                            .bg(Hsla {
+                                a: 0.12,
+                                ..colors.accent
+                            })
+                            .px(px(11.))
+                            .py(px(7.))
+                            .text_size(px(12.))
+                            .text_color(colors.accent)
+                            .child(state.online_operation.label()),
+                    )
+                })
+                .when(
+                    state.easytier_running
+                        || matches!(
+                            state.online_operation,
+                            crate::ui::views::tools::state::OnlineOperation::CreatingRoom
+                                | crate::ui::views::tools::state::OnlineOperation::JoiningRoom
+                                | crate::ui::views::tools::state::OnlineOperation::Stopping
+                        ),
+                    |this| this.child(render_quick_action(colors, state)),
+                ),
+        )
+}
+
+fn render_quick_action(colors: &ThemeColors, state: &ToolsPageState) -> Stateful<Div> {
+    let stopping =
+        state.online_operation == crate::ui::views::tools::state::OnlineOperation::Stopping;
+    let (id, label, icon) = if state.easytier_running {
+        ("online-stop", "断开连接", lucide_icons::icon_log_out())
+    } else if state.online_operation.is_busy() {
+        ("online-cancel", "取消", lucide_icons::icon_x())
+    } else {
+        ("online-stop", "断开连接", lucide_icons::icon_log_out())
+    };
+    action_button(colors, id, label, icon, stopping, true).when(!stopping, |this| {
+        this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+            actions::stop_session(cx);
         })
+    })
+}
+
+fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+    div()
+        .w_full()
+        .rounded(px(17.))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.20,
+            ..colors.accent
+        })
+        .bg(Hsla {
+            a: 0.08,
+            ..colors.accent
+        })
+        .p(px(18.))
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .child(themed_icon(
+            lucide_icons::icon_loader_circle(),
+            20.0,
+            colors.accent,
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_primary)
+                        .child(state.online_operation.label()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(colors.text_secondary)
+                        .child("正在建立网络，完成后即可进入 Minecraft。"),
+                ),
+        )
+}
+
+fn render_connected_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
+    div()
+        .w_full()
+        .rounded(px(17.))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.20,
+            ..colors.accent
+        })
+        .bg(Hsla {
+            a: 0.08,
+            ..colors.accent
+        })
+        .p(px(18.))
+        .flex()
+        .flex_col()
+        .gap(px(5.))
+        .child(
+            div()
+                .text_size(px(14.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child("已连接，可以进入 Minecraft"),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(colors.text_secondary)
+                .child(format!("联机码：{}", state.active_room_code)),
+        )
 }
 
 fn render_create_action(colors: &ThemeColors, disabled: bool) -> Div {
@@ -99,23 +283,10 @@ fn render_create_action(colors: &ThemeColors, disabled: bool) -> Div {
             a: 0.22,
             ..colors.accent
         })
-        .bg(linear_gradient(
-            90.,
-            linear_color_stop(
-                Hsla {
-                    a: 0.15,
-                    ..colors.accent
-                },
-                0.,
-            ),
-            linear_color_stop(
-                Hsla {
-                    a: 0.04,
-                    ..colors.surface
-                },
-                1.,
-            ),
-        ))
+        .bg(Hsla {
+            a: 0.10,
+            ..colors.accent
+        })
         .p(px(15.))
         .flex()
         .items_center()

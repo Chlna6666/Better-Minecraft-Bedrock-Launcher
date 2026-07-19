@@ -5,9 +5,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
-use super::actions;
 use super::online_state_text;
-use super::widgets::{action_button, icon_button};
+use super::widgets::icon_button;
 
 pub(crate) fn persist_tools_online_settings(cx: &mut App) {
     let (bootstrap_peers, player_name, game_ports, disable_p2p, no_tun) =
@@ -43,8 +42,6 @@ pub(crate) fn persist_tools_online_settings(cx: &mut App) {
 }
 
 pub(super) fn render_session_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
-    let busy = state.online_operation.is_busy();
-
     div()
         .w_full()
         .rounded(px(20.))
@@ -63,7 +60,6 @@ pub(super) fn render_session_card(colors: &ThemeColors, state: &ToolsPageState) 
         .gap(px(16.))
         .child(render_session_header(colors, state))
         .child(render_session_details(colors, state))
-        .child(render_session_actions(colors, state, busy))
 }
 
 fn session_accent(colors: &ThemeColors, state: &ToolsPageState) -> Hsla {
@@ -135,67 +131,6 @@ fn render_session_identity(colors: &ThemeColors, state: &ToolsPageState, accent:
         )
 }
 
-fn render_session_actions(colors: &ThemeColors, state: &ToolsPageState, busy: bool) -> Div {
-    div()
-        .w_full()
-        .flex()
-        .flex_wrap()
-        .gap(px(10.))
-        .child(render_refresh_button(colors, busy))
-        .child(render_nat_button(colors, state.nat_checking))
-        .when(state.easytier_running, |this| {
-            this.child(render_stop_button(colors, busy))
-        })
-}
-
-fn render_refresh_button(colors: &ThemeColors, busy: bool) -> Stateful<Div> {
-    action_button(
-        colors,
-        "online-refresh",
-        "刷新状态",
-        lucide_icons::icon_refresh_cw(),
-        busy,
-        false,
-    )
-    .when(!busy, |this| {
-        this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-            actions::refresh_status(cx);
-        })
-    })
-}
-
-fn render_nat_button(colors: &ThemeColors, checking: bool) -> Stateful<Div> {
-    action_button(
-        colors,
-        "online-nat",
-        if checking { "检测中" } else { "检查 NAT" },
-        lucide_icons::icon_shield_check(),
-        checking,
-        false,
-    )
-    .when(!checking, |this| {
-        this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-            actions::check_nat(cx);
-        })
-    })
-}
-
-fn render_stop_button(colors: &ThemeColors, busy: bool) -> Stateful<Div> {
-    action_button(
-        colors,
-        "online-stop",
-        "断开连接",
-        lucide_icons::icon_log_out(),
-        busy,
-        true,
-    )
-    .when(!busy, |this| {
-        this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-            actions::stop_session(cx);
-        })
-    })
-}
-
 fn render_session_details(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     div()
         .w_full()
@@ -233,12 +168,41 @@ fn render_session_details(colors: &ThemeColors, state: &ToolsPageState) -> Div {
         ))
         .child(detail_row(
             colors,
+            "Minecraft 地址",
+            match (
+                state.easytier_game_host.as_ref().is_empty(),
+                state.easytier_game_port,
+            ) {
+                (false, Some(port)) => {
+                    SharedString::from(format!("{}:{port}", state.easytier_game_host))
+                }
+                _ => SharedString::from("连接后显示"),
+            },
+        ))
+        .child(detail_row(
+            colors,
             "NAT",
             match (state.nat_udp_type, state.nat_tcp_type) {
-                (Some(udp), Some(tcp)) => SharedString::from(format!("UDP {udp} / TCP {tcp}")),
+                (Some(udp), Some(tcp)) => SharedString::from(format!(
+                    "UDP：{} / TCP：{}",
+                    nat_type_label(udp),
+                    nat_type_label(tcp)
+                )),
                 _ => SharedString::from("尚未检测"),
             },
         ))
+}
+
+fn nat_type_label(value: i32) -> &'static str {
+    match value {
+        0 => "检测中或未知",
+        1 => "开放网络",
+        2 => "完全锥形 NAT",
+        3 => "受限锥形 NAT",
+        4 => "端口受限 NAT",
+        5 => "对称 NAT",
+        _ => "未知类型",
+    }
 }
 
 fn detail_row(colors: &ThemeColors, label: &'static str, value: SharedString) -> Div {

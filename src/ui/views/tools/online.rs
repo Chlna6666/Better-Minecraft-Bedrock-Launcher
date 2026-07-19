@@ -1,4 +1,4 @@
-mod actions;
+pub(crate) mod actions;
 mod controls;
 mod layout;
 mod peers;

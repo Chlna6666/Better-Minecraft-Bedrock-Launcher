@@ -33,60 +33,12 @@ pub(super) fn render_sidebar(colors: &ThemeColors, active: ToolsTab) -> Div {
         .flex()
         .flex_col()
         .gap(px(16.))
-        .child(render_sidebar_header(colors))
         .child(
             div().w_full().flex().flex_col().gap(px(8.)).children(
                 items
                     .into_iter()
                     .map(|item| render_navigation_item(colors, item, active)),
             ),
-        )
-}
-
-fn render_sidebar_header(colors: &ThemeColors) -> Div {
-    div()
-        .w_full()
-        .px(px(4.))
-        .py(px(3.))
-        .flex()
-        .items_center()
-        .gap(px(10.))
-        .child(
-            div()
-                .size(px(36.))
-                .rounded(px(12.))
-                .bg(Hsla {
-                    a: 0.14,
-                    ..colors.accent
-                })
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(themed_icon(
-                    lucide_icons::icon_layout_grid(),
-                    17.0,
-                    colors.accent,
-                )),
-        )
-        .child(
-            div()
-                .min_w(px(0.))
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .text_size(px(14.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(colors.text_primary)
-                        .child("工具中心"),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.text_muted)
-                        .child("选择要使用的工具"),
-                ),
         )
 }
 
