@@ -3531,10 +3531,12 @@ fn render_curseforge_install_modal(
         )
         .child(target_dropdown)
         .when_some(selected_version, |this, version| {
-            let target_path = crate::ui::hooks::use_local_versions::version_target_root_path(version)
-                .unwrap_or_else(|| SharedString::from("-"));
+            let target_path =
+                crate::ui::hooks::use_local_versions::version_target_root_path(version)
+                    .unwrap_or_else(|| SharedString::from("-"));
             let isolation = crate::ui::hooks::use_local_versions::version_isolation_label(version);
-            let version_type = crate::ui::hooks::use_local_versions::version_type_summary_label(version);
+            let version_type =
+                crate::ui::hooks::use_local_versions::version_type_summary_label(version);
 
             this.child(
                 div()
@@ -3585,7 +3587,7 @@ fn render_curseforge_install_modal(
                                             .text_color(colors.text_secondary)
                                             .child(target_path),
                                     ),
-                            )
+                            ),
                     )
                     .child(
                         // info summary row: 隔离状态
@@ -3624,7 +3626,7 @@ fn render_curseforge_install_modal(
                                             .text_color(colors.text_secondary)
                                             .child(isolation),
                                     ),
-                            )
+                            ),
                     )
                     .child(
                         // info summary row: 版本类型
@@ -3663,8 +3665,8 @@ fn render_curseforge_install_modal(
                                             .text_color(colors.text_secondary)
                                             .child(version_type),
                                     ),
-                            )
-                    )
+                            ),
+                    ),
             )
         });
 

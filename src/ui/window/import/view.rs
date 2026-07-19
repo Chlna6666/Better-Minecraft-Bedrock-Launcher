@@ -2123,7 +2123,9 @@ fn launch_version_descriptor(
     }
 }
 
-fn version_build_type(version: &crate::core::version::launch_versions::LaunchVersionEntry) -> BuildType {
+fn version_build_type(
+    version: &crate::core::version::launch_versions::LaunchVersionEntry,
+) -> BuildType {
     crate::ui::hooks::use_local_versions::version_build_type(version)
 }
 
@@ -2131,7 +2133,9 @@ fn version_edition(version: &crate::core::version::launch_versions::LaunchVersio
     crate::ui::hooks::use_local_versions::version_edition(version)
 }
 
-fn version_enable_isolation(version: &crate::core::version::launch_versions::LaunchVersionEntry) -> bool {
+fn version_enable_isolation(
+    version: &crate::core::version::launch_versions::LaunchVersionEntry,
+) -> bool {
     crate::ui::hooks::use_local_versions::version_enable_isolation(version)
 }
 

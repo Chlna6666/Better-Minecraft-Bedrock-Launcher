@@ -3,10 +3,10 @@ use gpui_hooks::hooks::{UseRefHook, UseStateHook};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
 use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
 use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::views::manage::state::{ManagePageState, ManagedVersionEntry};
-use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LocalVersionsSnapshot {
@@ -380,7 +380,6 @@ pub fn version_detail_label(version: &LaunchVersionEntry) -> SharedString {
         SharedString::from(parts.join(" / "))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
