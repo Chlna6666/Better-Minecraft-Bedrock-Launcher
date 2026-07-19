@@ -48,6 +48,7 @@ inside that section are maintained automatically by
 Automatically generated from `v0.1.3` through `HEAD`.
 
 ### Added
+- 完善 CurseForge 安装目标信息 (`775564d`, 2026-07-19)
 - 完善 PaperConnect 联机核心链路 (`fc29763`, 2026-07-19)
 - enable p2p by default (`09d0469`, 2026-07-18)
 - ship launcher rendering and release automation (`51aaeb3`, 2026-07-18)
@@ -64,6 +65,8 @@ Automatically generated from `v0.1.3` through `HEAD`.
 - improve nova resize and skin previews (`b765e6d`, 2026-07-06)
 
 ### Changed
+- 统一版本页面代码格式 (`5d7e3f9`, 2026-07-19)
+- 复用本地版本展示与路径信息 (`ff92670`, 2026-07-19)
 - 完善联机页面状态与周期刷新 (`8ceca67`, 2026-07-19)
 - 统一联机与管理页面布局 (`3ec012e`, 2026-07-19)
 
