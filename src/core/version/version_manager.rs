@@ -3,6 +3,7 @@ use crate::core::minecraft::appx::utils::{
     get_manifest_identity_from_dir_blocking,
 };
 use crate::core::version::launch_versions::LaunchVersionEntry;
+use anyhow::{Context as _, Result};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::fs::DirEntry;
@@ -189,7 +190,7 @@ fn absolute_display_path(root: &Path, path: &Path) -> String {
     root.join(path).to_string_lossy().into_owned()
 }
 
-pub async fn get_appx_version_list(folder: &Path) -> Vec<LaunchVersionEntry> {
+pub async fn get_appx_version_list(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
     let folder = folder.to_path_buf();
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let thread = std::thread::Builder::new()
@@ -200,41 +201,25 @@ pub async fn get_appx_version_list(folder: &Path) -> Vec<LaunchVersionEntry> {
                 debug!("版本扫描结果接收端已关闭");
             }
         });
-    if let Err(error) = thread {
-        debug!("启动版本扫描线程失败: {error}");
-        return Vec::new();
-    }
+    thread.context("启动版本扫描线程失败")?;
 
-    match receiver.await {
-        Ok(versions) => versions,
-        Err(error) => {
-            debug!("版本扫描线程异常退出: {error}");
-            Vec::new()
-        }
-    }
+    receiver.await.context("版本扫描线程异常退出")?
 }
 
-fn get_appx_version_list_blocking(folder: &Path) -> Vec<LaunchVersionEntry> {
+fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
     let start = Instant::now();
     debug!("开始读取目录: {}", folder.display());
 
-    let read_dir = match std::fs::read_dir(folder) {
-        Ok(read_dir) => read_dir,
-        Err(error) => {
-            debug!("读取目录失败: {}", error);
-            return Vec::new();
-        }
-    };
+    let read_dir = std::fs::read_dir(folder)
+        .with_context(|| format!("读取版本目录失败: {}", folder.display()))?;
 
     let entries = read_dir
         .filter_map(|entry| match entry {
-            Ok(entry) => Some(entry),
-            Err(error) => {
-                debug!("遍历目录项出错: {}", error);
-                None
-            }
+            Ok(entry) => Some(Ok(entry)),
+            Err(error) => Some(Err(error)),
         })
-        .collect::<Vec<_>>();
+        .collect::<std::io::Result<Vec<_>>>()
+        .context("遍历版本目录失败")?;
     let concurrency = num_cpus::get().clamp(2, 4);
     let versions = match rayon::ThreadPoolBuilder::new()
         .num_threads(concurrency)
@@ -262,7 +247,7 @@ fn get_appx_version_list_blocking(folder: &Path) -> Vec<LaunchVersionEntry> {
         concurrency,
         versions.len()
     );
-    versions
+    Ok(versions)
 }
 
 #[cfg(test)]
@@ -314,6 +299,7 @@ mod tests {
         assert!(
             result
                 .expect("version scan should bypass blocking pool")
+                .expect("version scan should complete")
                 .is_empty()
         );
     }

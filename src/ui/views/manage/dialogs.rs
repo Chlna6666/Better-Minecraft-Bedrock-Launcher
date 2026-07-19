@@ -89,10 +89,11 @@ impl ManagePageView {
                         .await
                         .map_err(|error| error.to_string());
 
-                    let _ = handle.update(cx, |_this, cx| {
+                    let _ = handle.update(cx, |this, cx| {
                         match result {
                             Ok(()) => {
                                 remove_local_version(&folder, cx);
+                                this.invalidate_version_dependent_data(cx);
                                 toast::success(cx, SharedString::from("版本已删除"));
                                 ensure_local_versions_loaded(true, cx);
                             }

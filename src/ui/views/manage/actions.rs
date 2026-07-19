@@ -116,6 +116,7 @@ impl ManagePageView {
         .detach();
     }
     pub(super) fn refresh_versions(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_version_dependent_data(cx);
         ensure_local_versions_loaded(true, cx);
         toast::push(cx, SharedString::from("正在刷新版本列表"));
     }

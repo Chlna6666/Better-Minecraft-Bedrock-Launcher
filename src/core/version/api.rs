@@ -10,7 +10,7 @@ use crate::utils::file_ops;
 pub async fn get_version_list() -> Result<Vec<LaunchVersionEntry>> {
     let path = file_ops::bmcbl_subdir("versions");
     anyhow::ensure!(path.as_os_str().len() > 0, "invalid versions folder path");
-    Ok(get_appx_version_list(&path).await)
+    get_appx_version_list(&path).await
 }
 
 pub async fn delete_version(folder_name: &str) -> Result<()> {
