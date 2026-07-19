@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
 use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::views::manage::state::{ManagePageState, ManagedVersionEntry};
+use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LocalVersionsSnapshot {
@@ -248,6 +249,138 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
     })
     .detach();
 }
+
+pub fn version_build_type(version: &LaunchVersionEntry) -> BuildType {
+    if version.kind.eq_ignore_ascii_case("gdk") {
+        BuildType::Gdk
+    } else {
+        BuildType::Uwp
+    }
+}
+
+pub fn version_edition(version: &LaunchVersionEntry) -> Edition {
+    if version.name.contains("Preview") || version.name.contains("Beta") {
+        Edition::Preview
+    } else {
+        Edition::Release
+    }
+}
+
+pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
+    let config_path = std::path::Path::new(&*version.path).join("config.json");
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(content) => content,
+        Err(_) => return false,
+    };
+    let value = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    value
+        .get("enable_redirection")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub fn version_target_root_path(version: &LaunchVersionEntry) -> Option<SharedString> {
+    let build_type = version_build_type(version);
+    let edition = version_edition(version);
+    let enable_isolation = version_enable_isolation(version);
+    let options = GamePathOptions {
+        build_type,
+        edition,
+        version_name: version.folder.to_string(),
+        enable_isolation,
+        user_id: None,
+        allow_shared_fallback: false,
+    };
+    get_game_root(&options).map(|path| SharedString::from(path.to_string_lossy().to_string()))
+}
+
+pub fn version_isolation_label(version: &LaunchVersionEntry) -> SharedString {
+    if version_enable_isolation(version) {
+        SharedString::from("版本隔离")
+    } else {
+        SharedString::from("系统路径")
+    }
+}
+
+pub fn version_type_summary_label(version: &LaunchVersionEntry) -> SharedString {
+    let platform = if version.kind.eq_ignore_ascii_case("gdk") {
+        "GDK"
+    } else {
+        "UWP"
+    };
+    let edition = if version.name.contains("Preview") || version.name.contains("Beta") {
+        "预览版"
+    } else {
+        "正式版"
+    };
+    SharedString::from(format!("{platform} · {edition}"))
+}
+
+pub fn launch_version_display_name(version: &LaunchVersionEntry) -> SharedString {
+    let ver = version.version.trim();
+    if !ver.is_empty() {
+        SharedString::from(ver.to_string())
+    } else {
+        let name = version.name.trim();
+        if !name.is_empty() {
+            SharedString::from(name.to_string())
+        } else {
+            SharedString::from(version.folder.to_string())
+        }
+    }
+}
+
+pub fn launch_version_display_type(version: &LaunchVersionEntry) -> &'static str {
+    if version.name.contains("Preview")
+        || version.name.contains("Beta")
+        || version.folder.contains("Preview")
+        || version.folder.contains("Beta")
+    {
+        "预览版"
+    } else {
+        "正式版"
+    }
+}
+
+pub fn launch_version_dropdown_label(version: &LaunchVersionEntry) -> SharedString {
+    let name = launch_version_display_name(version);
+    let type_str = launch_version_display_type(version);
+    SharedString::from(format!("{} ({})", name, type_str))
+}
+
+pub fn version_primary_label(version: &LaunchVersionEntry) -> SharedString {
+    if !version.folder.is_empty() {
+        return SharedString::from(version.folder.clone());
+    }
+    if !version.version.is_empty() {
+        return SharedString::from(version.version.clone());
+    }
+    if !version.manifest_version.is_empty() {
+        return SharedString::from(version.manifest_version.clone());
+    }
+    SharedString::from("Unknown")
+}
+
+pub fn version_detail_label(version: &LaunchVersionEntry) -> SharedString {
+    let mut parts = Vec::new();
+    if !version.version.is_empty() && version.version.as_ref() != version.folder.as_ref() {
+        parts.push(version.version.as_ref());
+    }
+    if !version.manifest_version.is_empty()
+        && version.manifest_version.as_ref() != version.version.as_ref()
+    {
+        parts.push(version.manifest_version.as_ref());
+    }
+    if parts.is_empty() {
+        SharedString::from(version.folder.clone())
+    } else {
+        SharedString::from(parts.join(" / "))
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

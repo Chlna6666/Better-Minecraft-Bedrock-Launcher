@@ -2123,126 +2123,52 @@ fn launch_version_descriptor(
     }
 }
 
-fn version_build_type(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-) -> BuildType {
-    if version.kind.eq_ignore_ascii_case("gdk") {
-        BuildType::Gdk
-    } else {
-        BuildType::Uwp
-    }
+fn version_build_type(version: &crate::core::version::launch_versions::LaunchVersionEntry) -> BuildType {
+    crate::ui::hooks::use_local_versions::version_build_type(version)
 }
 
 fn version_edition(version: &crate::core::version::launch_versions::LaunchVersionEntry) -> Edition {
-    if version.name.contains("Preview") || version.name.contains("Beta") {
-        Edition::Preview
-    } else {
-        Edition::Release
-    }
+    crate::ui::hooks::use_local_versions::version_edition(version)
 }
 
-fn version_enable_isolation(
-    version: &crate::core::version::launch_versions::LaunchVersionEntry,
-) -> bool {
-    let config_path = std::path::Path::new(&*version.path).join("config.json");
-    let content = match std::fs::read_to_string(config_path) {
-        Ok(content) => content,
-        Err(_) => return false,
-    };
-    let value = match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    value
-        .get("enable_redirection")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
+fn version_enable_isolation(version: &crate::core::version::launch_versions::LaunchVersionEntry) -> bool {
+    crate::ui::hooks::use_local_versions::version_enable_isolation(version)
 }
 
 fn version_target_root_path(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> Option<SharedString> {
-    let build_type = version_build_type(version);
-    let edition = version_edition(version);
-    let enable_isolation = version_enable_isolation(version);
-    let options = GamePathOptions {
-        build_type,
-        edition,
-        version_name: version.folder.to_string(),
-        enable_isolation,
-        user_id: None,
-        allow_shared_fallback: false,
-    };
-    get_game_root(&options).map(|path| SharedString::from(path.to_string_lossy().to_string()))
+    crate::ui::hooks::use_local_versions::version_target_root_path(version)
 }
 
 fn version_isolation_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> SharedString {
-    if version_enable_isolation(version) {
-        SharedString::from("版本隔离")
-    } else {
-        SharedString::from("系统路径")
-    }
+    crate::ui::hooks::use_local_versions::version_isolation_label(version)
 }
 
 fn version_type_summary_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> SharedString {
-    let platform = if version.kind.eq_ignore_ascii_case("gdk") {
-        "GDK"
-    } else {
-        "UWP"
-    };
-    let edition = if version.name.contains("Preview") || version.name.contains("Beta") {
-        "预览版"
-    } else {
-        "正式版"
-    };
-    SharedString::from(format!("{platform} · {edition}"))
+    crate::ui::hooks::use_local_versions::version_type_summary_label(version)
 }
 
 fn version_dropdown_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> SharedString {
-    version_primary_label(version)
+    crate::ui::hooks::use_local_versions::launch_version_dropdown_label(version)
 }
 
 fn version_primary_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> SharedString {
-    if !version.folder.is_empty() {
-        return SharedString::from(version.folder.clone());
-    }
-    if !version.version.is_empty() {
-        return SharedString::from(version.version.clone());
-    }
-    if !version.manifest_version.is_empty() {
-        return SharedString::from(version.manifest_version.clone());
-    }
-    SharedString::from("Unknown")
+    crate::ui::hooks::use_local_versions::version_primary_label(version)
 }
 
 fn version_detail_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> SharedString {
-    let mut parts = Vec::new();
-    if !version.version.is_empty() && version.version.as_ref() != version.folder.as_ref() {
-        parts.push(version.version.as_ref());
-    }
-    if !version.manifest_version.is_empty()
-        && version.manifest_version.as_ref() != version.version.as_ref()
-    {
-        parts.push(version.manifest_version.as_ref());
-    }
-    if !version.kind.is_empty() {
-        parts.push(version.kind.as_ref());
-    }
-    if parts.is_empty() {
-        version_primary_label(version)
-    } else {
-        SharedString::from(parts.join(" · "))
-    }
+    crate::ui::hooks::use_local_versions::version_detail_label(version)
 }
 
 fn render_status_box(this: &ImportWindowView, colors: &ThemeColors) -> Option<AnyElement> {
