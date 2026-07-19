@@ -2710,13 +2710,7 @@ fn render_curseforge_install_header(
 fn launch_version_dropdown_label(
     version: &crate::core::version::launch_versions::LaunchVersionEntry,
 ) -> SharedString {
-    let name = version.name.trim();
-    let folder = version.folder.trim();
-    if name.is_empty() || name == folder {
-        SharedString::from(folder.to_string())
-    } else {
-        SharedString::from(format!("{name} ({folder})"))
-    }
+    crate::ui::hooks::use_local_versions::launch_version_dropdown_label(version)
 }
 
 fn install_target_label(folder: &str, local_versions: &LocalVersionsSnapshot) -> SharedString {
@@ -2777,46 +2771,70 @@ fn render_install_target_dropdown(
     Dropdown::with_trigger(
         SharedString::from("curseforge-install-target-dropdown"),
         colors,
-        px(360.),
-        px(40.),
+        px(656.),
+        px(54.),
         label,
         options,
         selected_index,
         enabled && has_versions,
         |colors, _width, _height, enabled, open_k, label| {
+            let chevron = svg()
+                .path(lucide_icons::icon_chevron_down())
+                .w(px(18.))
+                .h(px(18.))
+                .text_color(colors.text_secondary)
+                .opacity(if enabled { 0.78 } else { 0.36 })
+                .with_transformation(Transformation::rotate(radians(
+                    open_k * std::f32::consts::PI,
+                )));
+
             div()
                 .size_full()
                 .px(px(14.))
+                .py(px(9.))
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(px(10.))
+                .gap(px(12.))
                 .child(
                     div()
-                        .flex_1()
                         .min_w(px(0.))
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(if enabled {
-                            colors.text_primary
-                        } else {
-                            colors.text_muted
-                        })
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(label.clone()),
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(themed_icon(
+                            lucide_icons::icon_folder_open(),
+                            16.0,
+                            if enabled {
+                                colors.accent
+                            } else {
+                                colors.text_muted
+                            },
+                        ))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(colors.text_primary)
+                                        .child(label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(colors.text_secondary)
+                                        .child(SharedString::from("选择安装目标版本")),
+                                ),
+                        ),
                 )
-                .child(
-                    svg()
-                        .path(lucide_icons::icon_chevron_down())
-                        .w(px(15.))
-                        .h(px(15.))
-                        .opacity(if enabled { 0.75 } else { 0.35 })
-                        .text_color(colors.text_secondary)
-                        .with_transformation(Transformation::rotate(radians(
-                            open_k * std::f32::consts::PI,
-                        ))),
-                )
+                .child(chevron)
                 .into_any_element()
         },
         move |index, _window, cx| {
@@ -3165,8 +3183,6 @@ fn render_curseforge_install_modal(
 
     let progress_bar = task_snapshot.map(|snap| {
         let pct = snap.percent.unwrap_or(0.0).clamp(0.0, 100.0) as f32;
-        let bar_width = 420.0f32;
-        let fill_width = (pct / 100.0) * bar_width;
         div()
             .w_full()
             .rounded(px(12.))
@@ -3197,7 +3213,7 @@ fn render_curseforge_install_modal(
                     .mt(px(10.))
                     .h(px(8.))
                     .rounded(px(999.))
-                    .w(px(bar_width))
+                    .w_full()
                     .bg(Hsla {
                         a: 0.10,
                         ..colors.text_secondary
@@ -3207,7 +3223,7 @@ fn render_curseforge_install_modal(
                             .h(px(8.))
                             .rounded(px(999.))
                             .bg(colors.accent)
-                            .w(px(fill_width)),
+                            .w(relative(pct / 100.0)),
                     ),
             )
             .into_any_element()
@@ -3480,6 +3496,178 @@ fn render_curseforge_install_modal(
         _ => None,
     };
 
+    let selected_version = state
+        .curseforge_install_target_folder
+        .as_ref()
+        .and_then(|selected| {
+            local_versions
+                .versions
+                .iter()
+                .find(|version| version.folder.as_ref() == selected.as_ref())
+        });
+
+    let version_card = div()
+        .w_full()
+        .rounded(px(14.))
+        .bg(Hsla {
+            a: 0.44,
+            ..colors.surface
+        })
+        .border_1()
+        .border_color(Hsla {
+            a: 0.10,
+            ..colors.border
+        })
+        .p(px(14.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_secondary)
+                .child("安装目标版本"),
+        )
+        .child(target_dropdown)
+        .when_some(selected_version, |this, version| {
+            let target_path = crate::ui::hooks::use_local_versions::version_target_root_path(version)
+                .unwrap_or_else(|| SharedString::from("-"));
+            let isolation = crate::ui::hooks::use_local_versions::version_isolation_label(version);
+            let version_type = crate::ui::hooks::use_local_versions::version_type_summary_label(version);
+
+            this.child(
+                div()
+                    .rounded(px(10.))
+                    .px(px(10.))
+                    .py(px(10.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .bg(Hsla {
+                        a: 0.20,
+                        ..colors.settings_field_bg
+                    })
+                    .child(
+                        // info summary row: 目标路径
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .w(px(70.))
+                                    .flex_none()
+                                    .text_size(px(11.))
+                                    .text_color(colors.text_muted)
+                                    .child("目标路径"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(themed_icon(
+                                        lucide_icons::icon_folder_tree(),
+                                        12.0,
+                                        colors.text_secondary,
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_size(px(11.))
+                                            .text_color(colors.text_secondary)
+                                            .child(target_path),
+                                    ),
+                            )
+                    )
+                    .child(
+                        // info summary row: 隔离状态
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .w(px(70.))
+                                    .flex_none()
+                                    .text_size(px(11.))
+                                    .text_color(colors.text_muted)
+                                    .child("隔离状态"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(themed_icon(
+                                        lucide_icons::icon_hard_drive(),
+                                        12.0,
+                                        colors.text_secondary,
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_size(px(11.))
+                                            .text_color(colors.text_secondary)
+                                            .child(isolation),
+                                    ),
+                            )
+                    )
+                    .child(
+                        // info summary row: 版本类型
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .w(px(70.))
+                                    .flex_none()
+                                    .text_size(px(11.))
+                                    .text_color(colors.text_muted)
+                                    .child("版本类型"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(themed_icon(
+                                        lucide_icons::icon_boxes(),
+                                        12.0,
+                                        colors.text_secondary,
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_size(px(11.))
+                                            .text_color(colors.text_secondary)
+                                            .child(version_type),
+                                    ),
+                            )
+                    )
+            )
+        });
+
     let body = div()
         .flex_1()
         .min_h(px(0.))
@@ -3488,6 +3676,7 @@ fn render_curseforge_install_modal(
         .flex()
         .flex_col()
         .gap(px(12.))
+        .child(version_card)
         .child(
             div()
                 .rounded(px(14.))
@@ -3501,34 +3690,6 @@ fn render_curseforge_install_modal(
                     ..colors.border
                 })
                 .p(px(14.))
-                .min_h(px(68.))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(14.))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(colors.text_secondary)
-                        .child("目标版本"),
-                )
-                .child(div().flex_none().child(target_dropdown)),
-        )
-        .child(
-            div()
-                .rounded(px(14.))
-                .bg(Hsla {
-                    a: 0.44,
-                    ..colors.surface
-                })
-                .border_1()
-                .border_color(Hsla {
-                    a: 0.10,
-                    ..colors.border
-                })
-                .p(px(14.))
-                .min_h(px(106.))
                 .flex()
                 .flex_col()
                 .items_start()
@@ -3569,7 +3730,7 @@ fn render_curseforge_install_modal(
                 ..colors.border
             },
             px(720.),
-            px(360.),
+            px(460.),
             px(18.),
         )
         .child(header)
