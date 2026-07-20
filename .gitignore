@@ -4,6 +4,9 @@
 /.tmp/
 build.log
 
+# Local packaged build artifact.
+/BMCBL.zip
+
 # Local GDK CIK key material.
 /src/core/minecraft/gdk/Cik/
 *.cik
