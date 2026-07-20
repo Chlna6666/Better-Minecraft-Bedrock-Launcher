@@ -32,7 +32,7 @@ pub(super) fn render_sponsors_modal(
     colors: &ThemeColors,
     i18n: &I18n,
     settings: &SettingsPageState,
-) -> Div {
+) -> AnyElement {
     let overlay_background = hsla(0., 0., 0., 0.26);
 
     let close = Rc::new(|cx: &mut App| {

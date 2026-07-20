@@ -3004,7 +3004,7 @@ fn render_curseforge_install_file_selection_modal(
     state: &DownloadPageState,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
-) -> Div {
+) -> AnyElement {
     let mod_name = state
         .curseforge_install_mod
         .as_ref()
@@ -3130,7 +3130,7 @@ fn render_curseforge_install_modal(
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
     tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
-) -> Div {
+) -> AnyElement {
     let mod_name = state
         .curseforge_install_mod
         .as_ref()
@@ -3754,7 +3754,7 @@ fn render_curseforge_mod_page_modal(
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
     _tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
-) -> Div {
+) -> AnyElement {
     let toolbar_button = |label: &'static str, icon_path: &'static str, primary: bool| {
         div()
             .h(px(42.))

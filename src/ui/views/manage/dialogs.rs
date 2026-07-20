@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::components::dialog;
 
 #[derive(Clone)]
 pub(super) enum ConfirmAction {
@@ -400,6 +401,7 @@ pub(super) fn render_confirm_dialog(
     colors: &ThemeColors,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
+    let modal_dismiss_handle = modal::ModalDismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -414,89 +416,22 @@ pub(super) fn render_confirm_dialog(
         });
     });
 
-    modal::modal_layer_dismissible(
-        div()
-            .w_full()
-            .max_w(px(480.))
-            .rounded(px(22.))
-            .border_1()
-            .border_color(Hsla {
-                a: 0.18,
-                ..colors.border
-            })
-            .bg(colors.settings_panel_bg)
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .p(px(22.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.))
-                    .child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(colors.text_primary)
-                            .child(dialog.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .line_height(relative(1.5))
-                            .text_color(colors.text_secondary)
-                            .child(dialog.description.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(22.))
-                    .pb(px(22.))
-                    .flex()
-                    .justify_end()
-                    .gap(px(10.))
-                    .child({
-                        let view_handle = view_handle.clone();
-                        ghost_button(colors, "manage-confirm-cancel", "取消").on_mouse_down(
-                            MouseButton::Left,
-                            move |_, _, cx| {
-                                let _ = view_handle.update(cx, |this, cx| {
-                                    this.confirm_dialog_close(cx);
-                                });
-                            },
-                        )
-                    })
-                    .child({
-                        let view_handle = view_handle.clone();
-                        primary_button(
-                            colors,
-                            "manage-confirm-save",
-                            if dialog.pending {
-                                SharedString::from("处理中...")
-                            } else {
-                                dialog.confirm_label.clone()
-                            },
-                        )
-                        .bg(if dialog.danger {
-                            colors.danger
-                        } else {
-                            colors.accent
-                        })
-                        .opacity(if dialog.pending { 0.72 } else { 1.0 })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            move |_, _, cx| {
-                                let _ = view_handle.update(cx, |this, cx| {
-                                    this.save_confirm_dialog(cx);
-                                });
-                            },
-                        )
-                    }),
-            ),
-        colors.backdrop,
+    let confirm_view_handle = view_handle.clone();
+    dialog::confirm_dialog(
+        colors,
+        dialog.title.clone(),
+        dialog.description.clone(),
+        dialog.confirm_label.clone(),
+        dialog.danger,
+        dialog.pending,
+        modal_dismiss_handle,
         dismiss,
+        move |_, _, cx| {
+            let _ = confirm_view_handle.update(cx, |this, cx| {
+                this.save_confirm_dialog(cx);
+            });
+        },
     )
-    .into_any_element()
 }
 
 pub(super) fn render_value_prompt(
@@ -504,6 +439,7 @@ pub(super) fn render_value_prompt(
     colors: &ThemeColors,
     view_handle: WeakEntity<ManagePageView>,
 ) -> AnyElement {
+    let modal_dismiss_handle = modal::ModalDismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -518,89 +454,24 @@ pub(super) fn render_value_prompt(
         });
     });
 
-    modal::modal_layer_dismissible(
-        div()
-            .w_full()
-            .max_w(px(520.))
-            .rounded(px(22.))
-            .border_1()
-            .border_color(Hsla {
-                a: 0.18,
-                ..colors.border
-            })
-            .bg(colors.settings_panel_bg)
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .p(px(22.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.))
-                    .child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(colors.text_primary)
-                            .child(dialog.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(relative(1.45))
-                            .text_color(colors.text_secondary)
-                            .child(dialog.description.clone()),
-                    )
-                    .child(
-                        Input::new(&dialog.input)
-                            .with_size(InputSize::Medium)
-                            .w_full(),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(22.))
-                    .pb(px(22.))
-                    .flex()
-                    .justify_end()
-                    .gap(px(10.))
-                    .child({
-                        let view_handle = view_handle.clone();
-                        ghost_button(colors, "manage-prompt-cancel", "取消").on_mouse_down(
-                            MouseButton::Left,
-                            move |_, _, cx| {
-                                let _ = view_handle.update(cx, |this, cx| {
-                                    this.close_value_prompt(cx);
-                                });
-                            },
-                        )
-                    })
-                    .child({
-                        let view_handle = view_handle.clone();
-                        primary_button(
-                            colors,
-                            "manage-prompt-save",
-                            if dialog.pending {
-                                SharedString::from("处理中...")
-                            } else {
-                                dialog.confirm_label.clone()
-                            },
-                        )
-                        .opacity(if dialog.pending { 0.72 } else { 1.0 })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            move |_, _, cx| {
-                                let _ = view_handle.update(cx, |this, cx| {
-                                    this.save_value_prompt(cx);
-                                });
-                            },
-                        )
-                    }),
-            ),
-        colors.backdrop,
+    let save_view_handle = view_handle.clone();
+    dialog::prompt_dialog(
+        colors,
+        dialog.title.clone(),
+        dialog.description.clone(),
+        Input::new(&dialog.input)
+            .with_size(InputSize::Medium)
+            .w_full(),
+        dialog.confirm_label.clone(),
+        dialog.pending,
+        modal_dismiss_handle,
         dismiss,
+        move |_, _, cx| {
+            let _ = save_view_handle.update(cx, |this, cx| {
+                this.save_value_prompt(cx);
+            });
+        },
     )
-    .into_any_element()
 }
 pub(super) fn render_mod_type_dialog(
     dialog: &ModTypeDialogState,
@@ -663,6 +534,7 @@ pub(super) fn render_mod_type_dialog(
         },
     );
 
+    let modal_dismiss_handle = modal::ModalDismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -677,19 +549,13 @@ pub(super) fn render_mod_type_dialog(
         });
     });
 
-    modal::modal_layer_dismissible(
+    let cancel_dismiss = modal_dismiss_handle.clone();
+    let save_view_handle = view_handle.clone();
+
+    let content = dialog::dialog_container(
+        colors,
+        px(540.),
         div()
-            .w_full()
-            .max_w(px(540.))
-            .rounded(px(22.))
-            .border_1()
-            .border_color(Hsla {
-                a: 0.18,
-                ..colors.border
-            })
-            .bg(colors.settings_panel_bg)
-            .flex()
-            .flex_col()
             .child(
                 div()
                     .p(px(22.))
@@ -754,46 +620,35 @@ pub(super) fn render_mod_type_dialog(
                         },
                     ),
             )
-            .child(
-                div()
-                    .px(px(22.))
-                    .pb(px(22.))
-                    .flex()
-                    .justify_end()
-                    .gap(px(10.))
-                    .child({
-                        let view_handle = view_handle.clone();
-                        ghost_button(colors, "manage-mod-type-cancel", "取消").on_mouse_down(
-                            MouseButton::Left,
-                            move |_, _, cx| {
-                                let _ = view_handle.update(cx, |this, cx| {
-                                    this.close_mod_type_dialog(cx);
-                                });
-                            },
-                        )
-                    })
-                    .child({
-                        let view_handle = view_handle.clone();
-                        primary_button(
-                            colors,
-                            "manage-mod-type-save",
-                            if dialog.pending {
-                                SharedString::from("保存中...")
-                            } else {
-                                SharedString::from("保存 Mod 设置")
-                            },
-                        )
-                        .opacity(if dialog.pending { 0.72 } else { 1.0 })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            move |_, _, cx| {
-                                let _ = view_handle.update(cx, |this, cx| {
-                                    this.save_mod_type_dialog(cx);
-                                });
-                            },
-                        )
-                    }),
-            ),
+            .child(dialog::dialog_actions(
+                colors,
+                ghost_button(colors, "manage-mod-type-cancel", "取消").on_mouse_down(
+                    MouseButton::Left,
+                    move |_, _, cx| {
+                        cancel_dismiss.dismiss(cx);
+                    },
+                ),
+                primary_button(
+                    colors,
+                    "manage-mod-type-save",
+                    if dialog.pending {
+                        SharedString::from("保存中...")
+                    } else {
+                        SharedString::from("保存 Mod 设置")
+                    },
+                )
+                .opacity(if dialog.pending { 0.72 } else { 1.0 })
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    let _ = save_view_handle.update(cx, |this, cx| {
+                        this.save_mod_type_dialog(cx);
+                    });
+                }),
+            )),
+    );
+
+    modal::modal_layer_dismissible_with_handle(
+        modal_dismiss_handle,
+        content,
         colors.backdrop,
         dismiss,
     )

@@ -3,6 +3,7 @@ pub mod button;
 pub mod code_editor;
 pub mod color_picker;
 pub mod context_menu;
+pub mod dialog;
 pub mod dropdown;
 pub mod html_renderer;
 pub mod icon;

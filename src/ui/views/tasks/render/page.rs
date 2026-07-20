@@ -64,7 +64,7 @@ fn empty_state(colors: &ThemeColors) -> AnyElement {
                     div()
                         .text_size(px(12.))
                         .text_color(task_text_secondary(colors))
-                        .child("下载、安装和更新开始后，任务会在这里按紧凑列表展示。"),
+                        .child("下载、安装和更新开始后，任务会在这里展示。"),
                 ),
         )
         .into_any_element()

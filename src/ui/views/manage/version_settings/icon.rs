@@ -33,8 +33,9 @@ pub(super) fn render_icon_card(
     )
     .unwrap_or_else(|| i18n.t("VersionSettingsModal.icon_select"));
 
-    panel_shell(colors).p(px(14.)).child(
+    panel_shell(colors).w_full().p(px(14.)).child(
         div()
+            .w_full()
             .flex()
             .items_center()
             .justify_between()

@@ -8,7 +8,7 @@ const TRACK_WIDTH: f32 = 44.0;
 const TRACK_HEIGHT: f32 = 26.0;
 const KNOB_SIZE: f32 = 22.0;
 const KNOB_INSET_X: f32 = 2.0;
-const KNOB_INSET_Y: f32 = 2.0;
+const KNOB_INSET_Y: f32 = 1.5;
 const KNOB_TRAVEL: f32 = TRACK_WIDTH - KNOB_SIZE - 2.0 * KNOB_INSET_X;
 const ANIMATION_DURATION: Duration = Duration::from_millis(160);
 
@@ -87,19 +87,19 @@ impl ToggleSwitchView {
             .h(px(TRACK_HEIGHT))
             .rounded(px(999.0))
             .bg(track_color)
-            .relative()
+            .px(px(KNOB_INSET_X))
+            .flex()
+            .items_center()
             .cursor_pointer()
             .shadow(track_shadow())
             .child(
                 div()
-                    .absolute()
-                    .top(px(KNOB_INSET_Y))
-                    .left(px(KNOB_INSET_X + KNOB_TRAVEL * progress))
                     .w(px(KNOB_SIZE))
                     .h(px(KNOB_SIZE))
                     .rounded(px(999.0))
                     .bg(rgb(0xffffff))
-                    .shadow(knob_shadow()),
+                    .shadow(knob_shadow())
+                    .ml(px(KNOB_TRAVEL * progress)),
             )
             .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                 (on_toggle)(cx);
@@ -180,12 +180,12 @@ fn track_shadow() -> Vec<BoxShadow> {
 fn knob_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
         color: Hsla {
-            a: 0.16,
+            a: 0.12,
             ..rgb(0x000000).into()
         },
-        blur_radius: px(8.0),
+        blur_radius: px(2.0),
         spread_radius: px(0.0),
-        offset: point(px(0.0), px(2.0)),
+        offset: point(px(0.0), px(0.0)),
     }]
 }
 

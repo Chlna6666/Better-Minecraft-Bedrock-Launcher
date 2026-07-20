@@ -56,7 +56,7 @@ pub(super) fn render_dependencies_modal(
     settings: &SettingsPageState,
     window_width: Pixels,
     window_height: Pixels,
-) -> Div {
+) -> AnyElement {
     let overlay_background = hsla(0., 0., 0., 0.26);
     let close = Rc::new(|cx: &mut App| {
         cx.update_global(|state: &mut SettingsPageState, _cx| {

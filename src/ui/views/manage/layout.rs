@@ -37,7 +37,7 @@ pub(super) fn render_version_header(
                 .child(version_type_label),
         );
 
-    let mut status_badges = div().flex().gap(px(8.)).flex_wrap();
+    let mut status_badges = div().flex().items_center().gap(px(8.)).flex_wrap();
     let mut has_status_badges = false;
 
     if state.version_config.enable_redirection {
@@ -64,21 +64,21 @@ pub(super) fn render_version_header(
             div()
                 .flex()
                 .items_center()
+                .min_w(px(0.))
+                .w_full()
                 .gap(px(8.))
                 .child(
                     div()
                         .text_size(px(18.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
-                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .child(version_title),
                 )
-                .child(version_meta),
+                .child(version_meta)
+                .when(has_status_badges, |this| this.child(status_badges)),
         );
-
-    if has_status_badges {
-        header = header.child(status_badges);
-    }
 
     if state.version_config_loading {
         header = header.child(

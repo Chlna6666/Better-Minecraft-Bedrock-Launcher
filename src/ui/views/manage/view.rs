@@ -18,6 +18,11 @@ pub struct ManagePageView {
     pub(super) server_editor_dialog: Option<ServerEditorDialogState>,
     pub(super) level_dat_editor: Option<level_dat_editor::LevelDatEditorModalState>,
     pub(super) last_selected_folder: Option<SharedString>,
+    pub(super) last_observed_tab: ManageTab,
+    pub(super) tab_anim_at: Option<Instant>,
+    pub(super) tab_anim_from: Option<ManageTab>,
+    pub(super) version_anim_at: Option<Instant>,
+    pub(super) version_anim_from: Option<SharedString>,
     pub(super) last_version_config_signature: Option<VersionConfigLoadSignature>,
     pub(super) last_gdk_users_signature: Option<GdkUsersLoadSignature>,
     pub(super) last_assets_signature: Option<AssetsLoadSignature>,
@@ -31,14 +36,35 @@ impl ManagePageView {
         cx.update_global(|state: &mut ManagePageState, _cx| {
             state.reset_transient_requests();
         });
-        let initial_render_signature =
-            ManageRenderSignature::from_state(cx.global::<ManagePageState>());
+        let state = cx.global::<ManagePageState>();
+        let initial_tab = state.tab;
+        let initial_selected_folder = state.selected_folder.clone();
+        let initial_render_signature = ManageRenderSignature::from_state(state);
         let subscriptions = vec![
             cx.observe_global::<ManagePageState>(|this, cx| {
                 let signature = ManageRenderSignature::from_state(cx.global::<ManagePageState>());
                 if this.last_global_render_signature != signature {
                     this.last_global_render_signature = signature;
                     cx.notify();
+                }
+
+                let (tab, selected_folder) = {
+                    let state = cx.global::<ManagePageState>();
+                    (state.tab, state.selected_folder.clone())
+                };
+
+                // Track tab changes for animation
+                if tab != this.last_observed_tab {
+                    this.tab_anim_from = Some(this.last_observed_tab);
+                    this.tab_anim_at = Some(Instant::now());
+                    this.last_observed_tab = tab;
+                }
+
+                // Track version/folder changes for animation
+                if selected_folder != this.last_selected_folder {
+                    this.version_anim_from = this.last_selected_folder.clone();
+                    this.version_anim_at = Some(Instant::now());
+                    this.last_selected_folder = selected_folder;
                 }
             }),
             cx.observe_global::<ThemeState>(|_, cx| {
@@ -69,7 +95,12 @@ impl ManagePageView {
             mod_type_dialog: None,
             server_editor_dialog: None,
             level_dat_editor: None,
-            last_selected_folder: None,
+            last_selected_folder: initial_selected_folder,
+            last_observed_tab: initial_tab,
+            tab_anim_at: None,
+            tab_anim_from: None,
+            version_anim_at: None,
+            version_anim_from: None,
             last_version_config_signature: None,
             last_gdk_users_signature: None,
             last_assets_signature: None,
@@ -77,6 +108,26 @@ impl ManagePageView {
             last_servers_signature: None,
             last_global_render_signature: initial_render_signature,
         }
+    }
+
+    pub fn tab_anim_factor(&self, now: Instant) -> (f32, bool) {
+        const DURATION_MS: u64 = 180;
+        let Some(started_at) = self.tab_anim_at else {
+            return (1.0, false);
+        };
+        let elapsed_ms = now.saturating_duration_since(started_at).as_millis() as u64;
+        let factor = (elapsed_ms as f32 / DURATION_MS as f32).clamp(0.0, 1.0);
+        (factor, factor < 1.0)
+    }
+
+    pub fn version_anim_factor(&self, now: Instant) -> (f32, bool) {
+        const DURATION_MS: u64 = 200;
+        let Some(started_at) = self.version_anim_at else {
+            return (1.0, false);
+        };
+        let elapsed_ms = now.saturating_duration_since(started_at).as_millis() as u64;
+        let factor = (elapsed_ms as f32 / DURATION_MS as f32).clamp(0.0, 1.0);
+        (factor, factor < 1.0)
     }
 
     pub(super) fn reset_asset_list_view(&mut self) {
@@ -105,6 +156,13 @@ impl Render for ManagePageView {
         self.sync_data_requests(cx);
 
         let now = Instant::now();
+        let (_, tab_animating) = self.tab_anim_factor(now);
+        let (_, version_animating) = self.version_anim_factor(now);
+        crate::ui::animation::request_animation_frame_if(
+            window,
+            tab_animating || version_animating,
+        );
+
         let theme = cx.global::<ThemeState>();
         let colors = lerp_theme_colors(
             &LightColors::colors(),
@@ -114,7 +172,7 @@ impl Render for ManagePageView {
         );
         let i18n = cx.global::<I18n>().clone();
         let state = cx.global::<ManagePageState>().clone();
-        let page = self.render_page(window, &colors, &state, cx);
+        let page = self.render_page(window, &colors, &state, now, cx);
         let _ = i18n;
 
         div()
@@ -130,6 +188,7 @@ impl ManagePageView {
         window: &mut Window,
         colors: &ThemeColors,
         state: &ManagePageState,
+        now: Instant,
         cx: &mut Context<Self>,
     ) -> Div {
         if is_level_dat_editor_route(cx) {
@@ -137,12 +196,12 @@ impl ManagePageView {
                 .size_full()
                 .min_w(px(0.))
                 .min_h(px(0.))
-                .child(self.render_main(window, colors, state, cx));
+                .child(self.render_main(window, colors, state, now, cx));
         }
 
         crate::ui::components::page_shell::split_page(
             self.render_sidebar(colors, state, cx),
-            self.render_main(window, colors, state, cx),
+            self.render_main(window, colors, state, now, cx),
         )
     }
 
@@ -416,6 +475,7 @@ impl ManagePageView {
         window: &mut Window,
         colors: &ThemeColors,
         state: &ManagePageState,
+        now: Instant,
         cx: &mut Context<Self>,
     ) -> Div {
         if is_level_dat_editor_route(cx) {
@@ -482,7 +542,54 @@ impl ManagePageView {
             ManageTab::Server => filtered_servers.len(),
         };
 
+        let (version_t, version_animating) = self.version_anim_factor(now);
+        let version_t_eased = {
+            let tc = version_t.clamp(0.0, 1.0);
+            let p = 1.0 - tc;
+            (1.0 - p.powi(3)).clamp(0.0, 1.0)
+        };
+        let version_opacity = if version_animating {
+            version_t_eased
+        } else {
+            1.0
+        };
+        let version_slide_offset = if version_animating {
+            10.0 * (1.0 - version_t_eased)
+        } else {
+            0.0
+        };
+
+        let (tab_t, tab_animating) = self.tab_anim_factor(now);
+        let tab_t_eased = {
+            let tc = tab_t.clamp(0.0, 1.0);
+            let p = 1.0 - tc;
+            (1.0 - p.powi(3)).clamp(0.0, 1.0)
+        };
+        let tab_opacity = if tab_animating {
+            0.88 + 0.12 * tab_t_eased
+        } else {
+            1.0
+        };
+        let tab_idx = |t: ManageTab| match t {
+            ManageTab::Mod => 0i32,
+            ManageTab::ResourcePack => 1i32,
+            ManageTab::SkinPack => 2i32,
+            ManageTab::Map => 3i32,
+            ManageTab::Screenshot => 4i32,
+            ManageTab::Server => 5i32,
+        };
+        let tab_from = self.tab_anim_from.unwrap_or(ManageTab::Mod);
+        let slide_direction = (tab_idx(state.tab) - tab_idx(tab_from)).signum() as f32;
+        let tab_slide_offset = if tab_animating {
+            slide_direction * 20.0 * (1.0 - tab_t_eased)
+        } else {
+            0.0
+        };
+
         let main_panel = crate::ui::components::page_shell::split_content_panel(colors)
+            .opacity(version_opacity)
+            .relative()
+            .top(px(version_slide_offset))
             .child(
                 div()
                     .px(px(18.))
@@ -644,6 +751,9 @@ impl ManagePageView {
                         div()
                             .flex_1()
                             .min_h(px(0.))
+                            .opacity(tab_opacity)
+                            .relative()
+                            .left(px(tab_slide_offset))
                             .child(if state.version_config_loading {
                                 empty_state(
                                     colors,

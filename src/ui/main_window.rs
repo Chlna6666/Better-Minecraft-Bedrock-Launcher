@@ -739,7 +739,7 @@ impl MainWindowView {
         model: &MainWindowRenderModel,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         let width = px((modal.width as f32)
             .min(model.window_width_px - 32.0)
             .max(280.0));

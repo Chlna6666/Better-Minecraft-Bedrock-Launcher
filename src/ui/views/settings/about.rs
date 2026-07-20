@@ -119,7 +119,7 @@ pub(super) fn render_sponsors_modal(
     colors: &ThemeColors,
     i18n: &I18n,
     settings: &SettingsPageState,
-) -> Div {
+) -> AnyElement {
     sponsors::render_sponsors_modal(colors, i18n, settings)
 }
 
@@ -129,7 +129,7 @@ pub(super) fn render_dependencies_modal(
     settings: &SettingsPageState,
     window_width: Pixels,
     window_height: Pixels,
-) -> Div {
+) -> AnyElement {
     dependencies::render_dependencies_modal(colors, i18n, settings, window_width, window_height)
 }
 

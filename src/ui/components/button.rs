@@ -157,3 +157,76 @@ impl RenderOnce for IconButton {
         button
     }
 }
+
+pub fn secondary_button(
+    colors: &crate::ui::theme::ThemeColors,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(16.))
+        .py(px(10.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.surface)
+        .cursor_pointer()
+        .child(
+            div()
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child(label.into()),
+        )
+}
+
+pub fn ghost_button(
+    colors: &crate::ui::theme::ThemeColors,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(8.))
+        .py(px(6.))
+        .rounded(px(10.))
+        .cursor_pointer()
+        .child(
+            div()
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(colors.text_secondary)
+                .child(label.into()),
+        )
+}
+
+pub fn primary_button(
+    colors: &crate::ui::theme::ThemeColors,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(16.))
+        .py(px(10.))
+        .rounded(px(12.))
+        .bg(colors.accent)
+        .cursor_pointer()
+        .child(
+            div()
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(colors.btn_primary_text)
+                .child(label.into()),
+        )
+}

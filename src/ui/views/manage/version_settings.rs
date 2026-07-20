@@ -41,6 +41,7 @@ pub fn render(
 ) -> AnyElement {
     let can_use_editor = supports_editor_mode(&state.version);
     let is_gdk = state.version.is_gdk();
+    let modal_dismiss_handle = modal::ModalDismissHandle::new();
     let dismiss_handle = view_handle.clone();
     let dismiss = Rc::new(move |cx: &mut App| {
         let _ = dismiss_handle.update(cx, |this, cx| {
@@ -48,10 +49,13 @@ pub fn render(
         });
     });
 
-    modal::modal_layer_dismissible(
+    let cancel_dismiss = modal_dismiss_handle.clone();
+    modal::modal_layer_dismissible_with_handle(
+        modal_dismiss_handle,
         div()
-            .w_full()
-            .max_w(px(640.))
+            .w(px(640.))
+            .max_w(relative(1.0))
+            .min_w(px(0.))
             .max_h(px(540.))
             .rounded(px(22.))
             .border_1()
@@ -74,65 +78,71 @@ pub fn render(
             .child(render_header(state, colors, i18n))
             .child(
                 div()
+                    .w_full()
                     .flex_none()
                     .max_h(px(340.))
                     .overflow_y_scrollbar()
                     .p(px(16.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.))
-                    .child(icon::render_icon_card(
-                        state,
-                        colors,
-                        i18n,
-                        view_handle.clone(),
-                    ))
-                    .child(render_toggle_card(
-                        "settings-debug-console",
-                        colors,
-                        i18n.t("VersionSettingsModal.debug_console_label"),
-                        i18n.t("VersionSettingsModal.debug_console_desc"),
-                        state.config.enable_debug_console,
-                        VersionSettingsToggle::DebugConsole,
-                        view_handle.clone(),
-                    ))
-                    .child(render_toggle_card(
-                        "settings-redirection",
-                        colors,
-                        i18n.t("VersionSettingsModal.redirection_label"),
-                        i18n.t("VersionSettingsModal.redirection_desc"),
-                        state.config.enable_redirection,
-                        VersionSettingsToggle::Redirection,
-                        view_handle.clone(),
-                    ))
-                    .when(!is_gdk, |this| {
-                        this.child(render_mouse_lock_card(
-                            state,
-                            colors,
-                            i18n,
-                            view_handle.clone(),
-                        ))
-                    })
-                    .child(render_toggle_card(
-                        "settings-disable-mod-loading",
-                        colors,
-                        i18n.t("VersionSettingsModal.disable_mod_loading_label"),
-                        i18n.t("VersionSettingsModal.disable_mod_loading_desc"),
-                        state.config.disable_mod_loading,
-                        VersionSettingsToggle::DisableModLoading,
-                        view_handle.clone(),
-                    ))
-                    .when(can_use_editor, |this| {
-                        this.child(render_toggle_card(
-                            "settings-editor-mode",
-                            colors,
-                            i18n.t("VersionSettingsModal.editor_label"),
-                            i18n.t("VersionSettingsModal.editor_desc"),
-                            state.config.editor_mode,
-                            VersionSettingsToggle::EditorMode,
-                            view_handle.clone(),
-                        ))
-                    }),
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .items_stretch()
+                            .gap(px(10.))
+                            .child(icon::render_icon_card(
+                                state,
+                                colors,
+                                i18n,
+                                view_handle.clone(),
+                            ))
+                            .child(render_toggle_card(
+                                "settings-debug-console",
+                                colors,
+                                i18n.t("VersionSettingsModal.debug_console_label"),
+                                i18n.t("VersionSettingsModal.debug_console_desc"),
+                                state.config.enable_debug_console,
+                                VersionSettingsToggle::DebugConsole,
+                                view_handle.clone(),
+                            ))
+                            .child(render_toggle_card(
+                                "settings-redirection",
+                                colors,
+                                i18n.t("VersionSettingsModal.redirection_label"),
+                                i18n.t("VersionSettingsModal.redirection_desc"),
+                                state.config.enable_redirection,
+                                VersionSettingsToggle::Redirection,
+                                view_handle.clone(),
+                            ))
+                            .when(!is_gdk, |this| {
+                                this.child(render_mouse_lock_card(
+                                    state,
+                                    colors,
+                                    i18n,
+                                    view_handle.clone(),
+                                ))
+                            })
+                            .child(render_toggle_card(
+                                "settings-disable-mod-loading",
+                                colors,
+                                i18n.t("VersionSettingsModal.disable_mod_loading_label"),
+                                i18n.t("VersionSettingsModal.disable_mod_loading_desc"),
+                                state.config.disable_mod_loading,
+                                VersionSettingsToggle::DisableModLoading,
+                                view_handle.clone(),
+                            ))
+                            .when(can_use_editor, |this| {
+                                this.child(render_toggle_card(
+                                    "settings-editor-mode",
+                                    colors,
+                                    i18n.t("VersionSettingsModal.editor_label"),
+                                    i18n.t("VersionSettingsModal.editor_desc"),
+                                    state.config.editor_mode,
+                                    VersionSettingsToggle::EditorMode,
+                                    view_handle.clone(),
+                                ))
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -144,15 +154,13 @@ pub fn render(
                         ..colors.border
                     })
                     .flex()
+                    .items_center()
                     .justify_end()
                     .gap(px(10.))
                     .child({
-                        let view_handle = view_handle.clone();
                         ghost_button(colors, "manage-settings-cancel", i18n.t("common.cancel"))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                let _ = view_handle.update(cx, |this, cx| {
-                                    this.close_version_settings(cx);
-                                });
+                                cancel_dismiss.dismiss(cx);
                             })
                     })
                     .child({
@@ -183,35 +191,30 @@ pub fn render(
     .into_any_element()
 }
 
-fn render_header(state: &VersionSettingsModalState, colors: &ThemeColors, i18n: &I18n) -> Div {
+fn render_header(
+    state: &VersionSettingsModalState,
+    colors: &ThemeColors,
+    i18n: &I18n,
+) -> impl IntoElement {
     div()
-        .px(px(18.))
-        .py(px(14.))
-        .border_b_1()
-        .border_color(Hsla {
-            a: 0.16,
-            ..colors.border
-        })
+        .px(px(22.))
+        .pt(px(22.))
+        .pb(px(12.))
         .flex()
-        .items_start()
+        .flex_col()
+        .gap(px(4.))
         .child(
             div()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .child(
-                    div()
-                        .text_size(px(18.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(colors.text_primary)
-                        .child(i18n.t("ManagePage.version_settings")),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(colors.text_secondary)
-                        .child(state.version.display_name()),
-                ),
+                .text_size(px(18.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(colors.text_primary)
+                .child(i18n.t("ManagePage.version_settings")),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(colors.text_secondary)
+                .child(state.version.display_name()),
         )
 }
 
@@ -223,16 +226,19 @@ fn render_toggle_card(
     enabled: bool,
     field: VersionSettingsToggle,
     view_handle: WeakEntity<ManagePageView>,
-) -> impl IntoElement {
-    panel_shell(colors).id(id).p(px(14.)).child(
+) -> Div {
+    panel_shell(colors).w_full().p(px(14.)).child(
         div()
+            .id(id)
+            .w_full()
             .flex()
-            .items_start()
+            .items_center()
             .justify_between()
             .gap(px(12.))
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -314,6 +320,7 @@ fn render_mouse_lock_card(
         }));
 
     panel_shell(colors)
+        .w_full()
         .p(px(14.))
         .flex()
         .flex_col()
@@ -321,13 +328,15 @@ fn render_mouse_lock_card(
         .child({
             let toggle_view_handle = view_handle.clone();
             div()
+                .w_full()
                 .flex()
-                .items_start()
+                .items_center()
                 .justify_between()
                 .gap(px(14.))
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
                         .flex()
                         .flex_col()
                         .gap(px(6.))
@@ -359,13 +368,15 @@ fn render_mouse_lock_card(
         })
         .when(state.config.lock_mouse_on_launch, |this: Div| {
             this.child(
-                panel_shell(colors).p(px(14.)).child(
+                panel_shell(colors).w_full().p(px(14.)).child(
                     div()
+                        .w_full()
                         .flex()
                         .flex_col()
                         .gap(px(12.))
                         .child(
                             div()
+                                .w_full()
                                 .flex()
                                 .items_center()
                                 .justify_between()
@@ -373,6 +384,7 @@ fn render_mouse_lock_card(
                                 .child(
                                     div()
                                         .flex_1()
+                                        .min_w(px(0.))
                                         .flex()
                                         .flex_col()
                                         .gap(px(4.))

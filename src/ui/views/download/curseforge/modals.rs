@@ -70,7 +70,7 @@ pub(super) fn render_curseforge_install_modal(
     selected_folder: Option<SharedString>,
     local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
     tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
-) -> Div {
+) -> AnyElement {
     super::render_curseforge_install_modal(colors, state, selected_folder, local_versions, tasks)
 }
 
@@ -81,7 +81,7 @@ pub(super) fn render_curseforge_mod_page_modal(
     selected_folder: Option<SharedString>,
     local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
     tasks: &HashMap<Arc<str>, Arc<TaskSnapshot>>,
-) -> Div {
+) -> AnyElement {
     super::render_curseforge_mod_page_modal(
         colors,
         state,
