@@ -1,4 +1,5 @@
 use super::*;
+use crate::TransformOrigin;
 
 impl Window {
     /// Acquire a globally unique identifier for the given ElementId.
@@ -94,10 +95,16 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint_or_prepaint();
         if let Some(mask) = mask {
-            let mask = mask.intersect(&self.content_mask());
-            self.content_mask_stack.push(mask);
+            let logical_mask = mask.intersect(&self.content_mask());
+            let visual_mask = self
+                .element_visual_transform
+                .transform_mask(&mask)
+                .intersect(&self.visual_content_mask());
+            self.content_mask_stack.push(logical_mask);
+            self.visual_content_mask_stack.push(visual_mask);
             let result = f(self);
             self.content_mask_stack.pop();
+            self.visual_content_mask_stack.pop();
             result
         } else {
             f(self)
@@ -152,6 +159,59 @@ impl Window {
         let result = f(self);
         self.element_opacity = previous_opacity;
         result
+    }
+
+    pub(crate) fn with_element_scale<R>(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        scale: f32,
+        origin: TransformOrigin,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint_or_prepaint();
+
+        let scale = if scale.is_finite() {
+            scale.max(0.0)
+        } else {
+            1.0
+        };
+        if scale == 1.0 {
+            return f(self);
+        }
+
+        let previous_transform = self.element_visual_transform;
+        self.element_visual_transform =
+            previous_transform.then_scale(scale, origin.resolve(bounds));
+        let result = f(self);
+        self.element_visual_transform = previous_transform;
+        result
+    }
+
+    pub(crate) fn visual_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        self.element_visual_transform.transform_bounds(bounds)
+    }
+
+    pub(crate) fn visual_scale(&self) -> f32 {
+        self.element_visual_transform.scale
+    }
+
+    pub(crate) fn visual_device_bounds(
+        &self,
+        bounds: Bounds<ScaledPixels>,
+        device_scale: f32,
+    ) -> Bounds<ScaledPixels> {
+        let transform = self.element_visual_transform;
+        Bounds {
+            origin: point(
+                ScaledPixels(
+                    bounds.origin.x.0 * transform.scale + transform.translation.x.0 * device_scale,
+                ),
+                ScaledPixels(
+                    bounds.origin.y.0 * transform.scale + transform.translation.y.0 * device_scale,
+                ),
+            ),
+            size: bounds.size.map(|value| value * transform.scale),
+        }
     }
 
     /// Perform prepaint on child elements in a "retryable" manner, so that any side effects
@@ -216,6 +276,18 @@ impl Window {
                     size: self.viewport_size,
                 },
                 ..Default::default()
+            })
+    }
+
+    pub(crate) fn visual_content_mask(&self) -> ContentMask<Pixels> {
+        self.visual_content_mask_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| {
+                ContentMask::new(Bounds {
+                    origin: Point::default(),
+                    size: self.viewport_size,
+                })
             })
     }
 

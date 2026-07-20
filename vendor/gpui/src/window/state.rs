@@ -82,6 +82,67 @@ pub(crate) struct ElementStateBox {
     pub(crate) type_name: &'static str,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ElementVisualTransform {
+    pub(crate) scale: f32,
+    pub(crate) translation: Point<Pixels>,
+}
+
+impl ElementVisualTransform {
+    pub(crate) fn identity() -> Self {
+        Self {
+            scale: 1.0,
+            translation: Point::default(),
+        }
+    }
+
+    pub(crate) fn then_scale(self, scale: f32, origin: Point<Pixels>) -> Self {
+        let translation = origin * (1.0 - scale);
+        Self {
+            scale: self.scale * scale,
+            translation: self.translation + translation * self.scale,
+        }
+    }
+
+    pub(crate) fn transform_point(self, point: Point<Pixels>) -> Point<Pixels> {
+        point * self.scale + self.translation
+    }
+
+    pub(crate) fn transform_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        Bounds {
+            origin: self.transform_point(bounds.origin),
+            size: bounds.size.map(|value| value * self.scale),
+        }
+    }
+
+    pub(crate) fn transform_mask(self, mask: &ContentMask<Pixels>) -> ContentMask<Pixels> {
+        ContentMask {
+            bounds: self.transform_bounds(mask.bounds),
+            corner_bounds: self.transform_bounds(mask.corner_bounds),
+            corner_radii: mask.corner_radii.map(|value| *value * self.scale),
+        }
+    }
+}
+
+#[cfg(test)]
+mod visual_transform_tests {
+    use super::*;
+    use crate::{bounds, point, px, size};
+
+    #[test]
+    fn nested_scales_compose_around_responsive_origins() {
+        let transform = ElementVisualTransform::identity()
+            .then_scale(0.5, point(px(100.0), px(50.0)))
+            .then_scale(0.8, point(px(40.0), px(20.0)));
+
+        assert_eq!(transform.scale, 0.4);
+        assert_eq!(
+            transform.transform_bounds(bounds(point(px(0.0), px(0.0)), size(px(200.0), px(100.0)))),
+            bounds(point(px(54.0), px(27.0)), size(px(80.0), px(40.0)))
+        );
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DispatchEventResult {
     pub propagate: bool,
@@ -114,7 +175,9 @@ pub struct Window {
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
+    pub(crate) element_visual_transform: ElementVisualTransform,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
+    pub(crate) visual_content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(super) animated_image_slots: FxHashMap<AnimatedImageSlotKey, usize>,

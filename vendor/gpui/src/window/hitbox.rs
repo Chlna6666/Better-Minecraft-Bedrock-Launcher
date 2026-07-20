@@ -231,7 +231,8 @@ impl Window {
     pub fn insert_hitbox(&mut self, bounds: Bounds<Pixels>, behavior: HitboxBehavior) -> Hitbox {
         self.invalidator.debug_assert_prepaint();
 
-        let content_mask = self.content_mask();
+        let bounds = self.visual_bounds(bounds);
+        let content_mask = self.visual_content_mask();
         let id = self.next_hitbox_id;
         self.next_hitbox_id = self.next_hitbox_id.next();
         let hitbox = Hitbox {

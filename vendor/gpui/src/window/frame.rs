@@ -1,3 +1,4 @@
+use super::state::ElementVisualTransform;
 use super::*;
 
 pub(crate) struct DeferredDraw {
@@ -6,6 +7,9 @@ pub(crate) struct DeferredDraw {
     pub(super) parent_node: DispatchNodeId,
     pub(super) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(super) text_style_stack: Vec<TextStyleRefinement>,
+    pub(super) element_visual_transform: ElementVisualTransform,
+    pub(super) content_mask_stack: Vec<ContentMask<Pixels>>,
+    pub(super) visual_content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(super) element: Option<AnyElement>,
     pub(super) absolute_offset: Point<Pixels>,
     pub(super) prepaint_range: Range<PrepaintStateIndex>,

@@ -1,3 +1,4 @@
+use super::state::ElementVisualTransform;
 use super::*;
 
 impl Window {
@@ -20,6 +21,11 @@ impl Window {
                 .clone_from(&deferred_draw.element_id_stack);
             self.text_style_stack
                 .clone_from(&deferred_draw.text_style_stack);
+            self.element_visual_transform = deferred_draw.element_visual_transform;
+            self.content_mask_stack
+                .clone_from(&deferred_draw.content_mask_stack);
+            self.visual_content_mask_stack
+                .clone_from(&deferred_draw.visual_content_mask_stack);
             self.next_frame
                 .dispatch_tree
                 .set_active_node(deferred_draw.parent_node);
@@ -46,6 +52,9 @@ impl Window {
         self.next_frame.deferred_draws = deferred_draws;
         self.element_id_stack.clear();
         self.text_style_stack.clear();
+        self.element_visual_transform = ElementVisualTransform::identity();
+        self.content_mask_stack.clear();
+        self.visual_content_mask_stack.clear();
     }
 
     pub(super) fn paint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
@@ -61,6 +70,11 @@ impl Window {
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
             self.element_id_stack
                 .clone_from(&deferred_draw.element_id_stack);
+            self.element_visual_transform = deferred_draw.element_visual_transform;
+            self.content_mask_stack
+                .clone_from(&deferred_draw.content_mask_stack);
+            self.visual_content_mask_stack
+                .clone_from(&deferred_draw.visual_content_mask_stack);
             self.next_frame
                 .dispatch_tree
                 .set_active_node(deferred_draw.parent_node);
@@ -85,6 +99,9 @@ impl Window {
         }
         self.next_frame.deferred_draws = deferred_draws;
         self.element_id_stack.clear();
+        self.element_visual_transform = ElementVisualTransform::identity();
+        self.content_mask_stack.clear();
+        self.visual_content_mask_stack.clear();
     }
 
     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
@@ -213,6 +230,9 @@ impl Window {
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
                     element_id_stack: deferred_draw.element_id_stack.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
+                    element_visual_transform: deferred_draw.element_visual_transform,
+                    content_mask_stack: deferred_draw.content_mask_stack.clone(),
+                    visual_content_mask_stack: deferred_draw.visual_content_mask_stack.clone(),
                     priority: deferred_draw.priority,
                     element: None,
                     absolute_offset: deferred_draw.absolute_offset,

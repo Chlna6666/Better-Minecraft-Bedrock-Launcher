@@ -39,6 +39,7 @@ pub(super) const EXPECT_MESSAGE: &str =
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
+    unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
     pub(super) node_fingerprints: FxHashMap<LayoutId, Option<u64>>,
     pub(super) measured_subtrees: FxHashSet<LayoutId>,
@@ -58,11 +59,14 @@ pub struct TaffyLayoutEngine {
 
 impl TaffyLayoutEngine {
     pub fn new() -> Self {
+        // Taffy's rounded sizes use cumulative coordinates, while its rounded locations remain
+        // parent-relative. GPUI needs both values from the same absolute coordinate system.
         let mut taffy = TaffyTree::new();
-        taffy.enable_rounding();
+        taffy.disable_rounding();
         TaffyLayoutEngine {
             taffy,
             absolute_layout_bounds: FxHashMap::default(),
+            unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
             node_fingerprints: FxHashMap::default(),
             measured_subtrees: FxHashSet::default(),
@@ -85,6 +89,7 @@ impl TaffyLayoutEngine {
         self.save_retained_layout_roots();
         self.taffy.clear();
         self.absolute_layout_bounds.clear();
+        self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
         self.node_fingerprints.clear();
         self.measured_subtrees.clear();
@@ -270,6 +275,7 @@ impl TaffyLayoutEngine {
             stack.push(id);
             while let Some(id) = stack.pop() {
                 self.absolute_layout_bounds.remove(&id);
+                self.unrounded_layout_origins.remove(&id);
                 stack.extend(
                     self.taffy
                         .children(id.into())
@@ -340,25 +346,41 @@ impl TaffyLayoutEngine {
         }
         self.bounds_cache_misses = self.bounds_cache_misses.saturating_add(1);
 
-        let layout = self.taffy.layout(id.into()).expect(EXPECT_MESSAGE);
-        let mut bounds = Bounds {
+        let layout = self.taffy.layout(id.into()).expect(EXPECT_MESSAGE).clone();
+        let (origin_x, origin_y) = self.unrounded_layout_origin(id);
+        let right = origin_x + layout.size.width;
+        let bottom = origin_y + layout.size.height;
+        let rounded_origin_x = origin_x.round();
+        let rounded_origin_y = origin_y.round();
+        let bounds = Bounds {
             origin: point(
-                Pixels(layout.location.x / scale_factor),
-                Pixels(layout.location.y / scale_factor),
+                Pixels(rounded_origin_x / scale_factor),
+                Pixels(rounded_origin_y / scale_factor),
             ),
             size: size(
-                Pixels(layout.size.width / scale_factor),
-                Pixels(layout.size.height / scale_factor),
+                Pixels((right.round() - rounded_origin_x) / scale_factor),
+                Pixels((bottom.round() - rounded_origin_y) / scale_factor),
             ),
         };
-
-        if let Some(parent_id) = self.taffy.parent(id.0) {
-            let parent_bounds = self.layout_bounds(parent_id.into(), scale_factor);
-            bounds.origin += parent_bounds.origin;
-        }
         self.absolute_layout_bounds.insert(id, bounds);
 
         bounds
+    }
+
+    fn unrounded_layout_origin(&mut self, id: LayoutId) -> (f32, f32) {
+        if let Some(origin) = self.unrounded_layout_origins.get(&id).copied() {
+            return origin;
+        }
+
+        let layout = self.taffy.layout(id.into()).expect(EXPECT_MESSAGE);
+        let mut origin = (layout.location.x, layout.location.y);
+        if let Some(parent_id) = self.taffy.parent(id.0) {
+            let parent_origin = self.unrounded_layout_origin(parent_id.into());
+            origin.0 += parent_origin.0;
+            origin.1 += parent_origin.1;
+        }
+        self.unrounded_layout_origins.insert(id, origin);
+        origin
     }
 
     fn layout_fingerprint(

@@ -9,6 +9,87 @@ use serde::{Deserialize, Serialize};
 
 use super::{Fill, paint::BoxShadow, paint::Visibility};
 
+/// The normalized point within an element used as the origin for visual transforms.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TransformOrigin {
+    /// Horizontal position, where `0.0` is the left edge and `1.0` is the right edge.
+    pub x: f32,
+    /// Vertical position, where `0.0` is the top edge and `1.0` is the bottom edge.
+    pub y: f32,
+}
+
+impl TransformOrigin {
+    /// Creates a normalized transform origin.
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    /// The center of an element's final layout bounds.
+    pub const CENTER: Self = Self::new(0.5, 0.5);
+
+    pub(crate) fn resolve(
+        self,
+        bounds: crate::Bounds<crate::Pixels>,
+    ) -> crate::Point<crate::Pixels> {
+        let normalize = |value: f32| {
+            if value.is_finite() {
+                value.clamp(0.0, 1.0)
+            } else {
+                0.5
+            }
+        };
+        crate::point(
+            bounds.origin.x + bounds.size.width * normalize(self.x),
+            bounds.origin.y + bounds.size.height * normalize(self.y),
+        )
+    }
+}
+
+#[cfg(test)]
+mod transform_origin_tests {
+    use super::*;
+    use crate::{LayoutStyle, bounds, point, px, size};
+
+    #[test]
+    fn transform_origin_resolves_from_final_layout_bounds() {
+        let bounds = bounds(point(px(10.0), px(20.0)), size(px(200.0), px(100.0)));
+
+        assert_eq!(
+            TransformOrigin::CENTER.resolve(bounds),
+            point(px(110.0), px(70.0))
+        );
+    }
+
+    #[test]
+    fn transform_origin_clamps_invalid_normalized_coordinates() {
+        let bounds = bounds(point(px(10.0), px(20.0)), size(px(200.0), px(100.0)));
+
+        assert_eq!(
+            TransformOrigin::new(-1.0, f32::NAN).resolve(bounds),
+            point(px(10.0), px(70.0))
+        );
+    }
+
+    #[test]
+    fn scale_does_not_change_layout_style() {
+        let scaled = Style {
+            scale: 0.5,
+            ..Style::default()
+        };
+
+        assert_eq!(
+            LayoutStyle::from(&scaled),
+            LayoutStyle::from(&Style::default())
+        );
+    }
+}
+
+impl Default for TransformOrigin {
+    fn default() -> Self {
+        Self::CENTER
+    }
+}
+
 /// Used to control how child nodes are aligned.
 /// For Flexbox it controls alignment in the cross axis
 /// For Grid it controls alignment in the block axis
@@ -251,6 +332,12 @@ pub struct Style {
     /// The opacity of this element
     pub opacity: Option<f32>,
 
+    /// Paint-time scale applied to this element and its descendants without changing layout.
+    pub scale: f32,
+
+    /// Origin for paint-time transforms, resolved from the element's final layout bounds.
+    pub transform_origin: TransformOrigin,
+
     /// Transition metadata for state-change animations.
     pub transition: Option<TransitionStyle>,
 
@@ -315,6 +402,8 @@ impl Default for Style {
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,
+            scale: 1.0,
+            transform_origin: TransformOrigin::default(),
             transition: None,
             grid_rows: None,
             grid_cols: None,

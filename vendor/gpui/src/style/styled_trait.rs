@@ -2,8 +2,8 @@ use crate::{
     self as gpui, AbsoluteLength, AlignContent, AlignItems, BorderStyle, CursorStyle,
     DefiniteLength, Display, Fill, FlexDirection, FlexWrap, Font, FontStyle, FontWeight,
     GridPlacement, Hsla, JustifyContent, Length, SharedString, StrikethroughStyle, StyleRefinement,
-    TextAlign, TextOverflow, TextStyleRefinement, Transition, UnderlineStyle, WhiteSpace, px,
-    relative, rems,
+    TextAlign, TextOverflow, TextStyleRefinement, TransformOrigin, Transition, UnderlineStyle,
+    WhiteSpace, px, relative, rems,
 };
 pub use gpui_macros::{
     border_style_methods, box_shadow_style_methods, cursor_style_methods, margin_style_methods,
@@ -264,6 +264,13 @@ pub trait Styled: Sized {
     /// [Docs](https://tailwindcss.com/docs/align-items#center)
     fn items_center(mut self) -> Self {
         self.style().align_items = Some(AlignItems::Center);
+        self
+    }
+
+    /// Sets the element to stretch flex items along the container's cross axis.
+    /// [Docs](https://tailwindcss.com/docs/align-items#stretch)
+    fn items_stretch(mut self) -> Self {
+        self.style().align_items = Some(AlignItems::Stretch);
         self
     }
 
@@ -623,6 +630,20 @@ pub trait Styled: Sized {
     /// Sets the opacity of this element and its children.
     fn opacity(mut self, opacity: f32) -> Self {
         self.style().opacity = Some(opacity);
+        self
+    }
+
+    /// Scales this element and its descendants around their final layout bounds.
+    ///
+    /// Scaling is a visual operation and does not change the element's layout size.
+    fn scale(mut self, scale: f32) -> Self {
+        self.style().scale = Some(scale.max(0.0));
+        self
+    }
+
+    /// Sets the normalized origin used by visual transforms.
+    fn transform_origin(mut self, origin: TransformOrigin) -> Self {
+        self.style().transform_origin = Some(origin);
         self
     }
 

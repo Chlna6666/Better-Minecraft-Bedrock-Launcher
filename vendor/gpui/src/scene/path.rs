@@ -160,6 +160,41 @@ impl Path<Pixels> {
     }
 }
 
+impl Path<ScaledPixels> {
+    pub(crate) fn transform_uniform(
+        mut self,
+        scale: f32,
+        translation: Point<ScaledPixels>,
+    ) -> Self {
+        self.bounds = Bounds {
+            origin: self.bounds.origin * scale + translation,
+            size: self.bounds.size.map(|value| value * scale),
+        };
+        self.content_mask = ContentMask {
+            bounds: Bounds {
+                origin: self.content_mask.bounds.origin * scale + translation,
+                size: self.content_mask.bounds.size.map(|value| value * scale),
+            },
+            corner_bounds: Bounds {
+                origin: self.content_mask.corner_bounds.origin * scale + translation,
+                size: self
+                    .content_mask
+                    .corner_bounds
+                    .size
+                    .map(|value| value * scale),
+            },
+            corner_radii: self.content_mask.corner_radii.map(|value| *value * scale),
+        };
+        for vertex in &mut self.vertices {
+            vertex.xy_position = vertex.xy_position * scale + translation;
+            vertex.content_mask = self.content_mask.clone();
+        }
+        self.start = self.start * scale + translation;
+        self.current = self.current * scale + translation;
+        self
+    }
+}
+
 impl<T> Path<T>
 where
     T: Clone + Debug + Default + PartialEq + PartialOrd + Add<T, Output = T> + Sub<Output = T>,

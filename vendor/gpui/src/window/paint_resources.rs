@@ -1,3 +1,4 @@
+use super::state::ElementVisualTransform;
 use super::*;
 
 #[cfg(target_os = "macos")]
@@ -41,6 +42,7 @@ pub struct ImagePaintProgress {
 
 struct ImagePaintContext {
     scale_factor: f32,
+    visual_transform: ElementVisualTransform,
     content_mask: ContentMask<ScaledPixels>,
     opacity: f32,
     animation_config: crate::AnimatedImageConfig,
@@ -131,7 +133,8 @@ impl Window {
         else {
             return Ok(());
         };
-        let content_mask = self.content_mask().scale(scale_factor);
+        let svg_bounds = self.visual_device_bounds(svg_bounds, scale_factor);
+        let content_mask = self.visual_content_mask().scale(scale_factor);
 
         self.next_frame.scene.insert_primitive(MonochromeSprite {
             order: 0,
@@ -304,7 +307,8 @@ impl Window {
         let scale_factor = self.scale_factor();
         ImagePaintContext {
             scale_factor,
-            content_mask: self.content_mask().scale(scale_factor),
+            visual_transform: self.element_visual_transform,
+            content_mask: self.visual_content_mask().scale(scale_factor),
             opacity: self.element_opacity(),
             animation_config: self.image_pipeline_config.animated,
         }
@@ -320,7 +324,10 @@ impl Window {
         frame: AnimatedFrame,
         grayscale: bool,
     ) -> Result<()> {
-        let bounds = visible_bounds.scale(context.scale_factor);
+        let bounds = context
+            .visual_transform
+            .transform_bounds(visible_bounds)
+            .scale(context.scale_factor);
         let frame_sequence = frame.sequence();
         let frame_slot = data.gpu_frame_slot_for_frame(frame_sequence, context.animation_config);
         let pixel_format = frame.pixel_format();
@@ -378,7 +385,8 @@ impl Window {
                 .insert(image_tile_cache_key, tile);
         }
         let tile = crop_image_tile_to_visible_bounds(tile, image_bounds, visible_bounds);
-        let corner_radii = corner_radii.scale(context.scale_factor);
+        let corner_radii =
+            corner_radii.scale(context.scale_factor * context.visual_transform.scale);
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
@@ -415,8 +423,9 @@ impl Window {
         }
 
         let scale_factor = self.scale_factor();
-        let bounds = bounds.scale(scale_factor);
-        let content_mask = self.content_mask().scale(scale_factor);
+        let visual_scale = self.visual_scale();
+        let bounds = self.visual_bounds(bounds).scale(scale_factor);
+        let content_mask = self.visual_content_mask().scale(scale_factor);
         self.next_frame.scene.insert_primitive(PaintBackdropBlur {
             order: 0,
             animation_id: None,
@@ -424,8 +433,8 @@ impl Window {
                 .map_origin(|origin| origin.floor())
                 .map_size(|size| size.ceil()),
             content_mask,
-            corner_radii: corner_radii.scale(scale_factor),
-            radius: ScaledPixels::from(f32::from(style.radius) * scale_factor),
+            corner_radii: corner_radii.scale(scale_factor * visual_scale),
+            radius: ScaledPixels::from(f32::from(style.radius) * scale_factor * visual_scale),
             downsample: style.downsample.max(1),
             levels: style.levels.clamp(1, 6),
             saturation: style.saturation.max(0.0),
@@ -447,8 +456,8 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let bounds = bounds.scale(scale_factor);
-        let content_mask = self.content_mask().scale(scale_factor);
+        let bounds = self.visual_bounds(bounds).scale(scale_factor);
+        let content_mask = self.visual_content_mask().scale(scale_factor);
         self.next_frame.scene.insert_primitive(PaintGpuMesh3d {
             order: 0,
             bounds,
@@ -468,8 +477,8 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let bounds = bounds.scale(scale_factor);
-        let content_mask = self.content_mask().scale(scale_factor);
+        let bounds = self.visual_bounds(bounds).scale(scale_factor);
+        let content_mask = self.visual_content_mask().scale(scale_factor);
         self.next_frame.scene.insert_primitive(PaintSurface {
             order: 0,
             bounds,

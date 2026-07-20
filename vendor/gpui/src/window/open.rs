@@ -1,3 +1,4 @@
+use super::state::ElementVisualTransform;
 use super::*;
 
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -307,7 +308,9 @@ impl Window {
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
+            visual_content_mask_stack: Vec::new(),
             element_opacity: 1.0,
+            element_visual_transform: ElementVisualTransform::identity(),
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),

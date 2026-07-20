@@ -118,6 +118,9 @@ impl Window {
             parent_node,
             element_id_stack: self.element_id_stack.clone(),
             text_style_stack: self.text_style_stack.clone(),
+            element_visual_transform: self.element_visual_transform,
+            content_mask_stack: self.content_mask_stack.clone(),
+            visual_content_mask_stack: self.visual_content_mask_stack.clone(),
             priority,
             element: Some(element),
             absolute_offset,
@@ -135,7 +138,8 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let content_mask = self.content_mask();
+        let bounds = self.visual_bounds(bounds);
+        let content_mask = self.visual_content_mask();
         let clipped_bounds = bounds.intersect(&content_mask.bounds);
         if !clipped_bounds.is_empty() {
             self.next_frame
@@ -164,17 +168,19 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let content_mask = self.content_mask();
+        let content_mask = self.visual_content_mask();
+        let visual_scale = self.visual_scale();
         let opacity = self.element_opacity();
         for shadow in shadows {
             let shadow_bounds = (bounds + shadow.offset).dilate(shadow.spread_radius);
+            let shadow_bounds = self.visual_bounds(shadow_bounds);
             self.next_frame.scene.insert_primitive(Shadow {
                 order: 0,
-                blur_radius: shadow.blur_radius.scale(scale_factor),
+                blur_radius: shadow.blur_radius.scale(scale_factor * visual_scale),
                 animation_id: None,
                 bounds: shadow_bounds.scale(scale_factor),
                 content_mask: content_mask.scale(scale_factor),
-                corner_radii: corner_radii.scale(scale_factor),
+                corner_radii: corner_radii.scale(scale_factor * visual_scale),
                 color: shadow.color.opacity(opacity),
             });
         }
@@ -193,17 +199,18 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let content_mask = self.content_mask();
+        let content_mask = self.visual_content_mask();
+        let visual_scale = self.visual_scale();
         let opacity = self.element_opacity();
         self.next_frame.scene.insert_primitive(Quad {
             order: 0,
             animation_id: None,
-            bounds: quad.bounds.scale(scale_factor),
+            bounds: self.visual_bounds(quad.bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
             background: quad.background.opacity(opacity),
             border_color: quad.border_color.opacity(opacity),
-            corner_radii: quad.corner_radii.scale(scale_factor),
-            border_widths: quad.border_widths.scale(scale_factor),
+            corner_radii: quad.corner_radii.scale(scale_factor * visual_scale),
+            border_widths: quad.border_widths.scale(scale_factor * visual_scale),
             border_style: quad.border_style,
         });
     }
@@ -215,14 +222,18 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let content_mask = self.content_mask();
+        let content_mask = self.visual_content_mask();
         let opacity = self.element_opacity();
-        path.content_mask = content_mask;
+        path.content_mask = self.content_mask();
         let color: Background = color.into();
         path.color = color.opacity(opacity);
-        self.next_frame
-            .scene
-            .insert_primitive(path.scale(scale_factor));
+        let transform = self.element_visual_transform;
+        let translation = transform.translation.map(|value| value.scale(scale_factor));
+        let mut path = path
+            .scale(scale_factor)
+            .transform_uniform(transform.scale, translation);
+        path.content_mask = content_mask.scale(scale_factor);
+        self.next_frame.scene.insert_primitive(path);
     }
 
     /// Paint an underline into the scene for the next frame at the current z-index.
@@ -246,16 +257,17 @@ impl Window {
             origin,
             size: size(width, height),
         };
-        let content_mask = self.content_mask();
+        let content_mask = self.visual_content_mask();
+        let visual_scale = self.visual_scale();
         let element_opacity = self.element_opacity();
 
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
-            bounds: bounds.scale(scale_factor),
+            bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
             color: style.color.unwrap_or_default().opacity(element_opacity),
-            thickness: style.thickness.scale(scale_factor),
+            thickness: style.thickness.scale(scale_factor * visual_scale),
             wavy: if style.wavy { 1 } else { 0 },
         });
     }
@@ -277,15 +289,16 @@ impl Window {
             origin,
             size: size(width, height),
         };
-        let content_mask = self.content_mask();
+        let content_mask = self.visual_content_mask();
+        let visual_scale = self.visual_scale();
         let opacity = self.element_opacity();
 
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
-            bounds: bounds.scale(scale_factor),
+            bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
-            thickness: style.thickness.scale(scale_factor),
+            thickness: style.thickness.scale(scale_factor * visual_scale),
             color: style.color.unwrap_or_default().opacity(opacity),
             wavy: 0,
         });
@@ -340,11 +353,14 @@ impl Window {
                 return Ok(());
             };
             let (origin, _) = glyph_device_origin(origin, raster_bounds.origin, scale_factor);
-            let bounds = Bounds {
-                origin,
-                size: tile.bounds.size.map(Into::into),
-            };
-            let content_mask = self.content_mask().scale(scale_factor);
+            let bounds = self.visual_device_bounds(
+                Bounds {
+                    origin,
+                    size: tile.bounds.size.map(Into::into),
+                },
+                scale_factor,
+            );
+            let content_mask = self.visual_content_mask().scale(scale_factor);
             self.next_frame.scene.insert_primitive(MonochromeSprite {
                 order: 0,
                 pad: MonochromeSpriteSampling::Glyph as u32,
@@ -404,11 +420,15 @@ impl Window {
                 return Ok(());
             };
 
-            let bounds = Bounds {
-                origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
-                size: tile.bounds.size.map(Into::into),
-            };
-            let content_mask = self.content_mask().scale(scale_factor);
+            let bounds = self.visual_device_bounds(
+                Bounds {
+                    origin: glyph_origin.map(|px| px.floor())
+                        + raster_bounds.origin.map(Into::into),
+                    size: tile.bounds.size.map(Into::into),
+                },
+                scale_factor,
+            );
+            let content_mask = self.visual_content_mask().scale(scale_factor);
             let opacity = self.element_opacity();
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
