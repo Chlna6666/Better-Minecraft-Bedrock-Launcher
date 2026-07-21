@@ -40,6 +40,9 @@ macos-blade = [
     "objc2-metal",
 ]
 wayland = [
+    "winit/wayland",
+    "winit/wayland-dlopen",
+    "winit/wayland-csd-adwaita",
     "bytemuck",
     "ashpd/wayland",
     "calloop-wayland-source",
@@ -53,6 +56,7 @@ wayland = [
     "open",
 ]
 x11 = [
+    "winit/x11",
     "bytemuck",
     "ashpd",
     "as-raw-xcb-connection",
@@ -133,6 +137,7 @@ waker-fn = "1.2.0"
 lyon = "1.0"
 libc.workspace = true
 pin-project = "1.1.10"
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block = "0.1"
@@ -223,7 +228,6 @@ wgpu = { version = "29.0.3", default-features = false, features = [
     "parking_lot",
     "counters",
 ] }
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 windows.workspace = true
 windows-core.workspace = true
 windows-numerics = "0.2"
