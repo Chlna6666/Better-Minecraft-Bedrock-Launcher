@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - codex/backdrop-blur-fix
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
