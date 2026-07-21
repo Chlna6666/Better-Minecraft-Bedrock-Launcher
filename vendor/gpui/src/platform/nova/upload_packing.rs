@@ -95,9 +95,19 @@ pub(super) fn write_backdrop_blur(
 }
 
 pub(super) fn backdrop_blur_offset(radius: f32, downsample: u8, levels: u8) -> f32 {
+    if !radius.is_finite() || radius <= 0.0 {
+        return 0.0;
+    }
+
     let downsample = f32::from(downsample.max(1));
     let levels = f32::from(levels.clamp(1, 6));
-    (radius / downsample / levels).clamp(0.5, 6.0)
+    let offset = radius / downsample / levels;
+
+    // Keep sub-pixel radii continuous. The old 0.5 lower clamp collapsed every
+    // small radius to the same sample distance and made values below 1 px look
+    // disabled. A tiny non-zero floor only protects the shader from a
+    // degenerate sample pattern.
+    offset.clamp(1.0 / 256.0, 6.0)
 }
 
 pub(super) fn write_quad(bytes: &mut Vec<u8>, quad: &Quad) {
