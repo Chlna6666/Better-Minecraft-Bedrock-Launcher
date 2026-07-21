@@ -1,0 +1,95 @@
+name: Fix GPUI Linux build
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/fix-gpui-linux-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Apply GPUI Linux fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"expected text not found in {path}: {old!r}")
+              p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          cargo = Path("vendor/gpui/Cargo.toml")
+          text = cargo.read_text(encoding="utf-8")
+          marker = '[dependencies.rand]\nversion = "0.10.1"\noptional = true\n'
+          if '[dependencies.raw-window-handle]' not in text:
+              text = text.replace(marker, marker + '\n[dependencies.raw-window-handle]\nversion = "0.6"\n', 1)
+          text = text.replace('features = ["async-io"]\noptional = true\ndefault-features = false', 'features = [\n    "async-io",\n    "file_chooser",\n    "open_uri",\n    "settings",\n]\noptional = true\ndefault-features = false', 1)
+          if '[target.\'cfg(any(target_os = "linux", target_os = "freebsd"))\'.dependencies.url]' not in text:
+              anchor = '[target.\'cfg(any(target_os = "linux", target_os = "freebsd"))\'.dependencies.wayland-backend]'
+              text = text.replace(anchor, '[target.\'cfg(any(target_os = "linux", target_os = "freebsd"))\'.dependencies.url]\nversion = "2"\n\n' + anchor, 1)
+          cargo.write_text(text, encoding="utf-8")
+
+          orig = Path("vendor/gpui/Cargo.toml.orig")
+          text = orig.read_text(encoding="utf-8")
+          text = text.replace('ashpd = { workspace = true, optional = true }', 'ashpd = { workspace = true, optional = true, default-features = false, features = ["async-io", "file_chooser", "open_uri", "settings"] }', 1)
+          if '\nurl = "2"\n' not in text:
+              text = text.replace('open = { version = "5.2.0", optional = true }', 'open = { version = "5.2.0", optional = true }\nurl = "2"', 1)
+          orig.write_text(text, encoding="utf-8")
+
+          replace(
+              "vendor/gpui/src/platform.rs",
+              'pub use bootstrap::{background_executor, enumerate_gpu_adapters, windows_manifest_path};',
+              'pub use bootstrap::{background_executor, enumerate_gpu_adapters};\n#[cfg(target_os = "windows")]\npub use bootstrap::windows_manifest_path;',
+          )
+
+          replace(
+              "vendor/gpui/src/platform/linux/platform.rs",
+              'ashpd::url::Url::parse(uri)',
+              'url::Url::parse(uri)',
+          )
+
+          traits = Path("vendor/gpui/src/platform/platform_traits.rs")
+          text = traits.read_text(encoding="utf-8")
+          needle = '    fn gpu_specs(&self) -> Option<GpuSpecs>;\n\n    fn update_ime_position'
+          if 'fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel);' not in text:
+              text = text.replace(needle, '    fn gpu_specs(&self) -> Option<GpuSpecs>;\n    fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel);\n\n    fn update_ime_position', 1)
+          traits.write_text(text, encoding="utf-8")
+
+          x11 = Path("vendor/gpui/src/platform/linux/x11/window.rs")
+          text = x11.read_text(encoding="utf-8")
+          text = text.replace('                    renderer_backend,\n                    crate::GpuSubmissionMode::Deferred,', '                    renderer_options.backend,\n                    crate::GpuSubmissionMode::Deferred,', 1)
+          text = text.replace('        renderer_backend: crate::RendererBackend,\n        params: WindowParams,', '        renderer_options: &RendererOptions,\n        params: WindowParams,', 1)
+          x11.write_text(text, encoding="utf-8")
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Check GPUI Linux Wayland and X11
+        run: cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features "wayland,x11,nova-gfx,nova-gfx-vulkan"
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vendor/gpui/Cargo.toml vendor/gpui/Cargo.toml.orig \
+            vendor/gpui/src/platform.rs \
+            vendor/gpui/src/platform/platform_traits.rs \
+            vendor/gpui/src/platform/linux/platform.rs \
+            vendor/gpui/src/platform/linux/x11/window.rs
+          git commit -m "fix(gpui): repair Linux platform build integration"
+          git push origin HEAD:master
