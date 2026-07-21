@@ -1,0 +1,32 @@
+name: Backdrop blur validation
+
+on:
+  push:
+    branches:
+      - codex/backdrop-blur-fix
+  workflow_dispatch:
+
+jobs:
+  check-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply validation patch
+        shell: pwsh
+        run: |
+          $compressed = [Convert]::FromBase64String("H4sIAKgaX2oC/61Ye0/bSBD/P1K/w7QnneyL47wgpaEgXrk71BQ4KFVPVeVu7A1YdWzXawc4xHe/mV0/84a7CBFnd2Z2nr+ZdaPRANYUkd1M3KYdTMLA534smpPAYZ4ZiVq9XofRKoKDA2j0jHYL6vL/wUEN6BO7E97vP54kEYvdwDfg1Bcx8+MnowZPuzWoNewAV+Dj+cnh0Do6PP5wcnl+YX08PbMOhxd/HvZh3O3AHrTMrd7uMuLDL7PEvYL4ZPD74fXwkzXDdDS8vrQuvmQsbbNViMfDV1O3zM5urb6p5tu9pcTzmr8tJG+meY80r2+ueWsb3V7Whpiujg+Hg4Lm3dYMzfnF4Mw6ub48/HR6ftaHLJxInD32++MomFgT1/NcoXW2WvqMiOPh+dXgWTI6JIPyqvvWeAd1/L+T55U7hpGXRFbEHDcRsL8H4b223HwdHhUffUbM/uFEQWhmDxaJ0goC+hyle0e4dRU/eJjFPr/TSofqtQbMfEwnuPMFm4Qe1zqL9j0+5Z7Quov2BItTP2iYjTt6rT5HwpI4sH4mzHPjB20RQVUGHgNzJLHrx1ow5ZHHHnSjIEhpnwAV5OiuhoSEKfedIGrehFj2VP2hx+JxEE2afjBlzXHEJtxKQi9gTpP7duDwAixexCrD3e4a7S4GnL6385Av+2iCe+NqLAU62td0aMIFJsLgZCYfjv7+NLjSgQlIup3dV8vFY5bZQeLHsIdVAY+vVisyr4cVMiG4MG2Ps0jT8ajGMwUUCYV1QiulFDMn7F5rv0SqSkPYW8Mpi4XOVPRoBp6rtQ0g3Kq6dDj4PBherdXlLnJjbs37SNtAk18nSbzcx8YmtlT4gvFY8FhWtKkq2mwZsz42yg7Q8ZD6qgM8HoNWZlZ8BqizdIphRQdJ5/o32hrBeSRyRTdlKGmzKUuq9Jpsp1jX/0s2Fz9eIKnI4LU2PSd56y9K3jWZmUV/FdI8rdhbcO6yI4XKVwOciN2xkcct4f7DV56spAub+9xivjuR3cMaub6j8nKTPqBgHO21fyDTpi1gnovQ/92WnCLxq/M2x36lJKK1NeW2NnqIya0taRd5DgPXbDbhkovAm3IBfDzmduxOOY4WzIMP6AvsaSGjnhPzSMCdG98G6EE78DwWCjweRDJqhO4994BqzDVRZpiMNJGEPNJh7K+pXFWYcoTKCi3iPxMuYu6U8r4Pyc78vkrRbE+Hxj5o+Ey/SaBOraeeAUw68uylD7IL4FiXpy82rZTkPY21OW/Gr7IR+bWU7DcaO7f1tEJaZruzbailckVEHEcLH6iC2uWUrqfpWy+pWKnzRW4oWlfOk1X0nFuKyu1VGDI7SjpmFjXJa2qaLMGxXllPIb0wm6zulfy4CsiRRJkMq3Ik7TDl1ICZVIAi9DLsNIE/pq1szpOLjEo9mXfeiitnrS27MuconFY6rJkKKdyTeid1zpJiUKLKVhq5oE5erDNOU8WNY62jKruvWv1nbr9PdvYNoB1c+wu/ZCUsRiSJYM0wcicuVf5yEFpAqKbOHaNHQ+eO0elWhs6nWvalbCeoueIeIowABgTydNEZuzfZjWaEaOMAPsS3HLzgxrURhMhRWcnmckoCJ8xLoQfwhvwALIZxQksEaomUK4ISSk2Zh2WC2xPm+jB1hYtwX0iGIYtueJRKTEQVCvP4EPLFAUpxEpvDHxfXqLzv3LlOfFuSdYy6CaL7+h0NH/f7RXy/f4MgytdVrHGNjRFn0X5XAELubYDuwCtH5Dq8kEreoRsNtRz0kPdADQ29ir5TxqUaYLZQmlQuP1n7k0VDZ+ONpYJyOUoWNSDbZXp3K1CzhB6SoJy6ciHNXxRVRtYtQtbqvCChsXQrS69SFTzuLGBDVOjMsy2g6papSoqTmikOq1RVGYrpSS4uVfWY2XEQmfBZ5Y4X3MkgMR+TFWMRcZDVjgHAWOOSqcSlAShdbjP3z+JZORzV8W3J6Jc1go3GDMSGWGw6XeTEaXHvGPJKSd/VO6XJ70PMOu0NcWRdReB44DkwwvBhPeMd0BFv8jEqTykLZyYJWZp9m/g/zDh6sPB6HWh6LpQAXW5mIm8ZjiX8HiMBNJu90XWFi9Q/f/lKOnzDp6XzhhUiIPAIpxwLsUBCQfo+QquOCS+7h0icl6mWtUGaYaPY4j9fVyS2FxFkx8xuvta01K8NHCy6NGywESn8XvlycHF1Ojw/k1xlEywD8E8QNPKsna5UvrNY+9daVQaeOzPALKHbh2yyekaEEGyFVUwxKWRZmJq4epN4LPo/I9ajW6uEkDUR66yKWGdFxNrmqnitd0wZuPEa4zHfJgdJF+CVw5H3JEu+aJnxSOz6D2i5jX2V9/tLXsmluyHh+TbOc9WXZAts1khsBeflQnbHT3F8Nhnlm+5nKEPD0ibKqDfoZW3USqGODO6sOh6192eo095UHym4oo9aqejT1bPY/wuvZh6lOhgAAA==")
+          $input = [IO.MemoryStream]::new($compressed)
+          $gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
+          $output = [IO.File]::Create("backdrop-blur.patch")
+          $gzip.CopyTo($output)
+          $output.Dispose()
+          $gzip.Dispose()
+          $input.Dispose()
+          git apply --whitespace=nowarn backdrop-blur.patch
+      - name: Check GPUI Nova DX12
+        run: cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features "nova-gfx,nova-gfx-dx12"
+      - name: Test backdrop blur
+        run: cargo test --manifest-path vendor/gpui/Cargo.toml --no-default-features --features "nova-gfx,nova-gfx-dx12" backdrop_blur --lib
+      - name: Check BMCBL
+        run: cargo check --bin BMCBL
