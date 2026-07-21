@@ -1,6 +1,6 @@
 use crate::{
-    App, Bounds, DefiniteLength, LayoutStyle, Length, Pixels, Size, Style, Window, point,
-    relative, size,
+    App, Bounds, DefiniteLength, LayoutStyle, Length, Pixels, Size, Style, Window, point, relative,
+    size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
 use smallvec::SmallVec;

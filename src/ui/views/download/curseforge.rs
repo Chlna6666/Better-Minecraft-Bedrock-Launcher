@@ -4156,10 +4156,9 @@ fn render_curseforge_mod_page_modal(
                     .on_scroll_wheel({
                         let scroll_handle = state.curseforge_mod_page_scroll.clone();
                         move |event, window, cx| {
-                            let extra_delta_y = scroll_event_delta_y_with_line_height(
-                                event,
-                                window.line_height(),
-                            ) * (CURSEFORGE_DETAIL_SCROLL_ACCELERATION - 1.0);
+                            let extra_delta_y =
+                                scroll_event_delta_y_with_line_height(event, window.line_height())
+                                    * (CURSEFORGE_DETAIL_SCROLL_ACCELERATION - 1.0);
                             if extra_delta_y == Pixels::ZERO {
                                 return;
                             }
@@ -4202,36 +4201,37 @@ fn render_curseforge_mod_page_modal(
                                                 a: 0.18,
                                                 ..colors.accent
                                             })
-                                            .when_some(mod_entry.logo_url.clone(), |this, logo_url| {
-                                                this.child(
-                                                    img(logo_url)
-                                                        .absolute()
-                                                        .inset_0()
-                                                        .w_full()
-                                                        .h_full()
-                                                        .object_fit(ObjectFit::Cover)
-                                                        .image_cache(detail_image_cache),
-                                                )
-                                            })
-                                            .child(
-                                                div().absolute().inset_0().bg(linear_gradient(
-                                                    180.0,
-                                                    linear_color_stop(
-                                                        Hsla {
-                                                            a: 0.0,
-                                                            ..colors.surface
-                                                        },
-                                                        0.0,
-                                                    ),
-                                                    linear_color_stop(
-                                                        Hsla {
-                                                            a: 0.86,
-                                                            ..rgb(0x111111).into()
-                                                        },
-                                                        1.0,
-                                                    ),
-                                                )),
+                                            .when_some(
+                                                mod_entry.logo_url.clone(),
+                                                |this, logo_url| {
+                                                    this.child(
+                                                        img(logo_url)
+                                                            .absolute()
+                                                            .inset_0()
+                                                            .w_full()
+                                                            .h_full()
+                                                            .object_fit(ObjectFit::Cover)
+                                                            .image_cache(detail_image_cache),
+                                                    )
+                                                },
                                             )
+                                            .child(div().absolute().inset_0().bg(linear_gradient(
+                                                180.0,
+                                                linear_color_stop(
+                                                    Hsla {
+                                                        a: 0.0,
+                                                        ..colors.surface
+                                                    },
+                                                    0.0,
+                                                ),
+                                                linear_color_stop(
+                                                    Hsla {
+                                                        a: 0.86,
+                                                        ..rgb(0x111111).into()
+                                                    },
+                                                    1.0,
+                                                ),
+                                            )))
                                             .child(
                                                 div()
                                                     .absolute()
@@ -4310,10 +4310,7 @@ fn render_curseforge_mod_page_modal(
                                                 SharedString::from(mod_entry.id.to_string()),
                                             ))
                                             .child(detail_row("更新时间", updated_at.clone()))
-                                            .child(detail_row(
-                                                "页面链接",
-                                                open_link.clone(),
-                                            )),
+                                            .child(detail_row("页面链接", open_link.clone())),
                                     )
                                     .when(!mod_entry.category_ids.is_empty(), |this| {
                                         this.child(
@@ -4415,7 +4412,9 @@ fn render_curseforge_mod_page_modal(
                                         selected_folder.clone(),
                                         local_versions,
                                     ))
-                                    .child(render_curseforge_detail_description_panel(colors, state)),
+                                    .child(render_curseforge_detail_description_panel(
+                                        colors, state,
+                                    )),
                             ),
                     ),
             )

@@ -287,7 +287,7 @@ pub fn modal_layer_dismissible_with_handle_and_cleanup(
         control: handle.control(),
         source_location,
     }
-        .into_any_element()
+    .into_any_element()
 }
 
 #[derive(Clone, Copy, Debug, Default)]

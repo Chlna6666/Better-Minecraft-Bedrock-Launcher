@@ -1,7 +1,5 @@
 use super::engine::{EXPECT_MESSAGE, TaffyLayoutEngine};
-use crate::{
-    AlignItems, Display, FlexDirection, JustifyContent, Style, px, relative, size,
-};
+use crate::{AlignItems, Display, FlexDirection, JustifyContent, Style, px, relative, size};
 
 #[test]
 fn centered_child_keeps_equal_device_margins_at_fractional_scale() {
@@ -52,7 +50,6 @@ fn centered_child_keeps_equal_device_margins_at_fractional_scale() {
     );
 }
 
-
 #[test]
 fn percentage_passthrough_keeps_relative_modal_centered() {
     let scale_factor = 1.0;
@@ -66,24 +63,15 @@ fn percentage_passthrough_keeps_relative_modal_centered() {
     let mut animation_wrapper_style = Style::default();
     animation_wrapper_style.display = Display::Flex;
     animation_wrapper_style.percentage_passthrough = true;
-    let animation_wrapper = engine.request_layout(
-        animation_wrapper_style,
-        px(16.),
-        scale_factor,
-        &[modal],
-    );
+    let animation_wrapper =
+        engine.request_layout(animation_wrapper_style, px(16.), scale_factor, &[modal]);
 
     let mut root_style = Style::default();
     root_style.display = Display::Flex;
     root_style.size = size(px(800.).into(), px(600.).into());
     root_style.align_items = Some(AlignItems::Center);
     root_style.justify_content = Some(JustifyContent::Center);
-    let root = engine.request_layout(
-        root_style,
-        px(16.),
-        scale_factor,
-        &[animation_wrapper],
-    );
+    let root = engine.request_layout(root_style, px(16.), scale_factor, &[animation_wrapper]);
 
     engine
         .taffy
