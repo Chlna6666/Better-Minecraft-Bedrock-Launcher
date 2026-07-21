@@ -6,6 +6,7 @@ build.log
 
 # Local packaged build artifact.
 /BMCBL.zip
+/vendor/gpui.zip
 
 # Local GDK CIK key material.
 /src/core/minecraft/gdk/Cik/
