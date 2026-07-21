@@ -17,7 +17,7 @@ use crate::{
     WindowParams, point, px, size,
     window::{Decorations, ResizeEdge},
 };
-use ::winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use anyhow::Result;
 use async_task::Runnable;
 use futures::channel::oneshot;
