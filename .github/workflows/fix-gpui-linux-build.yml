@@ -82,7 +82,34 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check GPUI Linux Wayland and X11
-        run: cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features "wayland,x11,nova-gfx,nova-gfx-vulkan"
+        id: gpui_check
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cargo check \
+            --manifest-path vendor/gpui/Cargo.toml \
+            --no-default-features \
+            --features "wayland,x11,nova-gfx,nova-gfx-vulkan" \
+            2>&1 | tee gpui-linux-check.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          echo "---- condensed compiler diagnostics ----"
+          grep -n -B 8 -A 24 -E 'error\[E[0-9]+\]|error: could not compile|error: aborting' gpui-linux-check.log || true
+          exit 0
+
+      - name: Upload GPUI Linux check log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-linux-check-log
+          path: gpui-linux-check.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail if GPUI check failed
+        if: steps.gpui_check.outputs.exit_code != '0'
+        run: exit 1
 
       - name: Commit fixes
         shell: bash
