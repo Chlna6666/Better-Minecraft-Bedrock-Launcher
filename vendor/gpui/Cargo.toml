@@ -32,8 +32,6 @@ keywords = [
 categories = ["gui"]
 license = "Apache-2.0"
 repository = "https://github.com/zed-industries/zed"
-resolver = "2"
-
 [features]
 default = [
     "wayland",
@@ -72,6 +70,9 @@ test-support = [
     "x11",
 ]
 wayland = [
+    "winit/wayland",
+    "winit/wayland-dlopen",
+    "winit/wayland-csd-adwaita",
     "bytemuck",
     "ashpd/wayland",
     "calloop-wayland-source",
@@ -87,6 +88,7 @@ wayland = [
 windows-manifest = ["dep:embed-resource"]
 windows-vulkan = ["nova-gfx-vulkan"]
 x11 = [
+    "winit/x11",
     "bytemuck",
     "ashpd",
     "as-raw-xcb-connection",
