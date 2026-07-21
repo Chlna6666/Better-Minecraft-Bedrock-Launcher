@@ -1,0 +1,44 @@
+name: Backdrop blur check
+
+on:
+  push:
+    branches:
+      - codex/backdrop-blur-fix
+    paths:
+      - "src/ui/components/modal.rs"
+      - "vendor/gpui/**"
+      - ".github/workflows/backdrop-blur-check.yml"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "src/ui/components/modal.rs"
+      - "vendor/gpui/**"
+      - ".github/workflows/backdrop-blur-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backdrop-blur-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check GPUI Nova DX12
+        run: cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features "nova-gfx,nova-gfx-dx12"
+
+      - name: Test GPUI backdrop blur
+        run: cargo test --manifest-path vendor/gpui/Cargo.toml --no-default-features --features "nova-gfx,nova-gfx-dx12" backdrop_blur --lib
+
+      - name: Check BMCBL
+        run: cargo check --bin BMCBL
