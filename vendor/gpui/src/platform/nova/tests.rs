@@ -3188,3 +3188,21 @@ fn read_f32_at(bytes: &[u8], offset: usize) -> f32 {
         .expect("test offset should be in bounds");
     f32::from_ne_bytes(chunk.try_into().expect("f32 chunk should have exact size"))
 }
+
+#[test]
+fn backdrop_blur_subpixel_offset_is_preserved() {
+    let quarter = backdrop_blur_offset(0.25, 1, 1);
+    let half = backdrop_blur_offset(0.5, 1, 1);
+
+    assert!(quarter > 0.0);
+    assert!(quarter < half);
+    assert!((quarter - 0.25).abs() < f32::EPSILON);
+    assert!((half - 0.5).abs() < f32::EPSILON);
+}
+
+#[test]
+fn backdrop_blur_invalid_offset_is_zero() {
+    assert_eq!(backdrop_blur_offset(0.0, 1, 1), 0.0);
+    assert_eq!(backdrop_blur_offset(-1.0, 1, 1), 0.0);
+    assert_eq!(backdrop_blur_offset(f32::NAN, 1, 1), 0.0);
+}

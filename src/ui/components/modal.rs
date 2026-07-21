@@ -6,9 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.46;
-const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.66;
-const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 1.0;
+const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.56;
+const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.72;
+const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 4.0;
 const MIN_MODAL_BACKDROP_BLUR_PX: f32 = 0.2;
 const MODAL_MIN_SCALE: f32 = 0.94;
 const MODAL_OPEN_DURATION: Duration = Duration::from_millis(240);
@@ -37,9 +37,8 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
     if blur_radius >= px(MIN_MODAL_BACKDROP_BLUR_PX) {
         backdrop.backdrop_blur(
             BackdropBlurStyle::new(blur_radius)
-                .downsample(2)
-                .levels(3)
-                .saturation(1.08)
+                .auto_quality()
+                .saturation(1.03)
                 .tint(overlay),
         )
     } else {

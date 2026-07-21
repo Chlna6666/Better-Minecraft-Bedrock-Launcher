@@ -318,6 +318,27 @@ impl BackdropBlurStyle {
         }
     }
 
+    /// Selects an efficient blur pyramid for the configured radius.
+    ///
+    /// Sub-pixel radii stay at full resolution so they do not disappear after
+    /// downsampling. Modal-sized radii use a two-level half-resolution pyramid
+    /// to reduce bandwidth without paying for the previous three-level chain.
+    pub fn auto_quality(mut self) -> Self {
+        let radius = self.radius.0.abs();
+        let (downsample, levels) = if radius < 1.0 {
+            (1, 1)
+        } else if radius < 4.0 {
+            (1, 1)
+        } else if radius <= 12.0 {
+            (2, 2)
+        } else {
+            (2, 3)
+        };
+        self.downsample = downsample;
+        self.levels = levels;
+        self
+    }
+
     /// Sets the downsample factor. Values lower than one are clamped to one.
     pub fn downsample(mut self, downsample: u8) -> Self {
         self.downsample = downsample.max(1);
