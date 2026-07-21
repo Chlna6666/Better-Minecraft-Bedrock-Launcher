@@ -75,7 +75,10 @@ jobs:
           text = text.replace('        renderer_backend: crate::RendererBackend,\n        params: WindowParams,', '        renderer_options: &RendererOptions,\n        params: WindowParams,', 1)
           x11.write_text(text, encoding="utf-8")
 
-      - name: Format
+      - name: Format generated changes
+        run: cargo fmt --all
+
+      - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Check GPUI Linux Wayland and X11
