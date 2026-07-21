@@ -1,4 +1,7 @@
-use crate::{App, Bounds, LayoutStyle, Pixels, Size, Style, Window, point, size};
+use crate::{
+    App, Bounds, DefiniteLength, LayoutStyle, Length, Pixels, Size, Style, Window, point,
+    relative, size,
+};
 use collections::{FxHashMap, FxHashSet, FxHasher};
 use smallvec::SmallVec;
 use stacksafe::{StackSafe, stacksafe};
@@ -27,6 +30,13 @@ pub(super) type NodeMeasureFn = StackSafe<
     >,
 >;
 
+#[derive(Clone)]
+struct NodeLayoutMetadata {
+    style: LayoutStyle,
+    rem_size: Pixels,
+    scale_factor: f32,
+}
+
 pub(super) struct NodeContext {
     pub(super) measure: NodeMeasureFn,
     pub(super) is_pure: bool,
@@ -42,6 +52,7 @@ pub struct TaffyLayoutEngine {
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
     pub(super) node_fingerprints: FxHashMap<LayoutId, Option<u64>>,
+    node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     pub(super) measured_subtrees: FxHashSet<LayoutId>,
     pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
     pub(super) computed_root_keys: Vec<(LayoutRootCacheKey, LayoutId)>,
@@ -57,6 +68,23 @@ pub struct TaffyLayoutEngine {
     pub(super) layout_cache_saved_roots: usize,
 }
 
+fn promote_percentage_axis(wrapper: &mut Length, child: &mut Length) -> bool {
+    if !matches!(wrapper, Length::Auto) {
+        return false;
+    }
+
+    let Length::Definite(DefiniteLength::Fraction(fraction)) = *child else {
+        return false;
+    };
+    if !fraction.is_finite() || fraction < 0.0 {
+        return false;
+    }
+
+    *wrapper = relative(fraction).into();
+    *child = relative(1.0).into();
+    true
+}
+
 impl TaffyLayoutEngine {
     pub fn new() -> Self {
         // Taffy's rounded sizes use cumulative coordinates, while its rounded locations remain
@@ -69,6 +97,7 @@ impl TaffyLayoutEngine {
             unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
             node_fingerprints: FxHashMap::default(),
+            node_layout_metadata: FxHashMap::default(),
             measured_subtrees: FxHashSet::default(),
             previous_layout_roots: FxHashMap::default(),
             computed_root_keys: Vec::new(),
@@ -92,6 +121,7 @@ impl TaffyLayoutEngine {
         self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
         self.node_fingerprints.clear();
+        self.node_layout_metadata.clear();
         self.measured_subtrees.clear();
         self.computed_root_keys.clear();
         self.nodes_requested = 0;
@@ -113,7 +143,8 @@ impl TaffyLayoutEngine {
         children: &[LayoutId],
     ) -> LayoutId {
         self.nodes_requested = self.nodes_requested.saturating_add(1);
-        let layout_style = LayoutStyle::from(&style);
+        let mut layout_style = LayoutStyle::from(&style);
+        self.normalize_percentage_passthrough(&mut layout_style, children);
         let fingerprint = self.layout_fingerprint(&layout_style, rem_size, scale_factor, children);
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
 
@@ -130,6 +161,14 @@ impl TaffyLayoutEngine {
                 .into()
         };
         self.node_fingerprints.insert(layout_id, fingerprint);
+        self.node_layout_metadata.insert(
+            layout_id,
+            NodeLayoutMetadata {
+                style: layout_style,
+                rem_size,
+                scale_factor,
+            },
+        );
         if children
             .iter()
             .any(|child| self.measured_subtrees.contains(child))
@@ -193,6 +232,14 @@ impl TaffyLayoutEngine {
             .expect(EXPECT_MESSAGE)
             .into();
         self.node_fingerprints.insert(layout_id, fingerprint);
+        self.node_layout_metadata.insert(
+            layout_id,
+            NodeLayoutMetadata {
+                style: layout_style,
+                rem_size,
+                scale_factor,
+            },
+        );
         self.measured_subtrees.insert(layout_id);
         layout_id
     }
@@ -233,6 +280,14 @@ impl TaffyLayoutEngine {
             .expect(EXPECT_MESSAGE)
             .into();
         self.node_fingerprints.insert(layout_id, Some(fingerprint));
+        self.node_layout_metadata.insert(
+            layout_id,
+            NodeLayoutMetadata {
+                style: layout_style,
+                rem_size,
+                scale_factor,
+            },
+        );
         self.measured_subtrees.insert(layout_id);
         layout_id
     }
@@ -383,6 +438,42 @@ impl TaffyLayoutEngine {
         origin
     }
 
+    /// Resolve the one safe and common percentage cycle produced by paint-only wrappers:
+    /// an auto-sized wrapper with one percentage-sized child.
+    ///
+    /// Example: `center -> animation wrapper(auto) -> modal(width: 80%)`. The wrapper's width
+    /// depends on the modal while the modal's percentage depends on the wrapper. For an explicitly
+    /// marked passthrough wrapper, forwarding `80%` to the wrapper and making the child `100%` is
+    /// layout-equivalent, gives Taffy a definite containing block, and preserves centering.
+    fn normalize_percentage_passthrough(
+        &mut self,
+        wrapper: &mut LayoutStyle,
+        children: &[LayoutId],
+    ) {
+        if !wrapper.percentage_passthrough || children.len() != 1 {
+            return;
+        }
+
+        let child_id = children[0];
+        let Some(mut child) = self.node_layout_metadata.get(&child_id).cloned() else {
+            return;
+        };
+
+        let mut changed = false;
+        changed |= promote_percentage_axis(&mut wrapper.size.width, &mut child.style.size.width);
+        changed |= promote_percentage_axis(&mut wrapper.size.height, &mut child.style.size.height);
+
+        if !changed {
+            return;
+        }
+
+        let taffy_style = child.style.to_taffy(child.rem_size, child.scale_factor);
+        self.taffy
+            .set_style(child_id.into(), taffy_style)
+            .expect(EXPECT_MESSAGE);
+        self.node_layout_metadata.insert(child_id, child);
+    }
+
     fn layout_fingerprint(
         &self,
         style: &LayoutStyle,
@@ -426,6 +517,7 @@ impl TaffyLayoutEngine {
         hash_size_length(&style.min_size, hasher);
         hash_size_length(&style.max_size, hasher);
         style.aspect_ratio.map(f32::to_bits).hash(hasher);
+        style.percentage_passthrough.hash(hasher);
         hash_edges_length(&style.margin, hasher);
         hash_edges_definite_length(&style.padding, hasher);
         hash_edges_absolute_length(&style.border_widths, hasher);

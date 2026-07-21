@@ -1,5 +1,7 @@
 use super::engine::{EXPECT_MESSAGE, TaffyLayoutEngine};
-use crate::{AlignItems, Display, FlexDirection, JustifyContent, Style, px, size};
+use crate::{
+    AlignItems, Display, FlexDirection, JustifyContent, Style, px, relative, size,
+};
 
 #[test]
 fn centered_child_keeps_equal_device_margins_at_fractional_scale() {
@@ -48,4 +50,57 @@ fn centered_child_keeps_equal_device_margins_at_fractional_scale() {
         (top_margin.0 - bottom_margin.0).abs() < 0.0001,
         "centered child margins diverged: top={top_margin:?}, bottom={bottom_margin:?}"
     );
+}
+
+
+#[test]
+fn percentage_passthrough_keeps_relative_modal_centered() {
+    let scale_factor = 1.0;
+    let mut engine = TaffyLayoutEngine::new();
+
+    let mut modal_style = Style::default();
+    modal_style.display = Display::Flex;
+    modal_style.size = size(relative(0.75).into(), px(240.).into());
+    let modal = engine.request_layout(modal_style, px(16.), scale_factor, &[]);
+
+    let mut animation_wrapper_style = Style::default();
+    animation_wrapper_style.display = Display::Flex;
+    animation_wrapper_style.percentage_passthrough = true;
+    let animation_wrapper = engine.request_layout(
+        animation_wrapper_style,
+        px(16.),
+        scale_factor,
+        &[modal],
+    );
+
+    let mut root_style = Style::default();
+    root_style.display = Display::Flex;
+    root_style.size = size(px(800.).into(), px(600.).into());
+    root_style.align_items = Some(AlignItems::Center);
+    root_style.justify_content = Some(JustifyContent::Center);
+    let root = engine.request_layout(
+        root_style,
+        px(16.),
+        scale_factor,
+        &[animation_wrapper],
+    );
+
+    engine
+        .taffy
+        .compute_layout(
+            root.into(),
+            taffy::geometry::Size {
+                width: taffy::style::AvailableSpace::Definite(800.),
+                height: taffy::style::AvailableSpace::Definite(600.),
+            },
+        )
+        .expect(EXPECT_MESSAGE);
+
+    let wrapper_bounds = engine.layout_bounds(animation_wrapper, scale_factor);
+    let modal_bounds = engine.layout_bounds(modal, scale_factor);
+
+    assert_eq!(wrapper_bounds.size.width, px(600.));
+    assert_eq!(modal_bounds.size.width, px(600.));
+    assert_eq!(wrapper_bounds.origin.x, px(100.));
+    assert_eq!(modal_bounds.origin.x, px(100.));
 }

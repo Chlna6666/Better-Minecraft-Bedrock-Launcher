@@ -271,6 +271,15 @@ pub struct Style {
     /// Sets the preferred aspect ratio for the item. The ratio is calculated as width divided by height.
     pub aspect_ratio: Option<f32>,
 
+    /// Makes this node a transparent percentage containing block for its single in-flow child.
+    ///
+    /// On an auto-sized axis, a percentage-sized child normally creates an indefinite-size
+    /// dependency (the parent depends on the child while the child depends on the parent).
+    /// When enabled, GPUI promotes the child's percentage to this wrapper and rewrites the
+    /// child to 100% on that axis. This is intended for paint-only wrappers used by animations,
+    /// opacity, transforms, and modal layers.
+    pub percentage_passthrough: bool,
+
     // Spacing Properties
     /// How large should the margin be on each side?
     #[refineable]
@@ -382,6 +391,7 @@ impl Default for Style {
             min_size: Size::auto(),
             max_size: Size::auto(),
             aspect_ratio: None,
+            percentage_passthrough: false,
             gap: Size::default(),
             // Alignment
             align_items: None,

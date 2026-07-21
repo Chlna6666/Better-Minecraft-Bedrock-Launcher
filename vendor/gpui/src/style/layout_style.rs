@@ -34,6 +34,8 @@ pub struct LayoutStyle {
     pub max_size: Size<Length>,
     /// Preferred aspect ratio.
     pub aspect_ratio: Option<f32>,
+    /// Whether a single child's percentage size is forwarded through this auto-sized wrapper.
+    pub percentage_passthrough: bool,
     /// Margin values.
     pub margin: Edges<Length>,
     /// Padding values.
@@ -82,6 +84,7 @@ impl From<&super::Style> for LayoutStyle {
             min_size: style.min_size,
             max_size: style.max_size,
             aspect_ratio: style.aspect_ratio,
+            percentage_passthrough: style.percentage_passthrough,
             margin: style.margin,
             padding: style.padding,
             border_widths: style.border_widths,

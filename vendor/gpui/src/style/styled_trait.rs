@@ -627,6 +627,16 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Forwards a single percentage-sized child's preferred size through this wrapper.
+    ///
+    /// Use this on paint-only wrappers around content whose width or height is expressed with
+    /// [`relative`]. It prevents an auto-sized wrapper and its percentage-sized child from
+    /// forming an indefinite containing-block cycle in Taffy.
+    fn percentage_passthrough(mut self) -> Self {
+        self.style().percentage_passthrough = Some(true);
+        self
+    }
+
     /// Sets the opacity of this element and its children.
     fn opacity(mut self, opacity: f32) -> Self {
         self.style().opacity = Some(opacity);
