@@ -8,7 +8,7 @@ use std::{
 
 const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.46;
 const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.66;
-const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 8.0;
+const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 1.0;
 const MIN_MODAL_BACKDROP_BLUR_PX: f32 = 0.2;
 const MODAL_MIN_SCALE: f32 = 0.94;
 const MODAL_OPEN_DURATION: Duration = Duration::from_millis(240);
@@ -102,6 +102,7 @@ pub fn animated_modal_layer(
                 .occlude()
                 .child(
                     div()
+                        .percentage_passthrough()
                         .mt(content_offset)
                         .scale(modal_content_scale(progress))
                         .opacity(progress)
@@ -133,6 +134,7 @@ pub fn animated_modal_layer_with_content_offset(
                 .occlude()
                 .child(
                     div()
+                        .percentage_passthrough()
                         .mt(content_offset_y)
                         .scale(modal_content_scale(progress))
                         .opacity(progress)
@@ -285,7 +287,7 @@ pub fn modal_layer_dismissible_with_handle_and_cleanup(
         control: handle.control(),
         source_location,
     }
-    .into_any_element()
+        .into_any_element()
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -488,6 +490,7 @@ fn dismissible_modal_layer(
                 .occlude()
                 .child(
                     div()
+                        .percentage_passthrough()
                         .scale(modal_content_scale(progress))
                         .opacity(progress)
                         .child(content),

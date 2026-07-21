@@ -151,7 +151,7 @@ impl MapViewerWindowView {
         self.professional.pending_overlay_refresh = false;
         self.professional.last_overlay_request_bounds = Some(bounds);
         self.professional.last_overlay_request_options = Some(options);
-        self.status = SharedString::from("正在加载专业地图叠加层...");
+        self.status = SharedString::from("正在加载地图叠加层...");
         cx.notify();
 
         let metadata_generation = self.metadata_generation;
@@ -291,13 +291,13 @@ impl MapViewerWindowView {
                         this.professional.overlay_paint = Some(overlay);
                         this.professional.overlays = None;
                         this.status = SharedString::from(format!(
-                            "专业地图叠加层已更新 · 缓存 {} · 重建 {}",
+                            "地图叠加层已更新 · 缓存 {} · 重建 {}",
                             map_info.cached_tile_count, map_info.rebuilt_tile_count
                         ));
                     }
                     Err(error) => {
                         if error.contains("cancelled") || error.contains("cancel") {
-                            this.status = SharedString::from("专业地图叠加层查询已取消");
+                            this.status = SharedString::from("地图叠加层查询已取消");
                         } else {
                             this.status = SharedString::from(error);
                         }

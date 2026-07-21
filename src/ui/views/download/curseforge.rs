@@ -97,6 +97,8 @@ fn curseforge_sidebar_image_cache_config() -> BoundedImageCacheConfig {
             .saturating_mul(CURSEFORGE_SIDEBAR_IMAGE_BYTES_PER_ITEM),
     }
 }
+pub(crate) struct GlobalCurseForgeDetailImageCache(pub Entity<BoundedImageCache>);
+impl gpui::Global for GlobalCurseForgeDetailImageCache {}
 
 fn curseforge_detail_image_cache_config() -> BoundedImageCacheConfig {
     BoundedImageCacheConfig {
@@ -237,6 +239,9 @@ impl CurseForgeResourcePanelView {
     }
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        let cache = BoundedImageCache::new(curseforge_detail_image_cache_config(), cx);
+        cx.set_global(GlobalCurseForgeDetailImageCache(cache.clone()));
+
         let (initial_tab, initial_signature) = cx.read_global(|state: &DownloadPageState, _cx| {
             (state.tab, curseforge_resource_panel_signature(state))
         });
@@ -278,7 +283,7 @@ impl CurseForgeResourcePanelView {
             focus_handle: cx.focus_handle().tab_stop(true),
             curseforge_sidebar: cx.new(CurseForgeSidebarView::new),
             curseforge_content: cx.new(CurseForgeContentView::new),
-            detail_image_cache: BoundedImageCache::new(curseforge_detail_image_cache_config(), cx),
+            detail_image_cache: cache,
             initial_tab,
             last_signature: initial_signature,
             active: true,
@@ -649,7 +654,8 @@ fn render_curseforge_detail_file_row(
     let date_label = format_date_ymd(file.file_date.as_ref());
 
     div()
-        .w_full()
+        .flex_1()
+        .min_w(px(0.))
         .rounded(px(16.))
         .bg(Hsla {
             a: 0.42,
@@ -931,16 +937,6 @@ pub(super) fn render_resource_panel(
         .min_h(px(0.))
         .child(div().flex_1().min_w(px(0.)).min_h(px(0.)).child(body))
         .on_action(|_: &Paste, _window, cx| handle_clipboard_share_paste(cx))
-        .when(state.curseforge_mod_page_open, |this| {
-            this.child(modals::render_curseforge_mod_page_modal(
-                _colors,
-                state,
-                detail_image_cache,
-                _selected_folder.clone(),
-                _local_versions,
-                _tasks,
-            ))
-        })
 }
 
 pub(super) fn render_curseforge_install_overlay(
@@ -948,7 +944,11 @@ pub(super) fn render_curseforge_install_overlay(
     cx: &App,
 ) -> Option<AnyElement> {
     let state = cx.global::<DownloadPageState>();
-    if state.tab != DownloadTab::ResourcePack || !state.curseforge_install_open {
+    if state.tab != DownloadTab::ResourcePack {
+        return None;
+    }
+
+    if !state.curseforge_install_open && !state.curseforge_mod_page_open {
         return None;
     }
 
@@ -960,16 +960,36 @@ pub(super) fn render_curseforge_install_overlay(
     let local_versions = read_local_versions_snapshot(cx);
     let tasks = crate::tasks::task_manager::snapshot_arcs_map();
 
-    Some(
-        modals::render_curseforge_install_modal(
-            colors,
-            state,
-            selected_folder,
-            &local_versions,
-            &tasks,
-        )
-        .into_any_element(),
-    )
+    if state.curseforge_install_open {
+        return Some(
+            modals::render_curseforge_install_modal(
+                colors,
+                state,
+                selected_folder,
+                &local_versions,
+                &tasks,
+            )
+            .into_any_element(),
+        );
+    }
+
+    if state.curseforge_mod_page_open {
+        if let Some(cache_ref) = cx.try_global::<GlobalCurseForgeDetailImageCache>() {
+            return Some(
+                modals::render_curseforge_mod_page_modal(
+                    colors,
+                    state,
+                    &cache_ref.0,
+                    selected_folder,
+                    &local_versions,
+                    &tasks,
+                )
+                .into_any_element(),
+            );
+        }
+    }
+
+    None
 }
 
 fn render_curseforge_sidebar(
@@ -3110,6 +3130,12 @@ fn render_curseforge_install_file_selection_modal(
             px(560.),
             px(18.),
         )
+        .w(relative(0.88))
+        .h(relative(0.85))
+        .max_w(px(860.))
+        .max_h(px(600.))
+        .min_w(px(500.))
+        .min_h(px(340.))
         .child(render_curseforge_install_header(
             colors, "文件", mod_name, None,
         ))
@@ -3735,6 +3761,12 @@ fn render_curseforge_install_modal(
             px(460.),
             px(18.),
         )
+        .w(relative(0.85))
+        .h(relative(0.80))
+        .max_w(px(760.))
+        .max_h(px(500.))
+        .min_w(px(460.))
+        .min_h(px(300.))
         .child(header)
         .child(body),
         Hsla {
@@ -3894,8 +3926,8 @@ fn render_curseforge_mod_page_modal(
     };
 
     let header = div()
-        .px(px(20.))
-        .py(px(16.))
+        .px(px(28.))
+        .py(px(18.))
         .flex()
         .items_center()
         .justify_between()
@@ -4144,12 +4176,13 @@ fn render_curseforge_mod_page_modal(
                             }
                         }
                     })
-                    .p(px(20.))
+                    .px(px(28.))
+                    .py(px(22.))
                     .child(
                         div()
                             .flex()
                             .items_start()
-                            .gap(px(20.))
+                            .gap(px(24.))
                             .w_full()
                             .child(
                                 div()
@@ -4308,6 +4341,65 @@ fn render_curseforge_mod_page_modal(
                                                 )
                                                 .child(tag_row),
                                         )
+                                    })
+                                    .when(!highlight_lines.is_empty(), |this| {
+                                        let mut notes = div().flex().flex_col().gap(px(8.));
+                                        for line in &highlight_lines {
+                                            notes = notes.child(
+                                                div()
+                                                    .rounded(px(12.))
+                                                    .bg(Hsla {
+                                                        a: 0.44,
+                                                        ..colors.surface
+                                                    })
+                                                    .border_1()
+                                                    .border_color(Hsla {
+                                                        a: 0.08,
+                                                        ..colors.border
+                                                    })
+                                                    .p(px(12.))
+                                                    .text_size(px(12.))
+                                                    .line_height(relative(1.5))
+                                                    .text_color(colors.text_secondary)
+                                                    .child(SharedString::from(line.to_string())),
+                                            );
+                                        }
+                                        this.child(
+                                            div()
+                                                .rounded(px(18.))
+                                                .bg(Hsla {
+                                                    a: 0.50,
+                                                    ..colors.surface
+                                                })
+                                                .border_1()
+                                                .border_color(Hsla {
+                                                    a: 0.10,
+                                                    ..colors.border
+                                                })
+                                                .p(px(14.))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(12.))
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.))
+                                                        .child(themed_icon(
+                                                            lucide_icons::icon_scroll_text(),
+                                                            14.0,
+                                                            colors.accent,
+                                                        ))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.))
+                                                                .font_weight(FontWeight::BOLD)
+                                                                .text_color(colors.text_primary)
+                                                                .child("详细介绍 & 快速了解"),
+                                                        ),
+                                                )
+                                                .child(notes),
+                                        )
                                     }),
                             )
                             .child(
@@ -4317,159 +4409,6 @@ fn render_curseforge_mod_page_modal(
                                     .flex()
                                     .flex_col()
                                     .gap(px(16.))
-                                    .child(
-                                        div()
-                                            .rounded(px(12.))
-                                            .bg(Hsla {
-                                                a: 0.72,
-                                                ..colors.surface
-                                            })
-                                            .border_1()
-                                            .border_color(colors.border)
-                                            .p(px(20.))
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(14.))
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_between()
-                                                    .gap(px(12.))
-                                                    .child(
-                                                        div()
-                                                            .flex()
-                                                            .items_center()
-                                                            .gap(px(10.))
-                                                            .child(
-                                                                div()
-                                                                    .w(px(36.))
-                                                                    .h(px(36.))
-                                                                    .rounded(px(12.))
-                                                                    .bg(Hsla {
-                                                                        a: 0.14,
-                                                                        ..colors.accent
-                                                                    })
-                                                                    .flex()
-                                                                    .items_center()
-                                                                    .justify_center()
-                                                                    .child(themed_icon(
-                                                                        lucide_icons::icon_scroll_text(),
-                                                                        16.0,
-                                                                        colors.accent,
-                                                                    )),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .flex()
-                                                                    .flex_col()
-                                                                    .gap(px(3.))
-                                                                    .child(
-                                                                        div()
-                                                                            .text_size(px(14.))
-                                                                            .font_weight(FontWeight::BOLD)
-                                                                            .text_color(colors.text_primary)
-                                                            .child("详细介绍"),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .text_size(px(12.))
-                                                                            .text_color(colors.text_muted)
-                                                                            .child("包含项目描述、玩法说明与补充信息"),
-                                                                    ),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .h(px(30.))
-                                                            .px(px(12.))
-                                                            .rounded(px(999.))
-                                                            .bg(Hsla {
-                                                                a: 0.10,
-                                                                ..colors.accent
-                                                            })
-                                                            .border_1()
-                                                            .border_color(Hsla {
-                                                                a: 0.10,
-                                                                ..colors.border
-                                                            })
-                                                            .flex()
-                                                            .items_center()
-                                                            .text_size(px(11.))
-                                                            .text_color(colors.text_secondary)
-                                                            .child(format!("{} | {}", downloads, updated_at)),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .rounded(px(16.))
-                                                    .bg(Hsla {
-                                                        a: 0.38,
-                                                        ..colors.surface
-                                                    })
-                                                    .border_1()
-                                                    .border_color(Hsla {
-                                                        a: 0.08,
-                                                        ..colors.border
-                                                    })
-                                                    .p(px(14.))
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap(px(6.))
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(11.))
-                                                            .text_color(colors.text_muted)
-                                                            .child("一句话简介"),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(13.))
-                                                            .line_height(relative(1.5))
-                                                            .text_color(colors.text_secondary)
-                                                            .child(summary),
-                                                    ),
-                                            )
-                                            .when(!highlight_lines.is_empty(), |this| {
-                                                let mut notes = div().flex().gap(px(10.)).flex_wrap();
-                                                for line in &highlight_lines {
-                                                    notes = notes.child(
-                                                        div()
-                                                            .min_w(px(220.))
-                                                            .flex_1()
-                                                            .rounded(px(16.))
-                                                            .bg(Hsla {
-                                                                a: 0.44,
-                                                                ..colors.surface
-                                                            })
-                                                            .border_1()
-                                                            .border_color(Hsla {
-                                                                a: 0.08,
-                                                                ..colors.border
-                                                            })
-                                                            .p(px(14.))
-                                                            .text_size(px(12.))
-                                                            .line_height(relative(1.55))
-                                                            .text_color(colors.text_secondary)
-                                                            .child(SharedString::from(line.to_string())),
-                                                    );
-                                                }
-                                                this.child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .gap(px(10.))
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(11.))
-                                                                .text_color(colors.text_muted)
-                                                                .child("快速了解"),
-                                                        )
-                                                        .child(notes),
-                                                )
-                                            }),
-                                    )
                                     .child(render_curseforge_detail_files_panel(
                                         colors,
                                         state,
@@ -4495,10 +4434,16 @@ fn render_curseforge_mod_page_modal(
                 ..colors.surface
             },
             colors.border,
-            px(960.),
-            px(540.),
+            px(1000.),
+            px(580.),
             px(18.),
         )
+        .w(relative(0.92))
+        .h(relative(0.88))
+        .max_w(px(1040.))
+        .max_h(px(660.))
+        .min_w(px(580.))
+        .min_h(px(380.))
         .child(header)
         .child(body),
         Hsla {
