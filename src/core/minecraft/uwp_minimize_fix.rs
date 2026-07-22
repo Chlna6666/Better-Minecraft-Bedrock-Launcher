@@ -1,3 +1,4 @@
+#![cfg(target_os = "windows")]
 // uwp_minimize_fix.rs
 // 使用 Rust + windows crate 启用 UWP 包的调试（等同于 C++ 中的 IPackageDebugSettings::EnableDebugging）
 

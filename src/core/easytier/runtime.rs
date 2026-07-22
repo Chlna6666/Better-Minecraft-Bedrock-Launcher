@@ -1,17 +1,26 @@
+#[cfg(target_os = "windows")]
 use crate::utils::file_ops;
+#[cfg(target_os = "windows")]
 use std::fs;
+#[cfg(target_os = "windows")]
 use std::io;
+#[cfg(target_os = "windows")]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 
+#[cfg(target_os = "windows")]
 use super::runtime_assets::{WINDIVERT64_SYS, WINTUN_DLL};
 
+#[cfg(target_os = "windows")]
 static EASYTIER_RUNTIME_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
+#[cfg(target_os = "windows")]
 fn runtime_dir() -> PathBuf {
     file_ops::bmcbl_subdir("runtime").join("easytier")
 }
 
+#[cfg(target_os = "windows")]
 fn write_if_missing_or_size_mismatch(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let need_write = match fs::metadata(path) {
         Ok(m) => m.len() != bytes.len() as u64,
@@ -36,6 +45,7 @@ fn write_if_missing_or_size_mismatch(path: &Path, bytes: &[u8]) -> io::Result<()
 #[cfg(windows)]
 fn load_library_from(path: &Path) -> Result<(), String> {
     use std::ffi::OsStr;
+    #[cfg(target_os = "windows")]
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::System::LibraryLoader::LoadLibraryW;
     use windows::core::PCWSTR;
@@ -58,6 +68,7 @@ fn load_library_from(path: &Path) -> Result<(), String> {
 
 /// Ensures EasyTier runtime dependencies (wintun, windivert) are embedded and available on disk,
 /// and preloads wintun.dll so embedded EasyTier can create a virtual NIC reliably.
+#[cfg(target_os = "windows")]
 pub fn ensure_easytier_runtime_ready() -> Result<(), String> {
     EASYTIER_RUNTIME_INIT
         .get_or_init(|| {
@@ -87,4 +98,9 @@ pub fn ensure_easytier_runtime_ready() -> Result<(), String> {
             Ok(())
         })
         .clone()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn ensure_easytier_runtime_ready() -> Result<(), String> {
+    Ok(())
 }

@@ -13,7 +13,7 @@ pub struct DownloadUiPrefs {
 }
 
 fn prefs_path() -> PathBuf {
-    file_ops::bmcbl_subdir("cache").join("download_ui_prefs.json")
+    file_ops::cache_subdir("download_ui_prefs.json")
 }
 
 pub fn load_download_ui_prefs() -> Option<DownloadUiPrefs> {

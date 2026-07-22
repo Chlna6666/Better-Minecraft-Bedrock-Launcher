@@ -31,11 +31,11 @@ pub(super) fn clear_config_cache_for_test() -> std::sync::MutexGuard<'static, ()
 }
 
 pub fn get_config_file_path() -> PathBuf {
-    file_ops::bmcbl_subdir("config").join("settings.toml")
+    file_ops::config_dir().join("settings.toml")
 }
 
 pub fn ensure_config_dir() -> io::Result<()> {
-    let config_dir = file_ops::bmcbl_subdir("config");
+    let config_dir = file_ops::config_dir();
     if !config_dir.exists() {
         fs::create_dir_all(&config_dir)?;
     }

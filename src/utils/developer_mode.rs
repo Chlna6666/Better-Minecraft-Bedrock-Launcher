@@ -1,3 +1,4 @@
+#![cfg(target_os = "windows")]
 use std::io;
 use std::mem::size_of;
 
@@ -9,6 +10,7 @@ use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 use windows::core::{HSTRING, PCWSTR};
+#[cfg(target_os = "windows")]
 use winreg::RegKey;
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 

@@ -54,7 +54,17 @@ impl MemoryStats {
 
     #[cfg(not(windows))]
     pub fn refresh(&mut self) {
-        // 非 Windows 平台暂不实现
+        let system = sysinfo::System::new_all();
+        let Ok(process_id) = sysinfo::get_current_pid() else {
+            return;
+        };
+        let Some(process) = system.process(process_id) else {
+            return;
+        };
+
+        self.working_set_kb = process.memory() / 1024;
+        self.private_kb = self.working_set_kb;
+        self.peak_working_set_kb = self.peak_working_set_kb.max(self.working_set_kb);
     }
 }
 
@@ -126,8 +136,9 @@ pub fn empty_working_set() -> MemoryStats {
 
 #[cfg(not(windows))]
 pub fn empty_working_set() -> MemoryStats {
-    // 非 Windows 平台暂不实现
-    MemoryStats::new()
+    let mut stats = MemoryStats::new();
+    stats.refresh();
+    stats
 }
 
 /// 尝试触发一次显式内存整理。

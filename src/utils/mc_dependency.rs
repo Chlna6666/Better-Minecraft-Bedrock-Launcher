@@ -1,3 +1,4 @@
+#![cfg(target_os = "windows")]
 use std::cmp::Ordering;
 use std::env;
 use std::path::{Path, PathBuf};

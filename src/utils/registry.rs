@@ -1,7 +1,9 @@
+#![cfg(target_os = "windows")]
 // src-tauri/src/utils/registry.rs
 use std::env;
 use tracing::{debug, error, info, warn};
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+#[cfg(target_os = "windows")]
 use winreg::RegKey;
 use winreg::enums::*;
 

@@ -66,9 +66,14 @@ impl AppBootstrap {
 
 fn renderer_backend_from_config(renderer_backend: &str) -> gpui::RendererBackend {
     let normalized = crate::config::config::normalize_renderer_backend(renderer_backend);
-    normalized
+    let configured = normalized
         .parse::<gpui::RendererBackend>()
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    match configured {
+        gpui::RendererBackend::Auto => gpui::RendererBackend::platform_default(),
+        backend => backend,
+    }
 }
 
 async fn gpu_adapter_name_from_config(
@@ -156,6 +161,7 @@ impl Global for AppSubscriptions {}
 #[cfg(windows)]
 fn configure_platform_app_identity() {
     use std::ffi::OsStr;
+    #[cfg(target_os = "windows")]
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::core::PCWSTR;
@@ -287,6 +293,9 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::views::download::state::DownloadPageState>();
     cx.default_global::<crate::ui::state::local_versions::LocalVersionsState>();
     cx.default_global::<crate::ui::state::launcher::LauncherState>();
+    #[cfg(target_os = "linux")]
+    cx.default_global::<crate::ui::state::linux_runtime::LinuxRuntimeState>();
+    #[cfg(target_os = "windows")]
     cx.default_global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
     cx.default_global::<crate::ui::views::manage::state::ManagePageState>();
     cx.default_global::<crate::ui::views::tools::state::ToolsPageState>();
@@ -549,6 +558,12 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
             appears_transparent: true,
             ..Default::default()
         });
+        options.window_background = WindowBackgroundAppearance::Transparent;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        options.window_decorations = Some(WindowDecorations::Client);
         options.window_background = WindowBackgroundAppearance::Transparent;
     }
 

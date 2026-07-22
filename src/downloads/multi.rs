@@ -376,6 +376,7 @@ async fn prepare_direct_output(dest: &Path) -> Result<(), CoreError> {
 
 #[cfg(windows)]
 fn write_all_at(file: &StdFile, mut offset: u64, mut buffer: &[u8]) -> io::Result<()> {
+    #[cfg(target_os = "windows")]
     use std::os::windows::fs::FileExt as _;
 
     while !buffer.is_empty() {

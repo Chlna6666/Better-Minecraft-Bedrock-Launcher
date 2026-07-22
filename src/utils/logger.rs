@@ -365,7 +365,7 @@ pub fn log(level: &str, message: &str) {
 
 // 初始化日志系统
 pub fn init_logging(debug_enabled: bool) {
-    let logs_dir: PathBuf = file_ops::bmcbl_subdir("logs");
+    let logs_dir: PathBuf = file_ops::logs_dir();
     let latest_log_file = logs_dir.join("latest.log");
     let daily_log_file = logs_dir.join(format!("{}.log", Local::now().format("%Y-%m-%d")));
     let _ = LATEST_LOG_PATH.set(latest_log_file.clone());

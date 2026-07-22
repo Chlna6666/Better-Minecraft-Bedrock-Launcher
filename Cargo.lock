@@ -313,6 +313,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.1",
  "serde",
+ "serde_repr",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",

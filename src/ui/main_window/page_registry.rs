@@ -145,12 +145,19 @@ impl MainWindowView {
                     cx.notify();
                 }
             }));
+        #[cfg(target_os = "windows")]
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::state::launch_prereq::LaunchPrereqState>(|_this, cx| {
                 let state = cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
                 if state.visible || state.is_busy() {
                     cx.notify();
                 }
+            }),
+        );
+        #[cfg(target_os = "linux")]
+        self._reactor_subscriptions.push(
+            cx.observe_global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(|_this, cx| {
+                cx.notify();
             }),
         );
         self._reactor_subscriptions
@@ -652,6 +659,8 @@ impl MainWindowView {
             Self::cache_agreement_document(cx);
         }
         this.schedule_startup_deferred_work(startup_check_updates, cx);
+        #[cfg(target_os = "linux")]
+        crate::ui::hooks::use_linux_runtime::start_startup_check(cx);
 
         this
     }

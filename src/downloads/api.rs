@@ -51,7 +51,7 @@ fn remove_download_temp(dest: &Path) {
 }
 
 fn downloads_dir() -> PathBuf {
-    file_ops::bmcbl_subdir("downloads")
+    file_ops::downloads_dir()
 }
 
 async fn local_file_ok(dest: &Path, md5: &Option<String>) -> bool {
@@ -361,6 +361,9 @@ pub async fn download_resource_to_cache(
     let client =
         get_download_client_for_proxy().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
 
+    #[cfg(target_os = "linux")]
+    let cache_dir = file_ops::cache_subdir("resource-downloads");
+    #[cfg(not(target_os = "linux"))]
     let cache_dir = std::env::temp_dir().join("BMCBL").join("cache_downloads");
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
     let safe_name = sanitize_filename(&file_name);

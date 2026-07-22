@@ -174,7 +174,9 @@ struct MainWindowRenderModel {
     update_modal_animating: bool,
     diagnostics_visible: bool,
     launcher_snapshot: crate::ui::hooks::use_launcher::LauncherSnapshot,
+    #[cfg(target_os = "windows")]
     launch_prereq_visible: bool,
+    #[cfg(target_os = "windows")]
     launch_prereq_busy_deadline: Option<Instant>,
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
@@ -353,6 +355,7 @@ impl MainWindowView {
             .pending_report
             .is_some();
         let launcher_snapshot = crate::ui::hooks::use_launcher::read_launcher_snapshot(now, cx);
+        #[cfg(target_os = "windows")]
         let (launch_prereq_visible, launch_prereq_busy_deadline) = {
             let launch_prereq_state =
                 cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
@@ -398,7 +401,9 @@ impl MainWindowView {
             update_modal_animating,
             diagnostics_visible,
             launcher_snapshot,
+            #[cfg(target_os = "windows")]
             launch_prereq_visible,
+            #[cfg(target_os = "windows")]
             launch_prereq_busy_deadline,
             toast_visible,
             toast_breadcrumb_visible,
@@ -650,6 +655,19 @@ impl MainWindowView {
         }
 
         if !model.agreement_render_state.visible {
+            #[cfg(target_os = "linux")]
+            if cx
+                .global::<crate::ui::state::linux_runtime::LinuxRuntimeState>()
+                .visible
+            {
+                root = root.child(
+                    crate::ui::overlays::linux_runtime::render_linux_runtime_overlay(
+                        cx.global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(),
+                        &model.theme_colors,
+                    ),
+                );
+            }
+
             if model.launcher_snapshot.show_modal {
                 root = root.child(crate::ui::overlays::launcher::render_launcher_overlay(
                     &model.launcher_snapshot,
@@ -658,6 +676,7 @@ impl MainWindowView {
                 ));
             }
 
+            #[cfg(target_os = "windows")]
             if model.launch_prereq_visible {
                 if let Some(deadline) = model.launch_prereq_busy_deadline {
                     window.request_invalidation_at(deadline, cx);
@@ -729,6 +748,16 @@ impl MainWindowView {
                 window,
                 cx,
             ));
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Decorations::Client { tiling } = window.window_decorations() {
+            if tiling.is_tiled() {
+                window.set_client_inset(px(0.));
+            } else {
+                window.set_client_inset(px(6.));
+                root = root.rounded(px(14.)).overflow_hidden();
+            }
         }
         root
     }
@@ -1190,7 +1219,7 @@ impl MainWindowView {
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
         cx.spawn(async move |_this, cx| {
-            let dir = crate::utils::file_ops::bmcbl_subdir("downloads");
+            let dir = crate::utils::file_ops::downloads_dir();
             let set = tokio::task::spawn_blocking(move || {
                 let mut out = std::collections::HashSet::new();
                 if let Ok(rd) = std::fs::read_dir(dir) {

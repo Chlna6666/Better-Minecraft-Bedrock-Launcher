@@ -1306,7 +1306,7 @@ fn open_game_dialog(window: &mut Window, cx: &mut App, dialog: GameDialogState) 
 }
 
 fn local_game_file_path(file_name: &SharedString) -> SharedString {
-    let path = file_ops::bmcbl_subdir("downloads").join(file_name.as_ref());
+    let path = file_ops::downloads_dir().join(file_name.as_ref());
     SharedString::from(path.to_string_lossy().to_string())
 }
 

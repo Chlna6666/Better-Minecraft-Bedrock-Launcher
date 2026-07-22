@@ -14,6 +14,7 @@ use uuid::Uuid; // [新增] 引入 Tokio Handle
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
+#[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
 
 use crate::tasks::task_manager::{

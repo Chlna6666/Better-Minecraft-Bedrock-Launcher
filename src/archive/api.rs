@@ -1,7 +1,10 @@
 use crate::archive::runtime::spawn_archive_task;
 use crate::archive::zip::extract_zip;
 use crate::config::config::read_config;
+#[cfg(target_os = "windows")]
 use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest};
+#[cfg(target_os = "linux")]
+use crate::core::minecraft::appx_utils::{get_manifest_identity, patch_manifest};
 use crate::core::minecraft::key_patcher::{PatchResult, patch_path};
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{

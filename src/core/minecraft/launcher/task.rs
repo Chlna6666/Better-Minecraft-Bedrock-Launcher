@@ -1,3 +1,4 @@
+#![cfg(target_os = "windows")]
 use crate::config::config::read_config;
 use crate::core::inject::inject::{
     grant_all_application_packages_access, inject_existing_process, launch_win32_with_injection,

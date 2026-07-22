@@ -1,3 +1,4 @@
+#![cfg(target_os = "windows")]
 use std::io;
 use tracing::{error, info};
 use windows::Foundation::Uri;

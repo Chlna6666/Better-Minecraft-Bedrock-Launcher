@@ -1,3 +1,4 @@
+#![cfg(target_os = "windows")]
 use tracing::{debug, error, info, warn};
 use windows::Management::Deployment::{DeploymentResult, PackageManager, RemovalOptions};
 use windows::core::{Error as WinError, HRESULT, HSTRING, Result as WinResult};

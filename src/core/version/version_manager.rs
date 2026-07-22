@@ -1,4 +1,10 @@
+#[cfg(target_os = "windows")]
 use crate::core::minecraft::appx::utils::{
+    find_any_game_executable_in_dir, get_executable_product_version,
+    get_manifest_identity_from_dir_blocking,
+};
+#[cfg(target_os = "linux")]
+use crate::core::minecraft::appx_utils::{
     find_any_game_executable_in_dir, get_executable_product_version,
     get_manifest_identity_from_dir_blocking,
 };

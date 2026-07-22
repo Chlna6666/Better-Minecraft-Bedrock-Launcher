@@ -19,6 +19,7 @@ use crate::ui::hooks::use_local_versions::{
     ensure_local_versions_loaded, read_local_versions_snapshot,
 };
 use crate::ui::state::i18n::I18n;
+#[cfg(target_os = "windows")]
 use crate::ui::state::launch_prereq::LaunchPrereqState;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
@@ -65,15 +66,12 @@ impl ImportWindowView {
         cx: &mut Context<Self>,
     ) -> Self {
         ensure_local_versions_loaded(false, cx);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.observe_global::<LocalVersionsState>(|this, cx| {
                 this.sync_selected_folder(cx);
                 cx.notify();
             }),
             cx.observe_global::<ThemeState>(|_, cx| {
-                cx.notify();
-            }),
-            cx.observe_global::<LaunchPrereqState>(|_, cx| {
                 cx.notify();
             }),
             cx.observe_global::<LauncherState>(|_, cx| {
@@ -86,6 +84,10 @@ impl ImportWindowView {
                 cx.notify();
             }),
         ];
+        #[cfg(target_os = "windows")]
+        subscriptions.push(cx.observe_global::<LaunchPrereqState>(|_, cx| {
+            cx.notify();
+        }));
 
         let mut this = Self {
             window_id: None,
@@ -633,15 +635,18 @@ impl Render for ImportWindowView {
             ));
         }
 
-        let launch_prereq_state = cx.global::<LaunchPrereqState>();
-        if launch_prereq_state.visible {
-            root = root.child(
-                crate::ui::overlays::launch_prereq::render_launch_prereq_overlay(
-                    launch_prereq_state,
-                    window,
-                    cx,
-                ),
-            );
+        #[cfg(target_os = "windows")]
+        {
+            let launch_prereq_state = cx.global::<LaunchPrereqState>();
+            if launch_prereq_state.visible {
+                root = root.child(
+                    crate::ui::overlays::launch_prereq::render_launch_prereq_overlay(
+                        launch_prereq_state,
+                        window,
+                        cx,
+                    ),
+                );
+            }
         }
 
         let toast_state = cx.global::<toast::ToastState>();

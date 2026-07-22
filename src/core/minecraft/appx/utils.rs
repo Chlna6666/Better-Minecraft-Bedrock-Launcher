@@ -236,6 +236,7 @@ pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
 }
 
 /// 获取包信息
+#[cfg(target_os = "windows")]
 pub fn get_package_info(
     app_user_model_id: &str,
 ) -> windows::core::Result<Option<(String, String, String)>> {

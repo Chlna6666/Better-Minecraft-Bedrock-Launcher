@@ -14,8 +14,8 @@ const SESSION_FILE: &str = "session.json";
 const PENDING_REPORT_FILE: &str = "pending-report.json";
 const CRASH_SIGNAL_FILE: &str = "crash-signal.json";
 const REPORT_ARCHIVE_DIR: &str = "archive";
-const LATEST_LOG_FILE: &str = "logs/latest.log";
-const PREVIOUS_LOG_FILE: &str = "logs/previous.log";
+const LATEST_LOG_FILE: &str = "latest.log";
+const PREVIOUS_LOG_FILE: &str = "previous.log";
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
 const MAX_SUMMARY_LEN: usize = 240;
 const GITHUB_ISSUE_BASE_URL: &str =
@@ -515,7 +515,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 fn diagnostics_dir() -> PathBuf {
-    file_ops::bmcbl_subdir(REPORTS_DIR)
+    file_ops::state_subdir(REPORTS_DIR)
 }
 
 fn session_marker_path() -> PathBuf {
@@ -531,11 +531,11 @@ fn crash_signal_path() -> PathBuf {
 }
 
 fn latest_log_path() -> PathBuf {
-    file_ops::bmcbl_subdir(LATEST_LOG_FILE)
+    file_ops::logs_dir().join(LATEST_LOG_FILE)
 }
 
 fn previous_log_path() -> PathBuf {
-    file_ops::bmcbl_subdir(PREVIOUS_LOG_FILE)
+    file_ops::logs_dir().join(PREVIOUS_LOG_FILE)
 }
 
 fn read_sanitized_log_tail(path: &Path) -> Result<String> {

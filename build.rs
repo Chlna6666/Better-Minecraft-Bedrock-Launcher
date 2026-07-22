@@ -993,20 +993,21 @@ fn main() {
         &release_key_path,
         RELEASE_CIK_GUID_BYTES_LE_HEX,
     )
-    .unwrap_or_else(|error| panic!("failed to resolve release CIK: {error}"));
+    .ok();
     let preview_code = load_key_hex(
         "GDK_PREVIEW_KEY",
         &preview_key_path,
         PREVIEW_CIK_GUID_BYTES_LE_HEX,
     )
-    .unwrap_or_else(|error| panic!("failed to resolve preview CIK: {error}"));
+    .ok();
 
     let secrets_content = format!(
         r#"
-pub const RELEASE_KEY_HEX: Option<&'static str> = Some("{}");
-pub const PREVIEW_KEY_HEX: Option<&'static str> = Some("{}");
+pub const RELEASE_KEY_HEX: Option<&'static str> = {};
+pub const PREVIEW_KEY_HEX: Option<&'static str> = {};
 "#,
-        release_code, preview_code
+        release_code.map_or("None".to_string(), |v| format!("Some(\"{v}\")")),
+        preview_code.map_or("None".to_string(), |v| format!("Some(\"{v}\")")),
     );
 
     fs::write(&dest_path, secrets_content).expect("write secrets.rs");

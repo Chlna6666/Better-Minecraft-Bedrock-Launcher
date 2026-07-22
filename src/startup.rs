@@ -11,6 +11,7 @@ const SINGLE_INSTANCE_MUTEX_NAME: &str = "Global\\com.bmcbl.app.single_instance"
 #[cfg(windows)]
 fn bring_main_window_to_foreground() {
     use std::ffi::OsStr;
+    #[cfg(target_os = "windows")]
     use std::os::windows::ffi::OsStrExt;
     use tracing::warn;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -57,6 +58,7 @@ impl Drop for SingleInstanceGuard {
 #[cfg(windows)]
 fn check_single_instance() -> Option<bool> {
     use std::ffi::OsStr;
+    #[cfg(target_os = "windows")]
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
     use windows::Win32::System::Threading::CreateMutexW;
@@ -189,6 +191,7 @@ fn spawn_noncritical_startup_work() {
                 error!(?error, "failed to mark diagnostics session as started");
             }
             crate::utils::updater_child::clean_old_versions();
+            #[cfg(target_os = "windows")]
             crate::utils::registry::register_file_associations();
             log_system_info();
         });

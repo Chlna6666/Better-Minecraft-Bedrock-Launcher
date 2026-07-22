@@ -60,8 +60,8 @@ pub struct DebugView {
 
 impl DebugView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let log_path = file_ops::bmcbl_subdir("logs").join("latest.log");
-        let stall_log_path = file_ops::bmcbl_subdir("logs").join("ui_foreground_stall.log");
+        let log_path = file_ops::logs_dir().join("latest.log");
+        let stall_log_path = file_ops::logs_dir().join("ui_foreground_stall.log");
         record_debug_window_metrics(window);
         let subscriptions = vec![cx.observe_window_bounds(window, |_, window, _cx| {
             record_debug_window_metrics(window);
@@ -1247,7 +1247,7 @@ impl Render for DebugView {
                     ),
             );
 
-        let logs_dir = file_ops::bmcbl_subdir("logs");
+        let logs_dir = file_ops::logs_dir();
         let latest_log_path = logs_dir.join("latest.log");
         let stall_log_path = logs_dir.join("ui_foreground_stall.log");
         let overview = (self.tab == DebugTab::Overview).then(|| {
@@ -1416,7 +1416,7 @@ impl Render for DebugView {
                                         action_button("debug-open-log-dir", copy.open_logs)
                                             .on_click(cx.listener(move |_, _, _, cx| {
                                                 open_path_in_background(
-                                                    file_ops::bmcbl_subdir("logs"),
+                                                    file_ops::logs_dir(),
                                                     SharedString::from(format!(
                                                         "{}: {}",
                                                         copy.opened, copy.open_logs
@@ -2890,11 +2890,10 @@ impl Render for DebugView {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         let path = match this.console_source {
                                             ConsoleSource::LatestLog => {
-                                                file_ops::bmcbl_subdir("logs").join("latest.log")
+                                                file_ops::logs_dir().join("latest.log")
                                             }
                                             ConsoleSource::StallWatch => {
-                                                file_ops::bmcbl_subdir("logs")
-                                                    .join("ui_foreground_stall.log")
+                                                file_ops::logs_dir().join("ui_foreground_stall.log")
                                             }
                                         };
                                         open_path_in_background(

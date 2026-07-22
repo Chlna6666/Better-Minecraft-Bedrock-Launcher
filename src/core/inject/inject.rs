@@ -1,6 +1,8 @@
+#![cfg(target_os = "windows")]
 use anyhow::{Context, Result, anyhow};
 use std::ffi::OsStr;
 use std::mem;
+#[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::process::Command;

@@ -120,7 +120,7 @@ fn stage_update_file(src: &Path, dst: &Path) -> Result<PathBuf> {
 }
 
 pub fn clean_old_versions() {
-    let downloads_dir = crate::utils::file_ops::bmcbl_subdir("downloads");
+    let downloads_dir = crate::utils::file_ops::downloads_dir();
     if !downloads_dir.exists() {
         return;
     }

@@ -1,4 +1,8 @@
+#[cfg(target_os = "windows")]
 pub mod appx;
+#[cfg(target_os = "linux")]
+#[path = "appx/utils.rs"]
+pub mod appx_utils;
 pub mod assets;
 pub mod entity_avatar;
 pub mod gdk;
@@ -8,6 +12,7 @@ pub mod launcher;
 pub mod map;
 pub mod map_info_cache;
 pub mod mod_manager;
+#[cfg(target_os = "windows")]
 pub mod mouse_lock;
 pub mod nbt;
 pub mod paths;
@@ -17,4 +22,5 @@ pub mod screenshots;
 pub mod servers;
 pub(crate) mod skin_pack_preview;
 pub mod skin_packs;
+#[cfg(target_os = "windows")]
 pub mod uwp_minimize_fix;

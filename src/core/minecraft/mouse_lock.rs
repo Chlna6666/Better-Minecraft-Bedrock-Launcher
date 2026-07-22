@@ -1,3 +1,4 @@
+#![cfg(target_os = "windows")]
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;

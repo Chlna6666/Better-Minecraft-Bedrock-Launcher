@@ -1,5 +1,6 @@
 pub mod app_info;
 pub mod cloudflare;
+#[cfg(target_os = "windows")]
 pub mod developer_mode;
 pub mod diagnostics;
 pub mod file_ops;
@@ -7,12 +8,15 @@ pub mod file_picker;
 pub mod font_settings;
 pub mod format_bytes;
 pub mod logger;
+#[cfg(target_os = "windows")]
 pub mod mc_dependency;
 pub mod memory;
 pub mod memory_diagnostics;
 pub mod network;
 pub mod open_path;
+#[cfg(target_os = "windows")]
 pub mod registry;
+#[cfg(target_os = "windows")]
 pub mod single_instance;
 pub mod stats;
 pub mod system_info;

@@ -132,7 +132,14 @@ pub(crate) async fn load_sponsors() -> Result<Vec<SponsorRecord>, String> {
 }
 
 fn sponsor_avatar_cache_dir() -> PathBuf {
-    std::env::temp_dir().join(SPONSOR_AVATAR_CACHE_DIR_NAME)
+    #[cfg(target_os = "linux")]
+    {
+        crate::utils::file_ops::cache_subdir(SPONSOR_AVATAR_CACHE_DIR_NAME)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::temp_dir().join(SPONSOR_AVATAR_CACHE_DIR_NAME)
+    }
 }
 
 fn sanitize_filename(input: &str) -> String {

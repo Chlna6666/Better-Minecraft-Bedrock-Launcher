@@ -1770,9 +1770,14 @@ fn extract_archive_parallel(file_path: &Path, dest_root: &Path) -> Result<()> {
 // ================================
 
 fn bmcbl_cache_base_dir() -> PathBuf {
-    // “系统缓存”这里用 std::env::temp_dir()：跨平台且无需额外依赖。
-    // 最终路径类似：%TEMP%/BMCBL/ 或 /tmp/BMCBL/
-    std::env::temp_dir().join("BMCBL")
+    #[cfg(target_os = "linux")]
+    {
+        crate::utils::file_ops::cache_subdir("imports")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::temp_dir().join("BMCBL")
+    }
 }
 
 fn create_bmcbl_cache_workdir(purpose: &str) -> Result<PathBuf> {

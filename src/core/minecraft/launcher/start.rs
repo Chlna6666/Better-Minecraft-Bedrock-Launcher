@@ -1,4 +1,6 @@
+#![cfg(target_os = "windows")]
 use std::io;
+#[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt; // [新增] 引入 CommandExt 以支持 creation_flags
 use std::path::{Path, PathBuf};
 use std::process::Command;

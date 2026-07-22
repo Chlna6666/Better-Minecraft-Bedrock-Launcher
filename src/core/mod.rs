@@ -1,6 +1,8 @@
 pub mod curseforge;
 pub mod easytier;
 pub mod inject;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_runtime;
 pub mod minecraft;
 #[path = "online/online.rs"]
 pub mod online;
