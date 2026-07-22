@@ -70,6 +70,16 @@ pub fn pick_file_path_with_filter(filter_name: &str, extensions: &[&str]) -> Opt
     file.map(|path| path.to_string_lossy().to_string())
 }
 
+/// Open a native directory picker and return the selected directory path.
+pub fn pick_directory_path_for_window(window: &Window) -> Option<String> {
+    let _dialog_guard = try_open_native_file_dialog()?;
+    window.activate_window();
+    rfd::FileDialog::new()
+        .set_parent(window)
+        .pick_folder()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
 /// Open a parent-owned native file picker, suppressing repeated dialog requests.
 pub fn pick_file_path_with_filter_for_window(
     window: &Window,

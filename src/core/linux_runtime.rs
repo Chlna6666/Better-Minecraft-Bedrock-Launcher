@@ -1,16 +1,83 @@
 use crate::tasks::task_manager::{
     append_task_log, create_task_with_details, finish_task, register_task_stage_labels,
+    set_task_message, update_progress,
 };
 use crate::utils::file_ops;
+use futures_util::StreamExt as _;
 use std::env;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tracing::{info, warn};
 
-const INSTALL_STAGE_LABELS: [(&str, &str); 1] = [("installing_linux_runtime", "安装兼容环境")];
+const INSTALL_STAGE_LABELS: [(&str, &str); 2] = [
+    ("awaiting_linux_authorization", "等待管理员授权"),
+    ("installing_linux_packages", "安装兼容环境依赖"),
+];
+
+pub(crate) const PROTON_GDK_RELEASE_SOURCES: [&str; 2] =
+    ["Weather-OS/GDK-Proton", "LukasPAH/GDK-Proton-Custom"];
+
+const PROTON_GDK_INSTALL_STAGE_LABELS: [(&str, &str); 3] = [
+    ("resolving_proton_gdk", "获取 Proton-GDK 版本"),
+    ("downloading_proton_gdk", "下载 Proton-GDK"),
+    ("extracting_proton_gdk", "安装 Proton-GDK"),
+];
+
+#[derive(Debug, serde::Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    name: Option<String>,
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProtonGdkSource {
+    WeatherOs,
+    LukasPah,
+}
+
+impl ProtonGdkSource {
+    pub(crate) fn from_config(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("lukaspah") {
+            Self::LukasPah
+        } else {
+            Self::WeatherOs
+        }
+    }
+
+    pub(crate) fn config_value(self) -> &'static str {
+        match self {
+            Self::WeatherOs => "weather-os",
+            Self::LukasPah => "lukaspah",
+        }
+    }
+
+    pub(crate) fn repository(self) -> &'static str {
+        match self {
+            Self::WeatherOs => "Weather-OS/GDK-Proton",
+            Self::LukasPah => "LukasPAH/GDK-Proton-Custom",
+        }
+    }
+
+    fn latest_release_api(self) -> &'static str {
+        match self {
+            Self::WeatherOs => "https://api.github.com/repos/Weather-OS/GDK-Proton/releases/latest",
+            Self::LukasPah => {
+                "https://api.github.com/repos/LukasPAH/GDK-Proton-Custom/releases/latest"
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RunnerKind {
@@ -78,66 +145,312 @@ struct OsRelease {
 }
 
 pub(crate) fn check_linux_runtime() -> LinuxRuntimeCheck {
-    match resolve_runner() {
-        Ok(runner) => LinuxRuntimeCheck {
-            distribution_name: detect_os_release().pretty_name.into(),
-            runner: Some(runner),
-            missing_reason: None,
-            install_plan: None,
-            manual_install_hint: Arc::from(""),
-        },
-        Err(reason) => {
-            let os_release = detect_os_release();
-            let distribution_name: Arc<str> = if os_release.pretty_name.is_empty() {
-                Arc::from("未知 Linux 发行版")
-            } else {
-                Arc::from(os_release.pretty_name.as_str())
-            };
-            let install_plan = build_install_plan(&os_release, distribution_name.clone());
-            let manual_install_hint = if install_plan.is_some() {
-                Arc::from("也可以自行安装 Proton 或 Wine，然后重新检测。")
-            } else {
-                Arc::from(
-                    "当前发行版没有可用的自动安装方案，请使用系统包管理器安装 Proton 或 Wine。",
-                )
-            };
-            LinuxRuntimeCheck {
-                runner: None,
-                missing_reason: Some(Arc::from(reason)),
+    let os_release = detect_os_release();
+    let distribution_name: Arc<str> = if os_release.pretty_name.is_empty() {
+        Arc::from("未知 Linux 发行版")
+    } else {
+        Arc::from(os_release.pretty_name.as_str())
+    };
+    match resolve_proton_runner() {
+        Ok(runner) => match validate_proton_game_runtime(&runner) {
+            Ok(()) => LinuxRuntimeCheck {
                 distribution_name,
-                install_plan,
-                manual_install_hint,
+                runner: Some(runner),
+                missing_reason: None,
+                install_plan: None,
+                manual_install_hint: Arc::from(""),
+            },
+            Err(reason) => {
+                let missing_i386_loader = reason.contains("/lib/ld-linux.so.2");
+                LinuxRuntimeCheck {
+                    runner: None,
+                    missing_reason: Some(Arc::from(reason)),
+                    install_plan: missing_i386_loader
+                        .then(|| {
+                            build_proton_host_dependencies_plan(
+                                &os_release,
+                                distribution_name.clone(),
+                            )
+                        })
+                        .flatten(),
+                    distribution_name,
+                    manual_install_hint: if missing_i386_loader {
+                        Arc::from(
+                            "GDK-Proton 的游戏 runner 需要 32 位 glibc。可授权系统包管理器安装，或手动安装后重新检测。",
+                        )
+                    } else {
+                        Arc::from(
+                            "请前往 Proton-GDK 设置页安装并选择 LukasPAH Custom 版本，不要为此错误授权安装系统软件包。",
+                        )
+                    },
+                }
+            }
+        },
+        Err(reason) => LinuxRuntimeCheck {
+            runner: None,
+            missing_reason: Some(Arc::from(reason)),
+            distribution_name,
+            install_plan: None,
+            manual_install_hint: Arc::from(
+                "请前往 Proton-GDK 设置页安装或管理运行环境；安装过程不需要管理员权限。",
+            ),
+        },
+    }
+}
+
+pub(crate) fn validate_proton_game_runtime(runner: &Runner) -> Result<(), String> {
+    if runner.kind != RunnerKind::Proton {
+        return Ok(());
+    }
+    let Some(proton_root) = runner.executable.parent() else {
+        return Ok(());
+    };
+    if proton_root.join("files/bin/wine").is_file() && !Path::new("/lib/ld-linux.so.2").is_file() {
+        return Err(
+            "已安装 Proton-GDK，但系统缺少 32 位 glibc 加载器 /lib/ld-linux.so.2；Minecraft GDK 不能使用简化的 WoW64 模式启动"
+                .to_string(),
+        );
+    }
+    let combase = [
+        proton_root.join("files/lib/wine/x86_64-windows/combase.dll"),
+        proton_root.join("files/lib64/wine/x86_64-windows/combase.dll"),
+        proton_root.join("files/share/default_pfx/drive_c/windows/system32/combase.dll"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+    .ok_or_else(|| {
+        format!(
+            "所选 Proton-GDK 不完整：{} 中没有找到 64 位 combase.dll",
+            proton_root.display()
+        )
+    })?;
+    let combase_binary = std::fs::read(&combase)
+        .map_err(|error| format!("无法检查 Proton-GDK 兼容性 {}：{error}", combase.display()))?;
+    if binary_has_unimplemented_ro_originate_error(&combase_binary) {
+        return Err(
+            "所选 Proton-GDK 不支持当前 Minecraft：combase.dll 中 RoOriginateErrorW 仍是未实现的 Wine stub。请在 Proton-GDK 设置中将下载源切换为 LukasPAH Custom，安装并选中 Custom 版本后重试"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn binary_has_unimplemented_ro_originate_error(binary: &[u8]) -> bool {
+    const STUB_SYMBOL: &[u8] = b"__wine_stub_RoOriginateErrorW";
+    binary
+        .windows(STUB_SYMBOL.len())
+        .any(|window| window == STUB_SYMBOL)
+}
+
+pub(crate) fn resolve_proton_runner() -> Result<Runner, String> {
+    let runner = resolve_runner()?;
+    if runner.kind == RunnerKind::Proton {
+        Ok(runner)
+    } else {
+        Err("已检测到 Wine，但 Minecraft UWP/GDK 版本需要 Proton".to_string())
+    }
+}
+
+pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String {
+    register_task_stage_labels(PROTON_GDK_INSTALL_STAGE_LABELS);
+    let task_id = create_task_with_details(
+        None,
+        "安装 Proton-GDK",
+        Some(format!("{} · latest", source.repository())),
+        "resolving_proton_gdk",
+        None,
+        false,
+    );
+    append_task_log(
+        &task_id,
+        format!("正在获取 {} 最新版本", source.repository()),
+    );
+    set_task_message(&task_id, Some("正在获取可安装版本".to_string()));
+
+    let worker_task_id = task_id.clone();
+    tokio::spawn(async move {
+        match install_latest_proton_gdk(source, &worker_task_id).await {
+            Ok(install_path) => finish_task(
+                &worker_task_id,
+                "completed",
+                Some(format!("Proton-GDK 已安装到 {}", install_path.display())),
+            ),
+            Err(error) => {
+                append_task_log(&worker_task_id, format!("安装失败：{error}"));
+                finish_task(&worker_task_id, "error", Some(error));
             }
         }
+    });
+    task_id
+}
+
+async fn install_latest_proton_gdk(
+    source: ProtonGdkSource,
+    task_id: &str,
+) -> Result<PathBuf, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("BMCBL-Proton-GDK")
+        .build()
+        .map_err(|error| format!("创建 GitHub 客户端失败：{error}"))?;
+    let release = client
+        .get(source.latest_release_api())
+        .send()
+        .await
+        .map_err(|error| format!("获取 Proton-GDK 版本失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("GitHub 返回错误：{error}"))?
+        .json::<GithubRelease>()
+        .await
+        .map_err(|error| format!("解析 Proton-GDK 版本失败：{error}"))?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| {
+            let name = asset.name.to_ascii_lowercase();
+            name.contains("proton") && (name.ends_with(".tar.gz") || name.ends_with(".tgz"))
+        })
+        .ok_or_else(|| "最新版本没有可安装的 Proton-GDK tar.gz 资源".to_string())?;
+    let version_name = sanitize_instance_name(
+        release
+            .name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(&release.tag_name),
+    );
+    let download_dir = file_ops::downloads_dir().join("proton-gdk");
+    tokio::fs::create_dir_all(&download_dir)
+        .await
+        .map_err(|error| format!("创建 Proton-GDK 下载目录失败：{error}"))?;
+    let archive_path = download_dir.join(&asset.name);
+    download_proton_gdk_asset(&client, asset, &archive_path, task_id).await?;
+
+    let install_path = file_ops::runners_dir().join(version_name);
+    if install_path.exists() {
+        return Err(format!(
+            "该 Proton-GDK 版本已经安装：{}",
+            install_path.display()
+        ));
+    }
+    tokio::fs::create_dir_all(&install_path)
+        .await
+        .map_err(|error| format!("创建 Proton-GDK 安装目录失败：{error}"))?;
+    update_progress(task_id, 0, None, Some("extracting_proton_gdk"));
+    set_task_message(task_id, Some("正在解压 Proton-GDK".to_string()));
+    append_task_log(task_id, format!("解压到 {}", install_path.display()));
+    let output = tokio::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(&install_path)
+        .arg("--strip-components=1")
+        .output()
+        .await
+        .map_err(|error| format!("无法启动 tar：{error}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("解压 Proton-GDK 失败：{}", error.trim()));
+    }
+    let proton = install_path.join("proton");
+    if !proton.is_file() {
+        return Err(format!(
+            "安装包中没有 proton 可执行文件：{}",
+            proton.display()
+        ));
+    }
+    let mut permissions = tokio::fs::metadata(&proton)
+        .await
+        .map_err(|error| format!("读取 Proton-GDK 权限失败：{error}"))?
+        .permissions();
+    permissions.set_mode(permissions.mode() | 0o755);
+    tokio::fs::set_permissions(&proton, permissions)
+        .await
+        .map_err(|error| format!("设置 Proton-GDK 可执行权限失败：{error}"))?;
+    let selected_runner = proton.to_string_lossy().into_owned();
+    crate::config::config::update_config(|config| {
+        config.launcher.proton_gdk_runner = selected_runner.clone();
+        config.launcher.proton_gdk_source = source.config_value().to_string();
+    })
+    .map_err(|error| format!("保存 Proton-GDK 默认版本失败：{error}"))?;
+    Ok(install_path)
+}
+
+async fn download_proton_gdk_asset(
+    client: &reqwest::Client,
+    asset: &GithubReleaseAsset,
+    archive_path: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    update_progress(task_id, 0, Some(asset.size), Some("downloading_proton_gdk"));
+    set_task_message(task_id, Some(format!("正在下载 {}", asset.name)));
+    append_task_log(task_id, format!("下载：{}", asset.browser_download_url));
+    let response = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .map_err(|error| format!("下载 Proton-GDK 失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Proton-GDK 下载服务器返回错误：{error}"))?;
+    let temporary_path = archive_path.with_extension("download");
+    let mut file = tokio::fs::File::create(&temporary_path)
+        .await
+        .map_err(|error| format!("创建 Proton-GDK 下载文件失败：{error}"))?;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("读取 Proton-GDK 下载数据失败：{error}"))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| format!("写入 Proton-GDK 下载文件失败：{error}"))?;
+        update_progress(task_id, chunk.len() as u64, Some(asset.size), None);
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("保存 Proton-GDK 下载文件失败：{error}"))?;
+    drop(file);
+    tokio::fs::rename(&temporary_path, archive_path)
+        .await
+        .map_err(|error| format!("完成 Proton-GDK 下载失败：{error}"))?;
+    Ok(())
+}
+
+fn sanitize_instance_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches('-');
+    if sanitized.is_empty() {
+        "proton-gdk".to_string()
+    } else {
+        sanitized.to_string()
     }
 }
 
 pub(crate) fn resolve_runner() -> Result<Runner, String> {
-    if let Some(executable) = env::var_os("BMCBL_PROTON_RUNNER").map(PathBuf::from) {
+    if let Some(executable) = env::var_os("BMCBL_PROTON_GDK_RUNNER")
+        .or_else(|| env::var_os("BMCBL_PROTON_RUNNER"))
+        .map(PathBuf::from)
+    {
         return runner_from_explicit_path(executable);
+    }
+
+    if let Ok(config) = crate::config::config::read_config()
+        && !config.launcher.proton_gdk_runner.trim().is_empty()
+    {
+        return runner_from_explicit_path(PathBuf::from(config.launcher.proton_gdk_runner));
     }
 
     if let Some(runner) = find_managed_runner() {
         return Ok(runner);
     }
 
-    for steam_root in steam_roots() {
-        if let Some(executable) = find_steam_proton(&steam_root) {
-            return Ok(Runner {
-                executable,
-                kind: RunnerKind::Proton,
-                steam_root: Some(steam_root),
-            });
-        }
-    }
-
-    if let Some(executable) = find_in_path("proton") {
-        return Ok(Runner {
-            executable,
-            kind: RunnerKind::Proton,
-            steam_root: steam_roots().into_iter().next(),
-        });
-    }
+    // Do not fall back to stock Steam/system Proton. Bedrock UWP/GDK requires
+    // the patched Proton-GDK runner managed by BMCBL.
     if let Some(executable) = find_in_path("wine") {
         return Ok(Runner {
             executable,
@@ -146,20 +459,34 @@ pub(crate) fn resolve_runner() -> Result<Runner, String> {
         });
     }
 
-    Err(
-        "未找到 Proton 或 Wine。可安装兼容环境，或用 BMCBL_PROTON_RUNNER 指定可执行文件"
-            .to_string(),
-    )
+    Err("未找到 Proton-GDK。请安装 BedrockBoot 兼容的 GDK-Proton，或用 BMCBL_PROTON_GDK_RUNNER 指定 proton 可执行文件".to_string())
 }
 
-pub(crate) async fn install_linux_runtime(plan: LinuxInstallPlan) -> Result<(), String> {
+pub(crate) fn installed_proton_gdk_runners() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(file_ops::runners_dir()) else {
+        return Vec::new();
+    };
+    let mut runners = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let root = entry.path();
+            [root.join("proton"), root.join("bin").join("proton")]
+                .into_iter()
+                .find(|candidate| is_executable_file(candidate))
+        })
+        .collect::<Vec<_>>();
+    runners.sort();
+    runners
+}
+
+pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
     register_task_stage_labels(INSTALL_STAGE_LABELS);
     let command_preview = plan.command_preview();
     let task_id = create_task_with_details(
         None,
         "安装 Linux 兼容环境",
         Some(format!("{} · {}", plan.distribution_name, command_preview)),
-        "installing_linux_runtime",
+        "awaiting_linux_authorization",
         None,
         false,
     );
@@ -168,13 +495,21 @@ pub(crate) async fn install_linux_runtime(plan: LinuxInstallPlan) -> Result<(), 
         &task_id,
         "BMCBL 主进程保持普通用户权限，仅包管理器通过 pkexec 请求授权",
     );
+    set_task_message(&task_id, Some("等待系统授权窗口确认".to_string()));
 
-    let outcome = run_install_command(&plan, &task_id).await;
-    match &outcome {
-        Ok(()) => finish_task(&task_id, "completed", Some("兼容环境安装完成".to_string())),
-        Err(error) => finish_task(&task_id, "error", Some(error.clone())),
-    }
-    outcome
+    let task_id_for_task = task_id.clone();
+    tokio::spawn(async move {
+        let outcome = run_install_command(&plan, &task_id_for_task).await;
+        match outcome {
+            Ok(()) => finish_task(
+                &task_id_for_task,
+                "completed",
+                Some("兼容环境安装完成".to_string()),
+            ),
+            Err(error) => finish_task(&task_id_for_task, "error", Some(error)),
+        }
+    });
+    task_id
 }
 
 async fn run_install_command(plan: &LinuxInstallPlan, task_id: &str) -> Result<(), String> {
@@ -208,6 +543,8 @@ async fn run_install_command(plan: &LinuxInstallPlan, task_id: &str) -> Result<(
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动授权安装程序：{error}"))?;
+    update_progress(task_id, 0, None, Some("installing_linux_packages"));
+    set_task_message(task_id, Some("系统包管理器正在安装依赖".to_string()));
     let stdout_task = child
         .stdout
         .take()
@@ -256,6 +593,7 @@ where
                 Ok(Some(line)) => {
                     let stream = if is_error { "stderr" } else { "stdout" };
                     append_task_log(&task_id, format!("{stream}: {line}"));
+                    update_progress(&task_id, 0, None, None);
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -268,22 +606,22 @@ where
     })
 }
 
-fn build_install_plan(
+fn build_proton_host_dependencies_plan(
     os_release: &OsRelease,
     distribution_name: Arc<str>,
 ) -> Option<LinuxInstallPlan> {
     let authorization_program = find_program(&["pkexec"])?;
     let family = format!("{} {}", os_release.id, os_release.id_like).to_ascii_lowercase();
-    let packages: Arc<[Arc<str>]> = Arc::from([Arc::<str>::from("wine")]);
-    let (package_manager, arguments): (PathBuf, Arc<[Arc<str>]>) =
+    let (package_manager, arguments, packages): (PathBuf, Arc<[Arc<str>]>, Arc<[Arc<str>]>) =
         if contains_family(&family, &["fedora", "rhel", "centos", "rocky", "almalinux"]) {
             (
                 find_program(&["dnf5", "dnf"])?,
                 Arc::from([
                     Arc::<str>::from("-y"),
                     Arc::<str>::from("install"),
-                    Arc::<str>::from("wine"),
+                    Arc::<str>::from("glibc.i686"),
                 ]),
+                Arc::from([Arc::<str>::from("glibc.i686")]),
             )
         } else if contains_family(&family, &["debian", "ubuntu", "mint", "pop"]) {
             (
@@ -291,8 +629,9 @@ fn build_install_plan(
                 Arc::from([
                     Arc::<str>::from("-y"),
                     Arc::<str>::from("install"),
-                    Arc::<str>::from("wine"),
+                    Arc::<str>::from("libc6-i386"),
                 ]),
+                Arc::from([Arc::<str>::from("libc6-i386")]),
             )
         } else if contains_family(&family, &["arch", "manjaro", "endeavouros"]) {
             (
@@ -301,8 +640,9 @@ fn build_install_plan(
                     Arc::<str>::from("-S"),
                     Arc::<str>::from("--needed"),
                     Arc::<str>::from("--noconfirm"),
-                    Arc::<str>::from("wine"),
+                    Arc::<str>::from("lib32-glibc"),
                 ]),
+                Arc::from([Arc::<str>::from("lib32-glibc")]),
             )
         } else if contains_family(&family, &["suse", "opensuse"]) {
             (
@@ -310,8 +650,9 @@ fn build_install_plan(
                 Arc::from([
                     Arc::<str>::from("--non-interactive"),
                     Arc::<str>::from("install"),
-                    Arc::<str>::from("wine"),
+                    Arc::<str>::from("glibc-32bit"),
                 ]),
+                Arc::from([Arc::<str>::from("glibc-32bit")]),
             )
         } else {
             return None;
@@ -427,11 +768,16 @@ fn find_steam_proton(steam_root: &Path) -> Option<PathBuf> {
 }
 
 fn find_managed_runner() -> Option<Runner> {
-    let entries = std::fs::read_dir(file_ops::runners_dir()).ok()?;
+    let root = file_ops::runners_dir();
+    let entries = std::fs::read_dir(&root).ok()?;
     let mut proton_candidates = Vec::new();
     let mut wine_candidates = Vec::new();
     for runner_root in entries.filter_map(Result::ok).map(|entry| entry.path()) {
-        let proton = runner_root.join("proton");
+        let proton = if runner_root.join("proton").is_file() {
+            runner_root.join("proton")
+        } else {
+            runner_root.join("bin").join("proton")
+        };
         if is_executable_file(&proton) {
             proton_candidates.push(proton);
         }
@@ -478,7 +824,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_os_release;
+    use super::{binary_has_unimplemented_ro_originate_error, parse_os_release};
 
     #[test]
     fn parses_os_release_identity() {
@@ -489,5 +835,15 @@ mod tests {
         assert_eq!(release.id, "fedora");
         assert_eq!(release.id_like, "rhel centos");
         assert_eq!(release.pretty_name, "Fedora Linux 44");
+    }
+
+    #[test]
+    fn detects_unimplemented_ro_originate_error_export() {
+        assert!(binary_has_unimplemented_ro_originate_error(
+            b"prefix__wine_stub_RoOriginateErrorWsuffix"
+        ));
+        assert!(!binary_has_unimplemented_ro_originate_error(
+            b"RoOriginateErrorW"
+        ));
     }
 }

@@ -9,7 +9,8 @@ pub use super::defaults::{
 };
 use super::defaults::{
     default_config_version, default_error_report_sentry_enabled, default_music_volume,
-    default_renderer_backend, default_true, default_update_check_interval_minutes,
+    default_proton_gdk_source, default_renderer_backend, default_true,
+    default_update_check_interval_minutes,
 };
 
 pub(super) const CURRENT_CONFIG_VERSION: u32 = 1;
@@ -269,6 +270,12 @@ pub struct Launcher {
     pub check_on_start: bool,
     #[serde(default = "default_update_check_interval_minutes")]
     pub update_check_interval_minutes: u32,
+    #[cfg(target_os = "linux")]
+    #[serde(default = "default_proton_gdk_source")]
+    pub proton_gdk_source: String,
+    #[cfg(target_os = "linux")]
+    #[serde(default)]
+    pub proton_gdk_runner: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -298,9 +305,25 @@ pub fn normalize_renderer_backend(renderer_backend: &str) -> String {
         "" | "auto" | "default" => "auto".to_string(),
         "vk" | "vulkan" | "nova" | "blade" | "nova-vulkan" | "nova_vulkan" => "vulkan".to_string(),
         "dx12" | "directx" | "directx12" | "d3d12" | "nova-dx12" | "nova_dx12" => {
-            "dx12".to_string()
+            #[cfg(target_os = "linux")]
+            {
+                "auto".to_string()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                "dx12".to_string()
+            }
         }
-        "dx11" | "directx11" | "d3d11" => "dx12".to_string(),
+        "dx11" | "directx11" | "d3d11" => {
+            #[cfg(target_os = "linux")]
+            {
+                "auto".to_string()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                "dx12".to_string()
+            }
+        }
         _ => "auto".to_string(),
     }
 }

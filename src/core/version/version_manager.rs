@@ -212,7 +212,7 @@ pub async fn get_appx_version_list(folder: &Path) -> Result<Vec<LaunchVersionEnt
     receiver.await.context("版本扫描线程异常退出")?
 }
 
-fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
+pub(crate) fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
     let start = Instant::now();
     debug!("开始读取目录: {}", folder.display());
 

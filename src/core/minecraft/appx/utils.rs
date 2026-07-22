@@ -49,10 +49,9 @@ fn has_xmlns_prefix(attrs: &AttributeMap<String, String>, prefix: &str) -> bool 
 
 /// 补丁清单文件以支持 UWP 多开和脱离沙盒运行
 pub fn patch_manifest(dir: &Path) -> io::Result<bool> {
-    let manifest_path = dir.join("AppxManifest.xml");
-    if !manifest_path.exists() {
+    let Some(manifest_path) = find_manifest_path(dir)? else {
         return Ok(false);
-    }
+    };
 
     // 1. 读取并去除 BOM
     let mut xml_str = String::new();
@@ -486,11 +485,42 @@ pub fn resolve_executable_product_version_in_dir(
 pub fn get_manifest_identity_from_dir_blocking(
     appx_path: &Path,
 ) -> Result<(String, String), String> {
-    let manifest_path = appx_path.join("AppxManifest.xml");
+    let manifest_path = find_manifest_path(appx_path)
+        .map_err(|error| format!("无法查找 Manifest 目录 {}: {}", appx_path.display(), error))?
+        .ok_or_else(|| {
+            format!(
+                "未找到 AppxManifest.xml（忽略大小写）: {}",
+                appx_path.display()
+            )
+        })?;
     debug!("Manifest 路径: {}", manifest_path.display());
     let xml = std::fs::read_to_string(&manifest_path)
         .map_err(|error| format!("无法打开/读取文件 {}: {}", manifest_path.display(), error))?;
     parse_manifest_identity(&xml)
+}
+
+fn find_manifest_path(directory: &Path) -> io::Result<Option<PathBuf>> {
+    for name in ["AppxManifest.xml", "appxmanifest.xml"] {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    let entries = fs::read_dir(directory)?;
+    for entry in entries {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        if file_name
+            .to_string_lossy()
+            .eq_ignore_ascii_case("AppxManifest.xml")
+            && entry.file_type()?.is_file()
+        {
+            return Ok(Some(entry.path()));
+        }
+    }
+
+    Ok(None)
 }
 
 fn parse_manifest_identity(xml: &str) -> Result<(String, String), String> {
@@ -557,4 +587,35 @@ pub async fn get_manifest_identity_from_dir(appx_path: &Path) -> Result<(String,
 /// 异步获取清单中的 Identity 信息
 pub async fn get_manifest_identity(appx_path: &str) -> Result<(String, String), String> {
     get_manifest_identity_from_dir(Path::new(appx_path)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_manifest_identity_from_dir_blocking;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn manifest_lookup_accepts_lowercase_filename_on_case_sensitive_filesystems() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "bmcbl-manifest-case-test-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        fs::write(
+            directory.join("appxmanifest.xml"),
+            r#"<Package><Identity Name="Minecraft" Version="1.2.3.4" /></Package>"#,
+        )
+        .expect("manifest should be written");
+
+        let identity = get_manifest_identity_from_dir_blocking(&directory)
+            .expect("lowercase manifest should be parsed");
+        assert_eq!(identity, ("Minecraft".to_string(), "1.2.3.4".to_string()));
+
+        fs::remove_dir_all(directory).expect("test directory should be removed");
+    }
 }

@@ -11,7 +11,9 @@ use crate::ui::window::debug::state::{DebugRuntimeSnapshot, DebugState, snapshot
 use crate::utils::file_ops;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::cell::Cell;
 use std::io::{Read, Seek, SeekFrom};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const GLOBAL_IMAGE_ASSET_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
@@ -63,9 +65,16 @@ impl DebugView {
         let log_path = file_ops::logs_dir().join("latest.log");
         let stall_log_path = file_ops::logs_dir().join("ui_foreground_stall.log");
         record_debug_window_metrics(window);
-        let subscriptions = vec![cx.observe_window_bounds(window, |_, window, _cx| {
-            record_debug_window_metrics(window);
-        })];
+        let window_active = Rc::new(Cell::new(window.is_window_active()));
+        let subscriptions = vec![
+            cx.observe_window_bounds(window, |_, window, _cx| {
+                record_debug_window_metrics(window);
+            }),
+            cx.observe_window_activation(window, {
+                let window_active = window_active.clone();
+                move |_, window, _cx| window_active.set(window.is_window_active())
+            }),
+        ];
         cx.on_next_frame(window, |_, window, _cx| {
             crate::ui::window::debug::state::record_debug_gpu_specs(window.gpu_specs());
         });
@@ -75,6 +84,9 @@ impl DebugView {
             loop {
                 Timer::after(refresh_delay).await;
                 refresh_delay = DEBUG_REFRESH_INTERVAL;
+                if !window_active.get() {
+                    continue;
+                }
 
                 let log_path = log_path.clone();
                 let stall_log_path = stall_log_path.clone();

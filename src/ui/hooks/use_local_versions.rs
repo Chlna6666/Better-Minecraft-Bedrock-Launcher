@@ -2,11 +2,16 @@ use gpui::{App, AppContext, BorrowAppContext, Context, ImageSource, SharedString
 use gpui_hooks::hooks::{UseRefHook, UseStateHook};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+use tracing::{info, warn};
 
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
 use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
 use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::views::manage::state::{ManagePageState, ManagedVersionEntry};
+
+static NEXT_LOCAL_VERSION_REFRESH_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LocalVersionsSnapshot {
@@ -198,6 +203,9 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         return;
     }
 
+    let refresh_id = NEXT_LOCAL_VERSION_REFRESH_ID.fetch_add(1, Ordering::Relaxed);
+    let started_at = Instant::now();
+    info!(refresh_id, force_refresh, "local version refresh started");
     sync_manage_page_state_from_local_versions(cx);
     cx.spawn(async move |cx| {
         let result = async {
@@ -209,6 +217,7 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
 
         let refresh_again = match result {
             Ok(versions) => {
+                let version_count = versions.len();
                 match cx.update_global(|state: &mut LocalVersionsState, _cx| {
                     state.versions = Arc::from(versions);
                     state.loaded = true;
@@ -217,24 +226,55 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
                     state.error = None;
                     take_pending_local_versions_refresh(state)
                 }) {
-                    Ok(refresh_again) => refresh_again,
+                    Ok(refresh_again) => {
+                        info!(
+                            refresh_id,
+                            force_refresh,
+                            version_count,
+                            refresh_again,
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            "local version refresh completed"
+                        );
+                        refresh_again
+                    }
                     Err(error) => {
-                        tracing::warn!("update local versions failed: {error:?}");
+                        warn!(
+                            refresh_id,
+                            force_refresh,
+                            ?error,
+                            "update local versions failed"
+                        );
                         false
                     }
                 }
             }
             Err(error) => {
+                let error_message = error.to_string();
                 match cx.update_global(|state: &mut LocalVersionsState, _cx| {
                     state.loaded = !state.versions.is_empty();
                     state.loading = false;
                     state.loading_force_refresh = false;
-                    state.error = Some(SharedString::from(error.to_string()));
+                    state.error = Some(SharedString::from(error_message.clone()));
                     take_pending_local_versions_refresh(state)
                 }) {
-                    Ok(refresh_again) => refresh_again,
+                    Ok(refresh_again) => {
+                        warn!(
+                            refresh_id,
+                            force_refresh,
+                            refresh_again,
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            error = %error_message,
+                            "local version refresh failed"
+                        );
+                        refresh_again
+                    }
                     Err(update_error) => {
-                        tracing::warn!("update local versions error failed: {update_error:?}");
+                        warn!(
+                            refresh_id,
+                            force_refresh,
+                            ?update_error,
+                            "update local versions error state failed"
+                        );
                         false
                     }
                 }
@@ -247,7 +287,7 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         }
         Ok::<(), anyhow::Error>(())
     })
-    .detach();
+    .detach_and_log_err(cx);
 }
 
 pub fn version_build_type(version: &LaunchVersionEntry) -> BuildType {

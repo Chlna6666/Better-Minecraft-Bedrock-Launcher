@@ -572,7 +572,7 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
 
 fn debug_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
-    options.window_bounds = Some(WindowBounds::centered(size(px(1280.), px(860.)), cx));
+    options.window_bounds = Some(WindowBounds::centered(size(px(1100.), px(720.)), cx));
     options.window_min_size = Some(size(px(760.), px(560.)));
     options.is_resizable = true;
     options.is_minimizable = true;

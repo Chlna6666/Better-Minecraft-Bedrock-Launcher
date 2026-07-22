@@ -17,6 +17,8 @@ mod customization;
 mod game;
 mod launcher;
 mod plugins;
+#[cfg(target_os = "linux")]
+mod proton_gdk;
 mod rows;
 pub mod state;
 mod tabs;

@@ -1683,9 +1683,10 @@ fn start_game_operation(
                 warn!("update_global failed: {err:?}");
             }
 
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(true, cx);
-            });
+            })
+            .map_err(|error| format!("请求刷新本地游戏版本失败: {error}"))?;
 
             Ok::<(), String>(())
         }

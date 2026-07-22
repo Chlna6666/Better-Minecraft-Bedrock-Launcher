@@ -8,6 +8,8 @@ use crate::ui::components::input::InputState;
 pub enum SettingsTab {
     Game,
     Launcher,
+    #[cfg(target_os = "linux")]
+    ProtonGdk,
     Customization,
     Plugins,
     About,

@@ -83,16 +83,17 @@ pub fn render_launcher_overlay(
         rgb(0x4f46e5)
     };
     let status_text = snapshot
-        .logs
-        .last()
-        .map(|line| line.as_ref().to_string())
-        .filter(|line| !line.is_empty())
+        .last_snapshot
+        .as_ref()
+        .filter(|value| matches!(value.status.as_ref(), "completed" | "cancelled" | "error"))
+        .and_then(|value| value.message.as_deref())
+        .map(ToString::to_string)
         .or_else(|| {
             snapshot
-                .last_snapshot
-                .as_ref()
-                .and_then(|value| value.message.as_deref())
-                .map(ToString::to_string)
+                .logs
+                .last()
+                .map(|line| line.as_ref().to_string())
+                .filter(|line| !line.is_empty())
         })
         .unwrap_or_else(|| stage.clone());
     let status_color = line_color(&status_text);

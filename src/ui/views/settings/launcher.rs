@@ -325,11 +325,15 @@ fn launcher_render_engine_row(
 ) -> impl IntoElement {
     let section = i18n.t("Settings.tabs.launcher");
 
-    let values = vec![
-        SharedString::from("auto"),
-        SharedString::from("vulkan"),
-        SharedString::from("dx12"),
-    ];
+    let values = if cfg!(target_os = "linux") {
+        vec![SharedString::from("auto"), SharedString::from("vulkan")]
+    } else {
+        vec![
+            SharedString::from("auto"),
+            SharedString::from("vulkan"),
+            SharedString::from("dx12"),
+        ]
+    };
 
     let current =
         crate::config::config::normalize_renderer_backend(state.renderer_backend.as_ref());

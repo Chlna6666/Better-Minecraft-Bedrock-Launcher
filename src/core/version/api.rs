@@ -1,16 +1,26 @@
 use anyhow::{Context as _, Result};
 use std::fs;
+use std::time::Duration;
 use std::time::Instant;
 use tracing::{debug, error};
 
 use crate::core::version::launch_versions::LaunchVersionEntry;
-use crate::core::version::version_manager::get_appx_version_list;
+use crate::core::version::version_manager::get_appx_version_list_blocking;
+use crate::tasks::runtime::{BlockingTaskOptions, run_blocking};
 use crate::utils::file_ops;
 
 pub async fn get_version_list() -> Result<Vec<LaunchVersionEntry>> {
     let path = file_ops::bmcbl_subdir("versions");
     anyhow::ensure!(path.as_os_str().len() > 0, "invalid versions folder path");
-    get_appx_version_list(&path).await
+    let mut options = BlockingTaskOptions::hidden("扫描本地游戏版本");
+    options.detail = Some(path.display().to_string());
+    options.timeout = Some(Duration::from_secs(60));
+
+    run_blocking(options, move || {
+        get_appx_version_list_blocking(&path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(anyhow::Error::msg)
 }
 
 pub async fn delete_version(folder_name: &str) -> Result<()> {

@@ -178,6 +178,14 @@ struct ExtractJob {
     start_block_index: u64,
 }
 
+fn normalize_segment_path(path: &str) -> String {
+    if cfg!(target_os = "windows") {
+        path.replace('/', "\\")
+    } else {
+        path.replace('\\', "/")
+    }
+}
+
 fn build_gdk_visualization(
     worker_total: usize,
     worker_active: usize,
@@ -364,7 +372,8 @@ impl MsiXVDStream {
                 jobs.push(ExtractJob {
                     input_offset: current_offset,
                     file_size: segment.file_size,
-                    output_path: output_dir.join(&self.segment_paths[seg_idx]),
+                    output_path: output_dir
+                        .join(normalize_segment_path(&self.segment_paths[seg_idx])),
                     base_iv,
                     should_decrypt,
                     start_block_index,
@@ -856,5 +865,20 @@ impl Extensions {
             block_idx *= 2;
         }
         (block_idx, entry_idx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_segment_path;
+
+    #[test]
+    fn normalize_segment_path_uses_host_separators() {
+        let normalized = normalize_segment_path(r"data\textures\terrain");
+        if cfg!(target_os = "windows") {
+            assert_eq!(normalized, r"data\textures\terrain");
+        } else {
+            assert_eq!(normalized, "data/textures/terrain");
+        }
     }
 }

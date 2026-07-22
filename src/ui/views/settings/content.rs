@@ -5,6 +5,8 @@ use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::StatefulInteractiveElement as _;
 use gpui::*;
 
+#[cfg(target_os = "linux")]
+use super::proton_gdk;
 use super::{about, customization, game, launcher, plugins};
 
 pub(super) fn render_settings_content(
@@ -22,6 +24,8 @@ pub(super) fn render_settings_content(
         SettingsTab::Launcher => {
             launcher::render_launcher_tab(colors, i18n, state).into_any_element()
         }
+        #[cfg(target_os = "linux")]
+        SettingsTab::ProtonGdk => proton_gdk::render(colors).into_any_element(),
         SettingsTab::Customization => {
             customization::render_customization_tab(colors, i18n, state, system_font_names)
                 .into_any_element()

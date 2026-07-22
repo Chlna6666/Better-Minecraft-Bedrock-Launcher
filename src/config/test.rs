@@ -187,11 +187,26 @@ fn merge_json_values_inserts_new_fields() {
 
 #[test]
 fn renderer_backend_normalization_migrates_legacy_dx11() {
-    assert_eq!(normalize_renderer_backend("dx11"), "dx12");
-    assert_eq!(normalize_renderer_backend("directx11"), "dx12");
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert_eq!(normalize_renderer_backend("dx11"), "dx12");
+        assert_eq!(normalize_renderer_backend("directx11"), "dx12");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(normalize_renderer_backend("dx11"), "auto");
+        assert_eq!(normalize_renderer_backend("directx11"), "auto");
+    }
     assert_eq!(normalize_renderer_backend("vulkan"), "vulkan");
     assert_eq!(normalize_renderer_backend("nova-vulkan"), "vulkan");
-    assert_eq!(normalize_renderer_backend("nova-dx12"), "dx12");
+    assert_eq!(
+        normalize_renderer_backend("nova-dx12"),
+        if cfg!(target_os = "linux") {
+            "auto"
+        } else {
+            "dx12"
+        }
+    );
 }
 
 #[test]

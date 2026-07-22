@@ -28,6 +28,10 @@ pub(super) fn default_renderer_backend() -> String {
     "auto".to_string()
 }
 
+pub(super) fn default_proton_gdk_source() -> String {
+    "lukaspah".to_string()
+}
+
 pub(super) fn default_update_check_interval_minutes() -> u32 {
     60
 }
@@ -101,6 +105,10 @@ pub fn get_default_config() -> Config {
             auto_check_updates: true,
             check_on_start: true,
             update_check_interval_minutes: 60,
+            #[cfg(target_os = "linux")]
+            proton_gdk_source: default_proton_gdk_source(),
+            #[cfg(target_os = "linux")]
+            proton_gdk_runner: String::new(),
         },
         game: GameConfig {
             launcher_visibility: "keep".to_string(),

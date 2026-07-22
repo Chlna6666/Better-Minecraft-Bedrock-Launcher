@@ -1,3 +1,4 @@
+use crate::core::linux_runtime::check_linux_runtime;
 use crate::core::minecraft::launcher::{LaunchRequest, start_launch_task};
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::state::launcher::LauncherState;
@@ -104,6 +105,18 @@ pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<
         return None;
     }
 
+    let runtime_check = check_linux_runtime();
+    if !runtime_check.is_ready() {
+        cx.update_global(
+            |state: &mut crate::ui::state::linux_runtime::LinuxRuntimeState, _cx| {
+                if let Some(request_id) = state.begin_check(true) {
+                    state.apply_check(request_id, runtime_check);
+                }
+            },
+        );
+        return None;
+    }
+
     Some(begin_launch_task(version, cx))
 }
 
@@ -162,14 +175,12 @@ pub fn copy_launcher_error(cx: &mut App) -> bool {
             .and_then(|snapshot| snapshot.message.as_ref())
             .map(ToString::to_string)
             .or_else(|| {
-                state.task_id.as_ref().and_then(|task_id| {
+                state.task_id.as_ref().map(|task_id| {
                     task_manager::task_logs(task_id.as_ref())
                         .iter()
-                        .rev()
-                        .find(|line| {
-                            line.contains("失败") || line.contains("错误") || line.contains("ERROR")
-                        })
                         .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 })
             })
     });
@@ -226,6 +237,9 @@ fn begin_launch_task(version: LaunchVersionDescriptor, cx: &mut App) -> Arc<str>
 }
 
 fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
+    // Subscribe before reading the current snapshot so a fast task cannot
+    // finish in the gap between the initial read and receiver creation.
+    let mut updates = task_manager::subscribe_task_updates();
     if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
         cx.update_global(|state: &mut LauncherState, _cx| {
             if state.task_id.as_deref() == Some(task_id.as_ref()) {
@@ -237,7 +251,6 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     cx.spawn({
         let task_id = task_id.clone();
         async move |cx| {
-            let mut updates = task_manager::subscribe_task_updates();
             loop {
                 let snapshot = match updates.recv().await {
                     Ok(snapshot) => snapshot,
@@ -259,6 +272,17 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
                         state.apply_snapshot(snapshot_for_state);
                     }
                 })?;
+                if snapshot.status.as_ref() == "running"
+                    && snapshot.stage.as_ref() == "running_game"
+                {
+                    Timer::after(Duration::from_millis(900)).await;
+                    let now = std::time::Instant::now();
+                    cx.update_global(|state: &mut LauncherState, _cx| {
+                        if state.task_id.as_deref() == Some(task_id.as_ref()) {
+                            state.request_close(now);
+                        }
+                    })?;
+                }
                 if terminal {
                     if snapshot.status.as_ref() == "completed" {
                         Timer::after(Duration::from_millis(900)).await;

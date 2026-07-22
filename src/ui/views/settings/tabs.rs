@@ -1,6 +1,7 @@
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
@@ -184,6 +185,15 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
             SettingsTab::Launcher,
             active,
         ))
+        .when(cfg!(target_os = "linux"), |this| {
+            this.child(tab(
+                "settings-tab-proton-gdk",
+                lucide_icons::icon_box(),
+                SharedString::from("Proton-GDK"),
+                SettingsTab::ProtonGdk,
+                active,
+            ))
+        })
         .child(tab(
             "settings-tab-customize",
             lucide_icons::icon_palette(),

@@ -303,14 +303,12 @@ pub fn copy_launcher_error(cx: &mut App) -> bool {
             .and_then(|snapshot| snapshot.message.as_ref())
             .map(ToString::to_string)
             .or_else(|| {
-                state.task_id.as_ref().and_then(|task_id| {
+                state.task_id.as_ref().map(|task_id| {
                     task_manager::task_logs(task_id.as_ref())
                         .iter()
-                        .rev()
-                        .find(|line| {
-                            line.contains("ERROR") || line.contains("失败") || line.contains("错误")
-                        })
                         .map(|line| line.as_ref().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 })
             })
     });

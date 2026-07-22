@@ -1,5 +1,7 @@
 use crate::core::linux_runtime::{LinuxInstallPlan, LinuxRuntimeCheck};
+use crate::tasks::task_manager::TaskSnapshot;
 use gpui::{Global, SharedString};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LinuxRuntimeStatus {
@@ -19,6 +21,8 @@ pub struct LinuxRuntimeState {
     pub request_id: u64,
     pub status: LinuxRuntimeStatus,
     pub error_message: Option<SharedString>,
+    pub install_task_id: Option<Arc<str>>,
+    pub install_snapshot: Option<Arc<TaskSnapshot>>,
     pub(crate) check: Option<LinuxRuntimeCheck>,
 }
 
@@ -33,6 +37,8 @@ impl LinuxRuntimeState {
         self.request_id = self.request_id.wrapping_add(1).max(1);
         self.status = LinuxRuntimeStatus::Checking;
         self.error_message = None;
+        self.install_task_id = None;
+        self.install_snapshot = None;
         if show_while_checking {
             self.visible = true;
         }
@@ -51,6 +57,8 @@ impl LinuxRuntimeState {
         };
         self.error_message = None;
         self.check = Some(check);
+        self.install_task_id = None;
+        self.install_snapshot = None;
         true
     }
 
@@ -73,7 +81,28 @@ impl LinuxRuntimeState {
         self.visible = true;
         self.status = LinuxRuntimeStatus::Installing;
         self.error_message = None;
+        self.install_task_id = None;
+        self.install_snapshot = None;
         Some((self.request_id, plan))
+    }
+
+    pub fn attach_install_task(&mut self, request_id: u64, task_id: Arc<str>) -> bool {
+        if self.request_id != request_id || self.status != LinuxRuntimeStatus::Installing {
+            return false;
+        }
+        self.install_task_id = Some(task_id);
+        self.install_snapshot = None;
+        true
+    }
+
+    pub fn apply_install_snapshot(&mut self, request_id: u64, snapshot: Arc<TaskSnapshot>) -> bool {
+        if self.request_id != request_id
+            || self.install_task_id.as_deref() != Some(snapshot.id.as_ref())
+        {
+            return false;
+        }
+        self.install_snapshot = Some(snapshot);
+        true
     }
 
     pub fn set_install_error(&mut self, request_id: u64, error: impl Into<SharedString>) -> bool {
