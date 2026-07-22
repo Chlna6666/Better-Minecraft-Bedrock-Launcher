@@ -1130,11 +1130,13 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn request_decorations(&self, decorations: WindowDecorations) {
-        let mut state = self.borrow_mut();
-        state.decorations = decorations;
+        let state = self.borrow();
         if let Some(decoration) = state.decoration.as_ref() {
             decoration.set_mode(decorations.to_xdg());
-            update_window(state);
+        } else if decorations == WindowDecorations::Server {
+            log::info!(
+                "wayland: server-side decorations unavailable; keeping client-side decorations"
+            );
         }
     }
 

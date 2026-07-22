@@ -130,6 +130,11 @@ impl Window {
     /// Updates the window's title at the platform level.
     pub fn set_title(&mut self, title: &str) {
         self.platform_window.set_title(title);
+        #[cfg(target_os = "linux")]
+        if let Some(fallback) = self.server_titlebar_fallback.as_mut() {
+            fallback.title = SharedString::from(title.to_string());
+            self.refresh();
+        }
     }
 
     /// Sets the application identifier.

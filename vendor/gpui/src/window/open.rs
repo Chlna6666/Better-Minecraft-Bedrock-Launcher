@@ -56,6 +56,17 @@ impl Window {
                 .appears_transparent
                 .then_some(titlebar.transparent_caption_height.unwrap_or(px(32.0)))
         });
+        #[cfg(target_os = "linux")]
+        let server_titlebar_fallback = titlebar
+            .as_ref()
+            .filter(|_| {
+                window_decorations.unwrap_or(WindowDecorations::Server) == WindowDecorations::Server
+            })
+            .map(|titlebar| super::state::ServerTitlebarFallback {
+                title: titlebar.title.clone().unwrap_or_default(),
+                is_minimizable,
+                is_maximizable: is_resizable,
+            });
 
         let bounds = window_bounds
             .map(|bounds| bounds.bounds())
@@ -190,6 +201,9 @@ impl Window {
 
                     window.content_bounds_changed(cx);
                     window.refresh();
+                    if active {
+                        window.rearm_platform_frame_watchdog_on_activation();
+                    }
 
                     SystemWindowTabController::update_last_active(cx, window.handle.id);
                 }));
@@ -292,6 +306,8 @@ impl Window {
             invalidator,
             removed: false,
             platform_window,
+            #[cfg(target_os = "linux")]
+            server_titlebar_fallback,
             display_id,
             sprite_atlas,
             text_system,

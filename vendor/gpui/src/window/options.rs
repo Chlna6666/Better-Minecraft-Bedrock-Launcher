@@ -29,9 +29,12 @@ pub enum ResizeEdge {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
 pub enum WindowDecorations {
     #[default]
-    /// Server side decorations
+    /// Prefer server-side decorations.
+    ///
+    /// On Linux, when the compositor requires client-side decorations and a
+    /// titlebar is configured, GPUI supplies a functional titlebar fallback.
     Server,
-    /// Client side decorations
+    /// Use client-side decorations supplied by the application.
     Client,
 }
 
@@ -165,8 +168,12 @@ pub struct WindowOptions {
     /// Window minimum size
     pub window_min_size: Option<Size<Pixels>>,
 
-    /// Whether to use client or server side decorations. Wayland only
-    /// Note that this may be ignored.
+    /// Whether to use client- or server-side decorations on Linux.
+    ///
+    /// A compositor may reject server-side decorations. In that case GPUI
+    /// renders a titlebar fallback when [`Self::titlebar`] is configured.
+    /// Applications that select [`WindowDecorations::Client`] remain
+    /// responsible for drawing their own window chrome.
     pub window_decorations: Option<WindowDecorations>,
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.

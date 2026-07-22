@@ -1817,6 +1817,43 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn stalled_inactive_platform_frame_waits_until_window_activation(cx: &mut TestAppContext) {
+    let visual = cx.add_empty_window();
+    visual.update(|window, cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let baseline = test_window.requested_frame_count();
+        window.active.set(true);
+        window.has_completed_rendered_frame = true;
+        window.invalidator.set_dirty(true);
+        window.refreshing = false;
+        window.dirty_frame_scheduled = false;
+        window.dirty_frame_throttle_pending = false;
+        window.dirty_frame_deferred_pending = false;
+        window.frame_throttle.clear_delay();
+        window.frame_watchdog.set(FrameWatchdog::default());
+
+        window.schedule_dirty_frame();
+        let stalled_generation = window.frame_watchdog.get().platform_generation;
+        window.active.set(false);
+        window.recover_stalled_platform_frame(stalled_generation, cx);
+
+        assert!(window.refreshing);
+        assert!(window.dirty_frame_scheduled);
+        assert!(window.invalidator.is_dirty());
+        assert!(!window.frame_watchdog.get().platform_pending);
+        assert!(window.platform_frame_watchdog_task.is_none());
+        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+
+        window.active.set(true);
+        window.rearm_platform_frame_watchdog_on_activation();
+
+        assert!(window.frame_watchdog.get().platform_pending);
+        assert!(window.platform_frame_watchdog_task.is_some());
+        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+    });
+}
+
+#[gpui::test]
 fn completed_dirty_frame_does_not_arm_generation_backpressure(cx: &mut TestAppContext) {
     let visual = cx.add_empty_window();
     let (test_window, baseline) = visual.update(|window, cx| {

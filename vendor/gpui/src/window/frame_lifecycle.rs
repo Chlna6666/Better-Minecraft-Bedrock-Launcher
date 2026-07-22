@@ -363,6 +363,18 @@ impl Window {
         }
 
         let frame_options = watchdog.platform_options;
+        if !self.active.get() && self.has_completed_rendered_frame {
+            log::debug!(
+                "gpui inactive platform frame waiting for compositor: window={} generation={} dirty={} refreshing={} scheduled={}",
+                self.handle.window_id().as_u64(),
+                generation,
+                self.invalidator.is_dirty(),
+                self.refreshing,
+                self.dirty_frame_scheduled
+            );
+            return;
+        }
+
         self.platform_window.frame_request_timed_out(frame_options);
         log::warn!(
             "gpui stalled platform frame recovery: window={} generation={} dirty={} refreshing={} scheduled={} force_render={} require_presentation={}",
@@ -386,6 +398,18 @@ impl Window {
         } else {
             self.dirty_frame_scheduled = false;
             self.refreshing = false;
+        }
+    }
+
+    pub(super) fn rearm_platform_frame_watchdog_on_activation(&mut self) {
+        let watchdog = self.frame_watchdog.get();
+        if self.active.get()
+            && self.dirty_frame_scheduled
+            && self.refreshing
+            && !watchdog.platform_pending
+            && watchdog.platform_options.requires_frame()
+        {
+            self.arm_platform_frame_watchdog(watchdog.platform_options);
         }
     }
 

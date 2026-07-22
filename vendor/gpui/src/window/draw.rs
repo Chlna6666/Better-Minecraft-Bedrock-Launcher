@@ -332,9 +332,18 @@ impl Window {
             }
         };
 
-        let mut root_element = self.root.as_ref().unwrap().clone().into_any();
-        self.with_critical_draw(|window| {
-            root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
+        #[cfg(target_os = "linux")]
+        let (mut root_element, wrapper_view_id) = self.linux_root_element();
+        #[cfg(not(target_os = "linux"))]
+        let (mut root_element, wrapper_view_id) =
+            (self.root.as_ref().unwrap().clone().into_any(), None);
+        self.with_critical_draw(|window| match wrapper_view_id {
+            Some(view_id) => window.with_rendered_view(view_id, |window| {
+                root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
+            }),
+            None => {
+                root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
+            }
         });
 
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -381,8 +390,11 @@ impl Window {
         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
 
         self.invalidator.set_phase(DrawPhase::Paint);
-        self.with_critical_draw(|window| {
-            root_element.paint(window, cx);
+        self.with_critical_draw(|window| match wrapper_view_id {
+            Some(view_id) => {
+                window.with_rendered_view(view_id, |window| root_element.paint(window, cx))
+            }
+            None => root_element.paint(window, cx),
         });
 
         #[cfg(any(feature = "inspector", debug_assertions))]
@@ -412,6 +424,144 @@ impl Window {
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         self.paint_inspector_hitbox(cx);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_root_element(&self) -> (AnyElement, Option<EntityId>) {
+        let decorations = self.platform_window.window_decorations();
+        let fullscreen = self.platform_window.is_fullscreen();
+        let Some(titlebar) = self
+            .server_titlebar_fallback
+            .as_ref()
+            .filter(|_| should_draw_linux_server_titlebar_fallback(true, decorations, fullscreen))
+        else {
+            return (self.root.as_ref().unwrap().clone().into_any(), None);
+        };
+
+        let wrapper_view_id = self.root.as_ref().unwrap().entity_id();
+
+        let dark = matches!(
+            self.appearance,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        );
+        let active = self.active.get();
+        let background = match (dark, active) {
+            (true, true) => crate::rgb(0x303030),
+            (true, false) => crate::rgb(0x383838),
+            (false, true) => crate::rgb(0xf2f2f2),
+            (false, false) => crate::rgb(0xf8f8f8),
+        };
+        let foreground = if dark {
+            crate::rgb(0xf2f2f2)
+        } else {
+            crate::rgb(0x202020)
+        };
+        let border = if dark {
+            crate::rgb(0x1f1f1f)
+        } else {
+            crate::rgb(0xd8d8d8)
+        };
+        let button_hover = if dark {
+            crate::rgb(0x484848)
+        } else {
+            crate::rgb(0xe4e4e4)
+        };
+        let controls = self.platform_window.window_controls();
+        let is_maximized = self.platform_window.is_maximized();
+
+        let title = crate::div()
+            .id("gpui-linux-server-titlebar-drag")
+            .flex()
+            .flex_1()
+            .h_full()
+            .items_center()
+            .px_3()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .window_control_area(WindowControlArea::Drag)
+            .on_click(|event, window, _cx| {
+                if event.is_right_click() {
+                    window.show_window_menu(event.position());
+                }
+            })
+            .child(titlebar.title.clone());
+
+        let minimize = (titlebar.is_minimizable && controls.minimize).then(|| {
+            crate::div()
+                .id("gpui-linux-server-titlebar-minimize")
+                .flex()
+                .w(px(46.0))
+                .h_full()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(move |style| style.bg(button_hover))
+                .on_click(|_, window, _| window.minimize_window())
+                .child("\u{2212}")
+        });
+        let maximize = (titlebar.is_maximizable && controls.maximize).then(|| {
+            crate::div()
+                .id("gpui-linux-server-titlebar-maximize")
+                .flex()
+                .w(px(46.0))
+                .h_full()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(move |style| style.bg(button_hover))
+                .on_click(|_, window, _| {
+                    if window.is_maximized() {
+                        window.restore_window();
+                    } else {
+                        window.maximize_window();
+                    }
+                })
+                .child(if is_maximized { "\u{2750}" } else { "\u{25a1}" })
+        });
+        let close = crate::div()
+            .id("gpui-linux-server-titlebar-close")
+            .flex()
+            .w(px(46.0))
+            .h_full()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|style| style.bg(crate::rgb(0xe81123)).text_color(crate::white()))
+            .on_click(|_, window, _| window.remove_window())
+            .child("\u{00d7}");
+
+        let titlebar_element = crate::div()
+            .flex()
+            .flex_none()
+            .w_full()
+            .h(px(38.0))
+            .items_center()
+            .bg(background)
+            .border_b_1()
+            .border_color(border)
+            .text_color(foreground)
+            .text_size(px(13.0))
+            .child(title)
+            .children(minimize)
+            .children(maximize)
+            .child(close);
+
+        let element = crate::div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(titlebar_element)
+            .child(
+                crate::div()
+                    .flex()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(self.root.as_ref().unwrap().clone()),
+            )
+            .into_any_element();
+
+        (element, Some(wrapper_view_id))
     }
 
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
@@ -482,5 +632,53 @@ impl Window {
             return Some(element);
         }
         None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn should_draw_linux_server_titlebar_fallback(
+    has_fallback: bool,
+    decorations: Decorations,
+    fullscreen: bool,
+) -> bool {
+    has_fallback && matches!(decorations, Decorations::Client { .. }) && !fullscreen
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_server_titlebar_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn draws_when_server_decorations_fall_back_to_client_side() {
+        assert!(should_draw_linux_server_titlebar_fallback(
+            true,
+            Decorations::Client {
+                tiling: Tiling::default(),
+            },
+            false,
+        ));
+    }
+
+    #[test]
+    fn stays_hidden_for_server_decorations_fullscreen_or_no_fallback() {
+        assert!(!should_draw_linux_server_titlebar_fallback(
+            true,
+            Decorations::Server,
+            false,
+        ));
+        assert!(!should_draw_linux_server_titlebar_fallback(
+            true,
+            Decorations::Client {
+                tiling: Tiling::default(),
+            },
+            true,
+        ));
+        assert!(!should_draw_linux_server_titlebar_fallback(
+            false,
+            Decorations::Client {
+                tiling: Tiling::default(),
+            },
+            false,
+        ));
     }
 }
