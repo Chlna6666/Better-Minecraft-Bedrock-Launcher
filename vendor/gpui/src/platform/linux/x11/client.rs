@@ -79,6 +79,16 @@ pub(crate) const XINPUT_ALL_DEVICE_GROUPS: xinput::DeviceId = 1;
 
 const GPUI_X11_SCALE_FACTOR_ENV: &str = "GPUI_X11_SCALE_FACTOR";
 
+fn frame_options_after_expose(
+    pending: RequestFrameOptions,
+    expose_event_received: bool,
+) -> RequestFrameOptions {
+    pending.merge(RequestFrameOptions {
+        require_presentation: expose_event_received,
+        force_render: false,
+    })
+}
+
 pub(crate) struct WindowRef {
     window: X11WindowStatePtr,
     refresh_state: Option<RefreshState>,
@@ -1798,13 +1808,10 @@ impl X11ClientState {
                             if expose_event_received
                                 || pending_frame_request != RequestFrameOptions::default()
                             {
-                                let frame_options = RequestFrameOptions {
-                                    require_presentation: expose_event_received
-                                        || pending_frame_request.require_presentation,
-                                    force_render: pending_frame_request.force_render,
-                                    request_id: pending_frame_request.request_id,
-                                };
-                                window.refresh(frame_options);
+                                window.refresh(frame_options_after_expose(
+                                    pending_frame_request,
+                                    expose_event_received,
+                                ));
                             }
                         }
                         xcb_connection
@@ -2500,4 +2507,25 @@ fn dpi_factor((width_px, height_px): (u32, u32), (width_mm, height_mm): (u64, u6
 #[inline]
 fn valid_scale_factor(scale_factor: f32) -> bool {
     scale_factor.is_sign_positive() && scale_factor.is_normal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expose_requests_presentation() {
+        let options = frame_options_after_expose(RequestFrameOptions::default(), true);
+
+        assert!(options.require_presentation);
+        assert!(!options.force_render);
+    }
+
+    #[test]
+    fn expose_preserves_pending_force_render() {
+        let options = frame_options_after_expose(RequestFrameOptions::from_refresh(), true);
+
+        assert!(options.require_presentation);
+        assert!(options.force_render);
+    }
 }

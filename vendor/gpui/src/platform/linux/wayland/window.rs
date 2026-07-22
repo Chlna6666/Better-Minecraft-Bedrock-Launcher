@@ -9,7 +9,6 @@ use std::{
 use collections::HashMap;
 use futures::channel::oneshot::Receiver;
 
-use raw_window_handle as rwh;
 use wayland_backend::client::ObjectId;
 use wayland_client::WEnum;
 use wayland_client::{Proxy, protocol::wl_surface};
@@ -22,7 +21,9 @@ use wayland_protocols::{
     xdg::shell::client::xdg_toplevel::XdgToplevel,
 };
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
+use winit::raw_window_handle as rwh;
 
+use crate::WindowKind;
 use crate::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, FrameRenderPlan, Globals, GpuSpecs,
     GpuiMemoryTrimLevel, Modifiers, Output, Pixels, PlatformDisplay, PlatformInput, Point,
@@ -37,7 +38,7 @@ use crate::{
         linux::wayland::{display::WaylandDisplay, serial::SerialKind},
     },
 };
-use crate::{WindowKind, scene::Scene};
+use util::ResultExt;
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
@@ -155,6 +156,7 @@ impl WaylandWindowState {
             NovaRenderer::new(
                 &raw_window,
                 renderer_options.backend,
+                renderer_options,
                 crate::GpuSubmissionMode::Deferred,
                 drawable_size,
                 transparent,
@@ -281,7 +283,7 @@ impl WaylandWindow {
     pub fn new(
         handle: AnyWindowHandle,
         globals: Globals,
-        renderer_backend: crate::RendererBackend,
+        renderer_options: &RendererOptions,
         client: WaylandClientStatePtr,
         params: WindowParams,
         appearance: WindowAppearance,
@@ -329,7 +331,7 @@ impl WaylandWindow {
                 viewport,
                 client,
                 globals,
-                renderer_backend,
+                renderer_options,
                 params,
             )?)),
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
@@ -369,11 +371,9 @@ impl WaylandWindowStatePtr {
         }
     }
 
-    pub fn clear_timed_out_frame_request(&self, options: RequestFrameOptions) {
+    pub fn clear_timed_out_frame_request(&self, _options: RequestFrameOptions) {
         let mut state = self.state.borrow_mut();
-        if state.pending_frame_request.request_id == options.request_id {
-            state.pending_frame_request = RequestFrameOptions::default();
-        }
+        state.pending_frame_request = RequestFrameOptions::default();
     }
 
     pub fn frame(&self) {
@@ -1069,6 +1069,14 @@ impl PlatformWindow for WaylandWindow {
     fn draw(&self, render_plan: FrameRenderPlan<'_>) {
         let mut state = self.borrow_mut();
         state.renderer.draw(render_plan).log_err();
+    }
+
+    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) {
+        let mut state = self.borrow_mut();
+        state
+            .renderer
+            .present_framebuffer_only(render_plan)
+            .log_err();
     }
 
     fn completed_frame(&self) {

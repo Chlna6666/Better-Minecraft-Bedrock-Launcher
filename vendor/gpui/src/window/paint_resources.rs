@@ -521,13 +521,14 @@ impl Window {
     }
 
     /// Hints the platform renderer backing this window to release idle GPUI resources.
-    pub fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
+    pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.image_paint_tile_cache.clear();
         }
         self.rendered_frame.trim_retained_capacity_for_level(level);
         self.next_frame.trim_retained_capacity_for_level(level);
         self.text_system.trim_retained_capacity_for_level(level);
+        self.platform_window.trim_gpui_memory(level);
     }
 }
 

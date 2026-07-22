@@ -11,8 +11,8 @@ use crate::{
     WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
 };
 
-use raw_window_handle as rwh;
 use util::{ResultExt, maybe};
+use winit::raw_window_handle as rwh;
 use x11rb::{
     connection::Connection,
     cookie::{Cookie, VoidCookie},
@@ -706,7 +706,8 @@ impl X11WindowState {
                 };
                 NovaRenderer::new(
                     &raw_window,
-                    renderer_backend,
+                    renderer_options.backend,
+                    renderer_options,
                     crate::GpuSubmissionMode::Deferred,
                     query_render_extent(xcb, x_window)?,
                     params.window_background != WindowBackgroundAppearance::Opaque,
@@ -759,11 +760,7 @@ impl X11WindowState {
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        let size = self.renderer.viewport_size();
-        Size {
-            width: size.width.into(),
-            height: size.height.into(),
-        }
+        self.renderer.viewport_size().to_pixels(self.scale_factor)
     }
 }
 
@@ -816,7 +813,7 @@ impl X11Window {
         handle: AnyWindowHandle,
         client: X11ClientStatePtr,
         executor: ForegroundExecutor,
-        renderer_backend: crate::RendererBackend,
+        renderer_options: &RendererOptions,
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
         client_side_decorations_supported: bool,
@@ -832,7 +829,7 @@ impl X11Window {
                 handle,
                 client,
                 executor,
-                renderer_options.backend,
+                renderer_options,
                 params,
                 xcb,
                 client_side_decorations_supported,
@@ -1486,14 +1483,12 @@ impl PlatformWindow for X11Window {
         self.0.request_frame(options);
     }
 
-    fn frame_request_timed_out(&self, options: RequestFrameOptions) {
-        let state = self.0.state.borrow();
-        let pending = state.pending_frame_request.get();
-        if pending.request_id == options.request_id {
-            state
-                .pending_frame_request
-                .set(RequestFrameOptions::default());
-        }
+    fn frame_request_timed_out(&self, _options: RequestFrameOptions) {
+        self.0
+            .state
+            .borrow()
+            .pending_frame_request
+            .set(RequestFrameOptions::default());
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>) {
@@ -1534,6 +1529,14 @@ impl PlatformWindow for X11Window {
     fn draw(&self, render_plan: FrameRenderPlan<'_>) {
         let mut inner = self.0.state.borrow_mut();
         inner.renderer.draw(render_plan).log_err();
+    }
+
+    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) {
+        let mut inner = self.0.state.borrow_mut();
+        inner
+            .renderer
+            .present_framebuffer_only(render_plan)
+            .log_err();
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

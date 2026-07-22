@@ -15,10 +15,8 @@ fn main() {
 
     #[cfg(all(
         feature = "build-shader-validation",
-        any(
-            not(any(target_os = "macos", target_os = "windows")),
-            all(target_os = "macos", feature = "macos-blade")
-        )
+        target_os = "macos",
+        feature = "macos-blade"
     ))]
     check_blade_wgsl_shaders();
 
@@ -158,10 +156,8 @@ fn check_nova_wgsl_shader_coverage(covered_shader_paths: &std::collections::BTre
 
 #[cfg(all(
     feature = "build-shader-validation",
-    any(
-        not(any(target_os = "macos", target_os = "windows")),
-        all(target_os = "macos", feature = "macos-blade")
-    )
+    target_os = "macos",
+    feature = "macos-blade"
 ))]
 fn check_blade_wgsl_shaders() {
     check_wgsl_shader("./src/platform/blade/shaders.wgsl");

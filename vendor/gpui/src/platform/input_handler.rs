@@ -23,7 +23,10 @@ impl PlatformInputHandler {
         dead_code,
         reason = "used by platform IME implementations outside Windows"
     )]
-    fn selected_text_range(&mut self, ignore_disabled_input: bool) -> Option<Utf16Selection> {
+    pub(crate) fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+    ) -> Option<Utf16Selection> {
         self.cx
             .update(|window, cx| {
                 self.handler
@@ -34,7 +37,7 @@ impl PlatformInputHandler {
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
-    fn marked_text_range(&mut self) -> Option<Range<usize>> {
+    pub(crate) fn marked_text_range(&mut self) -> Option<Range<usize>> {
         self.cx
             .update(|window, cx| self.handler.marked_text_range(window, cx))
             .ok()
@@ -63,7 +66,11 @@ impl PlatformInputHandler {
         dead_code,
         reason = "used by platform IME implementations outside Windows"
     )]
-    fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
+    pub(crate) fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+    ) {
         self.cx
             .update(|window, cx| {
                 self.handler
@@ -96,7 +103,7 @@ impl PlatformInputHandler {
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
-    fn unmark_text(&mut self) {
+    pub(crate) fn unmark_text(&mut self) {
         self.cx
             .update(|window, cx| self.handler.unmark_text(window, cx))
             .ok();
@@ -106,7 +113,7 @@ impl PlatformInputHandler {
         dead_code,
         reason = "used by platform IME implementations outside Windows"
     )]
-    fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
+    pub(crate) fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
         self.cx
             .update(|window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
             .ok()

@@ -11,13 +11,12 @@ use super::{TestDispatcher, TestWindow};
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DevicePixels,
     DispatchEventResult, Font, FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs,
-    Keymap, LineLayout, Modifiers, Pixels, PlatformInput, Point, RenderGlyphParams, ShapedGlyph,
-    ShapedRun, SharedString, Size, SystemWindowTab, Task, TaskLabel, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
-    WindowParams, point, px, size,
+    GpuiMemoryTrimLevel, Keymap, LineLayout, Modifiers, Pixels, PlatformInput, Point,
+    RenderGlyphParams, ShapedGlyph, ShapedRun, SharedString, Size, SystemWindowTab, Task,
+    TaskLabel, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowControls, WindowDecorations, WindowParams, point, px, size,
     window::{Decorations, ResizeEdge},
 };
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use anyhow::Result;
 use async_task::Runnable;
 use futures::channel::oneshot;
@@ -29,6 +28,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub(crate) trait Platform: 'static {
     fn background_executor(&self) -> BackgroundExecutor;
@@ -202,6 +202,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn present_framebuffer_only(&self, _render_plan: FrameRenderPlan<'_>) {}
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+
+    fn trim_gpui_memory(&self, _level: GpuiMemoryTrimLevel) {}
 
     // macOS specific methods
     fn title(&self) -> String {

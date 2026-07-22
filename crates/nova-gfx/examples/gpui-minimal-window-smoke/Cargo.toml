@@ -27,4 +27,4 @@ gpui = { path = "../../../../vendor/gpui", default-features = false, features = 
 gpui = { path = "../../../../vendor/gpui", default-features = false, features = ["nova-gfx-metal"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui = { path = "../../../../vendor/gpui", default-features = false, features = ["nova-gfx-vulkan"] }
+gpui = { path = "../../../../vendor/gpui", default-features = false, features = ["nova-gfx-vulkan", "wayland", "x11"] }

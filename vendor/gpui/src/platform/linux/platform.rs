@@ -351,7 +351,7 @@ impl<P: LinuxClient + 'static> Platform for P {
                         response
                             .uris()
                             .iter()
-                            .filter_map(|uri| uri.to_file_path().ok())
+                            .filter_map(|uri| uri_to_file_path(uri))
                             .collect::<Vec<_>>(),
                     )),
                     Err(ashpd::Error::Response(_)) => Ok(None),
@@ -413,7 +413,7 @@ impl<P: LinuxClient + 'static> Platform for P {
                         Ok(response) => Ok(response
                             .uris()
                             .first()
-                            .and_then(|uri| uri.to_file_path().ok())),
+                            .and_then(|uri| uri_to_file_path(uri))),
                         Err(ashpd::Error::Response(_)) => Ok(None),
                         Err(e) => Err(e.into()),
                     };
@@ -614,7 +614,7 @@ pub(super) fn open_uri_internal(
     uri: &str,
     activation_token: Option<String>,
 ) {
-    if let Some(uri) = ashpd::url::Url::parse(uri).log_err() {
+    if let Some(uri) = ashpd::Uri::parse(uri).log_err() {
         executor
             .spawn(async move {
                 match ashpd::desktop::open_uri::OpenFileRequest::default()
@@ -626,7 +626,7 @@ pub(super) fn open_uri_internal(
                     Err(e) => log::error!("Failed to open with dbus: {}", e),
                 }
 
-                for mut command in open::commands(uri.to_string()) {
+                for mut command in open::commands(uri.as_str()) {
                     if let Some(token) = activation_token.as_ref() {
                         command.env("XDG_ACTIVATION_TOKEN", token);
                     }
@@ -671,6 +671,13 @@ pub(super) fn reveal_path_internal(
             }
         })
         .detach();
+}
+
+#[cfg(any(feature = "wayland", feature = "x11"))]
+pub(super) fn uri_to_file_path(uri: &ashpd::Uri) -> Option<PathBuf> {
+    let s = uri.as_str();
+    let path = s.strip_prefix("file://")?;
+    Some(PathBuf::from(path))
 }
 
 #[allow(unused)]

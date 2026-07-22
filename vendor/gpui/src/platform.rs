@@ -55,9 +55,11 @@ pub(crate) use atlas::*;
 pub(crate) use bootstrap::current_platform;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub use bootstrap::guess_compositor;
+#[cfg(target_os = "windows")]
+pub use bootstrap::windows_manifest_path;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use bootstrap::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream};
-pub use bootstrap::{background_executor, enumerate_gpu_adapters, windows_manifest_path};
+pub use bootstrap::{background_executor, enumerate_gpu_adapters};
 pub use clipboard::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use cosmic_text_system::*;

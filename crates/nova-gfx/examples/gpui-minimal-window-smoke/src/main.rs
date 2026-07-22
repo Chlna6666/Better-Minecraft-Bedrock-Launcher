@@ -93,9 +93,13 @@ fn default_backend_name() -> String {
     {
         "nova-metal".to_string()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         "nova-dx12".to_string()
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        "nova-vulkan".to_string()
     }
 }
 
