@@ -297,20 +297,35 @@ pub fn retry_launcher(cx: &mut App) -> Option<Arc<str>> {
 
 pub fn copy_launcher_error(cx: &mut App) -> bool {
     let copy_text = cx.read_global(|state: &LauncherState, _cx| {
-        state
+        let logs = state
+            .task_id
+            .as_ref()
+            .map(|task_id| task_manager::task_logs(task_id.as_ref()))
+            .unwrap_or_else(|| Arc::<[Arc<str>]>::from([]));
+        let message = state
             .last_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.message.as_ref())
-            .map(ToString::to_string)
-            .or_else(|| {
-                state.task_id.as_ref().map(|task_id| {
-                    task_manager::task_logs(task_id.as_ref())
-                        .iter()
-                        .map(|line| line.as_ref().to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-            })
+            .map(ToString::to_string);
+
+        match (message, logs.is_empty()) {
+            (Some(message), false) => {
+                let joined = logs
+                    .iter()
+                    .map(|line| line.as_ref().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(format!("{message}\n\n—— 启动日志 ——\n{joined}"))
+            }
+            (Some(message), true) => Some(message),
+            (None, false) => Some(
+                logs.iter()
+                    .map(|line| line.as_ref().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            (None, true) => None,
+        }
     });
 
     if let Some(text) = copy_text.filter(|text| !text.is_empty()) {

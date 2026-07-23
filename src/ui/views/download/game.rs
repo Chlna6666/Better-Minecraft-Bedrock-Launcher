@@ -19,7 +19,7 @@ use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::common::{status_card, wait_task_finished};
 
@@ -1515,6 +1515,7 @@ fn start_game_operation(
         );
     });
 
+    info!("game_op: start package_id={package_id} file_name={file_name} is_gdk={is_gdk} force_download={force_download}");
     cx.spawn(async move |cx| {
         let operation_package_id = package_id.clone();
         let operation_file_name = file_name.clone();
@@ -1555,6 +1556,7 @@ fn start_game_operation(
                         file_name.to_string(),
                         md5_string.clone(),
                         Some(force_download),
+                        None,
                     )
                     .await
                     .map_err(|error| error.to_string())?
@@ -1571,6 +1573,7 @@ fn start_game_operation(
                         file_name.to_string(),
                         md5_string.clone(),
                         Some(force_download),
+                        None,
                     )
                     .await
                     .map_err(|error| error.to_string())?
@@ -1589,12 +1592,9 @@ fn start_game_operation(
                     Some(version_label.to_string()),
                 );
 
-                let snapshot = cx
-                    .background_spawn({
-                        let task_id = task_id.clone();
-                        async move { wait_task_finished(&task_id) }
-                    })
-                    .await?;
+                info!("game_op: waiting for download task_id={task_id}");
+                let snapshot = wait_task_finished(&task_id).await?;
+                info!("game_op: download completed task_id={task_id} status={}", snapshot.status);
                 if snapshot.status.as_ref() != "completed" {
                     return Err(format!(
                         "download {} ({})",
@@ -1610,6 +1610,7 @@ fn start_game_operation(
                     .ok_or_else(|| "download completed but no path returned".to_string())?
             };
 
+            info!("game_op: starting extract file_path={file_path} install_folder={install_folder}");
             let extract_task_id = if is_gdk {
                 crate::core::minecraft::gdk::unpack::start_unpack_gdk_task(
                     file_path.clone(),
@@ -1633,12 +1634,9 @@ fn start_game_operation(
                 warn!("update_global failed: {err:?}");
             }
 
-            let extract_snapshot = cx
-                .background_spawn({
-                    let extract_task_id = extract_task_id.clone();
-                    async move { wait_task_finished(&extract_task_id) }
-                })
-                .await?;
+            info!("game_op: waiting for extract task_id={extract_task_id}");
+            let extract_snapshot = wait_task_finished(&extract_task_id).await?;
+            info!("game_op: extract completed task_id={extract_task_id} status={}", extract_snapshot.status);
             if extract_snapshot.status.as_ref() != "completed" {
                 return Err(format!(
                     "extract {} ({})",
@@ -1683,16 +1681,19 @@ fn start_game_operation(
                 warn!("update_global failed: {err:?}");
             }
 
+            info!("game_op: triggering version refresh after successful download+extract");
             cx.update(|cx| {
                 crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(true, cx);
             })
             .map_err(|error| format!("请求刷新本地游戏版本失败: {error}"))?;
 
+            info!("game_op: download+extract complete");
             Ok::<(), String>(())
         }
         .await;
 
         if let Err(error) = result {
+            warn!("game_op: operation failed error={error}");
             let message = SharedString::from(format!(
                 "{} 操作失败: {}",
                 operation_file_name.as_ref(),
@@ -1706,6 +1707,10 @@ fn start_game_operation(
             }) {
                 warn!("failed to clear game operation after error: {err:?}");
             }
+
+            let _ = cx.update(|cx| {
+                crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(true, cx);
+            });
         }
 
         Ok::<(), anyhow::Error>(())

@@ -3380,6 +3380,7 @@ fn render_curseforge_install_modal(
                         download_url,
                         file_name.clone(),
                         None,
+                        None,
                     )
                     .await?;
 
@@ -3388,12 +3389,7 @@ fn render_curseforge_install_modal(
                     })
                     .map_err(|e| e.to_string())?;
 
-                    let snap = cx
-                        .background_spawn({
-                            let task_id = task_id.clone();
-                            async move { wait_task_finished(&task_id) }
-                        })
-                        .await;
+                    let snap = wait_task_finished(&task_id).await;
                     let snap = snap?;
                     if snap.status.as_ref() != "completed" {
                         return Err(format!(

@@ -501,6 +501,7 @@ impl ManagePageView {
                 if state.version_config_request_id != request_id
                     || state.selected_folder.as_ref() != Some(&version.folder)
                 {
+                    state.version_config_loading = false;
                     return false;
                 }
                 state.version_config_loading = false;
@@ -548,6 +549,7 @@ impl ManagePageView {
                 if state.gdk_users_request_id != request_id
                     || state.selected_folder.as_ref() != Some(&version.folder)
                 {
+                    state.gdk_users_loading = false;
                     return false;
                 }
                 state.gdk_users_loading = false;
@@ -671,6 +673,7 @@ impl ManagePageView {
                     if state.assets_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
+                        state.assets_loading = false;
                         return false;
                     }
                     state.assets_loading = false;
@@ -736,6 +739,7 @@ impl ManagePageView {
                     if state.screenshots_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
+                        state.screenshots_loading = false;
                         return false;
                     }
                     state.screenshots_loading = false;
@@ -798,6 +802,7 @@ impl ManagePageView {
                     if state.servers_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
+                        state.servers_loading = false;
                         return false;
                     }
                     state.servers_loading = false;
@@ -879,6 +884,7 @@ impl ManagePageView {
             let result = data::query_server_motd_batch(servers).await;
             cx.update_global(|state: &mut ManagePageState, _cx| {
                 if state.server_motd_request_id != request_id {
+                    state.server_motd_loading = false;
                     return;
                 }
                 let mut motd = (*state.server_motd).clone();

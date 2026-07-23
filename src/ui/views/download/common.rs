@@ -1,10 +1,11 @@
-use crate::tasks::task_manager::{TaskSnapshot, get_snapshot_arc};
+use crate::tasks::task_manager::{TaskSnapshot, get_snapshot_arc, subscribe_task_updates};
 use crate::ui::theme::colors::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
+use tokio::sync::broadcast::error::RecvError;
+use tracing::{info, warn};
 
 pub(crate) fn status_card(colors: &ThemeColors, text: &str, accent: Option<Hsla>) -> Div {
     let border = accent.unwrap_or(colors.border);
@@ -134,15 +135,48 @@ pub(crate) fn truncate_with_ellipsis(text: &str, max_chars: usize) -> SharedStri
     }
 }
 
-pub(crate) fn wait_task_finished(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
+fn is_task_running_or_paused(snapshot: &TaskSnapshot) -> bool {
+    matches!(snapshot.status.as_ref(), "running" | "paused")
+}
+
+fn check_task_finished(task_id: &str) -> Option<Arc<TaskSnapshot>> {
+    get_snapshot_arc(task_id).filter(|snap| !is_task_running_or_paused(snap))
+}
+
+pub(crate) async fn wait_task_finished(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
+    if let Some(snapshot) = check_task_finished(task_id) {
+        info!("wait_task_finished: already done task_id={task_id} status={}", snapshot.status);
+        return Ok(snapshot);
+    }
+
+    info!("wait_task_finished: waiting task_id={task_id}");
+    let mut receiver = subscribe_task_updates();
+    let mut poll_count: u64 = 0;
+
     loop {
-        let Some(snap) = get_snapshot_arc(task_id) else {
-            thread::sleep(Duration::from_millis(200));
-            continue;
-        };
-        if snap.status.as_ref() != "running" && snap.status.as_ref() != "paused" {
-            return Ok(snap);
+        if let Some(snapshot) = check_task_finished(task_id) {
+            info!("wait_task_finished: done via poll task_id={task_id} status={} poll_count={poll_count}", snapshot.status);
+            return Ok(snapshot);
         }
-        thread::sleep(Duration::from_millis(200));
+
+        poll_count += 1;
+        match tokio::time::timeout(Duration::from_millis(200), receiver.recv()).await {
+            Ok(Ok(snapshot)) => {
+                if snapshot.id.as_ref() == task_id && !is_task_running_or_paused(&snapshot) {
+                    info!("wait_task_finished: done via broadcast task_id={task_id} status={} poll_count={poll_count}", snapshot.status);
+                    return Ok(snapshot);
+                }
+            }
+            Ok(Err(RecvError::Lagged(_))) => {}
+            Ok(Err(RecvError::Closed)) => {
+                if let Some(snapshot) = check_task_finished(task_id) {
+                    info!("wait_task_finished: done via closed channel check task_id={task_id} status={}", snapshot.status);
+                    return Ok(snapshot);
+                }
+                warn!("wait_task_finished: channel closed task_id={task_id}");
+                return Err("任务管理器已关闭".to_string());
+            }
+            Err(_elapsed) => {}
+        }
     }
 }

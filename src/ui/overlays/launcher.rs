@@ -222,23 +222,50 @@ pub fn render_launcher_overlay(
                         )
                         .child(
                             div()
-                                .w(px(32.))
-                                .h(px(32.))
-                                .rounded(px(7.))
-                                .cursor_pointer()
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .hover(|style| style.bg(rgb(0xf1f5f9)))
-                                .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                                    minimize_launcher(cx);
-                                    cx.stop_propagation();
-                                })
+                                .gap(px(4.))
                                 .child(
-                                    svg()
-                                        .path(lucide_icons::icon_minus())
-                                        .size(px(16.))
-                                        .text_color(rgb(0x64748b)),
+                                    div()
+                                        .w(px(32.))
+                                        .h(px(32.))
+                                        .rounded(px(7.))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .hover(|style| style.bg(rgb(0xf1f5f9)))
+                                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                                            let _ = copy_launcher_error(cx);
+                                            cx.stop_propagation();
+                                        })
+                                        .child(
+                                            svg()
+                                                .path(lucide_icons::icon_copy())
+                                                .size(px(16.))
+                                                .text_color(rgb(0x64748b)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(32.))
+                                        .h(px(32.))
+                                        .rounded(px(7.))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .hover(|style| style.bg(rgb(0xf1f5f9)))
+                                        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
+                                            minimize_launcher(cx);
+                                            cx.stop_propagation();
+                                        })
+                                        .child(
+                                            svg()
+                                                .path(lucide_icons::icon_minus())
+                                                .size(px(16.))
+                                                .text_color(rgb(0x64748b)),
+                                        ),
                                 ),
                         ),
                 )
@@ -379,26 +406,53 @@ pub fn render_launcher_overlay(
                         })
                         .when(is_error, |this| {
                             this.flex()
-                                .items_center()
-                                .justify_between()
+                                .flex_col()
+                                .gap(px(10.))
                                 .child(
-                                    ghost_button("复制错误", lucide_icons::icon_copy())
-                                        .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
-                                            let _ = copy_launcher_error(cx);
-                                        }),
-                                )
-                                .child(
-                                    primary_button(
-                                        &colors,
-                                        "重试",
-                                        lucide_icons::icon_rotate_ccw(),
-                                    )
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        move |_ev, _window, cx| {
-                                            let _ = retry_launcher(cx);
-                                        },
-                                    ),
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .text_color(status_color)
+                                                .child(status_text.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child(
+                                                    ghost_button("复制错误", lucide_icons::icon_copy())
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            move |_ev, _window, cx| {
+                                                                let _ = copy_launcher_error(cx);
+                                                                cx.stop_propagation();
+                                                            },
+                                                        ),
+                                                )
+                                                .child(
+                                                    primary_button(
+                                                        &colors,
+                                                        "重试",
+                                                        lucide_icons::icon_rotate_ccw(),
+                                                    )
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        move |_ev, _window, cx| {
+                                                            let _ = retry_launcher(cx);
+                                                            cx.stop_propagation();
+                                                        },
+                                                    ),
+                                                ),
+                                        ),
                                 )
                         }),
                 ),
