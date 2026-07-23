@@ -1,5 +1,5 @@
 use crate::config::config::read_config;
-use crate::downloads::manager::DownloaderManager;
+use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::http::proxy::get_client_for_proxy;
 use crate::result::CoreResult;
 use crate::tasks::task_manager::{create_task_with_details, finish_task};
@@ -470,8 +470,12 @@ pub async fn download_and_apply_update(
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", "BMCBL-Updater".parse().unwrap());
 
+    let options = DownloadOptions {
+        headers: Some(headers),
+        ..Default::default()
+    };
     let res = manager
-        .download_with_options(&task_id, url.clone(), target.clone(), Some(headers), None)
+        .download_with_options(&task_id, url.clone(), target.clone(), &options)
         .await;
 
     let bytes_len = match res {

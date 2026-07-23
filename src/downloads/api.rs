@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 use crate::downloads::integrity::verify_download_integrity;
-use crate::downloads::manager::DownloaderManager;
+use crate::downloads::manager::{DownloadOptions, DownloaderManager};
 use crate::downloads::wu_client::client::WuClient;
 use crate::http::proxy::get_download_client_for_proxy;
 use crate::result::CoreResult;
@@ -111,6 +111,7 @@ pub async fn download_appx(
     file_name: String,
     md5: Option<String>,
     force_download: Option<bool>,
+    download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
     crate::downloads::register_download_task_stage_labels();
     let client =
@@ -158,7 +159,6 @@ pub async fn download_appx(
     let update_id = update_id.to_string();
     let revision = revision.to_string();
     let dest_clone = dest.clone();
-    let md5_clone = md5.clone();
     let task_id_clone = task_id.clone();
 
     let abort_handle =
@@ -206,14 +206,17 @@ pub async fn download_appx(
             }
 
             update_progress(&task_id_clone, 0, None, Some("starting"));
+            let mut options = download_options.unwrap_or_default();
+            if options.md5_expected.is_none() {
+                options.md5_expected = md5;
+            }
             let manager = DownloaderManager::with_client(client);
             let res = manager
-                .download_single_with_url_candidates(
+                .download_with_url_candidates(
                     &task_id_clone,
                     candidates,
                     dest_clone.clone(),
-                    None,
-                    md5_clone.as_deref(),
+                    &options,
                 )
                 .await;
 
@@ -252,6 +255,7 @@ pub async fn download_resource(
     file_name: String,
     md5: Option<String>,
     force_download: Option<bool>,
+    download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
     crate::downloads::register_download_task_stage_labels();
     let client =
@@ -293,7 +297,6 @@ pub async fn download_resource(
     let manager = DownloaderManager::with_client(client);
     let dest_clone = dest.clone();
     let task_id_clone = task_id.clone();
-    let md5_clone = md5.clone();
 
     let abort_handle =
         match crate::downloads::runtime::spawn_download_task(task_id.clone(), async move {
@@ -308,13 +311,16 @@ pub async fn download_resource(
 
             update_progress(&task_id_clone, 0, None, Some("starting"));
 
+            let mut options = download_options.unwrap_or_default();
+            if options.md5_expected.is_none() {
+                options.md5_expected = md5;
+            }
             let res = manager
                 .download_with_options(
                     &task_id_clone,
                     url,
                     dest_clone.clone(),
-                    None,
-                    md5_clone.as_deref(),
+                    &options,
                 )
                 .await;
 
@@ -356,6 +362,7 @@ pub async fn download_resource_to_cache(
     url: String,
     file_name: String,
     md5: Option<String>,
+    download_options: Option<DownloadOptions>,
 ) -> Result<String, String> {
     crate::downloads::register_download_task_stage_labels();
     let client =
@@ -381,7 +388,6 @@ pub async fn download_resource_to_cache(
     let manager = DownloaderManager::with_client(client);
     let dest_clone = dest.clone();
     let task_id_clone = task_id.clone();
-    let md5_clone = md5.clone();
 
     let abort_handle =
         match crate::downloads::runtime::spawn_download_task(task_id.clone(), async move {
@@ -396,13 +402,16 @@ pub async fn download_resource_to_cache(
 
             update_progress(&task_id_clone, 0, None, Some("starting"));
 
+            let mut options = download_options.unwrap_or_default();
+            if options.md5_expected.is_none() {
+                options.md5_expected = md5;
+            }
             let res = manager
                 .download_with_options(
                     &task_id_clone,
                     url,
                     dest_clone.clone(),
-                    None,
-                    md5_clone.as_deref(),
+                    &options,
                 )
                 .await;
 
@@ -508,6 +517,7 @@ mod tests {
             MC_1_21_93_X64_TEST_FILE.to_string(),
             None,
             Some(true),
+            None,
         )
         .await
         .expect("download task should be created");

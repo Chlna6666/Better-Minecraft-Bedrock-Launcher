@@ -32,7 +32,9 @@ const WORKER_BATCH_SIZE: usize = 1024 * 1024;
 const VISUALIZATION_EMIT_INTERVAL_MS: u64 = 250;
 const WRITE_CHANNEL_SIZE: usize = 64;
 
-const MIN_CHUNK_SIZE: u64 = 10 * 1024 * 1024;
+const MIN_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
+const WORK_STEALING_CHUNK_MULTIPLIER: usize = 4;
+const MAX_WORK_STEALING_CHUNKS: usize = 256;
 const RANGE_REQUEST_TIMEOUT_SECS: u64 = 5 * 60;
 const DOWNLOAD_METADATA_TIMEOUT_SECS: u64 = 30;
 const RANGE_REQUEST_ATTEMPTS: usize = 10;
@@ -149,11 +151,14 @@ fn build_thread_visualizations(worker_total: usize) -> Vec<ThreadVisualization> 
 }
 
 fn build_initial_chunk_states(total: u64, threads: usize) -> Vec<ChunkState> {
-    let initial_chunk_size = (total / threads.max(1) as u64).max(MIN_CHUNK_SIZE);
-    let mut chunks = Vec::new();
+    let target_chunks = threads
+        .saturating_mul(WORK_STEALING_CHUNK_MULTIPLIER)
+        .clamp(1, MAX_WORK_STEALING_CHUNKS);
+    let chunk_size = (total / target_chunks as u64).max(MIN_CHUNK_SIZE);
+    let mut chunks = Vec::with_capacity(target_chunks);
     let mut offset = 0;
     while offset < total {
-        let end = (offset + initial_chunk_size - 1).min(total - 1);
+        let end = (offset + chunk_size - 1).min(total - 1);
         chunks.push(ChunkState { start: offset, end });
         offset = end + 1;
     }
@@ -1146,18 +1151,15 @@ mod tests {
     use tokio::task::JoinHandle;
 
     #[test]
-    fn large_files_are_partitioned_by_thread_count() {
+    fn large_files_split_into_work_stealing_queue() {
         let total = 938_519_123;
-        let chunks = build_initial_chunk_states(total, 16);
+        let threads = 16;
+        let chunks = build_initial_chunk_states(total, threads);
 
-        assert_eq!(chunks.len(), 17);
+        let expected_target = (threads * WORK_STEALING_CHUNK_MULTIPLIER).min(MAX_WORK_STEALING_CHUNKS);
+        let expected_chunk_size = (total / expected_target as u64).max(MIN_CHUNK_SIZE);
+
         assert_eq!(chunks.first().map(|chunk| chunk.start), Some(0));
-        assert_eq!(
-            chunks
-                .first()
-                .map(|chunk| inclusive_range_len(chunk.start, chunk.end)),
-            Some(total / 16)
-        );
         assert_eq!(chunks.last().map(|chunk| chunk.end), Some(total - 1));
         assert_eq!(
             chunks
@@ -1165,6 +1167,16 @@ mod tests {
                 .map(|chunk| inclusive_range_len(chunk.start, chunk.end))
                 .sum::<u64>(),
             total
+        );
+        for chunk in &chunks[..chunks.len().saturating_sub(1)] {
+            assert_eq!(
+                inclusive_range_len(chunk.start, chunk.end),
+                expected_chunk_size
+            );
+        }
+        assert!(
+            inclusive_range_len(chunks.last().unwrap().start, chunks.last().unwrap().end)
+                <= expected_chunk_size
         );
     }
 

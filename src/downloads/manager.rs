@@ -18,6 +18,47 @@ use std::path::Path;
 use std::path::PathBuf;
 use tracing::debug;
 
+#[derive(Debug, Clone)]
+pub struct DownloadOptions {
+    pub headers: Option<HeaderMap>,
+    pub md5_expected: Option<String>,
+    pub threads: Option<usize>,
+}
+
+impl Default for DownloadOptions {
+    fn default() -> Self {
+        Self {
+            headers: None,
+            md5_expected: None,
+            threads: None,
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl DownloadOptions {
+    pub fn with_threads(threads: usize) -> Self {
+        Self {
+            threads: Some(threads),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_md5(md5: impl Into<String>) -> Self {
+        Self {
+            md5_expected: Some(md5.into()),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_headers(headers: HeaderMap) -> Self {
+        Self {
+            headers: Some(headers),
+            ..Default::default()
+        }
+    }
+}
+
 pub struct DownloaderManager {
     client: Client,
 }
@@ -268,6 +309,22 @@ fn is_non_retryable_candidate_error(error: &CoreError) -> bool {
     matches!(error, CoreError::ChecksumMismatch(_))
 }
 
+fn resolve_thread_count(preferred: Option<usize>) -> usize {
+    if let Some(threads) = preferred {
+        return threads.clamp(1, MAX_MANUAL_DOWNLOAD_THREADS);
+    }
+    let configured_threads = match read_config() {
+        Ok(config) if config.launcher.download.auto_thread_count => num_cpus::get()
+            .saturating_sub(1)
+            .clamp(2, MAX_DOWNLOAD_THREADS),
+        Ok(config) if config.launcher.download.multi_thread => {
+            (config.launcher.download.max_threads as usize).clamp(1, MAX_MANUAL_DOWNLOAD_THREADS)
+        }
+        _ => 1,
+    };
+    configured_threads
+}
+
 impl DownloaderManager {
     pub fn with_client(client: Client) -> Self {
         Self { client }
@@ -279,27 +336,17 @@ impl DownloaderManager {
         task_id: &str,
         url: String,
         dest: PathBuf,
-        headers: Option<HeaderMap>, // [新增]
-        md5_expected: Option<&str>,
+        options: &DownloadOptions,
     ) -> Result<CoreResult<PathBuf>, CoreError> {
         crate::downloads::register_download_task_stage_labels();
-        let config = read_config().map_err(|e| CoreError::Config(e.to_string()))?;
 
-        let configured_threads = if config.launcher.download.auto_thread_count {
-            num_cpus::get()
-                .saturating_sub(1)
-                .clamp(2, MAX_DOWNLOAD_THREADS)
-        } else if config.launcher.download.multi_thread {
-            (config.launcher.download.max_threads as usize).clamp(1, MAX_MANUAL_DOWNLOAD_THREADS)
-        } else {
-            1
-        };
+        let configured_threads = resolve_thread_count(options.threads);
         let task_control = task_control(task_id)
             .ok_or_else(|| CoreError::Other(format!("Task control missing for {task_id}")))?;
 
         update_progress(task_id, 0, None, Some("downloading"));
 
-        let final_dest = resolve_final_dest(&self.client, &url, &dest, headers.as_ref())
+        let final_dest = resolve_final_dest(&self.client, &url, &dest, options.headers.as_ref())
             .await
             .unwrap_or(dest.clone());
         let temp_dest = temp_download_path(&final_dest);
@@ -321,8 +368,8 @@ impl DownloaderManager {
                     &url,
                     &temp_dest,
                     threads,
-                    headers.clone(),
-                    md5_expected,
+                    options.headers.clone(),
+                    options.md5_expected.as_deref(),
                 )
                 .await
             } else {
@@ -332,8 +379,8 @@ impl DownloaderManager {
                     task_id,
                     &url,
                     &temp_dest,
-                    headers.clone(),
-                    md5_expected,
+                    options.headers.clone(),
+                    options.md5_expected.as_deref(),
                 )
                 .await
             };
@@ -426,8 +473,7 @@ impl DownloaderManager {
         task_id: &str,
         urls: Vec<String>,
         dest: PathBuf,
-        headers: Option<HeaderMap>,
-        md5_expected: Option<&str>,
+        options: &DownloadOptions,
     ) -> Result<CoreResult<PathBuf>, CoreError> {
         if urls.is_empty() {
             return Err(CoreError::BadUpdateIdentity);
@@ -443,13 +489,7 @@ impl DownloaderManager {
                 url
             );
             match self
-                .download_with_options(
-                    task_id,
-                    url.clone(),
-                    dest.clone(),
-                    headers.clone(),
-                    md5_expected,
-                )
+                .download_with_options(task_id, url.clone(), dest.clone(), options)
                 .await
             {
                 Ok(CoreResult::Success(path)) => return Ok(CoreResult::Success(path)),
@@ -496,86 +536,13 @@ impl DownloaderManager {
         headers: Option<HeaderMap>,
         md5_expected: Option<&str>,
     ) -> Result<CoreResult<PathBuf>, CoreError> {
-        crate::downloads::register_download_task_stage_labels();
-        if urls.is_empty() {
-            return Err(CoreError::BadUpdateIdentity);
-        }
-
-        let task_control = task_control(task_id)
-            .ok_or_else(|| CoreError::Other(format!("Task control missing for {task_id}")))?;
-
-        update_progress(task_id, 0, None, Some("downloading"));
-
-        let final_dest = resolve_final_dest(&self.client, &urls[0], &dest, headers.as_ref())
+        let options = DownloadOptions {
+            headers,
+            md5_expected: md5_expected.map(String::from),
+            threads: Some(1),
+        };
+        self.download_with_url_candidates(task_id, urls, dest, &options)
             .await
-            .unwrap_or(dest);
-        let temp_dest = temp_download_path(&final_dest);
-
-        let total = urls.len();
-        let mut last_error = None;
-        for (index, url) in urls.into_iter().enumerate() {
-            debug!(
-                "DownloaderManager trying single-thread download url candidate {}/{}: {}",
-                index + 1,
-                total,
-                url
-            );
-            reset_progress(task_id, None, Some("downloading"));
-            remove_file_if_exists(&temp_dest).await;
-
-            match download_file(
-                self.client.clone(),
-                task_control.clone(),
-                task_id,
-                &url,
-                &temp_dest,
-                headers.clone(),
-                md5_expected,
-            )
-            .await
-            {
-                Ok(CoreResult::Success(_)) => {
-                    update_progress(task_id, 0, None, Some("verifying"));
-                    if let Err(error) = verify_temp_download(&temp_dest).await {
-                        remove_file_if_exists(&temp_dest).await;
-                        last_error = Some(error);
-                        continue;
-                    }
-
-                    if temp_dest != final_dest {
-                        update_progress(task_id, 0, None, Some("renaming"));
-                        match rename_overwrite(&temp_dest, &final_dest).await {
-                            Ok(()) => return Ok(CoreResult::Success(final_dest.clone())),
-                            Err(error) => {
-                                debug!(
-                                    "rename_overwrite failed src={} dst={} err={}",
-                                    temp_dest.to_string_lossy(),
-                                    final_dest.to_string_lossy(),
-                                    error
-                                );
-                                return Ok(CoreResult::Success(temp_dest));
-                            }
-                        }
-                    }
-
-                    return Ok(CoreResult::Success(final_dest.clone()));
-                }
-                Ok(CoreResult::Cancelled) => return Ok(CoreResult::Cancelled),
-                Ok(CoreResult::Error(error)) | Err(error) => {
-                    debug!(
-                        "DownloaderManager single-thread url candidate failed {}/{} url={} error={}",
-                        index + 1,
-                        total,
-                        url,
-                        error
-                    );
-                    remove_file_if_exists(&temp_dest).await;
-                    last_error = Some(error);
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or(CoreError::BadUpdateIdentity))
     }
 
     /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
@@ -583,7 +550,7 @@ impl DownloaderManager {
         &self,
         url: String,
         dest: PathBuf,
-        md5_expected: Option<String>,
+        options: DownloadOptions,
     ) -> String {
         crate::downloads::register_download_task_stage_labels();
         let task_id = create_task_with_details(
@@ -596,10 +563,8 @@ impl DownloaderManager {
         );
         let client = self.client.clone();
 
-        // clones for task
         let url_clone = url.clone();
         let dest_clone = dest.clone();
-        let md5_clone = md5_expected.clone();
         let task_id_clone = task_id.clone();
 
         let abort_handle = match spawn_download_task(task_id.clone(), async move {
@@ -608,13 +573,7 @@ impl DownloaderManager {
             let manager = DownloaderManager::with_client(client);
 
             let res = manager
-                .download_with_options(
-                    &task_id_clone,
-                    url_clone,
-                    dest_clone.clone(),
-                    None, // 默认不传 header
-                    md5_clone.as_deref(),
-                )
+                .download_with_options(&task_id_clone, url_clone, dest_clone.clone(), &options)
                 .await;
 
             match res {

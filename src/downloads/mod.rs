@@ -8,6 +8,8 @@ mod single;
 mod md5;
 pub mod wu_client;
 
+pub use manager::DownloadOptions;
+
 const DOWNLOAD_TASK_STAGE_LABELS: [(&str, &str); 9] = [
     ("downloading", "下载中"),
     ("merging", "合并文件"),
