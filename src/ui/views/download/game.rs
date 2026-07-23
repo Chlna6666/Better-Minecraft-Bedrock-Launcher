@@ -1515,7 +1515,9 @@ fn start_game_operation(
         );
     });
 
-    info!("game_op: start package_id={package_id} file_name={file_name} is_gdk={is_gdk} force_download={force_download}");
+    info!(
+        "game_op: start package_id={package_id} file_name={file_name} is_gdk={is_gdk} force_download={force_download}"
+    );
     cx.spawn(async move |cx| {
         let operation_package_id = package_id.clone();
         let operation_file_name = file_name.clone();
@@ -1594,7 +1596,10 @@ fn start_game_operation(
 
                 info!("game_op: waiting for download task_id={task_id}");
                 let snapshot = wait_task_finished(&task_id).await?;
-                info!("game_op: download completed task_id={task_id} status={}", snapshot.status);
+                info!(
+                    "game_op: download completed task_id={task_id} status={}",
+                    snapshot.status
+                );
                 if snapshot.status.as_ref() != "completed" {
                     return Err(format!(
                         "download {} ({})",
@@ -1610,7 +1615,9 @@ fn start_game_operation(
                     .ok_or_else(|| "download completed but no path returned".to_string())?
             };
 
-            info!("game_op: starting extract file_path={file_path} install_folder={install_folder}");
+            info!(
+                "game_op: starting extract file_path={file_path} install_folder={install_folder}"
+            );
             let extract_task_id = if is_gdk {
                 crate::core::minecraft::gdk::unpack::start_unpack_gdk_task(
                     file_path.clone(),
@@ -1636,7 +1643,10 @@ fn start_game_operation(
 
             info!("game_op: waiting for extract task_id={extract_task_id}");
             let extract_snapshot = wait_task_finished(&extract_task_id).await?;
-            info!("game_op: extract completed task_id={extract_task_id} status={}", extract_snapshot.status);
+            info!(
+                "game_op: extract completed task_id={extract_task_id} status={}",
+                extract_snapshot.status
+            );
             if extract_snapshot.status.as_ref() != "completed" {
                 return Err(format!(
                     "extract {} ({})",

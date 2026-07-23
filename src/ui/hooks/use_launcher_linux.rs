@@ -199,9 +199,7 @@ pub fn copy_launcher_error(cx: &mut App) -> bool {
             (None, true) => None,
         }
     });
-    let has_text = copy_text
-        .as_ref()
-        .is_some_and(|text| !text.is_empty());
+    let has_text = copy_text.as_ref().is_some_and(|text| !text.is_empty());
     debug!(
         has_text,
         text_len = copy_text.as_ref().map(|text| text.len()).unwrap_or(0),

@@ -145,7 +145,10 @@ fn check_task_finished(task_id: &str) -> Option<Arc<TaskSnapshot>> {
 
 pub(crate) async fn wait_task_finished(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
     if let Some(snapshot) = check_task_finished(task_id) {
-        info!("wait_task_finished: already done task_id={task_id} status={}", snapshot.status);
+        info!(
+            "wait_task_finished: already done task_id={task_id} status={}",
+            snapshot.status
+        );
         return Ok(snapshot);
     }
 
@@ -155,7 +158,10 @@ pub(crate) async fn wait_task_finished(task_id: &str) -> Result<Arc<TaskSnapshot
 
     loop {
         if let Some(snapshot) = check_task_finished(task_id) {
-            info!("wait_task_finished: done via poll task_id={task_id} status={} poll_count={poll_count}", snapshot.status);
+            info!(
+                "wait_task_finished: done via poll task_id={task_id} status={} poll_count={poll_count}",
+                snapshot.status
+            );
             return Ok(snapshot);
         }
 
@@ -163,14 +169,20 @@ pub(crate) async fn wait_task_finished(task_id: &str) -> Result<Arc<TaskSnapshot
         match tokio::time::timeout(Duration::from_millis(200), receiver.recv()).await {
             Ok(Ok(snapshot)) => {
                 if snapshot.id.as_ref() == task_id && !is_task_running_or_paused(&snapshot) {
-                    info!("wait_task_finished: done via broadcast task_id={task_id} status={} poll_count={poll_count}", snapshot.status);
+                    info!(
+                        "wait_task_finished: done via broadcast task_id={task_id} status={} poll_count={poll_count}",
+                        snapshot.status
+                    );
                     return Ok(snapshot);
                 }
             }
             Ok(Err(RecvError::Lagged(_))) => {}
             Ok(Err(RecvError::Closed)) => {
                 if let Some(snapshot) = check_task_finished(task_id) {
-                    info!("wait_task_finished: done via closed channel check task_id={task_id} status={}", snapshot.status);
+                    info!(
+                        "wait_task_finished: done via closed channel check task_id={task_id} status={}",
+                        snapshot.status
+                    );
                     return Ok(snapshot);
                 }
                 warn!("wait_task_finished: channel closed task_id={task_id}");

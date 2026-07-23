@@ -116,15 +116,13 @@ async fn copy_runner_dlls(
         if dest.exists() {
             continue;
         }
-        tokio::fs::copy(&source, &dest)
-            .await
-            .map_err(|error| {
-                format!(
-                    "复制 {} 到 {} 失败：{error}",
-                    source.display(),
-                    dest.display()
-                )
-            })?;
+        tokio::fs::copy(&source, &dest).await.map_err(|error| {
+            format!(
+                "复制 {} 到 {} 失败：{error}",
+                source.display(),
+                dest.display()
+            )
+        })?;
         copied += 1;
     }
     debug!(copied, "copied Proton runtime DLLs to Wine prefix");
@@ -184,7 +182,10 @@ async fn inject_bloader(exe_path: &Path, task_id: &str) -> Result<(), String> {
         tokio::fs::write(&injector_path, INJECTOR_BYTES)
             .await
             .map_err(|error| format!("写入 BLoader.dll 失败：{error}"))?;
-        append_task_log(task_id, format!("部署 BLoader.dll：{}", injector_path.display()));
+        append_task_log(
+            task_id,
+            format!("部署 BLoader.dll：{}", injector_path.display()),
+        );
     }
     if crate::core::inject::pe::is_file_patched(exe_path) {
         append_task_log(task_id, "游戏 EXE 已包含补丁标记，跳过注入".to_string());
@@ -290,7 +291,10 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             let windows_game_executable = wine_z_path(&game_executable)?;
             append_task_log(
                 task_id,
-                format!("GDK 游戏路径：{}", windows_game_executable.to_string_lossy()),
+                format!(
+                    "GDK 游戏路径：{}",
+                    windows_game_executable.to_string_lossy()
+                ),
             );
             command
                 .env("WINEPREFIX", prefix_path.join("pfx"))
@@ -379,18 +383,13 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 };
                 append_task_log(
                     task_id,
-                    format!(
-                        "兼容环境在启动检测期内退出（{status}），继续监控游戏进程{detail}"
-                    ),
+                    format!("兼容环境在启动检测期内退出（{status}），继续监控游戏进程{detail}"),
                 );
             }
         }
         Ok(None) => {}
         Err(error) => {
-            append_task_log(
-                task_id,
-                format!("检查兼容环境进程状态失败：{error}"),
-            );
+            append_task_log(task_id, format!("检查兼容环境进程状态失败：{error}"));
         }
     }
     spawn_process_monitor(task_id.to_string(), child);
@@ -446,8 +445,7 @@ async fn stop_lingering_proton_processes(
         let code = output.status.code().unwrap_or(-1);
         warn!(
             task_id,
-            code,
-            "wineserver -k exited non-zero; treating as no-op when no process is running"
+            code, "wineserver -k exited non-zero; treating as no-op when no process is running"
         );
         append_task_log(
             task_id,
