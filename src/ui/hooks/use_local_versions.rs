@@ -200,6 +200,8 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
     });
 
     if !should_spawn {
+        info!(force_refresh, "ensure_local_versions_loaded: refresh skipped (already loading or loaded)");
+        sync_manage_page_state_from_local_versions(cx);
         return;
     }
 

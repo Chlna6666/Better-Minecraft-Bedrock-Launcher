@@ -169,21 +169,44 @@ pub fn retry_launcher(cx: &mut App) -> Option<Arc<str>> {
 
 pub fn copy_launcher_error(cx: &mut App) -> bool {
     let copy_text = cx.read_global(|state: &LauncherState, _cx| {
-        state
+        let logs = state
+            .task_id
+            .as_ref()
+            .map(|task_id| task_manager::task_logs(task_id.as_ref()))
+            .unwrap_or_else(|| Arc::<[Arc<str>]>::from([]));
+        let message = state
             .last_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.message.as_ref())
-            .map(ToString::to_string)
-            .or_else(|| {
-                state.task_id.as_ref().map(|task_id| {
-                    task_manager::task_logs(task_id.as_ref())
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-            })
+            .map(ToString::to_string);
+
+        match (message, logs.is_empty()) {
+            (Some(message), false) => {
+                let joined = logs
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(format!("{message}\n\n—— 启动日志 ——\n{joined}"))
+            }
+            (Some(message), true) => Some(message),
+            (None, false) => Some(
+                logs.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            (None, true) => None,
+        }
     });
+    let has_text = copy_text
+        .as_ref()
+        .is_some_and(|text| !text.is_empty());
+    debug!(
+        has_text,
+        text_len = copy_text.as_ref().map(|text| text.len()).unwrap_or(0),
+        "copy_launcher_error invoked"
+    );
     if let Some(text) = copy_text.filter(|text| !text.is_empty()) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         return true;

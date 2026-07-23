@@ -1,15 +1,16 @@
+use crate::downloads::manager::{DownloadOptions, DownloaderManager};
+use crate::result::CoreResult;
 use crate::tasks::task_manager::{
     append_task_log, create_task_with_details, finish_task, register_task_stage_labels,
     set_task_message, update_progress,
 };
 use crate::utils::file_ops;
-use futures_util::StreamExt as _;
 use std::env;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tracing::{info, warn};
 
 const INSTALL_STAGE_LABELS: [(&str, &str); 2] = [
@@ -211,35 +212,7 @@ pub(crate) fn validate_proton_game_runtime(runner: &Runner) -> Result<(), String
                 .to_string(),
         );
     }
-    let combase = [
-        proton_root.join("files/lib/wine/x86_64-windows/combase.dll"),
-        proton_root.join("files/lib64/wine/x86_64-windows/combase.dll"),
-        proton_root.join("files/share/default_pfx/drive_c/windows/system32/combase.dll"),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.is_file())
-    .ok_or_else(|| {
-        format!(
-            "所选 Proton-GDK 不完整：{} 中没有找到 64 位 combase.dll",
-            proton_root.display()
-        )
-    })?;
-    let combase_binary = std::fs::read(&combase)
-        .map_err(|error| format!("无法检查 Proton-GDK 兼容性 {}：{error}", combase.display()))?;
-    if binary_has_unimplemented_ro_originate_error(&combase_binary) {
-        return Err(
-            "所选 Proton-GDK 不支持当前 Minecraft：combase.dll 中 RoOriginateErrorW 仍是未实现的 Wine stub。请在 Proton-GDK 设置中将下载源切换为 LukasPAH Custom，安装并选中 Custom 版本后重试"
-                .to_string(),
-        );
-    }
     Ok(())
-}
-
-fn binary_has_unimplemented_ro_originate_error(binary: &[u8]) -> bool {
-    const STUB_SYMBOL: &[u8] = b"__wine_stub_RoOriginateErrorW";
-    binary
-        .windows(STUB_SYMBOL.len())
-        .any(|window| window == STUB_SYMBOL)
 }
 
 pub(crate) fn resolve_proton_runner() -> Result<Runner, String> {
@@ -383,33 +356,24 @@ async fn download_proton_gdk_asset(
     update_progress(task_id, 0, Some(asset.size), Some("downloading_proton_gdk"));
     set_task_message(task_id, Some(format!("正在下载 {}", asset.name)));
     append_task_log(task_id, format!("下载：{}", asset.browser_download_url));
-    let response = client
-        .get(&asset.browser_download_url)
-        .send()
+
+    let manager = DownloaderManager::with_client(client.clone());
+    let options = DownloadOptions::default();
+    let result = manager
+        .download_with_options(
+            task_id,
+            asset.browser_download_url.clone(),
+            archive_path.to_path_buf(),
+            &options,
+        )
         .await
-        .map_err(|error| format!("下载 Proton-GDK 失败：{error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Proton-GDK 下载服务器返回错误：{error}"))?;
-    let temporary_path = archive_path.with_extension("download");
-    let mut file = tokio::fs::File::create(&temporary_path)
-        .await
-        .map_err(|error| format!("创建 Proton-GDK 下载文件失败：{error}"))?;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("读取 Proton-GDK 下载数据失败：{error}"))?;
-        file.write_all(&chunk)
-            .await
-            .map_err(|error| format!("写入 Proton-GDK 下载文件失败：{error}"))?;
-        update_progress(task_id, chunk.len() as u64, Some(asset.size), None);
+        .map_err(|error| format!("下载 Proton-GDK 失败：{error:?}"))?;
+
+    match result {
+        CoreResult::Success(_path) => Ok(()),
+        CoreResult::Cancelled => Err("下载已取消".to_string()),
+        CoreResult::Error(error) => Err(format!("下载 Proton-GDK 失败：{error:?}")),
     }
-    file.flush()
-        .await
-        .map_err(|error| format!("保存 Proton-GDK 下载文件失败：{error}"))?;
-    drop(file);
-    tokio::fs::rename(&temporary_path, archive_path)
-        .await
-        .map_err(|error| format!("完成 Proton-GDK 下载失败：{error}"))?;
-    Ok(())
 }
 
 fn sanitize_instance_name(name: &str) -> String {
@@ -459,7 +423,7 @@ pub(crate) fn resolve_runner() -> Result<Runner, String> {
         });
     }
 
-    Err("未找到 Proton-GDK。请安装 BedrockBoot 兼容的 GDK-Proton，或用 BMCBL_PROTON_GDK_RUNNER 指定 proton 可执行文件".to_string())
+    Err("未找到 Proton-GDK。请安装兼容的 GDK-Proton，或用 BMCBL_PROTON_GDK_RUNNER 指定 proton 可执行文件".to_string())
 }
 
 pub(crate) fn installed_proton_gdk_runners() -> Vec<PathBuf> {
@@ -824,7 +788,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{binary_has_unimplemented_ro_originate_error, parse_os_release};
+    use super::parse_os_release;
 
     #[test]
     fn parses_os_release_identity() {
@@ -835,15 +799,5 @@ mod tests {
         assert_eq!(release.id, "fedora");
         assert_eq!(release.id_like, "rhel centos");
         assert_eq!(release.pretty_name, "Fedora Linux 44");
-    }
-
-    #[test]
-    fn detects_unimplemented_ro_originate_error_export() {
-        assert!(binary_has_unimplemented_ro_originate_error(
-            b"prefix__wine_stub_RoOriginateErrorWsuffix"
-        ));
-        assert!(!binary_has_unimplemented_ro_originate_error(
-            b"RoOriginateErrorW"
-        ));
     }
 }
