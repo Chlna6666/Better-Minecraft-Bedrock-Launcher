@@ -316,12 +316,7 @@ pub async fn download_resource(
                 options.md5_expected = md5;
             }
             let res = manager
-                .download_with_options(
-                    &task_id_clone,
-                    url,
-                    dest_clone.clone(),
-                    &options,
-                )
+                .download_with_options(&task_id_clone, url, dest_clone.clone(), &options)
                 .await;
 
             match res {
@@ -407,12 +402,7 @@ pub async fn download_resource_to_cache(
                 options.md5_expected = md5;
             }
             let res = manager
-                .download_with_options(
-                    &task_id_clone,
-                    url,
-                    dest_clone.clone(),
-                    &options,
-                )
+                .download_with_options(&task_id_clone, url, dest_clone.clone(), &options)
                 .await;
 
             match res {

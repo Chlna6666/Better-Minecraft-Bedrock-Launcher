@@ -3,6 +3,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::{self, HeaderMap, HeaderValue};
+use std::collections::VecDeque;
 use std::fs::{File as StdFile, OpenOptions as StdOpenOptions};
 use std::io;
 use std::path::Path;
@@ -25,79 +26,254 @@ use crate::tasks::task_manager::{
 };
 
 // =========================================================================
-// 性能配置常量 (针对 2.5G+ 宽带优化)
+// 性能配置常量 (双端动态工作抢夺优化)
 // =========================================================================
 
 const WORKER_BATCH_SIZE: usize = 1024 * 1024;
 const VISUALIZATION_EMIT_INTERVAL_MS: u64 = 250;
 const WRITE_CHANNEL_SIZE: usize = 64;
 
-const MIN_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
-const WORK_STEALING_CHUNK_MULTIPLIER: usize = 4;
-const MAX_WORK_STEALING_CHUNKS: usize = 256;
+const DEFAULT_DYNAMIC_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
+const MIN_DYNAMIC_CHUNK_SIZE: u64 = 2 * 1024 * 1024;
+const MAX_DYNAMIC_CHUNK_SIZE: u64 = 32 * 1024 * 1024;
+const MIN_STEAL_SIZE: u64 = 2 * 1024 * 1024;
+const TARGET_CHUNK_DURATION_SECS: f64 = 1.0;
+
 const RANGE_REQUEST_TIMEOUT_SECS: u64 = 5 * 60;
 const DOWNLOAD_METADATA_TIMEOUT_SECS: u64 = 30;
 const RANGE_REQUEST_ATTEMPTS: usize = 10;
 
-#[derive(Clone, Debug)]
-struct ChunkState {
-    start: u64,
-    end: u64,
-}
-
 // =========================================================================
-// 任务管理结构
+// 主区间与动态 Task 管理结构
 // =========================================================================
 
 #[derive(Debug)]
-struct ChunkSlot {
+struct PrimaryPartition {
     id: usize,
     start: u64,
     end: u64,
-    is_active: AtomicBool,
-    is_done: AtomicBool,
+    front_cursor: u64,
+    back_cursor: u64,
+    smoothed_speed: f64,
+    completed_bytes: u64,
+    active_request_count: usize,
 }
 
-struct AdaptiveTaskManager {
-    slots: Mutex<Vec<Arc<ChunkSlot>>>,
-    total_slots: AtomicUsize,
+#[derive(Debug, Clone)]
+struct WorkUnit {
+    partition_id: usize,
+    start: u64,
+    end: u64,
+    attempt: usize,
+    is_retry: bool,
 }
 
-impl AdaptiveTaskManager {
-    fn new() -> Self {
+struct DynamicRangeScheduler {
+    total_size: u64,
+    partitions: Mutex<Vec<PrimaryPartition>>,
+    retry_queue: Mutex<VecDeque<WorkUnit>>,
+    active_work_units: AtomicUsize,
+    notify: Arc<Notify>,
+}
+
+impl DynamicRangeScheduler {
+    fn new(total_size: u64, worker_count: usize) -> Self {
+        let minimum_partition_size = MIN_DYNAMIC_CHUNK_SIZE;
+        let effective_workers = if total_size == 0 {
+            1
+        } else {
+            let max_possible = (total_size + minimum_partition_size - 1) / minimum_partition_size;
+            (worker_count as u64).min(max_possible).max(1) as usize
+        };
+
+        let mut partitions = Vec::with_capacity(effective_workers);
+        for index in 0..effective_workers {
+            let start = total_size * (index as u64) / (effective_workers as u64);
+            let end = total_size * ((index + 1) as u64) / (effective_workers as u64);
+            partitions.push(PrimaryPartition {
+                id: index,
+                start,
+                end,
+                front_cursor: start,
+                back_cursor: end,
+                smoothed_speed: 0.0,
+                completed_bytes: 0,
+                active_request_count: 0,
+            });
+        }
+
         Self {
-            slots: Mutex::new(Vec::new()),
-            total_slots: AtomicUsize::new(0),
+            total_size,
+            partitions: Mutex::new(partitions),
+            retry_queue: Mutex::new(VecDeque::new()),
+            active_work_units: AtomicUsize::new(0),
+            notify: Arc::new(Notify::new()),
         }
     }
 
-    async fn add_tasks(&self, chunks: Vec<ChunkState>) {
-        self.total_slots.store(chunks.len(), Ordering::Relaxed);
-        let mut guard = self.slots.lock().await;
-        for (i, chunk) in chunks.into_iter().enumerate() {
-            guard.push(Arc::new(ChunkSlot {
-                id: i,
-                start: chunk.start,
-                end: chunk.end,
-                is_active: AtomicBool::new(false),
-                is_done: AtomicBool::new(false),
-            }));
+    async fn effective_worker_count(&self) -> usize {
+        self.partitions.lock().await.len()
+    }
+
+    async fn claim_retry(&self) -> Option<WorkUnit> {
+        let mut retry_queue_guard = self.retry_queue.lock().await;
+        if let Some(unit) = retry_queue_guard.pop_front() {
+            self.active_work_units.fetch_add(1, Ordering::Relaxed);
+            Some(unit)
+        } else {
+            None
         }
     }
 
-    async fn get_next_task(&self) -> Option<Arc<ChunkSlot>> {
-        let guard = self.slots.lock().await;
-        for slot in guard.iter() {
-            if !slot.is_active.load(Ordering::Relaxed) && !slot.is_done.load(Ordering::Relaxed) {
-                slot.is_active.store(true, Ordering::Relaxed);
-                return Some(slot.clone());
+    async fn push_retry(&self, mut unit: WorkUnit) {
+        unit.attempt += 1;
+        unit.is_retry = true;
+        {
+            let mut retry_queue_guard = self.retry_queue.lock().await;
+            retry_queue_guard.push_back(unit);
+        }
+        self.notify.notify_waiters();
+    }
+
+    async fn claim_local(&self, worker_id: usize, desired_size: u64) -> Option<WorkUnit> {
+        let mut partitions_guard = self.partitions.lock().await;
+        let partition = partitions_guard.iter_mut().find(|p| p.id == worker_id)?;
+        if partition.front_cursor < partition.back_cursor {
+            let available = partition.back_cursor - partition.front_cursor;
+            let claim_size = desired_size.min(available);
+            let start = partition.front_cursor;
+            let end = start + claim_size;
+            partition.front_cursor = end;
+            partition.active_request_count += 1;
+            self.active_work_units.fetch_add(1, Ordering::Relaxed);
+            Some(WorkUnit {
+                partition_id: partition.id,
+                start,
+                end,
+                attempt: 0,
+                is_retry: false,
+            })
+        } else {
+            None
+        }
+    }
+
+    async fn steal(&self, worker_id: usize, desired_size: u64) -> Option<WorkUnit> {
+        let mut partitions_guard = self.partitions.lock().await;
+
+        let mut best_victim_index = None;
+        let mut max_estimated_time = -1.0f64;
+
+        for (index, partition) in partitions_guard.iter().enumerate() {
+            if partition.id == worker_id {
+                continue;
+            }
+            if partition.back_cursor <= partition.front_cursor {
+                continue;
+            }
+            let stealable_bytes = partition.back_cursor - partition.front_cursor;
+            if stealable_bytes < MIN_STEAL_SIZE {
+                continue;
+            }
+
+            let estimated_time = if partition.smoothed_speed > 0.0 {
+                stealable_bytes as f64 / partition.smoothed_speed
+            } else {
+                stealable_bytes as f64
+            };
+
+            if estimated_time > max_estimated_time {
+                max_estimated_time = estimated_time;
+                best_victim_index = Some(index);
             }
         }
-        None
+
+        let victim_index = best_victim_index?;
+        let partition = &mut partitions_guard[victim_index];
+        let stealable_bytes = partition.back_cursor - partition.front_cursor;
+        if stealable_bytes < MIN_STEAL_SIZE {
+            return None;
+        }
+
+        let raw_steal_size = desired_size.min(stealable_bytes / 2);
+        let steal_size = raw_steal_size
+            .clamp(MIN_STEAL_SIZE, MAX_DYNAMIC_CHUNK_SIZE)
+            .min(stealable_bytes);
+
+        if steal_size < MIN_STEAL_SIZE
+            || stealable_bytes.saturating_sub(steal_size) < MIN_STEAL_SIZE
+        {
+            if stealable_bytes < MIN_STEAL_SIZE * 2 {
+                return None;
+            }
+        }
+
+        let steal_end = partition.back_cursor;
+        let steal_start = partition.back_cursor - steal_size;
+        if steal_start < partition.front_cursor {
+            return None;
+        }
+
+        partition.back_cursor = steal_start;
+        partition.active_request_count += 1;
+        self.active_work_units.fetch_add(1, Ordering::Relaxed);
+
+        Some(WorkUnit {
+            partition_id: partition.id,
+            start: steal_start,
+            end: steal_end,
+            attempt: 0,
+            is_retry: false,
+        })
     }
 
-    fn slot_total(&self) -> usize {
-        self.total_slots.load(Ordering::Relaxed)
+    async fn record_completion(&self, partition_id: usize, bytes_downloaded: u64, elapsed_secs: f64) {
+        self.active_work_units.fetch_sub(1, Ordering::Relaxed);
+        {
+            let mut partitions_guard = self.partitions.lock().await;
+            if let Some(partition) = partitions_guard.iter_mut().find(|p| p.id == partition_id) {
+                partition.completed_bytes += bytes_downloaded;
+                partition.active_request_count = partition.active_request_count.saturating_sub(1);
+                if elapsed_secs > 0.001 && bytes_downloaded > 0 {
+                    let sample_speed = bytes_downloaded as f64 / elapsed_secs;
+                    let alpha = 0.3;
+                    partition.smoothed_speed = if partition.smoothed_speed <= 0.0 {
+                        sample_speed
+                    } else {
+                        alpha * sample_speed + (1.0 - alpha) * partition.smoothed_speed
+                    };
+                }
+            }
+        }
+        self.notify.notify_waiters();
+    }
+
+    async fn record_unit_released(&self) {
+        self.active_work_units.fetch_sub(1, Ordering::Relaxed);
+        self.notify.notify_waiters();
+    }
+
+    async fn is_all_finished(&self) -> bool {
+        if self.active_work_units.load(Ordering::Relaxed) > 0 {
+            return false;
+        }
+        if !self.retry_queue.lock().await.is_empty() {
+            return false;
+        }
+        let partitions_guard = self.partitions.lock().await;
+        partitions_guard
+            .iter()
+            .all(|partition| partition.front_cursor >= partition.back_cursor)
+    }
+
+    async fn partition_summary(&self) -> (usize, usize) {
+        let partitions_guard = self.partitions.lock().await;
+        let total = partitions_guard.len();
+        let done = partitions_guard
+            .iter()
+            .filter(|partition| partition.front_cursor >= partition.back_cursor)
+            .count();
+        (total, done)
     }
 }
 
@@ -150,23 +326,8 @@ fn build_thread_visualizations(worker_total: usize) -> Vec<ThreadVisualization> 
         .collect()
 }
 
-fn build_initial_chunk_states(total: u64, threads: usize) -> Vec<ChunkState> {
-    let target_chunks = threads
-        .saturating_mul(WORK_STEALING_CHUNK_MULTIPLIER)
-        .clamp(1, MAX_WORK_STEALING_CHUNKS);
-    let chunk_size = (total / target_chunks as u64).max(MIN_CHUNK_SIZE);
-    let mut chunks = Vec::with_capacity(target_chunks);
-    let mut offset = 0;
-    while offset < total {
-        let end = (offset + chunk_size - 1).min(total - 1);
-        chunks.push(ChunkState { start: offset, end });
-        offset = end + 1;
-    }
-    chunks
-}
-
-fn inclusive_range_len(start: u64, end: u64) -> u64 {
-    if start > end { 0 } else { end - start + 1 }
+fn half_open_range_len(start: u64, end: u64) -> u64 {
+    end.saturating_sub(start)
 }
 
 #[derive(Clone, Copy)]
@@ -261,14 +422,7 @@ async fn resolve_reliable_range_url(
     }
 }
 
-async fn all_slots_done(manager: &AdaptiveTaskManager) -> bool {
-    manager
-        .slots
-        .lock()
-        .await
-        .iter()
-        .all(|slot| slot.is_done.load(Ordering::Relaxed))
-}
+
 
 async fn update_thread_visualization(
     thread_visualizations: &Mutex<Vec<ThreadVisualization>>,
@@ -477,36 +631,32 @@ async fn download_multi_partitioned(
     md5_expected: Option<&str>,
     total: u64,
 ) -> Result<CoreResult<()>, CoreError> {
-    let chunks = build_initial_chunk_states(total, threads);
-    let active_threads = threads.min(chunks.len()).max(1);
-    let planned_chunks = chunks.len();
-    let first_chunk_size = chunks
-        .first()
-        .map(|chunk| inclusive_range_len(chunk.start, chunk.end))
-        .unwrap_or(0);
-    debug!(
-        "multi download chunk plan: task={} total={} requested_threads={} active_threads={} chunks={} first_chunk_size={}",
-        task_id, total, threads, active_threads, planned_chunks, first_chunk_size
-    );
     prepare_direct_output(dest_path.as_path()).await?;
 
-    let manager = Arc::new(AdaptiveTaskManager::new());
-    manager.add_tasks(chunks).await;
+    let scheduler = Arc::new(DynamicRangeScheduler::new(total, threads));
+    let active_threads = scheduler.effective_worker_count().await;
 
-    let completed_slots = Arc::new(AtomicUsize::new(0));
+    debug!(
+        "multi download scheduler initialized: task={} total={} requested_threads={} active_threads={}",
+        task_id, total, threads, active_threads
+    );
+
+    let completed_units = Arc::new(AtomicUsize::new(0));
     let active_workers = Arc::new(AtomicUsize::new(0));
     let thread_visualizations = Arc::new(Mutex::new(build_thread_visualizations(active_threads)));
     let visualization_last_emit_at = Arc::new(Mutex::new(
         Instant::now() - Duration::from_millis(VISUALIZATION_EMIT_INTERVAL_MS),
     ));
+
     if task_visualization_enabled() {
+        let (total_units, _) = scheduler.partition_summary().await;
         let threads_snapshot = thread_visualizations.lock().await.clone();
         set_task_visualization(
             task_id,
             Some(build_download_visualization(
                 active_threads,
                 0,
-                manager.slot_total(),
+                total_units,
                 0,
                 None,
                 Some(threads_snapshot),
@@ -523,12 +673,12 @@ async fn download_multi_partitioned(
     let mut workers = JoinSet::new();
 
     for worker_id in 0..active_threads {
-        let manager = manager.clone();
+        let scheduler = scheduler.clone();
         let client = client.clone();
         let url = url.clone();
         let task_control = task_control.clone();
         let downloaded_global = downloaded_global.clone();
-        let completed_slots = completed_slots.clone();
+        let completed_units = completed_units.clone();
         let active_workers = active_workers.clone();
         let thread_visualizations = thread_visualizations.clone();
         let visualization_last_emit_at = visualization_last_emit_at.clone();
@@ -541,6 +691,7 @@ async fn download_multi_partitioned(
         workers.spawn(async move {
             let mut pending_progress = 0u64;
             let mut last_update_time = Instant::now();
+            let mut worker_smoothed_speed = 0.0f64;
 
             loop {
                 if !wait_until_active_fast(task_control.as_ref()).await {
@@ -551,10 +702,25 @@ async fn download_multi_partitioned(
                     return;
                 }
 
-                let slot = match manager.get_next_task().await {
-                    Some(slot) => slot,
+                let desired_size = if worker_smoothed_speed > 0.0 {
+                    let bytes_per_sec = (worker_smoothed_speed * TARGET_CHUNK_DURATION_SECS) as u64;
+                    bytes_per_sec.clamp(MIN_DYNAMIC_CHUNK_SIZE, MAX_DYNAMIC_CHUNK_SIZE)
+                } else {
+                    DEFAULT_DYNAMIC_CHUNK_SIZE
+                };
+
+                let mut work_unit = scheduler.claim_retry().await;
+                if work_unit.is_none() {
+                    work_unit = scheduler.claim_local(worker_id, desired_size).await;
+                }
+                if work_unit.is_none() {
+                    work_unit = scheduler.steal(worker_id, desired_size).await;
+                }
+
+                let unit = match work_unit {
+                    Some(unit) => unit,
                     None => {
-                        if all_slots_done(manager.as_ref()).await {
+                        if scheduler.is_all_finished().await {
                             let (thread_done, thread_total) = {
                                 let guard = thread_visualizations.lock().await;
                                 guard
@@ -572,23 +738,28 @@ async fn download_multi_partitioned(
                             .await;
                             break;
                         }
-                        sleep(Duration::from_millis(100)).await;
+                        tokio::select! {
+                            _ = scheduler.notify.notified() => {}
+                            _ = sleep(Duration::from_millis(500)) => {}
+                        }
                         continue;
                     }
                 };
 
                 let active_guard = WorkerActivityGuard::new(active_workers.as_ref());
-                let slot_start = slot.start;
-                let slot_end = slot.end;
-                let slot_total = inclusive_range_len(slot_start, slot_end);
-                let mut reported_slot_bytes = 0u64;
+                let unit_start = unit.start;
+                let unit_end = unit.end;
+                let unit_total = half_open_range_len(unit_start, unit_end);
+                let http_range_end = unit_end.saturating_sub(1);
+                let mut reported_unit_bytes = 0u64;
 
+                let (total_units, done_units) = scheduler.partition_summary().await;
                 update_thread_visualization(
                     thread_visualizations.as_ref(),
                     worker_id,
                     true,
                     0,
-                    slot_total,
+                    unit_total,
                     None,
                 )
                 .await;
@@ -596,8 +767,8 @@ async fn download_multi_partitioned(
                     &task_id,
                     active_threads,
                     active_workers.load(Ordering::Relaxed),
-                    manager.slot_total(),
-                    completed_slots.load(Ordering::Relaxed),
+                    total_units,
+                    done_units,
                     None,
                     thread_visualizations.as_ref(),
                     visualization_last_emit_at.as_ref(),
@@ -605,245 +776,194 @@ async fn download_multi_partitioned(
                 )
                 .await;
 
-                let mut attempts = 0;
-                let mut success = false;
+                let mut req = client
+                    .get(url.as_str())
+                    .header(header::RANGE, format!("bytes={unit_start}-{http_range_end}"))
+                    .timeout(Duration::from_secs(RANGE_REQUEST_TIMEOUT_SECS));
+                if let Some(h) = &headers {
+                    req = req.headers(h.clone());
+                }
+                req = apply_download_request_headers(req);
+
+                let chunk_start_time = Instant::now();
                 let mut last_error = None::<String>;
+                let mut stream_err = false;
+                let mut local_curr = unit_start;
 
-                'retry: while attempts < RANGE_REQUEST_ATTEMPTS {
-                    if !wait_until_active_fast(task_control.as_ref()).await {
-                        return;
+                let resp = match req.send().await {
+                    Ok(resp) => resp,
+                    Err(error) => {
+                        last_error = Some(format!("range request failed: {error}"));
+                        if unit.attempt < RANGE_REQUEST_ATTEMPTS {
+                            scheduler.push_retry(unit).await;
+                        } else {
+                            scheduler.record_unit_released().await;
+                            *error_store.lock().await = Some(CoreError::Other(format!(
+                                "WorkUnit [{unit_start}, {unit_end}) Range 请求失败: {}",
+                                last_error.unwrap_or_default()
+                            )));
+                            error_occurred.notify_waiters();
+                        }
+                        drop(active_guard);
+                        continue;
+                    }
+                };
+
+                if let Err(error) = validate_download_response_headers(url.as_str(), &resp) {
+                    last_error = Some(format!("transformed range response: {error}"));
+                    stream_err = true;
+                } else if resp.url().as_str() != url.as_str() {
+                    last_error = Some(format!(
+                        "range response url changed: expected={} actual={}",
+                        url,
+                        resp.url()
+                    ));
+                    stream_err = true;
+                } else if resp.status() != StatusCode::PARTIAL_CONTENT
+                    || !content_range_matches(resp.headers(), unit_start, http_range_end, total)
+                {
+                    last_error = Some(format!(
+                        "invalid range response status={} content_range={:?}",
+                        resp.status(),
+                        resp.headers().get(header::CONTENT_RANGE)
+                    ));
+                    stream_err = true;
+                } else if resp.content_length().is_some_and(|len| len != unit_total) {
+                    last_error = Some(format!("invalid range length: {:?}", resp.content_length()));
+                    stream_err = true;
+                }
+
+                if stream_err {
+                    if unit.attempt < RANGE_REQUEST_ATTEMPTS {
+                        scheduler.push_retry(unit).await;
+                    } else {
+                        scheduler.record_unit_released().await;
+                        *error_store.lock().await = Some(CoreError::Other(format!(
+                            "WorkUnit [{unit_start}, {unit_end}) Range 校验失败: {}",
+                            last_error.unwrap_or_default()
+                        )));
+                        error_occurred.notify_waiters();
+                    }
+                    drop(active_guard);
+                    continue;
+                }
+
+                let mut stream = resp.bytes_stream();
+                let mut batch_start_offset = local_curr;
+                let mut batch_chunks: Vec<Bytes> = Vec::with_capacity(16);
+                let mut batch_size = 0usize;
+
+                while let Some(item) = stream.next().await {
+                    if !wait_until_active_fast(task_control.as_ref()).await
+                        || is_cancelled_fast(task_control.as_ref())
+                    {
+                        break;
                     }
 
-                    if is_cancelled_fast(task_control.as_ref()) {
-                        return;
-                    }
-
-                    if attempts > 0 {
-                        sleep(Duration::from_millis(500 * attempts as u64)).await;
-                    }
-
-                    let mut req = client
-                        .get(url.as_str())
-                        .header(header::RANGE, format!("bytes={slot_start}-{slot_end}"))
-                        .timeout(Duration::from_secs(RANGE_REQUEST_TIMEOUT_SECS));
-                    if let Some(headers) = &headers {
-                        req = req.headers(headers.clone());
-                    }
-                    req = apply_download_request_headers(req);
-
-                    let resp = match req.send().await {
-                        Ok(resp) => resp,
+                    let chunk = match item {
+                        Ok(chunk) => chunk,
                         Err(error) => {
-                            last_error = Some(format!("range request failed: {error}"));
-                            attempts += 1;
-                            continue;
+                            last_error = Some(format!("read range stream failed: {error}"));
+                            stream_err = true;
+                            break;
                         }
                     };
-                    if let Err(error) = validate_download_response_headers(url.as_str(), &resp) {
-                        last_error = Some(format!("transformed range response: {error}"));
-                        attempts += 1;
+
+                    if chunk.is_empty() {
                         continue;
                     }
-                    if resp.url().as_str() != url.as_str() {
+
+                    let remaining = unit_end.saturating_sub(local_curr);
+                    let chunk_len = chunk.len() as u64;
+                    if chunk_len > remaining {
                         last_error = Some(format!(
-                            "range response url changed: expected={} actual={}",
-                            url,
-                            resp.url()
+                            "range body exceeded requested length: expected {unit_total} bytes"
                         ));
-                        warn!(
-                            "range response url changed for task={} slot={} start={} end={} expected={} actual={}",
-                            task_id,
-                            slot.id,
-                            slot_start,
-                            slot_end,
-                            url,
-                            resp.url()
-                        );
-                        attempts += 1;
-                        continue;
+                        stream_err = true;
+                        break;
                     }
 
-                    if resp.status() != StatusCode::PARTIAL_CONTENT
-                        || !content_range_matches(resp.headers(), slot_start, slot_end, total)
-                    {
-                        last_error = Some(format!(
-                            "invalid range response status={} content_range={:?}",
-                            resp.status(),
-                            resp.headers().get(header::CONTENT_RANGE)
-                        ));
-                        warn!(
-                            "invalid range response for task={} slot={} start={} end={} status={} content_range={:?}",
-                            task_id,
-                            slot.id,
-                            slot_start,
-                            slot_end,
-                            resp.status(),
-                            resp.headers().get(header::CONTENT_RANGE),
-                        );
-                        attempts += 1;
-                        continue;
+                    batch_size += chunk.len();
+                    batch_chunks.push(chunk);
+                    local_curr = local_curr.saturating_add(chunk_len);
+
+                    let current_unit_done = local_curr.saturating_sub(unit_start).min(unit_total);
+                    let reportable_bytes = current_unit_done.saturating_sub(reported_unit_bytes);
+                    if reportable_bytes > 0 {
+                        reported_unit_bytes = current_unit_done;
+                        downloaded_global.fetch_add(reportable_bytes, Ordering::Relaxed);
+                        pending_progress = pending_progress.saturating_add(reportable_bytes);
                     }
 
-                    if resp.content_length().is_some_and(|len| len != slot_total) {
-                        last_error =
-                            Some(format!("invalid range length: {:?}", resp.content_length()));
-                        warn!(
-                            "invalid range length for task={} slot={} start={} end={} content_length={:?}",
-                            task_id,
-                            slot.id,
-                            slot_start,
-                            slot_end,
-                            resp.content_length(),
-                        );
-                        attempts += 1;
-                        continue;
-                    }
-
-                    let mut stream = resp.bytes_stream();
-                    let mut local_curr = slot_start;
-                    let mut batch_start_offset = local_curr;
-                    let mut batch_chunks: Vec<Bytes> = Vec::with_capacity(16);
-                    let mut batch_size = 0usize;
-                    let mut stream_err = false;
-
-                    while let Some(item) = stream.next().await {
-                        if !wait_until_active_fast(task_control.as_ref()).await {
-                            return;
-                        }
-
-                        if is_cancelled_fast(task_control.as_ref()) {
-                            return;
-                        }
-
-                        let chunk = match item {
-                            Ok(chunk) => chunk,
-                            Err(error) => {
-                                last_error = Some(format!("read range stream failed: {error}"));
-                                stream_err = true;
-                                break;
-                            }
-                        };
-
-                        if chunk.is_empty() {
-                            continue;
-                        }
-
-                        if local_curr > slot_end {
-                            last_error = Some(format!(
-                                "range body exceeded requested length: expected {slot_total} bytes"
-                            ));
-                            break 'retry;
-                        }
-
-                        let remaining = slot_end.saturating_sub(local_curr).saturating_add(1);
-                        let chunk_len = chunk.len() as u64;
-                        if chunk_len > remaining {
-                            last_error = Some(format!(
-                                "range body exceeded requested length: expected {slot_total} bytes"
-                            ));
-                            break 'retry;
-                        }
-
-                        batch_size += chunk.len();
-                        batch_chunks.push(chunk);
-                        local_curr = local_curr.saturating_add(chunk_len);
-
-                        let current_slot_done =
-                            local_curr.saturating_sub(slot_start).min(slot_total);
-                        let reportable_bytes =
-                            current_slot_done.saturating_sub(reported_slot_bytes);
-                        if reportable_bytes > 0 {
-                            reported_slot_bytes = current_slot_done;
-                            downloaded_global.fetch_add(reportable_bytes, Ordering::Relaxed);
-                            pending_progress = pending_progress.saturating_add(reportable_bytes);
-                        }
-
-                        if batch_size >= WORKER_BATCH_SIZE {
-                            let next_batch_start = batch_start_offset + batch_size as u64;
-                            let chunks = std::mem::take(&mut batch_chunks);
-                            if write_tx
-                                .send(WriterMsg::Write {
-                                    offset: batch_start_offset,
-                                    chunks,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                last_error = Some("download writer stopped".to_string());
-                                stream_err = true;
-                                break;
-                            }
-                            batch_start_offset = next_batch_start;
-                            batch_size = 0;
-                        }
-
-                        if pending_progress > 0
-                            && (last_update_time.elapsed().as_millis() > 200
-                                || pending_progress > WORKER_BATCH_SIZE as u64)
+                    if batch_size >= WORKER_BATCH_SIZE {
+                        let next_batch_start = batch_start_offset + batch_size as u64;
+                        let chunks = std::mem::take(&mut batch_chunks);
+                        if write_tx
+                            .send(WriterMsg::Write {
+                                offset: batch_start_offset,
+                                chunks,
+                            })
+                            .await
+                            .is_err()
                         {
-                            update_thread_visualization(
-                                thread_visualizations.as_ref(),
-                                worker_id,
-                                true,
-                                current_slot_done,
-                                slot_total,
-                                None,
-                            )
-                            .await;
-                            update_progress(
-                                &task_id,
-                                pending_progress,
-                                Some(total),
-                                Some("downloading"),
-                            );
-                            set_download_visualization_throttled(
-                                &task_id,
-                                active_threads,
-                                active_workers.load(Ordering::Relaxed),
-                                manager.slot_total(),
-                                completed_slots.load(Ordering::Relaxed),
-                                None,
-                                thread_visualizations.as_ref(),
-                                visualization_last_emit_at.as_ref(),
-                                false,
-                            )
-                            .await;
-                            pending_progress = 0;
-                            last_update_time = Instant::now();
+                            last_error = Some("download writer stopped".to_string());
+                            stream_err = true;
+                            break;
                         }
+                        batch_start_offset = next_batch_start;
+                        batch_size = 0;
                     }
 
-                    if !stream_err {
-                        if !batch_chunks.is_empty() {
-                            let next_batch_start = batch_start_offset + batch_size as u64;
-                            let chunks = std::mem::take(&mut batch_chunks);
-                            if write_tx
-                                .send(WriterMsg::Write {
-                                    offset: batch_start_offset,
-                                    chunks,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                last_error = Some("download writer stopped".to_string());
-                                stream_err = true;
-                            }
-                        }
+                    if pending_progress > 0
+                        && (last_update_time.elapsed().as_millis() > 200
+                            || pending_progress > WORKER_BATCH_SIZE as u64)
+                    {
+                        let (total_units, done_units) = scheduler.partition_summary().await;
+                        update_thread_visualization(
+                            thread_visualizations.as_ref(),
+                            worker_id,
+                            true,
+                            current_unit_done,
+                            unit_total,
+                            None,
+                        )
+                        .await;
+                        update_progress(
+                            &task_id,
+                            pending_progress,
+                            Some(total),
+                            Some("downloading"),
+                        );
+                        set_download_visualization_throttled(
+                            &task_id,
+                            active_threads,
+                            active_workers.load(Ordering::Relaxed),
+                            total_units,
+                            done_units,
+                            None,
+                            thread_visualizations.as_ref(),
+                            visualization_last_emit_at.as_ref(),
+                            false,
+                        )
+                        .await;
+                        pending_progress = 0;
+                        last_update_time = Instant::now();
                     }
+                }
 
-                    if !stream_err {
-                        let expected_written = local_curr.saturating_sub(slot_start);
-                        if expected_written == slot_total {
-                            success = true;
-                            break 'retry;
-                        }
-
-                        last_error = Some(format!(
-                            "range size mismatch: expected {slot_total}, stream wrote {expected_written}"
-                        ));
+                if !stream_err && !batch_chunks.is_empty() {
+                    let chunks = std::mem::take(&mut batch_chunks);
+                    if write_tx
+                        .send(WriterMsg::Write {
+                            offset: batch_start_offset,
+                            chunks,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        last_error = Some("download writer stopped".to_string());
+                        stream_err = true;
                     }
-
-                    attempts += 1;
                 }
 
                 if pending_progress > 0 {
@@ -851,17 +971,29 @@ async fn download_multi_partitioned(
                     pending_progress = 0;
                 }
 
-                if success {
-                    slot.is_done.store(true, Ordering::Relaxed);
-                    slot.is_active.store(false, Ordering::Relaxed);
-                    let completed = completed_slots.fetch_add(1, Ordering::Relaxed) + 1;
+                let bytes_downloaded_this_run = local_curr.saturating_sub(unit_start);
+                let elapsed_secs = chunk_start_time.elapsed().as_secs_f64();
+
+                if !stream_err && bytes_downloaded_this_run == unit_total {
+                    if elapsed_secs > 0.001 {
+                        let sample_speed = unit_total as f64 / elapsed_secs;
+                        worker_smoothed_speed = if worker_smoothed_speed <= 0.0 {
+                            sample_speed
+                        } else {
+                            0.3 * sample_speed + 0.7 * worker_smoothed_speed
+                        };
+                    }
+                    scheduler.record_completion(unit.partition_id, unit_total, elapsed_secs).await;
+                    completed_units.fetch_add(1, Ordering::Relaxed);
                     drop(active_guard);
+
+                    let (total_units, done_units) = scheduler.partition_summary().await;
                     update_thread_visualization(
                         thread_visualizations.as_ref(),
                         worker_id,
                         false,
-                        slot_total,
-                        slot_total,
+                        unit_total,
+                        unit_total,
                         None,
                     )
                     .await;
@@ -869,8 +1001,8 @@ async fn download_multi_partitioned(
                         &task_id,
                         active_threads,
                         active_workers.load(Ordering::Relaxed),
-                        manager.slot_total(),
-                        completed,
+                        total_units,
+                        done_units,
                         None,
                         thread_visualizations.as_ref(),
                         visualization_last_emit_at.as_ref(),
@@ -878,29 +1010,26 @@ async fn download_multi_partitioned(
                     )
                     .await;
                 } else {
+                    if local_curr < unit_end && unit.attempt < RANGE_REQUEST_ATTEMPTS {
+                        let retry_unit = WorkUnit {
+                            partition_id: unit.partition_id,
+                            start: local_curr,
+                            end: unit_end,
+                            attempt: unit.attempt,
+                            is_retry: true,
+                        };
+                        scheduler.push_retry(retry_unit).await;
+                    } else {
+                        scheduler.record_unit_released().await;
+                        *error_store.lock().await = Some(CoreError::Other(format!(
+                            "WorkUnit [{unit_start}, {unit_end}) 下载失败: {}",
+                            last_error.unwrap_or_else(|| "unknown error".to_string())
+                        )));
+                        error_occurred.notify_waiters();
+                        drop(active_guard);
+                        return;
+                    }
                     drop(active_guard);
-                    let (thread_done, thread_total) = {
-                        let guard = thread_visualizations.lock().await;
-                        guard
-                            .get(worker_id)
-                            .map_or((0, 0), |thread| (thread.done, thread.total))
-                    };
-                    update_thread_visualization(
-                        thread_visualizations.as_ref(),
-                        worker_id,
-                        false,
-                        thread_done,
-                        thread_total,
-                        None,
-                    )
-                    .await;
-                    *error_store.lock().await = Some(CoreError::Other(format!(
-                        "分片 #{} 下载失败: {}",
-                        slot.id,
-                        last_error.unwrap_or_else(|| "unknown error".to_string())
-                    )));
-                    error_occurred.notify_waiters();
-                    return;
                 }
             }
         });
@@ -952,7 +1081,7 @@ async fn download_multi_partitioned(
         return Ok(CoreResult::Cancelled);
     }
 
-    if !all_slots_done(manager.as_ref()).await {
+    if !scheduler.is_all_finished().await {
         set_task_visualization(task_id, None);
         log_writer_cleanup_result(writer_thread.join());
         remove_download_file_if_exists(dest_path.as_path()).await?;
@@ -1145,54 +1274,204 @@ mod tests {
     use crate::tasks::task_manager::{create_task_with_options, task_control};
     use std::io::{Error as IoError, ErrorKind};
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
 
-    #[test]
-    fn large_files_split_into_work_stealing_queue() {
-        let total = 938_519_123;
-        let threads = 16;
-        let chunks = build_initial_chunk_states(total, threads);
+    #[tokio::test]
+    async fn primary_partitions_cover_entire_file_without_gaps_or_overlaps() {
+        let total_size = 100_000_000u64;
+        let worker_count = 8;
+        let scheduler = DynamicRangeScheduler::new(total_size, worker_count);
+        let partitions = scheduler.partitions.lock().await;
 
-        let expected_target = (threads * WORK_STEALING_CHUNK_MULTIPLIER).min(MAX_WORK_STEALING_CHUNKS);
-        let expected_chunk_size = (total / expected_target as u64).max(MIN_CHUNK_SIZE);
+        assert_eq!(partitions.len(), worker_count);
+        assert_eq!(partitions[0].start, 0);
+        assert_eq!(partitions.last().unwrap().end, total_size);
 
-        assert_eq!(chunks.first().map(|chunk| chunk.start), Some(0));
-        assert_eq!(chunks.last().map(|chunk| chunk.end), Some(total - 1));
-        assert_eq!(
-            chunks
-                .iter()
-                .map(|chunk| inclusive_range_len(chunk.start, chunk.end))
-                .sum::<u64>(),
-            total
-        );
-        for chunk in &chunks[..chunks.len().saturating_sub(1)] {
-            assert_eq!(
-                inclusive_range_len(chunk.start, chunk.end),
-                expected_chunk_size
-            );
+        let mut sum_bytes = 0u64;
+        for window in partitions.windows(2) {
+            assert_eq!(window[0].end, window[1].start);
+            sum_bytes += half_open_range_len(window[0].start, window[0].end);
         }
-        assert!(
-            inclusive_range_len(chunks.last().unwrap().start, chunks.last().unwrap().end)
-                <= expected_chunk_size
-        );
+        sum_bytes += half_open_range_len(partitions.last().unwrap().start, partitions.last().unwrap().end);
+        assert_eq!(sum_bytes, total_size);
     }
 
-    #[test]
-    fn small_files_are_not_split_below_minimum_chunk_size() {
-        let total = MIN_CHUNK_SIZE - 1;
-        let chunks = build_initial_chunk_states(total, 16);
+    #[tokio::test]
+    async fn primary_partitions_handle_indivisible_total_size() {
+        let total_size = 938_519_123u64;
+        let worker_count = 7;
+        let scheduler = DynamicRangeScheduler::new(total_size, worker_count);
+        let partitions = scheduler.partitions.lock().await;
 
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].start, 0);
-        assert_eq!(chunks[0].end, total - 1);
+        assert_eq!(partitions.first().unwrap().start, 0);
+        assert_eq!(partitions.last().unwrap().end, total_size);
+
+        for window in partitions.windows(2) {
+            assert_eq!(window[0].end, window[1].start);
+        }
+    }
+
+    #[tokio::test]
+    async fn small_files_cap_effective_worker_count() {
+        let total_size = MIN_DYNAMIC_CHUNK_SIZE - 100;
+        let scheduler = DynamicRangeScheduler::new(total_size, 16);
+        let partitions = scheduler.partitions.lock().await;
+
+        assert_eq!(partitions.len(), 1);
+        assert_eq!(partitions[0].start, 0);
+        assert_eq!(partitions[0].end, total_size);
+    }
+
+    #[tokio::test]
+    async fn worker_claims_local_from_front_cursor() {
+        let total_size = 20 * 1024 * 1024;
+        let scheduler = DynamicRangeScheduler::new(total_size, 2);
+
+        let unit = scheduler.claim_local(0, 4 * 1024 * 1024).await.unwrap();
+        assert_eq!(unit.partition_id, 0);
+        assert_eq!(unit.start, 0);
+        assert_eq!(unit.end, 4 * 1024 * 1024);
+
+        let unit2 = scheduler.claim_local(0, 4 * 1024 * 1024).await.unwrap();
+        assert_eq!(unit2.start, 4 * 1024 * 1024);
+        assert_eq!(unit2.end, 8 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn idle_worker_steals_from_tail_of_slow_partition() {
+        let total_size = 20 * 1024 * 1024;
+        let scheduler = DynamicRangeScheduler::new(total_size, 2);
+
+        // Exhaust worker 1's local partition
+        let p1_len = {
+            let parts = scheduler.partitions.lock().await;
+            half_open_range_len(parts[1].start, parts[1].end)
+        };
+        let _claim1 = scheduler.claim_local(1, p1_len).await.unwrap();
+        assert!(scheduler.claim_local(1, 4 * 1024 * 1024).await.is_none());
+
+        // Set worker 0 speed to 0.1 MB/s so it looks slow (high estimated remaining time)
+        {
+            let mut parts = scheduler.partitions.lock().await;
+            parts[0].smoothed_speed = 100_000.0;
+        }
+
+        // Worker 1 steals from Worker 0's tail
+        let stolen = scheduler.steal(1, 4 * 1024 * 1024).await.unwrap();
+        assert_eq!(stolen.partition_id, 0);
+
+        let p0_end = {
+            let parts = scheduler.partitions.lock().await;
+            parts[0].end
+        };
+        assert_eq!(stolen.end, p0_end);
+        assert!(stolen.start < stolen.end);
+        assert!(stolen.start >= MIN_STEAL_SIZE);
+    }
+
+    #[tokio::test]
+    async fn front_claim_and_tail_steal_do_not_overlap() {
+        let total_size = 10 * 1024 * 1024;
+        let scheduler = DynamicRangeScheduler::new(total_size, 2);
+
+        // Worker 0 claims front
+        let local_unit = scheduler.claim_local(0, 2 * 1024 * 1024).await.unwrap();
+        assert_eq!(local_unit.start, 0);
+        assert_eq!(local_unit.end, 2 * 1024 * 1024);
+
+        // Worker 1 exhausts its own partition
+        let p1_len = {
+            let parts = scheduler.partitions.lock().await;
+            parts[1].end - parts[1].start
+        };
+        let _ = scheduler.claim_local(1, p1_len).await;
+
+        // Worker 1 steals tail of Worker 0
+        let stolen_unit = scheduler.steal(1, 2 * 1024 * 1024).await.unwrap();
+        assert_eq!(stolen_unit.partition_id, 0);
+        assert!(stolen_unit.start >= local_unit.end);
+
+        let parts = scheduler.partitions.lock().await;
+        assert_eq!(parts[0].front_cursor, local_unit.end);
+        assert_eq!(parts[0].back_cursor, stolen_unit.start);
+        assert!(parts[0].front_cursor <= parts[0].back_cursor);
+    }
+
+    #[tokio::test]
+    async fn remaining_data_below_min_steal_size_is_not_stolen() {
+        let total_size = 3 * 1024 * 1024;
+        let scheduler = DynamicRangeScheduler::new(total_size, 2);
+
+        // Worker 1 exhausts its own partition
+        let p1_len = {
+            let parts = scheduler.partitions.lock().await;
+            parts[1].end - parts[1].start
+        };
+        let _ = scheduler.claim_local(1, p1_len).await;
+
+        // Worker 0 partition remaining size is 1.5MB (< MIN_STEAL_SIZE 2MB)
+        let steal_result = scheduler.steal(1, 2 * 1024 * 1024).await;
+        assert!(steal_result.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_download_retries_only_remaining_undownloaded_tail() {
+        let total_size = 10 * 1024 * 1024;
+        let scheduler = DynamicRangeScheduler::new(total_size, 1);
+
+        let unit = scheduler.claim_local(0, 4 * 1024 * 1024).await.unwrap();
+        assert_eq!(unit.start, 0);
+        assert_eq!(unit.end, 4 * 1024 * 1024);
+
+        // Simulate stream breaking after downloading 1.5MB
+        let downloaded = 1_500_000u64;
+        let retry_start = unit.start + downloaded;
+        let retry_unit = WorkUnit {
+            partition_id: unit.partition_id,
+            start: retry_start,
+            end: unit.end,
+            attempt: unit.attempt,
+            is_retry: true,
+        };
+        scheduler.push_retry(retry_unit).await;
+
+        // Verify claim_retry yields the remaining [1.5MB, 4MB)
+        let claimed_retry = scheduler.claim_retry().await.unwrap();
+        assert_eq!(claimed_retry.start, 1_500_000);
+        assert_eq!(claimed_retry.end, 4 * 1024 * 1024);
+        assert_eq!(claimed_retry.attempt, 1);
+        assert!(claimed_retry.is_retry);
+    }
+
+    #[tokio::test]
+    async fn retry_queue_has_priority_over_local_and_steal() {
+        let total_size = 20 * 1024 * 1024;
+        let scheduler = DynamicRangeScheduler::new(total_size, 2);
+
+        let retry_unit = WorkUnit {
+            partition_id: 0,
+            start: 100,
+            end: 500,
+            attempt: 0,
+            is_retry: false,
+        };
+        scheduler.push_retry(retry_unit).await;
+
+        // Worker 1 should receive retry unit first before local claim
+        let claimed = scheduler.claim_retry().await;
+        assert!(claimed.is_some());
+        let unit = claimed.unwrap();
+        assert_eq!(unit.start, 100);
+        assert_eq!(unit.end, 500);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn multi_download_writes_ranges_to_expected_offsets() {
-        let data_len = usize::try_from(MIN_CHUNK_SIZE * 2 + 123_457)
+        let data_len = usize::try_from(MIN_DYNAMIC_CHUNK_SIZE * 2 + 123_457)
             .expect("test payload length should fit usize");
         let data = Arc::new(build_test_payload(data_len));
         let mut context = md5::Context::new();
@@ -1237,9 +1516,54 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multi_download_with_slow_partition_demonstrates_work_stealing() {
+        let data_len = 16 * 1024 * 1024; // 16 MiB
+        let data = Arc::new(build_test_payload(data_len));
+        let request_counts = Arc::new(AtomicUsize::new(0));
+
+        let (url, server_handle) = spawn_slow_partition_range_server(data.clone(), request_counts.clone())
+            .await
+            .expect("slow range test server should start");
+        let dest = temp_test_path("bmcbl-multi-slow-stealing.bin");
+        remove_test_file_if_exists(&dest).await;
+
+        let task_id = unique_task_id("multi-slow-stealing-test");
+        create_task_with_options(Some(task_id.clone()), "downloading", None, true);
+        let control = task_control(&task_id).expect("task control should exist");
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test client should build");
+
+        let result = download_multi(
+            client,
+            control,
+            &task_id,
+            &url,
+            &dest,
+            4,
+            None,
+            None,
+        )
+        .await
+        .expect("multi download should complete successfully");
+
+        assert!(matches!(result, CoreResult::Success(())));
+        let downloaded = tokio::fs::read(&dest)
+            .await
+            .expect("downloaded file should be readable");
+        assert_eq!(downloaded, data.as_slice());
+
+        assert!(request_counts.load(AtomicOrdering::Relaxed) > 4);
+
+        remove_test_file_if_exists(&dest).await;
+        server_handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn multi_download_falls_back_to_single_when_range_body_exceeds_request() {
         let data_len =
-            usize::try_from(MIN_CHUNK_SIZE + 4096).expect("test payload length should fit usize");
+            usize::try_from(MIN_DYNAMIC_CHUNK_SIZE + 4096).expect("test payload length should fit usize");
         let data = Arc::new(build_test_payload(data_len));
         let mut context = md5::Context::new();
         context.consume(data.as_slice());
@@ -1337,21 +1661,30 @@ mod tests {
     enum TestRangeMode {
         Exact,
         ExtraByteAfterRange,
+        SlowPartition0,
     }
 
     async fn spawn_range_server(data: Arc<Vec<u8>>) -> std::io::Result<(String, JoinHandle<()>)> {
-        spawn_range_server_with_mode(data, TestRangeMode::Exact).await
+        spawn_range_server_with_mode(data, TestRangeMode::Exact, None).await
+    }
+
+    async fn spawn_slow_partition_range_server(
+        data: Arc<Vec<u8>>,
+        request_counter: Arc<AtomicUsize>,
+    ) -> std::io::Result<(String, JoinHandle<()>)> {
+        spawn_range_server_with_mode(data, TestRangeMode::SlowPartition0, Some(request_counter)).await
     }
 
     async fn spawn_malformed_range_server(
         data: Arc<Vec<u8>>,
     ) -> std::io::Result<(String, JoinHandle<()>)> {
-        spawn_range_server_with_mode(data, TestRangeMode::ExtraByteAfterRange).await
+        spawn_range_server_with_mode(data, TestRangeMode::ExtraByteAfterRange, None).await
     }
 
     async fn spawn_range_server_with_mode(
         data: Arc<Vec<u8>>,
         mode: TestRangeMode,
+        request_counter: Option<Arc<AtomicUsize>>,
     ) -> std::io::Result<(String, JoinHandle<()>)> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -1361,8 +1694,9 @@ mod tests {
                     break;
                 };
                 let data = data.clone();
+                let request_counter = request_counter.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = handle_range_connection(stream, data, mode).await {
+                    if let Err(error) = handle_range_connection(stream, data, mode, request_counter).await {
                         debug!("range test server request failed: {}", error);
                     }
                 });
@@ -1376,11 +1710,16 @@ mod tests {
         mut stream: TcpStream,
         data: Arc<Vec<u8>>,
         mode: TestRangeMode,
+        request_counter: Option<Arc<AtomicUsize>>,
     ) -> std::io::Result<()> {
         let request = read_http_request(&mut stream).await?;
         let request_text = String::from_utf8_lossy(&request);
         let request_line = request_text.lines().next().unwrap_or_default();
         let total = data.len() as u64;
+
+        if let Some(counter) = request_counter {
+            counter.fetch_add(1, AtomicOrdering::Relaxed);
+        }
 
         if request_line.starts_with("HEAD ") {
             let response =
@@ -1426,6 +1765,11 @@ mod tests {
         })?;
         let body = &data[start_index..=end_index];
         let body_len = body.len();
+
+        if matches!(mode, TestRangeMode::SlowPartition0) && start < total / 4 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
         let extra_range_byte =
             matches!(mode, TestRangeMode::ExtraByteAfterRange) && !(start == 0 && end == 0);
         if extra_range_byte {
