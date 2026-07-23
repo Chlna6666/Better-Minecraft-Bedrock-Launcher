@@ -227,7 +227,12 @@ impl DynamicRangeScheduler {
         })
     }
 
-    async fn record_completion(&self, partition_id: usize, bytes_downloaded: u64, elapsed_secs: f64) {
+    async fn record_completion(
+        &self,
+        partition_id: usize,
+        bytes_downloaded: u64,
+        elapsed_secs: f64,
+    ) {
         self.active_work_units.fetch_sub(1, Ordering::Relaxed);
         {
             let mut partitions_guard = self.partitions.lock().await;
@@ -421,8 +426,6 @@ async fn resolve_reliable_range_url(
         }
     }
 }
-
-
 
 async fn update_thread_visualization(
     thread_visualizations: &Mutex<Vec<ThreadVisualization>>,
@@ -778,7 +781,10 @@ async fn download_multi_partitioned(
 
                 let mut req = client
                     .get(url.as_str())
-                    .header(header::RANGE, format!("bytes={unit_start}-{http_range_end}"))
+                    .header(
+                        header::RANGE,
+                        format!("bytes={unit_start}-{http_range_end}"),
+                    )
                     .timeout(Duration::from_secs(RANGE_REQUEST_TIMEOUT_SECS));
                 if let Some(h) = &headers {
                     req = req.headers(h.clone());
@@ -983,7 +989,9 @@ async fn download_multi_partitioned(
                             0.3 * sample_speed + 0.7 * worker_smoothed_speed
                         };
                     }
-                    scheduler.record_completion(unit.partition_id, unit_total, elapsed_secs).await;
+                    scheduler
+                        .record_completion(unit.partition_id, unit_total, elapsed_secs)
+                        .await;
                     completed_units.fetch_add(1, Ordering::Relaxed);
                     drop(active_guard);
 
@@ -1296,7 +1304,10 @@ mod tests {
             assert_eq!(window[0].end, window[1].start);
             sum_bytes += half_open_range_len(window[0].start, window[0].end);
         }
-        sum_bytes += half_open_range_len(partitions.last().unwrap().start, partitions.last().unwrap().end);
+        sum_bytes += half_open_range_len(
+            partitions.last().unwrap().start,
+            partitions.last().unwrap().end,
+        );
         assert_eq!(sum_bytes, total_size);
     }
 
@@ -1521,9 +1532,10 @@ mod tests {
         let data = Arc::new(build_test_payload(data_len));
         let request_counts = Arc::new(AtomicUsize::new(0));
 
-        let (url, server_handle) = spawn_slow_partition_range_server(data.clone(), request_counts.clone())
-            .await
-            .expect("slow range test server should start");
+        let (url, server_handle) =
+            spawn_slow_partition_range_server(data.clone(), request_counts.clone())
+                .await
+                .expect("slow range test server should start");
         let dest = temp_test_path("bmcbl-multi-slow-stealing.bin");
         remove_test_file_if_exists(&dest).await;
 
@@ -1535,18 +1547,9 @@ mod tests {
             .build()
             .expect("test client should build");
 
-        let result = download_multi(
-            client,
-            control,
-            &task_id,
-            &url,
-            &dest,
-            4,
-            None,
-            None,
-        )
-        .await
-        .expect("multi download should complete successfully");
+        let result = download_multi(client, control, &task_id, &url, &dest, 4, None, None)
+            .await
+            .expect("multi download should complete successfully");
 
         assert!(matches!(result, CoreResult::Success(())));
         let downloaded = tokio::fs::read(&dest)
@@ -1562,8 +1565,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn multi_download_falls_back_to_single_when_range_body_exceeds_request() {
-        let data_len =
-            usize::try_from(MIN_DYNAMIC_CHUNK_SIZE + 4096).expect("test payload length should fit usize");
+        let data_len = usize::try_from(MIN_DYNAMIC_CHUNK_SIZE + 4096)
+            .expect("test payload length should fit usize");
         let data = Arc::new(build_test_payload(data_len));
         let mut context = md5::Context::new();
         context.consume(data.as_slice());
@@ -1672,7 +1675,8 @@ mod tests {
         data: Arc<Vec<u8>>,
         request_counter: Arc<AtomicUsize>,
     ) -> std::io::Result<(String, JoinHandle<()>)> {
-        spawn_range_server_with_mode(data, TestRangeMode::SlowPartition0, Some(request_counter)).await
+        spawn_range_server_with_mode(data, TestRangeMode::SlowPartition0, Some(request_counter))
+            .await
     }
 
     async fn spawn_malformed_range_server(
@@ -1696,7 +1700,9 @@ mod tests {
                 let data = data.clone();
                 let request_counter = request_counter.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = handle_range_connection(stream, data, mode, request_counter).await {
+                    if let Err(error) =
+                        handle_range_connection(stream, data, mode, request_counter).await
+                    {
                         debug!("range test server request failed: {}", error);
                     }
                 });

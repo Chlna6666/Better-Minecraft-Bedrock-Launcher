@@ -546,12 +546,7 @@ impl DownloaderManager {
     }
 
     /// manager 创建新的 task 并 spawn 后台执行，立即返回 task_id
-    pub fn start_download(
-        &self,
-        url: String,
-        dest: PathBuf,
-        options: DownloadOptions,
-    ) -> String {
+    pub fn start_download(&self, url: String, dest: PathBuf, options: DownloadOptions) -> String {
         crate::downloads::register_download_task_stage_labels();
         let task_id = create_task_with_details(
             None,
