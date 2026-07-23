@@ -155,7 +155,7 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
         tab_button
     };
 
-    div()
+    let container = div()
         .w_full()
         .rounded(px(16.))
         .bg(Hsla {
@@ -184,16 +184,18 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
             i18n.t("Settings.tabs.launcher"),
             SettingsTab::Launcher,
             active,
-        ))
-        .when(cfg!(target_os = "linux"), |this| {
-            this.child(tab(
-                "settings-tab-proton-gdk",
-                lucide_icons::icon_box(),
-                SharedString::from("Proton-GDK"),
-                SettingsTab::ProtonGdk,
-                active,
-            ))
-        })
+        ));
+
+    #[cfg(target_os = "linux")]
+    let container = container.child(tab(
+        "settings-tab-proton-gdk",
+        lucide_icons::icon_box(),
+        SharedString::from("Proton-GDK"),
+        SettingsTab::ProtonGdk,
+        active,
+    ));
+
+    container
         .child(tab(
             "settings-tab-customize",
             lucide_icons::icon_palette(),

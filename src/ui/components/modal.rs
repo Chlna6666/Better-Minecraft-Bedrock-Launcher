@@ -8,7 +8,7 @@ use std::{
 
 const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.56;
 const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.72;
-const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 4.0;
+const DEFAULT_MODAL_BACKDROP_BLUR_PX: f32 = 14.0;
 const MIN_MODAL_BACKDROP_BLUR_PX: f32 = 0.2;
 const MODAL_MIN_SCALE: f32 = 0.94;
 const MODAL_OPEN_DURATION: Duration = Duration::from_millis(240);
@@ -33,12 +33,13 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
     };
 
     let backdrop = div().absolute().inset_0().occlude();
-    let blur_radius = px(DEFAULT_MODAL_BACKDROP_BLUR_PX * progress);
+    let blur_progress = crate::ui::animation::ease_out_cubic(progress);
+    let blur_radius = px(DEFAULT_MODAL_BACKDROP_BLUR_PX * blur_progress);
     if blur_radius >= px(MIN_MODAL_BACKDROP_BLUR_PX) {
         backdrop.backdrop_blur(
             BackdropBlurStyle::new(blur_radius)
                 .auto_quality()
-                .saturation(1.03)
+                .saturation(1.05)
                 .tint(overlay),
         )
     } else {
@@ -102,6 +103,9 @@ pub fn animated_modal_layer(
                 .child(
                     div()
                         .percentage_passthrough()
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .mt(content_offset)
                         .scale(modal_content_scale(progress))
                         .opacity(progress)
@@ -134,6 +138,9 @@ pub fn animated_modal_layer_with_content_offset(
                 .child(
                     div()
                         .percentage_passthrough()
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .mt(content_offset_y)
                         .scale(modal_content_scale(progress))
                         .opacity(progress)
@@ -490,6 +497,9 @@ fn dismissible_modal_layer(
                 .child(
                     div()
                         .percentage_passthrough()
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .scale(modal_content_scale(progress))
                         .opacity(progress)
                         .child(content),
