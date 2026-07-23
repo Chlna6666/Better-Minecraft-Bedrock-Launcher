@@ -784,10 +784,10 @@ pub(super) fn render_detail_modal_content(
                 .rounded(px(8.))
                 .bg(Hsla {
                     a: 0.08,
-                    ..colors.warning
+                    ..colors.danger
                 })
                 .text_size(px(12.))
-                .text_color(colors.warning)
+                .text_color(colors.danger)
                 .child("当前仅支持显示 LeviLamina 模组信息，暂不支持在启动器内安装。"),
         )
         .child(
