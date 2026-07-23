@@ -30,6 +30,9 @@ impl ManagePageView {
             version_settings::VersionSettingsToggle::LockMouseOnLaunch => {
                 state.config.lock_mouse_on_launch = !state.config.lock_mouse_on_launch;
             }
+            version_settings::VersionSettingsToggle::ShortcutSilentLaunch => {
+                state.config.shortcut_silent_launch = !state.config.shortcut_silent_launch;
+            }
         }
         cx.notify();
     }
@@ -281,6 +284,28 @@ impl ManagePageView {
             launch_args: None,
         };
         let _ = start_launcher(descriptor, cx);
+    }
+
+    pub(super) fn create_selected_version_shortcut(&mut self, cx: &mut Context<Self>) {
+        let state = cx.global::<ManagePageState>();
+        let Some(version) = self.selected_version(state) else {
+            return;
+        };
+        let folder = version.folder.to_string();
+        match crate::utils::shortcut::create_desktop_shortcut(&folder, &folder) {
+            Ok(path) => {
+                toast::success(
+                    cx,
+                    SharedString::from(format!("桌面快捷方式已创建: {}", path.display())),
+                );
+            }
+            Err(error) => {
+                toast::error(
+                    cx,
+                    SharedString::from(format!("创建桌面快捷方式失败: {error}")),
+                );
+            }
+        }
     }
     pub(super) fn open_path_background(&mut self, path: SharedString, cx: &mut Context<Self>) {
         cx.spawn(async move |_handle, cx| {

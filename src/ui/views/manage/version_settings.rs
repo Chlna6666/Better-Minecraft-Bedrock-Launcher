@@ -31,6 +31,7 @@ pub enum VersionSettingsToggle {
     EditorMode,
     DisableModLoading,
     LockMouseOnLaunch,
+    ShortcutSilentLaunch,
 }
 
 pub fn render(
@@ -122,6 +123,15 @@ pub fn render(
                                     view_handle.clone(),
                                 ))
                             })
+                            .child(render_toggle_card(
+                                "settings-shortcut-silent-launch",
+                                colors,
+                                i18n.t("VersionSettingsModal.shortcut_silent_launch_label"),
+                                i18n.t("VersionSettingsModal.shortcut_silent_launch_desc"),
+                                state.config.shortcut_silent_launch,
+                                VersionSettingsToggle::ShortcutSilentLaunch,
+                                view_handle.clone(),
+                            ))
                             .child(render_toggle_card(
                                 "settings-disable-mod-loading",
                                 colors,

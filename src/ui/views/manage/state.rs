@@ -46,6 +46,7 @@ pub struct ManageVersionConfig {
     pub unlock_mouse_hotkey: SharedString,
     pub reduce_pixels: i32,
     pub vanilla_skin_pack_redirect: Option<SharedString>,
+    pub shortcut_silent_launch: bool,
 }
 
 impl Default for ManageVersionConfig {
@@ -59,6 +60,7 @@ impl Default for ManageVersionConfig {
             unlock_mouse_hotkey: SharedString::from("ALT"),
             reduce_pixels: 20,
             vanilla_skin_pack_redirect: None,
+            shortcut_silent_launch: true,
         }
     }
 }

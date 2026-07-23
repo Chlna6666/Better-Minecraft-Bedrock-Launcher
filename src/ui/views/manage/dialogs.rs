@@ -38,6 +38,9 @@ pub(super) struct ConfirmDialogState {
 #[derive(Clone)]
 pub(super) enum ValuePromptTarget {
     VersionReducePixels,
+    RenameVersion {
+        version: ManagedVersionEntry,
+    },
     ModInjectDelay {
         version: ManagedVersionEntry,
         asset: ManageAssetEntry,
@@ -236,6 +239,32 @@ impl ManagePageView {
         }
     }
 
+    pub(super) fn open_rename_version_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = cx.global::<ManagePageState>();
+        let Some(version) = self.selected_version(state).cloned() else {
+            return;
+        };
+        let input = cx.new(|cx| {
+            let mut input_state = InputState::new(window, cx);
+            input_state.set_value(version.folder.clone(), window, cx);
+            input_state
+        });
+        let i18n = cx.global::<I18n>();
+        self.value_prompt = Some(ValuePromptDialogState {
+            title: i18n.t("ManagePage.rename_title"),
+            description: i18n.t("ManagePage.rename_desc"),
+            confirm_label: i18n.t("common.confirm"),
+            input,
+            target: ValuePromptTarget::RenameVersion { version },
+            pending: false,
+        });
+        cx.notify();
+    }
+
     pub(super) fn close_value_prompt(&mut self, cx: &mut Context<Self>) {
         self.value_prompt = None;
         cx.notify();
@@ -264,6 +293,51 @@ impl ManagePageView {
                 }
                 self.value_prompt = None;
                 cx.notify();
+            }
+            ValuePromptTarget::RenameVersion { version } => {
+                let new_name = value.trim().to_string();
+                let old_name = version.folder.to_string();
+                if new_name == old_name {
+                    self.value_prompt = None;
+                    cx.notify();
+                    return;
+                }
+                prompt.pending = true;
+                let old_name_clone = old_name.clone();
+                let new_name_clone = new_name.clone();
+                cx.spawn(async move |handle, cx| {
+                    let result =
+                        data::rename_version_instance(&old_name_clone, &new_name_clone).await;
+                    let _ = handle.update(cx, |this, cx| {
+                        match result {
+                            Ok(()) => {
+                                this.value_prompt = None;
+                                cx.update_global(|state: &mut ManagePageState, _cx| {
+                                    state.selected_folder =
+                                        Some(SharedString::from(new_name_clone));
+                                });
+                                crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(
+                                    true, cx,
+                                );
+                                let msg = cx.global::<I18n>().t("ManagePage.rename_success");
+                                toast::success(cx, msg);
+                            }
+                            Err(error) => {
+                                if let Some(prompt) = this.value_prompt.as_mut() {
+                                    prompt.pending = false;
+                                }
+                                let msg = cx.global::<I18n>().t_args(
+                                    "ManagePage.rename_failed",
+                                    crate::i18n_args![("message", &error)],
+                                );
+                                toast::error(cx, msg);
+                            }
+                        }
+                        cx.notify();
+                    });
+                    Ok::<(), anyhow::Error>(())
+                })
+                .detach();
             }
             ValuePromptTarget::LevelDat(field) => {
                 let Some(editor) = self.level_dat_editor.as_mut() else {

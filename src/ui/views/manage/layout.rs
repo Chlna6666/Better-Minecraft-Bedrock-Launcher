@@ -4,6 +4,7 @@ pub(super) fn render_version_header(
     colors: &ThemeColors,
     version: &ManagedVersionEntry,
     state: &ManagePageState,
+    cx: &mut Context<ManagePageView>,
 ) -> Div {
     let version_title = {
         let display_name = version.display_name();
@@ -69,12 +70,31 @@ pub(super) fn render_version_header(
                 .gap(px(8.))
                 .child(
                     div()
-                        .text_size(px(18.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(colors.text_primary)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(version_title),
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(colors.text_primary)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(version_title),
+                        )
+                        .child(
+                            toolbar_glyph_button(
+                                "manage-rename-version-btn",
+                                lucide_icons::icon_file_pen_line(),
+                                colors,
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_rename_version_dialog(window, cx);
+                                }),
+                            ),
+                        ),
                 )
                 .child(version_meta)
                 .when(has_status_badges, |this| this.child(status_badges)),

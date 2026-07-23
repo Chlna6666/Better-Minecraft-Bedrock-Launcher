@@ -599,7 +599,7 @@ impl ManagePageView {
                     .items_center()
                     .justify_between()
                     .gap(px(14.))
-                    .child(render_version_header(colors, version, state))
+                    .child(render_version_header(colors, version, state, cx))
                     .child(
                         div()
                             .flex()
@@ -632,6 +632,19 @@ impl ManagePageView {
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
                                         this.open_selected_version_folder(cx);
+                                    }),
+                                ),
+                            )
+                            .child(
+                                toolbar_glyph_button(
+                                    "manage-create-shortcut",
+                                    lucide_icons::icon_external_link(),
+                                    colors,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.create_selected_version_shortcut(cx);
                                     }),
                                 ),
                             )

@@ -9,10 +9,17 @@ pub struct ImportLaunchContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectLaunchContext {
+    pub version_folder: String,
+    pub silent_override: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchMode {
     Main,
     Import(ImportLaunchContext),
     Updater(UpdaterLaunchContext),
+    DirectLaunch(DirectLaunchContext),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,11 +31,15 @@ pub struct UpdaterLaunchContext {
 
 impl LaunchMode {
     pub fn is_main(&self) -> bool {
-        matches!(self, Self::Main)
+        matches!(self, Self::Main | Self::DirectLaunch(_))
     }
 
     pub fn is_import(&self) -> bool {
         matches!(self, Self::Import(_))
+    }
+
+    pub fn is_direct_launch(&self) -> bool {
+        matches!(self, Self::DirectLaunch(_))
     }
 }
 
@@ -45,6 +56,15 @@ struct Cli {
 
     #[arg(long = "import-file", value_name = "FILE")]
     import_file: Option<PathBuf>,
+
+    #[arg(long = "launch-version", value_name = "VERSION")]
+    launch_version: Option<String>,
+
+    #[arg(long = "silent")]
+    silent: bool,
+
+    #[arg(long = "gui")]
+    gui: bool,
 
     #[arg(value_name = "FILE")]
     shell_open_target: Option<PathBuf>,
@@ -92,6 +112,20 @@ fn parse_launch_mode_from_cli(cli: Cli) -> LaunchMode {
             source_path,
             destination_path,
             timeout_secs,
+        });
+    }
+
+    if let Some(version_folder) = cli.launch_version {
+        let silent_override = if cli.silent {
+            Some(true)
+        } else if cli.gui {
+            Some(false)
+        } else {
+            None
+        };
+        return LaunchMode::DirectLaunch(DirectLaunchContext {
+            version_folder,
+            silent_override,
         });
     }
 

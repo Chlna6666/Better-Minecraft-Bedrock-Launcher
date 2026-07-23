@@ -73,11 +73,12 @@ pub async fn save_manage_version_config(
     core_config.lock_mouse_on_launch = config.lock_mouse_on_launch;
     core_config.unlock_mouse_hotkey = config.unlock_mouse_hotkey.to_string();
     core_config.reduce_pixels = config.reduce_pixels;
+    core_config.shortcut_silent_launch = config.shortcut_silent_launch;
     core_config.set_vanilla_skin_pack_redirect(
         config
             .vanilla_skin_pack_redirect
             .as_ref()
-            .map(|path| path.to_string()),
+            .map(ToString::to_string),
     );
 
     save_version_config(version.folder.to_string(), core_config).await
@@ -642,6 +643,7 @@ fn manage_version_config_from_core(config: VersionConfig) -> ManageVersionConfig
         unlock_mouse_hotkey: config.unlock_mouse_hotkey.into(),
         reduce_pixels: config.reduce_pixels,
         vanilla_skin_pack_redirect: config.vanilla_skin_pack_redirect.map(SharedString::from),
+        shortcut_silent_launch: config.shortcut_silent_launch,
     }
 }
 
@@ -1097,5 +1099,41 @@ fn zip_directory(source_dir: &Path, target_file: &Path) -> anyhow::Result<()> {
     }
 
     zip.finish()?;
+    Ok(())
+}
+
+pub async fn rename_version_instance(old_name: &str, new_name: &str) -> Result<(), String> {
+    let old_name = old_name.trim();
+    let new_name = new_name.trim();
+
+    if new_name.is_empty() {
+        return Err("实例名称不能为空".to_string());
+    }
+
+    if new_name == old_name {
+        return Ok(());
+    }
+
+    let invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+    if new_name.chars().any(|c| invalid_chars.contains(&c)) {
+        return Err("实例名称不能包含字符 \\ / : * ? \" < > |".to_string());
+    }
+
+    let versions_root = crate::utils::file_ops::bmcbl_subdir("versions");
+    let old_dir = versions_root.join(old_name);
+    let new_dir = versions_root.join(new_name);
+
+    if !old_dir.exists() {
+        return Err(format!("原版本目录不存在: {}", old_dir.display()));
+    }
+
+    if new_dir.exists() {
+        return Err(format!("已存在同名的游戏实例: {new_name}"));
+    }
+
+    tokio::fs::rename(&old_dir, &new_dir)
+        .await
+        .map_err(|err| format!("重命名目录失败: {err}"))?;
+
     Ok(())
 }

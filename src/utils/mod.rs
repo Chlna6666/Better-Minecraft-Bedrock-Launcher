@@ -17,6 +17,7 @@ pub mod open_path;
 #[cfg(target_os = "windows")]
 pub mod registry;
 #[cfg(target_os = "windows")]
+pub mod shortcut;
 pub mod single_instance;
 pub mod stats;
 pub mod system_info;

@@ -92,8 +92,8 @@ fn check_single_instance() -> Option<bool> {
 
 #[cfg(windows)]
 fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard> {
-    match launch_mode {
-        LaunchMode::Main => match check_single_instance() {
+    if matches!(launch_mode, LaunchMode::Main) {
+        match check_single_instance() {
             Some(true) => Some(SingleInstanceGuard),
             Some(false) => {
                 info!(
@@ -105,8 +105,9 @@ fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard
                 error!("Single instance check failed, continuing anyway.");
                 Some(SingleInstanceGuard)
             }
-        },
-        LaunchMode::Import(_) | LaunchMode::Updater(_) => None,
+        }
+    } else {
+        None
     }
 }
 
@@ -160,6 +161,23 @@ async fn async_main(startup_started: Instant) -> Result<()> {
         "configuration loaded and debug logging state applied"
     );
 
+    if let LaunchMode::DirectLaunch(ref direct_ctx) = launch_mode {
+        let version_config =
+            crate::core::version::settings::get_version_config(direct_ctx.version_folder.clone())
+                .await
+                .unwrap_or_default();
+        let is_silent = direct_ctx
+            .silent_override
+            .unwrap_or(version_config.shortcut_silent_launch);
+        if is_silent {
+            info!(
+                version_folder = %direct_ctx.version_folder,
+                "执行 CMD/快捷方式静默启动"
+            );
+            return run_silent_direct_launch(&direct_ctx.version_folder).await;
+        }
+    }
+
     if launch_mode.is_main() && config.launcher.stats_upload {
         crate::utils::stats::spawn_startup_ingest();
     }
@@ -208,9 +226,11 @@ fn launch_working_dir(launch_mode: &LaunchMode) -> Option<std::path::PathBuf> {
             .destination_path
             .parent()
             .map(std::path::Path::to_path_buf),
-        LaunchMode::Main | LaunchMode::Import(_) => env::current_exe()
-            .ok()
-            .and_then(|exe_path| exe_path.parent().map(std::path::Path::to_path_buf)),
+        LaunchMode::Main | LaunchMode::Import(_) | LaunchMode::DirectLaunch(_) => {
+            env::current_exe()
+                .ok()
+                .and_then(|exe_path| exe_path.parent().map(std::path::Path::to_path_buf))
+        }
     }
 }
 
@@ -262,4 +282,39 @@ fn log_system_info() {
         crate::utils::system_info::get_cpu_architecture(),
         crate::utils::system_info::get_system_language()
     );
+}
+
+async fn run_silent_direct_launch(version_folder: &str) -> Result<()> {
+    info!(version_folder = %version_folder, "开始执行静默直接启动");
+    let version_list = match crate::core::version::api::get_version_list().await {
+        Ok(list) => list,
+        Err(err) => {
+            error!(error = %err, "获取本地版本列表失败");
+            eprintln!("获取本地版本列表失败: {err}");
+            process::exit(1);
+        }
+    };
+
+    let target = version_list
+        .into_iter()
+        .find(|v| v.folder.as_ref() == version_folder);
+
+    let Some(version) = target else {
+        error!(version_folder = %version_folder, "未找到目标游戏版本");
+        eprintln!("未找到目标游戏版本: {version_folder}");
+        process::exit(1);
+    };
+
+    let request = crate::core::minecraft::launcher::LaunchRequest::new(
+        version.folder.as_ref(),
+        version.name.as_ref(),
+        version.version.as_ref(),
+        version.path.as_ref(),
+    );
+
+    let task_id = crate::core::minecraft::launcher::start_launch_task(request);
+    info!(task_id = %task_id, "已触发游戏静默启动任务");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    process::exit(0);
 }

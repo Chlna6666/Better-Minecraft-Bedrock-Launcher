@@ -38,8 +38,14 @@ pub struct VersionConfig {
     pub vanilla_skin_pack_redirect: Option<String>,
     #[serde(default)]
     pub file_redirections: Vec<FileRedirectionConfig>,
+    #[serde(default = "default_true")]
+    pub shortcut_silent_launch: bool,
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_unlock_hotkey() -> String {
@@ -62,6 +68,7 @@ impl Default for VersionConfig {
             reduce_pixels: 20,
             vanilla_skin_pack_redirect: None,
             file_redirections: Vec::new(),
+            shortcut_silent_launch: true,
             extra: serde_json::Map::new(),
         }
     }
