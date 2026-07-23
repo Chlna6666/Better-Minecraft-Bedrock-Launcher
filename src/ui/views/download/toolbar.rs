@@ -393,7 +393,14 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                     s.curseforge_sidebar_scroll
                         .set_offset(point(px(0.), px(0.)));
                 }
-                DownloadTab::Mod => {}
+                DownloadTab::Mod => {
+                    s.levilauncher_loaded = false;
+                    s.levilauncher_loading = false;
+                    s.levilauncher_error = None;
+                    s.levilauncher_all_mods.clear();
+                    s.levilauncher_page_index = 0;
+                    s.levilauncher_scroll.set_offset(point(px(0.), px(0.)));
+                }
             });
         })
         .into_any_element();
@@ -545,7 +552,120 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             row = row.child(version_select).child(sort_select).child(refresh);
         }
         DownloadTab::Mod => {
-            row = row.child(refresh);
+            let enabled = state.levilauncher_loaded;
+
+            // 1. 加载器选择下拉框 (Loader Type Dropdown: "全部", "LeviLamina")
+            let mut loader_type_options = Vec::with_capacity(state.levilauncher_loaders.len());
+            for loader_name in &state.levilauncher_loaders {
+                loader_type_options.push(DropdownOption::from(loader_name.clone()));
+            }
+
+            let loader_type_label = if state.levilauncher_selected_loader.trim().is_empty() {
+                SharedString::from("全部")
+            } else {
+                state.levilauncher_selected_loader.clone()
+            };
+
+            let selected_loader_type_index = state
+                .levilauncher_loaders
+                .iter()
+                .position(|l| l.as_ref() == state.levilauncher_selected_loader.as_ref())
+                .unwrap_or(0);
+
+            let loader_type_select = Dropdown::new(
+                "download-levilauncher-loader-type",
+                colors,
+                px(120.),
+                loader_type_label,
+                loader_type_options,
+                selected_loader_type_index,
+                enabled,
+                move |ix, _window, cx| {
+                    let chosen_loader = cx.read_global(|s: &DownloadPageState, _cx| {
+                        s.levilauncher_loaders
+                            .get(ix)
+                            .cloned()
+                            .unwrap_or_else(|| SharedString::from("全部"))
+                    });
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        if s.levilauncher_selected_loader == chosen_loader {
+                            return;
+                        }
+                        s.levilauncher_selected_loader = chosen_loader;
+                        s.levilauncher_page_index = 0;
+                        s.levilauncher_scroll.set_offset(point(px(0.), px(0.)));
+                    });
+                },
+            )
+            .with_height(px(32.))
+            .rounded(px(6.))
+            .into_any_element();
+
+            // 2. 加载器版本选择下拉框 (Loader Version Dropdown)
+            let mut ver_options = Vec::with_capacity(1 + state.levilauncher_loader_versions.len());
+            ver_options.push(DropdownOption::from("全部版本"));
+            for v in &state.levilauncher_loader_versions {
+                ver_options.push(DropdownOption::from(v.clone()));
+            }
+
+            let ver_label = if !enabled && state.levilauncher_loading {
+                SharedString::from("加载中...")
+            } else if state.levilauncher_selected_loader_version.trim().is_empty() {
+                SharedString::from("全部版本")
+            } else {
+                state.levilauncher_selected_loader_version.clone()
+            };
+
+            let selected_ver_index = if state.levilauncher_selected_loader_version.trim().is_empty()
+                || state.levilauncher_selected_loader_version == "全部版本"
+            {
+                0usize
+            } else {
+                state
+                    .levilauncher_loader_versions
+                    .iter()
+                    .position(|v| v.as_ref() == state.levilauncher_selected_loader_version.as_ref())
+                    .map(|ix| ix + 1)
+                    .unwrap_or(0)
+            };
+
+            let ver_select = Dropdown::new(
+                "download-levilauncher-version",
+                colors,
+                px(130.),
+                ver_label,
+                ver_options,
+                selected_ver_index,
+                enabled,
+                move |ix, _window, cx| {
+                    let version = if ix == 0 {
+                        SharedString::from("全部版本")
+                    } else {
+                        cx.read_global(|s: &DownloadPageState, _cx| {
+                            s.levilauncher_loader_versions
+                                .get(ix.saturating_sub(1))
+                                .cloned()
+                                .unwrap_or_else(|| SharedString::from("全部版本"))
+                        })
+                    };
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        if s.levilauncher_selected_loader_version == version {
+                            return;
+                        }
+                        s.levilauncher_selected_loader_version = version;
+                        s.levilauncher_page_index = 0;
+                        s.levilauncher_scroll.set_offset(point(px(0.), px(0.)));
+                    });
+                },
+            )
+            .with_height(px(32.))
+            .rounded(px(6.))
+            .into_any_element();
+
+            row = row
+                .child(loader_type_select)
+                .child(ver_select)
+                .child(refresh);
         }
     }
 

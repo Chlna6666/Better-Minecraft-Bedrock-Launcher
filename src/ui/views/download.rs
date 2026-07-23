@@ -291,7 +291,18 @@ impl Render for DownloadPageView {
                 }
             })
             .on_action(|_: &CloseOverlay, _window, cx| {
-                if cx.global::<DownloadPageState>().tab == DownloadTab::ResourcePack {
+                let (mod_modal_open, game_dialog_open) =
+                    cx.read_global(|s: &DownloadPageState, _cx| {
+                        (s.levilauncher_modal_open, s.game_dialog.is_some())
+                    });
+                if mod_modal_open {
+                    cx.update_global(|s: &mut DownloadPageState, _cx| {
+                        s.levilauncher_modal_open = false;
+                        s.levilauncher_selected_mod = None;
+                    });
+                } else if game_dialog_open {
+                    dismiss_game_dialog(cx);
+                } else if cx.global::<DownloadPageState>().tab == DownloadTab::ResourcePack {
                     curseforge::handle_close_overlay(cx);
                 }
             })
@@ -368,6 +379,7 @@ pub fn render_download_page(
             .unwrap_or_else(|| div().size_full().into_any_element()),
         DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
         DownloadTab::Mod => {
+            ensure_levilauncher_loaded(cx);
             mods::render_mod_panel(&colors, cx.global::<DownloadPageState>()).into_any_element()
         }
     };
@@ -449,5 +461,67 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
         );
     }
 
+    let (levilauncher_modal_open, levilauncher_selected_mod) =
+        cx.read_global(|state: &DownloadPageState, _cx| {
+            (
+                state.levilauncher_modal_open,
+                state.levilauncher_selected_mod.clone(),
+            )
+        });
+
+    if levilauncher_modal_open && let Some(mod_entry) = levilauncher_selected_mod {
+        let dismiss_fn = Rc::new(|cx: &mut App| {
+            cx.update_global(|s: &mut DownloadPageState, _cx| {
+                s.levilauncher_modal_open = false;
+                s.levilauncher_selected_mod = None;
+            });
+        });
+
+        return Some(
+            modal::modal_layer_dismissible(
+                mods::render_detail_modal_content(colors, cx, &mod_entry),
+                hsla(0.0, 0.0, 0.0, 0.45),
+                dismiss_fn,
+            )
+            .into_any_element(),
+        );
+    }
+
     curseforge::render_curseforge_install_overlay(colors, cx)
+}
+
+pub fn ensure_levilauncher_loaded(cx: &mut App) {
+    let (loaded, loading) = cx
+        .read_global(|s: &DownloadPageState, _cx| (s.levilauncher_loaded, s.levilauncher_loading));
+    if loaded || loading {
+        return;
+    }
+
+    cx.update_global(|s: &mut DownloadPageState, _cx| {
+        s.levilauncher_loading = true;
+        s.levilauncher_error = None;
+    });
+
+    cx.spawn(async move |cx| {
+        let result = crate::core::levilamina::fetch_levilamina_index().await;
+        let _ = cx.update_global(|s: &mut DownloadPageState, _cx| {
+            s.levilauncher_loading = false;
+            match result {
+                Ok(data) => {
+                    s.levilauncher_loaded = true;
+                    s.levilauncher_loader_versions = data
+                        .loader_versions
+                        .into_iter()
+                        .map(SharedString::from)
+                        .collect();
+                    s.levilauncher_all_mods = data.client_mods;
+                }
+                Err(err) => {
+                    s.levilauncher_loaded = false;
+                    s.levilauncher_error = Some(SharedString::from(err));
+                }
+            }
+        });
+    })
+    .detach();
 }
