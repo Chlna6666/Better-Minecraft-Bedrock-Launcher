@@ -1271,7 +1271,7 @@ impl MainWindowView {
         let initial_filter = prefs
             .as_ref()
             .map(|p| p.channel_filter.as_str())
-            .unwrap_or("all");
+            .unwrap_or("release");
         let initial_filter = match initial_filter {
             "release" => crate::ui::views::download::state::DownloadChannelFilter::Release,
             "beta" => crate::ui::views::download::state::DownloadChannelFilter::Beta,
