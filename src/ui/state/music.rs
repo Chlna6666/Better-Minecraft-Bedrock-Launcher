@@ -19,6 +19,7 @@ pub struct MusicState {
     rendered_cover_generation: u64,
     rendered_cover_cache_key: Option<u64>,
     rendered_cover_image: Option<Arc<RenderImage>>,
+    pending_cover_application: Option<(CoverDecodeRequest, Option<Arc<RenderImage>>)>,
     expanded_from: f32,
     expanded_to: f32,
     expanded_started_at: Option<Instant>,
@@ -27,6 +28,8 @@ pub struct MusicState {
     drag_target: Option<MusicDragTarget>,
     drag_progress_ratio: Option<f32>,
     drag_volume_ratio: Option<f32>,
+    pending_progress_ratio: Option<(u64, f32)>,
+    pending_volume_ratio: Option<f32>,
     auto_next_pending: bool,
 }
 
@@ -46,6 +49,7 @@ impl Default for MusicState {
             rendered_cover_generation: 0,
             rendered_cover_cache_key: None,
             rendered_cover_image: None,
+            pending_cover_application: None,
             expanded_from: 0.0,
             expanded_to: 0.0,
             expanded_started_at: None,
@@ -54,6 +58,8 @@ impl Default for MusicState {
             drag_target: None,
             drag_progress_ratio: None,
             drag_volume_ratio: None,
+            pending_progress_ratio: None,
+            pending_volume_ratio: None,
             auto_next_pending: false,
         };
         state.set_playback_snapshot(playback_snapshot);
@@ -111,6 +117,19 @@ impl MusicState {
 
     fn set_playback_snapshot(&mut self, snapshot: MusicPlaybackSnapshot) {
         let snapshot = MusicSnapshot::from_playback(snapshot, self.expanded_target_open);
+        if let Some((generation, ratio)) = self.pending_progress_ratio {
+            if snapshot.generation != generation
+                || (snapshot.total_seconds > 0.0
+                    && (snapshot.current_seconds / snapshot.total_seconds - ratio).abs() < 0.01)
+            {
+                self.pending_progress_ratio = None;
+            }
+        }
+        if let Some(ratio) = self.pending_volume_ratio
+            && (snapshot.volume - ratio).abs() < 0.01
+        {
+            self.pending_volume_ratio = None;
+        }
         if self.rendered_cover_cache_key != snapshot.cover_cache_key {
             self.clear_rendered_cover();
         }
@@ -141,13 +160,21 @@ impl MusicState {
     ) {
         let controller = self.controller.clone();
         let operation_gate = self.controller_operation_gate.clone();
+        tracing::debug!(
+            operation = operation_name,
+            "music: controller update scheduled"
+        );
         cx.spawn(async move |cx| {
             // Keep user commands ordered while the potentially blocking work runs off the UI thread.
             let _operation_guard = operation_gate.lock().await;
-            let result = tokio::task::spawn_blocking(move || {
-                let mut controller = controller
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("music controller lock poisoned"))?;
+            let result = crate::tasks::runtime::run_io_blocking(move || {
+                let mut controller = match controller.lock() {
+                    Ok(controller) => controller,
+                    Err(poisoned) => {
+                        tracing::warn!("music: recovering poisoned controller lock");
+                        poisoned.into_inner()
+                    }
+                };
                 let previous = match persist {
                     PersistMusicState::No => None,
                     PersistMusicState::WhenChanged => Some(controller.persisted_state()),
@@ -176,12 +203,28 @@ impl MusicState {
                         operation = operation_name,
                         "music: controller update failed: {error:?}"
                     );
+                    if let Err(update_error) = cx.update_global(|state: &mut MusicState, _cx| {
+                        state.apply_controller_error(format!("{operation_name}: {error}"));
+                    }) {
+                        tracing::warn!(
+                            operation = operation_name,
+                            "music: failed to publish controller error: {update_error:?}"
+                        );
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(
                         operation = operation_name,
-                        "music: controller update task failed: {error}"
+                        "music: controller update worker failed: {error}"
                     );
+                    if let Err(update_error) = cx.update_global(|state: &mut MusicState, _cx| {
+                        state.apply_controller_error(format!("{operation_name}: {error}"));
+                    }) {
+                        tracing::warn!(
+                            operation = operation_name,
+                            "music: failed to publish controller worker error: {update_error:?}"
+                        );
+                    }
                 }
             }
 
@@ -193,14 +236,22 @@ impl MusicState {
     fn apply_controller_outcome(&mut self, outcome: ControllerUpdateOutcome, cx: &mut App) {
         self.auto_next_pending = false;
         self.set_playback_snapshot(outcome.snapshot);
+        self.apply_pending_cover();
         if let Some(persisted_state) = outcome.persisted_state {
             Self::spawn_persist_music_state(persisted_state, cx);
         }
     }
 
+    fn apply_controller_error(&mut self, message: String) {
+        self.auto_next_pending = false;
+        self.pending_progress_ratio = None;
+        self.pending_volume_ratio = None;
+        self.snapshot.last_error = Some(message.into());
+    }
+
     fn spawn_persist_music_state(state: MusicPersistedState, cx: &mut App) {
         cx.spawn(async move |_cx| {
-            let result = tokio::task::spawn_blocking(move || {
+            let result = crate::tasks::runtime::run_io_blocking(move || {
                 crate::config::config::update_config(|config| {
                     config.music.volume = crate::config::config::clamp_music_volume(state.volume);
                     config.music.muted = state.muted;
@@ -212,7 +263,7 @@ impl MusicState {
             .await;
 
             match result {
-                Err(error) => tracing::warn!("music: persist state join error: {error}"),
+                Err(error) => tracing::warn!("music: persist state worker error: {error}"),
                 Ok(Err(error)) => tracing::warn!("music: persist state failed: {error}"),
                 Ok(Ok(())) => {}
             }
@@ -230,9 +281,12 @@ impl MusicState {
                 Some((needs_auto_next, snapshot))
             }
             Err(TryLockError::WouldBlock) => None,
-            Err(TryLockError::Poisoned(_)) => {
-                tracing::warn!("music: controller lock poisoned during refresh");
-                None
+            Err(TryLockError::Poisoned(poisoned)) => {
+                tracing::warn!("music: recovering poisoned controller lock during refresh");
+                let mut controller = poisoned.into_inner();
+                let needs_auto_next = controller.needs_auto_next();
+                let snapshot = controller.refresh_snapshot_no_cover();
+                Some((needs_auto_next, snapshot))
             }
         };
 
@@ -324,6 +378,7 @@ impl MusicState {
     }
 
     pub fn seek_ratio(&mut self, ratio: f32, _now: Instant, cx: &mut App) {
+        self.auto_next_pending = false;
         self.spawn_controller_update("seek", PersistMusicState::No, cx, move |controller| {
             controller.seek_ratio(ratio);
         });
@@ -350,10 +405,16 @@ impl MusicState {
                     None
                 }
             }
-            Err(TryLockError::WouldBlock) => None,
-            Err(TryLockError::Poisoned(_)) => {
-                tracing::warn!("music: controller lock poisoned while applying cover");
-                None
+            Err(TryLockError::WouldBlock) => {
+                self.pending_cover_application = Some((request.clone(), cover_image));
+                return;
+            }
+            Err(TryLockError::Poisoned(poisoned)) => {
+                tracing::warn!("music: recovering poisoned controller lock while applying cover");
+                let mut controller = poisoned.into_inner();
+                controller
+                    .apply_decoded_cover_if_current(request, decoded)
+                    .then(|| controller.refresh_snapshot_no_cover())
             }
         };
 
@@ -361,6 +422,45 @@ impl MusicState {
             return;
         };
 
+        if let Some(cover_image) = cover_image {
+            self.rendered_cover_generation = snapshot.cover_generation;
+            self.rendered_cover_cache_key = snapshot.cover_cache_key;
+            self.rendered_cover_image = Some(cover_image);
+        }
+        self.set_playback_snapshot(snapshot);
+    }
+
+    fn apply_pending_cover(&mut self) {
+        let Some((request, cover_image)) = self.pending_cover_application.take() else {
+            return;
+        };
+        let decoded = cover_image.is_some();
+        let snapshot = match self.controller.try_lock() {
+            Ok(mut controller) => {
+                if controller.apply_decoded_cover_if_current(&request, decoded) {
+                    Some(controller.refresh_snapshot_no_cover())
+                } else {
+                    None
+                }
+            }
+            Err(TryLockError::WouldBlock) => {
+                self.pending_cover_application = Some((request, cover_image));
+                return;
+            }
+            Err(TryLockError::Poisoned(poisoned)) => {
+                tracing::warn!(
+                    "music: recovering poisoned controller lock while applying pending cover"
+                );
+                let mut controller = poisoned.into_inner();
+                controller
+                    .apply_decoded_cover_if_current(&request, decoded)
+                    .then(|| controller.refresh_snapshot_no_cover())
+            }
+        };
+
+        let Some(snapshot) = snapshot else {
+            return;
+        };
         if let Some(cover_image) = cover_image {
             self.rendered_cover_generation = snapshot.cover_generation;
             self.rendered_cover_cache_key = snapshot.cover_cache_key;
@@ -407,10 +507,10 @@ impl MusicState {
         self.drag_target = Some(target);
         match target {
             MusicDragTarget::Progress => {
-                self.drag_progress_ratio = Some(self.current_progress_ratio());
+                self.drag_progress_ratio = Some(self.displayed_progress_ratio());
             }
             MusicDragTarget::Volume => {
-                self.drag_volume_ratio = Some(self.snapshot.volume.clamp(0.0, 1.0));
+                self.drag_volume_ratio = Some(self.displayed_volume_ratio());
             }
         }
     }
@@ -454,11 +554,13 @@ impl MusicState {
         match self.drag_target {
             Some(MusicDragTarget::Progress) => {
                 if let Some(ratio) = self.drag_progress_ratio {
+                    self.pending_progress_ratio = Some((self.snapshot.generation, ratio));
                     self.seek_ratio(ratio, now, cx);
                 }
             }
             Some(MusicDragTarget::Volume) => {
                 if let Some(ratio) = self.drag_volume_ratio {
+                    self.pending_volume_ratio = Some(ratio);
                     self.set_volume(ratio, now, cx);
                 }
             }
@@ -476,11 +578,13 @@ impl MusicState {
 
     pub fn displayed_progress_ratio(&self) -> f32 {
         self.drag_progress_ratio
+            .or_else(|| self.pending_progress_ratio.map(|(_, ratio)| ratio))
             .unwrap_or_else(|| self.current_progress_ratio())
     }
 
     pub fn displayed_volume_ratio(&self) -> f32 {
         self.drag_volume_ratio
+            .or(self.pending_volume_ratio)
             .unwrap_or_else(|| self.snapshot.volume.clamp(0.0, 1.0))
     }
 

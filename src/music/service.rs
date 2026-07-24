@@ -300,6 +300,15 @@ impl MusicController {
             return;
         }
 
+        if self.sink.as_ref().is_some_and(Player::empty) {
+            self.last_position = Duration::ZERO;
+            if let Err(err) = self.recreate_sink(false) {
+                error!(error = %err, "music: failed to restart completed track");
+                self.last_error = Some(err.to_string());
+            }
+            return;
+        }
+
         if self.sink.is_none() {
             if let Err(err) = self.recreate_sink(false) {
                 error!(error = %err, "music: failed to start playback");
@@ -396,11 +405,12 @@ impl MusicController {
         let Some(track) = self.tracks.get(self.current_index) else {
             return;
         };
-        self.last_position = track.duration.mul_f32(ratio.clamp(0.0, 1.0));
+        let ratio = ratio.clamp(0.0, 1.0);
+        self.last_position = track.duration.mul_f32(ratio);
         if let Some(sink) = &self.sink {
-            if sink.try_seek(self.last_position).is_ok() {
+            if !sink.empty() && sink.try_seek(self.last_position).is_ok() {
                 debug!(
-                    ratio = ratio.clamp(0.0, 1.0),
+                    ratio,
                     seconds = self.last_position.as_secs_f32(),
                     "music: seek applied"
                 );
@@ -411,7 +421,7 @@ impl MusicController {
             return;
         }
         if let Err(err) = self.recreate_sink(self.paused) {
-            error!(error = %err, ratio = ratio.clamp(0.0, 1.0), "music: seek fallback recreate failed");
+            error!(error = %err, ratio, "music: seek fallback recreate failed");
             self.last_error = Some(err.to_string());
         }
     }
@@ -456,7 +466,7 @@ impl MusicController {
             last_error: self.last_error.clone(),
             current_seconds,
             total_seconds,
-            is_playing: !self.paused && self.sink.is_some(),
+            is_playing: !self.paused && self.sink.as_ref().is_some_and(|sink| !sink.empty()),
             muted: self.muted,
             volume: self.volume,
             mode: self.mode,

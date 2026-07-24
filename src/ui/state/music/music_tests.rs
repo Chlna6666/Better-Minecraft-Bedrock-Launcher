@@ -11,6 +11,7 @@ impl MusicState {
             rendered_cover_generation: 0,
             rendered_cover_cache_key: None,
             rendered_cover_image: None,
+            pending_cover_application: None,
             expanded_from: 0.0,
             expanded_to: 0.0,
             expanded_started_at: None,
@@ -19,6 +20,8 @@ impl MusicState {
             drag_target: None,
             drag_progress_ratio: None,
             drag_volume_ratio: None,
+            pending_progress_ratio: None,
+            pending_volume_ratio: None,
             auto_next_pending: false,
         }
     }
@@ -44,4 +47,29 @@ fn decoded_cover_result_is_used_without_png_bytes() {
     state.apply_decoded_cover_if_current(&request, Some(decoded_cover), Instant::now());
 
     assert!(state.snapshot.cover_render_image.is_some());
+}
+
+#[test]
+fn pending_drag_value_survives_stale_controller_snapshot() {
+    let mut state = MusicState::default();
+    state.snapshot.total_seconds = 100.0;
+    state.snapshot.current_seconds = 10.0;
+    state.pending_progress_ratio = Some((state.snapshot.generation, 0.8));
+
+    state.set_playback_snapshot(MusicPlaybackSnapshot {
+        current_seconds: 10.0,
+        total_seconds: 100.0,
+        generation: state.snapshot.generation,
+        ..MusicPlaybackSnapshot::default()
+    });
+    assert!((state.displayed_progress_ratio() - 0.8).abs() < f32::EPSILON);
+
+    state.set_playback_snapshot(MusicPlaybackSnapshot {
+        current_seconds: 80.0,
+        total_seconds: 100.0,
+        generation: state.snapshot.generation,
+        ..MusicPlaybackSnapshot::default()
+    });
+    assert!((state.displayed_progress_ratio() - 0.8).abs() < 0.01);
+    assert!(state.pending_progress_ratio.is_none());
 }

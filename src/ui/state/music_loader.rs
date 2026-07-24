@@ -14,7 +14,7 @@ pub fn spawn_library_load(cx: &mut App) {
     cx.spawn(async move |cx| {
         Timer::after(Duration::from_secs(3)).await;
 
-        let result = tokio::task::spawn_blocking(|| {
+        let result = crate::tasks::runtime::run_io_blocking(|| {
             let tracks = MusicController::scan_library_tracks()?;
             let music_config = crate::config::config::read_config()
                 .map(|config| config.music)
@@ -41,7 +41,7 @@ pub fn spawn_library_load(cx: &mut App) {
                 };
 
                 if installed && !preload_items.is_empty() {
-                    match tokio::task::spawn_blocking(move || {
+                    match crate::tasks::runtime::run_io_blocking(move || {
                         MusicController::preload_cover_cache(preload_items);
                     })
                     .await
