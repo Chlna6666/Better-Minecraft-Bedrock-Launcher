@@ -5,6 +5,3 @@ include!(concat!(env!("OUT_DIR"), "/easytier_runtime_assets.rs"));
 
 #[cfg(not(windows))]
 pub const WINTUN_DLL: Option<&'static [u8]> = None;
-
-#[cfg(not(windows))]
-pub const WINDIVERT64_SYS: Option<&'static [u8]> = None;

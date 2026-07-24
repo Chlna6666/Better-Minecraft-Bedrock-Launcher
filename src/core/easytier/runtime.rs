@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 #[cfg(target_os = "windows")]
-use super::runtime_assets::{WINDIVERT64_SYS, WINTUN_DLL};
+use super::runtime_assets::WINTUN_DLL;
 
 #[cfg(target_os = "windows")]
 static EASYTIER_RUNTIME_INIT: OnceLock<Result<(), String>> = OnceLock::new();
@@ -66,7 +66,7 @@ fn load_library_from(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Ensures EasyTier runtime dependencies (wintun, windivert) are embedded and available on disk,
+/// Ensures EasyTier runtime dependencies (wintun) are embedded and available on disk,
 /// and preloads wintun.dll so embedded EasyTier can create a virtual NIC reliably.
 #[cfg(target_os = "windows")]
 pub fn ensure_easytier_runtime_ready() -> Result<(), String> {
@@ -87,12 +87,6 @@ pub fn ensure_easytier_runtime_ready() -> Result<(), String> {
                     "wintun.dll is not bundled (missing EasyTier third_party assets during build)"
                         .to_string(),
                 );
-            }
-
-            // Best-effort: EasyTier can run without WinDivert in some modes, so don't fail hard.
-            if let Some(bytes) = WINDIVERT64_SYS {
-                let dst = dir.join("WinDivert64.sys");
-                let _ = write_if_missing_or_size_mismatch(&dst, bytes);
             }
 
             Ok(())
