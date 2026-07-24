@@ -1,4 +1,4 @@
-use crate::tasks::task_manager::TaskSnapshot;
+use crate::tasks::task_manager::{TaskSnapshot, TaskVisibility};
 use crate::ui::animation::repeating_linear_motion;
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::html_renderer::render_html_document;
@@ -25,9 +25,8 @@ use std::time::{Duration, Instant};
 
 use super::common::{
     format_bytes, format_count, format_date_ymd, sanitize_single_line, status_card,
-    truncate_with_ellipsis, wait_task_finished,
+    truncate_with_ellipsis,
 };
-use super::is_entity_released_error;
 
 mod content;
 mod modals;
@@ -173,7 +172,7 @@ fn curseforge_resource_panel_signature(
 pub(crate) struct CurseForgeResourcePanelView {
     tasks: HashMap<Arc<str>, Arc<TaskSnapshot>>,
     _subscriptions: Vec<Subscription>,
-    task_updates_task: Option<Task<anyhow::Result<()>>>,
+    task_updates_task: Option<Task<()>>,
     focus_handle: FocusHandle,
     curseforge_sidebar: Entity<CurseForgeSidebarView>,
     curseforge_content: Entity<CurseForgeContentView>,
@@ -184,57 +183,57 @@ pub(crate) struct CurseForgeResourcePanelView {
 }
 
 impl CurseForgeResourcePanelView {
-    fn spawn_task_updates(&mut self, cx: &mut Context<Self>) {
-        let mut updates = crate::tasks::task_manager::subscribe_task_updates();
-        let task = cx.spawn(async move |handle, cx| {
-            loop {
-                let first_snapshot = match updates.recv().await {
-                    Ok(snapshot) => snapshot,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        return Ok::<(), anyhow::Error>(());
+    fn apply_task_event(&mut self, event: crate::tasks::task_manager::TaskEvent) {
+        match event {
+            crate::tasks::task_manager::TaskEvent::Updated(snapshot) => {
+                if snapshot.visibility == TaskVisibility::Hidden {
+                    self.tasks.remove(snapshot.id.as_ref());
+                } else {
+                    let is_newer = self
+                        .tasks
+                        .get(snapshot.id.as_ref())
+                        .is_none_or(|current| current.sequence <= snapshot.sequence);
+                    if is_newer {
+                        self.tasks.insert(snapshot.id.clone(), snapshot);
                     }
-                };
-
-                let mut batch = HashMap::new();
-                batch.insert(first_snapshot.id.clone(), first_snapshot);
-                loop {
-                    match updates.try_recv() {
-                        Ok(snapshot) => {
-                            batch.insert(snapshot.id.clone(), snapshot);
-                        }
-                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-                        Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                            return Ok::<(), anyhow::Error>(());
-                        }
-                    }
-                }
-                let snapshots = batch.into_values().collect::<Vec<_>>();
-
-                match handle.update(cx, |this, cx| {
-                    if !this.active {
-                        return;
-                    }
-
-                    for snapshot in snapshots {
-                        this.tasks.insert(snapshot.id.clone(), snapshot);
-                    }
-                    let should_notify = cx.read_global(|state: &DownloadPageState, _cx| {
-                        state.curseforge_install_open
-                    });
-                    if should_notify {
-                        cx.notify();
-                    }
-                }) {
-                    Ok(()) => {}
-                    Err(error) if is_entity_released_error(&error) => {
-                        return Ok::<(), anyhow::Error>(());
-                    }
-                    Err(error) => return Err(error),
                 }
             }
-        });
+            crate::tasks::task_manager::TaskEvent::Removed(task_id) => {
+                self.tasks.remove(task_id.as_ref());
+            }
+        }
+    }
+
+    fn spawn_task_updates(&mut self, cx: &mut Context<Self>) {
+        let task = cx.spawn_stream(
+            crate::tasks::task_manager::task_event_stream(),
+            |this, delivery, cx| {
+                match delivery {
+                    crate::tasks::task_manager::TaskEventDelivery::Event(event) => {
+                        this.apply_task_event(event);
+                    }
+                    crate::tasks::task_manager::TaskEventDelivery::Batch(events) => {
+                        for event in events {
+                            this.apply_task_event(event);
+                        }
+                    }
+                    crate::tasks::task_manager::TaskEventDelivery::ResyncRequired => {
+                        this.tasks = crate::tasks::task_manager::snapshot_arcs()
+                            .into_iter()
+                            .filter(|snapshot| snapshot.visibility != TaskVisibility::Hidden)
+                            .map(|snapshot| (snapshot.id.clone(), snapshot))
+                            .collect();
+                    }
+                }
+                if !this.active
+                    || !cx
+                        .read_global(|state: &DownloadPageState, _cx| state.curseforge_install_open)
+                {
+                    return;
+                }
+                cx.notify();
+            },
+        );
         self.task_updates_task = Some(task);
     }
 
@@ -958,7 +957,7 @@ pub(super) fn render_curseforge_install_overlay(
         },
     );
     let local_versions = read_local_versions_snapshot(cx);
-    let tasks = crate::tasks::task_manager::snapshot_arcs_map();
+    let tasks = &state.task_snapshots;
 
     if state.curseforge_install_open {
         return Some(
@@ -967,7 +966,7 @@ pub(super) fn render_curseforge_install_overlay(
                 state,
                 selected_folder,
                 &local_versions,
-                &tasks,
+                tasks,
             )
             .into_any_element(),
         );
@@ -982,7 +981,7 @@ pub(super) fn render_curseforge_install_overlay(
                     &cache_ref.0,
                     selected_folder,
                     &local_versions,
-                    &tasks,
+                    tasks,
                 )
                 .into_any_element(),
             );
@@ -3389,7 +3388,8 @@ fn render_curseforge_install_modal(
                     })
                     .map_err(|e| e.to_string())?;
 
-                    let snap = wait_task_finished(&task_id).await;
+                    let snap =
+                        crate::tasks::task_manager::wait_for_task_terminal(&task_id).await;
                     let snap = snap?;
                     if snap.status.as_ref() != "completed" {
                         return Err(format!(

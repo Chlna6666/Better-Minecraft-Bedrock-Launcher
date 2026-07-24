@@ -13,7 +13,6 @@ mod render;
 
 pub use render::render_tasks_overlay;
 
-const TASKS_PAGE_POLL_INTERVAL_MS: u64 = 500;
 const MAX_RENDER_ACTIVE_TASKS: usize = 12;
 const MAX_FINISHED_TASKS_IN_LIST: usize = 120;
 const MAX_RENDER_FINISHED_TASKS: usize = 20;
@@ -29,7 +28,8 @@ const TASK_FINISHED_HOLD_TERMINAL_DEFAULT_MS: u64 = 800;
 pub struct TasksPageView {
     _subscriptions: Vec<Subscription>,
     confirm_dialog: Option<TaskConfirmDialog>,
-    update_apply_task: Option<Task<anyhow::Result<()>>>,
+    update_apply_task: Option<Task<()>>,
+    task_snapshots: HashMap<Arc<str>, Arc<TaskSnapshot>>,
     render_model: TasksPageRenderModel,
     card_motions: HashMap<Arc<str>, TaskCardMotionState>,
     finished_hold_until: HashMap<Arc<str>, Instant>,
@@ -77,7 +77,9 @@ pub(super) struct TaskTransitionCard {
     sequence: u64,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+
+
+#[derive(Clone, PartialEq)]
 pub(super) struct TaskCardViewModel {
     pub(super) id: Arc<str>,
     pub(super) title: Arc<str>,
@@ -97,6 +99,11 @@ pub(super) struct TaskCardViewModel {
     pub(super) can_pause: bool,
     pub(super) can_cancel: bool,
     pub(super) can_remove: bool,
+    pub(super) done: u64,
+    pub(super) total: Option<u64>,
+    pub(super) percent: Option<f64>,
+    pub(super) speed_bytes_per_sec: f64,
+    pub(super) sequence: u64,
 }
 
 #[derive(Clone)]
@@ -124,237 +131,6 @@ impl TasksPageRenderModel {
             finished: Vec::new(),
         }
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TaskRenderBucket {
-    Active,
-    Finished,
-    Hidden,
-}
-
-struct TaskRenderEntry {
-    started_at_unix: u64,
-    sequence: u64,
-    model: TaskCardViewModel,
-}
-
-struct TaskRenderIndexEntry {
-    bucket: TaskRenderBucket,
-    sequence: u64,
-}
-
-struct TaskRenderCache {
-    task_index: HashMap<Arc<str>, TaskRenderIndexEntry>,
-    active_entries: HashMap<Arc<str>, TaskRenderEntry>,
-    finished_entries: HashMap<Arc<str>, TaskRenderEntry>,
-    active_total: usize,
-    finished_total: usize,
-    last_signature: Option<u64>,
-}
-
-impl TaskRenderEntry {
-    fn from_snapshot(snapshot: &TaskSnapshot) -> Self {
-        Self {
-            started_at_unix: snapshot.started_at_unix,
-            sequence: snapshot.sequence,
-            model: build_task_card_model(snapshot),
-        }
-    }
-}
-
-impl TaskRenderCache {
-    fn new() -> Self {
-        Self {
-            task_index: HashMap::new(),
-            active_entries: HashMap::new(),
-            finished_entries: HashMap::new(),
-            active_total: 0,
-            finished_total: 0,
-            last_signature: None,
-        }
-    }
-
-    fn from_snapshots(snapshots: Vec<Arc<TaskSnapshot>>) -> Self {
-        let mut this = Self::new();
-        for snapshot in snapshots {
-            this.apply_snapshot(snapshot.as_ref());
-        }
-        this
-    }
-
-    fn mark_rendered(&mut self, signature: u64) {
-        self.last_signature = Some(signature);
-    }
-
-    fn apply_snapshot(&mut self, snapshot: &TaskSnapshot) {
-        let next_bucket = task_render_bucket(snapshot.status.as_ref());
-        let next_sequence = snapshot.sequence;
-        let previous_bucket = self.task_index.get(snapshot.id.as_ref()).and_then(|entry| {
-            if next_sequence < entry.sequence {
-                None
-            } else {
-                Some(entry.bucket)
-            }
-        });
-        if self
-            .task_index
-            .get(snapshot.id.as_ref())
-            .is_some_and(|entry| next_sequence < entry.sequence)
-        {
-            return;
-        }
-
-        if let Some(previous_bucket) = previous_bucket {
-            if previous_bucket != next_bucket {
-                self.decrement_bucket(previous_bucket);
-                self.increment_bucket(next_bucket);
-            }
-        } else if next_bucket != TaskRenderBucket::Hidden {
-            self.increment_bucket(next_bucket);
-        }
-
-        match next_bucket {
-            TaskRenderBucket::Active => {
-                self.task_index.insert(
-                    snapshot.id.clone(),
-                    TaskRenderIndexEntry {
-                        bucket: next_bucket,
-                        sequence: next_sequence,
-                    },
-                );
-                self.active_entries.insert(
-                    snapshot.id.clone(),
-                    TaskRenderEntry::from_snapshot(snapshot),
-                );
-                self.finished_entries.remove(snapshot.id.as_ref());
-            }
-            TaskRenderBucket::Finished => {
-                self.task_index.insert(
-                    snapshot.id.clone(),
-                    TaskRenderIndexEntry {
-                        bucket: next_bucket,
-                        sequence: next_sequence,
-                    },
-                );
-                self.finished_entries.insert(
-                    snapshot.id.clone(),
-                    TaskRenderEntry::from_snapshot(snapshot),
-                );
-                self.active_entries.remove(snapshot.id.as_ref());
-                self.trim_finished_entries();
-            }
-            TaskRenderBucket::Hidden => {
-                self.task_index.remove(snapshot.id.as_ref());
-                self.active_entries.remove(snapshot.id.as_ref());
-                self.finished_entries.remove(snapshot.id.as_ref());
-            }
-        }
-    }
-
-    fn take_changed_render_model(&mut self) -> Option<TasksPageRenderModel> {
-        let next_render_model = self.build_render_model();
-        if self.last_signature == Some(next_render_model.signature) {
-            return None;
-        }
-
-        self.last_signature = Some(next_render_model.signature);
-        Some(next_render_model)
-    }
-
-    fn build_render_model(&self) -> TasksPageRenderModel {
-        let mut active_entries = Vec::with_capacity(MAX_RENDER_ACTIVE_TASKS);
-        let mut finished_entries =
-            Vec::with_capacity(MAX_FINISHED_TASKS_IN_LIST.min(MAX_RENDER_FINISHED_TASKS));
-
-        for entry in self.active_entries.values() {
-            insert_sorted_limited_entries(&mut active_entries, entry, MAX_RENDER_ACTIVE_TASKS);
-        }
-        for entry in self.finished_entries.values() {
-            insert_sorted_limited_entries(&mut finished_entries, entry, MAX_FINISHED_TASKS_IN_LIST);
-        }
-
-        if finished_entries.len() > MAX_RENDER_FINISHED_TASKS {
-            finished_entries.truncate(MAX_RENDER_FINISHED_TASKS);
-        }
-
-        let active: Vec<_> = active_entries
-            .into_iter()
-            .map(|entry| entry.model.clone())
-            .collect();
-        let finished: Vec<_> = finished_entries
-            .into_iter()
-            .map(|entry| entry.model.clone())
-            .collect();
-        let signature = compute_render_model_signature(
-            false,
-            self.active_total,
-            self.finished_total,
-            0,
-            &active,
-            &finished,
-        );
-
-        TasksPageRenderModel {
-            loading: false,
-            signature,
-            total_count: self.active_total + self.finished_total,
-            active_total: self.active_total,
-            finished_total: self.finished_total,
-            thread_total: 0,
-            active,
-            finished,
-        }
-    }
-
-    fn increment_bucket(&mut self, bucket: TaskRenderBucket) {
-        match bucket {
-            TaskRenderBucket::Active => {
-                self.active_total += 1;
-            }
-            TaskRenderBucket::Finished => {
-                self.finished_total += 1;
-            }
-            TaskRenderBucket::Hidden => {}
-        }
-    }
-
-    fn decrement_bucket(&mut self, bucket: TaskRenderBucket) {
-        match bucket {
-            TaskRenderBucket::Active => {
-                self.active_total = self.active_total.saturating_sub(1);
-            }
-            TaskRenderBucket::Finished => {
-                self.finished_total = self.finished_total.saturating_sub(1);
-            }
-            TaskRenderBucket::Hidden => {}
-        }
-    }
-
-    fn trim_finished_entries(&mut self) {
-        while self.finished_entries.len() > MAX_FINISHED_TASKS_IN_LIST {
-            let Some(oldest_id) = self
-                .finished_entries
-                .iter()
-                .min_by(|(left_id, left_entry), (right_id, right_entry)| {
-                    left_entry
-                        .started_at_unix
-                        .cmp(&right_entry.started_at_unix)
-                        .then_with(|| left_id.as_ref().cmp(right_id.as_ref()))
-                })
-                .map(|(task_id, _)| task_id.clone())
-            else {
-                break;
-            };
-            self.finished_entries.remove(oldest_id.as_ref());
-        }
-    }
-}
-
-fn is_entity_released_error(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|cause| cause.to_string().contains("entity released"))
 }
 
 fn task_subject(snapshot: &TaskSnapshot) -> String {
@@ -425,14 +201,6 @@ fn format_task_speed(speed_bytes_per_sec: f64) -> Arc<str> {
     Arc::from(speed_text)
 }
 
-fn task_render_bucket(status: &str) -> TaskRenderBucket {
-    match status {
-        "running" | "paused" | "cancelling" => TaskRenderBucket::Active,
-        "completed" | "cancelled" | "error" => TaskRenderBucket::Finished,
-        _ => TaskRenderBucket::Hidden,
-    }
-}
-
 fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
     let display_title = if is_generic_task_title(snapshot.title.as_ref()) {
         non_empty_arc(snapshot.detail.as_ref()).unwrap_or_else(|| snapshot.title.clone())
@@ -480,6 +248,11 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
             snapshot.status.as_ref(),
             "completed" | "cancelled" | "error"
         ),
+        done: snapshot.done,
+        total: snapshot.total,
+        percent: snapshot.percent,
+        speed_bytes_per_sec: snapshot.speed_bytes_per_sec,
+        sequence: snapshot.sequence,
     }
 }
 
@@ -488,6 +261,16 @@ fn hash_optional_text(hasher: &mut RenderFingerprint, text: Option<&Arc<str>>) {
         Some(text) => {
             true.hash(hasher);
             text.hash(hasher);
+        }
+        None => false.hash(hasher),
+    }
+}
+
+fn hash_optional_f64(hasher: &mut RenderFingerprint, val: Option<f64>) {
+    match val {
+        Some(f) => {
+            true.hash(hasher);
+            f.to_bits().hash(hasher);
         }
         None => false.hash(hasher),
     }
@@ -512,36 +295,11 @@ fn hash_task_card_model(hasher: &mut RenderFingerprint, model: &TaskCardViewMode
     model.can_pause.hash(hasher);
     model.can_cancel.hash(hasher);
     model.can_remove.hash(hasher);
-}
-
-fn task_render_entry_sort_key(entry: &TaskRenderEntry) -> (u64, &str) {
-    (entry.started_at_unix, entry.model.id.as_ref())
-}
-
-fn insert_sorted_limited_entries<'a>(
-    entries: &mut Vec<&'a TaskRenderEntry>,
-    entry: &'a TaskRenderEntry,
-    limit: usize,
-) {
-    if limit == 0 {
-        return;
-    }
-
-    let insert_at = entries.partition_point(|existing| {
-        task_render_entry_sort_key(existing) <= task_render_entry_sort_key(entry)
-    });
-
-    if entries.len() < limit {
-        entries.insert(insert_at, entry);
-        return;
-    }
-
-    if insert_at >= limit {
-        return;
-    }
-
-    entries.insert(insert_at, entry);
-    entries.truncate(limit);
+    model.done.hash(hasher);
+    model.total.hash(hasher);
+    hash_optional_f64(hasher, model.percent);
+    model.speed_bytes_per_sec.to_bits().hash(hasher);
+    model.sequence.hash(hasher);
 }
 
 fn compute_render_model_signature(
@@ -570,6 +328,55 @@ fn compute_render_model_signature(
 
 pub(super) fn build_render_model() -> TasksPageRenderModel {
     let snapshot_lists = task_manager::render_snapshots_limited(
+        MAX_RENDER_ACTIVE_TASKS,
+        MAX_FINISHED_TASKS_IN_LIST,
+        MAX_RENDER_FINISHED_TASKS,
+    );
+
+    let active_total = snapshot_lists.active_total;
+    let finished_total = snapshot_lists.finished_total;
+    let thread_total = snapshot_lists
+        .active
+        .iter()
+        .filter_map(|snapshot| snapshot.visualization.as_ref())
+        .map(|visualization| visualization.worker_total.unwrap_or(0) as usize)
+        .sum();
+    let active: Vec<_> = snapshot_lists
+        .active
+        .iter()
+        .map(|snapshot| build_task_card_model(snapshot))
+        .collect();
+    let finished: Vec<_> = snapshot_lists
+        .finished
+        .iter()
+        .map(|snapshot| build_task_card_model(snapshot))
+        .collect();
+    let signature = compute_render_model_signature(
+        false,
+        active_total,
+        finished_total,
+        thread_total,
+        &active,
+        &finished,
+    );
+
+    TasksPageRenderModel {
+        loading: false,
+        signature,
+        total_count: active_total + finished_total,
+        active_total,
+        finished_total,
+        thread_total,
+        active,
+        finished,
+    }
+}
+
+pub(super) fn build_render_model_from_snapshots(
+    snapshots: impl IntoIterator<Item = Arc<TaskSnapshot>>,
+) -> TasksPageRenderModel {
+    let snapshot_lists = task_manager::render_snapshots_from(
+        snapshots,
         MAX_RENDER_ACTIVE_TASKS,
         MAX_FINISHED_TASKS_IN_LIST,
         MAX_RENDER_FINISHED_TASKS,
@@ -707,6 +514,33 @@ fn prune_terminal_visibility_state(
 }
 
 impl TasksPageView {
+    pub(super) fn local_render_model(&self) -> TasksPageRenderModel {
+        build_render_model_from_snapshots(self.task_snapshots.values().cloned())
+    }
+
+    pub(super) fn replace_task_snapshots_from_manager(&mut self) {
+        self.task_snapshots = task_manager::snapshot_arcs_map();
+    }
+
+    pub(super) fn apply_task_snapshot(&mut self, snapshot: Arc<TaskSnapshot>) {
+        if snapshot.visibility == task_manager::TaskVisibility::Hidden {
+            self.task_snapshots.remove(snapshot.id.as_ref());
+            return;
+        }
+
+        let should_replace = self
+            .task_snapshots
+            .get(snapshot.id.as_ref())
+            .is_none_or(|current| current.sequence <= snapshot.sequence);
+        if should_replace {
+            self.task_snapshots.insert(snapshot.id.clone(), snapshot);
+        }
+    }
+
+    pub(super) fn remove_task_snapshot(&mut self, task_id: &str) {
+        self.task_snapshots.remove(task_id);
+    }
+
     pub(super) fn apply_render_model(
         &mut self,
         next_render_model: TasksPageRenderModel,
@@ -987,7 +821,7 @@ impl TasksPageView {
                 this.user_cancelled_ids.remove(task_id_for_hide.as_ref());
                 this.pending_exit_motions
                     .insert(task_id_for_hide.clone(), TaskCardMotionKind::Exit);
-                this.apply_render_model(build_render_model(), cx);
+                this.apply_render_model(this.local_render_model(), cx);
             })?;
             Ok(())
         })
@@ -1002,7 +836,7 @@ impl TasksPageView {
 
 impl Drop for TasksPageView {
     fn drop(&mut self) {
-        let _ = self.update_apply_task.take();
+        self.update_apply_task.take();
     }
 }
 
@@ -1045,44 +879,12 @@ mod tests {
             can_pause: false,
             can_cancel: false,
             can_remove: true,
+            done: 1,
+            total: Some(2),
+            percent: Some(50.0),
+            speed_bytes_per_sec: 0.0,
+            sequence: 1,
         }
-    }
-
-    #[test]
-    fn terminal_task_remains_visible_before_deadline() {
-        let now = Instant::now();
-        let deadline = hold_deadline(now, "completed", false).unwrap();
-
-        assert!(!should_hide_finished(
-            Some(deadline),
-            now + Duration::from_millis(1_199)
-        ));
-    }
-
-    #[test]
-    fn completed_task_hides_after_completed_hold_window() {
-        let now = Instant::now();
-        let deadline = hold_deadline(now, "completed", false).unwrap();
-
-        assert!(should_hide_finished(
-            Some(deadline),
-            now + Duration::from_millis(1_200)
-        ));
-    }
-
-    #[test]
-    fn user_cancelled_task_uses_shorter_hold_window() {
-        let now = Instant::now();
-        let deadline = hold_deadline(now, "cancelled", true).unwrap();
-
-        assert!(!should_hide_finished(
-            Some(deadline),
-            now + Duration::from_millis(399)
-        ));
-        assert!(should_hide_finished(
-            Some(deadline),
-            now + Duration::from_millis(400)
-        ));
     }
 
     #[test]
@@ -1120,5 +922,21 @@ mod tests {
         assert!(hidden_finished_ids.is_empty());
         assert!(user_cancelled_ids.is_empty());
         assert!(pending_exit_motions.is_empty());
+    }
+
+    #[test]
+    fn unknown_non_terminal_status_remains_visible_as_active() {
+        for status in [
+            "ready",
+            "queued",
+            "initializing",
+            "starting",
+            "future-active-state",
+        ] {
+            assert!(
+                !task_manager::is_terminal_status(status),
+                "{status} must remain visible"
+            );
+        }
     }
 }

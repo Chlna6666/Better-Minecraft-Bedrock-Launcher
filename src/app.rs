@@ -85,7 +85,7 @@ async fn gpu_adapter_name_from_config(
         return None;
     }
 
-    let adapters = match tokio::task::spawn_blocking(move || {
+    let adapters = match crate::tasks::runtime::run_io_blocking(move || {
         gpui::enumerate_gpu_adapters(renderer_backend)
     })
     .await
@@ -210,6 +210,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     app.run(move |cx| {
         configure_runtime(cx, &bootstrap.launch_mode);
         build_app_state(cx, &bootstrap);
+        start_domain_event_bridges(cx);
         crate::plugins::runtime::init(cx);
 
         gpui_router::init(cx);
@@ -243,6 +244,18 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     });
 
     Ok(())
+}
+
+fn start_domain_event_bridges(cx: &mut App) {
+    crate::ui::views::download::start_task_event_bridge(cx);
+    cx.spawn_stream(
+        crate::core::version::catalog_events::local_version_changes(),
+        |generation, cx| {
+            tracing::info!(generation, "refreshing local versions after catalog change");
+            crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(true, cx);
+        },
+    )
+    .detach();
 }
 
 fn image_pipeline_decoded_budget_bytes() -> usize {
@@ -453,11 +466,12 @@ fn schedule_post_startup_warmups(cx: &mut App) {
     cx.spawn(async move |_cx| {
         Timer::after(STARTUP_WARMUP_DELAY).await;
 
-        let markdown_warmup = tokio::task::spawn_blocking(
+        let markdown_warmup = crate::tasks::runtime::run_io_blocking(
             crate::ui::components::markdown_renderer::warm_highlighter_assets,
         );
-        let http_warmup =
-            tokio::task::spawn_blocking(crate::http::proxy::prewarm_current_proxy_clients);
+        let http_warmup = crate::tasks::runtime::run_io_blocking(
+            crate::http::proxy::prewarm_current_proxy_clients,
+        );
 
         match markdown_warmup.await {
             Ok(()) => debug!("post-startup markdown highlighter warmup finished"),

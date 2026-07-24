@@ -162,7 +162,7 @@ pub async fn download_appx(
     let task_id_clone = task_id.clone();
 
     let abort_handle =
-        match crate::downloads::runtime::spawn_download_task(task_id.clone(), async move {
+        match crate::tasks::runtime::spawn_download_task(task_id.clone(), async move {
             if is_cancelled(&task_id_clone) {
                 finish_task(
                     &task_id_clone,
@@ -299,7 +299,7 @@ pub async fn download_resource(
     let task_id_clone = task_id.clone();
 
     let abort_handle =
-        match crate::downloads::runtime::spawn_download_task(task_id.clone(), async move {
+        match crate::tasks::runtime::spawn_download_task(task_id.clone(), async move {
             if is_cancelled(&task_id_clone) {
                 finish_task(
                     &task_id_clone,
@@ -385,7 +385,7 @@ pub async fn download_resource_to_cache(
     let task_id_clone = task_id.clone();
 
     let abort_handle =
-        match crate::downloads::runtime::spawn_download_task(task_id.clone(), async move {
+        match crate::tasks::runtime::spawn_download_task(task_id.clone(), async move {
             if is_cancelled(&task_id_clone) {
                 finish_task(
                     &task_id_clone,

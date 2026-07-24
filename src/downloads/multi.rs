@@ -9,7 +9,6 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::thread;
 use std::time::Instant;
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinSet;
@@ -579,8 +578,8 @@ fn spawn_direct_writer(
     dest: std::path::PathBuf,
     total: u64,
     mut rx: mpsc::Receiver<WriterMsg>,
-) -> thread::JoinHandle<io::Result<()>> {
-    thread::spawn(move || {
+) -> Result<tokio::task::JoinHandle<io::Result<()>>, String> {
+    crate::tasks::runtime::spawn_download_blocking(move || {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -615,11 +614,11 @@ fn spawn_direct_writer(
     })
 }
 
-fn log_writer_cleanup_result(result: thread::Result<io::Result<()>>) {
+fn log_writer_cleanup_result(result: Result<io::Result<()>, tokio::task::JoinError>) {
     match result {
         Ok(Ok(())) => {}
         Ok(Err(error)) => warn!("download writer stopped during cleanup: {error}"),
-        Err(_) => warn!("download writer thread panicked during cleanup"),
+        Err(error) => warn!("download writer task stopped during cleanup: {error}"),
     }
 }
 
@@ -672,7 +671,8 @@ async fn download_multi_partitioned(
     let error_occurred = Arc::new(Notify::new());
     let error_store = Arc::new(Mutex::new(None));
     let (write_tx, write_rx) = mpsc::channel::<WriterMsg>(WRITE_CHANNEL_SIZE);
-    let writer_thread = spawn_direct_writer(dest_path.as_ref().clone(), total, write_rx);
+    let writer_task = spawn_direct_writer(dest_path.as_ref().clone(), total, write_rx)
+        .map_err(CoreError::Other)?;
     let mut workers = JoinSet::new();
 
     for worker_id in 0..active_threads {
@@ -921,7 +921,7 @@ async fn download_multi_partitioned(
                     }
 
                     if pending_progress > 0
-                        && (last_update_time.elapsed().as_millis() > 200
+                        && (last_update_time.elapsed().as_millis() > 100
                             || pending_progress > WORKER_BATCH_SIZE as u64)
                     {
                         let (total_units, done_units) = scheduler.partition_summary().await;
@@ -970,11 +970,6 @@ async fn download_multi_partitioned(
                         last_error = Some("download writer stopped".to_string());
                         stream_err = true;
                     }
-                }
-
-                if pending_progress > 0 {
-                    update_progress(&task_id, pending_progress, Some(total), Some("downloading"));
-                    pending_progress = 0;
                 }
 
                 let bytes_downloaded_this_run = local_curr.saturating_sub(unit_start);
@@ -1077,36 +1072,38 @@ async fn download_multi_partitioned(
 
     if let Some(error) = error_store.lock().await.take() {
         set_task_visualization(task_id, None);
-        log_writer_cleanup_result(writer_thread.join());
+        log_writer_cleanup_result(writer_task.await);
         remove_download_file_if_exists(dest_path.as_path()).await?;
         return Err(error);
     }
 
     if is_cancelled_fast(task_control.as_ref()) {
         set_task_visualization(task_id, None);
-        log_writer_cleanup_result(writer_thread.join());
+        log_writer_cleanup_result(writer_task.await);
         remove_download_file_if_exists(dest_path.as_path()).await?;
         return Ok(CoreResult::Cancelled);
     }
 
     if !scheduler.is_all_finished().await {
         set_task_visualization(task_id, None);
-        log_writer_cleanup_result(writer_thread.join());
+        log_writer_cleanup_result(writer_task.await);
         remove_download_file_if_exists(dest_path.as_path()).await?;
         return Err(CoreError::Other("Download incomplete".into()));
     }
 
-    match writer_thread.join() {
+    match writer_task.await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             set_task_visualization(task_id, None);
             remove_download_file_if_exists(dest_path.as_path()).await?;
             return Err(CoreError::Io(error));
         }
-        Err(_) => {
+        Err(error) => {
             set_task_visualization(task_id, None);
             remove_download_file_if_exists(dest_path.as_path()).await?;
-            return Err(CoreError::Other("download writer thread panicked".into()));
+            return Err(CoreError::Other(format!(
+                "download writer task stopped: {error}"
+            )));
         }
     }
 
@@ -1616,7 +1613,10 @@ mod tests {
         remove_test_file_if_exists(&dest).await;
 
         let (write_tx, write_rx) = mpsc::channel::<WriterMsg>(8);
-        let writer_thread = spawn_direct_writer(dest.clone(), data.len() as u64, write_rx);
+        crate::tasks::runtime::initialize_app_runtime()
+            .expect("application runtime should initialize");
+        let writer_task = spawn_direct_writer(dest.clone(), data.len() as u64, write_rx)
+            .expect("writer task should start");
 
         let middle_start = 4096usize;
         let tail_start = 48 * 1024usize;
@@ -1639,9 +1639,9 @@ mod tests {
             .expect("head write should enqueue");
         drop(write_tx);
 
-        writer_thread
-            .join()
-            .expect("writer thread should not panic")
+        writer_task
+            .await
+            .expect("writer task should not stop")
             .expect("writer thread should flush successfully");
         let written = tokio::fs::read(&dest)
             .await

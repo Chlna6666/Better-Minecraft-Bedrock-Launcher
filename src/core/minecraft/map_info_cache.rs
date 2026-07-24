@@ -202,12 +202,7 @@ fn query_map_info_records_parallel(
     }
 
     let batch_size = keys.len().div_ceil(worker_count);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(worker_count)
-        .thread_name(|index| format!("map-info-{index}"))
-        .build()
-        .context("build map information query pool")?;
-    let batches = pool.install(|| {
+    let batches = crate::tasks::runtime::install_cpu(|| {
         keys.par_chunks(batch_size)
             .map(|batch| {
                 cancel_if_requested(cancel)?;
@@ -220,7 +215,8 @@ fn query_map_info_records_parallel(
                 .map_err(Into::into)
             })
             .collect::<Result<Vec<_>>>()
-    })?;
+    })
+    .map_err(anyhow::Error::msg)??;
     Ok(batches.into_iter().flatten().collect())
 }
 

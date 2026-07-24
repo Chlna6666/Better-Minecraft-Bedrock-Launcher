@@ -74,6 +74,11 @@ impl LauncherState {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Arc<TaskSnapshot>) {
+        if self.last_snapshot.as_ref().is_some_and(|current| {
+            current.id == snapshot.id && current.sequence > snapshot.sequence
+        }) {
+            return;
+        }
         self.last_snapshot = Some(snapshot);
     }
 
@@ -202,6 +207,22 @@ mod tests {
         state.last_snapshot = Some(task_snapshot("error"));
 
         assert!(!state.launch_in_progress());
+    }
+
+    #[test]
+    fn apply_snapshot_does_not_replace_newer_task_state() {
+        let mut state = LauncherState::default();
+        let mut newer = task_snapshot("running").as_ref().clone();
+        newer.sequence = 2;
+        let mut stale = task_snapshot("error").as_ref().clone();
+        stale.sequence = 1;
+
+        state.apply_snapshot(Arc::new(newer));
+        state.apply_snapshot(Arc::new(stale));
+
+        let snapshot = state.last_snapshot.expect("launcher snapshot");
+        assert_eq!(snapshot.sequence, 2);
+        assert_eq!(snapshot.status.as_ref(), "running");
     }
 
     fn launcher_with_status(status: &'static str) -> LauncherState {

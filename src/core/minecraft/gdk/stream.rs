@@ -1,15 +1,12 @@
-use once_cell::sync::Lazy;
 use rayon::prelude::*;
-use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration as StdDuration, Instant as StdInstant};
-use tokio::runtime::Handle;
 use tracing::{error, info, warn};
-use uuid::Uuid; // [新增] 引入 Tokio Handle
+use uuid::Uuid;
 
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
@@ -30,19 +27,6 @@ const XVD_HEADER_INCL_SIGNATURE_SIZE: u64 = 0x3000;
 
 const RELEASE_GUID_STR: &str = "bdb9e791-c97c-3734-e1a8-bc602552df06";
 const PRE_RELEASE_GUID_STR: &str = "1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9";
-const MAX_RESPONSIVE_GDK_EXTRACT_THREADS: usize = 2;
-
-static GDK_EXTRACT_POOL: Lazy<ThreadPool> = Lazy::new(|| {
-    match ThreadPoolBuilder::new()
-        .num_threads(MAX_RESPONSIVE_GDK_EXTRACT_THREADS)
-        .thread_name(|index| format!("bmcb-gdk-extract-{index}"))
-        .build()
-    {
-        Ok(pool) => pool,
-        Err(error) => panic!("failed to build GDK extract thread pool: {error}"),
-    }
-});
-
 // 引入生成的常量文件
 include!(concat!(env!("OUT_DIR"), "/secrets.rs"));
 
@@ -320,9 +304,6 @@ impl MsiXVDStream {
         );
         fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
 
-        // [关键修改 1] 获取当前的 Tokio Runtime Handle
-        let rt_handle = Handle::current();
-
         let cik = self.select_cik()?;
         let decoder = MsiXVDDecoder::new(&cik)?;
 
@@ -389,7 +370,9 @@ impl MsiXVDStream {
         let total_size: u64 = jobs.iter().map(|j| j.file_size).sum();
         set_total(&task_id, Some(total_size));
         let total_jobs = jobs.len();
-        let parallel_workers = MAX_RESPONSIVE_GDK_EXTRACT_THREADS.min(total_jobs.max(1));
+        let parallel_workers = total_jobs
+            .max(1)
+            .min(std::thread::available_parallelism().map_or(1, usize::from));
         let finished_counter = AtomicUsize::new(0);
         let active_workers = AtomicUsize::new(0);
         set_task_visualization(
@@ -423,8 +406,7 @@ impl MsiXVDStream {
 
         let task_id_ref = &task_id;
 
-        // [关键修改 2] 将 rt_handle 传入并行迭代器
-        GDK_EXTRACT_POOL.install(|| -> Result<(), String> {
+        crate::tasks::runtime::install_cpu(|| -> Result<(), String> {
             let parents: HashSet<_> = jobs
                 .iter()
                 .filter_map(|job| job.output_path.parent())
@@ -480,7 +462,6 @@ impl MsiXVDStream {
                         decrypt_buffer,
                         hash_page_cache,
                         task_id_ref,
-                        &rt_handle,
                     );
                     active_workers.fetch_sub(1, Ordering::Relaxed);
 
@@ -506,7 +487,7 @@ impl MsiXVDStream {
                     Ok(())
                 },
             )
-        })?;
+        })??;
 
         // 最终检查
         if is_cancelled(&task_id) {
@@ -521,7 +502,6 @@ impl MsiXVDStream {
         Ok(())
     }
 
-    // [修改] 增加 task_id 和 rt_handle 参数
     fn process_job(
         file: &File,
         job: &ExtractJob,
@@ -531,12 +511,7 @@ impl MsiXVDStream {
         decrypt_buffer: &mut Vec<u8>,
         hash_page_cache: &mut Vec<u8>,
         task_id: &str,
-        rt: &Handle, // [新增参数]
     ) -> std::io::Result<()> {
-        // [关键修改 3] 在函数入口处进入 Tokio 上下文
-        // 这样当前 Rayon 线程在执行 update_progress 里的 tokio::spawn 时就能找到 Runtime 了
-        let _guard = rt.enter();
-
         if Self::is_directory_output_path(&job.output_path) {
             fs::create_dir_all(&job.output_path)?;
             return Ok(());

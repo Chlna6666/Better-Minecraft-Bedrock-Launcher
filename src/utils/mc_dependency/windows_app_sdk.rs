@@ -332,7 +332,7 @@ fn emit_windows_app_sdk_admin_notice(
 #[cfg(windows)]
 async fn install_windows_app_sdk_installer(installer_path: &Path) -> Result<()> {
     let installer_path = installer_path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
+    crate::tasks::runtime::run_io_blocking(move || {
         use std::process::Command;
 
         let output = Command::new(&installer_path)
@@ -361,6 +361,7 @@ async fn install_windows_app_sdk_installer(installer_path: &Path) -> Result<()> 
         }
     })
     .await
+    .map_err(anyhow::Error::msg)
     .context("等待 Windows App SDK Runtime 安装线程失败")?
 }
 

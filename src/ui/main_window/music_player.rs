@@ -317,6 +317,7 @@ pub fn render_music_player(
         .cursor_pointer()
         .opacity(mini_button_opacity)
         .occlude()
+        .window_control_area(WindowControlArea::Client)
         .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| {
             cx.stop_propagation();
             let now = Instant::now();
@@ -350,6 +351,7 @@ pub fn render_music_player(
         .border_color(border_color)
         .cursor_pointer()
         .occlude()
+        .window_control_area(WindowControlArea::Client)
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
             let now = Instant::now();
@@ -492,6 +494,8 @@ pub fn render_music_player(
                 .bg(popup_bg)
                 .border_1()
                 .border_color(border_color.opacity(0.18))
+                .occlude()
+                .window_control_area(WindowControlArea::Client)
                 .p(popup_inner_padding)
                 .flex()
                 .flex_col()
@@ -896,6 +900,8 @@ pub fn render_music_player(
                 .right(px(0.0))
                 .bottom(px(0.0))
                 .cursor_pointer()
+                .occlude()
+                .window_control_area(WindowControlArea::Client)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     let should_update = {

@@ -732,9 +732,10 @@ pub async fn easytier_stop() -> Result<(), String> {
     if let Some(id) = instance_id {
         let manager = ONLINE_STATE.easytier_manager.clone();
         let cleanup_in_progress = ONLINE_STATE.easytier_cleanup_in_progress.clone();
-        let mut cleanup =
-            tokio::task::spawn_blocking(move || manager.delete_network_instance(vec![id]));
-        match tokio::time::timeout(EASYTIER_STOP_TIMEOUT, &mut cleanup).await {
+        let mut cleanup = Box::pin(crate::tasks::runtime::run_io_blocking(move || {
+            manager.delete_network_instance(vec![id])
+        }));
+        match tokio::time::timeout(EASYTIER_STOP_TIMEOUT, cleanup.as_mut()).await {
             Ok(joined) => {
                 cleanup_in_progress.store(false, Ordering::Release);
                 match joined {
@@ -755,7 +756,8 @@ pub async fn easytier_stop() -> Result<(), String> {
                     timeout = ?EASYTIER_STOP_TIMEOUT,
                     "停止 EasyTier 超时，连接状态已关闭，后台继续清理实例"
                 );
-                tokio::spawn(async move {
+                let cleanup_flag = cleanup_in_progress.clone();
+                if let Err(error) = crate::tasks::runtime::spawn_io(async move {
                     match cleanup.await {
                         Ok(Ok(_)) => tracing::info!(instance_id = %id, "EasyTier 后台清理完成"),
                         Ok(Err(error)) => tracing::warn!(
@@ -767,8 +769,14 @@ pub async fn easytier_stop() -> Result<(), String> {
                             "EasyTier 后台清理任务异常：{error}"
                         ),
                     }
+                    cleanup_flag.store(false, Ordering::Release);
+                }) {
                     cleanup_in_progress.store(false, Ordering::Release);
-                });
+                    tracing::warn!(
+                        instance_id = %id,
+                        "无法调度 EasyTier 后台清理：{error}"
+                    );
+                }
             }
         }
     }

@@ -213,7 +213,7 @@ impl MainWindowView {
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |_this, _cx| {
-            let res = tokio::task::spawn_blocking(move || {
+            let res = crate::tasks::runtime::run_io_blocking(move || {
                 crate::config::config::update_config(|cfg| {
                     cfg.launcher.download.curseforge_api_base = curseforge_api_base;
                     cfg.launcher.download.proxy.http_proxy_url = http_proxy_url;
@@ -250,7 +250,7 @@ impl MainWindowView {
         let background_blur = crate::config::config::clamp_background_blur(background_blur);
         let font_source = crate::config::config::normalize_font_source(&font_source);
         cx.spawn(async move |_this, _cx| {
-            let res = tokio::task::spawn_blocking(move || {
+            let res = crate::tasks::runtime::run_io_blocking(move || {
                 crate::config::config::update_config(|cfg| {
                     cfg.custom_style.theme_color = normalized_theme_color;
                     cfg.custom_style.background_option = background_option;

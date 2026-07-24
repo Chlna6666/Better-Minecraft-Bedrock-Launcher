@@ -30,7 +30,7 @@ pub(crate) fn progress_panel(
     percent_opt: Option<f64>,
 ) -> Div {
     let progress_mode = progress_mode(status, percent_opt);
-    let progress = match progress_mode {
+    let _progress = match progress_mode {
         TaskProgressMode::Determinate(progress) | TaskProgressMode::Idle(progress) => progress,
         TaskProgressMode::Indeterminate => 0.0,
     };

@@ -175,7 +175,7 @@ pub fn remove_local_version(folder_name: &str, cx: &mut App) {
 
 fn request_local_versions_refresh(state: &mut LocalVersionsState, force_refresh: bool) -> bool {
     if state.loading {
-        if force_refresh && !state.loading_force_refresh {
+        if force_refresh {
             state.refresh_pending = true;
         }
         return false;
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn request_local_versions_refresh_coalesces_duplicate_forced_refreshes() {
+    fn request_local_versions_refresh_preserves_invalidation_during_forced_refresh() {
         let mut state = LocalVersionsState {
             loading: true,
             loading_force_refresh: true,
@@ -473,6 +473,6 @@ mod tests {
         };
 
         assert!(!request_local_versions_refresh(&mut state, true));
-        assert!(!state.refresh_pending);
+        assert!(state.refresh_pending);
     }
 }

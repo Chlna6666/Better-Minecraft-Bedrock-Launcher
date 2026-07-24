@@ -102,17 +102,15 @@ pub(crate) fn spawn_update_check_thread(
 ) -> oneshot::Receiver<UpdateCheckOutcome> {
     let (sender, receiver) = oneshot::channel();
     let sender = Arc::new(Mutex::new(Some(sender)));
-    let thread_sender = Arc::clone(&sender);
-    let builder = std::thread::Builder::new().name(format!("update-check-{reason}"));
-
-    match builder.spawn(move || {
-        tracing::info!(
-            reason,
-            thread = ?std::thread::current().id(),
-            "update check worker thread started"
-        );
-        let outcome = check_for_updates_blocking();
-        let sender = thread_sender
+    let worker_sender = Arc::clone(&sender);
+    let spawn_result = crate::tasks::runtime::spawn_io(async move {
+        tracing::info!(reason, "update check worker started");
+        let outcome = match crate::tasks::runtime::run_io_blocking(check_for_updates_blocking).await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => UpdateCheckOutcome::with_error(error),
+        };
+        let sender = worker_sender
             .lock()
             .ok()
             .and_then(|mut sender| sender.take());
@@ -121,7 +119,9 @@ pub(crate) fn spawn_update_check_thread(
                 tracing::warn!(reason, "update check result receiver dropped");
             }
         }
-    }) {
+    });
+
+    match spawn_result {
         Ok(_) => {}
         Err(error) => {
             let sender = sender.lock().ok().and_then(|mut sender| sender.take());

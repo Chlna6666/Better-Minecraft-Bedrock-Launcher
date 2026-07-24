@@ -31,7 +31,7 @@ impl MainWindowView {
 
         cx.spawn(async move |handle, cx| {
             tracing::debug!("update markdown cache task started release_tag={release_tag}");
-            let parsed = tokio::task::spawn_blocking(move || {
+            let parsed = crate::tasks::runtime::run_io_blocking(move || {
                 crate::ui::components::markdown_renderer::warm_highlighter_assets();
                 crate::ui::components::markdown_renderer::parse_markdown_document(&release_body)
             })
@@ -249,77 +249,92 @@ impl MainWindowView {
         self.update_download_listener_running = true;
         cx.spawn(async move |handle, cx| {
             loop {
-                match rx.recv().await {
-                    Ok(snapshot) => {
-                        if snapshot.id.as_ref() != task_id {
+                let snapshot = match rx.recv().await {
+                    Ok(snapshot) => snapshot,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            task_id = %task_id,
+                            "update download listener lagged; resyncing"
+                        );
+                        let Some(snapshot) = crate::tasks::task_manager::get_snapshot_arc(&task_id)
+                        else {
                             continue;
-                        }
-
-                        let task_id = task_id.clone();
-                        let update_result = handle.update(cx, |this, cx| {
-                            let mut still_downloading = true;
-                            let mut should_notify = false;
-                            cx.update_global(|update_state: &mut UpdateState, _cx| {
-                                if snapshot.id.as_ref() != task_id {
-                                    return;
-                                }
-
-                                let previous_snapshot = update_state.last_task_snapshot.as_ref();
-                                if !download_snapshot_meaningfully_changed(
-                                    previous_snapshot,
-                                    snapshot.as_ref(),
-                                ) {
-                                    return;
-                                }
-
-                                if snapshot.status.as_ref() == "error" {
-                                    update_state.fail_download(
-                                        snapshot
-                                            .message
-                                            .clone()
-                                            .map(|message| message.to_string())
-                                            .unwrap_or_else(|| "下载失败".to_string()),
-                                    );
-                                } else if snapshot.status.as_ref() == "cancelled" {
-                                    update_state.cancel_download();
-                                } else if snapshot.status.as_ref() == "completed" {
-                                    update_state.finish_download();
-                                } else {
-                                    update_state.last_task_snapshot = Some(snapshot.clone());
-                                }
-
-                                still_downloading = update_state.downloading;
-                                should_notify = true;
-                            });
-
-                            if !still_downloading {
-                                this.update_download_listener_running = false;
-                            }
-
-                            if should_notify {
-                                cx.notify();
-                            }
-
-                            still_downloading
-                        });
-
-                        match update_result {
-                            Ok(true) => {}
-                            Ok(false) => return Ok::<(), anyhow::Error>(()),
-                            Err(error) => {
-                                let _ = handle.update(cx, |this, _cx| {
-                                    this.update_download_listener_running = false;
-                                });
-                                return Err(error);
-                            }
-                        }
+                        };
+                        snapshot
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         let _ = handle.update(cx, |this, _cx| {
                             this.update_download_listener_running = false;
                         });
                         return Ok::<(), anyhow::Error>(());
+                    }
+                };
+                if snapshot.id.as_ref() != task_id {
+                    continue;
+                }
+
+                let task_id = task_id.clone();
+                let update_result = handle.update(cx, |this, cx| {
+                    let mut still_downloading = true;
+                    let mut should_notify = false;
+                    cx.update_global(|update_state: &mut UpdateState, _cx| {
+                        if snapshot.id.as_ref() != task_id {
+                            return;
+                        }
+
+                        let previous_snapshot = update_state.last_task_snapshot.as_ref();
+                        if previous_snapshot.is_some_and(|previous| {
+                            previous.id == snapshot.id && previous.sequence > snapshot.sequence
+                        }) {
+                            return;
+                        }
+                        if !download_snapshot_meaningfully_changed(
+                            previous_snapshot,
+                            snapshot.as_ref(),
+                        ) {
+                            return;
+                        }
+
+                        if snapshot.status.as_ref() == "error" {
+                            update_state.fail_download(
+                                snapshot
+                                    .message
+                                    .clone()
+                                    .map(|message| message.to_string())
+                                    .unwrap_or_else(|| "下载失败".to_string()),
+                            );
+                        } else if snapshot.status.as_ref() == "cancelled" {
+                            update_state.cancel_download();
+                        } else if snapshot.status.as_ref() == "completed" {
+                            update_state.finish_download();
+                        } else {
+                            update_state.last_task_snapshot = Some(snapshot.clone());
+                        }
+
+                        still_downloading = update_state.downloading;
+                        should_notify = true;
+                    });
+
+                    if !still_downloading {
+                        this.update_download_listener_running = false;
+                    }
+
+                    if should_notify {
+                        cx.notify();
+                    }
+
+                    still_downloading
+                });
+
+                match update_result {
+                    Ok(true) => {}
+                    Ok(false) => return Ok::<(), anyhow::Error>(()),
+                    Err(error) => {
+                        let _ = handle.update(cx, |this, _cx| {
+                            this.update_download_listener_running = false;
+                        });
+                        return Err(error);
                     }
                 }
             }

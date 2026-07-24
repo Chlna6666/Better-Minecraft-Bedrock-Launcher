@@ -114,7 +114,7 @@ fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard
 pub fn run() -> Result<()> {
     let startup_started = Instant::now();
     crate::utils::memory::configure_mimalloc_optimizer();
-    crate::tasks::runtime::build_launcher_runtime()?.block_on(async_main(startup_started))
+    crate::tasks::runtime::initialize_app_runtime()?.block_on(async_main(startup_started))
 }
 
 async fn async_main(startup_started: Instant) -> Result<()> {
@@ -199,9 +199,8 @@ async fn async_main(startup_started: Instant) -> Result<()> {
 }
 
 fn spawn_noncritical_startup_work() {
-    let result = std::thread::Builder::new()
-        .name("bmcbl-startup-maintenance".to_string())
-        .spawn(|| {
+    let result = crate::tasks::runtime::spawn_io(async {
+        if let Err(error) = crate::tasks::runtime::run_io_blocking(|| {
             if let Err(error) = crate::utils::diagnostics::prepare_previous_run_reports() {
                 error!(?error, "failed to prepare previous run diagnostics");
             }
@@ -212,7 +211,12 @@ fn spawn_noncritical_startup_work() {
             #[cfg(target_os = "windows")]
             crate::utils::registry::register_file_associations();
             log_system_info();
-        });
+        })
+        .await
+        {
+            error!(%error, "noncritical startup work failed");
+        }
+    });
     if let Err(error) = result {
         error!(?error, "failed to start noncritical startup work");
     } else {

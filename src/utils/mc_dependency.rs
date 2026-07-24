@@ -623,8 +623,9 @@ pub async fn install_game_input_runtime(
     );
 
     let installer_path = plan.installer_path.clone();
-    tokio::task::spawn_blocking(move || install_game_input_with_msi(&installer_path))
+    crate::tasks::runtime::run_io_blocking(move || install_game_input_with_msi(&installer_path))
         .await
+        .map_err(anyhow::Error::msg)
         .context("等待 GameInput MSI 安装线程失败")??;
 
     wait_for_condition(
@@ -790,9 +791,12 @@ async fn download_file_with_progress(
 #[cfg(windows)]
 async fn install_appx_package_from_file(package_path: &Path) -> Result<()> {
     let package_path = package_path.to_path_buf();
-    tokio::task::spawn_blocking(move || install_appx_package_from_file_blocking(&package_path))
-        .await
-        .context("等待 APPX 安装线程失败")??;
+    crate::tasks::runtime::run_io_blocking(move || {
+        install_appx_package_from_file_blocking(&package_path)
+    })
+    .await
+    .map_err(anyhow::Error::msg)
+    .context("等待 APPX 安装线程失败")??;
     Ok(())
 }
 

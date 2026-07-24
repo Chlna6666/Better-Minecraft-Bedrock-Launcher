@@ -188,7 +188,7 @@ fn ensure_results_loaded_impl(
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let target_page_index = page_index;
-    let task = tokio::spawn(async move {
+    let task = match crate::tasks::runtime::spawn_io(async move {
         let index = (target_page_index as u32).saturating_mul(page_size);
         let result: Result<
             (
@@ -259,7 +259,17 @@ fn ensure_results_loaded_impl(
         }
         .await;
         let _ = tx.send(result);
-    });
+    }) {
+        Ok(task) => task,
+        Err(error) => {
+            let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
+                state.curseforge_results_loading = false;
+                state.curseforge_results_error =
+                    Some(SharedString::from(format!("无法调度搜索任务: {error}")));
+            });
+            return;
+        }
+    };
 
     let abort_handle = task.abort_handle();
     let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
@@ -276,13 +286,13 @@ fn ensure_results_loaded_impl(
         match result {
             Ok(Ok((mods, total_count, has_more))) => {
                 match cx.update_global(|state: &mut DownloadPageState, cx| {
-                    state.curseforge_results_abort_handle = None;
                     if state.curseforge_view_epoch != curseforge_view_epoch {
                         return false;
                     }
                     if state.curseforge_results_epoch != curseforge_results_epoch {
                         return false;
                     }
+                    state.curseforge_results_abort_handle = None;
 
                     state.curseforge_page_index = target_page_index;
                     state.curseforge_mods = mods;
@@ -315,13 +325,13 @@ fn ensure_results_loaded_impl(
             }
             Ok(Err(error_message)) | Err(error_message) => {
                 match cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    state.curseforge_results_abort_handle = None;
                     if state.curseforge_view_epoch != curseforge_view_epoch {
                         return false;
                     }
                     if state.curseforge_results_epoch != curseforge_results_epoch {
                         return false;
                     }
+                    state.curseforge_results_abort_handle = None;
                     state.curseforge_results_loading = false;
                     state.curseforge_results_error =
                         Some(SharedString::from(error_message.clone()));

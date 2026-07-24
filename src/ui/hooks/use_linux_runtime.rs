@@ -59,7 +59,7 @@ pub fn authorize_and_install(cx: &mut App) {
 fn spawn_install_snapshot_pump(
     request_id: u64,
     task_id: Arc<str>,
-    mut updates: tokio::sync::broadcast::Receiver<Arc<TaskSnapshot>>,
+    mut updates: task_manager::TaskUpdateReceiver,
     cx: &mut App,
 ) {
     if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {

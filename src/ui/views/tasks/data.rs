@@ -1,13 +1,9 @@
-use super::{
-    TASKS_PAGE_POLL_INTERVAL_MS, TaskConfirmAction, TaskConfirmDialog, TasksPageView,
-    build_render_model, is_entity_released_error,
-};
+use super::{TaskConfirmAction, TaskConfirmDialog, TasksPageView};
 use crate::tasks::task_manager;
 use crate::ui::components::toast;
 use gpui::*;
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 impl TasksPageView {
@@ -18,7 +14,7 @@ impl TasksPageView {
 
         self.active = active;
         if active {
-            self.apply_render_model(build_render_model(), cx);
+            self.apply_render_model(super::build_render_model(), cx);
         }
     }
 
@@ -50,10 +46,12 @@ impl TasksPageView {
     }
 
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let task_events = task_manager::task_event_stream();
         let mut this = Self {
             _subscriptions: Vec::new(),
             confirm_dialog: None,
             update_apply_task: None,
+            task_snapshots: task_manager::snapshot_arcs_map(),
             render_model: super::TasksPageRenderModel::loading(),
             card_motions: Default::default(),
             finished_hold_until: Default::default(),
@@ -64,7 +62,7 @@ impl TasksPageView {
             motion_sequence: 0,
             active: true,
         };
-        this.apply_render_model(build_render_model(), cx);
+        this.apply_render_model(super::build_render_model(), cx);
 
         this._subscriptions
             .push(
@@ -78,18 +76,55 @@ impl TasksPageView {
             }),
         );
 
-        let update_apply_task = cx.spawn(async move |handle, cx| -> anyhow::Result<()> {
-            loop {
-                Timer::after(Duration::from_millis(TASKS_PAGE_POLL_INTERVAL_MS)).await;
+        let stream_task = cx.spawn_stream(task_events, |this, delivery, cx| {
+            match delivery {
+                task_manager::TaskEventDelivery::Event(task_manager::TaskEvent::Updated(
+                    snapshot,
+                )) => {
+                    this.apply_task_snapshot(snapshot);
+                }
+                task_manager::TaskEventDelivery::Event(task_manager::TaskEvent::Removed(
+                    task_id,
+                )) => {
+                    this.remove_task_snapshot(task_id.as_ref());
+                }
+                task_manager::TaskEventDelivery::Batch(events) => {
+                    for event in events {
+                        match event {
+                            task_manager::TaskEvent::Updated(snapshot) => {
+                                this.apply_task_snapshot(snapshot);
+                            }
+                            task_manager::TaskEvent::Removed(task_id) => {
+                                this.remove_task_snapshot(task_id.as_ref());
+                            }
+                        }
+                    }
+                }
+                task_manager::TaskEventDelivery::ResyncRequired => {
+                    this.replace_task_snapshots_from_manager();
+                }
+            }
 
-                let next_render_model = build_render_model();
+            if this.active {
+                this.apply_render_model(super::build_render_model(), cx);
+            }
+        });
+        this._subscriptions.push(Subscription::new(move || {
+            drop(stream_task);
+        }));
+
+        let update_apply_task = cx.spawn(async move |handle, cx| {
+            loop {
+                Timer::after(Duration::from_millis(100)).await;
+
+                let next_render_model = super::build_render_model();
                 let update_result = handle.update(cx, move |this, cx| {
-                    this.apply_render_model(next_render_model, cx);
+                    if this.active {
+                        this.apply_render_model(next_render_model, cx);
+                    }
                 });
-                match update_result {
-                    Ok(()) => {}
-                    Err(error) if is_entity_released_error(&error) => return Ok(()),
-                    Err(error) => return Err(error),
+                if update_result.is_err() {
+                    break;
                 }
             }
         });
@@ -133,12 +168,11 @@ impl TasksPageView {
                     let model = super::build_task_card_model(snapshot.as_ref());
                     self.schedule_exit_motion(task_id.clone(), model, cx);
                 }
-                let task_id_for_cancel = task_id.clone();
-                let _ = thread::Builder::new()
-                    .name("task-cancel".to_string())
-                    .spawn(move || {
-                        task_manager::cancel_task(task_id_for_cancel.as_ref());
-                    });
+                task_manager::cancel_task(task_id.as_ref());
+                if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
+                    self.apply_task_snapshot(snapshot);
+                }
+                self.apply_render_model(self.local_render_model(), cx);
                 self.close_confirm(cx);
             }
             TaskConfirmAction::RemoveTask => {
@@ -146,11 +180,10 @@ impl TasksPageView {
                     let model = super::build_task_card_model(snapshot.as_ref());
                     self.schedule_exit_motion(task_id.clone(), model, cx);
                 }
-                let removed = task_manager::remove_task(task_id.as_ref());
+                task_manager::remove_task(task_id.as_ref());
+                self.remove_task_snapshot(task_id.as_ref());
+                self.apply_render_model(self.local_render_model(), cx);
                 self.close_confirm(cx);
-                if removed {
-                    self.apply_render_model(build_render_model(), cx);
-                }
             }
             TaskConfirmAction::DeleteDownloadFile => {
                 let path = task_manager::get_snapshot_arc(task_id.as_ref())

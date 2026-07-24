@@ -1,5 +1,6 @@
 use gpui::{App, Entity, Global, ScrollHandle, SharedString, Task, point, px};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::ui::components::html_renderer::HtmlDocument;
@@ -140,10 +141,13 @@ pub struct DownloadPageState {
     pub local_path_by_package: HashMap<SharedString, SharedString>,
     pub local_files: HashSet<SharedString>,
     pub operations_by_package: HashMap<SharedString, DownloadOperation>,
+    pub task_snapshots: HashMap<Arc<str>, Arc<crate::tasks::task_manager::TaskSnapshot>>,
     pub force_download_by_package: HashMap<SharedString, bool>,
     pub force_refresh_next: bool,
+    pub versions_request_id: u64,
     pub downloads_index_loaded: bool,
     pub downloads_index_loading: bool,
+    pub downloads_index_request_id: u64,
     pub search_input: Option<Entity<InputState>>,
     pub search_query: SharedString,
     pub channel_filter: DownloadChannelFilter,
@@ -154,9 +158,11 @@ pub struct DownloadPageState {
     pub game_dialog_input: Option<Entity<InputState>>,
     pub game_dialog_folder_input: Option<Entity<InputState>>,
     pub game_dialog_cdn_loading: bool,
+    pub game_dialog_cdn_request_id: u64,
     pub game_dialog_cdn_error: Option<SharedString>,
     pub game_dialog_cdn_results: Vec<GameDialogCdnResult>,
     pub game_dialog_selected_cdn_base: Option<SharedString>,
+    pub game_dialog_cdn_expanded: bool,
     pub game_rows_scroll: ScrollHandle,
     pub curseforge_sidebar_scroll: ScrollHandle,
     pub curseforge_results_scroll: ScrollHandle,
@@ -165,6 +171,7 @@ pub struct DownloadPageState {
     pub resource_view_mode: ResourceViewMode,
     pub curseforge_loaded: bool,
     pub curseforge_loading: bool,
+    pub curseforge_metadata_request_id: u64,
     pub curseforge_error: Option<SharedString>,
     pub curseforge_categories: Vec<CurseForgeCategoryEntry>,
     pub curseforge_versions: Vec<SharedString>,
@@ -202,6 +209,7 @@ pub struct DownloadPageState {
     pub curseforge_search_commit_task: Option<Task<()>>,
     pub curseforge_mod_page_open: bool,
     pub curseforge_mod_page_loading: bool,
+    pub curseforge_mod_page_request_id: u64,
     pub curseforge_mod_page_error: Option<SharedString>,
     pub curseforge_mod_page_mod_id: Option<i32>,
     pub curseforge_mod_page_mod: Option<CurseForgeModEntry>,
@@ -212,6 +220,7 @@ pub struct DownloadPageState {
     pub curseforge_install_error: Option<SharedString>,
     pub curseforge_install_mod: Option<CurseForgeModEntry>,
     pub curseforge_install_files: Vec<CurseForgeFileEntry>,
+    pub curseforge_install_files_request_id: u64,
     pub curseforge_install_selected_file_id: Option<i32>,
     pub curseforge_install_target_folder: Option<SharedString>,
     pub curseforge_install_task_id: Option<SharedString>,
@@ -246,10 +255,13 @@ impl Default for DownloadPageState {
             local_path_by_package: HashMap::new(),
             local_files: HashSet::new(),
             operations_by_package: HashMap::new(),
+            task_snapshots: HashMap::new(),
             force_download_by_package: HashMap::new(),
             force_refresh_next: false,
+            versions_request_id: 0,
             downloads_index_loaded: false,
             downloads_index_loading: false,
+            downloads_index_request_id: 0,
             search_input: None,
             search_query: SharedString::from(""),
             channel_filter: DownloadChannelFilter::Release,
@@ -260,9 +272,11 @@ impl Default for DownloadPageState {
             game_dialog_input: None,
             game_dialog_folder_input: None,
             game_dialog_cdn_loading: false,
+            game_dialog_cdn_request_id: 0,
             game_dialog_cdn_error: None,
             game_dialog_cdn_results: Vec::new(),
             game_dialog_selected_cdn_base: None,
+            game_dialog_cdn_expanded: false,
             game_rows_scroll: ScrollHandle::new(),
             curseforge_sidebar_scroll: ScrollHandle::new(),
             curseforge_results_scroll: ScrollHandle::new(),
@@ -271,6 +285,7 @@ impl Default for DownloadPageState {
             resource_view_mode: ResourceViewMode::List,
             curseforge_loaded: false,
             curseforge_loading: false,
+            curseforge_metadata_request_id: 0,
             curseforge_error: None,
             curseforge_categories: Vec::new(),
             curseforge_versions: Vec::new(),
@@ -305,6 +320,7 @@ impl Default for DownloadPageState {
             curseforge_search_commit_task: None,
             curseforge_mod_page_open: false,
             curseforge_mod_page_loading: false,
+            curseforge_mod_page_request_id: 0,
             curseforge_mod_page_error: None,
             curseforge_mod_page_mod_id: None,
             curseforge_mod_page_mod: None,
@@ -315,6 +331,7 @@ impl Default for DownloadPageState {
             curseforge_install_error: None,
             curseforge_install_mod: None,
             curseforge_install_files: Vec::new(),
+            curseforge_install_files_request_id: 0,
             curseforge_install_selected_file_id: None,
             curseforge_install_target_folder: None,
             curseforge_install_task_id: None,
@@ -419,20 +436,24 @@ impl DownloadPageState {
         self.loaded = false;
         self.loading = false;
         self.error = None;
+        self.versions_request_id = self.versions_request_id.wrapping_add(1);
         self.versions.clear();
         self.local_path_by_package.clear();
         self.local_files.clear();
         self.force_download_by_package.clear();
         self.downloads_index_loaded = false;
         self.downloads_index_loading = false;
+        self.downloads_index_request_id = self.downloads_index_request_id.wrapping_add(1);
         self.page_index = 0;
         self.game_dialog = None;
         self.game_dialog_input = None;
         self.game_dialog_folder_input = None;
         self.game_dialog_cdn_loading = false;
+        self.game_dialog_cdn_request_id = self.game_dialog_cdn_request_id.wrapping_add(1);
         self.game_dialog_cdn_error = None;
         self.game_dialog_cdn_results.clear();
         self.game_dialog_selected_cdn_base = None;
+        self.game_dialog_cdn_expanded = false;
         self.game_rows_scroll.set_offset(point(px(0.), px(0.)));
     }
 
@@ -441,6 +462,7 @@ impl DownloadPageState {
             handle.abort();
         }
         self.curseforge_view_epoch = self.curseforge_view_epoch.wrapping_add(1);
+        self.curseforge_metadata_request_id = self.curseforge_metadata_request_id.wrapping_add(1);
         self.curseforge_results_epoch = self.curseforge_results_epoch.wrapping_add(1);
         self.curseforge_invalidate_seq = self.curseforge_invalidate_seq.wrapping_add(1);
         self.curseforge_page_commit_seq = self.curseforge_page_commit_seq.wrapping_add(1);
@@ -458,6 +480,7 @@ impl DownloadPageState {
         self.curseforge_selected_sub_id = None;
         self.curseforge_selected_game_version = SharedString::from("");
         self.curseforge_mod_page_loading = false;
+        self.curseforge_mod_page_request_id = self.curseforge_mod_page_request_id.wrapping_add(1);
         self.curseforge_last_query_key = SharedString::from("");
         self.curseforge_results_loading = false;
         self.curseforge_results_error = None;
@@ -480,6 +503,8 @@ impl DownloadPageState {
         self.set_curseforge_mod_page_description(SharedString::from(""));
         self.curseforge_install_open = false;
         self.curseforge_install_stage = CurseForgeInstallStage::Idle;
+        self.curseforge_install_files_request_id =
+            self.curseforge_install_files_request_id.wrapping_add(1);
         self.curseforge_install_error = None;
         self.curseforge_install_mod = None;
         self.curseforge_install_files.clear();

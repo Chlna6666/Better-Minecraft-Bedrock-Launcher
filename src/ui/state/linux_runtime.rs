@@ -101,6 +101,11 @@ impl LinuxRuntimeState {
         {
             return false;
         }
+        if self.install_snapshot.as_ref().is_some_and(|current| {
+            current.id == snapshot.id && current.sequence > snapshot.sequence
+        }) {
+            return false;
+        }
         self.install_snapshot = Some(snapshot);
         true
     }

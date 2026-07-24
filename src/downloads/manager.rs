@@ -2,9 +2,9 @@
 use crate::config::config::read_config;
 use crate::downloads::integrity::{is_appx_download_path, verify_download_integrity};
 use crate::downloads::multi::download_multi;
-use crate::downloads::runtime::spawn_download_task;
 use crate::downloads::single::download_file;
 use crate::result::{CoreError, CoreResult};
+use crate::tasks::runtime::spawn_download_task;
 use crate::tasks::task_manager::{
     create_task_with_details, finish_task, register_task_abort_handle, reset_progress,
     task_control, update_progress,

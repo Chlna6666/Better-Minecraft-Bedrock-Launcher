@@ -198,18 +198,9 @@ fn absolute_display_path(root: &Path, path: &Path) -> String {
 
 pub async fn get_appx_version_list(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
     let folder = folder.to_path_buf();
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    let thread = std::thread::Builder::new()
-        .name("bmcbl-version-scan".to_string())
-        .spawn(move || {
-            let versions = get_appx_version_list_blocking(&folder);
-            if sender.send(versions).is_err() {
-                debug!("版本扫描结果接收端已关闭");
-            }
-        });
-    thread.context("启动版本扫描线程失败")?;
-
-    receiver.await.context("版本扫描线程异常退出")?
+    crate::tasks::runtime::run_cpu(move || get_appx_version_list_blocking(&folder))
+        .await
+        .map_err(anyhow::Error::msg)?
 }
 
 pub(crate) fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<LaunchVersionEntry>> {
@@ -226,26 +217,11 @@ pub(crate) fn get_appx_version_list_blocking(folder: &Path) -> Result<Vec<Launch
         })
         .collect::<std::io::Result<Vec<_>>>()
         .context("遍历版本目录失败")?;
-    let concurrency = num_cpus::get().clamp(2, 4);
-    let versions = match rayon::ThreadPoolBuilder::new()
-        .num_threads(concurrency)
-        .thread_name(|index| format!("bmcbl-version-parse-{index}"))
-        .build()
-    {
-        Ok(pool) => pool.install(|| {
-            entries
-                .into_par_iter()
-                .filter_map(|entry| read_appx_version_entry(entry, folder))
-                .collect::<Vec<_>>()
-        }),
-        Err(error) => {
-            debug!("创建版本解析线程池失败，改用顺序解析: {error}");
-            entries
-                .into_iter()
-                .filter_map(|entry| read_appx_version_entry(entry, folder))
-                .collect::<Vec<_>>()
-        }
-    };
+    let concurrency = num_cpus::get().max(1);
+    let versions = entries
+        .into_par_iter()
+        .filter_map(|entry| read_appx_version_entry(entry, folder))
+        .collect::<Vec<_>>();
 
     debug!(
         "get_appx_version_list 完成，用时: {:?}, 并发度: {}, 条目数: {}",
@@ -264,6 +240,8 @@ mod tests {
 
     #[test]
     fn version_scan_does_not_wait_for_tokio_blocking_pool() {
+        crate::tasks::runtime::initialize_app_runtime()
+            .expect("application runtime should initialize");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .max_blocking_threads(1)

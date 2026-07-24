@@ -110,6 +110,8 @@ pub(super) fn close_curseforge_install_modal(cx: &mut App) {
         state.curseforge_install_open = false;
         state.curseforge_install_stage =
             crate::ui::views::download::state::CurseForgeInstallStage::Idle;
+        state.curseforge_install_files_request_id =
+            state.curseforge_install_files_request_id.wrapping_add(1);
     });
 }
 
@@ -117,6 +119,7 @@ pub(super) fn close_curseforge_mod_page(cx: &mut App) {
     cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.curseforge_mod_page_open = false;
         state.curseforge_mod_page_loading = false;
+        state.curseforge_mod_page_request_id = state.curseforge_mod_page_request_id.wrapping_add(1);
         state.curseforge_mod_page_error = None;
         state.curseforge_mod_page_mod_id = None;
         state.curseforge_mod_page_mod = None;
@@ -243,13 +246,14 @@ fn numeric_version_parts(text: &str) -> Vec<u64> {
 pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
     let found = clone_curseforge_mod_entry_by_id(mod_id, cx);
 
-    cx.update_global(|state: &mut DownloadPageState, _cx| {
+    let request_id = cx.update_global(|state: &mut DownloadPageState, _cx| {
         state.curseforge_mod_page_open = true;
         state.curseforge_mod_page_error = None;
         state.curseforge_mod_page_mod_id = Some(mod_id);
         state.curseforge_mod_page_mod = found.clone();
         state.set_curseforge_mod_page_description(SharedString::from(""));
         state.curseforge_mod_page_loading = true;
+        state.curseforge_mod_page_request_id = state.curseforge_mod_page_request_id.wrapping_add(1);
         state
             .curseforge_mod_page_scroll
             .set_offset(point(px(0.), px(0.)));
@@ -260,6 +264,7 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
         state.curseforge_install_mod = found.clone();
         state.curseforge_install_files.clear();
         state.curseforge_install_selected_file_id = None;
+        state.curseforge_mod_page_request_id
     });
 
     let cached_mod_entry = found.map(curseforge_mod_entry_to_query_data);
@@ -274,7 +279,9 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
                 } = page_data;
                 let mod_entry = curseforge_mod_entry_from_query_data(mod_entry);
                 if let Err(error) = cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    if state.curseforge_mod_page_mod_id != Some(mod_id) {
+                    if state.curseforge_mod_page_request_id != request_id
+                        || state.curseforge_mod_page_mod_id != Some(mod_id)
+                    {
                         return;
                     }
                     state.curseforge_mod_page_loading = false;
@@ -287,7 +294,9 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
             }
             Err(error) => {
                 if let Err(update_error) = cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    if state.curseforge_mod_page_mod_id != Some(mod_id) {
+                    if state.curseforge_mod_page_request_id != request_id
+                        || state.curseforge_mod_page_mod_id != Some(mod_id)
+                    {
                         return;
                     }
                     state.curseforge_mod_page_loading = false;
@@ -329,6 +338,8 @@ pub(super) fn open_curseforge_install_modal(
         state.curseforge_install_error = None;
         state.curseforge_install_mod = Some(mod_entry.clone());
         state.curseforge_install_files.clear();
+        state.curseforge_install_files_request_id =
+            state.curseforge_install_files_request_id.wrapping_add(1);
         state.curseforge_install_selected_file_id = None;
         state.curseforge_install_task_id = None;
         state.curseforge_install_downloaded_path = None;
@@ -351,6 +362,8 @@ pub(super) fn open_curseforge_install_modal_for_file(
             crate::ui::views::download::state::CurseForgeInstallStage::Idle;
         state.curseforge_install_error = None;
         state.curseforge_install_mod = Some(mod_entry);
+        state.curseforge_install_files_request_id =
+            state.curseforge_install_files_request_id.wrapping_add(1);
         state.curseforge_install_selected_file_id = Some(file_id);
         state.curseforge_install_task_id = None;
         state.curseforge_install_downloaded_path = None;
@@ -360,8 +373,13 @@ pub(super) fn open_curseforge_install_modal_for_file(
 }
 
 fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
-    let game_version = cx.read_global(|state: &DownloadPageState, _cx| {
-        Some(state.curseforge_selected_game_version.to_string())
+    let (game_version, request_id) = cx.update_global(|state: &mut DownloadPageState, _cx| {
+        state.curseforge_install_files_request_id =
+            state.curseforge_install_files_request_id.wrapping_add(1);
+        (
+            Some(state.curseforge_selected_game_version.to_string()),
+            state.curseforge_install_files_request_id,
+        )
     });
 
     cx.spawn(async move |cx| {
@@ -374,7 +392,9 @@ fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
                         .curseforge_install_mod
                         .as_ref()
                         .map(|mod_entry| mod_entry.id);
-                    if current_mod_id != Some(mod_id) {
+                    if state.curseforge_install_files_request_id != request_id
+                        || current_mod_id != Some(mod_id)
+                    {
                         return;
                     }
                     let previous_selected_id = state.curseforge_install_selected_file_id;
@@ -394,7 +414,9 @@ fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
                         .curseforge_install_mod
                         .as_ref()
                         .map(|mod_entry| mod_entry.id);
-                    if current_mod_id != Some(mod_id) {
+                    if state.curseforge_install_files_request_id != request_id
+                        || current_mod_id != Some(mod_id)
+                    {
                         return;
                     }
                     state.curseforge_install_stage =

@@ -65,7 +65,7 @@ pub async fn launch_win32_with_injection(
     let args_owned = args.map(|s| s.to_string());
     let cb = on_progress.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<u32> {
+    crate::tasks::runtime::run_io_blocking(move || -> Result<u32> {
         unsafe {
             let log = |msg: &str| {
                 if let Some(c) = &cb {
@@ -195,7 +195,8 @@ pub async fn launch_win32_with_injection(
             Ok(pid)
         }
     })
-    .await?
+    .await
+    .map_err(anyhow::Error::msg)?
 }
 
 // inject_existing_process 代码保持原样，因为它是针对已存在进程的
@@ -208,7 +209,7 @@ pub async fn inject_existing_process(
 ) -> Result<()> {
     let cb = on_progress.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<()> {
+    crate::tasks::runtime::run_io_blocking(move || -> Result<()> {
         unsafe {
             let log = |msg: &str| {
                 if let Some(c) = &cb {
@@ -311,5 +312,6 @@ pub async fn inject_existing_process(
             Ok(())
         }
     })
-    .await?
+    .await
+    .map_err(anyhow::Error::msg)?
 }

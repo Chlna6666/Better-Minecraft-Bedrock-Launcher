@@ -9,12 +9,11 @@
 //! https://github.com/MicrosoftDocs/windows-dev-docs/blob/docs/uwp/launch-resume/multi-instance-uwp.md
 
 use pelite::{FileMap, PeFile};
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
 use std::time::Instant;
 use tracing::debug;
 use xmltree::{AttributeMap, Element, EmitterConfig, Namespace, XMLNode};
@@ -404,23 +403,22 @@ pub fn resolve_executable_product_version_in_dir(
         candidates.len()
     );
 
-    let (sender, receiver) = mpsc::channel();
-    let candidate_count = candidates.len();
-    for candidate in candidates {
-        let sender = sender.clone();
-        thread::spawn(move || {
-            let task_started_at = Instant::now();
-            let result = get_executable_product_version(&candidate);
-            let _ = sender.send((candidate, task_started_at.elapsed(), result));
-        });
-    }
-    drop(sender);
+    let results = crate::tasks::runtime::install_cpu(|| {
+        candidates
+            .into_par_iter()
+            .map(|candidate| {
+                let task_started_at = Instant::now();
+                let result = get_executable_product_version(&candidate);
+                (candidate, task_started_at.elapsed(), result)
+            })
+            .collect::<Vec<_>>()
+    })?;
 
     let mut first_error = None;
     let mut resolved_product_version = None;
-    for _ in 0..candidate_count {
-        match receiver.recv() {
-            Ok((candidate, elapsed, Ok(Some(product_version)))) => {
+    for (candidate, elapsed, result) in results {
+        match result {
+            Ok(Some(product_version)) => {
                 debug!(
                     "PE ProductVersion 解析成功: exe={}, product_version={}, single_elapsed={:?}, total_elapsed={:?}",
                     candidate.display(),
@@ -432,14 +430,14 @@ pub fn resolve_executable_product_version_in_dir(
                     resolved_product_version = Some((candidate, product_version));
                 }
             }
-            Ok((candidate, elapsed, Ok(None))) => {
+            Ok(None) => {
                 debug!(
                     "PE ProductVersion 缺失: exe={}, single_elapsed={:?}",
                     candidate.display(),
                     elapsed
                 );
             }
-            Ok((candidate, elapsed, Err(error))) => {
+            Err(error) => {
                 debug!(
                     "PE ProductVersion 解析失败: exe={}, single_elapsed={:?}, error={}",
                     candidate.display(),
@@ -448,13 +446,6 @@ pub fn resolve_executable_product_version_in_dir(
                 );
                 if first_error.is_none() {
                     first_error = Some(error);
-                }
-            }
-            Err(error) => {
-                let message = format!("PE 解析任务通道失败: {}", error);
-                debug!("{}", message);
-                if first_error.is_none() {
-                    first_error = Some(message);
                 }
             }
         }
@@ -568,20 +559,11 @@ fn parse_manifest_identity(xml: &str) -> Result<(String, String), String> {
 
 pub async fn get_manifest_identity_from_dir(appx_path: &Path) -> Result<(String, String), String> {
     let appx_path = appx_path.to_path_buf();
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("bmcbl-manifest-read".to_string())
-        .spawn(move || {
-            let result = get_manifest_identity_from_dir_blocking(&appx_path);
-            if sender.send(result).is_err() {
-                debug!("Manifest 读取结果接收端已关闭");
-            }
-        })
-        .map_err(|error| format!("无法启动 Manifest 读取线程: {error}"))?;
-
-    receiver
-        .await
-        .map_err(|error| format!("Manifest 读取线程异常退出: {error}"))?
+    crate::tasks::runtime::run_io_blocking(move || {
+        get_manifest_identity_from_dir_blocking(&appx_path)
+    })
+    .await
+    .map_err(|error| format!("Manifest 读取后台任务异常退出: {error}"))?
 }
 
 /// 异步获取清单中的 Identity 信息

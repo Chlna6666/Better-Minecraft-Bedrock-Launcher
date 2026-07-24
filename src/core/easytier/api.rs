@@ -10,7 +10,7 @@ pub struct NatTypeSnapshot {
 }
 
 pub async fn detect_nat_types() -> NatTypeSnapshot {
-    tokio::task::spawn_blocking(|| {
+    crate::tasks::runtime::run_io_blocking(|| {
         let collector = StunInfoCollector::new_with_default_servers();
         collector.update_stun_info();
 

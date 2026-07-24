@@ -5,7 +5,6 @@ use crate::utils::updater::ReleaseSummary;
 use gpui::{Global, ScrollHandle};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::broadcast;
 
 #[derive(Default)]
 pub struct UpdateState {
@@ -19,7 +18,7 @@ pub struct UpdateState {
     // Download/apply flow (WebView2's useUpdaterWithModal equivalent).
     pub downloading: bool,
     pub task_id: Option<String>,
-    pub task_updates: Option<broadcast::Receiver<Arc<TaskSnapshot>>>,
+    pub task_updates: Option<crate::tasks::task_manager::TaskUpdateReceiver>,
     pub last_task_snapshot: Option<Arc<TaskSnapshot>>,
     pub download_error: Option<String>,
 
@@ -46,7 +45,7 @@ impl UpdateState {
     pub fn begin_download(
         &mut self,
         task_id: String,
-        task_updates: broadcast::Receiver<Arc<TaskSnapshot>>,
+        task_updates: crate::tasks::task_manager::TaskUpdateReceiver,
     ) {
         self.downloading = true;
         self.task_id = Some(task_id);

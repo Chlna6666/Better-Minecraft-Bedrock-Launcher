@@ -122,7 +122,7 @@ pub async fn import_assets(request: ImportAssetsRequest) -> Result<ImportAssetsR
         allow_shared_fallback: request.allow_shared_fallback,
     };
 
-    let result = tokio::task::spawn_blocking(move || {
+    let result = crate::tasks::runtime::run_io_blocking(move || {
         import_files_batch(request.file_paths, &options, request.overwrite)
     })
     .await
@@ -160,7 +160,7 @@ pub async fn inspect_import_file(
     let path_for_log = path.display().to_string();
 
     // 在 blocking thread 中执行，因为涉及 ZIP 解压读取
-    tokio::task::spawn_blocking(move || {
+    crate::tasks::runtime::run_io_blocking(move || {
         inspect_archive(&path, lang.as_deref()).map_err(|e| e.to_string())
     })
     .await
@@ -201,7 +201,7 @@ pub async fn check_import_conflict(
     }
     let path_for_log = path.display().to_string();
 
-    tokio::task::spawn_blocking(move || {
+    crate::tasks::runtime::run_io_blocking(move || {
         check_import_file(&path, &options).map_err(|e| e.to_string())
     })
     .await

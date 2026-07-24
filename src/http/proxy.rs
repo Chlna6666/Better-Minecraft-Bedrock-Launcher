@@ -549,18 +549,12 @@ pub fn prewarm_current_proxy_clients_in_background() {
         }
     }
 
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            drop(handle.spawn_blocking(prewarm));
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+        if let Err(error) = crate::tasks::runtime::run_io_blocking(prewarm).await {
+            warn!("HTTP proxy client prewarm task failed: {error}");
         }
-        Err(_) => {
-            if let Err(error) = std::thread::Builder::new()
-                .name("bmcbl-http-client-prewarm".to_string())
-                .spawn(prewarm)
-            {
-                error!("Failed to spawn HTTP proxy client prewarm thread: {error}");
-            }
-        }
+    }) {
+        error!("Failed to schedule HTTP proxy client prewarm: {error}");
     }
 }
 

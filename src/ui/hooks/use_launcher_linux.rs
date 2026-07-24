@@ -275,8 +275,16 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
             loop {
                 let snapshot = match updates.recv().await {
                     Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        warn!(%error, "Linux launcher snapshot pump closed");
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "Linux launcher snapshot pump lagged; resyncing");
+                        let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                        else {
+                            continue;
+                        };
+                        snapshot
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        warn!("Linux launcher snapshot pump closed");
                         break;
                     }
                 };

@@ -166,9 +166,13 @@ fn should_use_acceleration_blocking() -> bool {
 }
 
 async fn should_use_acceleration() -> bool {
-    // 使用标准库线程执行阻塞操作，避免依赖 tokio 运行时
-    let handle = std::thread::spawn(|| should_use_acceleration_blocking());
-    handle.join().unwrap_or(false)
+    match crate::tasks::runtime::run_io_blocking(should_use_acceleration_blocking).await {
+        Ok(use_acceleration) => use_acceleration,
+        Err(error) => {
+            warn!("GitHub 连接检测后台任务失败：{error}");
+            false
+        }
+    }
 }
 
 fn accelerate_download_url(url: &str, use_acceleration: bool) -> String {
@@ -599,18 +603,13 @@ fn normalize_file_arg(s: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
-/// 在后台线程创建 Tokio runtime 并执行异步更新逻辑
-/// 用于在 GPUI 线程池等非 Tokio 环境中运行异步更新代码
-fn block_on_tokio<F, T>(fut: F) -> Result<T, String>
+fn block_on_app_runtime<F, T>(future: F) -> Result<T, String>
 where
-    F: std::future::Future<Output = Result<T, String>>,
+    F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    T: Send + 'static,
 {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("创建 Tokio 运行时失败：{}", e))?;
-
-    rt.block_on(fut)
+    let task = crate::tasks::runtime::spawn_io(future)?;
+    futures::executor::block_on(task).map_err(|error| format!("更新任务异常结束: {error}"))?
 }
 
 /// 阻塞式检查更新函数 - 在 GPUI 线程池中使用
@@ -619,14 +618,14 @@ pub fn check_updates_blocking(
     repo: String,
     api_base: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    block_on_tokio(check_updates(owner, repo, api_base))
+    block_on_app_runtime(check_updates(owner, repo, api_base))
 }
 
 /// 阻塞式下载并应用更新函数 - 在 GPUI 线程池中使用
 pub fn download_and_apply_update_blocking(
     args: DownloadAndApplyArgs,
 ) -> Result<serde_json::Value, String> {
-    block_on_tokio(download_and_apply_update(args))
+    block_on_app_runtime(download_and_apply_update(args))
 }
 
 #[cfg(test)]

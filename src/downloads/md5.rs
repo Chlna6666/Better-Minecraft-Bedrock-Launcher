@@ -1,5 +1,4 @@
 // core/downloads/md5.rs
-use futures::channel::oneshot;
 use md5::Context;
 use std::fs::File;
 use std::io::{self, Read};
@@ -39,19 +38,12 @@ pub async fn compute_md5<P: AsRef<Path>>(path: P) -> Result<String, std::io::Err
 
     let path_buf = path_ref.to_path_buf();
     let display_path = path_buf.display().to_string();
-    let (sender, receiver) = oneshot::channel();
-    std::thread::Builder::new()
-        .name("bmcbl-md5".to_string())
-        .spawn(move || {
-            let result = compute_md5_blocking(&path_buf);
-            if sender.send(result).is_err() {
-                debug!("MD5 worker result receiver was dropped");
-            }
-        })?;
-
-    let (result, total_bytes) = receiver
-        .await
-        .map_err(|_| io::Error::other(format!("MD5 worker stopped for {display_path}")))??;
+    let (result, total_bytes) =
+        crate::tasks::runtime::run_io_blocking(move || compute_md5_blocking(&path_buf))
+            .await
+            .map_err(|error| {
+                io::Error::other(format!("MD5 worker stopped for {display_path}: {error}"))
+            })??;
 
     debug!(
         "文件 {} 的 MD5 计算完成: {} (已读取 {} 字节)",
@@ -101,7 +93,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_md5_works_without_tokio_runtime() {
+    fn verify_md5_uses_application_runtime() {
+        crate::tasks::runtime::initialize_app_runtime()
+            .expect("application runtime should initialize");
         let path = temp_md5_path("plain-thread.bin");
         std::fs::write(&path, b"bmcbl").expect("failed to create md5 test file");
 

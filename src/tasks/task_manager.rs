@@ -6,12 +6,14 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::{Notify, broadcast};
 use tokio::task::AbortHandle;
 use tracing::debug;
 
-const TASK_EMIT_INTERVAL_MS: u128 = 250;
-const TASK_PROGRESS_MIN_UPDATE_INTERVAL: f64 = 0.25;
+const TASK_EMIT_INTERVAL_MS: u128 = 100;
+const TASK_EVENT_BATCH_LIMIT: usize = 256;
+const TASK_PROGRESS_MIN_UPDATE_INTERVAL: f64 = 0.10;
 const TASK_PROGRESS_IDLE_RESET_SECONDS: f64 = 2.0;
 const TASK_PROGRESS_EMA_ALPHA: f64 = 0.2;
 const TASK_VISUALIZATION_ENABLED: bool = true;
@@ -33,9 +35,9 @@ static TASK_STAGE_LABELS: Lazy<RwLock<HashMap<Arc<str>, Arc<str>>>> =
 static TASK_LOGS: Lazy<Mutex<HashMap<Arc<str>, VecDeque<Arc<str>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-static TASK_UPDATES: Lazy<broadcast::Sender<Arc<TaskSnapshot>>> = Lazy::new(|| {
+static TASK_EVENTS: Lazy<broadcast::Sender<TaskEvent>> = Lazy::new(|| {
     // Best-effort: drop updates if there are no receivers, or buffer overflow happens.
-    let (tx, _rx) = broadcast::channel(256);
+    let (tx, _rx) = broadcast::channel(4096);
     tx
 });
 
@@ -140,6 +142,51 @@ pub struct TaskSnapshot {
     pub sequence: u64,
     #[serde(default)]
     pub visibility: TaskVisibility,
+}
+
+impl TaskSnapshot {
+    pub fn is_terminal(&self) -> bool {
+        is_terminal_status(self.status.as_ref())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum TaskEvent {
+    Updated(Arc<TaskSnapshot>),
+    Removed(Arc<str>),
+}
+
+#[derive(Clone, Debug)]
+pub enum TaskEventDelivery {
+    Event(TaskEvent),
+    Batch(Vec<TaskEvent>),
+    ResyncRequired,
+}
+
+pub struct TaskUpdateReceiver {
+    events: broadcast::Receiver<TaskEvent>,
+}
+
+impl TaskUpdateReceiver {
+    pub async fn recv(&mut self) -> Result<Arc<TaskSnapshot>, RecvError> {
+        loop {
+            match self.events.recv().await? {
+                TaskEvent::Updated(snapshot) => return Ok(snapshot),
+                TaskEvent::Removed(_) => {}
+            }
+        }
+    }
+
+    pub fn try_recv(
+        &mut self,
+    ) -> Result<Arc<TaskSnapshot>, tokio::sync::broadcast::error::TryRecvError> {
+        loop {
+            match self.events.try_recv()? {
+                TaskEvent::Updated(snapshot) => return Ok(snapshot),
+                TaskEvent::Removed(_) => {}
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
@@ -290,12 +337,109 @@ fn default_task_title(_stage: &str) -> Arc<str> {
     Arc::<str>::from("后台任务")
 }
 
-fn is_terminal_status(status: &str) -> bool {
+pub fn is_terminal_status(status: &str) -> bool {
     matches!(status, "completed" | "cancelled" | "error")
 }
 
-pub fn subscribe_task_updates() -> broadcast::Receiver<Arc<TaskSnapshot>> {
-    TASK_UPDATES.subscribe()
+pub fn subscribe_task_events() -> broadcast::Receiver<TaskEvent> {
+    TASK_EVENTS.subscribe()
+}
+
+pub fn task_event_stream() -> impl futures::Stream<Item = TaskEventDelivery> {
+    let receiver = subscribe_task_events();
+    futures::stream::unfold(receiver, |mut receiver| async move {
+        match receiver.recv().await {
+            Ok(first_event) => {
+                let mut events = vec![first_event];
+                loop {
+                    match receiver.try_recv() {
+                        Ok(event) => events.push(event),
+                        Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+                        Err(TryRecvError::Lagged(_)) => {
+                            return Some((TaskEventDelivery::ResyncRequired, receiver));
+                        }
+                    }
+                }
+
+                if events.len() == 1 {
+                    let Some(event) = events.pop() else {
+                        return None;
+                    };
+                    Some((TaskEventDelivery::Event(event), receiver))
+                } else {
+                    Some((
+                        TaskEventDelivery::Batch(coalesce_task_events(events)),
+                        receiver,
+                    ))
+                }
+            }
+            Err(RecvError::Lagged(_)) => Some((TaskEventDelivery::ResyncRequired, receiver)),
+            Err(RecvError::Closed) => None,
+        }
+    })
+}
+
+fn coalesce_task_events(events: Vec<TaskEvent>) -> Vec<TaskEvent> {
+    let mut latest_by_task = HashMap::with_capacity(events.len());
+    for event in events {
+        let task_id = match &event {
+            TaskEvent::Updated(snapshot) => snapshot.id.clone(),
+            TaskEvent::Removed(task_id) => task_id.clone(),
+        };
+        let should_replace = match latest_by_task.get(&task_id) {
+            None => true,
+            Some(TaskEvent::Updated(current)) => match &event {
+                TaskEvent::Updated(next) => current.sequence <= next.sequence,
+                TaskEvent::Removed(_) => true,
+            },
+            Some(TaskEvent::Removed(_)) => matches!(event, TaskEvent::Updated(_)),
+        };
+        if should_replace {
+            latest_by_task.insert(task_id, event);
+        }
+    }
+    latest_by_task.into_values().collect()
+}
+
+pub fn subscribe_task_updates() -> TaskUpdateReceiver {
+    TaskUpdateReceiver {
+        events: subscribe_task_events(),
+    }
+}
+
+pub async fn wait_for_task_terminal(task_id: &str) -> Result<Arc<TaskSnapshot>, String> {
+    let mut events = subscribe_task_events();
+    if let Some(snapshot) = get_snapshot_arc(task_id)
+        && snapshot.is_terminal()
+    {
+        return Ok(snapshot);
+    }
+
+    loop {
+        match events.recv().await {
+            Ok(TaskEvent::Updated(snapshot))
+                if snapshot.id.as_ref() == task_id && snapshot.is_terminal() =>
+            {
+                return Ok(snapshot);
+            }
+            Ok(TaskEvent::Removed(removed_task_id)) if removed_task_id.as_ref() == task_id => {
+                return Err("任务在到达终态前已移除".to_string());
+            }
+            Ok(_) => {}
+            Err(RecvError::Lagged(_)) => {
+                if let Some(snapshot) = get_snapshot_arc(task_id)
+                    && snapshot.is_terminal()
+                {
+                    return Ok(snapshot);
+                }
+            }
+            Err(RecvError::Closed) => {
+                return get_snapshot_arc(task_id)
+                    .filter(|snapshot| snapshot.is_terminal())
+                    .ok_or_else(|| "任务事件通道已关闭".to_string());
+            }
+        }
+    }
 }
 
 pub fn task_visualization_enabled() -> bool {
@@ -821,14 +965,25 @@ pub fn resume_task(task_id: &str) -> bool {
 pub fn remove_task(task_id: &str) -> bool {
     clear_task_abort_handle(task_id);
     clear_task_cancel_hook(task_id);
-    let _ = TASK_SNAPSHOTS.write().unwrap().remove(task_id);
+    let removed_snapshot = TASK_SNAPSHOTS.write().unwrap().remove(task_id);
     TASK_LOGS.lock().unwrap().remove(task_id);
     let _ = TASK_CONTROLS
         .write()
         .ok()
         .and_then(|mut map| map.remove(task_id));
     let mut map = TASKS.lock().unwrap();
-    map.remove(task_id).is_some()
+    let removed = map.remove(task_id).is_some();
+    drop(map);
+
+    if removed_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.visibility == TaskVisibility::Visible)
+        && TASK_EVENTS.receiver_count() > 0
+    {
+        let _ = TASK_EVENTS.send(TaskEvent::Removed(Arc::from(task_id)));
+    }
+
+    removed
 }
 
 pub async fn wait_until_active(task_id: &str) -> bool {
@@ -941,16 +1096,12 @@ fn collect_render_snapshots_limited<'a>(
         if snapshot.visibility == TaskVisibility::Hidden {
             continue;
         }
-        match snapshot.status.as_ref() {
-            "running" | "paused" | "cancelling" => {
-                active_total += 1;
-                insert_sorted_limited(&mut active, snapshot, active_limit);
-            }
-            "completed" | "cancelled" | "error" => {
-                finished_total += 1;
-                insert_sorted_limited(&mut finished, snapshot, finished_storage_limit);
-            }
-            _ => {}
+        if snapshot.is_terminal() {
+            finished_total += 1;
+            insert_sorted_limited(&mut finished, snapshot, finished_storage_limit);
+        } else {
+            active_total += 1;
+            insert_sorted_limited(&mut active, snapshot, active_limit);
         }
     }
 
@@ -974,6 +1125,21 @@ pub fn render_snapshots_limited(
     let map = TASK_SNAPSHOTS.read().unwrap();
     collect_render_snapshots_limited(
         map.values(),
+        active_limit,
+        finished_storage_limit,
+        finished_render_limit,
+    )
+}
+
+pub fn render_snapshots_from(
+    snapshots: impl IntoIterator<Item = Arc<TaskSnapshot>>,
+    active_limit: usize,
+    finished_storage_limit: usize,
+    finished_render_limit: usize,
+) -> TaskRenderSnapshotLists {
+    let snapshots: Vec<_> = snapshots.into_iter().collect();
+    collect_render_snapshots_limited(
+        snapshots.iter(),
         active_limit,
         finished_storage_limit,
         finished_render_limit,
@@ -1033,11 +1199,11 @@ fn emit_task_update(snapshot: TaskSnapshot) {
         map.insert(snapshot.id.clone(), snapshot.clone());
     }
 
-    if snapshot.visibility == TaskVisibility::Hidden || TASK_UPDATES.receiver_count() == 0 {
+    if snapshot.visibility == TaskVisibility::Hidden || TASK_EVENTS.receiver_count() == 0 {
         return;
     }
 
-    let _ = TASK_UPDATES.send(snapshot);
+    let _ = TASK_EVENTS.send(TaskEvent::Updated(snapshot));
 }
 
 fn unix_now_seconds() -> u64 {
@@ -1059,6 +1225,136 @@ fn format_duration_hms(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_snapshot(task_id: &str, sequence: u64) -> Arc<TaskSnapshot> {
+        Arc::new(TaskSnapshot {
+            id: Arc::from(task_id),
+            title: Arc::from("批处理测试"),
+            detail: None,
+            stage: Arc::from("downloading"),
+            total: Some(100),
+            done: sequence,
+            speed_bytes_per_sec: 0.0,
+            eta: Arc::from("unknown"),
+            percent: Some(sequence as f64),
+            status: Arc::from("running"),
+            cancel_requested: false,
+            message: None,
+            supports_pause: false,
+            visualization: None,
+            started_at_unix: 0,
+            last_update_unix: 0,
+            sequence,
+            visibility: TaskVisibility::Visible,
+        })
+    }
+
+    #[test]
+    fn task_event_batch_keeps_latest_event_per_task() {
+        let events = coalesce_task_events(vec![
+            TaskEvent::Updated(test_snapshot("task-a", 1)),
+            TaskEvent::Updated(test_snapshot("task-a", 3)),
+            TaskEvent::Updated(test_snapshot("task-a", 2)),
+            TaskEvent::Removed(Arc::from("task-b")),
+            TaskEvent::Updated(test_snapshot("task-b", 4)),
+        ]);
+
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                TaskEvent::Updated(snapshot)
+                    if snapshot.id.as_ref() == "task-a" && snapshot.sequence == 3
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                TaskEvent::Updated(snapshot)
+                    if snapshot.id.as_ref() == "task-b" && snapshot.sequence == 4
+            )
+        }));
+    }
+
+    #[test]
+    fn only_explicit_terminal_statuses_finish_a_task() {
+        for status in [
+            "ready",
+            "queued",
+            "initializing",
+            "starting",
+            "running",
+            "paused",
+            "cancelling",
+            "future-active-state",
+        ] {
+            assert!(!is_terminal_status(status), "{status} must remain active");
+        }
+        for status in ["completed", "cancelled", "error"] {
+            assert!(is_terminal_status(status), "{status} must be terminal");
+        }
+    }
+
+    #[test]
+    fn render_snapshots_keep_unknown_non_terminal_statuses_active() {
+        let task_id = format!(
+            "task-manager-render-active-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task_with_details(
+            Some(task_id.clone()),
+            "活动状态渲染测试",
+            None,
+            "ready",
+            None,
+            false,
+        );
+        {
+            let mut tasks = TASKS.lock().expect("task map lock");
+            let task = tasks.get_mut(&task_id).expect("test task");
+            task.status = Arc::from("future-active-state");
+            task.touch();
+            emit_task_update(task.snapshot());
+        }
+
+        let snapshots = render_snapshots_limited(64, 64, 64);
+        assert!(
+            snapshots
+                .active
+                .iter()
+                .any(|snapshot| snapshot.id.as_ref() == task_id)
+        );
+        assert!(remove_task(&task_id));
+    }
+
+    #[tokio::test]
+    async fn terminal_wait_does_not_treat_queued_as_finished() {
+        let task_id = format!(
+            "task-manager-terminal-wait-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        create_task_with_details(
+            Some(task_id.clone()),
+            "终态等待测试",
+            None,
+            "queued",
+            None,
+            false,
+        );
+
+        let task_id_for_waiter = task_id.clone();
+        let waiter = tokio::spawn(async move { wait_for_task_terminal(&task_id_for_waiter).await });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "queued task returned as terminal");
+
+        finish_task(&task_id, "completed", Some("done".to_string()));
+        let snapshot = waiter
+            .await
+            .expect("terminal waiter should join")
+            .expect("terminal waiter should receive snapshot");
+        assert_eq!(snapshot.status.as_ref(), "completed");
+        assert!(remove_task(&task_id));
+    }
 
     #[test]
     fn completed_task_finishes_known_progress_total() {
@@ -1118,6 +1414,46 @@ mod tests {
                 .as_ref(),
             "cancelled"
         );
+        assert!(remove_task(&task_id));
+    }
+
+    #[tokio::test]
+    async fn cancel_task_publishes_cancelled_snapshot() {
+        let task_id = format!(
+            "task-manager-cancel-event-test-{}",
+            TASK_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut events = subscribe_task_events();
+        create_task_with_details(
+            Some(task_id.clone()),
+            "取消事件测试",
+            None,
+            "running",
+            None,
+            false,
+        );
+
+        cancel_task(&task_id);
+
+        let cancelled = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match events.recv().await {
+                    Ok(TaskEvent::Updated(snapshot))
+                        if snapshot.id.as_ref() == task_id
+                            && snapshot.status.as_ref() == "cancelled" =>
+                    {
+                        return snapshot;
+                    }
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => panic!("task event stream closed"),
+                }
+            }
+        })
+        .await
+        .expect("cancelled snapshot should be published");
+
+        assert!(cancelled.cancel_requested);
+        assert!(cancelled.is_terminal());
         assert!(remove_task(&task_id));
     }
 

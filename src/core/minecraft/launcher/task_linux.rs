@@ -191,7 +191,7 @@ async fn inject_bloader(exe_path: &Path, task_id: &str) -> Result<(), String> {
         append_task_log(task_id, "游戏 EXE 已包含补丁标记，跳过注入".to_string());
     } else {
         let exe_path = exe_path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
+        crate::tasks::runtime::run_io_blocking(move || {
             crate::core::inject::pe::ensure_backup(&exe_path)
                 .map_err(|error| format!("创建 EXE 备份失败：{error}"))?;
             crate::core::inject::pe::restore_original_pe(&exe_path)
@@ -207,7 +207,7 @@ async fn inject_bloader(exe_path: &Path, task_id: &str) -> Result<(), String> {
 }
 
 async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u32>, String> {
-    let runner = tokio::task::spawn_blocking(resolve_runner)
+    let runner = crate::tasks::runtime::run_io_blocking(resolve_runner)
         .await
         .map_err(|error| format!("检测 Proton/Wine 任务失败：{error}"))??;
     append_task_log(
@@ -223,10 +223,11 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
 
     let package_path = PathBuf::from(request.package_folder.as_ref());
     let package_path_for_probe = package_path.clone();
-    let game_executable =
-        tokio::task::spawn_blocking(move || resolve_game_executable(&package_path_for_probe))
-            .await
-            .map_err(|error| format!("检测游戏可执行文件任务失败：{error}"))??;
+    let game_executable = crate::tasks::runtime::run_io_blocking(move || {
+        resolve_game_executable(&package_path_for_probe)
+    })
+    .await
+    .map_err(|error| format!("检测游戏可执行文件任务失败：{error}"))??;
     if runner.kind == RunnerKind::Wine
         && game_executable
             .file_name()
@@ -243,7 +244,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     // runtime 1.8 and the game exits with code 3.
     inject_bloader(&game_executable, task_id).await?;
 
-    tokio::task::spawn_blocking({
+    crate::tasks::runtime::run_io_blocking({
         let runner = runner.clone();
         move || validate_proton_game_runtime(&runner)
     })

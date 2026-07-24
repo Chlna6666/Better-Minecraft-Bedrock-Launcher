@@ -448,7 +448,7 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
     }
 
     let tmp_path_for_parse = tmp_path.clone();
-    let (creation_time, versions) = tokio::task::spawn_blocking(move || {
+    let (creation_time, versions) = crate::tasks::runtime::run_io_blocking(move || {
         let file = std::fs::File::open(&tmp_path_for_parse).with_context(|| {
             format!(
                 "open temp api body file failed: {}",
@@ -459,6 +459,7 @@ async fn load_or_fetch_versions_once(force_refresh: bool) -> Result<Vec<RemoteMi
         parse_api_reader_streaming(reader)
     })
     .await
+    .map_err(anyhow::Error::msg)
     .context("parse remote versions join failed")??;
 
     let _ = tokio::fs::remove_file(&tmp_path).await;

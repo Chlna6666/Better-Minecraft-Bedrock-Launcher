@@ -38,6 +38,7 @@ type MusicRenderSignature = (
         crate::music::MusicPlaybackMode,
         bool,
         Option<MusicDragTarget>,
+        Option<SharedString>,
     ),
     (u16, u16),
 );
@@ -96,6 +97,7 @@ fn build_music_render_signature(cx: &App) -> MusicRenderSignature {
                 music.snapshot.mode,
                 music.popup_animating(now),
                 music.drag_target(),
+                music.snapshot.last_error.clone(),
             ),
             (progress_bucket, volume_bucket),
         )
@@ -301,7 +303,7 @@ impl AppChromeView {
 
                     let decoded_cover = match tokio::time::timeout(
                         COVER_DECODE_TIMEOUT,
-                        tokio::task::spawn_blocking(move || {
+                        crate::tasks::runtime::run_io_blocking(move || {
                             crate::music::MusicController::decode_cover_thumbnail(&request_clone)
                         }),
                     )

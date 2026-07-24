@@ -93,7 +93,7 @@ pub(crate) fn render_task_card(
     let kind = task_visual_kind(model.stage.as_ref(), model.status.as_ref());
     let accent = task_status_accent(model.status.as_ref(), kind, colors);
     let icon_path = task_visual_icon(kind);
-    let progress_percent = model.percent_basis_points.map(|value| value as f64 / 100.0);
+    let progress_percent = model.percent;
     let paused = model.status.as_ref() == "paused";
 
     let mut actions = div().flex().items_center().justify_center().gap(px(8.));

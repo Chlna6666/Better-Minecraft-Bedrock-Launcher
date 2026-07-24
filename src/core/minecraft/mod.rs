@@ -7,6 +7,7 @@ pub mod assets;
 pub mod entity_avatar;
 pub mod gdk;
 pub mod import;
+pub mod install;
 pub mod key_patcher;
 pub mod launcher;
 pub mod map;

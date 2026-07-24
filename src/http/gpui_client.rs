@@ -59,27 +59,11 @@ async fn send_blocking_request(
     headers: http_client::http::HeaderMap,
     body_bytes: Vec<u8>,
 ) -> anyhow::Result<http_client::Response<http_client::AsyncBody>> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle
-            .spawn_blocking(move || build_blocking_response(method, url, headers, body_bytes))
-            .await
-            .map_err(|error| anyhow::anyhow!("http task failed: {error}"))?,
-        Err(_) => {
-            let (tx, rx) = futures::channel::oneshot::channel();
-            std::thread::Builder::new()
-                .name("bmcbl-gpui-http".to_string())
-                .spawn(move || {
-                    let result = build_blocking_response(method, url, headers, body_bytes);
-                    if tx.send(result).is_err() {
-                        tracing::debug!("GPUI HTTP receiver dropped before request completed");
-                    }
-                })
-                .map_err(|error| anyhow::anyhow!("failed to spawn HTTP task: {error}"))?;
-
-            rx.await
-                .map_err(|_| anyhow::anyhow!("http task cancelled"))?
-        }
-    }
+    crate::tasks::runtime::run_io_blocking(move || {
+        build_blocking_response(method, url, headers, body_bytes)
+    })
+    .await
+    .map_err(anyhow::Error::msg)?
 }
 
 fn build_blocking_response(

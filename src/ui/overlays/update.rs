@@ -18,7 +18,6 @@ use gpui::*;
 use gpui::{AnimationExt, StatefulInteractiveElement as _};
 use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 const UPDATE_MODAL_MARGIN_PX: f32 = 40.0;
@@ -685,13 +684,15 @@ pub fn render_update_modal(
                             let id = task_id.clone();
                             move |_, _window, cx| {
                                 if let Some(id) = id.clone() {
-                                    if let Err(err) = thread::Builder::new()
-                                        .name("update-cancel".to_string())
-                                        .spawn(move || {
+                                    if let Err(error) =
+                                        crate::tasks::runtime::spawn_io(async move {
                                             task_manager::cancel_task(&id);
                                         })
                                     {
-                                        eprintln!("failed to spawn update cancel thread: {err}");
+                                        tracing::error!(
+                                            %error,
+                                            "failed to schedule update cancellation"
+                                        );
                                     }
                                 }
                                 let now = Instant::now();

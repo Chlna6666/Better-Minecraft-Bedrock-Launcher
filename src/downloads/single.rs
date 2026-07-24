@@ -171,7 +171,7 @@ pub async fn download_file(
                     pending_progress += len as u64;
                     downloaded_bytes = downloaded_bytes.saturating_add(len as u64);
 
-                    if last_update.elapsed().as_millis() > 200 {
+                    if last_update.elapsed().as_millis() > 100 {
                         update_progress(task_id, pending_progress, total, Some("downloading"));
                         let _ = maybe_set_task_visualization(task_id, || {
                             Some(build_single_download_visualization(downloaded_bytes, total))

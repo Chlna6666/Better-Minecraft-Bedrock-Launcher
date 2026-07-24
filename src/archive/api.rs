@@ -1,4 +1,3 @@
-use crate::archive::runtime::spawn_archive_task;
 use crate::archive::zip::extract_zip;
 use crate::config::config::read_config;
 #[cfg(target_os = "windows")]
@@ -7,6 +6,7 @@ use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest}
 use crate::core::minecraft::appx_utils::{get_manifest_identity, patch_manifest};
 use crate::core::minecraft::key_patcher::{PatchResult, patch_path};
 use crate::result::CoreResult;
+use crate::tasks::runtime::spawn_archive_task;
 use crate::tasks::task_manager::{
     create_task_with_details, finish_task, is_cancelled, update_progress,
 };
@@ -406,7 +406,7 @@ async fn finish_appx_install(task_id: &str, extract_to: &Path, delete_signature:
 
     update_progress(task_id, 0, None, Some("patching"));
     let extract_clone = extract_to.to_path_buf();
-    match tokio::task::spawn_blocking(move || patch_path(&extract_clone)).await {
+    match crate::tasks::runtime::run_archive_blocking(move || patch_path(&extract_clone)).await {
         Ok(Ok(PatchResult::Patched(backup_path))) => {
             info!("旧版补丁应用成功，备份文件：{}", backup_path.display());
             true

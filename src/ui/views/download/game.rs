@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
-use super::common::{status_card, wait_task_finished};
+use super::common::status_card;
 
 const GAME_ROW_PITCH_PX: f32 = 96.0;
 const GAME_ROW_OVERSCAN: usize = 1;
@@ -80,6 +80,7 @@ struct GameDialogObserveSignature {
     dialog_cdn_error: SharedString,
     dialog_cdn_result_count: usize,
     selected_cdn_base: SharedString,
+    dialog_cdn_expanded: bool,
 }
 
 impl DownloadGamePanelView {
@@ -152,6 +153,7 @@ fn build_game_dialog_observe_signature(state: &DownloadPageState) -> GameDialogO
             .game_dialog_selected_cdn_base
             .clone()
             .unwrap_or_else(|| SharedString::from("")),
+        dialog_cdn_expanded: state.game_dialog_cdn_expanded,
     }
 }
 
@@ -622,11 +624,11 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
             let active_snapshot = if is_heavy_row {
                 download_task
                     .as_ref()
-                    .and_then(|id| task_manager::get_snapshot_arc(id.as_ref()))
+                    .and_then(|id| state.task_snapshots.get(id.as_ref()).cloned())
                     .or_else(|| {
                         extract_task
                             .as_ref()
-                            .and_then(|id| task_manager::get_snapshot_arc(id.as_ref()))
+                            .and_then(|id| state.task_snapshots.get(id.as_ref()).cloned())
                     })
             } else {
                 None
@@ -1285,6 +1287,7 @@ fn open_game_dialog(window: &mut Window, cx: &mut App, dialog: GameDialogState) 
         state.game_dialog_input = None;
         state.game_dialog_folder_input = None;
         state.game_dialog_cdn_loading = false;
+        state.game_dialog_cdn_request_id = state.game_dialog_cdn_request_id.wrapping_add(1);
         state.game_dialog_cdn_error = None;
         state.game_dialog_cdn_results.clear();
         state.game_dialog_selected_cdn_base = selected_cdn_base;
@@ -1316,6 +1319,7 @@ fn close_game_dialog(cx: &mut App) {
         state.game_dialog_input = None;
         state.game_dialog_folder_input = None;
         state.game_dialog_cdn_loading = false;
+        state.game_dialog_cdn_request_id = state.game_dialog_cdn_request_id.wrapping_add(1);
         state.game_dialog_cdn_error = None;
         state.game_dialog_cdn_results.clear();
         state.game_dialog_selected_cdn_base = None;
@@ -1386,13 +1390,20 @@ fn apply_cdn_base(original_url: &str, base: &str) -> Result<String, String> {
     Ok(base_url.to_string())
 }
 
+pub(super) const GDK_CDN_BASES: [&str; 10] = [
+    "http://assets1.xboxlive.com",
+    "http://assets2.xboxlive.com",
+    "http://assets1.xboxlive.cn",
+    "http://assets2.xboxlive.cn",
+    "http://d1.xboxlive.cn",
+    "http://d2.xboxlive.cn",
+    "http://xvcf1.xboxlive.com",
+    "http://xvcf2.xboxlive.com",
+    "http://d1.xboxlive.com",
+    "http://d2.xboxlive.com",
+];
+
 pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
-    const GDK_CDN_BASES: [&str; 4] = [
-        "http://assets1.xboxlive.cn",
-        "http://assets2.xboxlive.cn",
-        "http://assets1.xboxlive.com",
-        "http://assets2.xboxlive.com",
-    ];
 
     let package_id = cx.read_global(|state: &DownloadPageState, _cx| {
         state.game_dialog.as_ref().and_then(|dialog| {
@@ -1404,20 +1415,27 @@ pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
         return;
     };
 
-    let request_started = cx.update_global(|state: &mut DownloadPageState, _cx| {
-        if state.game_dialog.is_none() || state.game_dialog_cdn_loading {
-            return false;
+    let request_id = cx.update_global(|state: &mut DownloadPageState, _cx| {
+        if state
+            .game_dialog
+            .as_ref()
+            .is_none_or(|dialog| dialog.package_id != package_id)
+            || state.game_dialog_cdn_loading
+        {
+            return None;
         }
         state.game_dialog_cdn_loading = true;
+        state.game_dialog_cdn_request_id = state.game_dialog_cdn_request_id.wrapping_add(1);
         state.game_dialog_cdn_error = None;
         state.game_dialog_cdn_results.clear();
-        true
+        Some(state.game_dialog_cdn_request_id)
     });
-    if !request_started {
+    let Some(request_id) = request_id else {
         return;
-    }
+    };
 
     cx.spawn(async move |cx| {
+        let request_package_id = package_id.clone();
         let bases = GDK_CDN_BASES
             .into_iter()
             .map(std::string::ToString::to_string)
@@ -1431,7 +1449,12 @@ pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
         match response {
             Ok(result) => {
                 let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    if state.game_dialog.is_none() {
+                    if state.game_dialog_cdn_request_id != request_id
+                        || state
+                            .game_dialog
+                            .as_ref()
+                            .is_none_or(|dialog| dialog.package_id != request_package_id)
+                    {
                         return;
                     }
                     state.game_dialog_cdn_loading = false;
@@ -1456,7 +1479,12 @@ pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
             }
             Err(error) => {
                 let _ = cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    if state.game_dialog.is_none() {
+                    if state.game_dialog_cdn_request_id != request_id
+                        || state
+                            .game_dialog
+                            .as_ref()
+                            .is_none_or(|dialog| dialog.package_id != request_package_id)
+                    {
                         return;
                     }
                     state.game_dialog_cdn_loading = false;
@@ -1484,7 +1512,6 @@ fn start_game_operation(
     selected_cdn_base: Option<SharedString>,
 ) {
     let package_id = dialog.package_id.clone();
-    let version_label = dialog.version.clone();
     let file_name = sanitize_game_file_name(
         dialog.file_name.as_ref(),
         dialog.version.as_ref(),
@@ -1497,9 +1524,19 @@ fn start_game_operation(
             .unwrap_or(""),
         file_name.as_ref(),
     );
-    let md5_string = dialog.md5.clone().map(|value| value.to_string());
-    let is_gdk = dialog.is_gdk;
-    let selected_cdn_base = selected_cdn_base.map(|value| value.to_string());
+    let request = match build_game_install_request(
+        &dialog,
+        file_name.as_ref(),
+        install_folder.as_ref(),
+        force_download,
+        selected_cdn_base.as_deref().map(|value| &**value),
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            toast::error(cx, SharedString::from(error));
+            return;
+        }
+    };
 
     close_game_dialog(cx);
 
@@ -1515,217 +1552,168 @@ fn start_game_operation(
         );
     });
 
-    info!(
-        "game_op: start package_id={package_id} file_name={file_name} is_gdk={is_gdk} force_download={force_download}"
-    );
-    cx.spawn(async move |cx| {
-        let operation_package_id = package_id.clone();
-        let operation_file_name = file_name.clone();
-        let result = async {
-            let local_path = if force_download {
-                None
-            } else {
-                cx.background_spawn({
-                    let file_name = file_name.to_string();
-                    let md5_string = md5_string.clone();
-                    async move {
-                        crate::downloads::api::local_download_path(file_name, md5_string)
-                            .await
-                            .ok()
-                            .flatten()
-                    }
-                })
-                .await
-            };
-
-            let file_path = if let Some(path) = local_path {
-                path
-            } else {
-                let task_id = if is_gdk {
-                    let default_base = reqwest::Url::parse(package_id.as_ref())
-                        .ok()
-                        .map(|url| {
-                            format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default())
-                        })
-                        .filter(|base| !base.ends_with("://"));
-                    let base = selected_cdn_base
-                        .clone()
-                        .or(default_base)
-                        .ok_or_else(|| "missing GDK CDN base for package url".to_string())?;
-                    let url = apply_cdn_base(package_id.as_ref(), &base)?;
-                    crate::downloads::api::download_resource(
-                        url,
-                        file_name.to_string(),
-                        md5_string.clone(),
-                        Some(force_download),
-                        None,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?
-                } else {
-                    let base = package_id.as_ref();
-                    let full_id = if base.contains('_') {
-                        base.to_string()
-                    } else {
-                        format!("{base}_1")
-                    };
-
-                    crate::downloads::api::download_appx(
-                        full_id,
-                        file_name.to_string(),
-                        md5_string.clone(),
-                        Some(force_download),
-                        None,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?
-                };
-
-                if let Err(err) = cx.update_global(|state: &mut DownloadPageState, _cx| {
-                    if let Some(operation) = state.operations_by_package.get_mut(&package_id) {
-                        operation.download_task_id = Some(SharedString::from(task_id.clone()));
-                    }
-                }) {
-                    warn!("update_global failed: {err:?}");
-                }
-                let _ = crate::tasks::task_manager::set_task_labels(
-                    &task_id,
-                    file_name.as_ref(),
-                    Some(version_label.to_string()),
-                );
-
-                info!("game_op: waiting for download task_id={task_id}");
-                let snapshot = wait_task_finished(&task_id).await?;
-                info!(
-                    "game_op: download completed task_id={task_id} status={}",
-                    snapshot.status
-                );
-                if snapshot.status.as_ref() != "completed" {
-                    return Err(format!(
-                        "download {} ({})",
-                        snapshot.status,
-                        snapshot.message.clone().unwrap_or_default()
-                    ));
-                }
-
-                snapshot
-                    .message
-                    .clone()
-                    .map(|message| message.to_string())
-                    .ok_or_else(|| "download completed but no path returned".to_string())?
-            };
-
-            info!(
-                "game_op: starting extract file_path={file_path} install_folder={install_folder}"
-            );
-            let extract_task_id = if is_gdk {
-                crate::core::minecraft::gdk::unpack::start_unpack_gdk_task(
-                    file_path.clone(),
-                    install_folder.as_ref(),
-                )?
-            } else {
-                crate::archive::api::extract_zip_appx(
-                    format!("{}.appx", install_folder),
-                    file_path.clone(),
-                    true,
-                    true,
-                )
-                .await?
-            };
-
-            if let Err(err) = cx.update_global(|state: &mut DownloadPageState, _cx| {
-                if let Some(operation) = state.operations_by_package.get_mut(&package_id) {
-                    operation.extract_task_id = Some(SharedString::from(extract_task_id.clone()));
-                }
-            }) {
-                warn!("update_global failed: {err:?}");
-            }
-
-            info!("game_op: waiting for extract task_id={extract_task_id}");
-            let extract_snapshot = wait_task_finished(&extract_task_id).await?;
-            info!(
-                "game_op: extract completed task_id={extract_task_id} status={}",
-                extract_snapshot.status
-            );
-            if extract_snapshot.status.as_ref() != "completed" {
-                return Err(format!(
-                    "extract {} ({})",
-                    extract_snapshot.status,
-                    extract_snapshot.message.clone().unwrap_or_default()
-                ));
-            }
-
-            if let Err(err) = cx.update_global(|state: &mut DownloadPageState, _cx| {
+    let handle = match crate::core::minecraft::install::start_game_install(request) {
+        Ok(handle) => handle,
+        Err(error) => {
+            cx.update_global(|state: &mut DownloadPageState, cx| {
                 state.operations_by_package.remove(&package_id);
-            }) {
-                warn!("update_global failed: {err:?}");
-            }
-
-            let local_after = cx
-                .background_spawn({
-                    let file_name = file_name.to_string();
-                    let md5_string = md5_string.clone();
-                    async move {
-                        crate::downloads::api::local_download_path(file_name, md5_string)
-                            .await
-                            .ok()
-                            .flatten()
-                    }
-                })
-                .await;
-
-            if let Err(err) =
-                cx.update_global(|state: &mut DownloadPageState, _cx| match local_after {
-                    Some(path) => {
-                        state
-                            .local_path_by_package
-                            .insert(package_id.clone(), SharedString::from(path));
-                        state.local_files.insert(file_name.clone());
-                    }
-                    None => {
-                        state.local_path_by_package.remove(&package_id);
-                        state.local_files.remove(&file_name);
-                    }
-                })
-            {
-                warn!("update_global failed: {err:?}");
-            }
-
-            info!("game_op: triggering version refresh after successful download+extract");
-            cx.update(|cx| {
-                crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(true, cx);
-            })
-            .map_err(|error| format!("请求刷新本地游戏版本失败: {error}"))?;
-
-            info!("game_op: download+extract complete");
-            Ok::<(), String>(())
-        }
-        .await;
-
-        if let Err(error) = result {
-            warn!("game_op: operation failed error={error}");
-            let message = SharedString::from(format!(
-                "{} 操作失败: {}",
-                operation_file_name.as_ref(),
-                error
-            ));
-            if let Err(err) = cx.update(|cx| {
-                cx.update_global(|state: &mut DownloadPageState, cx| {
-                    state.operations_by_package.remove(&operation_package_id);
-                    toast::error(cx, message);
-                });
-            }) {
-                warn!("failed to clear game operation after error: {err:?}");
-            }
-
-            let _ = cx.update(|cx| {
-                crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(true, cx);
+                toast::error(cx, SharedString::from(error));
             });
+            return;
         }
+    };
+    consume_game_install_updates(handle.updates, cx);
+}
 
-        Ok::<(), anyhow::Error>(())
+fn build_game_install_request(
+    dialog: &GameDialogState,
+    file_name: &str,
+    install_folder: &str,
+    force_download: bool,
+    selected_cdn_base: Option<&str>,
+) -> Result<crate::core::minecraft::install::GameInstallRequest, String> {
+    use crate::core::minecraft::install::{GameInstallRequest, GamePackageSource};
+
+    let source = if dialog.is_gdk {
+        let default_base = reqwest::Url::parse(dialog.package_id.as_ref())
+            .ok()
+            .map(|url| format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default()))
+            .filter(|base| !base.ends_with("://"));
+        let base = selected_cdn_base
+            .map(ToOwned::to_owned)
+            .or(default_base)
+            .ok_or_else(|| "缺少 GDK 下载源".to_string())?;
+        GamePackageSource::Gdk {
+            url: apply_cdn_base(dialog.package_id.as_ref(), &base)?,
+        }
+    } else {
+        let package_id = if dialog.package_id.contains('_') {
+            dialog.package_id.to_string()
+        } else {
+            format!("{}_1", dialog.package_id)
+        };
+        GamePackageSource::Appx { package_id }
+    };
+
+    Ok(GameInstallRequest {
+        package_key: dialog.package_id.to_string(),
+        version_label: dialog.version.to_string(),
+        file_name: file_name.to_string(),
+        install_folder: install_folder.to_string(),
+        md5: dialog.md5.as_ref().map(ToString::to_string),
+        force_download,
+        source,
+    })
+}
+
+fn consume_game_install_updates(
+    mut updates: tokio::sync::watch::Receiver<crate::core::minecraft::install::GameInstallSnapshot>,
+    cx: &mut App,
+) {
+    cx.spawn(async move |cx| {
+        loop {
+            let snapshot = updates.borrow_and_update().clone();
+            let terminal = cx.update(|cx| apply_game_install_snapshot(snapshot, cx))?;
+            if terminal || updates.changed().await.is_err() {
+                return Ok::<(), anyhow::Error>(());
+            }
+        }
     })
     .detach_and_log_err(cx);
+}
+
+fn apply_game_install_snapshot(
+    snapshot: crate::core::minecraft::install::GameInstallSnapshot,
+    cx: &mut App,
+) -> bool {
+    use crate::core::minecraft::install::GameInstallStage;
+
+    let package_key = SharedString::from(snapshot.package_key.to_string());
+    let file_name = SharedString::from(snapshot.file_name.to_string());
+    match snapshot.stage {
+        GameInstallStage::Preparing => false,
+        GameInstallStage::Downloading { task_id } => {
+            apply_operation_task_snapshot(&package_key, task_id, true, cx);
+            false
+        }
+        GameInstallStage::Extracting { task_id } => {
+            apply_operation_task_snapshot(&package_key, task_id, false, cx);
+            false
+        }
+        GameInstallStage::Completed { local_path } => {
+            finish_game_install_operation(
+                &package_key,
+                &file_name,
+                Some(SharedString::from(local_path.to_string())),
+                None,
+                cx,
+            );
+            true
+        }
+        GameInstallStage::Failed { message } => {
+            finish_game_install_operation(
+                &package_key,
+                &file_name,
+                None,
+                Some(SharedString::from(message.to_string())),
+                cx,
+            );
+            true
+        }
+    }
+}
+
+fn apply_operation_task_snapshot(
+    package_key: &SharedString,
+    task_id: Arc<str>,
+    is_download: bool,
+    cx: &mut App,
+) {
+    let task_key = SharedString::from(task_id.to_string());
+    let task_snapshot = task_manager::get_snapshot_arc(task_id.as_ref());
+    cx.update_global(|state: &mut DownloadPageState, _cx| {
+        if let Some(operation) = state.operations_by_package.get_mut(package_key) {
+            if is_download {
+                operation.download_task_id = Some(task_key.clone());
+            } else {
+                operation.extract_task_id = Some(task_key.clone());
+            }
+        }
+        if let Some(task_snapshot) = task_snapshot {
+            state.task_snapshots.insert(task_id, task_snapshot);
+        }
+    });
+}
+
+fn finish_game_install_operation(
+    package_key: &SharedString,
+    file_name: &SharedString,
+    local_path: Option<SharedString>,
+    error: Option<SharedString>,
+    cx: &mut App,
+) {
+    cx.update_global(|state: &mut DownloadPageState, cx| {
+        if let Some(operation) = state.operations_by_package.remove(package_key) {
+            for task_id in [operation.download_task_id, operation.extract_task_id]
+                .into_iter()
+                .flatten()
+            {
+                state.task_snapshots.remove(task_id.as_ref());
+            }
+        }
+        if let Some(local_path) = local_path {
+            state
+                .local_path_by_package
+                .insert(package_key.clone(), local_path);
+            state.local_files.insert(file_name.clone());
+        }
+        if let Some(error) = error {
+            toast::error(
+                cx,
+                SharedString::from(format!("{} 操作失败: {error}", file_name.as_ref())),
+            );
+        }
+    });
 }
 
 fn delete_game_local_file(cx: &mut App, dialog: GameDialogState) {
@@ -2180,6 +2168,7 @@ pub(super) fn render_game_dialog(
     cdn_error: Option<SharedString>,
     cdn_results: Vec<GameDialogCdnResult>,
     selected_cdn_base: Option<SharedString>,
+    cdn_expanded: bool,
 ) -> Div {
     if matches!(dialog.kind, GameDialogKind::LocalActions) {
         return render_local_actions_dialog(colors, dialog);
@@ -2261,12 +2250,6 @@ pub(super) fn render_game_dialog(
         && matches!(dialog.kind, GameDialogKind::ConfirmDownload)
         && dialog.local_path.is_none())
     .then(|| {
-        const GDK_CDN_BASES: [&str; 4] = [
-            "http://assets1.xboxlive.cn",
-            "http://assets2.xboxlive.cn",
-            "http://assets1.xboxlive.com",
-            "http://assets2.xboxlive.com",
-        ];
 
         let cdn_entries = if cdn_results.is_empty() {
             GDK_CDN_BASES
@@ -2281,124 +2264,155 @@ pub(super) fn render_game_dialog(
         } else {
             cdn_results
         };
-        let mut cdn_list = div().flex().flex_col().gap(px(10.));
-        for pair in cdn_entries.chunks(2) {
-            let mut row = div().flex().gap(px(10.)).w_full();
-            for result in pair {
-                let is_selected = selected_cdn_base.as_ref() == Some(&result.base);
-                let badge_text =
-                    if cdn_loading && result.latency_ms.is_none() && result.error.is_none() {
-                        "测试中".to_string()
-                    } else if let Some(latency_ms) = result.latency_ms {
-                        format!("{latency_ms} ms")
-                    } else {
-                        "失败".to_string()
-                    };
-                let badge_color = if let Some(latency_ms) = result.latency_ms {
-                    if latency_ms <= 80 {
-                        colors.stat_green_text
-                    } else if latency_ms <= 180 {
-                        colors.accent
-                    } else if latency_ms <= 500 {
-                        colors.danger
-                    } else {
-                        Hsla {
-                            a: 1.0,
-                            ..colors.text_secondary
-                        }
+
+        let selected_item = cdn_entries
+            .iter()
+            .find(|item| selected_cdn_base.as_ref() == Some(&item.base))
+            .cloned()
+            .or_else(|| cdn_entries.first().cloned());
+
+        let render_card = |result: &GameDialogCdnResult, full_width: bool| {
+            let is_selected = selected_cdn_base.as_ref() == Some(&result.base);
+            let badge_text =
+                if cdn_loading && result.latency_ms.is_none() && result.error.is_none() {
+                    "测试中".to_string()
+                } else if let Some(latency_ms) = result.latency_ms {
+                    format!("{latency_ms} ms")
+                } else {
+                    "失败".to_string()
+                };
+            let badge_color = if let Some(latency_ms) = result.latency_ms {
+                if latency_ms <= 80 {
+                    colors.stat_green_text
+                } else if latency_ms <= 180 {
+                    colors.accent
+                } else if latency_ms <= 500 {
+                    colors.danger
+                } else {
+                    Hsla {
+                        a: 1.0,
+                        ..colors.text_secondary
+                    }
+                }
+            } else {
+                colors.danger
+            };
+
+            let card = div()
+                .rounded(px(12.))
+                .border_1()
+                .border_color(if is_selected {
+                    Hsla {
+                        a: 0.45,
+                        ..colors.accent
                     }
                 } else {
-                    colors.danger
-                };
-
-                row = row.child(
+                    Hsla {
+                        a: 0.12,
+                        ..colors.border
+                    }
+                })
+                .bg(if is_selected {
+                    Hsla {
+                        a: 0.10,
+                        ..colors.accent
+                    }
+                } else {
+                    Hsla {
+                        a: 0.25,
+                        ..colors.surface_hover
+                    }
+                })
+                .p(px(12.))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, {
+                    let base = result.base.clone();
+                    move |_ev, _window, cx| {
+                        cx.update_global(|state: &mut DownloadPageState, _cx| {
+                            state.game_dialog_selected_cdn_base = Some(base.clone());
+                        });
+                    }
+                })
+                .child(
                     div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .rounded(px(12.))
-                        .border_1()
-                        .border_color(if is_selected {
-                            Hsla {
-                                a: 0.45,
-                                ..colors.accent
-                            }
-                        } else {
-                            Hsla {
-                                a: 0.12,
-                                ..colors.border
-                            }
-                        })
-                        .bg(if is_selected {
-                            Hsla {
-                                a: 0.10,
-                                ..colors.accent
-                            }
-                        } else {
-                            Hsla {
-                                a: 0.25,
-                                ..colors.surface_hover
-                            }
-                        })
-                        .p(px(12.))
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, {
-                            let base = result.base.clone();
-                            move |_ev, _window, cx| {
-                                cx.update_global(|state: &mut DownloadPageState, _cx| {
-                                    state.game_dialog_selected_cdn_base = Some(base.clone());
-                                });
-                            }
-                        })
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(12.))
                         .child(
                             div()
+                                .flex_1()
+                                .min_w(px(0.))
                                 .flex()
-                                .items_start()
-                                .justify_between()
-                                .gap(px(12.))
+                                .flex_col()
+                                .gap(px(4.))
                                 .child(
                                     div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(4.))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(colors.text_primary)
-                                                .child(result.base.clone()),
-                                        )
-                                        .children(result.error.clone().map(|error| {
-                                            div()
-                                                .text_size(px(12.))
-                                                .text_color(colors.text_secondary)
-                                                .child(error)
-                                                .into_any_element()
-                                        })),
-                                )
-                                .child(
-                                    div()
-                                        .px(px(8.))
-                                        .py(px(4.))
-                                        .rounded(px(999.))
-                                        .bg(Hsla {
-                                            a: 0.12,
-                                            ..badge_color
-                                        })
-                                        .text_size(px(12.))
+                                        .text_size(px(13.))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(badge_color)
-                                        .child(badge_text),
-                                ),
+                                        .text_color(colors.text_primary)
+                                        .child(result.base.clone()),
+                                )
+                                .children(result.error.clone().map(|error| {
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(colors.text_secondary)
+                                        .child(error)
+                                        .into_any_element()
+                                })),
+                        )
+                        .child(
+                            div()
+                                .px(px(8.))
+                                .py(px(4.))
+                                .rounded(px(999.))
+                                .bg(Hsla {
+                                    a: 0.12,
+                                    ..badge_color
+                                })
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(badge_color)
+                                .child(badge_text),
                         ),
                 );
+
+            if full_width {
+                card.w_full()
+            } else {
+                card.flex_1().min_w(px(0.))
             }
-            if pair.len() == 1 {
-                row = row.child(div().flex_1());
+        };
+
+        let mut cdn_list = div().flex().flex_col().gap(px(10.));
+        if cdn_expanded {
+            for pair in cdn_entries.chunks(2) {
+                let mut row = div().flex().gap(px(10.)).w_full();
+                for result in pair {
+                    row = row.child(render_card(result, false));
+                }
+                if pair.len() == 1 {
+                    row = row.child(div().flex_1());
+                }
+                cdn_list = cdn_list.child(row);
             }
-            cdn_list = cdn_list.child(row);
+        } else if let Some(ref selected) = selected_item {
+            cdn_list = cdn_list.child(render_card(selected, true));
         }
+
+        let toggle_button = if cdn_expanded {
+            render_dialog_button(colors, "收起节点", false, |_window, cx| {
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    state.game_dialog_cdn_expanded = false;
+                });
+            })
+        } else {
+            render_dialog_button(colors, "展开节点", false, |_window, cx| {
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    state.game_dialog_cdn_expanded = true;
+                });
+            })
+        };
 
         div()
             .flex()
@@ -2417,12 +2431,19 @@ pub(super) fn render_game_dialog(
                             .text_color(colors.text_secondary)
                             .child("GDK CDN 节点"),
                     )
-                    .child(render_dialog_button(
-                        colors,
-                        "重新测试",
-                        false,
-                        |_window, cx| refresh_game_dialog_cdn(cx),
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(toggle_button)
+                            .child(render_dialog_button(
+                                colors,
+                                "重新测试",
+                                false,
+                                |_window, cx| refresh_game_dialog_cdn(cx),
+                            )),
+                    ),
             )
             .child(cdn_list)
             .children(cdn_error.map(|error| {
@@ -2436,14 +2457,19 @@ pub(super) fn render_game_dialog(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text_secondary)
-                    .child("会优先选择延迟最低的可用 CDN，也可以手动改选。"),
+                    .child(if cdn_expanded {
+                        "已测试并按延迟排序，可手动选择任意 CDN 节点。"
+                    } else {
+                        "默认显示并优先使用最快可用节点，点击「展开节点」可手动切换。"
+                    }),
             )
     });
 
     let body = div()
         .w(px(if dialog.is_gdk { 640. } else { 560. }))
-        .max_w(px(640.))
-        .max_h(px(760.))
+        .max_w(relative(0.92))
+        .max_h(px(490.))
+        .min_h(px(0.))
         .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
@@ -2457,8 +2483,10 @@ pub(super) fn render_game_dialog(
         .on_mouse_down(MouseButton::Left, |_ev, _window, cx| cx.stop_propagation())
         .child(
             div()
+                .flex_none()
                 .px(px(22.))
                 .pt(px(22.))
+                .pb(px(16.))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -2564,6 +2592,7 @@ pub(super) fn render_game_dialog(
         )
         .child(
             div()
+                .id("game-dialog-main-scroll-area")
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_y_scrollbar()
@@ -2665,7 +2694,14 @@ pub(super) fn render_game_dialog(
         GameDialogKind::LocalActions => unreachable!("local actions dialog is rendered separately"),
     };
 
-    body.child(div().px(px(22.)).pb(px(22.)).pt(px(16.)).child(footer))
+    body.child(
+        div()
+            .flex_none()
+            .px(px(22.))
+            .pb(px(22.))
+            .pt(px(16.))
+            .child(footer),
+    )
 }
 
 fn render_dialog_button<F>(

@@ -411,7 +411,8 @@ pub fn open_launch_prereq_developer_settings(cx: &mut App) {
     });
 
     cx.spawn(async move |cx| {
-        let result = tokio::task::spawn_blocking(developer_mode::open_developer_settings).await;
+        let result =
+            crate::tasks::runtime::run_io_blocking(developer_mode::open_developer_settings).await;
         match result {
             Ok(Ok(())) => {
                 info!(
@@ -496,7 +497,8 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
     );
 
     cx.spawn(async move |cx| {
-        let result = tokio::task::spawn_blocking(developer_mode::try_enable_developer_mode).await;
+        let result =
+            crate::tasks::runtime::run_io_blocking(developer_mode::try_enable_developer_mode).await;
         match result {
             Ok(Ok(())) => {
                 info!(
@@ -531,7 +533,11 @@ pub fn enable_launch_prereq_developer_mode(cx: &mut App) {
                     state.admin_notice = Some(admin_notice);
                 });
 
-                match tokio::task::spawn_blocking(developer_mode::open_developer_settings).await {
+                match crate::tasks::runtime::run_io_blocking(
+                    developer_mode::open_developer_settings,
+                )
+                .await
+                {
                     Ok(Ok(())) => {
                         info!(
                             request_id = context.request_id,
@@ -636,15 +642,17 @@ pub fn install_launch_prereq_uwp_dependencies(cx: &mut App) {
     spawn_dependency_event_pump(context.request_id, receiver, cx);
 
     cx.spawn(async move |cx| {
-        let result = tokio::spawn(async move {
+        let result = match crate::tasks::runtime::spawn_io(async move {
             mc_dependency::install_missing_uwp_dependencies(
                 context.locale,
                 check.missing_uwp_dependencies,
                 Some(sender),
             )
             .await
-        })
-        .await;
+        }) {
+            Ok(task) => task.await.map_err(|error| error.to_string()),
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok(Ok(())) => {
@@ -732,10 +740,12 @@ pub fn install_launch_prereq_game_input(cx: &mut App) {
     spawn_dependency_event_pump(context.request_id, receiver, cx);
 
     cx.spawn(async move |cx| {
-        let result = tokio::spawn(async move {
+        let result = match crate::tasks::runtime::spawn_io(async move {
             mc_dependency::install_game_input_runtime(context.locale, plan, Some(sender)).await
-        })
-        .await;
+        }) {
+            Ok(task) => task.await.map_err(|error| error.to_string()),
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok(Ok(())) => {
@@ -826,10 +836,12 @@ pub fn install_launch_prereq_windows_app_sdk(cx: &mut App) {
     spawn_dependency_event_pump(context.request_id, receiver, cx);
 
     cx.spawn(async move |cx| {
-        let result = tokio::spawn(async move {
+        let result = match crate::tasks::runtime::spawn_io(async move {
             mc_dependency::install_windows_app_sdk_runtime(context.locale, plan, Some(sender)).await
-        })
-        .await;
+        }) {
+            Ok(task) => task.await.map_err(|error| error.to_string()),
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok(Ok(())) => {
@@ -994,9 +1006,10 @@ fn spawn_launch_prereq_check_for_request(
     );
 
     cx.spawn(async move |cx| {
-        let result =
-            tokio::task::spawn_blocking(move || check_launch_prerequisites(&kind, &package_path))
-                .await;
+        let result = crate::tasks::runtime::run_io_blocking(move || {
+            check_launch_prerequisites(&kind, &package_path)
+        })
+        .await;
 
         match result {
             Ok(check) if check.has_issues() => {
@@ -1378,6 +1391,7 @@ fn requires_admin_notice(message: &str) -> bool {
 }
 
 fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
+    let mut updates = task_manager::subscribe_task_updates();
     if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
         cx.update_global(|state: &mut LauncherState, _cx| {
             if state.task_id.as_deref() == Some(task_id.as_ref()) {
@@ -1389,12 +1403,19 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     cx.spawn({
         let task_id = task_id.clone();
         async move |cx| {
-            let mut updates = task_manager::subscribe_task_updates();
             loop {
                 let snapshot = match updates.recv().await {
                     Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        warn!("launcher snapshot pump closed: {error}");
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "launcher snapshot pump lagged; resyncing");
+                        let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                        else {
+                            continue;
+                        };
+                        snapshot
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        warn!("launcher snapshot pump closed");
                         break;
                     }
                 };
