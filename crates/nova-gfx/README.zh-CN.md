@@ -59,7 +59,7 @@ rtk cargo test -p gfx-memory --no-default-features --features dx12
 GPUI 用户必须显式选择具体 nova-gfx 后端：
 
 ```toml
-gpui = { path = "vendor/gpui", default-features = false, features = ["nova-gfx-vulkan"] }
+gpui = { path = "../gpui", default-features = false, features = ["nova-gfx-vulkan"] }
 ```
 
 可选 feature 为 `nova-gfx-vulkan`、`nova-gfx-dx12`、`nova-gfx-metal`。旧

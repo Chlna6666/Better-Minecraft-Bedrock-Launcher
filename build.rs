@@ -51,7 +51,7 @@ fn compile_windows_resources() {
 
     let icon_path = manifest_dir.join("assets").join("icons").join("icon.ico");
     let dpi_manifest_path = manifest_dir
-        .join("vendor")
+        .join("crates")
         .join("gpui")
         .join("resources")
         .join("windows")

@@ -65,7 +65,7 @@ The backend crates enable only their own memory feature:
 GPUI users must choose a concrete nova-gfx backend explicitly:
 
 ```toml
-gpui = { path = "vendor/gpui", default-features = false, features = ["nova-gfx-vulkan"] }
+gpui = { path = "../gpui", default-features = false, features = ["nova-gfx-vulkan"] }
 ```
 
 Use `nova-gfx-vulkan`, `nova-gfx-dx12`, or `nova-gfx-metal`. The old

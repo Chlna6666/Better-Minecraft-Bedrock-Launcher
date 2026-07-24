@@ -26,6 +26,8 @@ logic implemented as ordinary Rust modules rather than WebView commands.
 
 - Current project structure: [`BMCBL_PROJECT_STRUCTURE.md`](BMCBL_PROJECT_STRUCTURE.md)
 - Architecture boundaries: [`ARCHITECTURE_BOUNDARIES.md`](ARCHITECTURE_BOUNDARIES.md)
+- Async runtime and GPUI state model:
+  [`ASYNC_RUNTIME_MODEL.md`](ASYNC_RUNTIME_MODEL.md)
 - GPUI structure and rendering pipeline: [`GPUI_VENDOR_RENDERING.md`](GPUI_VENDOR_RENDERING.md)
 - UI module placement rules: [`../src/ui/README.md`](../src/ui/README.md)
 - Map renderer design: [`MAP_RENDERER.md`](MAP_RENDERER.md)
@@ -45,7 +47,7 @@ logic implemented as ordinary Rust modules rather than WebView commands.
 | `src/music` | Music library, cover handling, playback service, and music state. |
 | `src/plugins` | Plugin manifest, runtime, events, watcher, UI DSL, and plugin windows. |
 | `crates/*` | Local reusable workspace crates. |
-| `vendor/gpui` | Vendored GPUI framework. |
+| `crates/gpui` | Independently maintained GPUI GUI core. |
 | `assets` | Build-time input assets embedded by the app. |
 | `docs` | Project, GPUI, architecture, and feature documentation. |
 
@@ -126,7 +128,7 @@ cargo test --workspace --all-features
 For GPUI framework changes, add a GPUI-specific check:
 
 ```powershell
-cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
+cargo check --manifest-path crates/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 ```
 
 For documentation-only changes, verify referenced paths and links.

@@ -1,16 +1,16 @@
-# GPUI Vendor Structure And Rendering Pipeline
+# GPUI Structure And Rendering Pipeline
 
-This document describes the vendored GPUI framework structure used by BMCBL and
+This document describes the independently maintained GPUI framework structure used by BMCBL and
 the current rendering pipeline from application invalidation to nova-gfx
-presentation. It is a BMCBL-facing guide to `vendor/gpui`; the framework's own
-documents remain under `vendor/gpui/docs`.
+presentation. It is a BMCBL-facing guide to `crates/gpui`; the framework's own
+documents remain under `crates/gpui/docs`.
 
 ## Scope
 
 This document covers:
 
 - the main GPUI source directories and ownership;
-- the public API surface exposed by `vendor/gpui/src/gpui.rs`;
+- the public API surface exposed by `crates/gpui/src/gpui.rs`;
 - BMCBL renderer startup integration in `src/app.rs`;
 - frame invalidation and scheduling;
 - element layout, prepaint, paint, and scene construction;
@@ -24,21 +24,21 @@ This document covers:
 
 | Path | Responsibility |
 | --- | --- |
-| `vendor/gpui/src/gpui.rs` | Public GPUI crate surface and re-exports. |
-| `vendor/gpui/src/app` | `Application`, `App`, contexts, entity map, globals, effects, async contexts, and actions. |
-| `vendor/gpui/src/window` | Window lifecycle, platform frame scheduling, drawing, presentation, input, focus, action dispatch, and window-local state. |
-| `vendor/gpui/src/element` | Element trait implementations and built-in elements such as `div`, text, image, SVG, list, canvas, and surface. |
-| `vendor/gpui/src/layout` | Layout engine wrapper, layout builders, layout cache, layout metrics, and conversion helpers. |
-| `vendor/gpui/src/text_system` | Fonts, fallback, line layout, wrapping, truncation, shaping, glyph rasterization, and text paint helpers. |
-| `vendor/gpui/src/scene` | Scene primitives, path data, batches, prepared scene data, bounds trees, transforms, and 3D mesh descriptors. |
-| `vendor/gpui/src/render_pipeline` | Renderer backend options, shader helpers, and SVG renderer bridge. |
-| `vendor/gpui/src/platform` | Platform windows, GPU backend adapters, clipboard, displays, keyboard, and test platforms. |
-| `vendor/gpui/src/platform/nova` | nova-gfx renderer integration, resources, pipelines, frame upload, swapchain, and backend-specific submission. |
-| `vendor/gpui/src/diagnostics` | Performance metrics, frame counters, inspector data, and diagnostic recording. |
+| `crates/gpui/src/gpui.rs` | Public GPUI crate surface and re-exports. |
+| `crates/gpui/src/app` | `Application`, `App`, contexts, entity map, globals, effects, async contexts, and actions. |
+| `crates/gpui/src/window` | Window lifecycle, platform frame scheduling, drawing, presentation, input, focus, action dispatch, and window-local state. |
+| `crates/gpui/src/element` | Element trait implementations and built-in elements such as `div`, text, image, SVG, list, canvas, and surface. |
+| `crates/gpui/src/layout` | Layout engine wrapper, layout builders, layout cache, layout metrics, and conversion helpers. |
+| `crates/gpui/src/text_system` | Fonts, fallback, line layout, wrapping, truncation, shaping, glyph rasterization, and text paint helpers. |
+| `crates/gpui/src/scene` | Scene primitives, path data, batches, prepared scene data, bounds trees, transforms, and 3D mesh descriptors. |
+| `crates/gpui/src/render_pipeline` | Renderer backend options, shader helpers, and SVG renderer bridge. |
+| `crates/gpui/src/platform` | Platform windows, GPU backend adapters, clipboard, displays, keyboard, and test platforms. |
+| `crates/gpui/src/platform/nova` | nova-gfx renderer integration, resources, pipelines, frame upload, swapchain, and backend-specific submission. |
+| `crates/gpui/src/diagnostics` | Performance metrics, frame counters, inspector data, and diagnostic recording. |
 
 ## Public Surface
 
-`vendor/gpui/src/gpui.rs` re-exports the framework API used by application
+`crates/gpui/src/gpui.rs` re-exports the framework API used by application
 code:
 
 - app and entity APIs: `Application`, `App`, `Context<T>`, `AsyncApp`,
@@ -167,9 +167,9 @@ directly.
 
 The scheduling logic lives primarily in:
 
-- `vendor/gpui/src/window/frame_scheduling.rs`
-- `vendor/gpui/src/window/frame_lifecycle.rs`
-- `vendor/gpui/src/window/frame_lifecycle/throttle.rs`
+- `crates/gpui/src/window/frame_scheduling.rs`
+- `crates/gpui/src/window/frame_lifecycle.rs`
+- `crates/gpui/src/window/frame_lifecycle/throttle.rs`
 
 Key behavior:
 
@@ -200,11 +200,11 @@ The frame decision uses these inputs:
 
 Important files:
 
-- `vendor/gpui/src/window/draw.rs`
-- `vendor/gpui/src/window/layout.rs`
-- `vendor/gpui/src/window/paint.rs`
-- `vendor/gpui/src/window/draw_reuse.rs`
-- `vendor/gpui/src/window/paint_resources.rs`
+- `crates/gpui/src/window/draw.rs`
+- `crates/gpui/src/window/layout.rs`
+- `crates/gpui/src/window/paint.rs`
+- `crates/gpui/src/window/draw_reuse.rs`
+- `crates/gpui/src/window/paint_resources.rs`
 
 The current lifecycle is:
 
@@ -225,7 +225,7 @@ The current lifecycle is:
 14. Mark `needs_present`.
 
 Current GPUI still uses request-layout, prepaint, and paint. The vNext typed
-frame context work is documented in `vendor/gpui/docs/element_lifecycle*.md`,
+frame context work is documented in `crates/gpui/docs/element_lifecycle*.md`,
 but it is not yet the active element API.
 
 ## Layout
@@ -256,7 +256,7 @@ Paint methods add primitives to the frame scene:
 - backdrop blur primitives;
 - custom 3D mesh primitives.
 
-Scene ownership lives under `vendor/gpui/src/scene`:
+Scene ownership lives under `crates/gpui/src/scene`:
 
 | Area | Role |
 | --- | --- |
@@ -323,7 +323,7 @@ Renderer startup is configured with `RendererOptions`:
 
 ## nova-gfx Renderer
 
-The nova-gfx renderer integration lives under `vendor/gpui/src/platform/nova`.
+The nova-gfx renderer integration lives under `crates/gpui/src/platform/nova`.
 
 Major modules:
 
@@ -487,33 +487,33 @@ the BMCBL default from `src/app.rs`.
 
 Framework docs:
 
-- `vendor/gpui/docs/rendering.zh-CN.md`
-- `vendor/gpui/docs/renderer_backend.zh-CN.md`
-- `vendor/gpui/docs/windows_renderer_backend.zh-CN.md`
-- `vendor/gpui/docs/performance_pipeline.zh-CN.md`
-- `vendor/gpui/docs/element_lifecycle.zh-CN.md`
+- `crates/gpui/docs/rendering.zh-CN.md`
+- `crates/gpui/docs/renderer_backend.zh-CN.md`
+- `crates/gpui/docs/windows_renderer_backend.zh-CN.md`
+- `crates/gpui/docs/performance_pipeline.zh-CN.md`
+- `crates/gpui/docs/element_lifecycle.zh-CN.md`
 
 Implementation entry points:
 
 - `src/app.rs`
-- `vendor/gpui/src/gpui.rs`
-- `vendor/gpui/src/render_pipeline/renderer_backend.rs`
-- `vendor/gpui/src/window/frame_scheduling.rs`
-- `vendor/gpui/src/window/frame_lifecycle.rs`
-- `vendor/gpui/src/window/draw.rs`
-- `vendor/gpui/src/window/layout.rs`
-- `vendor/gpui/src/window/paint.rs`
-- `vendor/gpui/src/scene.rs`
-- `vendor/gpui/src/platform/nova.rs`
-- `vendor/gpui/src/platform/nova/nova_renderer.rs`
-- `vendor/gpui/src/platform/nova/nova_renderer/present.rs`
-- `vendor/gpui/src/platform/nova/frame_upload`
+- `crates/gpui/src/gpui.rs`
+- `crates/gpui/src/render_pipeline/renderer_backend.rs`
+- `crates/gpui/src/window/frame_scheduling.rs`
+- `crates/gpui/src/window/frame_lifecycle.rs`
+- `crates/gpui/src/window/draw.rs`
+- `crates/gpui/src/window/layout.rs`
+- `crates/gpui/src/window/paint.rs`
+- `crates/gpui/src/scene.rs`
+- `crates/gpui/src/platform/nova.rs`
+- `crates/gpui/src/platform/nova/nova_renderer.rs`
+- `crates/gpui/src/platform/nova/nova_renderer/present.rs`
+- `crates/gpui/src/platform/nova/frame_upload`
 
 ## Review Checklist
 
 Before merging GPUI or renderer changes:
 
-- The change does not reference BMCBL product modules from `vendor/gpui`.
+- The change does not reference BMCBL product modules from `crates/gpui`.
 - `RequestFrameOptions` semantics are preserved.
 - Static idle windows remain event-driven.
 - Presentation-only frames do not rebuild layout unless required.

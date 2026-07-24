@@ -64,6 +64,27 @@ pedantic = "warn"
   });
   ```
 
+## Async Runtime And GPUI State Contract
+
+修改 `src/tasks`、`src/downloads`、`src/archive`、长期运行的 core 工作流，或任何
+后台状态到 GPUI 的传播链路前，**必须先完整阅读
+`docs/ASYNC_RUNTIME_MODEL.md`**。该文档是运行时所有权、任务终态、取消语义、
+事件桥接和 render 数据访问的唯一事实源。
+
+强制规则：
+
+- 业务代码通过 `src/tasks/runtime.rs` 的语义化 API 选择工作类型，不得自行选择
+  或创建物理 Runtime、blocking pool、Rayon pool。
+- 禁止通过 `Handle::try_current()` 探测环境后退化到系统线程。
+- 禁止从 GPUI 页面/View 直接调用 `tokio::spawn` 或
+  `tokio::task::spawn_blocking`。
+- 持久工作流不得由 GPUI `Task` 生命周期拥有；生产者只能发布纯事件/快照。
+- 只有 `completed`、`cancelled`、`error` 是终态；等待子任务必须调用
+  `wait_for_task_terminal()`，不得枚举“已知运行态”推断完成。
+- GPUI 前台消费者负责更新 Entity/Global 并触发重绘；render 不得读取后台锁、
+  TaskManager 实时状态或启动异步工作。
+- 轮询只允许用于无法提供事件的外部系统，并且必须按文档列出的例外条件实现。
+
 # BMCBL Project Structure / 项目结构
 
 BMCBL 是一个基于 GPUI 的原生 Rust 桌面启动器（Windows 优先）。下面给出仓库的文件路径树，并说明每个目录与关键文件的功能。图标资源（`crates/lucide-gpui/icons/`）与 `vendor/` 第三方依赖在树中省略，避免噪声。
@@ -84,7 +105,7 @@ BMCBL/
 │   ├── bmcbl-plugin-api/   # 插件宿主/插件间公共 API 类型
 │   ├── bmcbl-plugin-macros/# 插件开发派生宏
 │   └── bmcbl-plugin-tools/ # 插件打包/校验工具
-├── vendor/gpui/            # 内嵌的 GPUI 框架源码（独立子清单，勿直接耦合业务）
+├── crates/gpui/            # 独立维护的 GPUI GUI 核心（勿直接耦合业务）
 ├── assets/                 # 嵌入资源（编译期通过 AssetSource 打包）
 ├── docs/                   # 架构与设计文档
 ├── examples/plugins/       # 插件示例（bedrock-notes、hello-wasm）
@@ -200,6 +221,7 @@ assets/
 docs/
 ├── AI.md                   # AI 代码贡献约定（双语，GPUI 规则）
 ├── ARCHITECTURE_BOUNDARIES.md  # GPUI 框架与应用的边界（改框架前必读）
+├── ASYNC_RUNTIME_MODEL.md  # Runtime Facade、任务状态与 GPUI 事件桥接规范
 ├── PROJECT_SPEC.md         # 项目规格
 ├── GPUI_ROUTER_HOOKS.md    # 路由与 hooks 用法
 ├── GPUI_VENDOR_RENDERING.md # vendor GPUI 渲染说明
@@ -215,7 +237,8 @@ scripts/
 ## Boundary Rules Recap / 边界要点
 
 - `src/ui` 只渲染与协调 UI 状态；网络 IO、解码、持久缓存、解析、下载与长流程放在 `src/core`、`src/downloads`、`src/tasks` 等非 UI 模块。
-- 修改 `vendor/gpui`、`src/app.rs` 或 `src/ui` 顶层前，先读 `docs/ARCHITECTURE_BOUNDARIES.md`。
+- 修改 `crates/gpui`、`src/app.rs` 或 `src/ui` 顶层前，先读 `docs/ARCHITECTURE_BOUNDARIES.md`。
+- 修改异步执行、后台任务或 GPUI 状态传播前，先读 `docs/ASYNC_RUNTIME_MODEL.md`。
 - GPUI 框架代码不得依赖 BMCBL 的 routes/pages/assets/默认背景/下载服务/窗口策略。
 - 应用默认值（Vulkan 偏好、嵌入字体、默认背景、主窗口 chrome、启动服务）归应用启动或 UI 代码，而非 GPUI 框架默认。
 
@@ -237,6 +260,8 @@ GPUI is a UI framework which also provides primitives for state and concurrency 
 
 - Follow `docs/ARCHITECTURE_BOUNDARIES.md` before changing the GPUI framework,
   `src/app.rs`, or `src/ui`.
+- Follow `docs/ASYNC_RUNTIME_MODEL.md` before changing runtime ownership,
+  background tasks, durable workflows, or background-to-GPUI state propagation.
 - GPUI framework code must not depend on BMCBL routes, pages, assets, default
   backgrounds, download services, or application window policy.
 - BMCBL application defaults such as Vulkan preference, embedded fonts, default

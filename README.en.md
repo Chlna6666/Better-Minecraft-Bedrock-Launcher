@@ -148,8 +148,9 @@ BMCBL plugins are WASM sandbox plugins, not the old JavaScript plugin model.
 
 ## Architecture
 
-BMCBL is now a native GPUI desktop application. The Tauri compatibility layer has
-been removed. The default build does not include a web frontend, WebView, or
+BMCBL is now a native desktop application built with the `egpui` application
+framework and GPUI GUI core. The Tauri compatibility layer has been removed.
+The default build does not include a web frontend, WebView, or
 Tauri command wrappers.
 
 ```mermaid
@@ -159,7 +160,9 @@ flowchart TD
     UI --> Config["src/config\nConfiguration and migrations"]
     Core --> Downloads["src/downloads\nMulti-thread downloads, WU protocol, integrity"]
     Core --> Assets["src/assets / assets\nEmbedded assets, fonts, icons, locales, runtime payloads"]
-    UI --> GPUI["vendor/gpui\nnova-gfx renderer, windows, element system"]
+UI --> GPUI["crates/gpui\nnova-gfx renderer, windows, element system"]
+UI --> EGPUI["crates/egpui\nlifecycle, app runtime, UI bridge"]
+EGPUI --> GPUI
     GPUI --> Nova["crates/nova-gfx\nDX12 / Vulkan / Metal / OpenGL / WebGL abstraction"]
 ```
 
@@ -174,14 +177,18 @@ Main directories:
 | `src/i18n` | Runtime localization |
 | `src/config` | Config structs, defaults, migrations, and persistence |
 | `assets` | Compile-time icons, fonts, images, locales, and binary payloads |
-| `vendor/gpui` | Project-maintained GPUI framework code |
+| `crates/egpui` | Desktop host, Tokio/Rayon runtime, task scopes, services, and UI bridge |
+| `crates/gpui` | Independently maintained GPUI GUI core |
 | `crates/nova-gfx` | Cross-backend graphics abstraction used by the GPUI nova renderer path |
 | `crates/bmcbl-plugin-api` | Plugin ABI, macros, and packaging tools |
 | `crates/gpui-hooks` | GPUI hooks helpers |
 | `crates/lucide-gpui` | Lucide icon adapter for GPUI |
 
 Current structure: [docs/BMCBL_PROJECT_STRUCTURE.md](docs/BMCBL_PROJECT_STRUCTURE.md).
+Desktop framework tasks: [docs/EGPUI_DESKTOP_APPLICATION_FRAMEWORK_TASKS.md](docs/EGPUI_DESKTOP_APPLICATION_FRAMEWORK_TASKS.md).
 Architecture boundaries: [docs/ARCHITECTURE_BOUNDARIES.md](docs/ARCHITECTURE_BOUNDARIES.md).
+Async runtime and GPUI state model:
+[docs/ASYNC_RUNTIME_MODEL.md](docs/ASYNC_RUNTIME_MODEL.md).
 GPUI renderer notes: [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.md).
 Router and hooks: [docs/GPUI_ROUTER_HOOKS.md](docs/GPUI_ROUTER_HOOKS.md).
 

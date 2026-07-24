@@ -118,7 +118,7 @@ BMCBL 的插件系统已经不是旧版 JavaScript 插件，而是 WASM 沙箱�
 
 ## 技术架构
 
-BMCBL 现在是 GPUI 原生桌面应用。Tauri 兼容层已经删除，默认构建不包含 Web 前端、
+BMCBL 现在是基于 `egpui` 应用框架与 GPUI GUI 核心的原生桌面应用。Tauri 兼容层已经删除，默认构建不包含 Web 前端、
 WebView 或 Tauri command wrapper。
 
 ```mermaid
@@ -128,7 +128,9 @@ flowchart TD
     UI --> Config["src/config\n配置和迁移"]
     Core --> Downloads["src/downloads\n多线程下载、WU 协议、完整性校验"]
     Core --> Assets["src/assets / assets\n嵌入资源、字体、图标、本地化、运行时负载"]
-    UI --> GPUI["vendor/gpui\nnova-gfx 渲染、窗口、元素系统"]
+UI --> GPUI["crates/gpui\nnova-gfx 渲染、窗口、元素系统"]
+UI --> EGPUI["crates/egpui\n应用生命周期、后台运行时、UI bridge"]
+EGPUI --> GPUI
     GPUI --> Nova["crates/nova-gfx\nDX12 / Vulkan / Metal / OpenGL / WebGL 抽象"]
 ```
 
@@ -143,14 +145,18 @@ flowchart TD
 | `src/i18n` | 运行时多语言切换 |
 | `src/config` | 配置结构、默认值、迁移和持久化 |
 | `assets` | 编译期嵌入的图标、字体、图片、本地化和二进制负载 |
-| `vendor/gpui` | 本项目维护的 GPUI 框架代码 |
+| `crates/egpui` | 独立的桌面应用 host、Tokio/Rayon runtime、任务 scope、服务注册和 UI bridge |
+| `crates/gpui` | 本项目独立维护的 GPUI GUI 核心 |
 | `crates/nova-gfx` | GPUI nova 渲染路径使用的跨后端图形抽象 |
 | `crates/bmcbl-plugin-api` | 插件 ABI、宏和打包工具 |
 | `crates/gpui-hooks` | GPUI hooks 辅助库 |
 | `crates/lucide-gpui` | Lucide 图标到 GPUI 的适配 |
 
 当前结构总览见 [docs/BMCBL_PROJECT_STRUCTURE.md](docs/BMCBL_PROJECT_STRUCTURE.md)。
+桌面应用框架任务见 [docs/EGPUI_DESKTOP_APPLICATION_FRAMEWORK_TASKS.md](docs/EGPUI_DESKTOP_APPLICATION_FRAMEWORK_TASKS.md)。
 架构边界见 [docs/ARCHITECTURE_BOUNDARIES.md](docs/ARCHITECTURE_BOUNDARIES.md)。
+异步运行时与 GPUI 状态桥接规范见
+[docs/ASYNC_RUNTIME_MODEL.md](docs/ASYNC_RUNTIME_MODEL.md)。
 GPUI 渲染细节见 [docs/GPUI_VENDOR_RENDERING.md](docs/GPUI_VENDOR_RENDERING.md)。
 路由和 hooks 见 [docs/GPUI_ROUTER_HOOKS.md](docs/GPUI_ROUTER_HOOKS.md)。
 

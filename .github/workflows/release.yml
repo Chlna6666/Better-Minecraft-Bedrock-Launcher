@@ -64,6 +64,9 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.release_tag.outputs.TAG_NAME }}
 
+      - name: Validate GPUI workspace layout
+        run: ./scripts/check_gpui_layout.ps1
+
       - name: Generate release notes
         run: |
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"

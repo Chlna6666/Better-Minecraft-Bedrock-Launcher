@@ -9,7 +9,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-gpui = { path = "../../vendor/gpui", default-features = false }
+gpui = { path = "../gpui", default-features = false }
 gpui_hooks_macros = { path = "../gpui-hooks-macros" }
 smallvec = "1.15.1"
 

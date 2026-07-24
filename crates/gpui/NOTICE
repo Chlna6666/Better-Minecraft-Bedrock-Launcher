@@ -1,0 +1,17 @@
+GPUI independent fork notice
+
+This crate contains code derived from GPUI, the GPU-accelerated UI framework
+developed by Zed Industries, Inc. The upstream project is available at:
+
+https://github.com/zed-industries/zed
+
+Upstream copyright and license notices remain in the source tree. The upstream
+license for this crate is Apache-2.0; see LICENSE-APACHE for the complete text.
+The recorded upstream baseline is Zed commit
+69e2130295c2649963eb639fc70b4f2ee8ea1624 (GPUI 0.2.2). See UPSTREAM.md for
+the synchronization policy.
+
+This fork is maintained independently for the BMCBL/egpui application
+framework effort. It is not produced, endorsed, or supported by Zed
+Industries, Inc. The fork may contain local renderer, platform, API, and
+documentation changes. See the repository history for local modifications.

@@ -6,6 +6,8 @@ belong.
 
 Broader boundaries are documented in
 [`docs/ARCHITECTURE_BOUNDARIES.md`](../../docs/ARCHITECTURE_BOUNDARIES.md).
+Background execution and state propagation are defined in
+[`docs/ASYNC_RUNTIME_MODEL.md`](../../docs/ASYNC_RUNTIME_MODEL.md).
 The GPUI rendering pipeline is documented in
 [`docs/GPUI_VENDOR_RENDERING.md`](../../docs/GPUI_VENDOR_RENDERING.md).
 
@@ -25,6 +27,19 @@ The GPUI rendering pipeline is documented in
 caches, archive extraction, download engines, decoding pipelines, Minecraft
 domain logic, music playback internals, and plugin runtime internals belong in
 non-UI modules.
+
+## Background State Bridge
+
+Domain modules expose owned event or snapshot streams with explicit lag,
+closure, and recovery behavior. UI entities bind them with
+`Context::spawn_stream`; application-lifetime global bridges start once with
+`App::spawn_stream` from application setup.
+
+Page code must not hand-write `recv().await -> Entity::update -> cx.notify()`
+loops. It stores the returned `Task<()>` when the stream is page-owned and
+renders only its local stable snapshot. Render methods never acquire the
+task-manager or service `Mutex`/`RwLock`. If an event is only an invalidation,
+the foreground consumer rebuilds its snapshot outside render.
 
 ## Dependency Direction
 
@@ -361,6 +376,10 @@ All network work must happen off the UI thread. Preferred patterns:
   service-owned subscription;
 - store cancellable tasks when the work should stop with the view;
 - propagate errors to visible UI state instead of discarding them.
+
+`docs/ASYNC_RUNTIME_MODEL.md` is authoritative when choosing an executor,
+defining terminal task states, deciding workflow lifetime, or bridging a
+background event into GPUI.
 
 Forbidden patterns:
 

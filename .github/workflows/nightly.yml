@@ -33,6 +33,9 @@ jobs:
           ref: ${{ github.event.repository.default_branch || 'master' }}
           persist-credentials: true
 
+      - name: Validate GPUI workspace layout
+        run: ./scripts/check_gpui_layout.ps1
+
       - name: Resolve default branch
         id: default_branch
         run: |

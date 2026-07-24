@@ -17,6 +17,8 @@ separate from BMCBL product behavior.
 
 - `docs/BMCBL_PROJECT_STRUCTURE.md`: current workspace and module structure.
 - `docs/ARCHITECTURE_BOUNDARIES.md`: ownership boundaries and change rules.
+- `docs/ASYNC_RUNTIME_MODEL.md`: mandatory background execution, task state,
+  and GPUI event-bridge rules.
 - `docs/GPUI_VENDOR_RENDERING.md`: GPUI structure and rendering pipeline.
 - `src/ui/README.md`: UI placement rules and current UI tree.
 - `docs/PROJECT_SPEC.md`: product-level project specification.
@@ -48,6 +50,27 @@ separate from BMCBL product behavior.
 - Application defaults such as renderer preference, embedded fonts, default
   backgrounds, main-window chrome, and startup services belong in application
   startup or UI code.
+
+### Async And State Rules
+
+Before changing runtime, task, download, archive, long-running core work, or
+background-to-UI state propagation, read `docs/ASYNC_RUNTIME_MODEL.md`.
+
+- Submit business work through the semantic APIs in `src/tasks/runtime.rs`.
+- Do not construct runtimes or Rayon pools, probe `Handle::try_current()`, call
+  `tokio::task::spawn_blocking` from GPUI, or use a system thread as fallback.
+- Durable workflows live outside GPUI and publish pure events or snapshots.
+- Only `completed`, `cancelled`, and `error` are terminal task states.
+- Domain modules expose streams with explicit lag and closure behavior.
+- Bind streams with `Context::spawn_stream` for view-scoped Entity state or
+  `App::spawn_stream` for application-lifetime Global bridges. Do not hand-roll
+  channel receive, entity-release, update, and notify loops in pages.
+- A GPUI foreground consumer updates Entity or Global state and triggers
+  repaint; render reads only stable UI-owned snapshots.
+- An invalidation received during an in-flight refresh must preserve one
+  follow-up refresh, including when the in-flight refresh was already forced.
+- Polling requires a documented external-system limitation and must not replace
+  an available producer event.
 
 ### UI View Structure
 
@@ -87,7 +110,7 @@ Use focused checks for the area changed:
 ```powershell
 cargo fmt --all
 cargo check --workspace --no-default-features
-cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
+cargo check --manifest-path crates/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 ```
 
 Current local validation is Windows-only. Linux and macOS are planned but
@@ -109,6 +132,7 @@ GPUI 框架改动与 BMCBL 产品行为分离。
 
 - `docs/BMCBL_PROJECT_STRUCTURE.md`：当前 workspace 与模块结构。
 - `docs/ARCHITECTURE_BOUNDARIES.md`：职责边界与变更规则。
+- `docs/ASYNC_RUNTIME_MODEL.md`：后台执行、任务状态与 GPUI 事件桥接的强制规范。
 - `docs/GPUI_VENDOR_RENDERING.md`：GPUI 结构与渲染管线。
 - `src/ui/README.md`：UI 放置规则与当前 UI 目录。
 - `docs/PROJECT_SPEC.md`：项目规格。
@@ -137,6 +161,26 @@ GPUI 框架改动与 BMCBL 产品行为分离。
   框架代码。
 - renderer preference、嵌入字体、默认背景、主窗口 chrome、启动服务等应用默认值
   属于应用启动或 UI 代码。
+
+### 异步与状态规则
+
+修改运行时、任务、下载、归档、长期 core 工作或后台到 UI 状态传播前，必须阅读
+`docs/ASYNC_RUNTIME_MODEL.md`。
+
+- 业务工作只能通过 `src/tasks/runtime.rs` 的语义化 API 提交。
+- 禁止自行创建 Runtime/Rayon Pool、探测 `Handle::try_current()`、从 GPUI
+  调用 `tokio::task::spawn_blocking`，或用系统线程作通用兜底。
+- 持久工作流必须位于 GPUI 外部，并且只发布纯事件或快照。
+- 只有 `completed`、`cancelled` 和 `error` 是任务终态。
+- 领域模块必须暴露具有明确滞后恢复与关闭语义的事件流。
+- View 生命周期内的 Entity 状态使用 `Context::spawn_stream`，应用生命周期内的
+  Global 桥使用 `App::spawn_stream`。禁止页面自行编写 channel 接收、实体释放、
+  update 与 notify 循环。
+- GPUI 前台消费者负责更新 Entity/Global 并触发重绘；render 只能读取 UI
+  自己持有的稳定快照。
+- 刷新进行期间到达的失效事件必须保留一次后续刷新，即使当前已经是强制刷新；
+  多个事件可以合并，但不能静默丢失。
+- 轮询必须有明确的外部系统限制，不能替代已经可以生产的事件。
 
 ### UI View 结构
 
@@ -175,7 +219,7 @@ Render 方法不应执行网络 IO、持久缓存、解析、解码或长期工�
 ```powershell
 cargo fmt --all
 cargo check --workspace --no-default-features
-cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
+cargo check --manifest-path crates/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 ```
 
 当前本地验证以 Windows 为准。Linux 和 macOS 计划支持，但此仓库状态尚未验证。

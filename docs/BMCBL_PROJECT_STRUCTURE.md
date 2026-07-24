@@ -27,11 +27,11 @@ flowchart LR
     "UI windows" --> "UI state"
     "UI windows" --> "Core services"
     "Core services" --> "Downloads / HTTP / Tasks"
-    "GPUI Application" --> "vendor/gpui renderer"
-    "vendor/gpui renderer" --> "nova-gfx backends"
+"GPUI Application" --> "crates/gpui renderer"
+"crates/gpui renderer" --> "nova-gfx backends"
 ```
 
-The application crate owns product behavior. `vendor/gpui` owns generic UI and
+The application crate owns product behavior. `crates/gpui` owns generic UI and
 rendering behavior. Local crates under `crates/` provide reusable support for
 icons, hooks, graphics backends, and plugins.
 
@@ -97,15 +97,17 @@ domain logic.
 | Path | Responsibility |
 | --- | --- |
 | `src/http` | HTTP request wrapper, GPUI-compatible HTTP client, and proxy handling. |
-| `src/downloads` | Download manager, single and multi-file downloads, integrity, MD5, runtime support, and Windows Update client support. |
-| `src/archive` | Archive extraction APIs, runtime support, and ZIP handling. |
-| `src/tasks` | Background task manager and task snapshot model. |
+| `src/downloads` | Download manager, single and multi-file downloads, integrity, MD5, and Windows Update client support. |
+| `src/archive` | Archive extraction APIs and ZIP handling. |
+| `src/tasks` | Process-wide `AppRuntime` facade, background task manager, and task snapshot/event model. |
 | `src/music` | Music library, cover loading/cache, playback service, and music data types. |
 | `src/plugins` | Plugin manifest, runtime, watcher, UI DSL, events, state, and plugin windows. |
 | `src/utils` | Cross-cutting utilities such as logging, file operations, diagnostics, system info, network helpers, registry support, updater, and single-instance support. |
 
 These modules own long-running work. Render code should observe their state or
 request work through explicit APIs.
+Execution-domain selection and background-to-GPUI propagation must follow
+[`ASYNC_RUNTIME_MODEL.md`](ASYNC_RUNTIME_MODEL.md).
 
 ### Embedded Assets And Localization
 
@@ -145,6 +147,7 @@ Detailed UI placement rules live in [`../src/ui/README.md`](../src/ui/README.md)
 
 | Path | Responsibility |
 | --- | --- |
+| `crates/egpui` | Desktop application host, lifecycle, application runtime, task scopes, services, and background-to-GPUI bridges. |
 | `crates/gpui-hooks` | React-style hook support for GPUI views. |
 | `crates/gpui-hooks-macros` | Procedural macros for hooks. |
 | `crates/lucide-gpui` | Lucide icon asset crate for GPUI. |
@@ -156,25 +159,30 @@ Detailed UI placement rules live in [`../src/ui/README.md`](../src/ui/README.md)
 Workspace crates should remain reusable. They may support BMCBL, but they
 should not directly depend on BMCBL page modules or launcher state.
 
-## Vendored GPUI
+## GUI and Application Framework
 
-`vendor/gpui` is the framework. BMCBL patches it locally, but it should still
-be treated as generic framework code.
+`crates/egpui` is the application framework above the GUI core. It owns
+application lifecycle, the replaceable background runtime provider, service
+registration, structured task scopes, shutdown coordination, and bounded
+background-to-GPUI bridges. It must not contain BMCBL domain semantics.
+
+`crates/gpui` is the GUI core. BMCBL patches it locally, but it should still be
+treated as generic framework code.
 
 Major GPUI areas:
 
 | Path | Responsibility |
 | --- | --- |
-| `vendor/gpui/src/gpui.rs` | Public crate surface and re-exports. |
-| `vendor/gpui/src/app` | App, contexts, entities, globals, effects, async contexts, actions, and test support. |
-| `vendor/gpui/src/window` | Window lifecycle, frame scheduling, drawing, input, focus, dispatch, layout, and platform event handling. |
-| `vendor/gpui/src/element` | Elements, div, text, image, SVG, lists, surfaces, event handlers, and element lifecycle. |
-| `vendor/gpui/src/layout` | Layout engine, builders, cache, conversion, metrics, and tests. |
-| `vendor/gpui/src/text_system` | Font fallback, line layout, wrapping, truncation, shaping, and paint support. |
-| `vendor/gpui/src/scene` | Scene primitives, batching, prepared scene data, paths, meshes, transforms, and bounds trees. |
-| `vendor/gpui/src/render_pipeline` | Renderer backend options, shader support, and SVG renderer bridge. |
-| `vendor/gpui/src/platform` | Platform adapters and renderer implementations, including nova-gfx, Windows, Linux, macOS, tests, and legacy backend support. |
-| `vendor/gpui/src/diagnostics` | Performance metrics and inspector support. |
+| `crates/gpui/src/gpui.rs` | Public crate surface and re-exports. |
+| `crates/gpui/src/app` | App, contexts, entities, globals, effects, async contexts, actions, and test support. |
+| `crates/gpui/src/window` | Window lifecycle, frame scheduling, drawing, input, focus, dispatch, layout, and platform event handling. |
+| `crates/gpui/src/element` | Elements, div, text, image, SVG, lists, surfaces, event handlers, and element lifecycle. |
+| `crates/gpui/src/layout` | Layout engine, builders, cache, conversion, metrics, and tests. |
+| `crates/gpui/src/text_system` | Font fallback, line layout, wrapping, truncation, shaping, and paint support. |
+| `crates/gpui/src/scene` | Scene primitives, batching, prepared scene data, paths, meshes, transforms, and bounds trees. |
+| `crates/gpui/src/render_pipeline` | Renderer backend options, shader support, and SVG renderer bridge. |
+| `crates/gpui/src/platform` | Platform adapters and renderer implementations, including nova-gfx, Windows, Linux, macOS, tests, and legacy backend support. |
+| `crates/gpui/src/diagnostics` | Performance metrics and inspector support. |
 
 The GPUI render path is documented in
 [`GPUI_VENDOR_RENDERING.md`](GPUI_VENDOR_RENDERING.md).
@@ -185,20 +193,25 @@ The GPUI render path is documented in
 src/ui
   -> src/core / src/downloads / src/tasks / src/http / src/music / src/plugins
   -> crates/gpui-hooks / crates/lucide-gpui
-  -> vendor/gpui
+  -> crates/egpui
+  -> crates/gpui
+
+crates/egpui
+  -> crates/gpui
+  -> generic Tokio/Rayon runtime dependencies
 
 src/core and service modules
   -> src/http / src/archive / src/downloads / src/utils
   -> external crates
 
-vendor/gpui
+crates/gpui
   -> generic framework dependencies
   -> crates/nova-gfx through feature-gated backend paths
 ```
 
 Forbidden directions:
 
-- `vendor/gpui` must not depend on `src/*`.
+- `crates/gpui` must not depend on `src/*`.
 - `src/core` must not depend on concrete pages under `src/ui/views`.
 - `src/ui/components` must not depend on concrete pages.
 - `src/app.rs` must not grow page rendering or workflow implementation.
@@ -215,7 +228,7 @@ Forbidden directions:
 | Domain state or durable workflow | `src/core`, `src/downloads`, `src/tasks`, `src/music`, or `src/plugins`. |
 | HTTP transport behavior | `src/http`. |
 | New app startup global or window policy | `src/app.rs` if truly application-wide. |
-| Generic framework rendering or input capability | `vendor/gpui`, with no BMCBL references. |
+| Generic framework rendering or input capability | `crates/gpui`, with no BMCBL references. |
 | Reusable icon, hook, graphics, or plugin support | The relevant crate under `crates/`. |
 
 ## Structural Maintenance Rules

@@ -1,12 +1,15 @@
 # Architecture Boundaries
 
 This document defines ownership boundaries between BMCBL application code,
-local workspace crates, and the vendored GPUI framework. It is the first file
-to read before changing `src/app.rs`, `src/ui`, `vendor/gpui`, renderer
+local workspace crates, and the independently maintained GPUI/application
+framework. It is the first file
+to read before changing `src/app.rs`, `src/ui`, `crates/gpui`, renderer
 startup, window policy, or application-wide runtime behavior.
 
 Related documents:
 
+- [`docs/ASYNC_RUNTIME_MODEL.md`](ASYNC_RUNTIME_MODEL.md): mandatory runtime,
+  durable workflow, task-state, and GPUI event-bridge contract.
 - [`docs/BMCBL_PROJECT_STRUCTURE.md`](BMCBL_PROJECT_STRUCTURE.md): current
   BMCBL workspace and module map.
 - [`docs/GPUI_VENDOR_RENDERING.md`](GPUI_VENDOR_RENDERING.md): GPUI vendor
@@ -29,13 +32,15 @@ BMCBL product behavior
   src/plugins
 
 Reusable workspace support
+  crates/egpui
   crates/gpui-hooks
   crates/lucide-gpui
   crates/nova-gfx
   crates/bmcbl-plugin-*
 
 Generic UI framework
-  vendor/gpui
+  crates/egpui
+  crates/gpui
   vendor/gpui-router
   vendor/gpu-allocator
 ```
@@ -45,13 +50,21 @@ framework code. Framework code must not know about BMCBL routes, pages,
 launcher state, assets, default backgrounds, downloads, or product window
 policy.
 
+`crates/egpui` is the application framework layer above GPUI. It owns
+application lifecycle, service registration, the replaceable application
+runtime provider, structured task scopes, shutdown coordination, and bounded
+background-to-GPUI bridges. It may depend on `crates/gpui`, but neither
+framework crate may depend on BMCBL application modules.
+
 ## GPUI Framework Code
 
-`vendor/gpui` owns generic UI primitives and platform integration:
+`crates/gpui` owns generic UI primitives and platform integration:
 
 - application lifecycle primitives;
 - `App`, `Context<T>`, `AsyncApp`, `AsyncWindowContext`, `Entity<T>`, and
   entity invalidation;
+- generic foreground stream binding through `App::spawn_stream` and
+  `Context::spawn_stream`, including entity-lifetime cancellation;
 - `Window`, platform windows, input dispatch, focus, keymaps, actions, and
   hit testing;
 - element lifecycle, style, layout, text shaping, asset loading, image caches,
@@ -109,18 +122,35 @@ GPUI owns the foreground UI executor and UI-specific helper work. Small native
 dialogs and bounded UI-only preparation may use `background_spawn_blocking`.
 BMCBL business work—including filesystem access, version/resource parsing,
 decoding, downloads, networking, processes, and long-lived timers—must be
-scheduled through `src/tasks` on the Tokio runtime. Page and view code calls a
-service and commits its result back to GPUI; it must not select a Tokio blocking
-pool directly. Route-scoped request state must invalidate outstanding request
-identifiers and clear transient loading flags when its owning view is released
-or recreated.
+scheduled through the semantic APIs in `src/tasks/runtime.rs`. Page and view
+code calls a domain service; it must not construct a Tokio runtime or Rayon
+pool, probe `Handle::try_current()`, select a Tokio blocking pool directly, or
+fall back to an unowned system thread. Route-scoped request state must
+invalidate outstanding request identifiers and clear transient loading flags
+when its owning view is released or recreated.
 
-`src/tasks/runtime.rs` owns construction of the application Tokio runtime and
-the bounded blocking-work queue. Its async workers, blocking-thread pool, and
-business-work semaphore share one limit set to twice the available logical CPU
-count.
-The semaphore permit remains owned by the blocking operation until that
-operation actually exits, including after a caller timeout or cancellation.
+`src/tasks/runtime.rs` owns the process-wide `AppRuntime` facade. The facade is
+initialized once and owns the general IO, download, archive, bounded blocking,
+and CPU execution domains. Business modules select work semantics through the
+facade rather than selecting a physical executor. Download and archive permits
+provide domain-specific backpressure, while blocking and CPU work retain
+separate bounded budgets. A semaphore permit remains owned by its operation
+until that operation actually exits, including after a caller timeout or
+cancellation.
+
+Durable background workflows publish pure domain events or immutable snapshots.
+They must not retain a GPUI `Entity`, `Window`, `App`, or context. A single GPUI
+foreground consumer per domain binds the domain stream through
+`App::spawn_stream` or `Context::spawn_stream` and updates GPUI-owned state.
+Channel adaptation, lag recovery, snapshots, and retry semantics remain in the
+BMCBL domain layer; GPUI must not depend on them. Render methods read only local
+state and must not acquire task-manager or other cross-thread `Mutex`/`RwLock`
+guards. Event-stream lag may trigger a full snapshot recovery; periodic polling
+is only a documented fallback for external systems that cannot publish events.
+The complete execution-domain selection, terminal-state, cancellation, polling,
+and review rules are defined in
+[`docs/ASYNC_RUNTIME_MODEL.md`](ASYNC_RUNTIME_MODEL.md).
+
 `src/tasks/task_manager.rs` owns cancellation,
 progress, logs, errors, and task visibility. User-facing work is `Visible`;
 short internal service queries are `Hidden`, remain observable to diagnostics,
@@ -170,7 +200,7 @@ BMCBL owns renderer startup policy:
 - transparent or opaque window background policy;
 - whether a specific window exists and what it renders.
 
-Do not add BMCBL-specific renderer defaults to `vendor/gpui`. Add neutral
+Do not add BMCBL-specific renderer defaults to `crates/gpui`. Add neutral
 `RendererOptions`, metrics, or framework capabilities, then configure them in
 `src/app.rs`.
 
@@ -180,7 +210,7 @@ Before changing a file, classify the behavior:
 
 | Behavior | Correct owner |
 | --- | --- |
-| Generic element, layout, text, asset, window, input, frame, renderer, or platform behavior | `vendor/gpui` |
+| Generic element, layout, text, asset, foreground stream binding, window, input, frame, renderer, or platform behavior | `crates/gpui` |
 | BMCBL startup, window choices, fonts, background policy, configured renderer, globals | `src/app.rs`, `src/startup.rs`, `src/ui` |
 | Page composition, overlays, route UI, page-local UI state | `src/ui` |
 | Minecraft, CurseForge, EasyTier, online, version parsing, sponsors | `src/core` |
@@ -202,7 +232,7 @@ framework changes should use the narrowest meaningful command set:
 cargo fmt --all
 ./script/clippy
 cargo test --workspace --all-features
-cargo check --manifest-path vendor/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
+cargo check --manifest-path crates/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 ```
 
 Use a focused subset when the change only touches one crate or one UI page, and

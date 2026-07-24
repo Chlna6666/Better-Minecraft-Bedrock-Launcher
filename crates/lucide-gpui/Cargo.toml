@@ -13,7 +13,7 @@ all = "warn"
 pedantic = "warn"
 
 [dependencies]
-gpui = { path = "../../vendor/gpui", default-features = false }
+gpui = { path = "../gpui", default-features = false }
 anyhow = "1.0.100"
 
 [build-dependencies]

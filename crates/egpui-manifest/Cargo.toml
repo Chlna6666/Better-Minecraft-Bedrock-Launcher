@@ -1,0 +1,29 @@
+[package]
+name = "egpui-manifest"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Shared application manifest schema for the egpui desktop framework"
+homepage = "https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher"
+repository = "https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher"
+license = "Apache-2.0"
+
+[lib]
+name = "egpui_manifest"
+path = "src/egpui_manifest.rs"
+doctest = false
+
+[dependencies]
+schemars = { version = "1.1.0", features = ["semver1"] }
+semver = { version = "1.0.28", features = ["serde"] }
+serde = { version = "1.0.219", features = ["derive"] }
+thiserror = "2.0.17"
+unic-langid = "0.9.6"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
