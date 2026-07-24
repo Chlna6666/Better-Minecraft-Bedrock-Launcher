@@ -329,20 +329,27 @@ impl ManagePageView {
         self.reset_server_list_view();
         cx.update_global(|state: &mut ManagePageState, _cx| {
             state.selected_asset_keys.clear();
+            state.version_config_loading = false;
+            state.version_config_error = None;
+            state.version_config_request_id = state.version_config_request_id.wrapping_add(1);
             state.assets_loaded = false;
             state.assets_loading = false;
             state.assets_error = None;
+            state.assets_request_id = state.assets_request_id.wrapping_add(1);
             state.screenshots_loaded = false;
             state.screenshots_loading = false;
             state.screenshots_error = None;
+            state.screenshots_request_id = state.screenshots_request_id.wrapping_add(1);
             state.servers_loaded = false;
             state.servers_loading = false;
             state.servers_error = None;
+            state.servers_request_id = state.servers_request_id.wrapping_add(1);
             state.server_motd = Arc::new(HashMap::new());
             state.server_motd_loading = false;
             state.server_motd_request_id = state.server_motd_request_id.wrapping_add(1);
             state.gdk_users_loading = false;
             state.gdk_users_error = None;
+            state.gdk_users_request_id = state.gdk_users_request_id.wrapping_add(1);
         });
     }
 
@@ -501,7 +508,6 @@ impl ManagePageView {
                 if state.version_config_request_id != request_id
                     || state.selected_folder.as_ref() != Some(&version.folder)
                 {
-                    state.version_config_loading = false;
                     return false;
                 }
                 state.version_config_loading = false;
@@ -549,7 +555,6 @@ impl ManagePageView {
                 if state.gdk_users_request_id != request_id
                     || state.selected_folder.as_ref() != Some(&version.folder)
                 {
-                    state.gdk_users_loading = false;
                     return false;
                 }
                 state.gdk_users_loading = false;
@@ -673,7 +678,6 @@ impl ManagePageView {
                     if state.assets_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
-                        state.assets_loading = false;
                         return false;
                     }
                     state.assets_loading = false;
@@ -739,7 +743,6 @@ impl ManagePageView {
                     if state.screenshots_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
-                        state.screenshots_loading = false;
                         return false;
                     }
                     state.screenshots_loading = false;
@@ -802,7 +805,6 @@ impl ManagePageView {
                     if state.servers_request_id != request_id
                         || state.selected_folder.as_ref() != Some(&version.folder)
                     {
-                        state.servers_loading = false;
                         return false;
                     }
                     state.servers_loading = false;
@@ -884,7 +886,6 @@ impl ManagePageView {
             let result = data::query_server_motd_batch(servers).await;
             cx.update_global(|state: &mut ManagePageState, _cx| {
                 if state.server_motd_request_id != request_id {
-                    state.server_motd_loading = false;
                     return;
                 }
                 let mut motd = (*state.server_motd).clone();

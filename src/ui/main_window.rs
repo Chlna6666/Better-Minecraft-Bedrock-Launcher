@@ -991,11 +991,21 @@ impl MainWindowView {
                 cx.global::<crate::ui::views::download::state::DownloadPageState>();
             (s.loaded, s.loading)
         };
-        if loading || (loaded && !force_refresh) {
+        if loading {
+            if force_refresh {
+                cx.update_global(
+                    |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
+                        s.force_refresh_next = true;
+                    },
+                );
+            }
+            return;
+        }
+        if loaded && !force_refresh {
             return;
         }
 
-        cx.update_global(
+        let request_id = cx.update_global(
             |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
                 s.loading = true;
                 s.error = None;
@@ -1004,18 +1014,32 @@ impl MainWindowView {
                     s.versions.clear();
                 }
                 s.force_refresh_next = false;
+                s.versions_request_id = s.versions_request_id.wrapping_add(1);
+                s.versions_request_id
             },
         );
         self.notify_download_page(cx);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
+        if let Err(error) = crate::tasks::runtime::spawn_io(async move {
             let result = remote_versions::load_or_fetch_versions(force_refresh).await;
-            let _ = tx.send(result);
-        });
+            if tx.send(result).is_err() {
+                tracing::debug!("remote version result receiver was released");
+            }
+        }) {
+            tracing::error!(%error, "failed to schedule remote version loading");
+            cx.update_global(
+                |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
+                    if s.versions_request_id == request_id {
+                        s.loading = false;
+                        s.error = Some(SharedString::from(error));
+                    }
+                },
+            );
+        }
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
-        cx.spawn(async move |_this, cx| {
+        cx.spawn(async move |handle, cx| {
             let result = match rx.await {
                 Ok(v) => v,
                 Err(_) => Err(anyhow::anyhow!("remote version loader task dropped")),
@@ -1043,30 +1067,47 @@ impl MainWindowView {
                         });
                     }
 
-                    if let Err(err) = cx.update_global(
+                    let (applied, refresh_again) = cx.update_global(
                         |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
+                            if s.versions_request_id != request_id {
+                                return (false, false);
+                            }
+                            let refresh_again = s.force_refresh_next;
                             s.versions = versions;
                             s.local_path_by_package.clear();
                             s.loaded = true;
                             s.loading = false;
                             s.error = None;
+                            s.force_refresh_next = false;
+                            (true, refresh_again)
                         },
-                    ) {
-                        tracing::warn!("update_global failed: {err:?}");
-                    } else if let Some(view) = &download_page_view {
-                        notify_weak_view_async(view, cx)?;
+                    )?;
+                    if applied {
+                        if let Some(view) = &download_page_view {
+                            notify_weak_view_async(view, cx)?;
+                        }
+                        if refresh_again {
+                            handle.update(cx, |this, cx| {
+                                this.ensure_download_page_loaded(true, cx);
+                            })?;
+                        }
                     }
                 }
                 Err(e) => {
-                    if let Err(err) = cx.update_global(
+                    let applied = cx.update_global(
                         |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
+                            if s.versions_request_id != request_id {
+                                return false;
+                            }
                             s.loading = false;
                             s.error = Some(SharedString::from(e.to_string()));
+                            true
                         },
-                    ) {
-                        tracing::warn!("update_global failed: {err:?}");
-                    } else if let Some(view) = &download_page_view {
-                        notify_weak_view_async(view, cx)?;
+                    )?;
+                    if applied {
+                        if let Some(view) = &download_page_view {
+                            notify_weak_view_async(view, cx)?;
+                        }
                     }
                 }
             }
@@ -1094,16 +1135,18 @@ impl MainWindowView {
             return;
         }
 
-        cx.update_global(
+        let request_id = cx.update_global(
             |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
                 s.curseforge_loading = true;
                 s.curseforge_error = None;
+                s.curseforge_metadata_request_id = s.curseforge_metadata_request_id.wrapping_add(1);
+                s.curseforge_metadata_request_id
             },
         );
         self.notify_download_page(cx);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
+        if let Err(error) = crate::tasks::runtime::spawn_io(async move {
             let result = async {
                 let client = crate::core::curseforge::CurseForgeClient::new()?;
                 let (categories, versions) =
@@ -1111,8 +1154,12 @@ impl MainWindowView {
                 Ok::<_, String>((categories?, versions?))
             }
             .await;
-            let _ = tx.send(result);
-        });
+            if tx.send(result).is_err() {
+                tracing::debug!("CurseForge metadata receiver was released");
+            }
+        }) {
+            tracing::error!(%error, "failed to schedule CurseForge metadata loading");
+        }
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
         let curseforge_view_epoch = cx
@@ -1147,7 +1194,9 @@ impl MainWindowView {
 
                     match cx.update_global(
                         |s: &mut crate::ui::views::download::state::DownloadPageState, cx| {
-                            if s.curseforge_view_epoch != curseforge_view_epoch {
+                            if s.curseforge_view_epoch != curseforge_view_epoch
+                                || s.curseforge_metadata_request_id != request_id
+                            {
                                 return false;
                             }
                             s.curseforge_categories = entries;
@@ -1170,7 +1219,9 @@ impl MainWindowView {
                 Ok(Err(e)) | Err(e) => {
                     match cx.update_global(
                         |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
-                            if s.curseforge_view_epoch != curseforge_view_epoch {
+                            if s.curseforge_view_epoch != curseforge_view_epoch
+                                || s.curseforge_metadata_request_id != request_id
+                            {
                                 return false;
                             }
                             s.curseforge_loading = false;
@@ -1210,45 +1261,61 @@ impl MainWindowView {
             return;
         }
 
-        cx.update_global(
+        let request_id = cx.update_global(
             |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
                 s.downloads_index_loading = true;
+                s.downloads_index_request_id = s.downloads_index_request_id.wrapping_add(1);
+                s.downloads_index_request_id
             },
         );
         self.notify_download_page(cx);
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
-        cx.spawn(async move |_this, cx| {
+        cx.spawn(async move |handle, cx| {
             let dir = crate::utils::file_ops::downloads_dir();
-            let set = tokio::task::spawn_blocking(move || {
+            let result = crate::tasks::runtime::run_io_blocking(move || {
                 let mut out = std::collections::HashSet::new();
-                if let Ok(rd) = std::fs::read_dir(dir) {
-                    for entry in rd.flatten() {
-                        if let Ok(ft) = entry.file_type() {
-                            if !ft.is_file() {
-                                continue;
-                            }
-                        }
+                let rd = std::fs::read_dir(dir).map_err(|error| error.to_string())?;
+                for entry in rd {
+                    let entry = entry.map_err(|error| error.to_string())?;
+                    if entry
+                        .file_type()
+                        .map_err(|error| error.to_string())?
+                        .is_file()
+                    {
                         if let Some(name) = entry.file_name().to_str() {
                             out.insert(SharedString::from(name.to_string()));
                         }
                     }
                 }
-                out
+                Ok::<_, String>(out)
             })
-            .await
-            .unwrap_or_default();
+            .await;
 
-            if let Err(err) = cx.update_global(
+            let applied = cx.update_global(
                 |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
-                    s.local_files = set;
-                    s.downloads_index_loaded = true;
+                    if s.downloads_index_request_id != request_id {
+                        return false;
+                    }
                     s.downloads_index_loading = false;
+                    match result {
+                        Ok(Ok(set)) => {
+                            s.local_files = set;
+                            s.downloads_index_loaded = true;
+                        }
+                        Ok(Err(error)) | Err(error) => {
+                            tracing::warn!(%error, "download index refresh failed");
+                            s.downloads_index_loaded = false;
+                        }
+                    }
+                    true
                 },
-            ) {
-                tracing::warn!("update_global failed: {err:?}");
-            } else if let Some(view) = &download_page_view {
-                notify_weak_view_async(view, cx)?;
+            )?;
+            if applied {
+                if let Some(view) = &download_page_view {
+                    notify_weak_view_async(view, cx)?;
+                }
+                handle.update(cx, |_, cx| cx.notify())?;
             }
 
             Ok::<(), anyhow::Error>(())

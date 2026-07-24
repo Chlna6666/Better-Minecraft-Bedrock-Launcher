@@ -19,6 +19,34 @@ pub(super) fn render_settings_content(
     update: &UpdateState,
     system_font_names: &[String],
 ) -> impl IntoElement {
+    if state.tab == SettingsTab::Plugins {
+        return div()
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("settings-plugins-viewport")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(960.))
+                            .h_full()
+                            .min_h(px(0.))
+                            .pb(px(16.))
+                            .child(plugins::render_plugins_tab(colors, i18n, state, plugin_model)),
+                    ),
+            )
+            .into_any_element();
+    }
+
     let panel: AnyElement = match state.tab {
         SettingsTab::Game => game::render_game_tab(colors, i18n, state).into_any_element(),
         SettingsTab::Launcher => {
@@ -65,4 +93,5 @@ pub(super) fn render_settings_content(
         .flex()
         .flex_col()
         .child(scroll_area)
+        .into_any_element()
 }

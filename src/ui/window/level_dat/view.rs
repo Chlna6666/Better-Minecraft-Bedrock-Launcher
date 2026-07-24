@@ -165,7 +165,7 @@ impl LevelDatCodeWindowView {
         self.validation = level_dat_editor::validate_document_json(saved_text.as_ref());
 
         cx.spawn(async move |handle, cx| {
-            let result: Result<(), String> = tokio::task::spawn_blocking(move || {
+            let result: Result<(), String> = crate::tasks::runtime::run_io_blocking(move || {
                 let world_path = std::path::PathBuf::from(&folder_path);
                 let history_capture = crate::ui::window::map_viewer::map_history::capture_before(
                     crate::ui::window::map_viewer::map_history::MapHistoryCaptureSpec {

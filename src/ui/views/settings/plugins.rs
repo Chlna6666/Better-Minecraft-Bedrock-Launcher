@@ -410,22 +410,107 @@ pub(super) fn render_plugins_tab(
         .and_then(|id| model.statuses.iter().find(|status| status.id == id));
 
     div()
+        .w_full()
+        .h_full()
         .flex()
-        .flex_col()
-        .gap(px(10.))
-        .child(tab_title(colors, i18n.t("Settings.tabs.plugins")))
+        .items_start()
+        .gap(px(12.))
+        .child(plugin_list(
+            colors,
+            i18n,
+            &model.statuses,
+            model.selected_id.as_deref(),
+        ))
+        .child(plugin_detail(colors, i18n, state, model, selected))
+}
+
+fn compact_status_pill(
+    colors: &ThemeColors,
+    text: &'static str,
+    is_success: bool,
+    is_warning: bool,
+    is_disabled: bool,
+) -> Div {
+    let (bg_color, text_color) = if is_disabled {
+        (
+            Hsla {
+                a: 0.08,
+                ..colors.text_muted
+            },
+            colors.text_muted,
+        )
+    } else if is_success {
+        (
+            Hsla {
+                a: 0.12,
+                ..colors.stat_green_text
+            },
+            colors.stat_green_text,
+        )
+    } else if is_warning {
+        (
+            Hsla {
+                a: 0.12,
+                ..colors.danger
+            },
+            colors.danger,
+        )
+    } else {
+        (
+            Hsla {
+                a: 0.10,
+                ..colors.text_secondary
+            },
+            colors.text_secondary,
+        )
+    };
+
+    div()
+        .px(px(6.))
+        .py(px(2.))
+        .rounded(px(999.))
+        .bg(bg_color)
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(text_color)
+        .child(text)
+}
+
+fn small_icon_button(
+    colors: &ThemeColors,
+    label: &'static str,
+    icon_path: &'static str,
+) -> Div {
+    div()
+        .h(px(26.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.12,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.35,
+            ..colors.surface_hover
+        })
+        .hover(|this| {
+            this.bg(Hsla {
+                a: 0.60,
+                ..colors.surface_hover
+            })
+        })
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .child(themed_icon(icon_path, 12.0, colors.text_secondary))
         .child(
             div()
-                .flex()
-                .items_start()
-                .gap(px(12.))
-                .child(plugin_list(
-                    colors,
-                    i18n,
-                    &model.statuses,
-                    model.selected_id.as_deref(),
-                ))
-                .child(plugin_detail(colors, i18n, state, model, selected)),
+                .text_size(px(11.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(colors.text_primary)
+                .child(label),
         )
 }
 
@@ -436,9 +521,9 @@ fn plugin_list(
     selected_id: Option<&str>,
 ) -> Stateful<Div> {
     let mut list = settings_card(colors, "settings-plugins-list")
-        .w(px(292.))
+        .w(px(250.))
         .flex_shrink_0()
-        .p(px(12.))
+        .p(px(10.))
         .flex()
         .flex_col()
         .gap(px(8.))
@@ -447,26 +532,25 @@ fn plugin_list(
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(px(8.))
+                .px(px(2.))
                 .child(
                     div()
-                        .text_size(px(15.))
+                        .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child(i18n.t("PluginSettings.installed")),
+                        .child(format!("{} ({})", i18n.t("PluginSettings.installed"), statuses.len())),
                 )
                 .child(
                     div()
                         .flex()
-                        .gap(px(6.))
+                        .items_center()
+                        .gap(px(4.))
                         .child(
-                            icon_action_button(
+                            icon_only_button(
                                 colors,
-                                i18n.t("PluginSettings.import"),
                                 lucide_icons::icon_file_up(),
                                 true,
                             )
-                            .w(px(78.))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 move |_event, _window, cx| {
@@ -475,13 +559,11 @@ fn plugin_list(
                             ),
                         )
                         .child(
-                            icon_action_button(
+                            icon_only_button(
                                 colors,
-                                i18n.t("PluginSettings.reload"),
                                 lucide_icons::icon_refresh_cw(),
                                 true,
                             )
-                            .w(px(78.))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 |_event, _window, cx| {
@@ -502,21 +584,41 @@ fn plugin_list(
         );
     }
 
+    let mut items_container = div()
+        .id("settings-plugin-items-scroll")
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .gap(px(4.));
+
     for status in statuses {
         let is_selected = selected_id == Some(status.id.as_str());
         let plugin_id = status.id.clone();
-        list = list.child(
+        let (status_text, is_success, is_warning, is_disabled) = if !status.enabled {
+            ("已禁用", false, false, true)
+        } else if status.loaded {
+            ("已加载", true, false, false)
+        } else if status.healthy {
+            ("已启用", true, false, false)
+        } else {
+            ("失败", false, true, false)
+        };
+
+        items_container = items_container.child(
             div()
                 .id(SharedString::from(format!(
                     "settings-plugin-item-{}",
                     status.id
                 )))
-                .rounded(px(10.))
-                .px(px(10.))
-                .py(px(9.))
+                .rounded(px(8.))
+                .px(px(8.))
+                .py(px(7.))
                 .flex()
-                .flex_col()
-                .gap(px(5.))
+                .items_center()
+                .justify_between()
+                .gap(px(6.))
                 .cursor_pointer()
                 .bg(if is_selected {
                     Hsla {
@@ -531,7 +633,7 @@ fn plugin_list(
                 })
                 .hover(|this| {
                     this.bg(Hsla {
-                        a: 0.10,
+                        a: 0.08,
                         ..colors.accent
                     })
                 })
@@ -550,40 +652,42 @@ fn plugin_list(
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(plugin_icon(status, colors, px(24.)))
+                        .min_w(px(0.))
+                        .flex_1()
+                        .child(plugin_icon(status, colors, px(22.)))
                         .child(
                             div()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(colors.text_primary)
-                                .child(status.name.clone()),
+                                .flex()
+                                .flex_col()
+                                .gap(px(1.))
+                                .min_w(px(0.))
+                                .flex_1()
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(colors.text_primary)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .child(status.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .text_color(colors.text_muted)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .child(format!("v{}", status.version)),
+                                ),
                         ),
                 )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.text_muted)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(format!("{} · {}", status.id, status.version)),
-                )
-                .child(settings_badge(
-                    colors,
-                    if !status.enabled {
-                        SharedString::from("Disabled")
-                    } else if status.loaded {
-                        i18n.t("PluginSettings.status.loaded")
-                    } else if status.healthy {
-                        SharedString::from("Enabled")
-                    } else {
-                        i18n.t("PluginSettings.status.failed")
-                    },
-                )),
+                .child(compact_status_pill(colors, status_text, is_success, is_warning, is_disabled)),
         );
     }
 
-    list
+    list.child(items_container)
 }
 
 fn plugin_detail(
@@ -608,216 +712,273 @@ fn plugin_detail(
     settings_card(colors, "settings-plugin-detail")
         .flex_1()
         .min_w(px(0.))
-        .p(px(16.))
+        .p(px(14.))
         .flex()
         .flex_col()
-        .gap(px(14.))
-        .child(plugin_header(colors, i18n, status))
-        .child(plugin_actions_row(colors, i18n, status))
+        .gap(px(10.))
+        .child(plugin_header_card(colors, i18n, status))
         .child(plugin_sub_tabs(
             colors,
             i18n,
             &status.id,
             state.plugin_sub_tab,
         ))
-        .child(match state.plugin_sub_tab {
-            PluginSettingsSubTab::Readme => plugin_readme_panel(colors, i18n, model),
-            PluginSettingsSubTab::Permissions => plugin_permissions_panel(colors, status),
-            PluginSettingsSubTab::Config => plugin_config_panel(colors, i18n, state, model, status),
-            PluginSettingsSubTab::Logs => plugin_logs_panel(colors, i18n, model),
-        })
+        .child(
+            div()
+                .id("settings-plugin-detail-scroll")
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scroll()
+                .child(match state.plugin_sub_tab {
+                    PluginSettingsSubTab::Readme => plugin_readme_panel(colors, i18n, model),
+                    PluginSettingsSubTab::Permissions => plugin_permissions_panel(colors, status),
+                    PluginSettingsSubTab::Config => plugin_config_panel(colors, i18n, state, model, status),
+                    PluginSettingsSubTab::Logs => plugin_logs_panel(colors, i18n, model),
+                }),
+        )
 }
 
-fn plugin_header(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) -> Div {
+fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) -> Div {
+    let plugin_id = status.id.clone();
+    let enabled = status.enabled;
+    let reload_id = status.id.clone();
+    let uninstall_id = status.id.clone();
+    let diagnostics_id = status.id.clone();
+
     let authors = if status.authors.is_empty() {
         i18n.t("PluginSettings.unknown").to_string()
     } else {
         status.authors.join(", ")
     };
-    let capabilities = if status.capabilities.is_empty() {
-        i18n.t("PluginSettings.none").to_string()
-    } else {
-        status.capabilities.join(", ")
-    };
+
+    let capabilities = status.capabilities.clone();
 
     div()
         .w_full()
+        .rounded(px(10.))
+        .bg(Hsla {
+            a: 0.35,
+            ..colors.surface_hover
+        })
+        .border_1()
+        .border_color(Hsla {
+            a: 0.12,
+            ..colors.border
+        })
+        .p(px(12.))
         .flex()
-        .items_start()
-        .justify_between()
-        .gap(px(14.))
+        .flex_col()
+        .gap(px(10.))
         .child(
             div()
                 .flex()
-                .items_start()
+                .items_center()
+                .justify_between()
                 .gap(px(12.))
-                .child(plugin_icon(status, colors, px(42.)))
                 .child(
                     div()
                         .flex()
-                        .flex_col()
-                        .gap(px(6.))
+                        .items_center()
+                        .gap(px(12.))
                         .min_w(px(0.))
+                        .child(plugin_icon(status, colors, px(36.)))
                         .child(
                             div()
-                                .text_size(px(18.))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(colors.text_primary)
-                                .child(status.name.clone()),
-                        )
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .min_w(px(0.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(colors.text_primary)
+                                                .child(status.name.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .px(px(6.))
+                                                .py(px(1.))
+                                                .rounded(px(999.))
+                                                .bg(Hsla {
+                                                    a: 0.12,
+                                                    ..colors.text_muted
+                                                })
+                                                .text_size(px(10.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(colors.text_secondary)
+                                                .child(format!("v{}", status.version)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(colors.text_muted)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .child(format!("{} · by {}", status.id, authors)),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
                         .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(colors.text_secondary)
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .child(format!(
-                                    "{} · v{} · {}",
-                                    status.id, status.version, authors
-                                )),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .line_height(px(18.))
-                                .text_color(colors.text_muted)
-                                .child(capabilities),
-                        )
-                        .when_some(status.error.clone(), |this, error| {
-                            this.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .line_height(px(18.))
-                                    .text_color(colors.danger)
-                                    .child(error),
+                            settings_action_button(
+                                colors,
+                                if enabled {
+                                    SharedString::from("禁用")
+                                } else {
+                                    SharedString::from("启用")
+                                },
+                                true,
                             )
-                        }),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |_event, _window, cx| match crate::plugins::runtime::set_plugin_enabled(
+                                    cx,
+                                    plugin_id.clone(),
+                                    !enabled,
+                                ) {
+                                    Ok(()) => {
+                                        toast::success(
+                                            cx,
+                                            if enabled {
+                                                SharedString::from("插件已禁用")
+                                            } else {
+                                                SharedString::from("插件已启用")
+                                            },
+                                        );
+                                    }
+                                    Err(error) => {
+                                        toast::error(
+                                            cx,
+                                            SharedString::from(format!("操作失败: {error}")),
+                                        );
+                                    }
+                                },
+                            ),
+                        ),
                 ),
-        )
-        .child(settings_badge(
-            colors,
-            if !status.enabled {
-                SharedString::from("Disabled")
-            } else if status.loaded {
-                i18n.t("PluginSettings.status.loaded")
-            } else if status.healthy {
-                SharedString::from("Enabled")
-            } else {
-                i18n.t("PluginSettings.status.failed")
-            },
-        ))
-}
-
-fn plugin_actions_row(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) -> Div {
-    let plugin_id = status.id.clone();
-    let enabled = status.enabled;
-    let toggle_label = if enabled {
-        SharedString::from("Disable")
-    } else {
-        SharedString::from("Enable")
-    };
-    let reload_id = status.id.clone();
-    let uninstall_id = status.id.clone();
-    let diagnostics_id = status.id.clone();
-    let toggle_success = if enabled {
-        SharedString::from("Plugin disabled")
-    } else {
-        SharedString::from("Plugin enabled")
-    };
-    div()
-        .flex()
-        .flex_wrap()
-        .gap(px(8.))
-        .child(
-            settings_action_button(colors, toggle_label, true).on_mouse_down(
-                MouseButton::Left,
-                move |_event, _window, cx| match crate::plugins::runtime::set_plugin_enabled(
-                    cx,
-                    plugin_id.clone(),
-                    !enabled,
-                ) {
-                    Ok(()) => {
-                        toast::success(cx, toggle_success.clone());
-                    }
-                    Err(error) => {
-                        toast::error(
-                            cx,
-                            SharedString::from(format!("Plugin state update failed: {error}")),
-                        );
-                    }
-                },
-            ),
-        )
-        .child(
-            settings_action_button(colors, SharedString::from("Reload"), true).on_mouse_down(
-                MouseButton::Left,
-                move |_event, _window, cx| match crate::plugins::runtime::reload_plugin(
-                    cx,
-                    reload_id.clone(),
-                ) {
-                    Ok(()) => {
-                        toast::success(cx, SharedString::from("Plugin reloaded"));
-                    }
-                    Err(error) => {
-                        toast::error(
-                            cx,
-                            SharedString::from(format!("Plugin reload failed: {error}")),
-                        );
-                    }
-                },
-            ),
-        )
-        .child(
-            settings_action_button(colors, SharedString::from("Diagnostics"), true).on_mouse_down(
-                MouseButton::Left,
-                move |_event, _window, cx| match crate::plugins::runtime::export_plugin_diagnostics(
-                    cx,
-                    &diagnostics_id,
-                ) {
-                    Ok(report) => {
-                        cx.write_to_clipboard(ClipboardItem::new_string(report));
-                        toast::success(cx, SharedString::from("Plugin diagnostics copied"));
-                    }
-                    Err(error) => {
-                        toast::error(
-                            cx,
-                            SharedString::from(format!("Diagnostics export failed: {error}")),
-                        );
-                    }
-                },
-            ),
-        )
-        .child(
-            settings_action_button(colors, SharedString::from("Uninstall"), true).on_mouse_down(
-                MouseButton::Left,
-                move |_event, _window, cx| match crate::plugins::runtime::uninstall_plugin(
-                    cx,
-                    uninstall_id.clone(),
-                ) {
-                    Ok(()) => {
-                        cx.update_global(|state: &mut SettingsPageState, _cx| {
-                            state.selected_plugin_id = None;
-                        });
-                        toast::success(cx, SharedString::from("Plugin uninstalled"));
-                    }
-                    Err(error) => {
-                        toast::error(
-                            cx,
-                            SharedString::from(format!("Plugin uninstall failed: {error}")),
-                        );
-                    }
-                },
-            ),
         )
         .child(
             div()
-                .text_size(px(11.))
-                .text_color(colors.text_muted)
                 .flex()
                 .items_center()
-                .child(i18n.t("PluginSettings.installed")),
+                .justify_between()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap(px(6.))
+                        .children(capabilities.into_iter().map(|cap| {
+                            div()
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .bg(Hsla {
+                                    a: 0.08,
+                                    ..colors.accent
+                                })
+                                .text_size(px(10.))
+                                .text_color(colors.accent)
+                                .child(cap)
+                                .into_any_element()
+                        })),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            small_icon_button(colors, "重载", lucide_icons::icon_refresh_cw()).on_mouse_down(
+                                MouseButton::Left,
+                                move |_event, _window, cx| match crate::plugins::runtime::reload_plugin(
+                                    cx,
+                                    reload_id.clone(),
+                                ) {
+                                    Ok(()) => {
+                                        toast::success(cx, SharedString::from("插件已重载"));
+                                    }
+                                    Err(error) => {
+                                        toast::error(
+                                            cx,
+                                            SharedString::from(format!("重载失败: {error}")),
+                                        );
+                                    }
+                                },
+                            ),
+                        )
+                        .child(
+                            small_icon_button(colors, "诊断", lucide_icons::icon_activity()).on_mouse_down(
+                                MouseButton::Left,
+                                move |_event, _window, cx| match crate::plugins::runtime::export_plugin_diagnostics(
+                                    cx,
+                                    &diagnostics_id,
+                                ) {
+                                    Ok(report) => {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(report));
+                                        toast::success(cx, SharedString::from("诊断日志已复制到剪贴板"));
+                                    }
+                                    Err(error) => {
+                                        toast::error(
+                                            cx,
+                                            SharedString::from(format!("导出诊断失败: {error}")),
+                                        );
+                                    }
+                                },
+                            ),
+                        )
+                        .child(
+                            small_icon_button(colors, "卸载", lucide_icons::icon_trash_2()).on_mouse_down(
+                                MouseButton::Left,
+                                move |_event, _window, cx| match crate::plugins::runtime::uninstall_plugin(
+                                    cx,
+                                    uninstall_id.clone(),
+                                ) {
+                                    Ok(()) => {
+                                        cx.update_global(|state: &mut SettingsPageState, _cx| {
+                                            state.selected_plugin_id = None;
+                                        });
+                                        toast::success(cx, SharedString::from("插件已卸载"));
+                                    }
+                                    Err(error) => {
+                                        toast::error(
+                                            cx,
+                                            SharedString::from(format!("卸载失败: {error}")),
+                                        );
+                                    }
+                                },
+                            ),
+                        ),
+                ),
         )
+        .when_some(status.error.clone(), |this, error| {
+            this.child(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .bg(Hsla {
+                        a: 0.10,
+                        ..colors.danger
+                    })
+                    .text_size(px(12.))
+                    .text_color(colors.danger)
+                    .child(format!("错误: {error}")),
+            )
+        })
 }
 
 fn plugin_sub_tabs(
@@ -830,18 +991,15 @@ fn plugin_sub_tabs(
         let is_active = active == tab;
         let plugin_id = plugin_id.to_string();
         div()
-            .h(px(30.))
+            .h(px(28.))
             .px(px(12.))
-            .rounded(px(9.))
+            .rounded(px(6.))
             .cursor_pointer()
             .bg(if is_active {
-                Hsla {
-                    a: 0.16,
-                    ..colors.accent
-                }
+                colors.surface_hover
             } else {
                 Hsla {
-                    a: 0.58,
+                    a: 0.0,
                     ..colors.surface
                 }
             })
@@ -849,9 +1007,13 @@ fn plugin_sub_tabs(
             .font_weight(if is_active {
                 FontWeight::SEMIBOLD
             } else {
-                FontWeight::MEDIUM
+                FontWeight::NORMAL
             })
-            .text_color(colors.text_primary)
+            .text_color(if is_active {
+                colors.text_primary
+            } else {
+                colors.text_secondary
+            })
             .flex()
             .items_center()
             .child(label)
@@ -865,7 +1027,13 @@ fn plugin_sub_tabs(
 
     div()
         .flex()
-        .gap(px(8.))
+        .gap(px(4.))
+        .p(px(3.))
+        .rounded(px(8.))
+        .bg(Hsla {
+            a: 0.25,
+            ..colors.surface_hover
+        })
         .child(button(
             i18n.t("PluginSettings.readme"),
             PluginSettingsSubTab::Readme,
@@ -1414,16 +1582,40 @@ fn plugin_icon(status: &PluginStatus, colors: &ThemeColors, size: Pixels) -> Any
     })
 }
 
-fn icon_action_button(
+fn icon_only_button(
     colors: &ThemeColors,
-    label: SharedString,
     icon_path: &'static str,
     enabled: bool,
-) -> Div {
-    settings_action_button(colors, SharedString::from(""), enabled)
-        .gap(px(6.))
-        .children([themed_icon(icon_path, 14.0, colors.text_primary).into_any_element()])
-        .child(label)
+) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(format!("icon-only-btn-{icon_path}")))
+        .w(px(28.))
+        .h(px(28.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.12,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.35,
+            ..colors.surface_hover
+        })
+        .hover(|this| {
+            if enabled {
+                this.bg(Hsla {
+                    a: 0.60,
+                    ..colors.surface_hover
+                })
+            } else {
+                this
+            }
+        })
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(themed_icon(icon_path, 14.0, colors.text_secondary))
 }
 
 fn import_plugin_package_from_picker(cx: &mut App) {

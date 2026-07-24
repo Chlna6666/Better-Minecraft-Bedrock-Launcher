@@ -3502,7 +3502,9 @@ fn render_inline_text(spans: &[HtmlInline], colors: &ThemeColors, is_heading: bo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        HtmlBlock, discover_html_stylesheets, parse_html_document, split_into_words_and_whitespaces,
+    };
 
     #[test]
     fn css_class_and_descendant_selectors_are_cascaded() {

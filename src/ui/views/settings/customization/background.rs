@@ -263,7 +263,9 @@ fn local_picker_row(
                                     }
 
                                     let selected =
-                                        tokio::task::spawn_blocking(pick_background_image_path)
+                                        crate::tasks::runtime::run_io_blocking(
+                                            pick_background_image_path,
+                                        )
                                             .await;
                                     let path = match selected {
                                         Ok(Some(path)) => path,
@@ -296,7 +298,8 @@ fn local_picker_row(
                                         }
                                     };
 
-                                    let persist_result = tokio::task::spawn_blocking(move || {
+                                    let persist_result =
+                                        crate::tasks::runtime::run_io_blocking(move || {
                                         crate::config::config::update_config(|cfg| {
                                             cfg.custom_style.local_image_path = path;
                                             cfg.custom_style.background_option =

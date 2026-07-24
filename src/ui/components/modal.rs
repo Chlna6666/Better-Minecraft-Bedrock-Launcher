@@ -103,6 +103,10 @@ pub fn animated_modal_layer(
                 .child(
                     div()
                         .percentage_passthrough()
+                        .w_full()
+                        .h_full()
+                        .max_w(relative(1.0))
+                        .max_h(relative(1.0))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -138,6 +142,10 @@ pub fn animated_modal_layer_with_content_offset(
                 .child(
                     div()
                         .percentage_passthrough()
+                        .w_full()
+                        .h_full()
+                        .max_w(relative(1.0))
+                        .max_h(relative(1.0))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -158,7 +166,18 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
         .items_center()
         .justify_center()
         .occlude()
-        .child(content)
+        .child(
+            div()
+                .percentage_passthrough()
+                .w_full()
+                .h_full()
+                .max_w(relative(1.0))
+                .max_h(relative(1.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(content),
+        )
         .with_animation(
             "modal-layer-content-zoom",
             crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240)),
@@ -497,6 +516,10 @@ fn dismissible_modal_layer(
                 .child(
                     div()
                         .percentage_passthrough()
+                        .w_full()
+                        .h_full()
+                        .max_w(relative(1.0))
+                        .max_h(relative(1.0))
                         .flex()
                         .items_center()
                         .justify_center()

@@ -192,7 +192,7 @@ fn spawn_persist_language(code: String, resolved_locale: Locale, cx: &mut App) {
     let toast_id = toast::pending(cx, SharedString::from("保存语言中..."));
 
     cx.spawn(async move |cx| {
-        let res = tokio::task::spawn_blocking({
+        let res = crate::tasks::runtime::run_io_blocking({
             let code = code.clone();
             move || {
                 crate::config::config::update_config(|cfg| {

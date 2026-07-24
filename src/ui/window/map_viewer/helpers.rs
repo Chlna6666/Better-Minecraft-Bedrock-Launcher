@@ -2,31 +2,20 @@ use super::model::*;
 use super::panels::*;
 use super::prelude::*;
 
-pub(super) fn probe_tokio_blocking_pool(
-    stage: &'static str,
-    runtime_handle: Option<tokio::runtime::Handle>,
-) {
-    let runtime_handle = match runtime_handle {
-        Some(handle) => handle,
-        None => match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle,
-            Err(_) => {
-                tracing::debug!(stage, "tokio blocking pool probe unavailable");
-                return;
-            }
-        },
-    };
-    runtime_handle.spawn(async move {
+pub(super) fn probe_tokio_blocking_pool(stage: &'static str) {
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let queued_at = Instant::now();
-        match tokio::task::spawn_blocking(|| {}).await {
+        match crate::tasks::runtime::run_io_blocking(|| {}).await {
             Ok(()) => tracing::debug!(
                 stage,
                 queue_delay_ms = queued_at.elapsed().as_millis(),
                 "tokio blocking pool probe complete"
             ),
-            Err(error) => tracing::warn!(stage, %error, "tokio blocking pool probe failed"),
+            Err(error) => tracing::warn!(stage, %error, "application blocking pool probe failed"),
         }
-    });
+    }) {
+        tracing::debug!(stage, %error, "application blocking pool probe unavailable");
+    }
 }
 
 pub(super) fn render_io_error(message: impl Into<String>) -> bedrock_render::BedrockRenderError {

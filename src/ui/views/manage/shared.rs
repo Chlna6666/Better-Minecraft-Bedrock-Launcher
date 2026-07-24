@@ -25,6 +25,7 @@ pub(super) fn create_text_input(
 
 pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
     let task_id: Arc<str> = Arc::from(task_id);
+    let mut updates = task_manager::subscribe_task_updates();
 
     if let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref()) {
         if matches!(
@@ -39,12 +40,19 @@ pub(super) fn watch_import_task(task_id: String, cx: &mut App) {
     cx.spawn({
         let task_id = task_id.clone();
         async move |cx| {
-            let mut updates = task_manager::subscribe_task_updates();
             loop {
                 let snapshot = match updates.recv().await {
                     Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        warn!("manage import task watcher closed: {error}");
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "manage import task watcher lagged; resyncing");
+                        let Some(snapshot) = task_manager::get_snapshot_arc(task_id.as_ref())
+                        else {
+                            continue;
+                        };
+                        snapshot
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        warn!("manage import task watcher closed");
                         break;
                     }
                 };

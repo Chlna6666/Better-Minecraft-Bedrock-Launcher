@@ -872,7 +872,7 @@ impl MapViewerWindowView {
             cx,
         );
         self.status = SharedString::from(format!("正在{}...", action.label()));
-        probe_tokio_blocking_pool("map_paste_start", None);
+        probe_tokio_blocking_pool("map_paste_start");
         cx.notify();
 
         let generation = self.metadata_generation;
@@ -886,7 +886,6 @@ impl MapViewerWindowView {
         let action_for_task = action.clone();
         let copied_chunk = self.professional.copied_chunk.clone();
         let imported_structure = self.professional.imported_structure.clone();
-        let tokio_runtime_handle = tokio::runtime::Handle::try_current().ok();
         cx.spawn(async move |handle, cx| {
             enum QuickWriteEvent {
                 Progress {
@@ -1001,10 +1000,7 @@ impl MapViewerWindowView {
                 let completion_message = message.clone();
                 if quick_write_defers_task_completion(status, paste_progress_total) {
                     task_manager::update_progress(&task_id_for_task, 0, None, Some("map_refresh"));
-                    probe_tokio_blocking_pool(
-                        "map_paste_write_complete",
-                        tokio_runtime_handle.clone(),
-                    );
+                    probe_tokio_blocking_pool("map_paste_write_complete");
                 } else {
                     task_manager::finish_task(&task_id_for_task, status, message);
                 }

@@ -3821,7 +3821,7 @@ impl MapViewerWindowView {
             None => completion.message,
         };
         task_manager::finish_task(&completion.task_id, "completed", Some(message));
-        probe_tokio_blocking_pool("map_paste_refresh_complete", None);
+        probe_tokio_blocking_pool("map_paste_refresh_complete");
     }
 }
 

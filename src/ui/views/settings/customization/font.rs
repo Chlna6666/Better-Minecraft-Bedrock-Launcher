@@ -98,7 +98,8 @@ fn local_font_row(
                                     return;
                                 }
 
-                                let selected = tokio::task::spawn_blocking(pick_font_path).await;
+                                let selected =
+                                    crate::tasks::runtime::run_io_blocking(pick_font_path).await;
                                 let path = match selected {
                                     Ok(Some(path)) => path,
                                     Ok(None) => return,
@@ -108,7 +109,7 @@ fn local_font_row(
                                     }
                                 };
 
-                                let font_family = tokio::task::spawn_blocking({
+                                let font_family = crate::tasks::runtime::run_io_blocking({
                                     let path = path.clone();
                                     move || {
                                         crate::utils::font_settings::read_local_font_family(&path)

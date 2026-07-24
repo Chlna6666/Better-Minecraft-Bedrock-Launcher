@@ -187,8 +187,8 @@ pub fn render_user_agreement_modal(
                     agreement.accept();
                 });
 
-                tokio::spawn(async {
-                    let result = tokio::task::spawn_blocking(|| {
+                if let Err(error) = crate::tasks::runtime::spawn_io(async {
+                    let result = crate::tasks::runtime::run_io_blocking(|| {
                         config::update_config(|cfg| {
                             cfg.agreement_accepted = true;
                         })
@@ -204,7 +204,9 @@ pub fn render_user_agreement_modal(
                             eprintln!("persist agreement_accepted join error: {join_error}");
                         }
                     }
-                });
+                }) {
+                    tracing::error!(%error, "failed to schedule agreement persistence");
+                }
             })
             .into_any_element()
     } else {

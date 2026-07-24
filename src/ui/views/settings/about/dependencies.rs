@@ -772,7 +772,7 @@ mod tests {
         let manifest = r#"
 [dependencies]
 serde = { version = "1.0", features = ["derive", "rc"] }
-gpui = { path = "vendor/gpui" }
+gpui = { path = "crates/gpui" }
 simple = "0.1"
 
 [build-dependencies]
@@ -787,7 +787,7 @@ winreg = "0.56"
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].name, "dependencies");
         assert_eq!(groups[0].items[0].name, "gpui");
-        assert_eq!(groups[0].items[0].details, "path = \"vendor/gpui\"");
+        assert_eq!(groups[0].items[0].details, "path = \"crates/gpui\"");
         assert_eq!(groups[0].items[1].name, "serde");
         assert_eq!(
             groups[0].items[1].details,
@@ -804,7 +804,7 @@ winreg = "0.56"
         let manifest = r#"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-gpui = { path = "vendor/gpui" }
+gpui = { path = "crates/gpui" }
 "#;
         let metadata = [
             DependencyMetadata {

@@ -5,6 +5,7 @@ use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use gpui::*;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 mod common;
@@ -44,6 +45,8 @@ struct GamePanelObserveSignature {
     local_file_count: usize,
     local_path_count: usize,
     operation_count: usize,
+    task_snapshot_count: usize,
+    task_snapshot_sequence: u64,
 }
 
 fn build_game_panel_observe_signature(state: &DownloadPageState) -> GamePanelObserveSignature {
@@ -72,6 +75,108 @@ fn build_game_panel_observe_signature(state: &DownloadPageState) -> GamePanelObs
         local_file_count: state.local_files.len(),
         local_path_count: state.local_path_by_package.len(),
         operation_count: state.operations_by_package.len(),
+        task_snapshot_count: state.task_snapshots.len(),
+        task_snapshot_sequence: state
+            .task_snapshots
+            .values()
+            .map(|snapshot| snapshot.sequence)
+            .max()
+            .unwrap_or_default(),
+    }
+}
+
+pub(crate) fn start_task_event_bridge(cx: &mut App) {
+    cx.spawn_stream(
+        crate::tasks::task_manager::task_event_stream(),
+        |delivery, cx| match delivery {
+            crate::tasks::task_manager::TaskEventDelivery::Event(event) => {
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    apply_task_event_to_download_state(state, event);
+                });
+            }
+            crate::tasks::task_manager::TaskEventDelivery::Batch(events) => {
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    for event in events {
+                        apply_task_event_to_download_state(state, event);
+                    }
+                });
+            }
+            crate::tasks::task_manager::TaskEventDelivery::ResyncRequired => {
+                let task_ids = cx.read_global(|state: &DownloadPageState, _cx| {
+                    let mut task_ids = state
+                        .operations_by_package
+                        .values()
+                        .flat_map(|operation| {
+                            [
+                                operation.download_task_id.clone(),
+                                operation.extract_task_id.clone(),
+                            ]
+                        })
+                        .flatten()
+                        .collect::<Vec<_>>();
+                    if let Some(task_id) = &state.curseforge_install_task_id {
+                        task_ids.push(task_id.clone());
+                    }
+                    task_ids
+                });
+                let snapshots = task_ids
+                    .into_iter()
+                    .filter_map(|task_id| {
+                        crate::tasks::task_manager::get_snapshot_arc(task_id.as_ref())
+                            .filter(|snapshot| {
+                                snapshot.visibility
+                                    != crate::tasks::task_manager::TaskVisibility::Hidden
+                            })
+                            .map(|snapshot| (Arc::from(task_id.as_ref()), snapshot))
+                    })
+                    .collect::<Vec<_>>();
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    state.task_snapshots.clear();
+                    state.task_snapshots.extend(snapshots);
+                });
+            }
+        },
+    )
+    .detach();
+}
+
+fn apply_task_event_to_download_state(
+    state: &mut DownloadPageState,
+    event: crate::tasks::task_manager::TaskEvent,
+) {
+    match event {
+        crate::tasks::task_manager::TaskEvent::Updated(snapshot) => {
+            let tracked = state.operations_by_package.values().any(|operation| {
+                operation
+                    .download_task_id
+                    .as_ref()
+                    .is_some_and(|task_id| task_id.as_ref() == snapshot.id.as_ref())
+                    || operation
+                        .extract_task_id
+                        .as_ref()
+                        .is_some_and(|task_id| task_id.as_ref() == snapshot.id.as_ref())
+            }) || state
+                .curseforge_install_task_id
+                .as_ref()
+                .is_some_and(|task_id| task_id.as_ref() == snapshot.id.as_ref());
+            if !tracked {
+                return;
+            }
+            if snapshot.visibility == crate::tasks::task_manager::TaskVisibility::Hidden {
+                state.task_snapshots.remove(snapshot.id.as_ref());
+                return;
+            }
+            let is_newer = state
+                .task_snapshots
+                .get(snapshot.id.as_ref())
+                .is_none_or(|current| current.sequence <= snapshot.sequence);
+            if is_newer {
+                state.task_snapshots.insert(snapshot.id.clone(), snapshot);
+            }
+        }
+        crate::tasks::task_manager::TaskEvent::Removed(task_id) => {
+            state.task_snapshots.remove(task_id.as_ref());
+        }
     }
 }
 
@@ -430,17 +535,25 @@ pub fn dismiss_game_dialog(cx: &mut App) {
 }
 
 pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElement> {
-    let (dialog, dialog_folder_input, cdn_loading, cdn_error, cdn_results, selected_cdn_base) = cx
-        .read_global(|state: &DownloadPageState, _cx| {
-            (
-                state.game_dialog.clone(),
-                state.game_dialog_folder_input.clone(),
-                state.game_dialog_cdn_loading,
-                state.game_dialog_cdn_error.clone(),
-                state.game_dialog_cdn_results.clone(),
-                state.game_dialog_selected_cdn_base.clone(),
-            )
-        });
+    let (
+        dialog,
+        dialog_folder_input,
+        cdn_loading,
+        cdn_error,
+        cdn_results,
+        selected_cdn_base,
+        cdn_expanded,
+    ) = cx.read_global(|state: &DownloadPageState, _cx| {
+        (
+            state.game_dialog.clone(),
+            state.game_dialog_folder_input.clone(),
+            state.game_dialog_cdn_loading,
+            state.game_dialog_cdn_error.clone(),
+            state.game_dialog_cdn_results.clone(),
+            state.game_dialog_selected_cdn_base.clone(),
+            state.game_dialog_cdn_expanded,
+        )
+    });
 
     if let Some(dialog) = dialog {
         return Some(
@@ -453,6 +566,7 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
                     cdn_error,
                     cdn_results,
                     selected_cdn_base,
+                    cdn_expanded,
                 ),
                 hsla(0.0, 0.0, 0.0, 0.28),
                 Rc::new(dismiss_game_dialog),

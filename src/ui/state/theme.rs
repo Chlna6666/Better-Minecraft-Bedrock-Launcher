@@ -148,7 +148,7 @@ impl ThemeState {
         .to_string();
 
         cx.spawn(async move |_cx| {
-            let result = tokio::task::spawn_blocking(move || {
+            let result = crate::tasks::runtime::run_io_blocking(move || {
                 crate::config::config::update_config(|config| {
                     config.custom_style.theme_mode = theme_mode;
                 })

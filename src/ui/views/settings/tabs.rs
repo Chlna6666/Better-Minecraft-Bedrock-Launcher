@@ -22,7 +22,7 @@ pub(super) fn refresh_gpu_adapters_if_needed(cx: &mut App) {
 pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mut App) {
     cx.spawn(async move |cx| {
         let requested_renderer_backend = renderer_backend.clone();
-        let adapters = tokio::task::spawn_blocking(move || {
+        let adapters = crate::tasks::runtime::run_io_blocking(move || {
             let backend = renderer_backend
                 .parse::<gpui::RendererBackend>()
                 .unwrap_or_default();

@@ -21,7 +21,7 @@ pub(crate) fn persist_tools_online_settings(cx: &mut App) {
         });
 
     cx.spawn(async move |_cx| {
-        let result = tokio::task::spawn_blocking(move || {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
             crate::config::config::update_config(|config| {
                 config.online.bootstrap_peers = bootstrap_peers;
                 config.online.player_name = player_name;

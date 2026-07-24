@@ -98,7 +98,7 @@ pub(super) fn spawn_persist_settings_with_success(
     let toast_id = toast::pending(cx, SharedString::from("保存设置中..."));
 
     cx.spawn(async move |cx| {
-        let res = tokio::task::spawn_blocking(move || {
+        let res = crate::tasks::runtime::run_io_blocking(move || {
             crate::config::config::update_config(|cfg| {
                 cfg.game.launcher_visibility = match snapshot.launcher_display_mode {
                     LauncherDisplayMode::MinimizeOnLaunch => "minimize".to_string(),
@@ -205,7 +205,7 @@ pub(super) fn spawn_persist_settings_with_success(
 pub(super) fn spawn_persist_background_blur(blur: f32, cx: &mut App) {
     let blur = crate::config::config::clamp_background_blur(blur);
     cx.spawn(async move |_cx| {
-        let result = tokio::task::spawn_blocking(move || {
+        let result = crate::tasks::runtime::run_io_blocking(move || {
             crate::config::config::update_config(|cfg| {
                 cfg.custom_style.background_blur = blur;
             })?;

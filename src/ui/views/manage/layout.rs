@@ -100,14 +100,6 @@ pub(super) fn render_version_header(
                 .when(has_status_badges, |this| this.child(status_badges)),
         );
 
-    if state.version_config_loading {
-        header = header.child(
-            div()
-                .text_size(px(12.))
-                .text_color(colors.text_secondary)
-                .child("正在读取版本配置..."),
-        );
-    }
     if let Some(error) = state.version_config_error.clone() {
         header = header.child(
             div()
