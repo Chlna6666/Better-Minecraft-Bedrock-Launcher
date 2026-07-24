@@ -227,7 +227,7 @@ cargo run --bin BMCBL --features preview-3d-dx12
 
 `build.rs` embeds Windows icon / manifest resources, fonts, localization,
 images, `BLoader.dll`, and EasyTier runtime payload metadata. EasyTier
-`wintun.dll` / `WinDivert64.sys` are discovered from local vendored paths or
+`wintun.dll` is discovered from local vendored paths or
 Cargo Git checkouts. Missing files produce warnings and may disable some online
 play modes.
 

@@ -194,7 +194,7 @@ cargo run --bin BMCBL --features preview-3d-dx12
 ```
 
 `build.rs` 会嵌入 Windows 图标 / manifest、字体、本地化、图片、`BLoader.dll` 和
-EasyTier 运行时负载元数据。EasyTier 的 `wintun.dll` / `WinDivert64.sys` 会从本地
+EasyTier 运行时负载元数据。EasyTier 的 `wintun.dll` 会从本地
 vendored 目录或 Cargo Git checkout 中查找；缺失时构建会给出 warning，部分联机模式
 可能不可用。
 
