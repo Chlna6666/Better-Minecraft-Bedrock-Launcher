@@ -201,6 +201,13 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
             ..gpui::AnimatedImageConfig::default()
         },
         max_decoded_bytes: image_pipeline_decoded_budget_bytes(),
+        max_compressed_bytes: 32 * 1024 * 1024,
+        bitmap_pool_bytes: 32 * 1024 * 1024,
+        bitmap_pool_max_buffer_bytes: 8 * 1024 * 1024,
+        max_atlas_bytes: 128 * 1024 * 1024,
+        max_atlas_textures: 24,
+        decode_policy: gpui::ImageDecodePolicy::Visible,
+        trim_memory_on_hidden: true,
         slow_decode_threshold: Duration::from_millis(16),
         slow_upload_bytes: 8 * 1024 * 1024,
         slow_upload_threshold: Duration::from_millis(4),

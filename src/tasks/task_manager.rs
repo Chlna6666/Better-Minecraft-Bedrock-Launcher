@@ -47,6 +47,8 @@ pub struct ThreadVisualization {
     pub index: u32,
     pub label: Option<String>,
     pub active: bool,
+    /// Absolute byte offset in the file where this thread's current work unit starts.
+    pub start: u64,
     pub done: u64,
     pub total: u64,
     pub current_item: Option<String>,

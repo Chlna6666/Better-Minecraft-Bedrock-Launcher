@@ -77,7 +77,18 @@ pub(super) struct TaskTransitionCard {
     sequence: u64,
 }
 
-
+/// Normalized progress data for a single worker thread, used by the segmented
+/// progress bar renderer.
+#[derive(Clone, PartialEq)]
+pub(super) struct ThreadSegment {
+    pub(super) active: bool,
+    /// Normalized start position of this work unit in the file (0.0–1.0).
+    pub(super) start_offset: f32,
+    /// Normalized width of this work unit relative to the file (0.0–1.0).
+    pub(super) width_fraction: f32,
+    /// Fraction of this work unit that is done (0.0–1.0).
+    pub(super) progress: f32,
+}
 
 #[derive(Clone, PartialEq)]
 pub(super) struct TaskCardViewModel {
@@ -104,6 +115,8 @@ pub(super) struct TaskCardViewModel {
     pub(super) percent: Option<f64>,
     pub(super) speed_bytes_per_sec: f64,
     pub(super) sequence: u64,
+    /// Per-worker-thread progress segments; empty when the task has no thread breakdown.
+    pub(super) thread_segments: Vec<ThreadSegment>,
 }
 
 #[derive(Clone)]
@@ -208,6 +221,40 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
         snapshot.title.clone()
     };
 
+    let file_total = snapshot.total.unwrap_or(0);
+    let thread_segments: Vec<ThreadSegment> = snapshot
+        .visualization
+        .as_ref()
+        .and_then(|vis| vis.threads.as_ref())
+        .filter(|threads| !threads.is_empty() && file_total > 0)
+        .map(|threads| {
+            threads
+                .iter()
+                .map(|thread| {
+                    let start_offset = (thread.start as f64 / file_total as f64) as f32;
+                    let width_fraction = if thread.total > 0 {
+                        (thread.total as f64 / file_total as f64) as f32
+                    } else {
+                        0.0
+                    };
+                    let progress = if thread.total > 0 {
+                        (thread.done as f32 / thread.total as f32).clamp(0.0, 1.0)
+                    } else if thread.active {
+                        0.0
+                    } else {
+                        0.0
+                    };
+                    ThreadSegment {
+                        active: thread.active,
+                        start_offset: start_offset.clamp(0.0, 1.0),
+                        width_fraction: width_fraction.clamp(0.0, 1.0),
+                        progress,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     TaskCardViewModel {
         id: snapshot.id.clone(),
         title: display_title,
@@ -253,6 +300,7 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
         percent: snapshot.percent,
         speed_bytes_per_sec: snapshot.speed_bytes_per_sec,
         sequence: snapshot.sequence,
+        thread_segments,
     }
 }
 
@@ -300,6 +348,13 @@ fn hash_task_card_model(hasher: &mut RenderFingerprint, model: &TaskCardViewMode
     hash_optional_f64(hasher, model.percent);
     model.speed_bytes_per_sec.to_bits().hash(hasher);
     model.sequence.hash(hasher);
+    model.thread_segments.len().hash(hasher);
+    for seg in &model.thread_segments {
+        seg.active.hash(hasher);
+        seg.start_offset.to_bits().hash(hasher);
+        seg.width_fraction.to_bits().hash(hasher);
+        seg.progress.to_bits().hash(hasher);
+    }
 }
 
 fn compute_render_model_signature(
@@ -884,6 +939,7 @@ mod tests {
             percent: Some(50.0),
             speed_bytes_per_sec: 0.0,
             sequence: 1,
+            thread_segments: Vec::new(),
         }
     }
 

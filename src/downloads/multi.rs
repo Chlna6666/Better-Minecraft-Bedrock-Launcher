@@ -323,6 +323,7 @@ fn build_thread_visualizations(worker_total: usize) -> Vec<ThreadVisualization> 
             index: index as u32,
             label: Some(format!("线程 {}", index + 1)),
             active: false,
+            start: 0,
             done: 0,
             total: 0,
             current_item: None,
@@ -430,6 +431,7 @@ async fn update_thread_visualization(
     thread_visualizations: &Mutex<Vec<ThreadVisualization>>,
     worker_index: usize,
     active: bool,
+    start: u64,
     done: u64,
     total: u64,
     current_item: Option<String>,
@@ -437,6 +439,7 @@ async fn update_thread_visualization(
     let mut guard = thread_visualizations.lock().await;
     if let Some(thread) = guard.get_mut(worker_index) {
         thread.active = active;
+        thread.start = start;
         thread.done = done.min(total);
         thread.total = total;
         thread.current_item = current_item;
@@ -724,16 +727,17 @@ async fn download_multi_partitioned(
                     Some(unit) => unit,
                     None => {
                         if scheduler.is_all_finished().await {
-                            let (thread_done, thread_total) = {
+                            let (thread_start, thread_done, thread_total) = {
                                 let guard = thread_visualizations.lock().await;
-                                guard
-                                    .get(worker_id)
-                                    .map_or((0, 0), |thread| (thread.done, thread.total))
+                                guard.get(worker_id).map_or((0, 0, 0), |thread| {
+                                    (thread.start, thread.done, thread.total)
+                                })
                             };
                             update_thread_visualization(
                                 thread_visualizations.as_ref(),
                                 worker_id,
                                 false,
+                                thread_start,
                                 thread_done,
                                 thread_total,
                                 None,
@@ -761,6 +765,7 @@ async fn download_multi_partitioned(
                     thread_visualizations.as_ref(),
                     worker_id,
                     true,
+                    unit_start,
                     0,
                     unit_total,
                     None,
@@ -929,6 +934,7 @@ async fn download_multi_partitioned(
                             thread_visualizations.as_ref(),
                             worker_id,
                             true,
+                            unit_start,
                             current_unit_done,
                             unit_total,
                             None,
@@ -995,6 +1001,7 @@ async fn download_multi_partitioned(
                         thread_visualizations.as_ref(),
                         worker_id,
                         false,
+                        unit_start,
                         unit_total,
                         unit_total,
                         None,

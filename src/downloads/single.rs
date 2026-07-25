@@ -38,6 +38,7 @@ fn build_single_download_visualization(
             index: 0,
             label: Some("线程 1".to_string()),
             active: true,
+            start: 0,
             done: thread_done,
             total: thread_total,
             current_item: None,
