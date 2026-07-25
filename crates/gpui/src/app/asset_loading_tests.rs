@@ -39,7 +39,7 @@ fn compressed_image_preload_reuses_and_removes_global_asset() {
 }
 
 #[test]
-fn target_size_image_preload_reuses_target_without_implicit_compressed_cache() {
+fn target_size_image_preload_reuses_target_and_compressed_cache() {
     let cx = TestAppContext::single();
     let source = Resource::Embedded(SharedString::from("missing-target-background.webp"));
     let logical_size = size(px(972.0), px(600.0));
@@ -64,10 +64,11 @@ fn target_size_image_preload_reuses_target_without_implicit_compressed_cache() {
             .expect("target preload should be removable");
         let after_target_remove = cx.loading_assets.len();
 
-        assert!(cx.remove_compressed_image_resource(&source).is_none());
-        assert_eq!(after_first_preload, initial_assets + 1);
+        let compressed = cx.remove_compressed_image_resource(&source);
+        assert!(compressed.is_some());
+        assert_eq!(after_first_preload, initial_assets + 2);
         assert_eq!(after_second_preload, after_first_preload);
-        assert_eq!(after_target_remove, initial_assets);
+        assert_eq!(after_target_remove, initial_assets + 1);
     });
 }
 
@@ -99,9 +100,10 @@ fn target_size_image_preload_reuses_equivalent_scale_factor_targets() {
         cx.remove_target_size_image_source_in(&equivalent_target, None);
         let after_remove = cx.loading_assets.len();
 
-        assert_eq!(after_first_preload, initial_assets + 1);
+        assert_eq!(after_first_preload, initial_assets + 2);
         assert_eq!(after_second_preload, after_first_preload);
-        assert_eq!(after_remove, initial_assets);
+        assert_eq!(after_remove, initial_assets + 1);
+        assert!(cx.remove_compressed_image_resource(&source).is_some());
     });
 }
 

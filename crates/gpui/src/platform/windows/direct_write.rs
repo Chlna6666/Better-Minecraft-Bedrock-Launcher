@@ -1641,7 +1641,8 @@ mod tests {
         utf8_run_end, utf8_run_start,
     };
     use crate::{
-        FontRun, GlyphRasterization, PlatformTextSystem, RenderGlyphParams, font, point, px,
+        FontRun, GlyphRasterization, PlatformTextSystem, RenderGlyphParams, RendererCapabilities,
+        font, point, px,
     };
 
     #[test]

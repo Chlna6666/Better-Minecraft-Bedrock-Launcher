@@ -107,8 +107,8 @@ mod platform {
                 ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature,
             },
             DirectComposition::{
-                DCompositionCreateDevice2, IDCompositionDesktopDevice, IDCompositionTarget,
-                IDCompositionVisual,
+                DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, DCompositionCreateDevice2,
+                IDCompositionDesktopDevice, IDCompositionTarget, IDCompositionVisual,
             },
             Dxgi::{
                 Common::{
@@ -117,7 +117,7 @@ mod platform {
                     DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
-                DXGI_ERROR_NOT_FOUND, DXGI_PRESENT, DXGI_SCALING, DXGI_SCALING_STRETCH,
+                DXGI_ERROR_NOT_FOUND, DXGI_PRESENT, DXGI_SCALING, DXGI_SCALING_NONE,
                 DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
                 IDXGIFactory4, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain3,
@@ -322,8 +322,12 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
+                // The swapchain is sized in physical pixels by GPUI. Stretching a
+                // composition swapchain lets DWM resample the entire frame when
+                // the HWND is on a non-100% DPI monitor, which softens every UI
+                // primitive instead of only affecting text.
                 Scaling: if uses_composition {
-                    DXGI_SCALING_STRETCH
+                    DXGI_SCALING_NONE
                 } else {
                     DXGI_SCALING::default()
                 },
@@ -392,6 +396,11 @@ mod platform {
                 .map_err(|error| GfxError::Backend(error.to_string()))?;
             // SAFETY: The visual, target, and swapchain are live; Commit applies the root tree.
             unsafe {
+                composition_visual
+                    .SetBitmapInterpolationMode(
+                        DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                    )
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
                 composition_visual
                     .SetContent(&swapchain)
                     .map_err(|error| GfxError::Backend(error.to_string()))?;

@@ -3,7 +3,10 @@ use std::{any::TypeId, sync::Arc};
 use anyhow::Result;
 use futures::{FutureExt, future::Shared};
 
-use crate::{App, ImageCacheError, RenderImage, Task, performance_metrics_snapshot};
+use crate::{
+    App, BitmapPoolSnapshot, ImageCacheError, RenderImage, Task, compressed_cache_snapshot,
+    performance_metrics_snapshot,
+};
 
 /// Retained image asset totals in GPUI's global asset cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,8 +36,14 @@ pub struct GpuiMemorySnapshot {
     pub gpui_image_asset_cache_entries: usize,
     /// Encoded bytes retained by compressed image assets.
     pub gpui_image_asset_retained_compressed_bytes: usize,
+    /// Number of entries retained by the shared compressed byte cache.
+    pub gpui_compressed_cache_entries: usize,
     /// Decoded bytes retained by global image assets and bounded image caches.
     pub gpui_image_asset_retained_decoded_bytes: usize,
+    /// Bytes retained by reusable bitmap backing buffers.
+    pub gpui_bitmap_pool_retained_bytes: usize,
+    /// Number of reusable bitmap buffers retained by the pool.
+    pub gpui_bitmap_pool_buffers: usize,
     /// Decoded bytes retained by render images currently visible through GPUI cache metrics.
     pub gpui_render_image_cpu_bytes: usize,
     /// Estimated GPU texture bytes retained for render images.
@@ -60,6 +69,12 @@ pub struct GpuiMemorySnapshot {
 impl GpuiMemorySnapshot {
     fn from_metrics(global_assets: GlobalImageAssetCacheSnapshot) -> Self {
         let metrics = performance_metrics_snapshot();
+        let BitmapPoolSnapshot {
+            retained_bytes: bitmap_pool_retained_bytes,
+            free_buffers: bitmap_pool_buffers,
+            ..
+        } = crate::assets::global_bitmap_pool().snapshot();
+        let (compressed_cache_entries, compressed_cache_bytes) = compressed_cache_snapshot();
         let global_decoded_bytes = global_assets
             .resource_decoded_bytes
             .saturating_add(global_assets.inline_decoded_bytes)
@@ -80,8 +95,11 @@ impl GpuiMemorySnapshot {
                 .saturating_add(global_entries),
             gpui_image_asset_retained_compressed_bytes: metrics
                 .gpui_image_asset_retained_compressed_bytes
-                .saturating_add(global_assets.compressed_bytes),
+                .saturating_add(global_assets.compressed_bytes.max(compressed_cache_bytes)),
+            gpui_compressed_cache_entries: compressed_cache_entries,
             gpui_image_asset_retained_decoded_bytes: retained_decoded_bytes,
+            gpui_bitmap_pool_retained_bytes: bitmap_pool_retained_bytes,
+            gpui_bitmap_pool_buffers: bitmap_pool_buffers,
             gpui_render_image_cpu_bytes: metrics
                 .gpui_render_image_cpu_bytes
                 .max(retained_decoded_bytes),
@@ -95,7 +113,12 @@ impl GpuiMemorySnapshot {
             gpui_gpu_surface_texture_bytes: metrics.gpui_gpu_surface_texture_bytes,
             gpui_gpu_estimated_total_retained_bytes: metrics
                 .gpui_gpu_estimated_total_retained_bytes
-                .max(retained_decoded_bytes.saturating_add(metrics.gpu_retained_bytes)),
+                .max(
+                    retained_decoded_bytes
+                        .saturating_add(bitmap_pool_retained_bytes)
+                        .saturating_add(compressed_cache_bytes)
+                        .saturating_add(metrics.gpu_retained_bytes),
+                ),
         }
     }
 }

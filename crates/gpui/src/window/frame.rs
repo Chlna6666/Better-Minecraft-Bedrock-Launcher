@@ -266,6 +266,24 @@ impl Frame {
             }
         }
     }
+
+    pub(super) fn release_image_element_bitmaps(&mut self) {
+        let image_state_type = TypeId::of::<crate::ImgState>();
+        for ((_, type_id), state) in &mut self.element_states {
+            if *type_id != image_state_type {
+                continue;
+            }
+            let Some(state) = state
+                .inner
+                .downcast_mut::<Option<crate::ImgState>>()
+                .and_then(Option::as_mut)
+            else {
+                continue;
+            };
+            state.current_image = None;
+            state.current_frame = None;
+        }
+    }
 }
 
 fn trim_frame_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {

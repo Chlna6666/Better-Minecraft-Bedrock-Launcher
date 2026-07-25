@@ -236,6 +236,11 @@ impl Application {
 
     /// Sets application-wide image pipeline limits and animated image behavior.
     pub fn with_image_pipeline_config(self, config: ImagePipelineConfig) -> Self {
+        crate::assets::configure_global_bitmap_pool(
+            config.bitmap_pool_bytes,
+            config.bitmap_pool_max_buffer_bytes,
+        );
+        crate::configure_compressed_cache(config.max_compressed_bytes);
         self.0.borrow_mut().image_pipeline_config = config;
         self
     }

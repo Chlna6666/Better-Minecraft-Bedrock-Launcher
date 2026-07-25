@@ -1,3 +1,4 @@
+mod bitmap_pool;
 mod decode;
 mod render_image;
 mod source;
@@ -5,6 +6,11 @@ mod source;
 mod tests;
 mod types;
 
+pub(crate) use bitmap_pool::{
+    BitmapBytes, BitmapPoolSnapshot, acquire_bitmap_buffer, acquire_bitmap_buffer_capacity,
+    configure_global_bitmap_pool, global_bitmap_pool, release_bitmap_buffer,
+    trim_global_bitmap_pool, trim_global_bitmap_pool_to,
+};
 pub(crate) use decode::{decode_image_bytes, decode_image_source, fitted_target_size};
 pub use decode::{decode_image_bytes_to_target, decode_image_path_to_target};
 pub use render_image::RenderImage;
@@ -12,6 +18,6 @@ pub(crate) use render_image::{AnimatedFrame, AnimatedImageSource};
 pub use source::AssetSource;
 pub(crate) use types::RenderImageParams;
 pub use types::{
-    AnimatedImageConfig, AnimatedMediaSource, ImageDecodeTarget, ImageId, ImagePipelineConfig,
-    RenderImagePixelFormat, TargetImageDecodeMetadata,
+    AnimatedImageConfig, AnimatedMediaSource, ImageDecodePolicy, ImageDecodeTarget, ImageId,
+    ImageMemoryTrimLevel, ImagePipelineConfig, RenderImagePixelFormat, TargetImageDecodeMetadata,
 };

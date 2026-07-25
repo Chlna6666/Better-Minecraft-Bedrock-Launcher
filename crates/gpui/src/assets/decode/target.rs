@@ -1,4 +1,4 @@
-use crate::{ObjectFit, Result, Size, size};
+use crate::{ObjectFit, Result, Size, acquire_bitmap_buffer, size};
 use image::{
     AnimationDecoder, ImageFormat, Rgba, RgbaImage,
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
@@ -11,9 +11,12 @@ use super::{
     decode_static_bmp_frame, decode_static_jpeg_frame, decode_static_png_frame,
     decode_static_webp_frame,
 };
-use crate::assets::render_image::{AnimatedFrame, AnimatedImageSource, RenderImage};
 use crate::assets::types::{
     AnimatedImageConfig, ImageDecodeTarget, RenderImagePixelFormat, TargetImageDecodeMetadata,
+};
+use crate::assets::{
+    BitmapBytes,
+    render_image::{AnimatedFrame, AnimatedImageSource, RenderImage},
 };
 
 pub(super) fn decode_image_bytes_to_target_via_full_decode(
@@ -249,8 +252,8 @@ pub(crate) fn resample_bgra_frame_to_target(
     );
 
     let output_len = bgra_len(target)?;
-    let mut output = vec![0; output_len];
-    let source = frame.bytes.as_ref();
+    let mut output = acquire_bitmap_buffer(output_len);
+    let source = frame.bytes();
     for target_y in 0..target.height {
         let source_y = source_axis_for_target(target_y, source_size.height, target.height);
         for target_x in 0..target.width {
@@ -267,7 +270,7 @@ pub(crate) fn resample_bgra_frame_to_target(
         sequence: frame.sequence,
         size: target.size(),
         delay: frame.delay,
-        bytes: Arc::from(output),
+        bytes: BitmapBytes::from_vec(output),
         pixel_format: RenderImagePixelFormat::Bgra8,
     })
 }

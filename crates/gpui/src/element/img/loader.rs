@@ -4,15 +4,98 @@ use super::source::*;
 use crate::{
     AnimatedFrame, App, Asset, Bounds, ImageDecodeRecord, ImageDecodeTarget, ObjectFit, Pixels,
     RenderImage, Resource, SMOOTH_SVG_SCALE_FACTOR, SharedString, Size, SvgSize, Window,
-    decode_image_bytes, decode_image_bytes_to_target, decode_image_path_to_target,
-    fitted_target_size, hash, record_image_asset_retained,
-    record_image_decode_metrics_with_threshold, swap_rgba_pa_to_bgra,
+    decode_image_bytes, decode_image_bytes_to_target, fitted_target_size, hash,
+    record_image_asset_retained, record_image_decode_metrics_with_threshold, swap_rgba_pa_to_bgra,
 };
 use anyhow::{Context as _, Result};
 use futures::{AsyncReadExt, Future};
 use image::{Frame, ImageBuffer};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
-use std::{borrow::Cow, fs, sync::Arc, time::Instant};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, VecDeque},
+    fs,
+    sync::{Arc, OnceLock},
+    time::Instant,
+};
+
+struct CompressedCache {
+    entries: HashMap<u64, Arc<[u8]>>,
+    order: VecDeque<u64>,
+    retained_bytes: usize,
+    max_bytes: usize,
+}
+
+impl CompressedCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            retained_bytes: 0,
+            max_bytes: 64 * 1024 * 1024,
+        }
+    }
+
+    fn get(&mut self, key: u64) -> Option<Arc<[u8]>> {
+        let bytes = self.entries.get(&key)?.clone();
+        self.order.retain(|entry| *entry != key);
+        self.order.push_back(key);
+        Some(bytes)
+    }
+
+    fn insert(&mut self, key: u64, bytes: Arc<[u8]>) {
+        if bytes.len() > self.max_bytes {
+            return;
+        }
+        if let Some(previous) = self.entries.insert(key, bytes.clone()) {
+            self.retained_bytes = self.retained_bytes.saturating_sub(previous.len());
+            self.order.retain(|entry| *entry != key);
+        }
+        self.retained_bytes = self.retained_bytes.saturating_add(bytes.len());
+        self.order.push_back(key);
+        while self.retained_bytes > self.max_bytes {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(previous) = self.entries.remove(&oldest) {
+                self.retained_bytes = self.retained_bytes.saturating_sub(previous.len());
+            }
+        }
+    }
+
+    fn trim(&mut self, max_bytes: usize) {
+        while self.retained_bytes > max_bytes {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(previous) = self.entries.remove(&oldest) {
+                self.retained_bytes = self.retained_bytes.saturating_sub(previous.len());
+            }
+        }
+    }
+}
+
+static COMPRESSED_CACHE: OnceLock<Mutex<CompressedCache>> = OnceLock::new();
+
+fn compressed_cache() -> &'static Mutex<CompressedCache> {
+    COMPRESSED_CACHE.get_or_init(|| Mutex::new(CompressedCache::new()))
+}
+
+pub(crate) fn configure_compressed_cache(max_bytes: usize) {
+    let mut cache = compressed_cache().lock();
+    cache.max_bytes = max_bytes;
+    cache.trim(max_bytes);
+}
+
+pub(crate) fn compressed_cache_snapshot() -> (usize, usize) {
+    let cache = compressed_cache().lock();
+    (cache.entries.len(), cache.retained_bytes)
+}
+
+pub(crate) fn trim_compressed_cache(max_bytes: usize) {
+    compressed_cache().lock().trim(max_bytes);
+}
 
 /// Resource image source plus the device-pixel decode target for bounds-aware loading.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -82,9 +165,17 @@ impl Asset for CompressedImageAssetLoader {
         let client = cx.http_client();
         let asset_source = cx.asset_source().clone();
         async move {
+            let cache_key = hash(&source);
+            if let Some(bytes) = compressed_cache().lock().get(cache_key) {
+                return Ok(CompressedImageBytes::Shared(bytes));
+            }
             let source_bytes =
                 load_image_resource_data(source.resource, client, asset_source).await?;
-            Ok(source_bytes.into_compressed_image_bytes())
+            let compressed = source_bytes.into_compressed_image_bytes();
+            if let CompressedImageBytes::Shared(bytes) = &compressed {
+                compressed_cache().lock().insert(cache_key, bytes.clone());
+            }
+            Ok(compressed)
         }
     }
 }
@@ -151,18 +242,16 @@ impl Asset for ImageAssetLoader {
         source: Self::Source,
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
-        let client = cx.http_client();
-        // TODO: Can we make SVGs always rescale?
-        // let scale_factor = cx.scale_factor();
+        let compressed_task = cx
+            .fetch_asset::<CompressedImgResourceLoader>(&CompressedImageSource::new(source.clone()))
+            .0;
         let svg_renderer = cx.svg_renderer();
-        let asset_source = cx.asset_source().clone();
         let pipeline_config = cx.image_pipeline_config();
         let image_config = pipeline_config.animated;
         let slow_decode_threshold = pipeline_config.slow_decode_threshold;
         let background_executor = cx.background_executor().clone();
         async move {
-            let source_bytes =
-                load_image_resource_data(source.clone(), client, asset_source).await?;
+            let source_bytes = compressed_task.await?;
             let bytes = source_bytes.as_bytes();
             let compressed_len = source_bytes.len();
 
@@ -232,23 +321,17 @@ impl Asset for TargetSizeImageAssetLoader {
         let pipeline_config = cx.image_pipeline_config();
         let image_config = pipeline_config.animated;
         let slow_decode_threshold = pipeline_config.slow_decode_threshold;
-        let decode_source = cx
-            .cached_asset_task::<CompressedImgResourceLoader>(&CompressedImageSource {
+        let decode_source = TargetSizeImageDecodeSource::PreloadedBytes(
+            cx.fetch_asset::<CompressedImgResourceLoader>(&CompressedImageSource {
                 resource: source.resource.clone(),
             })
-            .map_or_else(
-                || TargetSizeImageDecodeSource::Resource(source.resource.clone()),
-                TargetSizeImageDecodeSource::PreloadedBytes,
-            );
-        let client = cx.http_client();
-        let asset_source = cx.asset_source().clone();
+            .0,
+        );
         async move {
             let decode_started = Instant::now();
             let scale_factor = f32::from_bits(source.scale_factor_bits);
             let (mut data, metadata, compressed_len) = decode_target_size_image_from_source(
                 decode_source,
-                client,
-                asset_source,
                 svg_renderer,
                 image_config,
                 source.target,
@@ -289,8 +372,6 @@ impl Asset for TargetSizeImageAssetLoader {
 
 async fn decode_target_size_image_from_source(
     source: TargetSizeImageDecodeSource,
-    client: Arc<dyn http_client::HttpClient>,
-    asset_source: Arc<dyn crate::AssetSource>,
     svg_renderer: crate::SvgRenderer,
     image_config: crate::AnimatedImageConfig,
     target: ImageDecodeTarget,
@@ -302,49 +383,6 @@ async fn decode_target_size_image_from_source(
             let compressed_len = compressed_bytes.len();
             let (image, metadata) = decode_target_size_image_bytes(
                 compressed_bytes.as_bytes(),
-                &svg_renderer,
-                image_config,
-                target,
-                object_fit,
-            )?;
-            Ok((image, metadata, compressed_len))
-        }
-        TargetSizeImageDecodeSource::Resource(Resource::Path(path)) => {
-            match decode_image_path_to_target(path.as_ref(), image_config, target, object_fit) {
-                Ok((image, metadata)) => {
-                    let compressed_len = fs::metadata(path.as_ref())
-                        .map(|metadata| usize::try_from(metadata.len()).unwrap_or(usize::MAX))
-                        .unwrap_or(0);
-                    Ok((image, metadata, compressed_len))
-                }
-                Err(path_decode_error) => {
-                    let bytes = fs::read(path.as_ref()).map_err(ImageCacheError::from)?;
-                    let (image, metadata) = decode_target_size_image_bytes(
-                        &bytes,
-                        &svg_renderer,
-                        image_config,
-                        target,
-                        object_fit,
-                    )
-                    .map_err(|error| {
-                        ImageCacheError::Asset(
-                            format!(
-                                "failed to decode target-size path image: {path_decode_error}; \
-fallback decode failed: {error}"
-                            )
-                            .into(),
-                        )
-                    })?;
-                    Ok((image, metadata, bytes.len()))
-                }
-            }
-        }
-        TargetSizeImageDecodeSource::Resource(resource) => {
-            let source_bytes = load_image_resource_data(resource, client, asset_source).await?;
-            let bytes = source_bytes.as_bytes();
-            let compressed_len = source_bytes.len();
-            let (image, metadata) = decode_target_size_image_bytes(
-                bytes,
                 &svg_renderer,
                 image_config,
                 target,
@@ -445,5 +483,21 @@ mod tests {
         assert_eq!(bucket_decode_dimension(1), 16);
         assert_eq!(bucket_decode_dimension(38), 48);
         assert_eq!(bucket_decode_dimension(800), 800);
+    }
+
+    #[test]
+    fn compressed_cache_is_bounded_and_updates_lru_order() {
+        let mut cache = CompressedCache::new();
+        cache.max_bytes = 8;
+        cache.insert(1, Arc::from(vec![1_u8; 4]));
+        cache.insert(2, Arc::from(vec![2_u8; 4]));
+        assert!(cache.get(1).is_some());
+
+        cache.insert(3, Arc::from(vec![3_u8; 4]));
+
+        assert!(cache.entries.contains_key(&1));
+        assert!(!cache.entries.contains_key(&2));
+        assert!(cache.entries.contains_key(&3));
+        assert_eq!(cache.retained_bytes, 8);
     }
 }

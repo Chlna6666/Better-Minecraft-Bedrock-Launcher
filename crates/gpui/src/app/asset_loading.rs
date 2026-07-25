@@ -4,9 +4,10 @@ use anyhow::Result;
 use futures::{FutureExt, future::Shared};
 
 use crate::{
-    Asset, CompressedImageLoadingTask, CompressedImageSource, ImageCacheError, ImagePipelineConfig,
-    ObjectFit, Pixels, RenderImage, Resource, Size, TargetSizeImageLoadingTask,
-    TargetSizeImageSource, Task, Window, drop_image_asset_retained, hash,
+    Asset, CompressedImageLoadingTask, CompressedImageSource, ImageCacheError,
+    ImageMemoryTrimLevel, ImagePipelineConfig, ObjectFit, Pixels, RenderImage, Resource, Size,
+    TargetSizeImageLoadingTask, TargetSizeImageSource, Task, Window, drop_image_asset_retained,
+    hash,
 };
 
 use super::App;
@@ -16,6 +17,107 @@ use super::App;
 mod asset_loading_tests;
 
 impl App {
+    fn enforce_compressed_asset_budget(&mut self) {
+        let completed = self
+            .compressed_asset_lru
+            .iter()
+            .filter_map(|asset_id| {
+                let task = self.loading_assets.get(asset_id)?.downcast_ref::<
+                    Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
+                >()?;
+                let bytes = task.clone().now_or_never()?.ok()?;
+                Some((*asset_id, bytes.len()))
+            })
+            .collect::<Vec<_>>();
+        let mut retained_bytes = completed.iter().map(|(_, bytes)| *bytes).sum::<usize>();
+        for (asset_id, bytes) in completed {
+            if retained_bytes <= self.image_pipeline_config.max_compressed_bytes {
+                break;
+            }
+            self.loading_assets.remove(&asset_id);
+            self.compressed_asset_lru
+                .retain(|candidate| *candidate != asset_id);
+            retained_bytes = retained_bytes.saturating_sub(bytes);
+        }
+    }
+
+    /// Trims decoded image state while retaining the bounded compressed byte layer.
+    pub fn trim_image_memory(&mut self, level: ImageMemoryTrimLevel) {
+        let config = self.image_pipeline_config;
+        let bitmap_pool_limit = match level {
+            ImageMemoryTrimLevel::Light => config.bitmap_pool_bytes.saturating_mul(3) / 4,
+            ImageMemoryTrimLevel::Moderate | ImageMemoryTrimLevel::Aggressive => 0,
+        };
+        let compressed_limit = match level {
+            ImageMemoryTrimLevel::Light => config.max_compressed_bytes.saturating_mul(3) / 4,
+            ImageMemoryTrimLevel::Moderate | ImageMemoryTrimLevel::Aggressive => {
+                config.max_compressed_bytes
+            }
+        };
+        crate::assets::trim_global_bitmap_pool_to(bitmap_pool_limit);
+        crate::trim_compressed_cache(compressed_limit);
+        self.enforce_compressed_asset_budget();
+
+        if matches!(level, ImageMemoryTrimLevel::Light) {
+            return;
+        }
+
+        let completed_compressed = self
+            .compressed_asset_lru
+            .iter()
+            .filter(|asset_id| {
+                self.loading_assets
+                    .get(asset_id)
+                    .and_then(|task| {
+                        task.downcast_ref::<
+                            Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
+                        >()
+                    })
+                    .is_some_and(|task| task.clone().now_or_never().is_some())
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        for asset_id in completed_compressed {
+            self.loading_assets.remove(&asset_id);
+            self.compressed_asset_lru
+                .retain(|candidate| *candidate != asset_id);
+        }
+
+        let resource_type = TypeId::of::<crate::ImgResourceLoader>();
+        let inline_type = TypeId::of::<crate::AssetLogger<crate::ImageDecoder>>();
+        let inline_bytes_type = TypeId::of::<crate::AssetLogger<crate::EncodedImageDecoder>>();
+        let target_type = TypeId::of::<crate::TargetSizeImgResourceLoader>();
+        let mut evicted = Vec::new();
+        for (asset_id, task) in &self.loading_assets {
+            let is_image = matches!(
+                asset_id.0,
+                id if id == resource_type
+                    || id == inline_type
+                    || id == inline_bytes_type
+                    || id == target_type
+            );
+            if !is_image {
+                continue;
+            }
+            let Some(task) =
+                task.downcast_ref::<Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>>()
+            else {
+                continue;
+            };
+            let Some(Ok(image)) = task.clone().now_or_never() else {
+                continue;
+            };
+            if Arc::strong_count(&image) <= 2 {
+                evicted.push((*asset_id, image));
+            }
+        }
+
+        for (asset_id, image) in evicted {
+            self.loading_assets.remove(&asset_id);
+            self.drop_image(image, None);
+        }
+    }
+
     /// Remove an asset from GPUI's cache
     pub fn remove_asset<A: Asset>(&mut self, source: &A::Source) {
         self.take_asset::<A>(source);
@@ -24,22 +126,13 @@ impl App {
     /// Remove an asset from GPUI's cache and return its task if it exists.
     pub fn take_asset<A: Asset>(&mut self, source: &A::Source) -> Option<Shared<Task<A::Output>>> {
         let asset_id = (TypeId::of::<A>(), hash(source));
-        self.loading_assets
+        let task = self
+            .loading_assets
             .remove(&asset_id)
-            .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap())
-    }
-
-    pub(crate) fn cached_asset_task<A: Asset>(
-        &self,
-        source: &A::Source,
-    ) -> Option<Shared<Task<A::Output>>> {
-        let asset_id = (TypeId::of::<A>(), hash(source));
-        self.loading_assets.get(&asset_id).map(|boxed_task| {
-            boxed_task
-                .downcast_ref::<Shared<Task<A::Output>>>()
-                .unwrap()
-                .clone()
-        })
+            .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap());
+        self.compressed_asset_lru
+            .retain(|candidate| *candidate != asset_id);
+        task
     }
 
     /// Asynchronously load an asset, if the asset hasn't finished loading this will return None.
@@ -61,6 +154,12 @@ impl App {
             });
 
         self.loading_assets.insert(asset_id, Box::new(task.clone()));
+        if asset_id.0 == TypeId::of::<crate::CompressedImgResourceLoader>() {
+            self.compressed_asset_lru
+                .retain(|candidate| *candidate != asset_id);
+            self.compressed_asset_lru.push_back(asset_id);
+            self.enforce_compressed_asset_budget();
+        }
 
         (task, is_first)
     }

@@ -2,14 +2,14 @@ use crate::{DevicePixels, Size, size};
 use image::{Delay, Frame, RgbaImage};
 use std::{sync::Arc, time::Duration};
 
-use super::super::types::RenderImagePixelFormat;
+use super::super::{BitmapBytes, types::RenderImagePixelFormat};
 
 #[derive(Clone)]
 pub(crate) struct AnimatedFrame {
     pub(in crate::assets) sequence: usize,
     pub(in crate::assets) size: Size<DevicePixels>,
     pub(in crate::assets) delay: Delay,
-    pub(in crate::assets) bytes: Arc<[u8]>,
+    pub(in crate::assets) bytes: Arc<BitmapBytes>,
     pub(in crate::assets) pixel_format: RenderImagePixelFormat,
 }
 
@@ -22,7 +22,7 @@ impl AnimatedFrame {
             sequence,
             size: size(width.into(), height.into()),
             delay,
-            bytes: Arc::from(data.into_raw()),
+            bytes: BitmapBytes::from_vec(data.into_raw()),
             pixel_format: RenderImagePixelFormat::Bgra8,
         }
     }
@@ -48,7 +48,7 @@ impl AnimatedFrame {
             sequence,
             size,
             delay: Delay::from_saturating_duration(Duration::ZERO),
-            bytes: Arc::from(bytes),
+            bytes: BitmapBytes::from_vec(bytes),
             pixel_format: RenderImagePixelFormat::Bgra8,
         }
     }
@@ -63,7 +63,7 @@ impl AnimatedFrame {
             sequence,
             size,
             delay: Delay::from_saturating_duration(Duration::ZERO),
-            bytes: bytes.into(),
+            bytes: BitmapBytes::from_shared(bytes.into()),
             pixel_format,
         }
     }
@@ -79,7 +79,7 @@ impl AnimatedFrame {
             sequence,
             size: size(width.into(), height.into()),
             delay,
-            bytes: Arc::from(data.into_raw()),
+            bytes: BitmapBytes::from_vec(data.into_raw()),
             pixel_format: RenderImagePixelFormat::Bgra8,
         }
     }
@@ -92,7 +92,7 @@ impl AnimatedFrame {
             sequence,
             size: size(width.into(), height.into()),
             delay,
-            bytes: Arc::from(data.into_raw()),
+            bytes: BitmapBytes::from_vec(data.into_raw()),
             pixel_format: RenderImagePixelFormat::Rgba8,
         }
     }
@@ -110,7 +110,7 @@ impl AnimatedFrame {
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
-        self.bytes.as_ref()
+        self.bytes.as_slice()
     }
 
     pub(crate) fn pixel_format(&self) -> RenderImagePixelFormat {
@@ -118,6 +118,6 @@ impl AnimatedFrame {
     }
 
     pub(in crate::assets) fn byte_len(&self) -> usize {
-        self.bytes.len()
+        self.bytes.as_slice().len()
     }
 }

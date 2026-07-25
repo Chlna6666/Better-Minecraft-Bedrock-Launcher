@@ -107,9 +107,9 @@ pub(super) fn should_request_image_animation_frame(
 }
 
 /// The image state between frames
-pub(super) struct ImgState {
-    pub(super) current_image: Option<Arc<RenderImage>>,
-    pub(super) current_frame: Option<AnimatedFrame>,
+pub(crate) struct ImgState {
+    pub(crate) current_image: Option<Arc<RenderImage>>,
+    pub(crate) current_frame: Option<AnimatedFrame>,
     pub(super) next_frame_at: Option<Instant>,
     pub(super) started_loading: Option<(Instant, Task<()>)>,
     pub(super) target_size_asset: Option<TargetSizeImageSource>,

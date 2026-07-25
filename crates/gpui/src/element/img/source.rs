@@ -18,17 +18,6 @@ pub(super) enum ResourceImageBytes {
 }
 
 impl ResourceImageBytes {
-    pub(super) fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Static(bytes) => bytes,
-            Self::Owned(bytes) => bytes.as_slice(),
-        }
-    }
-
-    pub(super) fn len(&self) -> usize {
-        self.as_bytes().len()
-    }
-
     pub(super) fn into_compressed_image_bytes(self) -> CompressedImageBytes {
         match self {
             Self::Static(bytes) => CompressedImageBytes::Static(bytes),
@@ -63,7 +52,6 @@ impl CompressedImageBytes {
 
 pub(super) enum TargetSizeImageDecodeSource {
     PreloadedBytes(CompressedImageLoadingTask),
-    Resource(Resource),
 }
 
 /// A source of image content.

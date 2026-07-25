@@ -62,6 +62,7 @@ pub struct App {
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) foreground_executor: ForegroundExecutor,
     pub(crate) loading_assets: FxHashMap<(TypeId, u64), Box<dyn Any>>,
+    pub(crate) compressed_asset_lru: VecDeque<(TypeId, u64)>,
     pub(in crate::app) asset_source: Arc<dyn AssetSource>,
     pub(crate) svg_renderer: SvgRenderer,
     pub(in crate::app) http_client: Arc<dyn HttpClient>,
@@ -127,6 +128,12 @@ impl App {
         let entities = EntityMap::new();
         let keyboard_layout = platform.keyboard_layout();
         let keyboard_mapper = platform.keyboard_mapper();
+        let image_pipeline_config = ImagePipelineConfig::default();
+        crate::assets::configure_global_bitmap_pool(
+            image_pipeline_config.bitmap_pool_bytes,
+            image_pipeline_config.bitmap_pool_max_buffer_bytes,
+        );
+        crate::configure_compressed_cache(image_pipeline_config.max_compressed_bytes);
 
         let app = Rc::new_cyclic(|this| AppCell {
             app: RefCell::new(App {
@@ -135,7 +142,7 @@ impl App {
                 text_system,
                 default_text_style: TextStyle::default(),
                 default_window_icon: None,
-                image_pipeline_config: ImagePipelineConfig::default(),
+                image_pipeline_config,
                 actions: Rc::new(ActionRegistry::default()),
                 flushing_effects: false,
                 pending_updates: 0,
@@ -145,6 +152,7 @@ impl App {
                 foreground_executor,
                 svg_renderer: SvgRenderer::new(asset_source.clone()),
                 loading_assets: Default::default(),
+                compressed_asset_lru: Default::default(),
                 asset_source,
                 http_client,
                 globals_by_type: FxHashMap::default(),

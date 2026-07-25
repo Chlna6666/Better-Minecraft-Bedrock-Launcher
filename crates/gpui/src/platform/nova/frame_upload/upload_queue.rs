@@ -230,6 +230,9 @@ impl NovaAtlasState {
         let Some(end) = offset.checked_add(len) else {
             return false;
         };
+        if self.upload_bytes.is_empty() {
+            self.upload_bytes = crate::assets::acquire_bitmap_buffer_capacity(len);
+        }
         self.upload_bytes.resize(end, 0);
         if encode_bgra_upload_with_padding(
             &mut self.upload_bytes[offset..end],

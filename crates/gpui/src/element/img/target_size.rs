@@ -7,8 +7,8 @@ use super::state::{
 };
 use super::style::ImageAnimationPolicy;
 use crate::{
-    AnimatedFrame, App, Bounds, GlobalElementId, ObjectFit, Pixels, RenderImage, Window,
-    drop_image_asset_retained, hash,
+    AnimatedFrame, App, Bounds, GlobalElementId, ImageDecodePolicy, ObjectFit, Pixels, RenderImage,
+    Window, drop_image_asset_retained, hash,
 };
 use futures::FutureExt;
 use std::sync::Arc;
@@ -26,6 +26,13 @@ pub(super) fn use_target_size_data(
     let ImageSource::Resource(resource) = source else {
         return None;
     };
+    if cx.image_pipeline_config().decode_policy == ImageDecodePolicy::Visible
+        && bounds
+            .intersect(&window.visual_content_mask().bounds)
+            .is_empty()
+    {
+        return None;
+    }
     let target = target_size_for_bounds(bounds, window)?;
     let requested = TargetSizeImageSource::new(resource, target, window.scale_factor(), object_fit);
 

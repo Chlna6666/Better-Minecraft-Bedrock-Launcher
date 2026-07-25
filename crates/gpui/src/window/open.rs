@@ -100,6 +100,11 @@ impl Window {
 
         let display_id = platform_window.display().map(|display| display.id());
         let sprite_atlas = platform_window.sprite_atlas();
+        let image_pipeline_config = cx.image_pipeline_config();
+        sprite_atlas.configure_image_budget(
+            image_pipeline_config.max_atlas_bytes,
+            image_pipeline_config.max_atlas_textures,
+        );
         let mouse_position = platform_window.mouse_position();
         let modifiers = platform_window.modifiers();
         let capslock = platform_window.capslock();
@@ -187,6 +192,17 @@ impl Window {
             move |active| {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
                     window.active.set(active);
+                    if !active && window.trim_memory_on_hidden {
+                        let any_other_window_active = cx
+                            .windows
+                            .values()
+                            .flatten()
+                            .any(|other_window| other_window.active.get());
+                        if !any_other_window_active {
+                            cx.trim_image_memory(ImageMemoryTrimLevel::Moderate);
+                        }
+                        window.trim_gpui_memory(GpuiMemoryTrimLevel::Moderate);
+                    }
                     if active {
                         window.last_inactive_animation_frame.set(None);
                         window.inactive_animation_frame_pending.set(false);
@@ -313,8 +329,8 @@ impl Window {
             sprite_atlas,
             text_system,
             default_text_style: cx.default_text_style.clone(),
-            image_pipeline_config: cx.image_pipeline_config(),
-            trim_memory_on_hidden: false,
+            image_pipeline_config,
+            trim_memory_on_hidden: cx.image_pipeline_config().trim_memory_on_hidden,
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
