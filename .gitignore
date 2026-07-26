@@ -1,6 +1,8 @@
 /target
 /.upstream_bmbl_*/
 /target/
+# 独立 workspace（crates/raknet、crates/easytier）各自的构建产物。
+/crates/*/target/
 /.tmp/
 build.log
 

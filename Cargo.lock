@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "bedrock-nethernet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "bytes",
@@ -8240,9 +8240,9 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "raknet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "byteorder",
+ "bytes",
  "rand 0.10.2",
  "thiserror 2.0.18",
  "tracing",
@@ -8250,13 +8250,15 @@ dependencies = [
 
 [[package]]
 name = "raknet-tokio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "bytes",
  "raknet",
+ "rand 0.10.2",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
