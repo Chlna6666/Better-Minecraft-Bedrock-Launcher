@@ -54,6 +54,13 @@ pub const MAX_MTU_SIZE: u16 = 1492;
 /// 单个 UDP 数据报的解析上限（含余量）。
 pub const MAX_DATAGRAM_SIZE: usize = 2048;
 
+/// OpenConnectionRequest1 探测报文的固定头开销（IPv4 20 + UDP 8）。
+///
+/// 这是 RakNet 线上约定，go-raknet 与 vanilla 对 IPv4/IPv6 一律用 28：
+/// 探测报文的 UDP 载荷长度 = MTU - 28，接收端反推 MTU = 载荷长度 + 28。
+/// 会话内的帧容量另按实际 IP 版本扣除（见 [`ip_overhead`]）。
+pub const OCR1_MTU_OVERHEAD: u16 = 28;
+
 /// IPv4 / IPv6 的 IP 头开销。
 pub fn ip_overhead(addr: &std::net::SocketAddr) -> u16 {
     match addr {
@@ -65,8 +72,11 @@ pub fn ip_overhead(addr: &std::net::SocketAddr) -> u16 {
 // ---- 可靠层参数 ----
 /// 有序通道数上限。
 pub const MAX_ORDERING_CHANNELS: usize = 32;
-/// 可靠帧去重窗口大小（以可靠序号计）。
-pub const RELIABLE_WINDOW: u64 = 65536;
+/// 可靠帧去重集合的条目上限。
+///
+/// 约束的是「已接收但前方仍有空洞」的序号个数，而非序号跨度：
+/// 跨度上限会让超窗帧被静默丢弃却仍被 ACK，形成永不填补的空洞。
+pub const MAX_RELIABLE_SEEN: usize = 1 << 20;
 /// 单条消息最大拆分片数。
 pub const MAX_SPLIT_PARTS: u32 = 4096;
 /// 并发拆分重组的消息数上限。

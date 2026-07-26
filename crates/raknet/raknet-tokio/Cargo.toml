@@ -1,0 +1,19 @@
+[package]
+name = "raknet-tokio"
+version = "0.2.0"
+edition = "2024"
+license = "GPL-3.0-only"
+authors = ["Chlna6666"]
+description = "自研 RakNet 的 tokio 异步驱动：客户端、服务端与会话"
+
+[dependencies]
+raknet = { path = "../raknet" }
+bytes = "1.10"
+rand = "0.10"
+socket2 = "0.6"
+thiserror = "2"
+tokio = { version = "1.48", features = ["rt", "net", "sync", "time", "io-util", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }

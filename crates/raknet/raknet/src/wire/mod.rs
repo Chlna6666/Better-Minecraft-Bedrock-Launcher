@@ -74,6 +74,11 @@ impl Rd {
     }
 
     #[inline]
+    pub fn u16_le(&mut self) -> Result<u16, RakCodecError> {
+        Ok(u16::from_le_bytes(self.array::<2>()?))
+    }
+
+    #[inline]
     pub fn u24_le(&mut self) -> Result<u32, RakCodecError> {
         let b = self.array::<3>()?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], 0]))
@@ -111,15 +116,22 @@ impl Rd {
     }
 
     /// RakNet 地址编码（与 go-raknet / vanilla 互通的布局）。
+    ///
+    /// IPv4 八位组在线上按位取反（RakNet 传统，go-raknet 与 PocketMine
+    /// 同样如此）；IPv6 的 family 字段是小端 AF_INET6。
     pub fn addr(&mut self) -> Result<SocketAddr, RakCodecError> {
         match self.u8()? {
             4 => {
-                let ip = Ipv4Addr::from(self.array::<4>()?);
+                let mut octets = self.array::<4>()?;
+                for b in &mut octets {
+                    *b = !*b;
+                }
+                let ip = Ipv4Addr::from(octets);
                 let port = self.u16_be()?;
                 Ok(SocketAddr::V4(SocketAddrV4::new(ip, port)))
             }
             6 => {
-                self.u16_be()?; // AF_INET6
+                self.u16_le()?; // AF_INET6
                 let port = self.u16_be()?;
                 let flowinfo = self.u32_be()?;
                 let ip = Ipv6Addr::from(self.array::<16>()?);
@@ -143,12 +155,14 @@ pub fn put_addr(buf: &mut BytesMut, addr: &SocketAddr) {
     match addr {
         SocketAddr::V4(v4) => {
             buf.put_u8(4);
-            buf.put_slice(&v4.ip().octets());
+            for b in v4.ip().octets() {
+                buf.put_u8(!b);
+            }
             buf.put_u16(v4.port());
         }
         SocketAddr::V6(v6) => {
             buf.put_u8(6);
-            buf.put_u16(23); // AF_INET6
+            buf.put_u16_le(23); // AF_INET6
             buf.put_u16(v6.port());
             buf.put_u32(v6.flowinfo());
             buf.put_slice(&v6.ip().octets());
@@ -183,6 +197,21 @@ mod tests {
         put_u24_le(&mut buf, 0xABCDEF);
         let mut rd = Rd::new(buf.freeze());
         assert_eq!(rd.u24_le().unwrap(), 0xABCDEF);
+    }
+
+    #[test]
+    fn ipv4_octets_inverted_on_wire() {
+        // go-raknet / vanilla RakNet 写入按位取反的八位组。
+        let mut buf = BytesMut::new();
+        put_addr(&mut buf, &"127.0.0.1:19132".parse().unwrap());
+        assert_eq!(&buf[..5], &[4, 128, 255, 255, 254]);
+    }
+
+    #[test]
+    fn ipv6_family_is_little_endian() {
+        let mut buf = BytesMut::new();
+        put_addr(&mut buf, &"[::1]:1".parse().unwrap());
+        assert_eq!(&buf[..3], &[6, 23, 0]);
     }
 
     #[test]
