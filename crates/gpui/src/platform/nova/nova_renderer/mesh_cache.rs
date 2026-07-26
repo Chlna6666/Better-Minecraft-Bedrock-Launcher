@@ -21,6 +21,9 @@ impl NovaRenderer {
         }
 
         let meshes = self.frame_upload.custom_mesh_3d_meshes.clone();
+        if !self.custom_mesh_3d_buffers_ready {
+            self.promote_custom_mesh_3d_buffers()?;
+        }
         let should_clear_cache = self.custom_mesh_3d_frame_has_orphaned_mesh(&meshes)
             || self.custom_mesh_3d_frame_has_stale_generation(&meshes)
             || !self.custom_mesh_3d_missing_meshes_fit(&meshes);
@@ -261,6 +264,106 @@ impl NovaRenderer {
         self.custom_mesh_3d_vertex_cursor = 0;
         self.custom_mesh_3d_index_cursor = 0;
     }
+
+    /// Replaces the startup placeholder mesh buffers with full-capacity ones
+    /// and rebinds every frame's mesh resource set. Runs once, on the first
+    /// frame that actually carries custom 3D meshes; the placeholder set was
+    /// never referenced by a mesh draw, and the old resources retire through
+    /// the backend's deferred-release queue without stalling.
+    fn promote_custom_mesh_3d_buffers(&mut self) -> Result<()> {
+        let layout = self.custom_mesh_3d_resource_set_layout;
+        let old_vertices = self.custom_mesh_3d_vertices_buffer;
+        let old_indices = self.custom_mesh_3d_indices_buffer;
+        let (vertices, indices) = match &mut self.backend {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => promote_custom_mesh_3d_buffers_on_device(
+                device,
+                layout,
+                &mut self.frame_resources,
+                old_vertices,
+                old_indices,
+            )?,
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => promote_custom_mesh_3d_buffers_on_device(
+                device,
+                layout,
+                &mut self.frame_resources,
+                old_vertices,
+                old_indices,
+            )?,
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => promote_custom_mesh_3d_buffers_on_device(
+                device,
+                layout,
+                &mut self.frame_resources,
+                old_vertices,
+                old_indices,
+            )?,
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {
+                return Err(anyhow::anyhow!(
+                    "nova-gfx renderer requires an explicit nova-gfx backend feature"
+                ));
+            }
+        };
+        self.custom_mesh_3d_vertices_buffer = vertices;
+        self.custom_mesh_3d_indices_buffer = indices;
+        // activate_frame_resources already ran this frame with the old set;
+        // refresh the flattened field so recording binds the promoted one.
+        if let Some(current) = self.frame_resources.get(self.current_frame_resource_index) {
+            self.custom_mesh_3d_resource_set = current.resource_sets.custom_mesh_3d_resource_set;
+        }
+        self.custom_mesh_3d_buffers_ready = true;
+        Ok(())
+    }
+}
+
+fn promote_custom_mesh_3d_buffers_on_device<D>(
+    device: &mut D,
+    layout: ResourceSetLayoutId,
+    frame_resources: &mut [NovaFrameResources],
+    old_vertices: BufferId,
+    old_indices: BufferId,
+) -> Result<(BufferId, BufferId)>
+where
+    D: BackendResources,
+{
+    let vertices = create_custom_mesh_3d_vertices_buffer(
+        device,
+        "nova renderer",
+        MAX_CUSTOM_MESH_3D_VERTICES,
+    )?;
+    let indices =
+        create_custom_mesh_3d_indices_buffer(device, "nova renderer", MAX_CUSTOM_MESH_3D_INDICES)?;
+    for (index, frame) in frame_resources.iter_mut().enumerate() {
+        let resource_set = create_custom_mesh_3d_resource_set(
+            device,
+            &format!("nova renderer frame {index}"),
+            layout,
+            frame.buffers.global_buffer,
+            frame.buffers.custom_mesh_3d_parameters_buffer,
+            vertices,
+            MAX_CUSTOM_MESH_3D_VERTICES,
+        )?;
+        let previous = std::mem::replace(
+            &mut frame.resource_sets.custom_mesh_3d_resource_set,
+            resource_set,
+        );
+        device.destroy_resource_set(previous)?;
+    }
+    device.destroy_buffer(old_vertices)?;
+    device.destroy_buffer(old_indices)?;
+    Ok((vertices, indices))
 }
 
 fn trim_custom_mesh_upload_scratch(vec: &mut Vec<u8>, floor: usize, multiplier: usize) {

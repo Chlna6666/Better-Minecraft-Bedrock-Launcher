@@ -69,6 +69,8 @@ impl NovaFrameUpload {
         trim_upload_vec(&mut self.custom_mesh_3d_shaders, 8, multiplier);
         trim_upload_vec(&mut self.batches, 64, multiplier);
         self.path_rasterization_cache.clear();
+        self.path_geometry_hash_memo.clear();
+        self.path_paint_key_scratch = Vec::new();
     }
 
     pub(in crate::platform::nova) fn backdrop_blur_downsample(&self) -> u8 {

@@ -99,11 +99,18 @@ pub(crate) struct NovaRenderer {
     mono_sprite_resource_set_layout: ResourceSetLayoutId,
     poly_sprite_resource_set_layout: ResourceSetLayoutId,
     gpu_atlas_textures: FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
+    /// Atlas texture-set generation observed by the last successful GPU texture sync; when the
+    /// atlas reports the same generation, the per-frame sync is skipped entirely.
+    synced_atlas_texture_generation: Option<u64>,
     underline_resource_set: ResourceSetId,
     backdrop_blur_pass_resource_set_layout: ResourceSetLayoutId,
     backdrop_blur_resource_set_layout: ResourceSetLayoutId,
     custom_mesh_3d_pipeline_layout: PipelineLayoutId,
     custom_mesh_3d_resource_set: ResourceSetId,
+    custom_mesh_3d_resource_set_layout: ResourceSetLayoutId,
+    /// False while the shared mesh buffers are still the startup placeholders;
+    /// the first frame that carries meshes promotes them to full capacity.
+    custom_mesh_3d_buffers_ready: bool,
     custom_mesh_3d_mesh_cache: FxHashMap<GpuMesh3dId, NovaMeshCacheEntry>,
     custom_mesh_3d_vertex_cursor: usize,
     custom_mesh_3d_index_cursor: usize,
@@ -145,6 +152,7 @@ struct NovaDrawStepScratch {
     present_copy_steps: Vec<RenderStepDescriptor>,
     backdrop_blur_source_steps: Vec<RenderStepDescriptor>,
     path_mask_steps: Vec<DrawStepDescriptor>,
+    backdrop_blur_passes: Vec<NovaBackdropBlurRenderPass>,
 }
 
 #[derive(Default)]
@@ -507,8 +515,14 @@ impl NovaRenderer {
     }
 
     fn sync_atlas_textures_for_current_backend(&mut self) -> Result<()> {
+        // Read the generation before syncing so any concurrent change after this point is
+        // observed as a mismatch (and therefore a re-sync) on the next frame.
+        let texture_set_generation = self.atlas.texture_set_generation();
+        if self.synced_atlas_texture_generation == Some(texture_set_generation) {
+            return Ok(());
+        }
         let descriptor = self.atlas_resource_descriptor();
-        match &mut self.backend {
+        let result = match &mut self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => sync_gpu_atlas_textures(
                 &self.atlas,
@@ -545,7 +559,11 @@ impl NovaRenderer {
                 )
             )))]
             NovaBackend::Unavailable => Ok(()),
+        };
+        if result.is_ok() {
+            self.synced_atlas_texture_generation = Some(texture_set_generation);
         }
+        result
     }
 }
 
@@ -560,6 +578,7 @@ impl NovaDrawStepScratch {
         trim_vec_capacity(&mut self.present_copy_steps, 1, multiplier);
         trim_vec_capacity(&mut self.backdrop_blur_source_steps, 64, multiplier);
         trim_vec_capacity(&mut self.path_mask_steps, 32, multiplier);
+        trim_vec_capacity(&mut self.backdrop_blur_passes, 16, multiplier);
     }
 }
 

@@ -477,15 +477,19 @@ impl NovaFrameUpload {
                 Default::default()
             },
         };
-        let mut paint_key = Vec::with_capacity(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
-        write_content_mask(&mut paint_key, &content_mask);
-        write_background(&mut paint_key, &path.color);
+        // Pack the paint parameters into a reusable scratch buffer and hash them, instead of
+        // allocating an owned byte key per path per frame.
+        self.path_paint_key_scratch.clear();
+        write_content_mask(&mut self.path_paint_key_scratch, &content_mask);
+        write_background(&mut self.path_paint_key_scratch, &path.color);
+        let paint_hash = fnv1a_bytes(&self.path_paint_key_scratch);
+
         let key = NovaPathRasterizationCacheKey {
             path_id: path.cache_id,
             generation: path.geometry_generation,
             vertex_count: path.vertices.len(),
-            geometry_hash: path_geometry_hash(&path.vertices),
-            paint_key,
+            geometry_hash: self.path_geometry_hash_for(path),
+            paint_hash,
         };
         if let Some(entry) = self.path_rasterization_cache.get(&key) {
             self.path_rasterization_cache_hits =
@@ -503,12 +507,62 @@ impl NovaFrameUpload {
             vertex_count,
         };
         if self.path_rasterization_cache.len() >= MAX_PATH_RASTERIZATION_CACHE_ENTRIES {
-            self.path_rasterization_cache.clear();
+            // Evict roughly half of the entries instead of clearing everything, so the frame
+            // after hitting the limit does not pay a 100% miss rate.
+            let mut keep = false;
+            self.path_rasterization_cache.retain(|_, _| {
+                keep = !keep;
+                keep
+            });
         }
         self.path_rasterization_cache.insert(key, entry.clone());
         self.path_rasterization_cache_misses =
             self.path_rasterization_cache_misses.saturating_add(1);
         Some(entry)
+    }
+
+    /// Returns the vertex-content hash for `path`, reusing the previous frame's hash when the
+    /// generation, vertex count, and first/last vertex positions all match.
+    ///
+    /// The probes are required because `Path::transform_uniform` rewrites vertex positions
+    /// without bumping `geometry_generation`; a uniform transform that changes any vertex also
+    /// moves the first and last vertices, so the memo stays sound while skipping the
+    /// per-vertex hash on the hot unchanged path.
+    fn path_geometry_hash_for(&mut self, path: &crate::Path<crate::ScaledPixels>) -> u64 {
+        let (Some(first), Some(last)) = (path.vertices.first(), path.vertices.last()) else {
+            return path_geometry_hash(&path.vertices);
+        };
+        let first_xy_bits = (
+            first.xy_position.x.0.to_bits(),
+            first.xy_position.y.0.to_bits(),
+        );
+        let last_xy_bits = (
+            last.xy_position.x.0.to_bits(),
+            last.xy_position.y.0.to_bits(),
+        );
+        if let Some(memo) = self.path_geometry_hash_memo.get(&path.cache_id)
+            && memo.generation == path.geometry_generation
+            && memo.vertex_count == path.vertices.len()
+            && memo.first_xy_bits == first_xy_bits
+            && memo.last_xy_bits == last_xy_bits
+        {
+            return memo.geometry_hash;
+        }
+        if self.path_geometry_hash_memo.len() >= MAX_PATH_RASTERIZATION_CACHE_ENTRIES {
+            self.path_geometry_hash_memo.clear();
+        }
+        let geometry_hash = path_geometry_hash(&path.vertices);
+        self.path_geometry_hash_memo.insert(
+            path.cache_id,
+            NovaPathGeometryHashMemo {
+                generation: path.geometry_generation,
+                vertex_count: path.vertices.len(),
+                first_xy_bits,
+                last_xy_bits,
+                geometry_hash,
+            },
+        );
+        geometry_hash
     }
 }
 
@@ -526,6 +580,15 @@ fn path_geometry_hash(vertices: &[crate::PathVertex_ScaledPixels]) -> u64 {
 fn fnv1a_u32(hash: u64, value: u32) -> u64 {
     let hash = hash ^ u64::from(value);
     hash.wrapping_mul(0x0000_0100_0000_01b3)
+}
+
+fn fnv1a_bytes(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn mesh_range_within_indices(

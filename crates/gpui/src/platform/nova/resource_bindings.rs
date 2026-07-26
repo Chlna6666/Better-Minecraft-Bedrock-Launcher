@@ -151,6 +151,7 @@ pub(super) fn custom_mesh_3d_resource_bindings(
     global_buffer: BufferId,
     parameters_buffer: BufferId,
     vertex_buffer: BufferId,
+    vertex_capacity: usize,
 ) -> Vec<ResourceBinding> {
     vec![
         ResourceBinding {
@@ -176,7 +177,7 @@ pub(super) fn custom_mesh_3d_resource_bindings(
             resource: ResourceBindingResource::Buffer(BufferBinding {
                 buffer: vertex_buffer,
                 offset: 0,
-                size: (MAX_CUSTOM_MESH_3D_VERTICES * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
+                size: (vertex_capacity * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
                 stride: Some(PACKED_CUSTOM_MESH_3D_VERTEX_BYTES as u32),
             }),
         },

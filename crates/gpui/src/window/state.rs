@@ -157,6 +157,16 @@ pub(super) struct ServerTitlebarFallback {
     pub(super) is_maximizable: bool,
 }
 
+/// Bounds accumulation state for one view being painted.
+///
+/// `scanned_until` is the scene index up to which this view's paint operations have already
+/// been folded into `bounds` (either scanned directly or merged from a completed child view).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ViewBoundsFrame {
+    pub(crate) scanned_until: usize,
+    pub(crate) bounds: Option<Bounds<ScaledPixels>>,
+}
+
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
@@ -183,6 +193,11 @@ pub struct Window {
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
+    /// Per-view bounds accumulation frames for the paint phase, parallel to the painted views
+    /// in `rendered_entity_stack`. Child views fold their already computed bounds into their
+    /// parent's frame so each scene operation is scanned exactly once regardless of nesting
+    /// depth when computing retained scene segment bounds.
+    pub(crate) view_bounds_stack: Vec<ViewBoundsFrame>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
     pub(crate) element_visual_transform: ElementVisualTransform,
@@ -229,6 +244,9 @@ pub struct Window {
     pub(super) async_app: AsyncApp,
     pub(super) frame_watchdog: Rc<Cell<FrameWatchdog>>,
     pub(super) platform_frame_watchdog_task: Option<Task<()>>,
+    /// Pending delayed memory trim scheduled when the window loses focus; dropped (and thereby
+    /// cancelled) when the window becomes active again before the delay elapses.
+    pub(super) deactivation_trim_task: Option<Task<()>>,
     pub(super) frame_throttle: WindowFrameThrottle,
     pub(super) draw_deadline: Option<Instant>,
     pub(super) draw_was_degraded: bool,

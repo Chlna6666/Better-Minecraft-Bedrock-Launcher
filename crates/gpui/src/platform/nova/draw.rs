@@ -352,17 +352,19 @@ pub(super) struct NovaBackdropBlurRenderPass {
     pub(super) step: DrawStepDescriptor,
 }
 
-pub(super) fn backdrop_blur_render_passes_for_targets(
+pub(super) fn backdrop_blur_render_passes_for_targets_into(
     pipelines: &NovaPipelines,
     targets: &NovaBackdropBlurTargets,
     frame_resource_index: usize,
     levels: usize,
-) -> Vec<NovaBackdropBlurRenderPass> {
+    passes: &mut Vec<NovaBackdropBlurRenderPass>,
+) {
+    passes.clear();
     if targets.levels.is_empty() {
-        return Vec::new();
+        return;
     }
     let levels = levels.clamp(1, targets.levels.len());
-    let mut passes = Vec::with_capacity(levels.saturating_mul(2).saturating_sub(1));
+    passes.reserve(levels.saturating_mul(2).saturating_sub(1));
     for (level_index, level) in targets.levels.iter().take(levels).enumerate() {
         let resource_set = if level_index == 0 {
             targets
@@ -408,7 +410,6 @@ pub(super) fn backdrop_blur_render_passes_for_targets(
             },
         });
     }
-    passes
 }
 
 pub(super) fn path_mask_draw_steps_for_upload(

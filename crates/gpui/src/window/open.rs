@@ -193,17 +193,13 @@ impl Window {
                 let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
                     window.active.set(active);
                     if !active && window.trim_memory_on_hidden {
-                        let any_other_window_active = cx
-                            .windows
-                            .values()
-                            .flatten()
-                            .any(|other_window| other_window.active.get());
-                        if !any_other_window_active {
-                            cx.trim_image_memory(ImageMemoryTrimLevel::Moderate);
-                        }
-                        window.trim_gpui_memory(GpuiMemoryTrimLevel::Moderate);
+                        // Trimming immediately would force a full redecode and atlas
+                        // re-upload on a quick refocus, so defer it until the window has
+                        // stayed inactive for a while.
+                        window.schedule_deactivation_memory_trim();
                     }
                     if active {
+                        window.deactivation_trim_task = None;
                         window.last_inactive_animation_frame.set(None);
                         window.inactive_animation_frame_pending.set(false);
                         window.frame_throttle.clear_delay();
@@ -339,6 +335,7 @@ impl Window {
             element_id_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
+            view_bounds_stack: Vec::new(),
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
             visual_content_mask_stack: Vec::new(),
@@ -382,6 +379,7 @@ impl Window {
             async_app,
             frame_watchdog,
             platform_frame_watchdog_task: None,
+            deactivation_trim_task: None,
             frame_throttle: WindowFrameThrottle::default(),
             draw_deadline: None,
             draw_was_degraded: false,

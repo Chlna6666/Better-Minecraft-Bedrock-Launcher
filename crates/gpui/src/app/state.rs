@@ -63,6 +63,13 @@ pub struct App {
     pub(crate) foreground_executor: ForegroundExecutor,
     pub(crate) loading_assets: FxHashMap<(TypeId, u64), Box<dyn Any>>,
     pub(crate) compressed_asset_lru: VecDeque<(TypeId, u64)>,
+    /// Byte sizes of completed compressed image assets, so budget enforcement can skip
+    /// polling every retained task.
+    pub(crate) compressed_asset_sizes: FxHashMap<(TypeId, u64), usize>,
+    /// Compressed image assets whose loading tasks have not been observed complete yet.
+    pub(crate) compressed_assets_pending: Vec<(TypeId, u64)>,
+    /// Total bytes accounted in `compressed_asset_sizes`.
+    pub(crate) compressed_asset_accounted_bytes: usize,
     pub(in crate::app) asset_source: Arc<dyn AssetSource>,
     pub(crate) svg_renderer: SvgRenderer,
     pub(in crate::app) http_client: Arc<dyn HttpClient>,
@@ -153,6 +160,9 @@ impl App {
                 svg_renderer: SvgRenderer::new(asset_source.clone()),
                 loading_assets: Default::default(),
                 compressed_asset_lru: Default::default(),
+                compressed_asset_sizes: Default::default(),
+                compressed_assets_pending: Default::default(),
+                compressed_asset_accounted_bytes: 0,
                 asset_source,
                 http_client,
                 globals_by_type: FxHashMap::default(),

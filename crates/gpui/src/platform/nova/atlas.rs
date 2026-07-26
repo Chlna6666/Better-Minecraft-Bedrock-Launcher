@@ -1,6 +1,7 @@
 use super::*;
 
 use etagere::{AllocId, BucketedAtlasAllocator};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 
 #[cfg(test)]
 pub(super) use super::upload_encoding::encode_bgra_upload;
@@ -23,6 +24,12 @@ pub(super) const NOVA_ATLAS_TEXTURE_KINDS: [AtlasTextureKind; NOVA_ATLAS_KIND_CO
 
 pub(super) struct NovaAtlas {
     pub(super) state: Mutex<NovaAtlasState>,
+    /// Lock-free mirror of [`NovaAtlasState::texture_set_generation`], refreshed by every atlas
+    /// method that can change the texture set. The renderer polls this each frame to skip the
+    /// texture sync (mutex + allocations) when nothing changed.
+    texture_set_generation: AtomicU64,
+    /// Lock-free mirror of whether [`NovaAtlasState::pending_removals`] is non-empty.
+    pending_removals_flag: AtomicBool,
 }
 
 pub(super) struct NovaAtlasState {
@@ -38,6 +45,8 @@ pub(super) struct NovaAtlasState {
     pub(super) pending_uploads: Vec<PendingAtlasUpload>,
     max_atlas_bytes: usize,
     max_atlas_textures: usize,
+    /// Monotonic counter bumped whenever a texture is created or removed.
+    texture_set_generation: u64,
 }
 
 impl Default for NovaAtlasState {
@@ -55,6 +64,7 @@ impl Default for NovaAtlasState {
             pending_uploads: Vec::new(),
             max_atlas_bytes: 256 * 1024 * 1024,
             max_atlas_textures: 32,
+            texture_set_generation: 0,
         }
     }
 }
@@ -85,9 +95,26 @@ pub(super) struct NovaAtlasTextureInfo {
 
 impl NovaAtlas {
     pub(super) fn new() -> Self {
+        let state = NovaAtlasState::with_fallback_tiles();
         Self {
-            state: Mutex::new(NovaAtlasState::with_fallback_tiles()),
+            texture_set_generation: AtomicU64::new(state.texture_set_generation),
+            pending_removals_flag: AtomicBool::new(!state.pending_removals.is_empty()),
+            state: Mutex::new(state),
         }
+    }
+
+    /// Publishes the lock-free mirrors of the locked state. Must be called before releasing the
+    /// state lock by every method that can change the texture set or the pending removals list.
+    fn publish_state_flags(&self, state: &NovaAtlasState) {
+        self.texture_set_generation
+            .store(state.texture_set_generation, AtomicOrdering::Release);
+        self.pending_removals_flag
+            .store(!state.pending_removals.is_empty(), AtomicOrdering::Release);
+    }
+
+    /// Monotonic counter identifying the current set of atlas textures without locking.
+    pub(super) fn texture_set_generation(&self) -> u64 {
+        self.texture_set_generation.load(AtomicOrdering::Acquire)
     }
 
     pub(super) fn trim(&self, level: GpuiMemoryTrimLevel) {
@@ -101,9 +128,16 @@ impl NovaAtlas {
                 }
             }
             GpuiMemoryTrimLevel::Aggressive => {
+                let previous_generation = state.texture_set_generation;
                 *state = NovaAtlasState::with_fallback_tiles();
+                // Keep the generation monotonic across the reset so a renderer that synced
+                // before the reset can never observe a stale-but-equal value.
+                state.texture_set_generation = previous_generation
+                    .wrapping_add(state.texture_set_generation)
+                    .wrapping_add(1);
             }
         }
+        self.publish_state_flags(&state);
     }
 
     pub(super) fn texture_infos(&self) -> Vec<NovaAtlasTextureInfo> {
@@ -123,12 +157,7 @@ impl NovaAtlas {
     }
 
     pub(super) fn has_pending_removals(&self) -> bool {
-        !self
-            .state
-            .lock()
-            .expect("nova atlas lock poisoned")
-            .pending_removals
-            .is_empty()
+        self.pending_removals_flag.load(AtomicOrdering::Acquire)
     }
 
     pub(super) fn apply_pending_removals(&self) {
@@ -137,6 +166,7 @@ impl NovaAtlas {
         for pending in pending_removals {
             state.deallocate_tile(pending.tile);
         }
+        self.publish_state_flags(&state);
     }
 }
 
@@ -159,13 +189,19 @@ impl PlatformAtlas for NovaAtlas {
         if let Some(tile) = state.tiles.get(key) {
             return Ok(Some(*tile));
         }
-        if let Some(index) = state
-            .pending_removals
-            .iter()
-            .rposition(|pending| pending.key == *key)
+        // Repainting an image whose removal is still queued cancels the
+        // removal instead of re-decoding and re-uploading. Non-image keys
+        // (glyphs cleared on DPI changes, probe-only lookups) must observe
+        // removals immediately, so they never resurrect.
+        if matches!(key, AtlasKey::Image(_))
+            && let Some(index) = state
+                .pending_removals
+                .iter()
+                .rposition(|pending| pending.key == *key)
         {
             let pending = state.pending_removals.swap_remove(index);
             state.tiles.insert(pending.key, pending.tile);
+            self.publish_state_flags(&state);
             return Ok(Some(pending.tile));
         }
         drop(state);
@@ -189,9 +225,11 @@ impl PlatformAtlas for NovaAtlas {
                     size.height.0.max(1)
                 );
             }
+            self.publish_state_flags(&state);
             return Ok(fallback);
         };
         state.tiles.insert(key.clone(), tile);
+        self.publish_state_flags(&state);
         Ok(Some(tile))
     }
 
@@ -229,11 +267,13 @@ impl PlatformAtlas for NovaAtlas {
                 tile,
             });
         }
-        let Some(tile) = state.allocate_and_upload(key, size, bytes.as_ref()) else {
-            return Ok(state.fallback_tile(key.texture_kind()));
-        };
-        state.tiles.insert(key.clone(), tile);
-        Ok(Some(tile))
+        let allocated = state.allocate_and_upload(key, size, bytes.as_ref());
+        if let Some(tile) = allocated {
+            state.tiles.insert(key.clone(), tile);
+        }
+        let result = allocated.or_else(|| state.fallback_tile(key.texture_kind()));
+        self.publish_state_flags(&state);
+        Ok(result)
     }
 
     fn ensure_glyph_with(
@@ -330,6 +370,7 @@ impl PlatformAtlas for NovaAtlas {
                     key: key.clone(),
                     tile,
                 });
+                self.publish_state_flags(&state);
             }
         }
     }
@@ -486,6 +527,9 @@ impl NovaAtlasState {
         if current_bytes.saturating_add(texture_bytes) > self.max_atlas_bytes {
             return None;
         }
+        // Bump before pushing: a failed push only causes one spurious renderer sync, while a
+        // missed bump could leave a new texture without GPU resources.
+        self.texture_set_generation = self.texture_set_generation.wrapping_add(1);
         let list = &mut self.texture_lists[atlas_kind_index(texture_kind)];
         let texture = Self::push_texture(texture_kind, content_size, list)?;
         let allocation = texture.allocator.allocate(allocation_size)?;
@@ -573,6 +617,7 @@ impl NovaAtlasState {
             }
         };
         if should_remove_pending_uploads {
+            self.texture_set_generation = self.texture_set_generation.wrapping_add(1);
             self.remove_pending_uploads_for_texture(texture_id);
         }
     }

@@ -36,5 +36,10 @@ pub(super) const MAX_CUSTOM_MESH_3D_VERTICES: usize =
     (64 * 1024 * 1024) / PACKED_CUSTOM_MESH_3D_VERTEX_BYTES;
 pub(super) const MAX_CUSTOM_MESH_3D_INDICES: usize =
     (64 * 1024 * 1024) / PACKED_CUSTOM_MESH_3D_INDEX_BYTES;
+/// The full-size mesh buffers commit ~128 MiB of upload-heap memory, so the
+/// renderer starts with tiny placeholders and promotes them to full capacity
+/// the first time a frame actually carries custom 3D meshes.
+pub(super) const CUSTOM_MESH_3D_PLACEHOLDER_VERTICES: usize = 64;
+pub(super) const CUSTOM_MESH_3D_PLACEHOLDER_INDICES: usize = 64;
 pub(super) const DEFAULT_BACKDROP_BLUR_DOWNSAMPLE: u8 = 2;
 pub(super) const MAX_BACKDROP_BLUR_LEVELS: u8 = 6;

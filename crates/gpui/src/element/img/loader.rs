@@ -13,16 +13,22 @@ use image::{Frame, ImageBuffer};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
+    any::TypeId,
     borrow::Cow,
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs,
     sync::{Arc, OnceLock},
     time::Instant,
 };
 
+struct CompressedCacheEntry {
+    bytes: Arc<[u8]>,
+    last_used: u64,
+}
+
 struct CompressedCache {
-    entries: HashMap<u64, Arc<[u8]>>,
-    order: VecDeque<u64>,
+    entries: HashMap<u64, CompressedCacheEntry>,
+    next_use: u64,
     retained_bytes: usize,
     max_bytes: usize,
 }
@@ -31,46 +37,62 @@ impl CompressedCache {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
-            order: VecDeque::new(),
+            next_use: 0,
             retained_bytes: 0,
             max_bytes: 64 * 1024 * 1024,
         }
     }
 
+    fn touch(&mut self) -> u64 {
+        let use_order = self.next_use;
+        self.next_use = self.next_use.wrapping_add(1);
+        use_order
+    }
+
     fn get(&mut self, key: u64) -> Option<Arc<[u8]>> {
-        let bytes = self.entries.get(&key)?.clone();
-        self.order.retain(|entry| *entry != key);
-        self.order.push_back(key);
-        Some(bytes)
+        let use_order = self.touch();
+        let entry = self.entries.get_mut(&key)?;
+        entry.last_used = use_order;
+        Some(entry.bytes.clone())
     }
 
     fn insert(&mut self, key: u64, bytes: Arc<[u8]>) {
         if bytes.len() > self.max_bytes {
             return;
         }
-        if let Some(previous) = self.entries.insert(key, bytes.clone()) {
-            self.retained_bytes = self.retained_bytes.saturating_sub(previous.len());
-            self.order.retain(|entry| *entry != key);
+        let byte_len = bytes.len();
+        let last_used = self.touch();
+        if let Some(previous) = self
+            .entries
+            .insert(key, CompressedCacheEntry { bytes, last_used })
+        {
+            self.retained_bytes = self.retained_bytes.saturating_sub(previous.bytes.len());
         }
-        self.retained_bytes = self.retained_bytes.saturating_add(bytes.len());
-        self.order.push_back(key);
-        while self.retained_bytes > self.max_bytes {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            if let Some(previous) = self.entries.remove(&oldest) {
-                self.retained_bytes = self.retained_bytes.saturating_sub(previous.len());
-            }
+        self.retained_bytes = self.retained_bytes.saturating_add(byte_len);
+        self.trim(self.max_bytes);
+    }
+
+    /// Removes the least recently used entry; eviction is a low-frequency path, so the linear
+    /// scan here is the cheap trade for O(1) `get`/`insert`.
+    fn evict_least_recently_used(&mut self) -> bool {
+        let Some(oldest) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| *key)
+        else {
+            return false;
+        };
+        if let Some(previous) = self.entries.remove(&oldest) {
+            self.retained_bytes = self.retained_bytes.saturating_sub(previous.bytes.len());
         }
+        true
     }
 
     fn trim(&mut self, max_bytes: usize) {
         while self.retained_bytes > max_bytes {
-            let Some(oldest) = self.order.pop_front() else {
+            if !self.evict_least_recently_used() {
                 break;
-            };
-            if let Some(previous) = self.entries.remove(&oldest) {
-                self.retained_bytes = self.retained_bytes.saturating_sub(previous.len());
             }
         }
     }
@@ -283,6 +305,10 @@ impl Asset for ImageAssetLoader {
 
             let decode_duration = decode_started.elapsed();
             data = data.with_pipeline_metadata(compressed_len, decode_duration);
+            // Reuse the same ImageId across re-decodes of this resource so retained atlas
+            // tiles keyed by the id are reused instead of leaking a new tile per decode.
+            data.id =
+                crate::interned_render_image_id(TypeId::of::<ImageAssetLoader>(), hash(&source));
             record_image_decode_metrics_with_threshold(
                 compressed_len,
                 data.decoded_byte_len(),
@@ -343,6 +369,13 @@ impl Asset for TargetSizeImageAssetLoader {
             data = data
                 .with_scale_factor(scale_factor)
                 .with_pipeline_metadata(compressed_len, decode_duration);
+            // The source hash covers the resource, decode target, scale factor, and object
+            // fit, so a matching key always yields pixel-identical frames and can safely
+            // reuse the previous ImageId (and therefore its resident atlas tiles).
+            data.id = crate::interned_render_image_id(
+                TypeId::of::<TargetSizeImageAssetLoader>(),
+                hash(&source),
+            );
             record_image_decode_metrics_with_threshold(
                 compressed_len,
                 data.decoded_byte_len(),

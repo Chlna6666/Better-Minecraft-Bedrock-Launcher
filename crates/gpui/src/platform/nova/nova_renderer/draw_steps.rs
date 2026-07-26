@@ -101,16 +101,22 @@ impl NovaRenderer {
         );
     }
 
-    pub(super) fn backdrop_blur_render_passes(&self) -> Vec<NovaBackdropBlurRenderPass> {
+    pub(super) fn prepare_backdrop_blur_passes(&mut self, enabled: bool) {
+        let passes = &mut self.draw_step_scratch.backdrop_blur_passes;
+        passes.clear();
+        if !enabled {
+            return;
+        }
         let Some(targets) = self.backdrop_blur_targets.as_ref() else {
-            return Vec::new();
+            return;
         };
-        backdrop_blur_render_passes_for_targets(
+        backdrop_blur_render_passes_for_targets_into(
             &self.pipelines,
             targets,
             self.current_frame_resource_index,
             self.frame_upload.backdrop_blur_levels(),
-        )
+            passes,
+        );
     }
 
     pub(super) fn has_backdrop_blurs(&self) -> bool {

@@ -70,6 +70,7 @@ where
             &layouts,
             &frame_buffers,
             shared_buffers.custom_mesh_3d_vertices_buffer,
+            CUSTOM_MESH_3D_PLACEHOLDER_VERTICES,
         )?;
         frame_resources.push(NovaFrameResources {
             buffers: frame_buffers,
@@ -129,6 +130,7 @@ where
         frame_resources,
         custom_mesh_3d_vertices_buffer: shared_buffers.custom_mesh_3d_vertices_buffer,
         custom_mesh_3d_indices_buffer: shared_buffers.custom_mesh_3d_indices_buffer,
+        custom_mesh_3d_resource_set_layout: layouts.custom_mesh_3d_resource_set_layout,
         path_resource_set_layout: layouts.path_resource_set_layout,
         mono_sprite_resource_set_layout: layouts.mono_resource_set_layout,
         poly_sprite_resource_set_layout: layouts.poly_resource_set_layout,

@@ -136,6 +136,7 @@ impl NovaRenderer {
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
+                    synced_atlas_texture_generation: None,
                     underline_resource_set: current_frame_resources
                         .resource_sets
                         .underline_resource_set,
@@ -146,6 +147,9 @@ impl NovaRenderer {
                     custom_mesh_3d_resource_set: current_frame_resources
                         .resource_sets
                         .custom_mesh_3d_resource_set,
+                    custom_mesh_3d_resource_set_layout: resources
+                        .custom_mesh_3d_resource_set_layout,
+                    custom_mesh_3d_buffers_ready: false,
                     custom_mesh_3d_mesh_cache: FxHashMap::default(),
                     custom_mesh_3d_vertex_cursor: 0,
                     custom_mesh_3d_index_cursor: 0,
@@ -265,6 +269,7 @@ impl NovaRenderer {
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
+                    synced_atlas_texture_generation: None,
                     underline_resource_set: current_frame_resources
                         .resource_sets
                         .underline_resource_set,
@@ -275,6 +280,9 @@ impl NovaRenderer {
                     custom_mesh_3d_resource_set: current_frame_resources
                         .resource_sets
                         .custom_mesh_3d_resource_set,
+                    custom_mesh_3d_resource_set_layout: resources
+                        .custom_mesh_3d_resource_set_layout,
+                    custom_mesh_3d_buffers_ready: false,
                     custom_mesh_3d_mesh_cache: FxHashMap::default(),
                     custom_mesh_3d_vertex_cursor: 0,
                     custom_mesh_3d_index_cursor: 0,
@@ -397,6 +405,7 @@ impl NovaRenderer {
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
+                    synced_atlas_texture_generation: None,
                     underline_resource_set: current_frame_resources
                         .resource_sets
                         .underline_resource_set,
@@ -407,6 +416,9 @@ impl NovaRenderer {
                     custom_mesh_3d_resource_set: current_frame_resources
                         .resource_sets
                         .custom_mesh_3d_resource_set,
+                    custom_mesh_3d_resource_set_layout: resources
+                        .custom_mesh_3d_resource_set_layout,
+                    custom_mesh_3d_buffers_ready: false,
                     custom_mesh_3d_mesh_cache: FxHashMap::default(),
                     custom_mesh_3d_vertex_cursor: 0,
                     custom_mesh_3d_index_cursor: 0,

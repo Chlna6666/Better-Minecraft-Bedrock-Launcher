@@ -4,9 +4,11 @@ use image::{Delay, Frame};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
+    any::TypeId,
+    collections::HashMap,
     fmt,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
         mpsc::{TryRecvError, sync_channel},
     },
@@ -43,6 +45,29 @@ fn next_render_image_id() -> ImageId {
     static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
     ImageId(NEXT_ID.fetch_add(1, SeqCst))
+}
+
+/// Returns a stable [`ImageId`] for a repeatable decode source.
+///
+/// Asset loaders that can re-decode the same source with the same decode parameters use this to
+/// keep the id stable across evictions of the decoded image. Because atlas tiles are keyed by
+/// `RenderImageParams { image_id, .. }` and retained scenes keep tiles resident after
+/// `drop_image`, a re-decode with a fresh id would allocate a new tile on every
+/// trim/redecode cycle until the atlas budget is exhausted. Reusing the id lets the re-decoded
+/// image (which is pixel-identical, since the source and decode parameters match) hit the
+/// existing tile instead.
+///
+/// Entries are never evicted: each is a `(TypeId, u64) -> ImageId` pair, so the retained set is
+/// tiny and bounded by the number of distinct image sources the application ever loads.
+/// Manually constructed [`RenderImage`]s keep their unique auto-incremented ids.
+pub(crate) fn interned_render_image_id(loader: TypeId, source_hash: u64) -> ImageId {
+    static INTERNED: OnceLock<Mutex<HashMap<(TypeId, u64), ImageId>>> = OnceLock::new();
+
+    *INTERNED
+        .get_or_init(Default::default)
+        .lock()
+        .entry((loader, source_hash))
+        .or_insert_with(next_render_image_id)
 }
 
 impl RenderImage {

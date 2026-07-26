@@ -17,27 +17,76 @@ use super::App;
 mod asset_loading_tests;
 
 impl App {
-    fn enforce_compressed_asset_budget(&mut self) {
-        let completed = self
-            .compressed_asset_lru
-            .iter()
-            .filter_map(|asset_id| {
-                let task = self.loading_assets.get(asset_id)?.downcast_ref::<
+    /// Records the byte sizes of compressed asset tasks that completed since the last call.
+    ///
+    /// This keeps `enforce_compressed_asset_budget` from downcasting and polling every retained
+    /// task on each fetch: only tasks still pending completion are polled here, and everything
+    /// else is served from the accounted byte counter.
+    fn account_completed_compressed_assets(&mut self) {
+        if self.compressed_assets_pending.is_empty() {
+            return;
+        }
+        let mut pending = std::mem::take(&mut self.compressed_assets_pending);
+        pending.retain(|asset_id| {
+            let Some(task) = self.loading_assets.get(asset_id).and_then(|task| {
+                task.downcast_ref::<
                     Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
-                >()?;
-                let bytes = task.clone().now_or_never()?.ok()?;
-                Some((*asset_id, bytes.len()))
-            })
-            .collect::<Vec<_>>();
-        let mut retained_bytes = completed.iter().map(|(_, bytes)| *bytes).sum::<usize>();
-        for (asset_id, bytes) in completed {
-            if retained_bytes <= self.image_pipeline_config.max_compressed_bytes {
+                >()
+            }) else {
+                // The asset was removed while its load was pending; nothing to account.
+                return false;
+            };
+            match task.clone().now_or_never() {
+                Some(result) => {
+                    // Failed loads are recorded with zero bytes so they stop being polled.
+                    let bytes = result.map(|bytes| bytes.len()).unwrap_or(0);
+                    self.compressed_asset_sizes.insert(*asset_id, bytes);
+                    self.compressed_asset_accounted_bytes =
+                        self.compressed_asset_accounted_bytes.saturating_add(bytes);
+                    false
+                }
+                None => true,
+            }
+        });
+        self.compressed_assets_pending = pending;
+    }
+
+    /// Drops budget accounting for a compressed asset that is being removed.
+    fn forget_compressed_asset_accounting(&mut self, asset_id: (TypeId, u64)) {
+        if let Some(bytes) = self.compressed_asset_sizes.remove(&asset_id) {
+            self.compressed_asset_accounted_bytes =
+                self.compressed_asset_accounted_bytes.saturating_sub(bytes);
+        }
+        self.compressed_assets_pending
+            .retain(|candidate| *candidate != asset_id);
+    }
+
+    fn enforce_compressed_asset_budget(&mut self) {
+        self.account_completed_compressed_assets();
+        let max_bytes = self.image_pipeline_config.max_compressed_bytes;
+        if self.compressed_asset_accounted_bytes <= max_bytes {
+            return;
+        }
+        let mut evicted = Vec::new();
+        let mut retained_bytes = self.compressed_asset_accounted_bytes;
+        for asset_id in &self.compressed_asset_lru {
+            if retained_bytes <= max_bytes {
                 break;
             }
+            let Some(bytes) = self.compressed_asset_sizes.get(asset_id).copied() else {
+                continue;
+            };
+            if bytes == 0 {
+                continue;
+            }
+            evicted.push(*asset_id);
+            retained_bytes = retained_bytes.saturating_sub(bytes);
+        }
+        for asset_id in evicted {
             self.loading_assets.remove(&asset_id);
             self.compressed_asset_lru
                 .retain(|candidate| *candidate != asset_id);
-            retained_bytes = retained_bytes.saturating_sub(bytes);
+            self.forget_compressed_asset_accounting(asset_id);
         }
     }
 
@@ -81,6 +130,7 @@ impl App {
             self.loading_assets.remove(&asset_id);
             self.compressed_asset_lru
                 .retain(|candidate| *candidate != asset_id);
+            self.forget_compressed_asset_accounting(asset_id);
         }
 
         let resource_type = TypeId::of::<crate::ImgResourceLoader>();
@@ -132,6 +182,7 @@ impl App {
             .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap());
         self.compressed_asset_lru
             .retain(|candidate| *candidate != asset_id);
+        self.forget_compressed_asset_accounting(asset_id);
         task
     }
 
@@ -141,23 +192,28 @@ impl App {
     /// time, and the results of this call will be cached
     pub fn fetch_asset<A: Asset>(&mut self, source: &A::Source) -> (Shared<Task<A::Output>>, bool) {
         let asset_id = (TypeId::of::<A>(), hash(source));
-        let mut is_first = false;
-        let task = self
+        // Fast path: clone an already registered task without removing and re-boxing it.
+        let existing = self
             .loading_assets
-            .remove(&asset_id)
-            .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap())
-            .unwrap_or_else(|| {
-                is_first = true;
-                let future = A::load(source.clone(), self);
+            .get(&asset_id)
+            .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
+            .cloned();
+        let mut is_first = false;
+        let task = existing.unwrap_or_else(|| {
+            is_first = true;
+            let future = A::load(source.clone(), self);
+            let task = self.background_executor().spawn(future).shared();
+            self.loading_assets.insert(asset_id, Box::new(task.clone()));
+            task
+        });
 
-                self.background_executor().spawn(future).shared()
-            });
-
-        self.loading_assets.insert(asset_id, Box::new(task.clone()));
         if asset_id.0 == TypeId::of::<crate::CompressedImgResourceLoader>() {
             self.compressed_asset_lru
                 .retain(|candidate| *candidate != asset_id);
             self.compressed_asset_lru.push_back(asset_id);
+            if is_first {
+                self.compressed_assets_pending.push(asset_id);
+            }
             self.enforce_compressed_asset_budget();
         }
 

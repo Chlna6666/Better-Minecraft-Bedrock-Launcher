@@ -2,11 +2,12 @@ use super::element::*;
 use super::error::ImageCacheError;
 use crate::{
     AnyImageCache, App, Asset, AssetLogger, Image, RenderImage, Resource, SharedString, SharedUri,
-    Window,
+    Window, hash,
 };
 use anyhow::Result;
 use futures::{Future, FutureExt};
 use std::{
+    any::TypeId,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -239,6 +240,21 @@ impl EncodedImageBytes {
             bytes: bytes.into(),
         }
     }
+
+    /// Hashes a cheap identity for this source: the format plus the byte buffer's address and
+    /// length rather than its contents.
+    ///
+    /// This is stable across frames as long as the same `Arc` (or clones of it) is reused,
+    /// which is how element ids are expected to behave; two different allocations holding
+    /// identical bytes hash differently, which is acceptable for id derivation and avoids
+    /// re-hashing potentially megabytes of compressed data every frame.
+    pub(crate) fn hash_identity(&self, hasher: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+
+        self.format.hash(hasher);
+        (Arc::as_ptr(&self.bytes) as *const u8 as usize).hash(hasher);
+        self.bytes.len().hash(hasher);
+    }
 }
 
 #[derive(Clone)]
@@ -256,9 +272,16 @@ impl Asset for ImageDecoder {
         let config = cx.image_pipeline_config().animated;
         let executor = cx.background_executor().clone();
         async move {
-            source
-                .to_image_data_with_config(renderer, config, Some(executor))
-                .map_err(Into::into)
+            let mut image = source.to_image_data_with_config(renderer, config, Some(executor))?;
+            // `Image::hash` is derived from its content, so re-decoding the same image after
+            // an eviction can reuse the previous ImageId and its resident atlas tiles. The
+            // decode returns a freshly created Arc, so `get_mut` normally succeeds; if it
+            // ever does not, we conservatively keep the auto-assigned id.
+            if let Some(image) = Arc::get_mut(&mut image) {
+                image.id =
+                    crate::interned_render_image_id(TypeId::of::<ImageDecoder>(), hash(&source));
+            }
+            Ok(image)
         }
     }
 }
@@ -278,10 +301,17 @@ impl Asset for EncodedImageDecoder {
         let config = cx.image_pipeline_config().animated;
         let executor = cx.background_executor().clone();
         async move {
-            let image = Image::from_bytes(source.format, source.bytes.to_vec());
-            image
-                .to_image_data_with_config(renderer, config, Some(executor))
-                .map_err(Into::into)
+            let decoded = Image::from_bytes(source.format, source.bytes.to_vec());
+            let mut image = decoded.to_image_data_with_config(renderer, config, Some(executor))?;
+            // The source hash covers the format and the encoded bytes, so a re-decode after
+            // an eviction produces identical frames and can reuse the previous ImageId.
+            if let Some(image) = Arc::get_mut(&mut image) {
+                image.id = crate::interned_render_image_id(
+                    TypeId::of::<EncodedImageDecoder>(),
+                    hash(&source),
+                );
+            }
+            Ok(image)
         }
     }
 }

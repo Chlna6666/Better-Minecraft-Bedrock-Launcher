@@ -27,6 +27,7 @@ use gfx_core::{GfxError, Result};
 mod platform {
     use std::{
         ptr, str,
+        sync::Arc,
         time::{Duration, Instant},
     };
 
@@ -49,7 +50,9 @@ mod platform {
         SwapchainId, TextureDesc, TextureDimension, TextureId, TextureUsage, TextureViewDesc,
         TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
     };
-    use gfx_memory::{UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc};
+    use gfx_memory::{
+        DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
+    };
     use log::log;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
     use windows::{
@@ -117,20 +120,25 @@ mod platform {
                     DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
-                DXGI_ERROR_NOT_FOUND, DXGI_PRESENT, DXGI_SCALING, DXGI_SCALING_NONE,
-                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_PRESENT,
+                DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
-                IDXGIFactory4, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain3,
+                IDXGIFactory4, IDXGIFactory5, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain3,
             },
         },
         Win32::{
             Foundation::{CloseHandle, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT},
             System::Threading::{CreateEventW, WaitForSingleObject},
         },
-        core::{Error as WindowsError, Interface, PCSTR, PCWSTR},
+        core::{BOOL, Error as WindowsError, Interface, PCSTR, PCWSTR},
     };
 
-    const BACK_BUFFER_COUNT: u32 = 2;
+    const BACK_BUFFER_COUNT: u32 = 3;
+    const DX12_MAX_FRAME_LATENCY: u32 = 1;
+    const DX12_FRAME_LATENCY_WAIT_MILLIS: u32 = 1000;
+    const DX12_UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
     const DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT: u64 = 512;
     const DX12_TEXTURE_DATA_PITCH_ALIGNMENT: u64 = 256;
     const DX12_RESOURCE_DESCRIPTOR_HEAP_CAPACITY: u32 = 4096;
@@ -178,6 +186,10 @@ mod platform {
         upload_ring: UploadRingAllocator,
         upload_pages: Vec<Option<Dx12UploadPage>>,
         deferred_command_encoders: Vec<DeferredDx12CommandEncoder>,
+        pending_texture_uploads: DeferredFreeQueue<Dx12SubmittedCommandList>,
+        upload_command_pool: Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
+        deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
+        allow_tearing: bool,
         submitted_frames: u64,
     }
 
@@ -190,6 +202,7 @@ mod platform {
         pub fn new(_desc: &DeviceDesc) -> Result<Self> {
             enable_debug_layer_if_requested();
             let factory = create_factory()?;
+            let allow_tearing = factory_supports_tearing(&factory);
             let adapter = pick_adapter(&factory)?;
             let device = create_device(&adapter)?;
             let graphics_queue = create_command_queue(&device)?;
@@ -242,6 +255,10 @@ mod platform {
                 upload_ring,
                 upload_pages: Vec::new(),
                 deferred_command_encoders: Vec::new(),
+                pending_texture_uploads: DeferredFreeQueue::new(),
+                upload_command_pool: Vec::new(),
+                deferred_releases: DeferredFreeQueue::new(),
+                allow_tearing,
                 submitted_frames: 0,
             })
         }
@@ -311,6 +328,12 @@ mod platform {
             config: SurfaceConfig,
         ) -> Result<Dx12Swapchain> {
             let uses_composition = config.alpha_mode == CompositeAlphaMode::Premultiplied;
+            // Frame-latency waitable objects let the frame loop block before recording
+            // instead of stalling inside Present once the queue is full.
+            let mut creation_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32;
+            if self.allow_tearing && !uses_composition {
+                creation_flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32;
+            }
             let swapchain_desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: config.size.width(),
                 Height: config.size.height(),
@@ -337,25 +360,60 @@ mod platform {
                     DXGI_SWAP_EFFECT_FLIP_DISCARD
                 },
                 AlphaMode: composite_alpha_to_dxgi(config.alpha_mode),
-                Flags: 0,
+                Flags: creation_flags,
             };
-            let (swapchain1, composition) = if uses_composition {
+            let hwnd_creation_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
+                | if self.allow_tearing {
+                    DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32
+                } else {
+                    0
+                };
+            let (swapchain1, composition, creation_flags) = if uses_composition {
                 match self.build_composition_swapchain(hwnd, &swapchain_desc) {
-                    Ok((swapchain, composition)) => (swapchain, composition),
+                    Ok((swapchain, composition)) => (swapchain, composition, creation_flags),
                     Err(error) => {
                         log!(
                             log::Level::Warn,
                             "DX12 DirectComposition swapchain unavailable; falling back to HWND swapchain: {error:?}"
                         );
-                        (self.build_hwnd_swapchain(hwnd, config)?, None)
+                        (
+                            self.build_hwnd_swapchain(hwnd, config, hwnd_creation_flags)?,
+                            None,
+                            hwnd_creation_flags,
+                        )
                     }
                 }
             } else {
-                (self.build_hwnd_swapchain(hwnd, config)?, None)
+                (
+                    self.build_hwnd_swapchain(hwnd, config, hwnd_creation_flags)?,
+                    None,
+                    hwnd_creation_flags,
+                )
             };
             let swapchain: IDXGISwapChain3 = swapchain1
                 .cast()
                 .map_err(|error| GfxError::Backend(error.to_string()))?;
+            let frame_latency_waitable = if creation_flags
+                & (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32)
+                != 0
+            {
+                // SAFETY: Swapchain was created with the frame-latency waitable flag.
+                if let Err(error) =
+                    unsafe { swapchain.SetMaximumFrameLatency(DX12_MAX_FRAME_LATENCY) }
+                {
+                    log!(
+                        log::Level::Warn,
+                        "DX12 SetMaximumFrameLatency failed; frame pacing falls back to Present: {error:?}"
+                    );
+                    None
+                } else {
+                    // SAFETY: Swapchain is valid; the returned handle is owned by this record.
+                    let handle = unsafe { swapchain.GetFrameLatencyWaitableObject() };
+                    (!handle.is_invalid()).then_some(handle)
+                }
+            } else {
+                None
+            };
             let mut swapchain = Dx12Swapchain {
                 surface,
                 config,
@@ -365,6 +423,8 @@ mod platform {
                 render_targets: Vec::new(),
                 rtv_descriptor_size: 0,
                 frame_index: 0,
+                creation_flags,
+                frame_latency_waitable,
             };
             Self::rebuild_render_targets(&self.device, &mut swapchain)?;
             Ok(swapchain)
@@ -431,6 +491,7 @@ mod platform {
             &self,
             hwnd: HWND,
             config: SurfaceConfig,
+            creation_flags: u32,
         ) -> Result<IDXGISwapChain1> {
             let swapchain_desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: config.size.width(),
@@ -451,7 +512,7 @@ mod platform {
                         DXGI_ALPHA_MODE_UNSPECIFIED
                     }
                 },
-                Flags: 0,
+                Flags: creation_flags,
             };
 
             // SAFETY: Factory, queue, HWND, and descriptor are valid for the duration of the call.
@@ -527,7 +588,10 @@ mod platform {
             };
 
             let next_swapchain = self.build_swapchain(surface, hwnd, config)?;
-            let _old_swapchain = self.swapchains.replace_live(swapchain, next_swapchain)?;
+            let old_swapchain = self.swapchains.replace_live(swapchain, next_swapchain)?;
+            // The GPU idled in wait_for_pending_work above; this releases the
+            // old backbuffers and closes its frame-latency waitable handle.
+            self.release_deferred_payload(DeferredDx12Release::Swapchain(old_swapchain));
             Ok(())
         }
 
@@ -560,7 +624,7 @@ mod platform {
                     config.size.width(),
                     config.size.height(),
                     format_to_dxgi(config.format),
-                    DXGI_SWAP_CHAIN_FLAG(0),
+                    DXGI_SWAP_CHAIN_FLAG(swapchain.creation_flags as i32),
                 )
             } {
                 swapchain.config = previous_config;
@@ -582,7 +646,7 @@ mod platform {
                         previous_config.size.width(),
                         previous_config.size.height(),
                         format_to_dxgi(previous_config.format),
-                        DXGI_SWAP_CHAIN_FLAG(0),
+                        DXGI_SWAP_CHAIN_FLAG(swapchain.creation_flags as i32),
                     )
                 };
                 if let Err(rollback_error) = rollback {
@@ -628,16 +692,6 @@ mod platform {
             Ok(self.buffers.insert(Dx12Buffer {
                 desc: desc.clone(),
                 resource: Some(resource),
-                data: if desc.memory_location == MemoryLocation::CpuToGpu {
-                    Some(vec![
-                        0;
-                        usize::try_from(desc.size).map_err(|error| {
-                            GfxError::InvalidInput(format!("buffer size overflow: {error}"))
-                        })?
-                    ])
-                } else {
-                    None
-                },
             }))
         }
 
@@ -648,20 +702,24 @@ mod platform {
         /// Returns [`GfxError`] when the handle or write range is invalid.
         fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
             let buffer = self.buffers.get_mut(buffer)?;
-            let storage = buffer.data.as_mut().ok_or_else(|| {
-                GfxError::Unavailable(
+            if buffer.desc.memory_location != MemoryLocation::CpuToGpu {
+                return Err(GfxError::Unavailable(
                     "DX12 GPU-only staging upload is not enabled in this build".to_string(),
-                )
-            })?;
+                ));
+            }
             let offset = usize::try_from(offset)
                 .map_err(|error| GfxError::InvalidInput(format!("offset overflow: {error}")))?;
             let end = offset
                 .checked_add(data.len())
                 .ok_or_else(|| GfxError::InvalidInput("buffer write range overflow".to_string()))?;
-            let target = storage.get_mut(offset..end).ok_or_else(|| {
-                GfxError::InvalidInput("buffer write range is out of bounds".to_string())
+            let size = usize::try_from(buffer.desc.size).map_err(|error| {
+                GfxError::InvalidInput(format!("buffer size overflow: {error}"))
             })?;
-            target.copy_from_slice(data);
+            if end > size {
+                return Err(GfxError::InvalidInput(
+                    "buffer write range is out of bounds".to_string(),
+                ));
+            }
             let resource = buffer.resource.as_ref().ok_or_else(|| {
                 GfxError::Backend("DX12 buffer has no native resource".to_string())
             })?;
@@ -697,7 +755,7 @@ mod platform {
         fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
             let copy = self.prepare_texture_copy(desc, data)?;
             let fence_value = self.upload_textures_2d(std::slice::from_ref(&copy))?;
-            self.complete_synchronous_upload(fence_value);
+            self.upload_ring.retire_used_pages(fence_value);
             self.textures.get_mut(desc.texture)?.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             Ok(())
         }
@@ -721,7 +779,7 @@ mod platform {
                 return Ok(());
             }
             let fence_value = self.upload_textures_2d(&copies)?;
-            self.complete_synchronous_upload(fence_value);
+            self.upload_ring.retire_used_pages(fence_value);
             for texture_id in uploaded_textures {
                 self.textures.get_mut(texture_id)?.state =
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
@@ -868,7 +926,7 @@ mod platform {
             let draw_step_constants_root_index = draw_step_constants_root_index(&layouts)?;
             Ok(self.pipeline_layouts.insert(Dx12PipelineLayout {
                 root_signature,
-                resource_set_layouts: desc.resource_set_layouts.clone(),
+                resource_set_layouts: Arc::from(desc.resource_set_layouts.as_slice()),
                 draw_step_constants_root_index,
             }))
         }
@@ -1160,7 +1218,11 @@ mod platform {
                         pipeline_layout.resource_set_layouts.clone(),
                     )
                 } else {
-                    (create_empty_root_signature(&self.device)?, 0, Vec::new())
+                    (
+                        create_empty_root_signature(&self.device)?,
+                        0,
+                        Arc::from(Vec::new()),
+                    )
                 };
             let pipeline_state = create_pipeline_state(
                 &self.device,
@@ -1308,6 +1370,7 @@ mod platform {
             steps: &[DrawStepDesc],
             clear_color: ClearColor,
         ) -> Result<()> {
+            self.wait_swapchain_frame_latency(swapchain);
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
                 .record_resource_steps_frame(encoder, swapchain, render_pass, steps, clear_color)
@@ -1357,6 +1420,7 @@ mod platform {
             clear_color: ClearColor,
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
+            self.wait_swapchain_frame_latency(swapchain);
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
                 .record_render_step_list_frame(
@@ -1476,6 +1540,7 @@ mod platform {
             clear_color: ClearColor,
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId> {
+            self.wait_swapchain_frame_latency(swapchain);
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
                 .record_render_step_list_frame(
@@ -1553,11 +1618,29 @@ mod platform {
         /// # Errors
         ///
         /// Returns [`GfxError::Unavailable`] until the DXGI present path is enabled.
+        /// Blocks until the swapchain can accept a new frame, bounded by
+        /// [`DX12_FRAME_LATENCY_WAIT_MILLIS`]. Waiting here (before recording)
+        /// keeps `Present` from stalling the UI thread mid-frame and caps
+        /// queued-frame latency at [`DX12_MAX_FRAME_LATENCY`].
+        fn wait_swapchain_frame_latency(&self, swapchain: SwapchainId) {
+            let Ok(record) = self.swapchains.get(swapchain) else {
+                return;
+            };
+            if let Some(handle) = record.frame_latency_waitable {
+                // SAFETY: Handle is a live waitable object owned by the swapchain
+                // record; a timeout simply lets the frame proceed.
+                let _ = unsafe { WaitForSingleObject(handle, DX12_FRAME_LATENCY_WAIT_MILLIS) };
+            }
+        }
+
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
             self.check_device_removed("DX12 present preflight")?;
             {
                 let swapchain = self.swapchains.get_mut(swapchain)?;
-                let (sync_interval, flags) = present_mode_to_dxgi(swapchain.config.present_mode);
+                let supports_tearing =
+                    swapchain.creation_flags & (DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32) != 0;
+                let (sync_interval, flags) =
+                    present_mode_to_dxgi(swapchain.config.present_mode, supports_tearing);
                 // SAFETY: Swapchain is valid and command submission has completed recording.
                 let result = unsafe { swapchain.swapchain.Present(sync_interval, flags) };
                 result.ok().map_err(|error| {
@@ -1570,30 +1653,24 @@ mod platform {
             Ok(())
         }
 
-        /// Destroys a buffer.
+        /// Destroys a buffer once in-flight GPU work has retired.
         fn destroy_buffer(&mut self, buffer: BufferId) -> Result<()> {
-            self.wait_for_pending_work()?;
-            let _buffer = self.buffers.take(buffer)?;
+            let buffer = self.buffers.take(buffer)?;
+            self.defer_release(DeferredDx12Release::Buffer(buffer));
             Ok(())
         }
 
-        /// Destroys a texture.
+        /// Destroys a texture once in-flight GPU work has retired.
         fn destroy_texture(&mut self, texture: TextureId) -> Result<()> {
-            self.wait_for_pending_work()?;
-            let _texture = self.textures.take(texture)?;
+            let texture = self.textures.take(texture)?;
+            self.defer_release(DeferredDx12Release::Texture(texture));
             Ok(())
         }
 
-        /// Destroys a texture view.
+        /// Destroys a texture view once in-flight GPU work has retired.
         fn destroy_texture_view(&mut self, view: TextureViewId) -> Result<()> {
-            self.wait_for_pending_work()?;
             let view = self.texture_views.take(view)?;
-            if let Some(slot) = view.rtv_slot {
-                self.rtv_heap.free(slot);
-            }
-            if let Some(slot) = view.dsv_slot {
-                self.dsv_heap.free(slot);
-            }
+            self.defer_release(DeferredDx12Release::TextureView(view));
             Ok(())
         }
 
@@ -1609,11 +1686,13 @@ mod platform {
             Ok(())
         }
 
-        /// Destroys a resource set.
+        /// Destroys a resource set once in-flight GPU work has retired.
+        ///
+        /// Shader-visible descriptor slots are recycled only after the fence
+        /// completes so in-flight command lists never observe rewritten tables.
         fn destroy_resource_set(&mut self, resource_set: ResourceSetId) -> Result<()> {
-            self.wait_for_pending_work()?;
             let resource_set = self.resource_sets.take(resource_set)?;
-            self.release_resource_set_descriptors(&resource_set);
+            self.defer_release(DeferredDx12Release::ResourceSet(resource_set));
             Ok(())
         }
 
@@ -1641,17 +1720,21 @@ mod platform {
             Ok(())
         }
 
-        /// Destroys a command encoder.
+        /// Destroys a command encoder once in-flight GPU work has retired.
         fn destroy_command_encoder(&mut self, encoder: CommandEncoderId) -> Result<()> {
-            self.wait_for_pending_work()?;
-            let _encoder = self.command_encoders.take(encoder)?;
+            let encoder = self.command_encoders.take(encoder)?;
+            self.defer_release(DeferredDx12Release::CommandEncoder(encoder));
             Ok(())
         }
 
         /// Destroys a swapchain.
+        ///
+        /// Presentation to the swapchain has stopped by contract, but the last
+        /// frame may still be executing; the backbuffers are released through
+        /// the deferred queue instead of stalling the device.
         fn destroy_swapchain(&mut self, swapchain: SwapchainId) -> Result<()> {
-            self.wait_for_pending_work()?;
-            let _swapchain = self.swapchains.take(swapchain)?;
+            let swapchain = self.swapchains.take(swapchain)?;
+            self.defer_release(DeferredDx12Release::Swapchain(swapchain));
             Ok(())
         }
 
@@ -1672,11 +1755,71 @@ mod platform {
                         "DX12 deferred cleanup observed device removal: {error}"
                     );
                     self.deferred_command_encoders.clear();
+                    let _dead_uploads = self.pending_texture_uploads.drain_all();
+                    let releases = self.deferred_releases.drain_all();
+                    for payload in releases {
+                        self.release_deferred_payload(payload);
+                    }
                     return;
                 }
             };
             self.deferred_command_encoders
                 .retain(|encoder| encoder.fence_value > completed_fence);
+            let completed_uploads = self
+                .pending_texture_uploads
+                .collect_completed(completed_fence);
+            for commands in completed_uploads {
+                self.recycle_upload_commands(commands);
+            }
+            let releases = self.deferred_releases.collect_completed(completed_fence);
+            for payload in releases {
+                self.release_deferred_payload(payload);
+            }
+            self.upload_ring.complete_fence(completed_fence);
+            self.upload_ring.trim_idle_pages();
+        }
+
+        /// Queues `payload` for release once every submission recorded so far has
+        /// retired on the GPU, or releases it immediately when the GPU already
+        /// caught up. This replaces full-device stalls on the destroy path.
+        fn defer_release(&mut self, payload: DeferredDx12Release) {
+            let retire_fence = self.next_fence_value.saturating_sub(1);
+            match self.completed_fence_value("ID3D12Fence::GetCompletedValue") {
+                Ok(completed) if completed >= retire_fence => {
+                    self.release_deferred_payload(payload);
+                }
+                Ok(_) => self.deferred_releases.retire(retire_fence, payload),
+                // Device removal: the GPU can no longer touch the resource.
+                Err(_) => self.release_deferred_payload(payload),
+            }
+        }
+
+        fn release_deferred_payload(&mut self, payload: DeferredDx12Release) {
+            match payload {
+                DeferredDx12Release::TextureView(view) => {
+                    if let Some(slot) = view.rtv_slot {
+                        self.rtv_heap.free(slot);
+                    }
+                    if let Some(slot) = view.dsv_slot {
+                        self.dsv_heap.free(slot);
+                    }
+                }
+                DeferredDx12Release::ResourceSet(resource_set) => {
+                    self.release_resource_set_descriptors(&resource_set);
+                }
+                DeferredDx12Release::Swapchain(swapchain) => {
+                    if let Some(handle) = swapchain.frame_latency_waitable {
+                        // SAFETY: The handle was returned by GetFrameLatencyWaitableObject
+                        // and is owned exclusively by this swapchain record.
+                        unsafe {
+                            let _ = CloseHandle(handle);
+                        }
+                    }
+                }
+                DeferredDx12Release::Buffer(_)
+                | DeferredDx12Release::Texture(_)
+                | DeferredDx12Release::CommandEncoder(_) => {}
+            }
         }
 
         /// Returns live resource statistics.
@@ -2137,7 +2280,7 @@ mod platform {
                 .filter_map(RenderStepRef::scissor)
                 .find(|scissor| !scissor.is_empty())
                 .and_then(|scissor| dx12_rect_for_scissor(scissor, swapchain.config.size).ok())
-                .map(|rect| vec![rect]);
+                .map(|rect| [rect]);
             let clear = [
                 clear_color.red,
                 clear_color.green,
@@ -2164,7 +2307,11 @@ mod platform {
                     false,
                     dsv_handle_pointer,
                 );
-                command_list.ClearRenderTargetView(rtv_handle, &clear, clear_rects.as_deref());
+                command_list.ClearRenderTargetView(
+                    rtv_handle,
+                    &clear,
+                    clear_rects.as_ref().map(|rects| rects.as_slice()),
+                );
                 if let Some((dsv_handle, depth_load_op)) = depth_handle {
                     if let LoadOp::Clear(depth) = depth_load_op {
                         command_list.ClearDepthStencilView(
@@ -2638,15 +2785,31 @@ mod platform {
         }
 
         fn wait_for_pending_work(&mut self) -> Result<()> {
-            self.wait_for_gpu()?;
+            let fence_value = self.signal_frame()?;
+            self.wait_for_fence_value(fence_value)?;
             self.deferred_command_encoders.clear();
+            self.recycle_completed_uploads_all();
+            let releases = self.deferred_releases.drain_all();
+            for payload in releases {
+                self.release_deferred_payload(payload);
+            }
+            self.upload_ring.complete_fence(fence_value);
+            self.upload_ring.trim_idle_pages();
             Ok(())
         }
 
-        fn complete_synchronous_upload(&mut self, fence_value: u64) {
-            self.upload_ring.retire_used_pages(fence_value);
-            self.upload_ring.complete_fence(fence_value);
-            self.upload_ring.trim_idle_pages();
+        fn recycle_completed_uploads_all(&mut self) {
+            let completed = self.pending_texture_uploads.drain_all();
+            for commands in completed {
+                self.recycle_upload_commands(commands);
+            }
+        }
+
+        fn recycle_upload_commands(&mut self, commands: Dx12SubmittedCommandList) {
+            if self.upload_command_pool.len() < DX12_UPLOAD_COMMAND_POOL_CAPACITY {
+                self.upload_command_pool
+                    .push((commands.allocator, commands.graphics_command_list));
+            }
         }
 
         fn completed_fence_value(&self, operation: &str) -> Result<u64> {
@@ -2718,12 +2881,22 @@ mod platform {
             }
         }
 
+        /// Submits texture uploads on the graphics queue without blocking the CPU.
+        ///
+        /// The recorded command objects and upload-ring pages stay alive until
+        /// [`Self::poll_cleanup`] observes the returned fence value.
         fn upload_textures_2d(&mut self, copies: &[Dx12TextureCopyOwned]) -> Result<u64> {
-            let upload_commands = upload_textures_2d(&self.device, &self.graphics_queue, copies)?;
+            let recycled = if copies.is_empty() {
+                None
+            } else {
+                self.upload_command_pool.pop()
+            };
+            let upload_commands =
+                upload_textures_2d(&self.device, &self.graphics_queue, copies, recycled)?;
             let fence_value = self.signal_frame()?;
-            let wait_result = self.wait_for_fence_value(fence_value);
-            drop(upload_commands);
-            wait_result?;
+            if let Some(commands) = upload_commands {
+                self.pending_texture_uploads.retire(fence_value, commands);
+            }
             Ok(fence_value)
         }
 
@@ -3173,10 +3346,20 @@ mod platform {
         }
     }
 
-    fn present_mode_to_dxgi(mode: PresentMode) -> (u32, DXGI_PRESENT) {
+    fn present_mode_to_dxgi(mode: PresentMode, supports_tearing: bool) -> (u32, DXGI_PRESENT) {
         match mode {
-            PresentMode::Immediate => (0, DXGI_PRESENT::default()),
-            PresentMode::Fifo | PresentMode::Mailbox => (1, DXGI_PRESENT::default()),
+            PresentMode::Immediate => (
+                0,
+                if supports_tearing {
+                    DXGI_PRESENT_ALLOW_TEARING
+                } else {
+                    DXGI_PRESENT::default()
+                },
+            ),
+            // Flip-model present with sync interval 0 and no tearing flag gives
+            // latest-frame-wins semantics at the next vblank (true mailbox).
+            PresentMode::Mailbox => (0, DXGI_PRESENT::default()),
+            PresentMode::Fifo => (1, DXGI_PRESENT::default()),
         }
     }
 
@@ -3974,6 +4157,7 @@ mod platform {
         device: &ID3D12Device,
         queue: &ID3D12CommandQueue,
         copies: &[Dx12TextureCopyOwned],
+        recycled: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     ) -> Result<Option<Dx12SubmittedCommandList>> {
         if copies.is_empty() {
             return Ok(None);
@@ -3981,8 +4165,24 @@ mod platform {
         for copy in copies {
             validate_dx12_texture_copy(copy.upload_offset, copy.row_pitch)?;
         }
-        let allocator = create_command_allocator(device)?;
-        let command_list = create_command_list(device, &allocator)?;
+        let (allocator, command_list) = match recycled {
+            Some((allocator, command_list)) => {
+                // SAFETY: Pooled objects only re-enter circulation after their
+                // previous submission's fence completed, so Reset is safe here.
+                unsafe { allocator.Reset() }
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                // SAFETY: The pooled command list was closed after its previous
+                // submission; Reset reopens it against the reset allocator.
+                unsafe { command_list.Reset(&allocator, None) }
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                (allocator, command_list)
+            }
+            None => {
+                let allocator = create_command_allocator(device)?;
+                let command_list = create_command_list(device, &allocator)?;
+                (allocator, command_list)
+            }
+        };
         let mut transitioned_textures = Vec::new();
         for copy in copies {
             if !transitioned_textures.contains(&copy.texture_id) {
@@ -4059,10 +4259,27 @@ mod platform {
             queue.ExecuteCommandLists(&[Some(command_list.clone())]);
         }
         Ok(Some(Dx12SubmittedCommandList {
-            _allocator: allocator,
-            _graphics_command_list: graphics_command_list,
+            allocator,
+            graphics_command_list,
             _command_list: command_list,
         }))
+    }
+
+    fn factory_supports_tearing(factory: &IDXGIFactory4) -> bool {
+        let Ok(factory5) = factory.cast::<IDXGIFactory5>() else {
+            return false;
+        };
+        let mut allow_tearing = BOOL::default();
+        // SAFETY: Output pointer and size describe a single BOOL as required by
+        // DXGI_FEATURE_PRESENT_ALLOW_TEARING.
+        let supported = unsafe {
+            factory5.CheckFeatureSupport(
+                DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                (&raw mut allow_tearing).cast(),
+                u32::try_from(size_of::<BOOL>()).unwrap_or(0),
+            )
+        };
+        supported.is_ok() && allow_tearing.as_bool()
     }
 
     fn validate_dx12_texture_copy(upload_offset: u64, row_pitch: u32) -> Result<()> {
@@ -4494,7 +4711,6 @@ mod platform {
     struct Dx12Buffer {
         desc: BufferDesc,
         resource: Option<ID3D12Resource>,
-        data: Option<Vec<u8>>,
     }
 
     #[derive(Clone)]
@@ -4526,9 +4742,19 @@ mod platform {
     }
 
     struct Dx12SubmittedCommandList {
-        _allocator: ID3D12CommandAllocator,
-        _graphics_command_list: ID3D12GraphicsCommandList,
+        allocator: ID3D12CommandAllocator,
+        graphics_command_list: ID3D12GraphicsCommandList,
         _command_list: ID3D12CommandList,
+    }
+
+    /// GPU resources queued for release once their retire fence completes.
+    enum DeferredDx12Release {
+        Buffer(Dx12Buffer),
+        Texture(Dx12Texture),
+        TextureView(Dx12TextureView),
+        ResourceSet(Dx12ResourceSet),
+        Swapchain(Dx12Swapchain),
+        CommandEncoder(Dx12CommandEncoder),
     }
 
     #[derive(Clone, Copy)]
@@ -4564,7 +4790,7 @@ mod platform {
     #[derive(Clone)]
     struct Dx12PipelineLayout {
         root_signature: ID3D12RootSignature,
-        resource_set_layouts: Vec<ResourceSetLayoutId>,
+        resource_set_layouts: Arc<[ResourceSetLayoutId]>,
         draw_step_constants_root_index: u32,
     }
 
@@ -4700,7 +4926,7 @@ mod platform {
         primitive_topology: PrimitiveTopology,
         pipeline_state: Option<ID3D12PipelineState>,
         root_signature: Option<ID3D12RootSignature>,
-        resource_set_layouts: Vec<ResourceSetLayoutId>,
+        resource_set_layouts: Arc<[ResourceSetLayoutId]>,
         draw_step_constants_root_index: u32,
     }
 
@@ -4742,6 +4968,10 @@ mod platform {
         render_targets: Vec<ID3D12Resource>,
         rtv_descriptor_size: u32,
         frame_index: u32,
+        /// DXGI creation flags; ResizeBuffers must pass the same set.
+        creation_flags: u32,
+        /// Frame-latency waitable object; closed when the swapchain retires.
+        frame_latency_waitable: Option<HANDLE>,
     }
 
     #[cfg(test)]
@@ -4770,7 +5000,6 @@ mod platform {
                     memory_location: MemoryLocation::CpuToGpu,
                 },
                 resource: None,
-                data: Some(vec![0]),
             });
 
             let _removed = registry.take(id).expect("handle should be live");

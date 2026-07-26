@@ -14,7 +14,7 @@ pub(crate) use bitmap_pool::{
 pub(crate) use decode::{decode_image_bytes, decode_image_source, fitted_target_size};
 pub use decode::{decode_image_bytes_to_target, decode_image_path_to_target};
 pub use render_image::RenderImage;
-pub(crate) use render_image::{AnimatedFrame, AnimatedImageSource};
+pub(crate) use render_image::{AnimatedFrame, AnimatedImageSource, interned_render_image_id};
 pub use source::AssetSource;
 pub(crate) use types::RenderImageParams;
 pub use types::{

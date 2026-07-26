@@ -12,12 +12,37 @@ pub(in crate::platform::nova) struct NovaFrameResourceSets {
     pub(in crate::platform::nova) custom_mesh_3d_resource_set: ResourceSetId,
 }
 
+pub(in crate::platform::nova) fn create_custom_mesh_3d_resource_set<D>(
+    device: &mut D,
+    label: &str,
+    layout: ResourceSetLayoutId,
+    global_buffer: BufferId,
+    parameters_buffer: BufferId,
+    vertices_buffer: BufferId,
+    vertex_capacity: usize,
+) -> Result<ResourceSetId>
+where
+    D: BackendResources,
+{
+    Ok(device.create_resource_set(&ResourceSetDescriptor {
+        label: Some(format!("{label} custom GPU mesh 3D resource set")),
+        layout,
+        bindings: custom_mesh_3d_resource_bindings(
+            global_buffer,
+            parameters_buffer,
+            vertices_buffer,
+            vertex_capacity,
+        ),
+    })?)
+}
+
 pub(super) fn create_renderer_resource_sets<D>(
     device: &mut D,
     label: &str,
     layouts: &NovaResourceLayouts,
     buffers: &NovaFrameResourceBuffers,
     custom_mesh_3d_vertices_buffer: BufferId,
+    custom_mesh_3d_vertex_capacity: usize,
 ) -> Result<NovaFrameResourceSets>
 where
     D: BackendResources,
@@ -118,15 +143,15 @@ where
             },
         ],
     })?;
-    let custom_mesh_3d_resource_set = device.create_resource_set(&ResourceSetDescriptor {
-        label: Some(format!("{label} custom GPU mesh 3D resource set")),
-        layout: layouts.custom_mesh_3d_resource_set_layout,
-        bindings: custom_mesh_3d_resource_bindings(
-            buffers.global_buffer,
-            buffers.custom_mesh_3d_parameters_buffer,
-            custom_mesh_3d_vertices_buffer,
-        ),
-    })?;
+    let custom_mesh_3d_resource_set = create_custom_mesh_3d_resource_set(
+        device,
+        label,
+        layouts.custom_mesh_3d_resource_set_layout,
+        buffers.global_buffer,
+        buffers.custom_mesh_3d_parameters_buffer,
+        custom_mesh_3d_vertices_buffer,
+        custom_mesh_3d_vertex_capacity,
+    )?;
 
     Ok(NovaFrameResourceSets {
         quad_resource_set,

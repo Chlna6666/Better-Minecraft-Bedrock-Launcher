@@ -45,18 +45,11 @@ where
         )?);
     }
 
-    let custom_mesh_3d_vertices_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} custom GPU mesh 3D vertices")),
-        size: (MAX_CUSTOM_MESH_3D_VERTICES * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
-        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
-        memory_location: MemoryLocation::CpuToGpu,
-    })?;
-    let custom_mesh_3d_indices_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} custom GPU mesh 3D indices")),
-        size: (MAX_CUSTOM_MESH_3D_INDICES * PACKED_CUSTOM_MESH_3D_INDEX_BYTES) as u64,
-        usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
-        memory_location: MemoryLocation::CpuToGpu,
-    })?;
+    // Placeholder-sized: promoted to full capacity on first actual mesh use.
+    let custom_mesh_3d_vertices_buffer =
+        create_custom_mesh_3d_vertices_buffer(device, label, CUSTOM_MESH_3D_PLACEHOLDER_VERTICES)?;
+    let custom_mesh_3d_indices_buffer =
+        create_custom_mesh_3d_indices_buffer(device, label, CUSTOM_MESH_3D_PLACEHOLDER_INDICES)?;
     let atlas_sampler = device.create_sampler(&SamplerDescriptor {
         label: Some(format!("{label} glyph atlas sampler")),
         mag_filter: FilterMode::Linear,
@@ -73,6 +66,38 @@ where
             atlas_sampler,
         },
     })
+}
+
+pub(in crate::platform::nova) fn create_custom_mesh_3d_vertices_buffer<D>(
+    device: &mut D,
+    label: &str,
+    vertex_capacity: usize,
+) -> Result<BufferId>
+where
+    D: BackendResources,
+{
+    Ok(device.create_buffer(&BufferDescriptor {
+        label: Some(format!("{label} custom GPU mesh 3D vertices")),
+        size: (vertex_capacity * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
+        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::CpuToGpu,
+    })?)
+}
+
+pub(in crate::platform::nova) fn create_custom_mesh_3d_indices_buffer<D>(
+    device: &mut D,
+    label: &str,
+    index_capacity: usize,
+) -> Result<BufferId>
+where
+    D: BackendResources,
+{
+    Ok(device.create_buffer(&BufferDescriptor {
+        label: Some(format!("{label} custom GPU mesh 3D indices")),
+        size: (index_capacity * PACKED_CUSTOM_MESH_3D_INDEX_BYTES) as u64,
+        usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::CpuToGpu,
+    })?)
 }
 
 fn create_frame_resource_buffers<D>(device: &mut D, label: &str) -> Result<NovaFrameResourceBuffers>

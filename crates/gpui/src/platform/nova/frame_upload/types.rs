@@ -5,19 +5,35 @@ const REDUCED_BACKDROP_BLUR_LEVELS: u8 = 1;
 const REDUCED_BACKDROP_BLUR_RADIUS_SCALE: f32 = 0.5;
 pub(in crate::platform::nova) const MAX_PATH_RASTERIZATION_CACHE_ENTRIES: usize = 4096;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::platform::nova) struct NovaPathRasterizationCacheKey {
     pub(in crate::platform::nova) path_id: crate::PathCacheId,
     pub(in crate::platform::nova) generation: crate::PathGeometryGeneration,
     pub(in crate::platform::nova) vertex_count: usize,
     pub(in crate::platform::nova) geometry_hash: u64,
-    pub(in crate::platform::nova) paint_key: Vec<u8>,
+    /// FNV-1a hash of the packed content mask and background bytes; trusted as identity the
+    /// same way `geometry_hash` already is.
+    pub(in crate::platform::nova) paint_hash: u64,
 }
 
 #[derive(Clone, Debug)]
 pub(in crate::platform::nova) struct NovaPathRasterizationCacheEntry {
     pub(in crate::platform::nova) bytes: Arc<[u8]>,
     pub(in crate::platform::nova) vertex_count: u32,
+}
+
+/// Memo of the last computed geometry hash for one retained path.
+///
+/// `geometry_generation` alone cannot identify vertex contents because
+/// `Path::transform_uniform` rewrites vertex positions without bumping it, so the memo also
+/// probes the vertex count and the first/last vertex positions before reusing the stored hash.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::platform::nova) struct NovaPathGeometryHashMemo {
+    pub(in crate::platform::nova) generation: crate::PathGeometryGeneration,
+    pub(in crate::platform::nova) vertex_count: usize,
+    pub(in crate::platform::nova) first_xy_bits: (u32, u32),
+    pub(in crate::platform::nova) last_xy_bits: (u32, u32),
+    pub(in crate::platform::nova) geometry_hash: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -203,4 +219,8 @@ pub(in crate::platform::nova) struct NovaFrameUpload {
         FxHashMap<NovaPathRasterizationCacheKey, NovaPathRasterizationCacheEntry>,
     pub(in crate::platform::nova) path_rasterization_cache_hits: u64,
     pub(in crate::platform::nova) path_rasterization_cache_misses: u64,
+    pub(in crate::platform::nova) path_geometry_hash_memo:
+        FxHashMap<crate::PathCacheId, NovaPathGeometryHashMemo>,
+    /// Reusable scratch for packing per-path paint bytes before hashing them.
+    pub(in crate::platform::nova) path_paint_key_scratch: Vec<u8>,
 }

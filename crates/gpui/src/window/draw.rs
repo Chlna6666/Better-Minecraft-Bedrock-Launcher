@@ -39,6 +39,9 @@ impl Window {
         self.pending_list_measured_items = 0;
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
+        debug_assert!(self.view_bounds_stack.is_empty());
+        // Defensive: an unwound draw could leave stale frames behind.
+        self.view_bounds_stack.clear();
         self.invalidator.set_dirty(false);
         self.requested_autoscroll = None;
         self.restore_previous_input_handler()

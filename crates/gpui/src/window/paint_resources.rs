@@ -501,6 +501,42 @@ impl Window {
         Ok(())
     }
 
+    /// Schedules a delayed moderate memory trim after this window loses focus.
+    ///
+    /// Trimming decoded images and GPU scratch immediately on deactivation forces a full
+    /// redecode and atlas re-upload when the user quickly returns to the window, so the trim
+    /// only runs once the window has stayed inactive for [`Self::DEACTIVATION_TRIM_DELAY`].
+    /// Becoming active again drops the pending task, which cancels it. Aggressive trims driven
+    /// by system memory pressure are unaffected by this path.
+    pub(crate) fn schedule_deactivation_memory_trim(&mut self) {
+        let handle = self.handle;
+        let mut cx = self.async_app.clone();
+        let executor = cx.foreground_executor().clone();
+        self.deactivation_trim_task = Some(executor.spawn(async move {
+            cx.background_executor()
+                .timer(Self::DEACTIVATION_TRIM_DELAY)
+                .await;
+            let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
+                window.deactivation_trim_task = None;
+                if window.active.get() {
+                    return;
+                }
+                let any_other_window_active = cx
+                    .windows
+                    .values()
+                    .flatten()
+                    .any(|other_window| other_window.active.get());
+                if !any_other_window_active {
+                    cx.trim_image_memory(ImageMemoryTrimLevel::Moderate);
+                }
+                window.trim_gpui_memory(GpuiMemoryTrimLevel::Moderate);
+            }));
+        }));
+    }
+
+    /// Delay between a window losing focus and its deferred memory trim running.
+    const DEACTIVATION_TRIM_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+
     /// Hints the platform renderer backing this window to release idle GPUI resources.
     pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
         if matches!(

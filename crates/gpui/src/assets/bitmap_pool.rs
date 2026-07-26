@@ -42,12 +42,17 @@ impl BitmapPool {
             .min(self.max_buffer_bytes.load(Ordering::Relaxed))
     }
 
-    fn acquire(&self, length: usize) -> Vec<u8> {
-        if length == 0 || length > self.max_buffer_bytes.load(Ordering::Relaxed) {
-            return Vec::with_capacity(length);
+    /// Returns an empty buffer with at least `capacity` spare capacity, without zero-filling.
+    ///
+    /// Callers that need an initialized prefix should use [`Self::acquire`] or resize the
+    /// returned buffer themselves; skipping the fill here avoids a redundant memset for
+    /// callers that overwrite the whole buffer anyway.
+    fn acquire_capacity(&self, capacity: usize) -> Vec<u8> {
+        if capacity == 0 || capacity > self.max_buffer_bytes.load(Ordering::Relaxed) {
+            return Vec::with_capacity(capacity);
         }
 
-        let bucket = self.bucket_capacity(length);
+        let bucket = self.bucket_capacity(capacity);
         let mut state = self.state.lock();
         let index = state
             .free
@@ -61,6 +66,11 @@ impl BitmapPool {
             })
             .unwrap_or_else(|| Vec::with_capacity(bucket));
         buffer.clear();
+        buffer
+    }
+
+    fn acquire(&self, length: usize) -> Vec<u8> {
+        let mut buffer = self.acquire_capacity(length);
         buffer.resize(length, 0);
         buffer
     }
@@ -142,9 +152,7 @@ pub(crate) fn acquire_bitmap_buffer(length: usize) -> Vec<u8> {
 }
 
 pub(crate) fn acquire_bitmap_buffer_capacity(capacity: usize) -> Vec<u8> {
-    let mut buffer = global_bitmap_pool().acquire(capacity);
-    buffer.clear();
-    buffer
+    global_bitmap_pool().acquire_capacity(capacity)
 }
 
 pub(crate) fn release_bitmap_buffer(buffer: Vec<u8>) {

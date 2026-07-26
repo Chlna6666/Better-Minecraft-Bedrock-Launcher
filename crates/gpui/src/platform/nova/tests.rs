@@ -1979,7 +1979,8 @@ fn backdrop_blur_render_passes_downsample_then_upsample_levels() {
         target_resource_sets: vec![test_resource_set_id(15)],
     };
 
-    let passes = backdrop_blur_render_passes_for_targets(&pipelines, &targets, 0, 3);
+    let mut passes = Vec::new();
+    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, 3, &mut passes);
 
     assert_eq!(passes.len(), 5);
     assert_eq!(
@@ -2037,7 +2038,9 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
         target_resource_sets: vec![test_resource_set_id(15)],
     };
 
-    assert!(backdrop_blur_render_passes_for_targets(&pipelines, &targets, 0, 3).is_empty());
+    let mut passes = Vec::new();
+    backdrop_blur_render_passes_for_targets_into(&pipelines, &targets, 0, 3, &mut passes);
+    assert!(passes.is_empty());
 }
 
 #[test]

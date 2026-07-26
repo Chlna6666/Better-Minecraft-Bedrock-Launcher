@@ -407,17 +407,13 @@ impl NovaRenderer {
         self.prepare_present_copy_steps(use_retained_present);
         self.prepare_path_mask_draw_steps();
         self.prepare_backdrop_blur_source_steps(has_backdrop_blurs);
-        let backdrop_blur_passes = if has_backdrop_blurs {
-            self.backdrop_blur_render_passes()
-        } else {
-            Vec::new()
-        };
+        self.prepare_backdrop_blur_passes(has_backdrop_blurs);
         let draw_step_count = self.draw_step_scratch.draw_steps.len();
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
         let mask_pass_count = usize::from(path_mask_step_count != 0);
         let main_pass_count = 1 + usize::from(use_retained_present);
-        let composite_pass_count =
-            usize::from(has_backdrop_blurs).saturating_add(backdrop_blur_passes.len());
+        let composite_pass_count = usize::from(has_backdrop_blurs)
+            .saturating_add(self.draw_step_scratch.backdrop_blur_passes.len());
         crate::diagnostics::performance_metrics::record_gpu_pass_metrics(
             mask_pass_count,
             main_pass_count,
@@ -565,7 +561,7 @@ impl NovaRenderer {
                         LoadOp::Clear(clear_color()),
                         Some(depth_attachment),
                     )?;
-                    for pass in &backdrop_blur_passes {
+                    for pass in &self.draw_step_scratch.backdrop_blur_passes {
                         device.render_step_list_to_texture(
                             pass.target_texture_view,
                             self.render_pass,
@@ -665,7 +661,7 @@ impl NovaRenderer {
                         LoadOp::Clear(clear_color()),
                         Some(depth_attachment),
                     )?;
-                    for pass in &backdrop_blur_passes {
+                    for pass in &self.draw_step_scratch.backdrop_blur_passes {
                         device.render_step_list_to_texture(
                             pass.target_texture_view,
                             self.render_pass,
@@ -750,7 +746,7 @@ impl NovaRenderer {
                         LoadOp::Clear(clear_color()),
                         Some(depth_attachment),
                     )?;
-                    for pass in &backdrop_blur_passes {
+                    for pass in &self.draw_step_scratch.backdrop_blur_passes {
                         device.render_step_list_to_texture(
                             pass.target_texture_view,
                             self.render_pass,

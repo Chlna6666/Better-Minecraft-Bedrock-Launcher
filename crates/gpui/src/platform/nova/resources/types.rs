@@ -20,6 +20,7 @@ pub(in crate::platform::nova) struct NovaRendererResources {
     pub(in crate::platform::nova) frame_resources: Vec<NovaFrameResources>,
     pub(in crate::platform::nova) custom_mesh_3d_vertices_buffer: BufferId,
     pub(in crate::platform::nova) custom_mesh_3d_indices_buffer: BufferId,
+    pub(in crate::platform::nova) custom_mesh_3d_resource_set_layout: ResourceSetLayoutId,
     pub(in crate::platform::nova) path_resource_set_layout: ResourceSetLayoutId,
     pub(in crate::platform::nova) mono_sprite_resource_set_layout: ResourceSetLayoutId,
     pub(in crate::platform::nova) poly_sprite_resource_set_layout: ResourceSetLayoutId,

@@ -369,26 +369,73 @@ impl Window {
         let prepaint_start = should_track_segment.then(|| self.prepaint_index());
         let paint_start = should_track_segment.then(|| self.paint_index());
         let was_dirty = should_track_segment && self.dirty_views.contains(&id);
+        if let Some(paint_start) = &paint_start {
+            self.view_bounds_stack.push(ViewBoundsFrame {
+                scanned_until: paint_start.scene_index,
+                bounds: None,
+            });
+        }
         let result = f(self);
         if should_track_segment {
             if let (Some(prepaint_start), Some(paint_start)) = (prepaint_start, paint_start) {
                 let paint_end = self.paint_index();
                 let scene_range = paint_start.scene_index..paint_end.scene_index;
-                if scene_range.start != scene_range.end {
-                    if let Some(bounds) =
-                        self.next_frame.scene.bounds_for_range(scene_range.clone())
-                    {
+                // Nested views have already folded their bounds into this frame; only the
+                // operations this view painted after its last child still need scanning, so
+                // each scene operation is visited exactly once across the whole view tree.
+                let frame = self.view_bounds_stack.pop();
+                let mut view_bounds = frame.and_then(|frame| frame.bounds);
+                let scanned_until = frame
+                    .map(|frame| frame.scanned_until)
+                    .unwrap_or(scene_range.start);
+                if scanned_until < scene_range.end
+                    && let Some(tail_bounds) = self
+                        .next_frame
+                        .scene
+                        .bounds_for_range(scanned_until..scene_range.end)
+                {
+                    view_bounds = Some(match view_bounds {
+                        Some(bounds) => bounds.union(&tail_bounds),
+                        None => tail_bounds,
+                    });
+                }
+                // Fold this view's result into the parent frame, covering any of the
+                // parent's own operations painted since its previous merge point.
+                if let Some(parent_scanned_until) = self
+                    .view_bounds_stack
+                    .last()
+                    .map(|parent| parent.scanned_until)
+                {
+                    let gap_bounds = if parent_scanned_until < scene_range.start {
                         self.next_frame
-                            .retained_scene_segments
-                            .push(RetainedSceneSegment {
-                                bounds,
-                                scene_range,
-                                paint_range: paint_start..paint_end,
-                                prepaint_range: prepaint_start..self.prepaint_index(),
-                                entity_id: id,
-                                dirty: was_dirty,
+                            .scene
+                            .bounds_for_range(parent_scanned_until..scene_range.start)
+                    } else {
+                        None
+                    };
+                    if let Some(parent) = self.view_bounds_stack.last_mut() {
+                        for bounds in gap_bounds.iter().chain(view_bounds.iter()) {
+                            parent.bounds = Some(match parent.bounds {
+                                Some(existing) => existing.union(bounds),
+                                None => *bounds,
                             });
+                        }
+                        parent.scanned_until = scene_range.end;
                     }
+                }
+                if scene_range.start != scene_range.end
+                    && let Some(bounds) = view_bounds
+                {
+                    self.next_frame
+                        .retained_scene_segments
+                        .push(RetainedSceneSegment {
+                            bounds,
+                            scene_range,
+                            paint_range: paint_start..paint_end,
+                            prepaint_range: prepaint_start..self.prepaint_index(),
+                            entity_id: id,
+                            dirty: was_dirty,
+                        });
                 }
             }
         }

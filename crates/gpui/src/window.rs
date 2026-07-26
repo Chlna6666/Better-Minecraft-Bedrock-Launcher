@@ -134,7 +134,7 @@ use state::{
     AnimatedImageSlotKey, DirtyFrameDiagnostics, FrameGenerationStats, ImagePaintTileCacheKey,
     LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
-pub(crate) use state::{DispatchEventResult, DrawPhase, ElementStateBox};
+pub(crate) use state::{DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame};
 pub(crate) use tab_stop::*;
 pub use titlebar::TitlebarGestureState;
 use titlebar::{

@@ -128,7 +128,9 @@ impl Img {
             }
             ImageSource::Bytes(bytes) => {
                 3u8.hash(&mut hasher);
-                bytes.hash(&mut hasher);
+                // Hash the buffer identity instead of its contents; this method runs every
+                // frame and the encoded bytes can be large.
+                bytes.hash_identity(&mut hasher);
             }
             ImageSource::Custom(load) => {
                 4u8.hash(&mut hasher);
