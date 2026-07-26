@@ -85,19 +85,8 @@ pub(crate) fn task_status_accent(status: &str, kind: TaskVisualKind, colors: &Th
 
 pub(crate) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
     crate::ui::components::page_shell::page_frame(
-        div()
+        crate::ui::components::page_shell::page_panel(colors)
             .size_full()
-            .rounded(px(12.))
-            .border_1()
-            .border_color(Hsla {
-                a: 0.16,
-                ..colors.border
-            })
-            .bg(Hsla {
-                a: 0.78,
-                ..colors.settings_panel_bg
-            })
-            .overflow_hidden()
             .child(content),
     )
 }
@@ -113,16 +102,19 @@ pub(crate) fn task_icon_button(
         .id(id)
         .w(px(32.))
         .h(px(32.))
-        .rounded(px(7.))
+        .rounded(px(crate::ui::theme::tokens::radius::XS))
         .flex()
         .items_center()
         .justify_center()
         .border_1()
         .border_color(Hsla {
-            a: 0.10,
+            a: 0.22,
             ..colors.border
         })
-        .bg(colors.surface)
+        .bg(Hsla {
+            a: 0.72,
+            ..colors.surface
+        })
         .child(themed_icon(
             icon_path,
             16.0,
@@ -136,7 +128,8 @@ pub(crate) fn task_icon_button(
     if enabled {
         button = button
             .cursor_pointer()
-            .hover(|this| this.bg(colors.surface_hover));
+            .hover(|this| this.bg(colors.surface_hover))
+            .active(|this| this.scale(0.94));
     } else {
         button = button.opacity(0.45);
     }

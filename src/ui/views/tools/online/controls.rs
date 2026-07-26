@@ -40,18 +40,8 @@ pub(crate) fn persist_tools_online_settings(cx: &mut App) {
 }
 
 pub(super) fn render_session_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
-    div()
+    crate::ui::components::page_shell::glass_card(colors)
         .w_full()
-        .rounded(px(20.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.18,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.78,
-            ..colors.surface
-        })
         .p(px(18.))
         .flex()
         .flex_col()
@@ -130,18 +120,8 @@ fn render_session_identity(colors: &ThemeColors, state: &ToolsPageState, accent:
 }
 
 fn render_session_details(colors: &ThemeColors, state: &ToolsPageState) -> Div {
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .w_full()
-        .rounded(px(15.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.12,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.45,
-            ..colors.settings_field_bg
-        })
         .px(px(14.))
         .py(px(12.))
         .flex()

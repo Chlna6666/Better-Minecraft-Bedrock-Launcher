@@ -1105,12 +1105,17 @@ fn render_curseforge_sidebar(
             } else {
                 colors.text_primary
             };
+            let hover_bg = Hsla {
+                a: 0.10,
+                ..colors.accent
+            };
             div()
                 .w_full()
                 .px(px(12.))
                 .py(px(9.))
-                .rounded(px(10.))
+                .rounded(px(12.))
                 .bg(bg)
+                .hover(move |s| if active { s } else { s.bg(hover_bg) })
                 .cursor_pointer()
                 .flex()
                 .items_center()
@@ -1339,15 +1344,15 @@ fn render_curseforge_sidebar(
 
     div()
         .size_full()
-        .rounded(px(8.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.06,
+            a: 0.12,
             ..colors.border
         })
         .bg(Hsla {
-            a: 0.80,
-            ..colors.surface
+            a: 0.45,
+            ..colors.settings_field_bg
         })
         .p(px(10.))
         .flex()
@@ -1400,7 +1405,7 @@ fn render_curseforge_content(
     let skeleton_card = || {
         div()
             .w_full()
-            .rounded(px(8.))
+            .rounded(px(12.))
             .bg(Hsla {
                 a: 0.90,
                 ..colors.surface
@@ -1417,7 +1422,7 @@ fn render_curseforge_content(
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().w(px(42.)).h(px(42.)).rounded(px(9.)).bg(Hsla {
+            .child(div().w(px(42.)).h(px(42.)).rounded(px(8.)).bg(Hsla {
                 a: 0.10,
                 ..colors.text_secondary
             }))
@@ -2037,16 +2042,9 @@ fn render_curseforge_result_card(
 ) -> AnyElement {
     let colors = *colors;
     let dark_mode = colors.bg.l < 0.5;
-    let card_bg = if dark_mode {
-        Hsla {
-            a: 0.80,
-            ..colors.surface
-        }
-    } else {
-        Hsla {
-            a: 0.95,
-            ..colors.surface
-        }
+    let card_bg = Hsla {
+        a: 0.55,
+        ..colors.surface
     };
     let card_hover_bg = if dark_mode {
         Hsla {
@@ -2099,8 +2097,15 @@ fn render_curseforge_result_card(
         .w_full()
         .min_w(px(0.))
         .h(px(78.))
-        .rounded(px(8.))
+        .rounded(px(12.))
+        .bg(card_bg)
+        .border_1()
+        .border_color(Hsla {
+            a: 0.10,
+            ..colors.border
+        })
         .hover(move |s| s.bg(card_hover_bg))
+        .active(|s| s.scale(0.97))
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, {
             let mod_id = props.mod_id;
@@ -2135,7 +2140,7 @@ fn render_curseforge_result_card(
                                 .id(("curseforge-result-logo", result_element_id))
                                 .w(px(42.))
                                 .h(px(42.))
-                                .rounded(px(9.))
+                                .rounded(px(8.))
                                 .overflow_hidden()
                                 .bg(Hsla {
                                     a: 0.10,
@@ -2146,7 +2151,7 @@ fn render_curseforge_result_card(
                                         .image_cache(result_logo_cache)
                                         .w_full()
                                         .h_full()
-                                        .rounded(px(9.))
+                                        .rounded(px(8.))
                                         .bg(gpui::transparent_black())
                                         .object_fit(ObjectFit::Cover)
                                         .with_loading({
@@ -4223,7 +4228,7 @@ fn render_curseforge_mod_page_modal(
                                                 linear_color_stop(
                                                     Hsla {
                                                         a: 0.86,
-                                                        ..rgb(0x111111).into()
+                                                        ..rgb(0x000000).into()
                                                     },
                                                     1.0,
                                                 ),
@@ -4240,14 +4245,14 @@ fn render_curseforge_mod_page_modal(
                                                     .child(
                                                         div()
                                                             .text_size(px(11.))
-                                                            .text_color(rgb(0xffffff))
+                                                            .text_color(colors.btn_primary_text)
                                                             .child("CurseForge 资源"),
                                                     )
                                                     .child(
                                                         div()
                                                             .text_size(px(24.))
                                                             .font_weight(FontWeight::BOLD)
-                                                            .text_color(rgb(0xffffff))
+                                                            .text_color(colors.btn_primary_text)
                                                             .child(title),
                                                     )
                                                     .child(
@@ -4256,7 +4261,7 @@ fn render_curseforge_mod_page_modal(
                                                             .line_height(relative(1.5))
                                                             .text_color(Hsla {
                                                                 a: 0.88,
-                                                                ..rgb(0xffffff).into()
+                                                                ..colors.btn_primary_text
                                                             })
                                                             .child(summary.clone()),
                                                     ),

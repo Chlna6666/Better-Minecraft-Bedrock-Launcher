@@ -289,17 +289,17 @@ pub fn render_overlay(
         .top(panel_top_left.y)
         .w(active.width)
         .h(active.animated_h)
-        .rounded(px(14.))
+        .rounded(px(12.))
         .overflow_hidden()
         .relative()
         .occlude()
         .bg(Hsla {
             a: 0.96,
-            ..colors.settings_field_bg
+            ..colors.settings_panel_bg
         })
         .border_1()
         .border_color(Hsla {
-            a: 0.24,
+            a: 0.22,
             ..colors.border
         })
         .shadow(vec![BoxShadow {
@@ -307,11 +307,11 @@ pub fn render_overlay(
                 h: 0.0,
                 s: 0.0,
                 l: 0.0,
-                a: 0.22,
+                a: 0.16,
             },
-            blur_radius: px(30.0),
+            blur_radius: px(24.0),
             spread_radius: px(-8.0),
-            offset: point(px(0.), px(12.)),
+            offset: point(px(0.), px(10.)),
         }])
         .opacity(panel_opacity)
         .on_scroll_wheel(|_, _window, cx| {
@@ -367,7 +367,7 @@ pub fn render_overlay(
 
                         div()
                             .h(px(MENU_ROW_HEIGHT))
-                            .rounded(px(10.))
+                            .rounded(px(8.))
                             .px(px(10.))
                             .flex()
                             .items_center()
@@ -397,8 +397,8 @@ pub fn render_overlay(
                             })
                             .hover(|s| {
                                 s.bg(Hsla {
-                                    a: 0.06,
-                                    ..colors.text_secondary
+                                    a: 0.60,
+                                    ..colors.surface_hover
                                 })
                             })
                             .on_mouse_down(MouseButton::Left, {
@@ -627,7 +627,7 @@ impl RenderOnce for Dropdown {
             })
             .bg(Hsla {
                 a: 0.84,
-                ..colors.settings_card_bg
+                ..colors.settings_field_bg
             })
             .border_1()
             .border_color(Hsla {
@@ -645,7 +645,7 @@ impl RenderOnce for Dropdown {
             }])
             .when(!enabled, |this| this.opacity(0.65))
             .active(|s| {
-                s.bg(Hsla {
+                s.scale(0.97).bg(Hsla {
                     a: 0.92,
                     ..colors.surface_hover
                 })

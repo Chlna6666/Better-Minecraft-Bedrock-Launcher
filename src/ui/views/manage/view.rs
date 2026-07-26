@@ -8,6 +8,8 @@ pub struct ManagePageView {
     pub(super) asset_scroll_handle: ScrollHandle,
     pub(super) screenshot_scroll_handle: ScrollHandle,
     pub(super) server_scroll_handle: ScrollHandle,
+    pub(super) version_scroll_handle: ScrollHandle,
+    pub(super) version_list_cache: VersionListRenderCache,
     pub(super) asset_list_cache: AssetListRenderCache,
     pub(super) screenshot_list_cache: ScreenshotListRenderCache,
     pub(super) server_list_cache: ServerListRenderCache,
@@ -88,6 +90,8 @@ impl ManagePageView {
             asset_scroll_handle: ScrollHandle::new(),
             screenshot_scroll_handle: ScrollHandle::new(),
             server_scroll_handle: ScrollHandle::new(),
+            version_scroll_handle: ScrollHandle::new(),
+            version_list_cache: VersionListRenderCache::default(),
             asset_list_cache: AssetListRenderCache::default(),
             screenshot_list_cache: ScreenshotListRenderCache::default(),
             server_list_cache: ServerListRenderCache::default(),
@@ -173,10 +177,8 @@ impl Render for ManagePageView {
             theme.factor(now),
             theme.accent,
         );
-        let i18n = cx.global::<I18n>().clone();
         let state = cx.global::<ManagePageState>().clone();
         let page = self.render_page(window, &colors, &state, now, cx);
-        let _ = i18n;
 
         div()
             .size_full()
@@ -209,14 +211,33 @@ impl ManagePageView {
     }
 
     fn render_sidebar(
-        &self,
+        &mut self,
         colors: &ThemeColors,
         state: &ManagePageState,
         cx: &mut Context<Self>,
     ) -> Div {
-        let filtered_versions = filtered_versions(state);
+        if self.version_list_cache.refresh(state) {
+            self.version_scroll_handle.set_offset(point(px(0.), px(0.)));
+        }
+        let filtered_version_indices = self.version_list_cache.filtered_indices();
+        let virtual_list_plan = compute_virtual_list_plan(
+            filtered_version_indices.len(),
+            MANAGE_VERSION_ROW_PITCH_PX,
+            self.version_scroll_handle.offset().y,
+            self.version_scroll_handle.bounds().size.height,
+            MANAGE_VERSION_ROW_OVERSCAN,
+            usize::MAX,
+        );
+        let no_versions = filtered_version_indices.is_empty();
+        let visible_versions = filtered_version_indices[virtual_list_plan.render_slice.start_index
+            ..virtual_list_plan
+                .render_slice
+                .end_index
+                .min(filtered_version_indices.len())]
+            .iter()
+            .filter_map(|&index| state.versions.get(index))
+            .collect::<Vec<_>>();
         crate::ui::components::page_shell::split_sidebar_panel(colors)
-            .bg(colors.settings_panel_bg)
             .p(px(10.))
             .flex()
             .flex_col()
@@ -270,9 +291,9 @@ impl ManagePageView {
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_y_scrollbar()
+                    .track_scroll(&self.version_scroll_handle)
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
                     .when(state.loading && state.versions.is_empty(), |this| {
                         this.child(subtle_badge(colors, "正在加载版本列表"))
                     })
@@ -290,7 +311,7 @@ impl ManagePageView {
                                 .child(error),
                         )
                     })
-                    .when(filtered_versions.is_empty(), |this| {
+                    .when(no_versions, |this| {
                         this.child(
                             empty_state(
                                 colors,
@@ -301,7 +322,10 @@ impl ManagePageView {
                             .h(px(220.)),
                         )
                     })
-                    .children(filtered_versions.into_iter().map(|version| {
+                    .when(virtual_list_plan.render_slice.top_spacer > px(0.), |this| {
+                        this.child(div().h(virtual_list_plan.render_slice.top_spacer))
+                    })
+                    .children(visible_versions.into_iter().map(|version| {
                         let selected = state
                             .selected_folder
                             .as_ref()
@@ -334,16 +358,21 @@ impl ManagePageView {
                         };
 
                         div()
+                            .h(px(MANAGE_VERSION_ROW_PITCH_PX))
+                            .pb(px(MANAGE_VERSION_ROW_GAP_PX))
+                            .child(div()
                             .id(SharedString::from(format!("manage-version-{}", folder)))
                             .w_full()
+                            .h_full()
                             .px(px(10.))
                             .py(px(9.))
                             .rounded(px(12.))
                             .cursor_pointer()
+                            .active(|style| style.scale(0.98))
                             .border_1()
                             .border_color(if selected {
                                 Hsla {
-                                    a: 0.42,
+                                    a: 0.34,
                                     ..colors.accent
                                 }
                             } else {
@@ -391,7 +420,7 @@ impl ManagePageView {
                                         div()
                                             .w(px(46.))
                                             .h(px(46.))
-                                            .rounded(px(10.))
+                                            .rounded(px(12.))
                                             .overflow_hidden()
                                             .border_1()
                                             .border_color(Hsla {
@@ -415,7 +444,7 @@ impl ManagePageView {
                                             .child(
                                                 img(icon)
                                                     .size_full()
-                                                    .rounded(px(10.))
+                                                    .rounded(px(12.))
                                                     .object_fit(ObjectFit::Cover),
                                             ),
                                     )
@@ -468,8 +497,11 @@ impl ManagePageView {
                                 cx.listener(move |this, _, _, cx| {
                                     this.select_version(folder.clone(), cx);
                                 })
-                            })
-                    })),
+                            }))
+                    }))
+                    .when(virtual_list_plan.render_slice.bottom_spacer > px(0.), |this| {
+                        this.child(div().h(virtual_list_plan.render_slice.bottom_spacer))
+                    }),
             )
     }
 
@@ -711,7 +743,7 @@ impl ManagePageView {
                         ..colors.border
                     })
                     .bg(Hsla {
-                        a: 1.0,
+                        a: 0.55,
                         ..colors.surface
                     })
                     .p(px(14.))

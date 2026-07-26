@@ -97,7 +97,7 @@ impl ToggleSwitchView {
                     .w(px(KNOB_SIZE))
                     .h(px(KNOB_SIZE))
                     .rounded(px(999.0))
-                    .bg(rgb(0xffffff))
+                    .bg(self.colors.btn_primary_text)
                     .shadow(knob_shadow())
                     .ml(px(KNOB_TRAVEL * progress)),
             )

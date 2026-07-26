@@ -377,6 +377,11 @@ pub(super) fn stop_session(cx: &mut App) {
 }
 
 pub(crate) fn refresh_status(cx: &mut App) {
+    // 未运行时直接返回，避免 update_global 触发全部观察者。
+    if !cx.read_global(|state: &ToolsPageState, _cx| state.easytier_running) {
+        return;
+    }
+
     let generation = cx.update_global(|state: &mut ToolsPageState, _cx| {
         if !state.easytier_running {
             return None;
@@ -472,6 +477,11 @@ pub(super) fn refresh_peers(cx: &mut App) {
 }
 
 pub(crate) fn check_nat(cx: &mut App) {
+    // 未运行或已在检测时直接返回，避免 update_global 触发全部观察者。
+    if cx.read_global(|state: &ToolsPageState, _cx| !state.easytier_running || state.nat_checking) {
+        return;
+    }
+
     let started = cx.update_global(|state: &mut ToolsPageState, _cx| {
         if !state.easytier_running || state.nat_checking {
             return false;

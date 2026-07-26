@@ -85,7 +85,7 @@ fn render_toolbar_search(colors: &ThemeColors, state: &DownloadPageState) -> Any
             .w_full()
             .h(px(32.))
             .px(px(8.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .bg(shell_background)
             .border_1()
             .border_color(shell_border)
@@ -160,7 +160,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
             .id(id)
             .w(px(item_w))
             .h(px(32.))
-            .rounded(px(7.))
+            .rounded(px(8.))
             .cursor_pointer()
             .relative()
             .flex()
@@ -189,7 +189,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
                     })
                 }
             })
-            .active(|s| s.top(px(1.0)))
+            .active(|s| s.scale(0.96))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 cx.update_global(|s: &mut DownloadPageState, cx| {
                     if s.tab != tab {
@@ -239,7 +239,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
         .top(px(3.))
         .w(px(stretch))
         .h(px(32.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .bg(colors.surface);
 
     div()
@@ -251,7 +251,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, now: Instant) ->
             ..colors.settings_card_bg
         })
         .p(px(3.))
-        .rounded(px(10.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.08,
@@ -302,7 +302,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             .icon_color(colors.text_secondary)
             .w(px(32.))
             .h(px(32.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .bg(Hsla {
                 a: 0.06,
                 ..colors.text_secondary
@@ -350,7 +350,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
             },
         )
         .with_height(px(32.))
-        .rounded(px(6.))
+        .rounded(px(8.))
         .into_any_element()
     } else {
         div().into_any_element()
@@ -360,7 +360,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
         .icon_color(colors.text_secondary)
         .w(px(32.))
         .h(px(32.))
-        .rounded(px(6.))
+        .rounded(px(8.))
         .bg(Hsla {
             a: 0.05,
             ..colors.text_secondary
@@ -487,7 +487,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 },
             )
             .with_height(px(32.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .into_any_element();
 
             let sort_options = vec![
@@ -546,7 +546,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 },
             )
             .with_height(px(32.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .into_any_element();
 
             row = row.child(version_select).child(sort_select).child(refresh);
@@ -598,7 +598,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 },
             )
             .with_height(px(32.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .into_any_element();
 
             // 2. 加载器版本选择下拉框 (Loader Version Dropdown)
@@ -659,7 +659,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
                 },
             )
             .with_height(px(32.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .into_any_element();
 
             row = row

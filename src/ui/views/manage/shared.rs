@@ -7,6 +7,11 @@ pub(super) const MANAGE_ASSET_ROW_PITCH_PX: f32 =
     MANAGE_ASSET_ROW_HEIGHT_PX + MANAGE_ASSET_ROW_GAP_PX;
 pub(super) const MANAGE_ASSET_ROW_OVERSCAN: usize = 8;
 pub(super) const MANAGE_ASSET_HEAVY_BUDGET: usize = 24;
+pub(super) const MANAGE_VERSION_ROW_HEIGHT_PX: f32 = 66.0;
+pub(super) const MANAGE_VERSION_ROW_GAP_PX: f32 = 4.0;
+pub(super) const MANAGE_VERSION_ROW_PITCH_PX: f32 =
+    MANAGE_VERSION_ROW_HEIGHT_PX + MANAGE_VERSION_ROW_GAP_PX;
+pub(super) const MANAGE_VERSION_ROW_OVERSCAN: usize = 6;
 pub(super) fn create_text_input(
     window: &mut Window,
     cx: &mut Context<ManagePageView>,
@@ -128,17 +133,61 @@ pub(super) fn selected_asset_folder_names(state: &ManagePageState) -> Vec<String
         .collect()
 }
 
-pub(super) fn filtered_versions(state: &ManagePageState) -> Vec<&ManagedVersionEntry> {
-    let query = state.search_query.trim();
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct VersionListSignature {
+    versions_ptr: usize,
+    versions_len: usize,
+    query: SharedString,
+}
+
+impl VersionListSignature {
+    pub(super) fn from_state(state: &ManagePageState) -> Self {
+        Self {
+            versions_ptr: state.versions.as_ref().as_ptr() as usize,
+            versions_len: state.versions.len(),
+            query: SharedString::from(state.search_query.trim().to_string()),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct VersionListRenderCache {
+    signature: Option<VersionListSignature>,
+    filtered_indices: Vec<usize>,
+}
+
+impl VersionListRenderCache {
+    pub(super) fn refresh(&mut self, state: &ManagePageState) -> bool {
+        let signature = VersionListSignature::from_state(state);
+        if self.signature.as_ref() == Some(&signature) {
+            return false;
+        }
+
+        self.filtered_indices = build_filtered_version_indices(state, &signature);
+        self.signature = Some(signature);
+        true
+    }
+
+    pub(super) fn filtered_indices(&self) -> &[usize] {
+        &self.filtered_indices
+    }
+}
+
+pub(super) fn build_filtered_version_indices(
+    state: &ManagePageState,
+    signature: &VersionListSignature,
+) -> Vec<usize> {
+    let query = signature.query.as_ref();
     if query.is_empty() {
-        return state.versions.iter().collect();
+        return (0..state.versions.len()).collect();
     }
 
     let needle = query.to_ascii_lowercase();
     state
         .versions
         .iter()
-        .filter(|version| {
+        .enumerate()
+        .filter(|(_, version)| {
             version
                 .folder
                 .as_ref()
@@ -156,6 +205,7 @@ pub(super) fn filtered_versions(state: &ManagePageState) -> Vec<&ManagedVersionE
                     .to_ascii_lowercase()
                     .contains(&needle)
         })
+        .map(|(index, _)| index)
         .collect()
 }
 pub(super) fn resolve_asset_by_key(
@@ -268,10 +318,17 @@ pub(super) fn compact_icon_button(
         .flex()
         .items_center()
         .justify_center()
-        .bg(colors.surface)
+        .bg(Hsla {
+            a: 0.72,
+            ..colors.surface
+        })
         .border_1()
-        .border_color(colors.border)
+        .border_color(Hsla {
+            a: 0.24,
+            ..colors.border
+        })
         .cursor_pointer()
+        .active(|style| style.scale(0.94))
         .child(
             svg()
                 .path(icon_path)
@@ -285,7 +342,7 @@ pub(super) fn icon_badge(colors: &ThemeColors, icon_path: &'static str) -> Div {
     div()
         .w(px(40.))
         .h(px(40.))
-        .rounded(px(14.))
+        .rounded(px(12.))
         .bg(Hsla {
             a: 0.12,
             ..colors.accent

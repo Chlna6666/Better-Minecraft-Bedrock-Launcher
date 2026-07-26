@@ -203,7 +203,7 @@ impl ToolsPageState {
 
 impl Global for ToolsPageState {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OnlinePeerEntry {
     pub ipv4: Option<SharedString>,
     pub hostname: SharedString,
@@ -215,7 +215,7 @@ pub struct OnlinePeerEntry {
     pub via_hostname: Option<SharedString>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OnlinePlayerEntry {
     pub player_name: SharedString,
     pub client_id: SharedString,

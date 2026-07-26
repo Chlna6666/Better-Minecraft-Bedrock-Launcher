@@ -223,30 +223,12 @@ pub(super) fn spawn_persist_background_blur(blur: f32, cx: &mut App) {
 }
 
 pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
-    div()
+    // 统一卡片基底（圆角/边框/背景/阴影配方来自 page_shell::glass_card），
+    // 设置页在其上追加顶部高光细线。
+    crate::ui::components::page_shell::glass_card(colors)
         .id(id)
         .relative()
         .w_full()
-        .rounded(px(14.))
-        .overflow_hidden()
-        .border_1()
-        .border_color(Hsla {
-            a: 0.24,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.72,
-            ..colors.surface
-        })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.12,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(16.),
-            spread_radius: px(-6.),
-            offset: point(px(0.), px(6.)),
-        }])
         .child(
             div()
                 .absolute()
@@ -592,67 +574,12 @@ pub(super) fn settings_sub_input_row(
 }
 
 pub(super) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
+    // 统一页面容器：配方（含渐变与高光线）来自 page_shell::page_panel。
     crate::ui::components::page_shell::page_frame(
         div().size_full().flex().justify_center().child(
-            div()
-                .relative()
+            crate::ui::components::page_shell::page_panel(colors)
                 .w_full()
                 .h_full()
-                .rounded(px(18.))
-                .overflow_hidden()
-                .border_1()
-                .border_color(Hsla {
-                    a: 0.22,
-                    ..colors.border
-                })
-                .bg(Hsla {
-                    a: 0.90,
-                    ..colors.settings_panel_bg
-                })
-                .shadow(vec![BoxShadow {
-                    color: Hsla {
-                        a: 0.16,
-                        ..rgb(0x000000).into()
-                    },
-                    blur_radius: px(36.),
-                    spread_radius: px(-8.),
-                    offset: point(px(0.), px(18.)),
-                }])
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .rounded(px(18.))
-                        .bg(linear_gradient(
-                            180.0,
-                            linear_color_stop(
-                                Hsla {
-                                    a: 0.14,
-                                    ..colors.accent
-                                },
-                                0.0,
-                            ),
-                            linear_color_stop(
-                                Hsla {
-                                    a: 0.02,
-                                    ..colors.surface
-                                },
-                                1.0,
-                            ),
-                        )),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(px(18.))
-                        .right(px(18.))
-                        .h(px(1.))
-                        .bg(Hsla {
-                            a: 0.18,
-                            ..colors.border
-                        }),
-                )
                 .p(px(14.))
                 .child(content),
         ),

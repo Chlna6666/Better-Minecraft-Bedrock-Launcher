@@ -209,23 +209,13 @@ fn sub_title(colors: &ThemeColors, title: SharedString) -> Div {
 }
 
 fn base_card(colors: &ThemeColors, id: impl Into<ElementId>) -> Stateful<Div> {
-    div()
+    crate::ui::components::page_shell::glass_card(colors)
         .id(id)
         .w_full()
-        .rounded(px(18.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.14,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.88,
-            ..colors.surface
-        })
         .p(px(18.))
         .hover(|this| {
             this.bg(Hsla {
-                a: 0.95,
+                a: 0.84,
                 ..colors.surface
             })
         })
@@ -757,7 +747,7 @@ fn action_btn(
         .id(SharedString::from(format!("btn-{}", label.as_ref())))
         .px(px(14.))
         .py(px(10.))
-        .rounded(px(14.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.24,
@@ -783,6 +773,7 @@ fn action_btn(
                 offset: point(px(0.), px(3.)),
             }])
         })
+        .active(|this| this.scale(0.96))
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| (on_click)(cx))
         .child(
             div()

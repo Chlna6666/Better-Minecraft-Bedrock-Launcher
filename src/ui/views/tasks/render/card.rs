@@ -188,10 +188,6 @@ pub(crate) fn render_task_card(
     };
     let paused_warning_color = task_warning_color(colors);
     let completed_accent = task_status_accent("completed", kind, colors);
-    let card_surface = Hsla {
-        a: 0.90,
-        ..task_card_bg(colors)
-    };
     let card_hover_surface = Hsla {
         a: 0.96,
         ..task_card_hover_bg(colors)
@@ -215,38 +211,16 @@ pub(crate) fn render_task_card(
             .into_any_element()
     });
 
-    let base_card = div()
+    let base_card = crate::ui::components::page_shell::glass_card(colors)
         .id(("task-card", stable_task_id(task_id.as_ref())))
         .w_full()
         .min_h(px(0.))
-        .overflow_hidden()
-        .rounded(px(10.))
-        .border_1()
-        .border_color(Hsla {
-            a: if paused { 0.10 } else { 0.10 },
-            ..task_border_color(colors)
-        })
-        .bg(card_surface)
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.08,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(18.0),
-            spread_radius: px(-10.0),
-            offset: point(px(0.0), px(7.0)),
-        }])
         .px(px(16.))
         .py(px(14.))
         .flex()
         .items_center()
         .gap(px(16.))
-        .hover(|this| {
-            this.bg(card_hover_surface).border_color(Hsla {
-                a: 0.16,
-                ..task_border_color(colors)
-            })
-        })
+        .hover(|this| this.bg(card_hover_surface))
         .when(paused, |this| {
             this.opacity(0.72).border_color(Hsla {
                 a: 0.18,
@@ -257,7 +231,7 @@ pub(crate) fn render_task_card(
             div()
                 .w(px(46.))
                 .h(px(46.))
-                .rounded(px(9.))
+                .rounded(px(12.))
                 .flex()
                 .items_center()
                 .justify_center()

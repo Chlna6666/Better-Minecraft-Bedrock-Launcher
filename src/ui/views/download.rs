@@ -85,16 +85,63 @@ fn build_game_panel_observe_signature(state: &DownloadPageState) -> GamePanelObs
     }
 }
 
+type ModPanelObserveSignature = (
+    bool,
+    bool,
+    bool,
+    usize,
+    SharedString,
+    SharedString,
+    SharedString,
+    usize,
+    bool,
+    SharedString,
+    Option<String>,
+);
+
+fn build_mod_panel_observe_signature(state: &DownloadPageState) -> ModPanelObserveSignature {
+    (
+        state.levilauncher_loaded,
+        state.levilauncher_loading,
+        state.levilauncher_error.is_some(),
+        state.levilauncher_all_mods.len(),
+        state.search_query.clone(),
+        state.levilauncher_selected_loader.clone(),
+        state.levilauncher_selected_loader_version.clone(),
+        state.levilauncher_page_index,
+        state.levilauncher_modal_open,
+        state.levilauncher_selected_version.clone(),
+        state
+            .levilauncher_selected_mod
+            .as_ref()
+            .map(|m| m.package_id.clone()),
+    )
+}
+
 pub(crate) fn start_task_event_bridge(cx: &mut App) {
     cx.spawn_stream(
         crate::tasks::task_manager::task_event_stream(),
         |delivery, cx| match delivery {
             crate::tasks::task_manager::TaskEventDelivery::Event(event) => {
+                let relevant = cx.read_global(|state: &DownloadPageState, _cx| {
+                    task_event_relevant_to_download_state(state, &event)
+                });
+                if !relevant {
+                    return;
+                }
                 cx.update_global(|state: &mut DownloadPageState, _cx| {
                     apply_task_event_to_download_state(state, event);
                 });
             }
             crate::tasks::task_manager::TaskEventDelivery::Batch(events) => {
+                let any_relevant = cx.read_global(|state: &DownloadPageState, _cx| {
+                    events
+                        .iter()
+                        .any(|event| task_event_relevant_to_download_state(state, event))
+                });
+                if !any_relevant {
+                    return;
+                }
                 cx.update_global(|state: &mut DownloadPageState, _cx| {
                     for event in events {
                         apply_task_event_to_download_state(state, event);
@@ -102,23 +149,27 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
                 });
             }
             crate::tasks::task_manager::TaskEventDelivery::ResyncRequired => {
-                let task_ids = cx.read_global(|state: &DownloadPageState, _cx| {
-                    let mut task_ids = state
-                        .operations_by_package
-                        .values()
-                        .flat_map(|operation| {
-                            [
-                                operation.download_task_id.clone(),
-                                operation.extract_task_id.clone(),
-                            ]
-                        })
-                        .flatten()
-                        .collect::<Vec<_>>();
-                    if let Some(task_id) = &state.curseforge_install_task_id {
-                        task_ids.push(task_id.clone());
-                    }
-                    task_ids
-                });
+                let (task_ids, has_stale_snapshots) =
+                    cx.read_global(|state: &DownloadPageState, _cx| {
+                        let mut task_ids = state
+                            .operations_by_package
+                            .values()
+                            .flat_map(|operation| {
+                                [
+                                    operation.download_task_id.clone(),
+                                    operation.extract_task_id.clone(),
+                                ]
+                            })
+                            .flatten()
+                            .collect::<Vec<_>>();
+                        if let Some(task_id) = &state.curseforge_install_task_id {
+                            task_ids.push(task_id.clone());
+                        }
+                        (task_ids, !state.task_snapshots.is_empty())
+                    });
+                if task_ids.is_empty() && !has_stale_snapshots {
+                    return;
+                }
                 let snapshots = task_ids
                     .into_iter()
                     .filter_map(|task_id| {
@@ -140,26 +191,43 @@ pub(crate) fn start_task_event_bridge(cx: &mut App) {
     .detach();
 }
 
+fn download_state_tracks_task(state: &DownloadPageState, task_id: &str) -> bool {
+    state.operations_by_package.values().any(|operation| {
+        operation
+            .download_task_id
+            .as_ref()
+            .is_some_and(|tracked| tracked.as_ref() == task_id)
+            || operation
+                .extract_task_id
+                .as_ref()
+                .is_some_and(|tracked| tracked.as_ref() == task_id)
+    }) || state
+        .curseforge_install_task_id
+        .as_ref()
+        .is_some_and(|tracked| tracked.as_ref() == task_id)
+}
+
+fn task_event_relevant_to_download_state(
+    state: &DownloadPageState,
+    event: &crate::tasks::task_manager::TaskEvent,
+) -> bool {
+    match event {
+        crate::tasks::task_manager::TaskEvent::Updated(snapshot) => {
+            download_state_tracks_task(state, snapshot.id.as_ref())
+        }
+        crate::tasks::task_manager::TaskEvent::Removed(task_id) => {
+            state.task_snapshots.contains_key(task_id.as_ref())
+        }
+    }
+}
+
 fn apply_task_event_to_download_state(
     state: &mut DownloadPageState,
     event: crate::tasks::task_manager::TaskEvent,
 ) {
     match event {
         crate::tasks::task_manager::TaskEvent::Updated(snapshot) => {
-            let tracked = state.operations_by_package.values().any(|operation| {
-                operation
-                    .download_task_id
-                    .as_ref()
-                    .is_some_and(|task_id| task_id.as_ref() == snapshot.id.as_ref())
-                    || operation
-                        .extract_task_id
-                        .as_ref()
-                        .is_some_and(|task_id| task_id.as_ref() == snapshot.id.as_ref())
-            }) || state
-                .curseforge_install_task_id
-                .as_ref()
-                .is_some_and(|task_id| task_id.as_ref() == snapshot.id.as_ref());
-            if !tracked {
+            if !download_state_tracks_task(state, snapshot.id.as_ref()) {
                 return;
             }
             if snapshot.visibility == crate::tasks::task_manager::TaskVisibility::Hidden {
@@ -198,32 +266,37 @@ pub struct DownloadPageView {
         bool,
         bool,
     ),
+    last_observed_mod_panel_signature: ModPanelObserveSignature,
 }
 
 impl DownloadPageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let (last_observed_tab, last_observed_curseforge_toolbar_signature) =
-            cx.read_global(|state: &DownloadPageState, _cx| {
+        let (
+            last_observed_tab,
+            last_observed_curseforge_toolbar_signature,
+            last_observed_mod_panel_signature,
+        ) = cx.read_global(|state: &DownloadPageState, _cx| {
+            (
+                state.tab,
                 (
-                    state.tab,
-                    (
-                        state.curseforge_loaded,
-                        state.curseforge_loading,
-                        state.curseforge_versions.len(),
-                        state.curseforge_selected_game_version.clone(),
-                        state.curseforge_sort_field,
-                        state.curseforge_invalidate_task.is_some(),
-                        state.curseforge_search_commit_task.is_some(),
-                        state.curseforge_results_loading,
-                        state.curseforge_page_commit_task.is_some(),
-                        state.curseforge_pending_page_index.is_some(),
-                    ),
-                )
-            });
+                    state.curseforge_loaded,
+                    state.curseforge_loading,
+                    state.curseforge_versions.len(),
+                    state.curseforge_selected_game_version.clone(),
+                    state.curseforge_sort_field,
+                    state.curseforge_invalidate_task.is_some(),
+                    state.curseforge_search_commit_task.is_some(),
+                    state.curseforge_results_loading,
+                    state.curseforge_page_commit_task.is_some(),
+                    state.curseforge_pending_page_index.is_some(),
+                ),
+                build_mod_panel_observe_signature(state),
+            )
+        });
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe_global::<DownloadPageState>(|this, cx| {
-            let (tab, curseforge_toolbar_signature) =
+            let (tab, curseforge_toolbar_signature, mod_panel_signature) =
                 cx.read_global(|state: &DownloadPageState, _cx| {
                     (
                         state.tab,
@@ -239,15 +312,18 @@ impl DownloadPageView {
                             state.curseforge_page_commit_task.is_some(),
                             state.curseforge_pending_page_index.is_some(),
                         ),
+                        build_mod_panel_observe_signature(state),
                     )
                 });
 
             let tab_changed = this.last_observed_tab != tab;
             let curseforge_toolbar_changed =
                 this.last_observed_curseforge_toolbar_signature != curseforge_toolbar_signature;
+            let mod_panel_changed = this.last_observed_mod_panel_signature != mod_panel_signature;
 
             this.last_observed_tab = tab;
             this.last_observed_curseforge_toolbar_signature = curseforge_toolbar_signature;
+            this.last_observed_mod_panel_signature = mod_panel_signature;
 
             if tab_changed {
                 cx.notify();
@@ -255,7 +331,9 @@ impl DownloadPageView {
             }
 
             if tab == DownloadTab::Mod {
-                cx.notify();
+                if mod_panel_changed {
+                    cx.notify();
+                }
                 return;
             }
 
@@ -336,6 +414,7 @@ impl DownloadPageView {
             last_observed_tab,
             active: true,
             last_observed_curseforge_toolbar_signature,
+            last_observed_mod_panel_signature,
         }
     }
 
@@ -485,23 +564,12 @@ pub fn render_download_page(
         DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
         DownloadTab::Mod => {
             ensure_levilauncher_loaded(cx);
-            mods::render_mod_panel(&colors, cx.global::<DownloadPageState>()).into_any_element()
+            mods::render_mod_panel(window, cx, &colors).into_any_element()
         }
     };
 
-    let unified_panel = div()
+    let unified_panel = crate::ui::components::page_shell::page_panel(&colors)
         .size_full()
-        .rounded(px(12.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.15,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.95,
-            ..colors.surface
-        })
-        .overflow_hidden()
         .flex()
         .flex_col()
         .child(header)
@@ -535,53 +603,58 @@ pub fn dismiss_game_dialog(cx: &mut App) {
 }
 
 pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElement> {
-    let (
-        dialog,
-        dialog_folder_input,
-        cdn_loading,
-        cdn_error,
-        cdn_results,
-        selected_cdn_base,
-        cdn_expanded,
-    ) = cx.read_global(|state: &DownloadPageState, _cx| {
-        (
-            state.game_dialog.clone(),
-            state.game_dialog_folder_input.clone(),
-            state.game_dialog_cdn_loading,
-            state.game_dialog_cdn_error.clone(),
-            state.game_dialog_cdn_results.clone(),
-            state.game_dialog_selected_cdn_base.clone(),
-            state.game_dialog_cdn_expanded,
-        )
-    });
-
-    if let Some(dialog) = dialog {
-        return Some(
-            modal::modal_layer_dismissible(
-                game::render_game_dialog(
-                    colors,
-                    dialog,
-                    dialog_folder_input.as_ref(),
-                    cdn_loading,
-                    cdn_error,
-                    cdn_results,
-                    selected_cdn_base,
-                    cdn_expanded,
-                ),
-                hsla(0.0, 0.0, 0.0, 0.28),
-                Rc::new(dismiss_game_dialog),
-            )
-            .into_any_element(),
-        );
-    }
-
-    let (levilauncher_modal_open, levilauncher_selected_mod) =
+    let (has_game_dialog, levilauncher_modal_open) =
         cx.read_global(|state: &DownloadPageState, _cx| {
+            (state.game_dialog.is_some(), state.levilauncher_modal_open)
+        });
+
+    if has_game_dialog {
+        let (
+            dialog,
+            dialog_folder_input,
+            cdn_loading,
+            cdn_error,
+            cdn_results,
+            selected_cdn_base,
+            cdn_expanded,
+        ) = cx.read_global(|state: &DownloadPageState, _cx| {
             (
-                state.levilauncher_modal_open,
-                state.levilauncher_selected_mod.clone(),
+                state.game_dialog.clone(),
+                state.game_dialog_folder_input.clone(),
+                state.game_dialog_cdn_loading,
+                state.game_dialog_cdn_error.clone(),
+                state.game_dialog_cdn_results.clone(),
+                state.game_dialog_selected_cdn_base.clone(),
+                state.game_dialog_cdn_expanded,
             )
         });
+
+        if let Some(dialog) = dialog {
+            return Some(
+                modal::modal_layer_dismissible(
+                    game::render_game_dialog(
+                        colors,
+                        dialog,
+                        dialog_folder_input.as_ref(),
+                        cdn_loading,
+                        cdn_error,
+                        cdn_results,
+                        selected_cdn_base,
+                        cdn_expanded,
+                    ),
+                    hsla(0.0, 0.0, 0.0, 0.28),
+                    Rc::new(dismiss_game_dialog),
+                )
+                .into_any_element(),
+            );
+        }
+    }
+
+    let levilauncher_selected_mod = levilauncher_modal_open
+        .then(|| {
+            cx.read_global(|state: &DownloadPageState, _cx| state.levilauncher_selected_mod.clone())
+        })
+        .flatten();
 
     if levilauncher_modal_open && let Some(mod_entry) = levilauncher_selected_mod {
         let dismiss_fn = Rc::new(|cx: &mut App| {

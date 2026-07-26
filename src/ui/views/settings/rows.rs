@@ -22,23 +22,13 @@ pub(super) fn section_placeholder(
     title: SharedString,
     desc: SharedString,
 ) -> impl IntoElement {
-    div()
+    crate::ui::components::page_shell::glass_card(colors)
         .w_full()
-        .rounded(px(12.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.24,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.98,
-            ..colors.surface
-        })
         .p(px(12.))
         .child(
             div()
-                .text_size(px(14.))
-                .font_weight(FontWeight::BOLD)
+                .text_size(px(15.))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.text_primary)
                 .child(title),
         )

@@ -53,15 +53,21 @@ fn render_navigation_item(
     div()
         .id(item.id)
         .w_full()
-        .rounded(px(15.))
+        .rounded(px(12.))
         .border_1()
         .border_color(palette.border)
         .bg(palette.background)
         .px(px(12.))
         .py(px(12.))
         .cursor_pointer()
+        .active(|style| style.scale(0.97))
         .when(!selected, |this| {
-            this.hover(|style| style.bg(colors.surface_hover))
+            this.hover(|style| {
+                style.bg(Hsla {
+                    a: 0.60,
+                    ..colors.surface_hover
+                })
+            })
         })
         .flex()
         .items_center()
@@ -80,11 +86,11 @@ fn navigation_palette(colors: &ThemeColors, selected: bool) -> NavigationPalette
         NavigationPalette {
             accent: colors.accent,
             background: Hsla {
-                a: 0.13,
+                a: 0.10,
                 ..colors.accent
             },
             border: Hsla {
-                a: 0.30,
+                a: 0.24,
                 ..colors.accent
             },
         }
@@ -106,7 +112,7 @@ fn navigation_palette(colors: &ThemeColors, selected: bool) -> NavigationPalette
 fn render_navigation_icon(icon: &'static str, accent: Hsla) -> Div {
     div()
         .size(px(34.))
-        .rounded(px(11.))
+        .rounded(px(12.))
         .bg(Hsla { a: 0.12, ..accent })
         .flex()
         .items_center()

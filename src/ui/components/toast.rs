@@ -1,6 +1,7 @@
 use crate::ui::animation::{
     ease_in_cubic, ease_out_back, ease_out_cubic, request_animation_frame_if,
 };
+use crate::ui::components::page_shell::card_shadow;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
@@ -20,7 +21,7 @@ const FADE_OUT: Duration = Duration::from_millis(280); // 退出 + 回收（折�
 const STAGGER_IN_MS: u64 = 0;
 
 // 外观几何参数。
-const TOAST_RADIUS_PX: f32 = 8.0; // 圆角半径（越小越“方”）
+const TOAST_RADIUS_PX: f32 = 12.0; // 圆角半径（紧凑浮层统一 12）
 const TOAST_SPACING_PX: f32 = 6.0; // Toast 堆叠间距（垂直）
 const TOAST_MIN_WIDTH_PX: f32 = 120.0;
 const TOAST_MAX_WIDTH_PX: f32 = 240.0;
@@ -767,6 +768,10 @@ impl ToastState {
             insets: self.insets,
         }
     }
+
+    pub fn has_content(&self) -> bool {
+        !self.items.is_empty() || self.breadcrumb.is_some()
+    }
 }
 
 pub fn has_visible_toasts(window_id: WindowId, now: Instant, state: &ToastState) -> bool {
@@ -928,26 +933,23 @@ fn toast_shell(colors: &ThemeColors, item: &ToastItem) -> impl IntoElement {
         .id(SharedString::from(format!("toast-{}", item.id.0)))
         .w_full()
         .bg(Hsla {
-            a: 0.92,
-            ..colors.surface
+            a: 0.94,
+            ..colors.settings_panel_bg
         })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.14,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(18.0),
-            spread_radius: px(0.0),
-            offset: point(px(0.), px(6.)),
-        }])
+        .border_1()
+        .border_color(Hsla {
+            a: 0.22,
+            ..colors.border
+        })
+        .shadow(card_shadow())
         .rounded(px(TOAST_RADIUS_PX))
         .px(px(12.))
         .py(px(8.))
         .min_h(px(TOAST_BODY_H_PX))
         .hover(|this| {
             this.bg(Hsla {
-                a: 0.96,
-                ..colors.surface
+                a: 0.98,
+                ..colors.settings_panel_bg
             })
         })
         .child(

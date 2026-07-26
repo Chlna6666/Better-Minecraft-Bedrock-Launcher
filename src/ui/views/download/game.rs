@@ -1029,7 +1029,7 @@ fn render_version_row(
         div()
             .px(px(8.))
             .py(px(2.))
-            .rounded(px(4.))
+            .rounded(px(8.))
             .bg(bg)
             .text_size(px(12.))
             .text_color(fg)
@@ -1073,7 +1073,15 @@ fn render_version_row(
         .h(px(84.))
         .px(px(20.))
         .py(px(12.))
-        .rounded(px(8.))
+        .rounded(px(12.))
+        .bg(card_bg)
+        .border_1()
+        .border_color(Hsla {
+            a: 0.14,
+            ..colors.border
+        })
+        .hover(move |s| s.bg(card_hover_bg))
+        .active(|s| s.scale(0.97))
         .flex()
         .items_center()
         .child(
@@ -1088,7 +1096,7 @@ fn render_version_row(
                         img(icon_path)
                             .w(px(42.))
                             .h(px(42.))
-                            .rounded(px(10.))
+                            .rounded(px(12.))
                             .p(px(4.))
                             .bg(Hsla {
                                 a: 0.05,
@@ -1121,7 +1129,7 @@ fn render_version_row(
                                     div()
                                         .px(px(8.))
                                         .py(px(3.))
-                                        .rounded(px(6.))
+                                        .rounded(px(8.))
                                         .bg(channel_bg)
                                         .text_size(px(11.))
                                         .font_weight(FontWeight::BOLD)
@@ -1209,7 +1217,7 @@ fn render_version_row(
                         .id(("download-game-action-btn", row_element_id))
                         .w(px(140.))
                         .h(px(36.))
-                        .rounded(px(10.))
+                        .rounded(px(12.))
                         .bg(btn_bg)
                         .cursor_pointer()
                         .text_size(px(14.))
@@ -1221,7 +1229,7 @@ fn render_version_row(
                         .gap(px(8.))
                         .relative()
                         .hover(move |s| if is_interactive { s.opacity(0.85) } else { s })
-                        .active(move |s| if is_interactive { s.top(px(1.5)) } else { s })
+                        .active(move |s| if is_interactive { s.scale(0.96) } else { s })
                         .child(themed_icon(lucide_icons::icon_download(), 16.0, btn_fg))
                         .child(btn_label)
                 }

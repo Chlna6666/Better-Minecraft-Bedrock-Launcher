@@ -16,14 +16,15 @@ pub(super) fn action_button(
         .id(id)
         .min_h(px(40.))
         .px(px(14.))
-        .rounded(px(13.))
+        .rounded(px(12.))
         .border_1()
-        .border_color(Hsla { a: 0.28, ..accent })
+        .border_color(Hsla { a: 0.24, ..accent })
         .bg(Hsla { a: 0.12, ..accent })
         .opacity(if disabled { 0.46 } else { 1.0 })
         .when(!disabled, |this| {
             this.cursor_pointer()
                 .hover(move |style| style.bg(Hsla { a: 0.20, ..accent }))
+                .active(|style| style.scale(0.97))
         })
         .flex()
         .items_center()
@@ -50,7 +51,7 @@ pub(super) fn subtle_button(
         .id(id)
         .min_h(px(40.))
         .px(px(14.))
-        .rounded(px(13.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.16,
@@ -64,6 +65,7 @@ pub(super) fn subtle_button(
         .when(!disabled, |this| {
             this.cursor_pointer()
                 .hover(|style| style.bg(colors.surface_hover))
+                .active(|style| style.scale(0.97))
         })
         .flex()
         .items_center()
@@ -88,7 +90,7 @@ pub(super) fn icon_button(
     div()
         .id(id)
         .size(px(40.))
-        .rounded(px(13.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.16,
@@ -102,6 +104,7 @@ pub(super) fn icon_button(
         .when(!disabled, |this| {
             this.cursor_pointer()
                 .hover(|style| style.bg(colors.surface_hover))
+                .active(|style| style.scale(0.97))
         })
         .flex()
         .items_center()

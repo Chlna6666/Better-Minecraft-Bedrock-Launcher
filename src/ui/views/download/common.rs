@@ -3,44 +3,27 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 pub(crate) fn status_card(colors: &ThemeColors, text: &str, accent: Option<Hsla>) -> Div {
-    let border = accent.unwrap_or(colors.border);
-    let bg = if accent.is_some() {
-        Hsla { a: 0.10, ..border }
-    } else {
-        Hsla {
-            a: 0.70,
-            ..colors.surface
-        }
-    };
     let fg = accent.unwrap_or(colors.text_secondary);
+    let mut card = crate::ui::components::page_shell::glass_card(colors);
+    if let Some(accent) = accent {
+        card = card
+            .border_color(Hsla { a: 0.30, ..accent })
+            .bg(Hsla { a: 0.10, ..accent });
+    }
 
-    div()
-        .w_full()
-        .rounded(px(10.))
-        .border_1()
-        .border_color(border)
-        .bg(bg)
-        .p(px(16.))
-        .child(
-            div()
-                .text_size(px(13.))
-                .text_color(fg)
-                .child(text.to_string()),
-        )
+    card.w_full().p(px(16.)).child(
+        div()
+            .text_size(px(13.))
+            .text_color(fg)
+            .child(text.to_string()),
+    )
 }
 
 pub(crate) fn panel_shell(colors: &ThemeColors) -> Div {
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .flex_1()
         .min_w(px(0.))
         .min_h(px(0.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(colors.border)
-        .bg(Hsla {
-            a: 0.40,
-            ..colors.surface
-        })
         .overflow_hidden()
 }
 

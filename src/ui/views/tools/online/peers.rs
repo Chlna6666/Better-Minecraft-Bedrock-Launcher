@@ -14,19 +14,8 @@ use super::widgets::subtle_button;
 /// 渲染“房间成员”卡片（置顶房主，快速可见）
 pub(super) fn render_room_members_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     let disabled = state.online_operation.is_busy() || !state.easytier_running;
-    div()
+    crate::ui::components::page_shell::glass_card(colors)
         .w_full()
-        .rounded(px(20.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.18,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.74,
-            ..colors.surface
-        })
-        .overflow_hidden()
         .p(px(18.))
         .flex()
         .flex_col()
@@ -64,7 +53,7 @@ fn render_room_members_header(colors: &ThemeColors, state: &ToolsPageState, disa
                         })
                         .px(px(8.))
                         .py(px(2.))
-                        .text_size(px(11.5))
+                        .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.accent)
                         .child(format!("{} 人", state.players.len())),
@@ -128,19 +117,8 @@ pub(super) fn render_network_nodes_card(colors: &ThemeColors, state: &ToolsPageS
     let disabled = state.online_operation.is_busy() || !state.easytier_running;
     let expanded = state.network_nodes_expanded;
 
-    div()
+    crate::ui::components::page_shell::glass_card(colors)
         .w_full()
-        .rounded(px(20.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.18,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.74,
-            ..colors.surface
-        })
-        .overflow_hidden()
         .p(px(18.))
         .flex()
         .flex_col()
@@ -197,7 +175,7 @@ fn render_network_nodes_header(
                         })
                         .px(px(8.))
                         .py(px(2.))
-                        .text_size(px(11.5))
+                        .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.text_secondary)
                         .child(format!("{} 节点", peer_count)),
@@ -243,18 +221,8 @@ fn render_network_nodes_header(
 
 fn render_collapsed_hint(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     let peer_count = state.peers.len();
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .w_full()
-        .rounded(px(12.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.10,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.32,
-            ..colors.settings_field_bg
-        })
         .px(px(12.))
         .py(px(9.))
         .flex()
@@ -276,7 +244,7 @@ fn render_collapsed_hint(colors: &ThemeColors, state: &ToolsPageState) -> Div {
         )
         .child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(12.))
                 .text_color(colors.accent)
                 .child("点击展开"),
         )
@@ -343,19 +311,9 @@ fn render_peer_groups(colors: &ThemeColors, peers: &[OnlinePeerEntry]) -> Vec<Di
 }
 
 fn render_peer_row(colors: &ThemeColors, index: usize, peer: &OnlinePeerEntry) -> Stateful<Div> {
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .id(("online-peer", index))
         .w_full()
-        .rounded(px(13.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.12,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.46,
-            ..colors.settings_field_bg
-        })
         .px(px(12.))
         .py(px(10.))
         .flex()
@@ -370,7 +328,7 @@ fn render_peer_row(colors: &ThemeColors, index: usize, peer: &OnlinePeerEntry) -
                 .gap(px(2.))
                 .child(
                     div()
-                        .text_size(px(12.5))
+                        .text_size(px(13.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(colors.text_primary)
                         .truncate()
@@ -401,32 +359,18 @@ fn render_player_row(
     player: &OnlinePlayerEntry,
 ) -> Stateful<Div> {
     let is_host = player.is_room_host;
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .id(("online-player", index))
         .w_full()
-        .rounded(px(13.))
-        .border_1()
-        .border_color(if is_host {
-            Hsla {
-                a: 0.28,
+        .when(is_host, |this| {
+            this.border_color(Hsla {
+                a: 0.24,
                 ..colors.accent
-            }
-        } else {
-            Hsla {
-                a: 0.12,
-                ..colors.border
-            }
-        })
-        .bg(if is_host {
-            Hsla {
-                a: 0.12,
+            })
+            .bg(Hsla {
+                a: 0.10,
                 ..colors.accent
-            }
-        } else {
-            Hsla {
-                a: 0.46,
-                ..colors.settings_field_bg
-            }
+            })
         })
         .px(px(12.))
         .py(px(10.))
@@ -443,7 +387,7 @@ fn render_player_row(
                 .child(
                     div().flex().items_center().gap(px(6.)).child(
                         div()
-                            .text_size(px(12.5))
+                            .text_size(px(13.))
                             .font_weight(if is_host {
                                 FontWeight::SEMIBOLD
                             } else {
@@ -479,7 +423,7 @@ fn render_player_row(
                         ..colors.text_secondary
                     }
                 })
-                .text_size(px(11.5))
+                .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(if is_host {
                     colors.accent
@@ -532,18 +476,8 @@ fn peer_address(peer: &OnlinePeerEntry) -> SharedString {
 }
 
 fn empty_row(colors: &ThemeColors, text: &'static str) -> Div {
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .w_full()
-        .rounded(px(13.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.10,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.32,
-            ..colors.settings_field_bg
-        })
         .px(px(12.))
         .py(px(14.))
         .text_size(px(12.))

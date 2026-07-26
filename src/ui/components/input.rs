@@ -84,7 +84,7 @@ impl InputSize {
         match self {
             Self::Small => InputMetrics {
                 height: 28.0,
-                radius: 4.0,
+                radius: 8.0,
                 gap: 2.0,
                 padding_x: 6.0,
                 clear_slot: 14.0,
@@ -94,7 +94,7 @@ impl InputSize {
             },
             Self::Medium => InputMetrics {
                 height: 38.0,
-                radius: 6.0,
+                radius: 12.0,
                 gap: 3.0,
                 padding_x: 6.0,
                 clear_slot: 16.0,
@@ -1069,16 +1069,9 @@ impl RenderOnce for Input {
             theme.accent,
         );
         let dark_mode = theme_colors.bg.l < 0.5;
-        let shell_background = if dark_mode {
-            Hsla {
-                a: 0.85,
-                ..theme_colors.settings_field_bg
-            }
-        } else {
-            Hsla {
-                a: 0.95,
-                ..theme_colors.settings_field_bg
-            }
+        let shell_background = Hsla {
+            a: 0.84,
+            ..theme_colors.settings_field_bg
         };
         let shell_hover_background = if dark_mode {
             Hsla {
@@ -1092,10 +1085,13 @@ impl RenderOnce for Input {
             }
         };
         let shell_border = Hsla {
-            a: 0.15,
+            a: 0.24,
             ..theme_colors.border
         };
-        let focus_border = theme_colors.accent;
+        let focus_border = Hsla {
+            a: 0.45,
+            ..theme_colors.accent
+        };
         let clear_button_text = if dark_mode {
             hsla(0.0, 0.0, 1.0, 0.64)
         } else {

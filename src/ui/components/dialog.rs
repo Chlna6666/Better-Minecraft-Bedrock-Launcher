@@ -13,10 +13,10 @@ pub fn dialog_container(colors: &ThemeColors, max_width: Pixels, content: impl I
     div()
         .w_full()
         .max_w(max_width)
-        .rounded(px(22.))
+        .rounded(px(20.))
         .border_1()
         .border_color(Hsla {
-            a: 0.18,
+            a: 0.22,
             ..colors.border
         })
         .bg(colors.settings_panel_bg)
@@ -33,7 +33,7 @@ pub fn dialog_header(
 ) -> Div {
     let mut header = div().p(px(22.)).flex().flex_col().gap(px(10.)).child(
         div()
-            .text_size(px(18.))
+            .text_size(px(17.))
             .font_weight(FontWeight::BOLD)
             .text_color(colors.text_primary)
             .child(title.into()),
@@ -141,15 +141,15 @@ pub fn prompt_dialog(
                     .gap(px(10.))
                     .child(
                         div()
-                            .text_size(px(18.))
+                            .text_size(px(17.))
                             .font_weight(FontWeight::BOLD)
                             .text_color(colors.text_primary)
                             .child(title.into()),
                     )
                     .child(
                         div()
-                            .text_size(px(12.))
-                            .line_height(relative(1.45))
+                            .text_size(px(13.))
+                            .line_height(relative(1.5))
                             .text_color(colors.text_secondary)
                             .child(description.into()),
                     )

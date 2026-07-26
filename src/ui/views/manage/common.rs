@@ -24,10 +24,17 @@ pub fn icon_action(
         .flex()
         .items_center()
         .justify_center()
-        .bg(colors.surface)
+        .bg(Hsla {
+            a: 0.72,
+            ..colors.surface
+        })
         .border_1()
-        .border_color(colors.border)
+        .border_color(Hsla {
+            a: 0.24,
+            ..colors.border
+        })
         .cursor_pointer()
+        .active(|style| style.scale(0.94))
         .child(themed_icon(icon_path, 18.0, colors.text_secondary))
 }
 
@@ -45,6 +52,7 @@ pub fn secondary_button(
         .border_color(colors.border)
         .bg(colors.surface)
         .cursor_pointer()
+        .active(|style| style.scale(0.97))
         .child(
             div()
                 .text_size(px(13.))
@@ -63,8 +71,9 @@ pub fn ghost_button(
         .id(id)
         .px(px(8.))
         .py(px(6.))
-        .rounded(px(10.))
+        .rounded(px(12.))
         .cursor_pointer()
+        .active(|style| style.scale(0.97))
         .child(
             div()
                 .text_size(px(13.))
@@ -86,6 +95,7 @@ pub fn primary_button(
         .rounded(px(12.))
         .bg(colors.accent)
         .cursor_pointer()
+        .active(|style| style.scale(0.97))
         .child(
             div()
                 .text_size(px(13.))

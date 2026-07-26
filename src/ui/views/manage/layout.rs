@@ -75,7 +75,7 @@ pub(super) fn render_version_header(
                         .gap(px(6.))
                         .child(
                             div()
-                                .text_size(px(18.))
+                                .text_size(px(20.))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(colors.text_primary)
                                 .overflow_hidden()
@@ -264,7 +264,7 @@ pub(super) fn render_toolbar_search_input(
         .w(width)
         .h(px(32.))
         .px(px(10.))
-        .rounded(px(10.))
+        .rounded(px(12.))
         .border_1()
         .border_color(shell_border)
         .bg(shell_background)

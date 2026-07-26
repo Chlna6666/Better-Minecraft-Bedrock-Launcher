@@ -844,7 +844,10 @@ pub(super) fn render_asset_row(
             ..colors.accent
         }
     } else {
-        colors.surface
+        Hsla {
+            a: 0.55,
+            ..colors.surface
+        }
     };
     let thumbnail_background = colors.surface.blend(row_background).alpha(1.0);
 
@@ -1024,17 +1027,27 @@ pub(super) fn render_asset_row(
         .w_full()
         .h(px(MANAGE_ASSET_ROW_HEIGHT_PX))
         .flex_none()
-        .rounded(px(10.))
+        .rounded(px(12.))
         .border_1()
         .border_color(if is_selected {
-            colors.accent
+            Hsla {
+                a: 0.55,
+                ..colors.accent
+            }
         } else {
             Hsla {
-                a: 0.30,
+                a: 0.16,
                 ..colors.border
             }
         })
         .bg(row_background)
+        .hover(|style| {
+            style.bg(Hsla {
+                a: 0.75,
+                ..colors.surface_hover
+            })
+        })
+        .active(|style| style.scale(0.98))
         .px(px(10.))
         .py(px(8.))
         .child(
@@ -1054,7 +1067,7 @@ pub(super) fn render_asset_row(
                             div()
                                 .w(px(18.))
                                 .h(px(18.))
-                                .rounded(px(6.))
+                                .rounded(px(8.))
                                 .border_1()
                                 .border_color(if is_selected {
                                     colors.accent

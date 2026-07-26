@@ -55,18 +55,8 @@ fn render_online_body(colors: &ThemeColors, state: &ToolsPageState, compact: boo
 }
 
 fn render_activity_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
-    div()
+    crate::ui::components::page_shell::glass_card(colors)
         .w_full()
-        .rounded(px(20.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.15,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.68,
-            ..colors.surface
-        })
         .p(px(17.))
         .flex()
         .flex_col()
@@ -105,10 +95,10 @@ fn render_activity_header(colors: &ThemeColors) -> Div {
 fn render_error_banner(colors: &ThemeColors, error: SharedString) -> Div {
     div()
         .w_full()
-        .rounded(px(13.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.28,
+            a: 0.30,
             ..colors.danger
         })
         .bg(Hsla {
@@ -136,14 +126,14 @@ fn render_log_lines(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoEl
         state.online_log.as_ref().lines().rev().take(8).map(|line| {
             div()
                 .w_full()
-                .rounded(px(10.))
+                .rounded(px(8.))
                 .bg(Hsla {
                     a: 0.38,
                     ..colors.settings_field_bg
                 })
                 .px(px(10.))
                 .py(px(7.))
-                .text_size(px(11.5))
+                .text_size(px(12.))
                 .text_color(colors.text_secondary)
                 .child(line.to_string())
         }),

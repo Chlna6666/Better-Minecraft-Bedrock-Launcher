@@ -57,7 +57,7 @@ fn render_settings_card(
     div()
         .w(width)
         .max_w(px(620.))
-        .rounded(px(22.))
+        .rounded(px(20.))
         .border_1()
         .border_color(Hsla {
             a: 0.22,
@@ -67,15 +67,7 @@ fn render_settings_card(
             a: 0.98,
             ..colors.settings_panel_bg
         })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.26,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(42.),
-            spread_radius: px(-8.),
-            offset: point(px(0.), px(20.)),
-        }])
+        .shadow(crate::ui::components::page_shell::panel_shadow())
         .overflow_hidden()
         .flex()
         .flex_col()
@@ -195,7 +187,7 @@ fn render_bootstrap_field(colors: &ThemeColors, state: &ToolsPageState) -> Div {
         .child(
             div()
                 .w_full()
-                .rounded(px(13.))
+                .rounded(px(12.))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.16,
@@ -248,10 +240,10 @@ fn render_toggle_row(
 ) -> Div {
     div()
         .w_full()
-        .rounded(px(15.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.13,
+            a: 0.12,
             ..colors.border
         })
         .bg(Hsla {
@@ -291,7 +283,7 @@ fn render_toggle_copy(colors: &ThemeColors, title: &'static str, description: &'
         )
         .child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(12.))
                 .text_color(colors.text_secondary)
                 .child(description),
         )

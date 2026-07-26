@@ -15,18 +15,8 @@ pub(super) fn render_room_card(colors: &ThemeColors, state: &ToolsPageState) -> 
     let busy = state.online_operation.is_busy();
     let actions_disabled = busy || state.easytier_running;
 
-    div()
+    crate::ui::components::page_shell::glass_card(colors)
         .w_full()
-        .rounded(px(22.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.18,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.82,
-            ..colors.surface
-        })
         .p(px(20.))
         .flex()
         .flex_col()
@@ -74,7 +64,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                         .gap(px(10.))
                         .child(
                             div()
-                                .text_size(px(19.))
+                                .text_size(px(20.))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(colors.text_primary)
                                 .child("开始联机"),
@@ -97,7 +87,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                             })
                                             .px(px(8.))
                                             .py(px(2.))
-                                            .text_size(px(11.5))
+                                            .text_size(px(12.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(colors.accent)
                                             .child(themed_icon(
@@ -122,7 +112,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                             })
                                             .px(px(8.))
                                             .py(px(2.))
-                                            .text_size(px(11.5))
+                                            .text_size(px(12.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(colors.accent)
                                             .child(themed_icon(
@@ -202,14 +192,14 @@ fn render_quick_action(colors: &ThemeColors, state: &ToolsPageState) -> Stateful
 fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     div()
         .w_full()
-        .rounded(px(17.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.20,
+            a: 0.24,
             ..colors.accent
         })
         .bg(Hsla {
-            a: 0.08,
+            a: 0.10,
             ..colors.accent
         })
         .p(px(18.))
@@ -245,14 +235,14 @@ fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div 
 fn render_connected_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     div()
         .w_full()
-        .rounded(px(17.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.20,
+            a: 0.24,
             ..colors.accent
         })
         .bg(Hsla {
-            a: 0.08,
+            a: 0.10,
             ..colors.accent
         })
         .p(px(18.))
@@ -277,10 +267,10 @@ fn render_connected_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
 fn render_create_action(colors: &ThemeColors, disabled: bool) -> Div {
     div()
         .w_full()
-        .rounded(px(17.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.22,
+            a: 0.24,
             ..colors.accent
         })
         .bg(Hsla {
@@ -305,7 +295,7 @@ fn render_create_description(colors: &ThemeColors) -> Div {
         .child(
             div()
                 .size(px(42.))
-                .rounded(px(14.))
+                .rounded(px(12.))
                 .bg(Hsla {
                     a: 0.18,
                     ..colors.accent
@@ -355,18 +345,8 @@ fn render_create_button(colors: &ThemeColors, disabled: bool) -> Stateful<Div> {
 
 fn render_join_action(colors: &ThemeColors, state: &ToolsPageState, disabled: bool) -> Div {
     let paste_input = state.room_code_input.clone();
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .w_full()
-        .rounded(px(17.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.14,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.52,
-            ..colors.settings_field_bg
-        })
         .p(px(15.))
         .flex()
         .flex_col()
@@ -456,7 +436,7 @@ fn render_join_input(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     div()
         .flex_1()
         .min_w(px(180.))
-        .rounded(px(13.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.18,
@@ -470,14 +450,14 @@ fn render_host_room_code(colors: &ThemeColors, room_code: SharedString) -> Div {
     let copy_room_code = room_code.clone();
     div()
         .w_full()
-        .rounded(px(16.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
-            a: 0.25,
+            a: 0.24,
             ..colors.accent
         })
         .bg(Hsla {
-            a: 0.12,
+            a: 0.10,
             ..colors.accent
         })
         .p(px(14.))

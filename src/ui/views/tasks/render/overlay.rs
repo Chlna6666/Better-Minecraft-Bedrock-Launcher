@@ -56,7 +56,7 @@ pub fn render_tasks_overlay(
                             Button::new("task-confirm-cancel")
                                 .h(px(38.))
                                 .px(px(16.))
-                                .rounded(px(10.))
+                                .rounded(px(12.))
                                 .bg(Hsla {
                                     a: 0.06,
                                     ..colors.text_secondary
@@ -76,7 +76,7 @@ pub fn render_tasks_overlay(
                             Button::new("task-confirm-ok")
                                 .h(px(38.))
                                 .px(px(16.))
-                                .rounded(px(10.))
+                                .rounded(px(12.))
                                 .bg(colors.accent)
                                 .border_0()
                                 .text_size(px(13.))
@@ -92,7 +92,7 @@ pub fn render_tasks_overlay(
                                 }),
                         ),
                 ),
-            hsla(0.0, 0.0, 0.0, 0.34),
+            hsla(0.0, 0.0, 0.0, 0.30),
             Rc::new(move |app| {
                 let _ = entity.update(app, |this, cx| {
                     this.close_confirm(cx);

@@ -756,7 +756,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
         })
         .border_1()
         .border_color(Hsla {
-            a: 0.12,
+            a: 0.22,
             ..colors.border
         })
         .p(px(12.))
@@ -1483,7 +1483,7 @@ fn raw_config_panel(colors: &ThemeColors, i18n: &I18n, content: &str) -> AnyElem
         .rounded(px(10.))
         .border_1()
         .border_color(Hsla {
-            a: 0.18,
+            a: 0.22,
             ..colors.border
         })
         .bg(colors.settings_field_bg)
@@ -1541,7 +1541,7 @@ fn empty_panel(colors: &ThemeColors, message: SharedString) -> AnyElement {
         .rounded(px(10.))
         .border_1()
         .border_color(Hsla {
-            a: 0.18,
+            a: 0.22,
             ..colors.border
         })
         .p(px(16.))
@@ -1884,7 +1884,7 @@ fn value_to_string(value: &toml::Value) -> String {
 fn log_level_color(colors: &ThemeColors, level: LogLevel) -> Hsla {
     match level {
         LogLevel::Error => colors.danger,
-        LogLevel::Warn => rgb(0xf59e0b).into(),
+        LogLevel::Warn => colors.badge_beta_text,
         LogLevel::Info => colors.text_secondary,
         LogLevel::Debug => colors.text_muted,
     }

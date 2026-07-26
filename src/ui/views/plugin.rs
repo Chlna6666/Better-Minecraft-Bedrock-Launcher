@@ -1,4 +1,5 @@
 use crate::plugins::ui_dsl::render_validated_view_tree;
+use crate::ui::components::page_shell::{page_frame, page_panel};
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, px};
@@ -47,6 +48,11 @@ impl Render for PluginPageView {
             }
         };
 
-        div().size_full().p(px(24.0)).bg(colors.bg).child(content)
+        page_frame(
+            page_panel(&colors)
+                .size_full()
+                .p(px(16.))
+                .child(div().size_full().min_h(px(0.)).child(content)),
+        )
     }
 }

@@ -8,16 +8,66 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 
-pub(super) fn render_mod_panel(colors: &ThemeColors, state: &DownloadPageState) -> Div {
-    if state.levilauncher_loading && !state.levilauncher_loaded {
-        return render_loading_state(colors);
-    }
+type ModPanelRenderSignature = (
+    usize,
+    String,
+    String,
+    SharedString,
+    SharedString,
+    SharedString,
+    usize,
+    usize,
+);
 
-    if let Some(ref err) = state.levilauncher_error {
-        return render_error_state(colors, err);
-    }
+#[derive(Default)]
+struct ModPanelRenderCache {
+    last_signature: Option<ModPanelRenderSignature>,
+    total_mods: usize,
+    total_pages: usize,
+    page_index: usize,
+    page_mods: Vec<LeviLaminaModEntry>,
+}
 
-    let query = state.search_query.trim().to_lowercase();
+fn build_mod_panel_render_signature(state: &DownloadPageState) -> ModPanelRenderSignature {
+    (
+        state.levilauncher_all_mods.len(),
+        state
+            .levilauncher_all_mods
+            .first()
+            .map(|m| m.package_id.clone())
+            .unwrap_or_default(),
+        state
+            .levilauncher_all_mods
+            .last()
+            .map(|m| m.package_id.clone())
+            .unwrap_or_default(),
+        state.search_query.clone(),
+        state.levilauncher_selected_loader.clone(),
+        state.levilauncher_selected_loader_version.clone(),
+        state.levilauncher_page_index,
+        state.levilauncher_page_size,
+    )
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    let haystack = haystack.as_bytes();
+    let needle = needle_lower.as_bytes();
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn rebuild_mod_panel_render_cache(
+    state: &DownloadPageState,
+    signature: ModPanelRenderSignature,
+) -> ModPanelRenderCache {
+    let query = state.search_query.trim().to_ascii_lowercase();
     let loader_type = state.levilauncher_selected_loader.as_ref();
     let loader_ver = state.levilauncher_selected_loader_version.as_ref();
 
@@ -25,13 +75,12 @@ pub(super) fn render_mod_panel(colors: &ThemeColors, state: &DownloadPageState) 
         .levilauncher_all_mods
         .iter()
         .filter(|m| {
-            if !query.is_empty() {
-                let name_match = m.name.to_lowercase().contains(&query);
-                let desc_match = m.description.to_lowercase().contains(&query);
-                let pkg_match = m.package_id.to_lowercase().contains(&query);
-                if !name_match && !desc_match && !pkg_match {
-                    return false;
-                }
+            if !query.is_empty()
+                && !contains_ignore_ascii_case(&m.name, &query)
+                && !contains_ignore_ascii_case(&m.description, &query)
+                && !contains_ignore_ascii_case(&m.package_id, &query)
+            {
+                return false;
             }
             mod_matches_loader_version(m, loader_type, loader_ver)
         })
@@ -47,15 +96,62 @@ pub(super) fn render_mod_panel(colors: &ThemeColors, state: &DownloadPageState) 
     let start_idx = page_index * page_size;
     let end_idx = (start_idx + page_size).min(total_mods);
     let page_mods = if start_idx < total_mods {
-        &filtered_mods[start_idx..end_idx]
+        filtered_mods[start_idx..end_idx]
+            .iter()
+            .map(|m| (*m).clone())
+            .collect()
     } else {
-        &[][..]
+        Vec::new()
     };
 
-    let main_content = if filtered_mods.is_empty() {
+    ModPanelRenderCache {
+        last_signature: Some(signature),
+        total_mods,
+        total_pages,
+        page_index,
+        page_mods,
+    }
+}
+
+pub(super) fn render_mod_panel(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
+    {
+        let state = cx.global::<DownloadPageState>();
+        if state.levilauncher_loading && !state.levilauncher_loaded {
+            return render_loading_state(colors);
+        }
+
+        if let Some(err) = state.levilauncher_error.clone() {
+            return render_error_state(colors, &err);
+        }
+    }
+
+    let cache = window.use_keyed_state("download-mod-panel-cache", cx, |_, _| {
+        ModPanelRenderCache::default()
+    });
+    let render_signature =
+        cx.read_global(|state: &DownloadPageState, _cx| build_mod_panel_render_signature(state));
+    let cache_needs_rebuild = cache.read(cx).last_signature.as_ref() != Some(&render_signature);
+    if cache_needs_rebuild {
+        let rebuilt_cache = cx.read_global(|state: &DownloadPageState, _cx| {
+            rebuild_mod_panel_render_cache(state, render_signature.clone())
+        });
+        cache.update(cx, |cached, _| {
+            *cached = rebuilt_cache;
+        });
+    }
+
+    let state = cx.global::<DownloadPageState>();
+    let cached = cache.read(cx);
+    let total_mods = cached.total_mods;
+    let total_pages = cached.total_pages;
+    let page_index = cached.page_index;
+    let loader_type = state.levilauncher_selected_loader.as_ref();
+    let loader_ver = state.levilauncher_selected_loader_version.as_ref();
+
+    let main_content = if total_mods == 0 {
         render_empty_state(colors)
     } else {
-        render_mod_grid(colors, page_mods, state)
+        render_mod_grid(colors, &cached.page_mods, state)
     };
 
     let stats_bar = render_stats_bar(colors, total_mods, loader_type, loader_ver);
@@ -65,7 +161,6 @@ pub(super) fn render_mod_panel(colors: &ThemeColors, state: &DownloadPageState) 
         .size_full()
         .flex()
         .flex_col()
-        .bg(colors.bg)
         .child(stats_bar)
         .child(
             div()
@@ -165,7 +260,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString) -> Div {
             Button::new("retry-fetch-mods")
                 .label("重新加载")
                 .bg(colors.accent)
-                .text_color(hsla(0.0, 0.0, 1.0, 1.0))
+                .text_color(colors.btn_primary_text)
                 .on_click(|_ev, _window, cx| {
                     cx.update_global(|s: &mut DownloadPageState, _cx| {
                         s.levilauncher_loaded = false;
@@ -279,7 +374,7 @@ fn render_stats_bar(
 
 fn render_mod_grid(
     colors: &ThemeColors,
-    mods: &[&LeviLaminaModEntry],
+    mods: &[LeviLaminaModEntry],
     _state: &DownloadPageState,
 ) -> Div {
     let mut grid = div()
@@ -304,14 +399,14 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
         img(mod_entry.avatar_url.clone())
             .w(px(48.))
             .h(px(48.))
-            .rounded(px(10.))
+            .rounded(px(12.))
             .object_fit(ObjectFit::Cover)
             .into_any_element()
     } else {
         div()
             .w(px(48.))
             .h(px(48.))
-            .rounded(px(10.))
+            .rounded(px(12.))
             .bg(Hsla {
                 a: 0.08,
                 ..colors.accent
@@ -335,23 +430,22 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
         .map(|s| s.as_str())
         .unwrap_or("1.0.0");
 
-    let card_bg = Hsla {
-        a: if colors.bg.l < 0.5 { 0.5 } else { 0.8 },
-        ..colors.settings_card_bg
-    };
-
     div()
         .id(ElementId::NamedInteger("mod-card".into(), idx as u64))
         .w(px(320.))
         .flex_grow()
         .min_h(px(160.))
-        .bg(card_bg)
+        .bg(Hsla {
+            a: 0.72,
+            ..colors.surface
+        })
         .border_1()
         .border_color(Hsla {
-            a: 0.12,
+            a: 0.22,
             ..colors.border
         })
-        .rounded(px(12.))
+        .rounded(px(16.))
+        .shadow(crate::ui::components::page_shell::card_shadow())
         .p(px(14.))
         .flex()
         .flex_col()
@@ -363,8 +457,8 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
                 ..colors.accent
             })
             .bg(Hsla {
-                a: 0.02,
-                ..colors.accent
+                a: 0.85,
+                ..colors.surface
             })
         })
         .child(
@@ -872,7 +966,7 @@ pub(super) fn render_detail_modal_content(
             Button::new("mod-modal-copy-lip")
                 .label("复制 LIP 参考指令")
                 .bg(colors.accent)
-                .text_color(hsla(0.0, 0.0, 1.0, 1.0))
+                .text_color(colors.btn_primary_text)
                 .on_click(move |_ev, _window, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(lip_cmd_copy.clone()));
                     cx.update_global(|s: &mut DownloadPageState, _cx| {

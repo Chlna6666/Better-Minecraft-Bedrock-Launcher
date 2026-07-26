@@ -188,7 +188,7 @@ pub(super) fn render_tasks_page(
             div().flex().flex_col().gap(px(4.)).child(
                 div()
                     .text_size(px(20.))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight::BOLD)
                     .text_color(task_text_main(&colors))
                     .child("任务管理器"),
             ),

@@ -121,6 +121,7 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
                     ..colors.surface_hover
                 })
             })
+            .active(|this| this.scale(0.96))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 let committed_blur = cx.update_global(|s: &mut SettingsPageState, _cx| {
                     if s.commit_background_blur_preview() {
@@ -164,7 +165,7 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
         })
         .border_1()
         .border_color(Hsla {
-            a: 0.16,
+            a: 0.20,
             ..colors.border
         })
         .p(px(7.))

@@ -40,18 +40,8 @@ pub(super) fn render_advanced_section(colors: &ThemeColors, state: &ToolsPageSta
 }
 
 fn render_advanced_panel(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoElement {
-    div()
+    crate::ui::components::page_shell::inner_well(colors)
         .w_full()
-        .rounded(px(16.))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.14,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.38,
-            ..colors.surface
-        })
         .p(px(14.))
         .flex()
         .flex_col()
@@ -145,7 +135,7 @@ fn render_input_label(colors: &ThemeColors, label: &'static str, helper: &'stati
 fn render_input_field(colors: &ThemeColors, field: AnyElement) -> Div {
     div()
         .w_full()
-        .rounded(px(13.))
+        .rounded(px(12.))
         .border_1()
         .border_color(Hsla {
             a: 0.16,

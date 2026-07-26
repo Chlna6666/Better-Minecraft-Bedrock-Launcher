@@ -253,28 +253,24 @@ impl RenderOnce for ContextMenu {
             .top(px(self.placement.top))
             .w(px(self.placement.width))
             .max_h(px(self.placement.max_height))
-            .rounded(px(8.0))
+            .rounded(px(12.0))
             .border_1()
-            .border_color(hsla(
-                colors.border.h,
-                colors.border.s,
-                colors.border.l,
-                0.24,
-            ))
-            .bg(hsla(
-                colors.surface.h,
-                colors.surface.s,
-                colors.surface.l,
-                0.98,
-            ))
+            .border_color(Hsla {
+                a: 0.22,
+                ..colors.border
+            })
+            .bg(Hsla {
+                a: 0.96,
+                ..colors.settings_panel_bg
+            })
             .shadow(vec![BoxShadow {
                 color: Hsla {
-                    a: 0.30,
+                    a: 0.16,
                     ..rgb(0x000000).into()
                 },
-                offset: point(px(0.0), px(12.0)),
-                blur_radius: px(28.0),
-                spread_radius: px(0.0),
+                offset: point(px(0.0), px(10.0)),
+                blur_radius: px(24.0),
+                spread_radius: px(-8.0),
             }])
             .flex()
             .flex_col()
@@ -352,7 +348,7 @@ fn render_group(
                 div()
                     .px(px(12.0))
                     .py(px(4.0))
-                    .text_size(px(10.0))
+                    .text_size(px(11.0))
                     .text_color(colors.text_muted)
                     .child(title),
             )
@@ -425,7 +421,7 @@ fn render_item(
                 .when_some(item.description, |this, description| {
                     this.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(px(11.0))
                             .text_color(colors.text_muted)
                             .child(description),
                     )
@@ -449,7 +445,7 @@ fn menu_row(colors: ThemeColors, disabled: bool, danger: bool) -> Div {
         .mx(px(5.0))
         .px(px(7.0))
         .py(px(7.0))
-        .rounded(px(6.0))
+        .rounded(px(8.0))
         .flex()
         .items_center()
         .gap(px(7.0))
@@ -467,7 +463,7 @@ fn menu_row(colors: ThemeColors, disabled: bool, danger: bool) -> Div {
                     colors.surface_hover.h,
                     colors.surface_hover.s,
                     colors.surface_hover.l,
-                    0.82,
+                    0.60,
                 ))
             })
         })
