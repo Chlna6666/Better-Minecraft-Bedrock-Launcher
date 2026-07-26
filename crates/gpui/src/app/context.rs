@@ -247,8 +247,14 @@ impl<'a, T: 'static> Context<'a, T> {
     }
 
     /// Consume an asynchronous stream on the foreground executor and apply each
-    /// item to this entity. The task ends when the stream closes or the entity
-    /// is released.
+    /// item to this entity in stream order. Each consumer is an independent
+    /// foreground task and yields after every item so other ready streams,
+    /// input, and rendering can make progress. The task ends when the stream
+    /// closes or the entity is released.
+    ///
+    /// Stream production may be asynchronous. The apply callback runs
+    /// synchronously on the foreground executor and must remain bounded and
+    /// non-blocking.
     ///
     /// The returned task must be stored or detached. Each applied item
     /// automatically notifies the entity.
@@ -271,6 +277,7 @@ impl<'a, T: 'static> Context<'a, T> {
                 {
                     break;
                 }
+                super::stream::yield_to_foreground_executor().await;
             }
         })
     }

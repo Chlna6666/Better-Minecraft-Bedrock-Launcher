@@ -184,6 +184,7 @@ fn build_gdk_visualization(
         unit_total: Some(unit_total as u64),
         unit_done: Some(unit_done as u64),
         current_item: current_item.into(),
+        downloaded_ranges: None,
         threads: None,
     }
 }

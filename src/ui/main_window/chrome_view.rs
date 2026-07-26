@@ -301,15 +301,26 @@ impl AppChromeView {
                     let _permit = COVER_DECODE_LIMITER.acquire().await.ok();
                     let request_clone = request.clone();
 
-                    let decoded_cover = match tokio::time::timeout(
-                        COVER_DECODE_TIMEOUT,
-                        crate::tasks::runtime::run_io_blocking(move || {
-                            crate::music::MusicController::decode_cover_thumbnail(&request_clone)
-                        }),
-                    )
-                    .await
-                    {
-                        Ok(Ok(result)) => {
+                    let decode_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+                        tokio::time::timeout(
+                            COVER_DECODE_TIMEOUT,
+                            crate::tasks::runtime::run_io_blocking(move || {
+                                crate::music::MusicController::decode_cover_thumbnail(
+                                    &request_clone,
+                                )
+                            }),
+                        )
+                        .await
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "封面解码超时（{} ms）",
+                                COVER_DECODE_TIMEOUT.as_millis()
+                            )
+                        })?
+                        .map_err(anyhow::Error::msg)
+                    });
+                    let decoded_cover = match decode_task.await {
+                        Ok(result) => {
                             if result.is_some() {
                                 tracing::info!(
                                     "cover_decode_worker: decoded successfully for {:?}",
@@ -323,18 +334,10 @@ impl AppChromeView {
                             }
                             result
                         }
-                        Ok(Err(error)) => {
+                        Err(error) => {
                             tracing::warn!(
-                                "cover_decode_worker: decode task join failed for {:?}: {error}",
+                                "cover_decode_worker: decode failed for {:?}: {error}",
                                 request.track_path
-                            );
-                            None
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                "cover_decode_worker: decode timed out for {:?} after {:?}",
-                                request.track_path,
-                                COVER_DECODE_TIMEOUT
                             );
                             None
                         }

@@ -476,11 +476,7 @@ fn compact_status_pill(
         .child(text)
 }
 
-fn small_icon_button(
-    colors: &ThemeColors,
-    label: &'static str,
-    icon_path: &'static str,
-) -> Div {
+fn small_icon_button(colors: &ThemeColors, label: &'static str, icon_path: &'static str) -> Div {
     div()
         .h(px(26.))
         .px(px(8.))
@@ -538,7 +534,11 @@ fn plugin_list(
                         .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.text_primary)
-                        .child(format!("{} ({})", i18n.t("PluginSettings.installed"), statuses.len())),
+                        .child(format!(
+                            "{} ({})",
+                            i18n.t("PluginSettings.installed"),
+                            statuses.len()
+                        )),
                 )
                 .child(
                     div()
@@ -546,30 +546,16 @@ fn plugin_list(
                         .items_center()
                         .gap(px(4.))
                         .child(
-                            icon_only_button(
-                                colors,
-                                lucide_icons::icon_file_up(),
-                                true,
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                move |_event, _window, cx| {
+                            icon_only_button(colors, lucide_icons::icon_file_up(), true)
+                                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                                     import_plugin_package_from_picker(cx);
-                                },
-                            ),
+                                }),
                         )
                         .child(
-                            icon_only_button(
-                                colors,
-                                lucide_icons::icon_refresh_cw(),
-                                true,
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_event, _window, cx| {
+                            icon_only_button(colors, lucide_icons::icon_refresh_cw(), true)
+                                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                                     crate::plugins::runtime::reload_plugins(cx);
-                                },
-                            ),
+                                }),
                         ),
                 ),
         );
@@ -683,7 +669,13 @@ fn plugin_list(
                                 ),
                         ),
                 )
-                .child(compact_status_pill(colors, status_text, is_success, is_warning, is_disabled)),
+                .child(compact_status_pill(
+                    colors,
+                    status_text,
+                    is_success,
+                    is_warning,
+                    is_disabled,
+                )),
         );
     }
 
@@ -732,7 +724,9 @@ fn plugin_detail(
                 .child(match state.plugin_sub_tab {
                     PluginSettingsSubTab::Readme => plugin_readme_panel(colors, i18n, model),
                     PluginSettingsSubTab::Permissions => plugin_permissions_panel(colors, status),
-                    PluginSettingsSubTab::Config => plugin_config_panel(colors, i18n, state, model, status),
+                    PluginSettingsSubTab::Config => {
+                        plugin_config_panel(colors, i18n, state, model, status)
+                    }
                     PluginSettingsSubTab::Logs => plugin_logs_panel(colors, i18n, model),
                 }),
         )
@@ -827,23 +821,20 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                         ),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            settings_action_button(
-                                colors,
-                                if enabled {
-                                    SharedString::from("禁用")
-                                } else {
-                                    SharedString::from("启用")
-                                },
-                                true,
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                move |_event, _window, cx| match crate::plugins::runtime::set_plugin_enabled(
+                    div().flex().items_center().gap(px(8.)).child(
+                        settings_action_button(
+                            colors,
+                            if enabled {
+                                SharedString::from("禁用")
+                            } else {
+                                SharedString::from("启用")
+                            },
+                            true,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |_event, _window, cx| {
+                                match crate::plugins::runtime::set_plugin_enabled(
                                     cx,
                                     plugin_id.clone(),
                                     !enabled,
@@ -864,9 +855,10 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                             SharedString::from(format!("操作失败: {error}")),
                                         );
                                     }
-                                },
-                            ),
+                                }
+                            },
                         ),
+                    ),
                 ),
         )
         .child(
@@ -902,65 +894,74 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                         .items_center()
                         .gap(px(6.))
                         .child(
-                            small_icon_button(colors, "重载", lucide_icons::icon_refresh_cw()).on_mouse_down(
-                                MouseButton::Left,
-                                move |_event, _window, cx| match crate::plugins::runtime::reload_plugin(
-                                    cx,
-                                    reload_id.clone(),
-                                ) {
-                                    Ok(()) => {
-                                        toast::success(cx, SharedString::from("插件已重载"));
+                            small_icon_button(colors, "重载", lucide_icons::icon_refresh_cw())
+                                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                                    match crate::plugins::runtime::reload_plugin(
+                                        cx,
+                                        reload_id.clone(),
+                                    ) {
+                                        Ok(()) => {
+                                            toast::success(cx, SharedString::from("插件已重载"));
+                                        }
+                                        Err(error) => {
+                                            toast::error(
+                                                cx,
+                                                SharedString::from(format!("重载失败: {error}")),
+                                            );
+                                        }
                                     }
-                                    Err(error) => {
-                                        toast::error(
-                                            cx,
-                                            SharedString::from(format!("重载失败: {error}")),
-                                        );
-                                    }
-                                },
-                            ),
+                                }),
                         )
                         .child(
-                            small_icon_button(colors, "诊断", lucide_icons::icon_activity()).on_mouse_down(
-                                MouseButton::Left,
-                                move |_event, _window, cx| match crate::plugins::runtime::export_plugin_diagnostics(
-                                    cx,
-                                    &diagnostics_id,
-                                ) {
-                                    Ok(report) => {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(report));
-                                        toast::success(cx, SharedString::from("诊断日志已复制到剪贴板"));
+                            small_icon_button(colors, "诊断", lucide_icons::icon_activity())
+                                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                                    match crate::plugins::runtime::export_plugin_diagnostics(
+                                        cx,
+                                        &diagnostics_id,
+                                    ) {
+                                        Ok(report) => {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                report,
+                                            ));
+                                            toast::success(
+                                                cx,
+                                                SharedString::from("诊断日志已复制到剪贴板"),
+                                            );
+                                        }
+                                        Err(error) => {
+                                            toast::error(
+                                                cx,
+                                                SharedString::from(format!(
+                                                    "导出诊断失败: {error}"
+                                                )),
+                                            );
+                                        }
                                     }
-                                    Err(error) => {
-                                        toast::error(
-                                            cx,
-                                            SharedString::from(format!("导出诊断失败: {error}")),
-                                        );
-                                    }
-                                },
-                            ),
+                                }),
                         )
                         .child(
-                            small_icon_button(colors, "卸载", lucide_icons::icon_trash_2()).on_mouse_down(
-                                MouseButton::Left,
-                                move |_event, _window, cx| match crate::plugins::runtime::uninstall_plugin(
-                                    cx,
-                                    uninstall_id.clone(),
-                                ) {
-                                    Ok(()) => {
-                                        cx.update_global(|state: &mut SettingsPageState, _cx| {
-                                            state.selected_plugin_id = None;
-                                        });
-                                        toast::success(cx, SharedString::from("插件已卸载"));
+                            small_icon_button(colors, "卸载", lucide_icons::icon_trash_2())
+                                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                                    match crate::plugins::runtime::uninstall_plugin(
+                                        cx,
+                                        uninstall_id.clone(),
+                                    ) {
+                                        Ok(()) => {
+                                            cx.update_global(
+                                                |state: &mut SettingsPageState, _cx| {
+                                                    state.selected_plugin_id = None;
+                                                },
+                                            );
+                                            toast::success(cx, SharedString::from("插件已卸载"));
+                                        }
+                                        Err(error) => {
+                                            toast::error(
+                                                cx,
+                                                SharedString::from(format!("卸载失败: {error}")),
+                                            );
+                                        }
                                     }
-                                    Err(error) => {
-                                        toast::error(
-                                            cx,
-                                            SharedString::from(format!("卸载失败: {error}")),
-                                        );
-                                    }
-                                },
-                            ),
+                                }),
                         ),
                 ),
         )
@@ -1582,11 +1583,7 @@ fn plugin_icon(status: &PluginStatus, colors: &ThemeColors, size: Pixels) -> Any
     })
 }
 
-fn icon_only_button(
-    colors: &ThemeColors,
-    icon_path: &'static str,
-    enabled: bool,
-) -> Stateful<Div> {
+fn icon_only_button(colors: &ThemeColors, icon_path: &'static str, enabled: bool) -> Stateful<Div> {
     div()
         .id(SharedString::from(format!("icon-only-btn-{icon_path}")))
         .w(px(28.))

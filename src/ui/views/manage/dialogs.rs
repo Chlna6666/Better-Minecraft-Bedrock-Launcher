@@ -89,9 +89,12 @@ impl ManagePageView {
                 self.confirm_dialog = None;
                 toast::push(cx, SharedString::from("正在删除版本"));
                 cx.spawn(async move |handle, cx| {
-                    let result = delete_version(&folder)
-                        .await
-                        .map_err(|error| error.to_string());
+                    let folder_for_delete = folder.clone();
+                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                        delete_version(&folder_for_delete).await
+                    })
+                    .await
+                    .map_err(|error| error.to_string());
 
                     let _ = handle.update(cx, |this, cx| {
                         match result {
@@ -121,14 +124,18 @@ impl ManagePageView {
                 folder_names,
             } => {
                 cx.spawn(async move |handle, cx| {
-                    let result = data::delete_assets(
-                        &version,
-                        &config,
-                        tab,
-                        pack_subtype,
-                        selected_gdk_user.as_ref().map(SharedString::as_ref),
-                        &folder_names,
-                    )
+                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                        data::delete_assets(
+                            &version,
+                            &config,
+                            tab,
+                            pack_subtype,
+                            selected_gdk_user.as_ref().map(SharedString::as_ref),
+                            &folder_names,
+                        )
+                        .await
+                        .map_err(anyhow::Error::msg)
+                    })
                     .await;
                     let _ = handle.update(cx, |this, cx| {
                         match result {
@@ -144,7 +151,7 @@ impl ManagePageView {
                                 if let Some(dialog) = this.confirm_dialog.as_mut() {
                                     dialog.pending = false;
                                 }
-                                toast::error(cx, SharedString::from(error));
+                                toast::error(cx, SharedString::from(error.to_string()));
                             }
                         }
                         cx.notify();
@@ -306,8 +313,14 @@ impl ManagePageView {
                 let old_name_clone = old_name.clone();
                 let new_name_clone = new_name.clone();
                 cx.spawn(async move |handle, cx| {
-                    let result =
-                        data::rename_version_instance(&old_name_clone, &new_name_clone).await;
+                    let old_name_for_rename = old_name_clone.clone();
+                    let new_name_for_rename = new_name_clone.clone();
+                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                        data::rename_version_instance(&old_name_for_rename, &new_name_for_rename)
+                            .await
+                            .map_err(anyhow::Error::msg)
+                    })
+                    .await;
                     let _ = handle.update(cx, |this, cx| {
                         match result {
                             Ok(()) => {
@@ -328,7 +341,7 @@ impl ManagePageView {
                                 }
                                 let msg = cx.global::<I18n>().t_args(
                                     "ManagePage.rename_failed",
-                                    crate::i18n_args![("message", &error)],
+                                    crate::i18n_args![("message", &error.to_string())],
                                 );
                                 toast::error(cx, msg);
                             }
@@ -369,11 +382,15 @@ impl ManagePageView {
                 let version = version.clone();
                 let asset = asset.clone();
                 cx.spawn(async move |handle, cx| {
-                    let result = data::set_mod_inject_delay(
-                        version.folder.as_ref(),
-                        asset.folder_name.as_ref(),
-                        delay,
-                    )
+                    let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                        data::set_mod_inject_delay(
+                            version.folder.as_ref(),
+                            asset.folder_name.as_ref(),
+                            delay,
+                        )
+                        .await
+                        .map_err(anyhow::Error::msg)
+                    })
                     .await;
                     let _ = handle.update(cx, |this, cx| {
                         match result {
@@ -388,7 +405,7 @@ impl ManagePageView {
                                 if let Some(prompt) = this.value_prompt.as_mut() {
                                     prompt.pending = false;
                                 }
-                                toast::error(cx, SharedString::from(error));
+                                toast::error(cx, SharedString::from(error.to_string()));
                             }
                         }
                         cx.notify();
@@ -427,23 +444,25 @@ impl ManagePageView {
         };
 
         cx.spawn(async move |handle, cx| {
-            let result = async {
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
                 data::set_mod_type(
                     version.folder.as_ref(),
                     asset.folder_name.as_ref(),
                     &mod_type,
                 )
-                .await?;
+                .await
+                .map_err(anyhow::Error::msg)?;
                 if mod_type == "hot-inject" {
                     data::set_mod_inject_delay(
                         version.folder.as_ref(),
                         asset.folder_name.as_ref(),
                         delay,
                     )
-                    .await?;
+                    .await
+                    .map_err(anyhow::Error::msg)?;
                 }
-                Ok::<(), String>(())
-            }
+                Ok::<(), anyhow::Error>(())
+            })
             .await;
 
             let _ = handle.update(cx, |this, cx| {
@@ -459,7 +478,7 @@ impl ManagePageView {
                         if let Some(dialog) = this.mod_type_dialog.as_mut() {
                             dialog.pending = false;
                         }
-                        toast::error(cx, SharedString::from(error));
+                        toast::error(cx, SharedString::from(error.to_string()));
                     }
                 }
                 cx.notify();

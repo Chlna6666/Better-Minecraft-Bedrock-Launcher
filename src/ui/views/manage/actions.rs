@@ -79,18 +79,22 @@ impl ManagePageView {
         let config = modal_state.config.clone();
         let icon_source_path = modal_state.icon_source_path.clone();
         cx.spawn(async move |handle, cx| {
-            let result = async {
-                data::save_manage_version_config(&version, &config).await?;
+            let version_for_save = version.clone();
+            let config_for_save = config.clone();
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::save_manage_version_config(&version_for_save, &config_for_save)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
                 if let Some(icon_source_path) = icon_source_path {
                     crate::core::version::icons::copy_version_icon(
                         std::path::Path::new(icon_source_path.as_ref()),
-                        std::path::Path::new(version.path.as_ref()),
+                        std::path::Path::new(version_for_save.path.as_ref()),
                     )
                     .await
-                    .map_err(|error| format!("保存版本图标失败: {error}"))?;
+                    .map_err(|error| anyhow::anyhow!("保存版本图标失败: {error}"))?;
                 }
-                Ok::<(), String>(())
-            }
+                Ok::<(), anyhow::Error>(())
+            })
             .await;
             let _ = handle.update(cx, |this, cx| {
                 if let Some(modal) = this.version_settings_modal.as_mut() {
@@ -109,7 +113,7 @@ impl ManagePageView {
                         this.invalidate_version_dependent_data(cx);
                     }
                     Err(error) => {
-                        toast::error(cx, SharedString::from(error));
+                        toast::error(cx, SharedString::from(error.to_string()));
                     }
                 }
                 cx.notify();

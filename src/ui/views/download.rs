@@ -616,8 +616,13 @@ pub fn ensure_levilauncher_loaded(cx: &mut App) {
         s.levilauncher_error = None;
     });
 
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
+        crate::core::levilamina::fetch_levilamina_index()
+            .await
+            .map_err(anyhow::Error::msg)
+    });
     cx.spawn(async move |cx| {
-        let result = crate::core::levilamina::fetch_levilamina_index().await;
+        let result = load_task.await;
         let _ = cx.update_global(|s: &mut DownloadPageState, _cx| {
             s.levilauncher_loading = false;
             match result {
@@ -632,7 +637,7 @@ pub fn ensure_levilauncher_loaded(cx: &mut App) {
                 }
                 Err(err) => {
                     s.levilauncher_loaded = false;
-                    s.levilauncher_error = Some(SharedString::from(err));
+                    s.levilauncher_error = Some(SharedString::from(err.to_string()));
                 }
             }
         });

@@ -3,7 +3,7 @@ use anyhow::Result;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use std::{env, process};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[cfg(windows)]
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Global\\com.bmcbl.app.single_instance";
@@ -114,10 +114,7 @@ fn single_instance_guard(launch_mode: &LaunchMode) -> Option<SingleInstanceGuard
 pub fn run() -> Result<()> {
     let startup_started = Instant::now();
     crate::utils::memory::configure_mimalloc_optimizer();
-    crate::tasks::runtime::initialize_app_runtime()?.block_on(async_main(startup_started))
-}
-
-async fn async_main(startup_started: Instant) -> Result<()> {
+    let runtime = crate::tasks::runtime::initialize_app_runtime()?;
     let launch_mode = parse_launch_mode();
 
     if let Some(working_dir) = launch_working_dir(&launch_mode)
@@ -162,10 +159,11 @@ async fn async_main(startup_started: Instant) -> Result<()> {
     );
 
     if let LaunchMode::DirectLaunch(ref direct_ctx) = launch_mode {
-        let version_config =
-            crate::core::version::settings::get_version_config(direct_ctx.version_folder.clone())
-                .await
-                .unwrap_or_default();
+        let version_config = runtime
+            .block_on(crate::core::version::settings::get_version_config(
+                direct_ctx.version_folder.clone(),
+            ))
+            .unwrap_or_default();
         let is_silent = direct_ctx
             .silent_override
             .unwrap_or(version_config.shortcut_silent_launch);
@@ -174,12 +172,14 @@ async fn async_main(startup_started: Instant) -> Result<()> {
                 version_folder = %direct_ctx.version_folder,
                 "执行 CMD/快捷方式静默启动"
             );
-            return run_silent_direct_launch(&direct_ctx.version_folder).await;
+            return runtime.block_on(run_silent_direct_launch(&direct_ctx.version_folder));
         }
     }
 
     if launch_mode.is_main() && config.launcher.stats_upload {
-        crate::utils::stats::spawn_startup_ingest();
+        if let Err(error) = crate::utils::stats::spawn_startup_ingest() {
+            warn!(%error, "failed to schedule startup stats ingest");
+        }
     }
 
     if launch_mode.is_main() {
@@ -188,14 +188,49 @@ async fn async_main(startup_started: Instant) -> Result<()> {
         info!("Import-mode preinit done");
     }
 
-    let bootstrap = crate::app::AppBootstrap::from_config(&config, launch_mode).await;
+    let bootstrap = runtime.block_on(crate::app::AppBootstrap::from_config(&config, launch_mode));
     info!(
         elapsed_ms = startup_started.elapsed().as_millis(),
         "startup critical path complete; entering GPUI"
     );
+    ensure_gpui_outside_tokio_runtime()?;
+    // Tokio work crosses into GPUI through the runtime bridge; the event loop owns
+    // the main thread and must never inherit a Tokio task's cooperative budget.
     crate::app::run(bootstrap)?;
 
     Ok(())
+}
+
+fn ensure_gpui_outside_tokio_runtime() -> Result<()> {
+    anyhow::ensure!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "GPUI event loop must not run inside a Tokio runtime context"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod runtime_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn gpui_event_loop_is_allowed_on_a_plain_thread() {
+        assert!(ensure_gpui_outside_tokio_runtime().is_ok());
+    }
+
+    #[test]
+    fn gpui_event_loop_is_rejected_inside_a_tokio_task() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test Tokio runtime should build");
+
+        runtime.block_on(async {
+            let error = ensure_gpui_outside_tokio_runtime()
+                .expect_err("GPUI event loop must not run as a Tokio task");
+            assert!(error.to_string().contains("must not run inside"));
+        });
+    }
 }
 
 fn spawn_noncritical_startup_work() {

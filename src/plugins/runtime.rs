@@ -3026,7 +3026,10 @@ fn spawn_http_refresh(
     sender: mpsc::Sender<HttpRefreshResult>,
     finished_refresh_pending: Arc<AtomicBool>,
 ) {
-    tokio::spawn(async move {
+    let fallback_url = url.clone();
+    let fallback_sender = sender.clone();
+    let fallback_finished_refresh_pending = Arc::clone(&finished_refresh_pending);
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let result = fetch_http_text(&url, max_bytes).await;
         if let Err(error) = sender.send(HttpRefreshResult { url, result }) {
             warn!(error = ?error, "plugin HTTP refresh result receiver dropped");
@@ -3034,7 +3037,17 @@ fn spawn_http_refresh(
         }
         finished_refresh_pending.store(true, Ordering::Release);
         notify_http_refresh_finished();
-    });
+    }) {
+        if let Err(send_error) = fallback_sender.send(HttpRefreshResult {
+            url: fallback_url,
+            result: Err(format!("schedule HTTP refresh failed: {error}")),
+        }) {
+            warn!(error = ?send_error, "plugin HTTP refresh result receiver dropped");
+            return;
+        }
+        fallback_finished_refresh_pending.store(true, Ordering::Release);
+        notify_http_refresh_finished();
+    }
 }
 
 async fn fetch_http_text(

@@ -1404,7 +1404,6 @@ pub(super) const GDK_CDN_BASES: [&str; 10] = [
 ];
 
 pub(super) fn refresh_game_dialog_cdn(cx: &mut App) {
-
     let package_id = cx.read_global(|state: &DownloadPageState, _cx| {
         state.game_dialog.as_ref().and_then(|dialog| {
             (dialog.is_gdk && matches!(dialog.kind, GameDialogKind::ConfirmDownload))
@@ -2250,7 +2249,6 @@ pub(super) fn render_game_dialog(
         && matches!(dialog.kind, GameDialogKind::ConfirmDownload)
         && dialog.local_path.is_none())
     .then(|| {
-
         let cdn_entries = if cdn_results.is_empty() {
             GDK_CDN_BASES
                 .into_iter()
@@ -2273,14 +2271,14 @@ pub(super) fn render_game_dialog(
 
         let render_card = |result: &GameDialogCdnResult, full_width: bool| {
             let is_selected = selected_cdn_base.as_ref() == Some(&result.base);
-            let badge_text =
-                if cdn_loading && result.latency_ms.is_none() && result.error.is_none() {
-                    "测试中".to_string()
-                } else if let Some(latency_ms) = result.latency_ms {
-                    format!("{latency_ms} ms")
-                } else {
-                    "失败".to_string()
-                };
+            let badge_text = if cdn_loading && result.latency_ms.is_none() && result.error.is_none()
+            {
+                "测试中".to_string()
+            } else if let Some(latency_ms) = result.latency_ms {
+                format!("{latency_ms} ms")
+            } else {
+                "失败".to_string()
+            };
             let badge_color = if let Some(latency_ms) = result.latency_ms {
                 if latency_ms <= 80 {
                     colors.stat_green_text

@@ -172,6 +172,7 @@ pub enum ManageServerMotdStatus {
 #[derive(Clone)]
 pub struct ManagePageState {
     pub tab: ManageTab,
+    pub versions_revision: u64,
     pub loaded: bool,
     pub loading: bool,
     pub error: Option<SharedString>,
@@ -222,6 +223,13 @@ pub struct ManagePageState {
 }
 
 impl ManagePageState {
+    pub(super) fn selected_instance_revision(&self) -> ManagedInstanceRevision {
+        ManagedInstanceRevision {
+            folder: self.selected_folder.clone(),
+            versions_revision: self.versions_revision,
+        }
+    }
+
     pub fn has_transient_requests(&self) -> bool {
         self.loading
             || self.version_config_loading
@@ -254,6 +262,7 @@ impl Default for ManagePageState {
     fn default() -> Self {
         Self {
             tab: ManageTab::Mod,
+            versions_revision: 0,
             loaded: false,
             loading: false,
             error: None,
@@ -301,8 +310,16 @@ impl Default for ManagePageState {
 
 impl Global for ManagePageState {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ManagedInstanceRevision {
+    pub(super) folder: Option<SharedString>,
+    pub(super) versions_revision: u64,
+}
+
 #[cfg(test)]
 mod tests {
+    use gpui::SharedString;
+
     use super::ManagePageState;
 
     #[test]
@@ -333,6 +350,20 @@ mod tests {
         assert_eq!(state.screenshots_request_id, 41);
         assert_eq!(state.servers_request_id, 51);
         assert_eq!(state.server_motd_request_id, 61);
+    }
+
+    #[test]
+    fn selected_instance_revision_changes_after_same_folder_is_refreshed() {
+        let mut state = ManagePageState {
+            selected_folder: Some(SharedString::from("26.12")),
+            versions_revision: 7,
+            ..ManagePageState::default()
+        };
+        let previous = state.selected_instance_revision();
+
+        state.versions_revision = 8;
+
+        assert_ne!(state.selected_instance_revision(), previous);
     }
 }
 

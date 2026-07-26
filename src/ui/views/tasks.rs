@@ -91,6 +91,12 @@ pub(super) struct ThreadSegment {
 }
 
 #[derive(Clone, PartialEq)]
+pub(super) struct DownloadedRangeSegment {
+    pub(super) start_offset: f32,
+    pub(super) width_fraction: f32,
+}
+
+#[derive(Clone, PartialEq)]
 pub(super) struct TaskCardViewModel {
     pub(super) id: Arc<str>,
     pub(super) title: Arc<str>,
@@ -115,6 +121,7 @@ pub(super) struct TaskCardViewModel {
     pub(super) percent: Option<f64>,
     pub(super) speed_bytes_per_sec: f64,
     pub(super) sequence: u64,
+    pub(super) downloaded_segments: Option<Vec<DownloadedRangeSegment>>,
     /// Per-worker-thread progress segments; empty when the task has no thread breakdown.
     pub(super) thread_segments: Vec<ThreadSegment>,
 }
@@ -222,6 +229,23 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
     };
 
     let file_total = snapshot.total.unwrap_or(0);
+    let downloaded_segments = snapshot
+        .visualization
+        .as_ref()
+        .and_then(|visualization| visualization.downloaded_ranges.as_ref())
+        .map(|ranges| {
+            ranges
+                .iter()
+                .filter_map(|range| {
+                    let start = range.start.min(file_total);
+                    let end = range.end.min(file_total);
+                    (start < end && file_total > 0).then(|| DownloadedRangeSegment {
+                        start_offset: (start as f64 / file_total as f64) as f32,
+                        width_fraction: ((end - start) as f64 / file_total as f64) as f32,
+                    })
+                })
+                .collect()
+        });
     let thread_segments: Vec<ThreadSegment> = snapshot
         .visualization
         .as_ref()
@@ -300,6 +324,7 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
         percent: snapshot.percent,
         speed_bytes_per_sec: snapshot.speed_bytes_per_sec,
         sequence: snapshot.sequence,
+        downloaded_segments,
         thread_segments,
     }
 }
@@ -348,6 +373,17 @@ fn hash_task_card_model(hasher: &mut RenderFingerprint, model: &TaskCardViewMode
     hash_optional_f64(hasher, model.percent);
     model.speed_bytes_per_sec.to_bits().hash(hasher);
     model.sequence.hash(hasher);
+    match &model.downloaded_segments {
+        Some(segments) => {
+            true.hash(hasher);
+            segments.len().hash(hasher);
+            for segment in segments {
+                segment.start_offset.to_bits().hash(hasher);
+                segment.width_fraction.to_bits().hash(hasher);
+            }
+        }
+        None => false.hash(hasher),
+    }
     model.thread_segments.len().hash(hasher);
     for seg in &model.thread_segments {
         seg.active.hash(hasher);
@@ -939,6 +975,7 @@ mod tests {
             percent: Some(50.0),
             speed_bytes_per_sec: 0.0,
             sequence: 1,
+            downloaded_segments: None,
             thread_segments: Vec::new(),
         }
     }

@@ -120,6 +120,11 @@ pub trait StyledImage: Sized {
     }
 
     /// Decode resource images for the actual element bounds in device pixels.
+    ///
+    /// This explicitly enables bounds-aware decoding when the application uses
+    /// [`ImageDecodePolicy::Explicit`](crate::ImageDecodePolicy::Explicit). Applications using
+    /// [`ImageDecodePolicy::Visible`](crate::ImageDecodePolicy::Visible) get this behavior by
+    /// default for resource images.
     fn decode_to_bounds(mut self) -> Self {
         self.image_style().decode_to_bounds = true;
         self

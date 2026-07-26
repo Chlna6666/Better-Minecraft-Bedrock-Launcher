@@ -102,6 +102,7 @@ pub(super) fn uses_embedded_default_background(
     )
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct BackgroundSettingsSnapshot {
     pub(super) loaded: bool,
     pub(super) background_option: String,
@@ -111,8 +112,14 @@ pub(super) struct BackgroundSettingsSnapshot {
     pub(super) network_image_refresh_nonce: u64,
 }
 
-pub(super) struct PreparedBackground {
-    pub(super) display_background: Option<BackgroundSource>,
+impl BackgroundSettingsSnapshot {
+    pub(super) fn has_same_source(&self, other: &Self) -> bool {
+        self.loaded == other.loaded
+            && self.background_option == other.background_option
+            && self.local_image_path == other.local_image_path
+            && self.network_image_url == other.network_image_url
+            && self.network_image_refresh_nonce == other.network_image_refresh_nonce
+    }
 }
 
 pub(super) fn resolve_background_source_from_values(
@@ -147,7 +154,20 @@ pub(super) fn resolve_background_source_from_values(
 
 #[cfg(test)]
 mod tests {
-    use super::{network_background_cache_key, uses_embedded_default_background};
+    use super::{
+        BackgroundSettingsSnapshot, network_background_cache_key, uses_embedded_default_background,
+    };
+
+    fn settings_snapshot() -> BackgroundSettingsSnapshot {
+        BackgroundSettingsSnapshot {
+            loaded: true,
+            background_option: "local".to_string(),
+            local_image_path: "C:\\demo\\background.webp".to_string(),
+            network_image_url: String::new(),
+            background_blur: 12.0,
+            network_image_refresh_nonce: 0,
+        }
+    }
 
     #[test]
     fn only_uses_embedded_default_background_when_source_resolves_to_default() {
@@ -172,5 +192,24 @@ mod tests {
             network_background_cache_key("https://example.com/bg.webp?a=1&_bm_refresh=42#hero"),
             "https://example.com/bg.webp?a=1#hero"
         );
+    }
+
+    #[test]
+    fn background_source_identity_ignores_blur_only_changes() {
+        let current = settings_snapshot();
+        let mut next = current.clone();
+        next.background_blur = 18.0;
+
+        assert!(current.has_same_source(&next));
+        assert_ne!(current, next);
+    }
+
+    #[test]
+    fn background_source_identity_tracks_refresh_nonce() {
+        let current = settings_snapshot();
+        let mut next = current.clone();
+        next.network_image_refresh_nonce = 1;
+
+        assert!(!current.has_same_source(&next));
     }
 }

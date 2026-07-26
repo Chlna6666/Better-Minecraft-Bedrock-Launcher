@@ -182,6 +182,7 @@ fn configure_platform_app_identity() {}
 
 pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     configure_platform_app_identity();
+    let io_handle = crate::tasks::runtime::io_handle().map_err(anyhow::Error::msg)?;
 
     let app = Application::new_with_renderer_options(gpui::RendererOptions {
         backend: bootstrap.renderer_backend,
@@ -215,6 +216,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     .with_default_font_or_platform_default(application_default_font(&bootstrap))
     .with_assets(crate::assets::asset_source::AppAssets);
     app.run(move |cx| {
+        gpui_tokio::init_from_handle(cx, io_handle);
         configure_runtime(cx, &bootstrap.launch_mode);
         build_app_state(cx, &bootstrap);
         start_domain_event_bridges(cx);

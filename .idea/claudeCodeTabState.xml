@@ -6,11 +6,12 @@
         <entry key="0">
           <value>
             <TabSessionState>
-              <option name="provider" value="codex" />
-              <option name="cwd" value="$PROJECT_DIR$" />
-              <option name="model" value="gpt-5.5" />
-              <option name="permissionMode" value="bypassPermissions" />
-              <option name="reasoningEffort" value="high" />
+              <option name="provider" value="claude" />
+              <option name="sessionId" value="da7921ef-80ee-4f34-b417-8c253822ddd8" />
+              <option name="cwd" value="C:\Users\Administrator\Desktop\BMCBL" />
+              <option name="model" value="claude-haiku-4-5" />
+              <option name="permissionMode" value="acceptEdits" />
+              <option name="reasoningEffort" value="max" />
             </TabSessionState>
           </value>
         </entry>

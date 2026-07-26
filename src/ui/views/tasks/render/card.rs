@@ -305,6 +305,7 @@ pub(crate) fn render_task_card(
                     colors,
                     model.status.as_ref(),
                     progress_percent,
+                    model.downloaded_segments.as_deref(),
                     &model.thread_segments,
                 )))
                 .children(message_line)

@@ -268,9 +268,13 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
     });
 
     let cached_mod_entry = found.map(curseforge_mod_entry_to_query_data);
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::core::curseforge::queries::load_mod_page(mod_id, cached_mod_entry)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
     cx.spawn(async move |cx| {
-        let result =
-            crate::core::curseforge::queries::load_mod_page(mod_id, cached_mod_entry).await;
+        let result = load_task.await;
         match result {
             Ok(page_data) => {
                 let crate::core::curseforge::queries::CurseForgeModPageData {
@@ -382,8 +386,13 @@ fn spawn_load_curseforge_install_files(mod_id: i32, cx: &mut App) {
         )
     });
 
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::core::curseforge::queries::load_mod_files(mod_id, game_version)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
     cx.spawn(async move |cx| {
-        let result = crate::core::curseforge::queries::load_mod_files(mod_id, game_version).await;
+        let result = load_task.await;
         match result {
             Ok(files) => {
                 let files = curseforge_file_entries_from_query_data(files);

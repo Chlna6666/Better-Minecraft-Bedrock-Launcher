@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "raknet",
+    "raknet-tokio"
+]
+resolver = "3"

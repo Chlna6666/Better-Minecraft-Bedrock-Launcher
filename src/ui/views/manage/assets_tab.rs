@@ -157,34 +157,38 @@ impl ManagePageView {
                     return Ok::<(), anyhow::Error>(());
                 }
 
-                let result = match tab {
-                    ManageTab::Mod => data::import_mod_files(
-                        version.folder.as_ref(),
-                        &files.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                    )
-                    .await
-                    .map(|_| format!("已导入 {} 个 Mod", files.len())),
-                    ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
-                        data::import_non_mod_files(
-                            &version,
-                            &config,
-                            tab,
-                            pack_subtype,
-                            selected_gdk_user.as_ref().map(SharedString::as_ref),
-                            files,
-                            false,
-                            false,
+                let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                    match tab {
+                        ManageTab::Mod => data::import_mod_files(
+                            version.folder.as_ref(),
+                            &files.iter().map(ToString::to_string).collect::<Vec<_>>(),
                         )
                         .await
-                        .map(|summary| {
-                            format!(
-                                "导入完成：成功 {} 个，失败 {} 个",
-                                summary.imported_count, summary.failed_count
+                        .map(|_| format!("已导入 {} 个 Mod", files.len())),
+                        ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+                            data::import_non_mod_files(
+                                &version,
+                                &config,
+                                tab,
+                                pack_subtype,
+                                selected_gdk_user.as_ref().map(SharedString::as_ref),
+                                files,
+                                false,
+                                false,
                             )
-                        })
+                            .await
+                            .map(|summary| {
+                                format!(
+                                    "导入完成：成功 {} 个，失败 {} 个",
+                                    summary.imported_count, summary.failed_count
+                                )
+                            })
+                        }
+                        ManageTab::Screenshot | ManageTab::Server => Ok(String::new()),
                     }
-                    ManageTab::Screenshot | ManageTab::Server => Ok(String::new()),
-                };
+                    .map_err(anyhow::Error::msg)
+                })
+                .await;
 
                 cx.update(|cx| match result {
                     Ok(message) => {
@@ -197,7 +201,7 @@ impl ManagePageView {
                         });
                     }
                     Err(error) => {
-                        toast::error(cx, SharedString::from(error));
+                        toast::error(cx, SharedString::from(error.to_string()));
                     }
                 })?;
                 Ok::<(), anyhow::Error>(())

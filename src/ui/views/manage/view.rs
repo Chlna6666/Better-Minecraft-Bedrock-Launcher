@@ -17,7 +17,8 @@ pub struct ManagePageView {
     pub(super) mod_type_dialog: Option<ModTypeDialogState>,
     pub(super) server_editor_dialog: Option<ServerEditorDialogState>,
     pub(super) level_dat_editor: Option<level_dat_editor::LevelDatEditorModalState>,
-    pub(super) last_selected_folder: Option<SharedString>,
+    pub(super) last_selected_instance_revision: ManagedInstanceRevision,
+    pub(super) last_animated_selected_folder: Option<SharedString>,
     pub(super) last_observed_tab: ManageTab,
     pub(super) tab_anim_at: Option<Instant>,
     pub(super) tab_anim_from: Option<ManageTab>,
@@ -39,6 +40,7 @@ impl ManagePageView {
         let state = cx.global::<ManagePageState>();
         let initial_tab = state.tab;
         let initial_selected_folder = state.selected_folder.clone();
+        let initial_selected_instance_revision = state.selected_instance_revision();
         let initial_render_signature = ManageRenderSignature::from_state(state);
         let subscriptions = vec![
             cx.observe_global::<ManagePageState>(|this, cx| {
@@ -61,10 +63,10 @@ impl ManagePageView {
                 }
 
                 // Track version/folder changes for animation
-                if selected_folder != this.last_selected_folder {
-                    this.version_anim_from = this.last_selected_folder.clone();
+                if selected_folder != this.last_animated_selected_folder {
+                    this.version_anim_from = this.last_animated_selected_folder.clone();
                     this.version_anim_at = Some(Instant::now());
-                    this.last_selected_folder = selected_folder;
+                    this.last_animated_selected_folder = selected_folder;
                 }
             }),
             cx.observe_global::<ThemeState>(|_, cx| {
@@ -95,7 +97,8 @@ impl ManagePageView {
             mod_type_dialog: None,
             server_editor_dialog: None,
             level_dat_editor: None,
-            last_selected_folder: initial_selected_folder,
+            last_selected_instance_revision: initial_selected_instance_revision,
+            last_animated_selected_folder: initial_selected_folder,
             last_observed_tab: initial_tab,
             tab_anim_at: None,
             tab_anim_from: None,

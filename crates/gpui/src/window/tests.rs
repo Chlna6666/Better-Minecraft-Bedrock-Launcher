@@ -204,8 +204,26 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
                 Some(first_tile)
             );
 
+            let atlas_key = crate::AtlasKey::from(RenderImageParams {
+                image_id: image.id,
+                frame_slot: 0,
+                pixel_format: RenderImagePixelFormat::Rgba8,
+            });
             window.drop_image(image).unwrap();
             assert!(window.image_paint_tile_cache.is_empty());
+
+            let build_called = Cell::new(false);
+            window
+                .sprite_atlas
+                .ensure_tile_with(&atlas_key, &mut || {
+                    build_called.set(true);
+                    Ok(Some((
+                        size(DevicePixels(1), DevicePixels(1)),
+                        Cow::Borrowed(&[255, 0, 0, 255]),
+                    )))
+                })
+                .unwrap();
+            assert!(!build_called.get());
             window.invalidator.set_phase(DrawPhase::None);
         })
         .unwrap();

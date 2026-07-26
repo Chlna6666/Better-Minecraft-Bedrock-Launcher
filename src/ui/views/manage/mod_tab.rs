@@ -11,11 +11,15 @@ impl ManagePageView {
         };
 
         cx.spawn(async move |_handle, cx| {
-            let result = data::set_mod_enabled(
-                version.folder.as_ref(),
-                asset.folder_name.as_ref(),
-                !enabled,
-            )
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::set_mod_enabled(
+                    version.folder.as_ref(),
+                    asset.folder_name.as_ref(),
+                    !enabled,
+                )
+                .await
+                .map_err(anyhow::Error::msg)
+            })
             .await;
             let _ = cx.update(|cx| match result {
                 Ok(()) => {
@@ -27,7 +31,7 @@ impl ManagePageView {
                     });
                 }
                 Err(error) => {
-                    toast::error(cx, SharedString::from(error));
+                    toast::error(cx, SharedString::from(error.to_string()));
                 }
             });
             Ok::<(), anyhow::Error>(())

@@ -214,7 +214,6 @@ pub struct OnlineConfig {
     pub player_name: String,
     pub game_ports: String,
     pub disable_p2p: bool,
-    pub no_tun: bool,
 }
 
 impl Default for OnlineConfig {
@@ -224,7 +223,6 @@ impl Default for OnlineConfig {
             player_name: default_online_player_name(),
             game_ports: "7551".to_string(),
             disable_p2p: false,
-            no_tun: true,
         }
     }
 }

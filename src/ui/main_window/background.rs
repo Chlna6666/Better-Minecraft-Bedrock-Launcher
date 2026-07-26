@@ -22,11 +22,8 @@ pub(super) struct AppBackgroundView {
     bootstrap_network_image_url: SharedString,
     last_background_error_signature: Option<String>,
     _subscriptions: Vec<Subscription>,
-    last_background_option: String,
-    last_local_image_path: String,
-    last_network_image_url: String,
-    last_network_refresh_nonce: u64,
-    last_background_blur: f32,
+    last_background_settings: Option<BackgroundSettingsSnapshot>,
+    cached_display_background: Option<BackgroundSource>,
     animation_suppressed: bool,
     startup_first_paint_logged: bool,
     preloaded_background_resource: Option<Resource>,
@@ -43,9 +40,14 @@ impl AppBackgroundView {
     ) -> Self {
         let _ = startup_trace_origin();
         let _subscriptions = vec![
-            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
-                cx.notify();
-            }),
+            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(
+                |this, cx| {
+                    let settings = this.read_background_settings_snapshot(cx);
+                    if this.last_background_settings.as_ref() != Some(&settings) {
+                        cx.notify();
+                    }
+                },
+            ),
         ];
         Self {
             bootstrap_background_option,
@@ -53,11 +55,8 @@ impl AppBackgroundView {
             bootstrap_network_image_url,
             last_background_error_signature: None,
             _subscriptions,
-            last_background_option: String::new(),
-            last_local_image_path: String::new(),
-            last_network_image_url: String::new(),
-            last_network_refresh_nonce: 0,
-            last_background_blur: crate::config::config::default_background_blur(),
+            last_background_settings: None,
+            cached_display_background: None,
             animation_suppressed: false,
             startup_first_paint_logged: false,
             preloaded_background_resource: None,
@@ -118,21 +117,18 @@ impl AppBackgroundView {
                 .id("main-window-background-image")
                 .size_full()
                 .object_fit(ObjectFit::Cover)
-                .decode_to_bounds()
                 .into_any_element(),
             BackgroundSource::LocalPath(path) => img(path.clone())
                 .animation_policy(animation_policy)
                 .id("main-window-background-image")
                 .size_full()
                 .object_fit(ObjectFit::Cover)
-                .decode_to_bounds()
                 .into_any_element(),
             BackgroundSource::NetworkUrl(url) => img(url.clone())
                 .animation_policy(animation_policy)
                 .id("main-window-background-image")
                 .size_full()
                 .object_fit(ObjectFit::Cover)
-                .decode_to_bounds()
                 .into_any_element(),
         }
     }
@@ -166,11 +162,16 @@ impl AppBackgroundView {
         }
     }
 
-    fn resolve_display_background(
-        &mut self,
-        settings: &BackgroundSettingsSnapshot,
-    ) -> PreparedBackground {
-        let desired_background = if settings.loaded {
+    fn update_cached_background_source(&mut self, settings: &BackgroundSettingsSnapshot) {
+        let source_changed = self
+            .last_background_settings
+            .as_ref()
+            .is_none_or(|previous| !previous.has_same_source(settings));
+        if !source_changed && self.cached_display_background.is_some() {
+            return;
+        }
+
+        let source = if settings.loaded {
             resolve_background_source_from_values(
                 &settings.background_option,
                 &settings.local_image_path,
@@ -185,17 +186,10 @@ impl AppBackgroundView {
                 0,
             )
         };
-
-        if matches!(&desired_background, BackgroundSource::None) {
+        if matches!(source, BackgroundSource::None) {
             self.reset_to_default_background();
-            return PreparedBackground {
-                display_background: Some(BackgroundSource::None),
-            };
         }
-
-        PreparedBackground {
-            display_background: Some(desired_background),
-        }
+        self.cached_display_background = Some(source);
     }
 
     fn sync_preloaded_background_resource(
@@ -284,37 +278,7 @@ impl Render for AppBackgroundView {
         }
 
         let settings = self.read_background_settings_snapshot(cx);
-        let background_changed = self.last_background_option != settings.background_option
-            || self.last_local_image_path != settings.local_image_path
-            || self.last_network_image_url != settings.network_image_url
-            || self.last_network_refresh_nonce != settings.network_image_refresh_nonce
-            || (self.last_background_blur - settings.background_blur).abs() > f32::EPSILON;
-
-        if background_changed {
-            self.last_background_option = settings.background_option.clone();
-            self.last_local_image_path = settings.local_image_path.clone();
-            self.last_network_image_url = settings.network_image_url.clone();
-            self.last_network_refresh_nonce = settings.network_image_refresh_nonce;
-            self.last_background_blur = settings.background_blur;
-            let source = if settings.loaded {
-                resolve_background_source_from_values(
-                    &settings.background_option,
-                    &settings.local_image_path,
-                    &settings.network_image_url,
-                    settings.network_image_refresh_nonce,
-                )
-            } else {
-                resolve_background_source_from_values(
-                    self.bootstrap_background_option.as_ref(),
-                    self.bootstrap_local_image_path.as_ref(),
-                    self.bootstrap_network_image_url.as_ref(),
-                    0,
-                )
-            };
-            let _ = source;
-        }
-
-        let prepared = self.resolve_display_background(&settings);
+        self.update_cached_background_source(&settings);
         if !self.startup_first_paint_logged {
             self.startup_first_paint_logged = true;
             info!(
@@ -323,8 +287,9 @@ impl Render for AppBackgroundView {
             );
         }
 
-        let display_background = prepared.display_background;
+        let display_background = self.cached_display_background.clone();
         self.sync_preloaded_background_resource(display_background.as_ref(), window, cx);
+        self.last_background_settings = Some(settings.clone());
 
         self.render_background_container(
             display_background.as_ref(),

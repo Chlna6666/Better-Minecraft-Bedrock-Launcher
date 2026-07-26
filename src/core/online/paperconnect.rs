@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,6 +25,31 @@ pub struct ServerInfo {
     pub game_port: u16,
     pub game_type: String,
     pub game_protocol_type: String,
+    pub protocol: PaperConnectProtocol,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PaperConnectProtocol {
+    Nethernet,
+    #[default]
+    Raknet,
+}
+
+impl PaperConnectProtocol {
+    pub const fn hostname_marker(self) -> char {
+        match self {
+            Self::Nethernet => 'g',
+            Self::Raknet => 'r',
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct ServerHostname {
+    pub server_port: u16,
+    pub game_port: Option<u16>,
+    pub protocol: Option<PaperConnectProtocol>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +88,8 @@ struct PingResponse {
     game_protocol_type: String,
     #[serde(rename = "gamePort")]
     game_port: u16,
+    #[serde(default)]
+    protocol: Option<PaperConnectProtocol>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -97,23 +124,69 @@ fn replace_player_snapshot(mut players: Vec<PaperConnectPlayer>) {
     }
 }
 
+pub fn build_server_hostname(
+    server_port: u16,
+    protocol: PaperConnectProtocol,
+    game_port: u16,
+) -> Result<String, String> {
+    validate_port("联机中心", server_port)?;
+    validate_port("游戏", game_port)?;
+    Ok(format!(
+        "pcs-{server_port}-{}-{game_port}",
+        protocol.hostname_marker()
+    ))
+}
+
+pub fn parse_server_hostname(hostname: &str) -> Option<ServerHostname> {
+    let hostname = hostname.trim();
+    if let Some(port) = hostname.strip_prefix("paper-connect-server-") {
+        return parse_port(port).map(|server_port| ServerHostname {
+            server_port,
+            game_port: None,
+            protocol: None,
+        });
+    }
+
+    let rest = hostname.strip_prefix("pcs-")?;
+    let (server_port, protocol, game_port) =
+        if let Some((server_port, game_port)) = rest.split_once("-g-") {
+            (server_port, PaperConnectProtocol::Nethernet, game_port)
+        } else {
+            let (server_port, game_port) = rest.split_once("-r-")?;
+            (server_port, PaperConnectProtocol::Raknet, game_port)
+        };
+    Some(ServerHostname {
+        server_port: parse_port(server_port)?,
+        game_port: Some(parse_port(game_port)?),
+        protocol: Some(protocol),
+    })
+}
+
 pub fn server_port_from_hostname(hostname: &str) -> Option<u16> {
-    let port = hostname.trim().strip_prefix("paper-connect-server-")?;
+    parse_server_hostname(hostname).map(|hostname| hostname.server_port)
+}
+
+fn parse_port(port: &str) -> Option<u16> {
     let port = port.parse::<u16>().ok()?;
     (1025..=65535).contains(&port).then_some(port)
+}
+
+fn validate_port(description: &str, port: u16) -> Result<(), String> {
+    if (1025..=65535).contains(&port) {
+        Ok(())
+    } else {
+        Err(format!("PaperConnect {description}端口无效：{port}"))
+    }
 }
 
 pub async fn start_server(
     server_port: u16,
     game_port: u16,
+    protocol: PaperConnectProtocol,
     host_player_name: String,
 ) -> Result<(), String> {
-    if !(1025..=65535).contains(&server_port) {
-        return Err(format!("PaperConnect 联机中心端口无效：{server_port}"));
-    }
-    if !(1025..=65535).contains(&game_port) {
-        return Err(format!("PaperConnect 游戏端口无效：{game_port}"));
-    }
+    validate_port("联机中心", server_port)?;
+    validate_port("游戏", game_port)?;
     if host_player_name.trim().is_empty() {
         return Err("PaperConnect 房主名称不能为空".to_string());
     }
@@ -133,7 +206,7 @@ pub async fn start_server(
         host_player.clone(),
     )])));
     replace_player_snapshot(vec![host_player]);
-    let task = tokio::spawn(async move {
+    let task = crate::tasks::runtime::spawn_io(async move {
         let mut cleanup = tokio::time::interval(PLAYER_CLEANUP_INTERVAL);
         cleanup.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut connections = JoinSet::new();
@@ -145,7 +218,9 @@ pub async fn start_server(
                     };
                     let players = Arc::clone(&players);
                     connections.spawn(async move {
-                        if let Err(error) = handle_connection(stream, game_port, players).await {
+                        if let Err(error) =
+                            handle_connection(stream, game_port, protocol, players).await
+                        {
                             tracing::debug!("PaperConnect 请求失败：{error}");
                         }
                     });
@@ -160,7 +235,7 @@ pub async fn start_server(
                 }
             }
         }
-    });
+    })?;
     if let Ok(mut server_task) = SERVER_TASK.lock() {
         *server_task = Some(task);
     }
@@ -195,7 +270,7 @@ pub async fn start_client(
     let mut client_task = CLIENT_TASK
         .lock()
         .map_err(|_| "PaperConnect 心跳任务锁已损坏".to_string())?;
-    let task = tokio::spawn(async move {
+    let task = crate::tasks::runtime::spawn_io(async move {
         loop {
             tokio::time::sleep(PLAYER_HEARTBEAT_INTERVAL).await;
             match send_player(&host, server_port, &player_name, &client_id).await {
@@ -203,7 +278,7 @@ pub async fn start_client(
                 Err(error) => tracing::debug!("PaperConnect 玩家心跳失败：{error}"),
             }
         }
-    });
+    })?;
     *client_task = Some(task);
     Ok(())
 }
@@ -225,13 +300,12 @@ pub async fn ping(host: &str, server_port: u16) -> Result<ServerInfo, String> {
         .write_all(request.as_bytes())
         .await
         .map_err(|error| format!("发送 PaperConnect c:ping 失败：{error}"))?;
-    let mut response = Vec::new();
-    tokio::time::timeout(REQUEST_TIMEOUT, stream.read_to_end(&mut response))
-        .await
-        .map_err(|_| "等待 PaperConnect 联机中心响应超时".to_string())?
-        .map_err(|error| format!("读取 PaperConnect 响应失败：{error}"))?;
-    let value: PingResponse = serde_json::from_slice(&response)
-        .map_err(|error| format!("PaperConnect c:ping 响应无效：{error}"))?;
+    let value: PingResponse = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        read_json_response(&mut stream, "PaperConnect c:ping 响应"),
+    )
+    .await
+    .map_err(|_| "等待 PaperConnect 联机中心响应超时".to_string())??;
     if !(1025..=65535).contains(&value.game_port) {
         return Err(format!(
             "PaperConnect c:ping 返回无效游戏端口：{}",
@@ -245,12 +319,14 @@ pub async fn ping(host: &str, server_port: u16) -> Result<ServerInfo, String> {
         game_port: value.game_port,
         game_type: value.game_type,
         game_protocol_type: value.game_protocol_type,
+        protocol: value.protocol.unwrap_or_default(),
     })
 }
 
 async fn handle_connection(
     mut stream: TcpStream,
     game_port: u16,
+    protocol: PaperConnectProtocol,
     players: Arc<Mutex<HashMap<String, PaperConnectPlayer>>>,
 ) -> Result<(), String> {
     let request = tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut stream))
@@ -261,7 +337,7 @@ async fn handle_connection(
         .split_once('\0')
         .ok_or_else(|| "PaperConnect 请求缺少协议分隔符".to_string())?;
     let response = match request_type {
-        "c:ping" => handle_ping(body, game_port)?,
+        "c:ping" => handle_ping(body, game_port, protocol)?,
         "c:player" => handle_player(body, players)?,
         _ => return Err(format!("未知 PaperConnect 请求：{request_type}")),
     };
@@ -310,6 +386,36 @@ async fn read_request(stream: &mut TcpStream) -> Result<String, String> {
     String::from_utf8(request).map_err(|error| format!("PaperConnect 请求不是 UTF-8：{error}"))
 }
 
+async fn read_json_response<T>(stream: &mut TcpStream, description: &str) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    const MAX_RESPONSE_SIZE: usize = 4096;
+    let mut response = Vec::new();
+    let mut buffer = [0_u8; 1024];
+
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("读取{description}失败：{error}"))?;
+        if read == 0 {
+            return serde_json::from_slice(&response)
+                .map_err(|error| format!("{description}无效：{error}"));
+        }
+        if response.len().saturating_add(read) > MAX_RESPONSE_SIZE {
+            return Err(format!("{description}超过 {MAX_RESPONSE_SIZE} 字节限制"));
+        }
+        response.extend_from_slice(&buffer[..read]);
+
+        match serde_json::from_slice(&response) {
+            Ok(value) => return Ok(value),
+            Err(error) if error.is_eof() => {}
+            Err(error) => return Err(format!("{description}无效：{error}")),
+        }
+    }
+}
+
 async fn send_player(
     host: &str,
     server_port: u16,
@@ -331,13 +437,12 @@ async fn send_player(
         .write_all(request.as_bytes())
         .await
         .map_err(|error| format!("发送 PaperConnect c:player 失败：{error}"))?;
-    let mut response = Vec::new();
-    tokio::time::timeout(REQUEST_TIMEOUT, stream.read_to_end(&mut response))
-        .await
-        .map_err(|_| "等待 PaperConnect 玩家心跳响应超时".to_string())?
-        .map_err(|error| format!("读取 PaperConnect 玩家心跳响应失败：{error}"))?;
-    let response: PlayerResponse = serde_json::from_slice(&response)
-        .map_err(|error| format!("PaperConnect c:player 响应无效：{error}"))?;
+    let response: PlayerResponse = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        read_json_response(&mut stream, "PaperConnect c:player 响应"),
+    )
+    .await
+    .map_err(|_| "等待 PaperConnect 玩家心跳响应超时".to_string())??;
     if response
         .players
         .iter()
@@ -348,7 +453,11 @@ async fn send_player(
     Ok(response.players)
 }
 
-fn handle_ping(body: &str, game_port: u16) -> Result<String, String> {
+fn handle_ping(
+    body: &str,
+    game_port: u16,
+    protocol: PaperConnectProtocol,
+) -> Result<String, String> {
     let request: PingRequest = serde_json::from_str(body)
         .map_err(|error| format!("PaperConnect c:ping 请求无效：{error}"))?;
     serde_json::to_string(&PingResponse {
@@ -357,6 +466,7 @@ fn handle_ping(body: &str, game_port: u16) -> Result<String, String> {
         game_type: "MinecraftBedrock".to_string(),
         game_protocol_type: "UDP".to_string(),
         game_port,
+        protocol: Some(protocol),
     })
     .map_err(|error| format!("序列化 PaperConnect c:ping 响应失败：{error}"))
 }
@@ -425,8 +535,9 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PaperConnectPlayer, PlayerResponse, REQUEST_TIMEOUT, client_id, handle_player, now_ms,
-        ping, players as player_snapshot, read_request, send_player, server_port_from_hostname,
+        PaperConnectPlayer, PaperConnectProtocol, PlayerResponse, REQUEST_TIMEOUT,
+        build_server_hostname, client_id, handle_player, now_ms, parse_server_hostname, ping,
+        players as player_snapshot, read_request, send_player, server_port_from_hostname,
         start_client, start_server, stop_client, stop_server,
     };
     use std::collections::HashMap;
@@ -449,17 +560,30 @@ mod tests {
             None
         );
         assert_eq!(server_port_from_hostname("paper-connect-server-1024"), None);
+        let hostname = build_server_hostname(22000, PaperConnectProtocol::Nethernet, 23000)
+            .expect("v2 hostname should build");
+        assert_eq!(hostname, "pcs-22000-g-23000");
+        let parsed = parse_server_hostname(&hostname).expect("v2 hostname should parse");
+        assert_eq!(parsed.server_port, 22000);
+        assert_eq!(parsed.game_port, Some(23000));
+        assert_eq!(parsed.protocol, Some(PaperConnectProtocol::Nethernet));
     }
 
     #[tokio::test]
     async fn local_server_answers_ping_with_bedrock_metadata() {
+        crate::tasks::runtime::initialize_app_runtime().expect("initialize application runtime");
         let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("pick test port");
         let port = probe.local_addr().expect("read test port").port();
         drop(probe);
 
-        start_server(port, 19132, "房主玩家".to_string())
-            .await
-            .expect("start PaperConnect server");
+        start_server(
+            port,
+            19132,
+            PaperConnectProtocol::Raknet,
+            "房主玩家".to_string(),
+        )
+        .await
+        .expect("start PaperConnect server");
         let response = ping("127.0.0.1", port)
             .await
             .expect("ping PaperConnect server");
@@ -468,6 +592,7 @@ mod tests {
         assert_eq!(response.server_port, port);
         assert_eq!(response.game_host, "127.0.0.1");
         assert_eq!(response.game_port, 19132);
+        assert_eq!(response.protocol, PaperConnectProtocol::Raknet);
         let players = send_player("127.0.0.1", port, "房主玩家", &client_id())
             .await
             .expect("send host c:player heartbeat");
@@ -548,13 +673,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ping_keeps_request_write_half_open_until_response() {
+    async fn ping_accepts_response_without_connection_close() {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind PaperConnect compatibility listener");
         let address = listener
             .local_addr()
             .expect("read PaperConnect compatibility address");
+        let (release_server, keep_connection_open) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener
                 .accept()
@@ -584,16 +710,23 @@ mod tests {
                 )
                 .await
                 .expect("write PaperConnect compatibility response");
-            stream
-                .shutdown()
+            keep_connection_open
                 .await
-                .expect("close PaperConnect compatibility response");
+                .expect("hold GravityCone-style persistent connection");
         });
 
-        let response = ping("127.0.0.1", address.port())
-            .await
-            .expect("PaperConnect ping should wait with write half open");
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            ping("127.0.0.1", address.port()),
+        )
+        .await
+        .expect("complete response should not wait for EOF")
+        .expect("PaperConnect ping should wait with write half open");
         assert_eq!(response.game_port, 19132);
+        assert_eq!(response.protocol, PaperConnectProtocol::Raknet);
+        release_server
+            .send(())
+            .expect("release compatibility server connection");
         server
             .await
             .expect("join PaperConnect compatibility server");

@@ -1,0 +1,13 @@
+[package]
+name = "raknet"
+version = "0.2.0"
+edition = "2024"
+license = "GPL-3.0-only"
+authors = ["Chlna6666"]
+description = "自研 RakNet 协议核心：零拷贝编解码与可靠传输引擎（无 IO 依赖）"
+
+[dependencies]
+bytes = "1.10"
+rand = "0.10"
+thiserror = "2"
+tracing = "0.1"

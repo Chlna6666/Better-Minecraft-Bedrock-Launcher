@@ -487,34 +487,15 @@ impl Window {
         });
     }
 
-    /// Removes an image from the sprite atlas.
+    /// Drops this window's decoded-image lookup state while preserving GPU atlas residency.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
-        let animation_config = self.image_pipeline_config.animated;
-        let frame_slots = if data.is_animated() {
-            data.frame_count()
-                .min(animation_config.max_gpu_frame_slots.max(1))
-        } else {
-            data.frame_count()
-        };
-        for frame_slot in 0..frame_slots {
-            let params = RenderImageParams {
-                image_id: data.id,
-                frame_slot,
-                pixel_format: RenderImagePixelFormat::Bgra8,
-            };
-
-            self.sprite_atlas.remove(&params.clone().into());
-            let params = RenderImageParams {
-                image_id: data.id,
-                frame_slot,
-                pixel_format: RenderImagePixelFormat::Rgba8,
-            };
-            self.sprite_atlas.remove(&params.into());
-        }
         self.animated_image_slots
             .retain(|slot_key, _| slot_key.image_id != data.id);
         self.image_paint_tile_cache
             .retain(|cache_key, _| cache_key.image_id != data.id);
+        // Retained scenes store raw atlas coordinates. Keep the GPU tile resident until an
+        // aggressive atlas trim rebuilds the entire scene, while allowing the decoded bitmap
+        // and window-side lookup entries to be released immediately.
         record_image_drop(1);
 
         Ok(())
@@ -531,6 +512,9 @@ impl Window {
         }
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.image_paint_tile_cache.clear();
+            self.force_full_redraw.set(true);
+            self.force_view_cache_refresh = true;
+            self.refresh();
         }
         self.rendered_frame.trim_retained_capacity_for_level(level);
         self.next_frame.trim_retained_capacity_for_level(level);

@@ -34,6 +34,7 @@ fn build_single_download_visualization(
         unit_total: Some(1),
         unit_done: Some(u64::from(thread_done >= thread_total && thread_total > 0)),
         current_item: Some("单线程顺序下载".to_string()),
+        downloaded_ranges: None,
         threads: Some(vec![ThreadVisualization {
             index: 0,
             label: Some("线程 1".to_string()),

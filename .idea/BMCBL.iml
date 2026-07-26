@@ -28,6 +28,13 @@
       <sourceFolder url="file://$MODULE_DIR$/vendor/gpui/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/vendor/gpui/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/vendor/gpui/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-build/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui-manifest/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/egpui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/gpui/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/gpui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/gpui/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/gpui_tokio/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

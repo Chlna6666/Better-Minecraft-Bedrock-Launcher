@@ -52,7 +52,6 @@ pub struct ToolsPageState {
     pub room_advanced_open: bool,
     pub easytier_settings_open: bool,
     pub disable_p2p: bool,
-    pub no_tun: bool,
     pub online_operation: OnlineOperation,
     online_operation_generation: u64,
     pub online_error: Option<SharedString>,
@@ -90,7 +89,6 @@ impl Default for ToolsPageState {
             room_advanced_open: false,
             easytier_settings_open: false,
             disable_p2p: false,
-            no_tun: false,
             online_operation: OnlineOperation::Idle,
             online_operation_generation: 0,
             online_error: None,
@@ -117,7 +115,6 @@ impl ToolsPageState {
         self.player_name = SharedString::from(config.player_name.clone());
         self.game_ports = SharedString::from(config.game_ports.clone());
         self.disable_p2p = config.disable_p2p;
-        self.no_tun = config.no_tun;
     }
 
     pub fn host_or_avg_latency(&self) -> Option<u64> {

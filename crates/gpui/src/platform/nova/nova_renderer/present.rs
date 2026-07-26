@@ -373,6 +373,10 @@ impl NovaRenderer {
         render_plan: FrameRenderPlan<'_>,
     ) -> Result<()> {
         self.prepare_for_frame_submission()?;
+        if self.atlas.has_pending_removals() {
+            self.wait_for_pending_submissions()?;
+            self.atlas.apply_pending_removals();
+        }
         self.sync_atlas_textures_for_current_backend()?;
         self.ensure_custom_mesh_3d_cache_for_current_backend()?;
         let frame_started = Instant::now();

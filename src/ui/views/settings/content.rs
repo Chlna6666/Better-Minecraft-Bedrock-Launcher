@@ -41,7 +41,12 @@ pub(super) fn render_settings_content(
                             .h_full()
                             .min_h(px(0.))
                             .pb(px(16.))
-                            .child(plugins::render_plugins_tab(colors, i18n, state, plugin_model)),
+                            .child(plugins::render_plugins_tab(
+                                colors,
+                                i18n,
+                                state,
+                                plugin_model,
+                            )),
                     ),
             )
             .into_any_element();

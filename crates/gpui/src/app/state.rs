@@ -355,8 +355,14 @@ impl App {
     }
 
     /// Consume an asynchronous stream on the foreground executor and apply
-    /// every item to application state. The task ends when the stream closes
-    /// or the application is released.
+    /// every item to application state in stream order. Each consumer is an
+    /// independent foreground task and yields after every item so other ready
+    /// streams, input, and rendering can make progress. The task ends when the
+    /// stream closes or the application is released.
+    ///
+    /// Stream production may be asynchronous. The apply callback runs
+    /// synchronously on the foreground executor and must remain bounded and
+    /// non-blocking.
     ///
     /// The returned task must be stored or detached.
     #[track_caller]
@@ -371,6 +377,7 @@ impl App {
                 if cx.update(|cx| apply(item, cx)).is_err() {
                     break;
                 }
+                super::stream::yield_to_foreground_executor().await;
             }
         })
     }

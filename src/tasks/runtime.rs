@@ -157,6 +157,10 @@ pub fn app_runtime() -> Result<&'static AppRuntime, String> {
         .ok_or_else(|| "应用运行时尚未初始化".to_string())
 }
 
+pub fn io_handle() -> Result<Handle, String> {
+    Ok(app_runtime()?.io_handle().clone())
+}
+
 pub fn spawn_io<F>(future: F) -> Result<JoinHandle<F::Output>, String>
 where
     F: Future + Send + 'static,

@@ -22,18 +22,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-mod acl;
 mod paperconnect;
+mod paperconnect_discovery;
+mod paperconnect_transport;
+mod paperconnect_tunnel;
 
 pub use paperconnect::PaperConnectPlayer;
 
-use crate::core::easytier::runtime::ensure_easytier_runtime_ready;
 use crate::http::proxy::{build_no_proxy_client_with_resolve, get_no_proxy_client};
 use crate::utils::cloudflare;
-use acl::build_paperconnect_acl;
 
 const DEFAULT_PAPERCONNECT_VIP: &str = "10.144.144.1";
-const DEFAULT_BOOTSTRAP_PEERS: [&str; 1] = ["tcp://public.easytier.bmcbl.com:54321"];
+const DEFAULT_BOOTSTRAP_PEERS: [&str; 2] = [
+    "wss://center.node.1tmc.top",
+    "tcp://public.easytier.bmcbl.com:54321",
+];
 const PUBLIC_BOOTSTRAP_PEERS_URL: &str = "https://et-public-node.roundstudio.top/";
 const PUBLIC_BOOTSTRAP_PEERS_HOST: &str = "et-public-node.roundstudio.top";
 const BOOTSTRAP_PEERS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -83,7 +86,6 @@ pub struct EasyTierEmbeddedStatus {
     pub instance_id: String,
     pub hostname: String,
     pub ipv4: Option<String>,
-    pub no_tun: bool,
     pub game_host: Option<String>,
     pub game_port: Option<u16>,
 }
@@ -92,8 +94,6 @@ pub struct EasyTierEmbeddedStatus {
 pub struct EasyTierStartOptions {
     #[serde(alias = "disableP2p", alias = "disable_p2p")]
     pub disable_p2p: Option<bool>,
-    #[serde(alias = "noTun", alias = "no_tun")]
-    pub no_tun: Option<bool>,
     #[serde(
         alias = "compression",
         alias = "dataCompressAlgo",
@@ -170,7 +170,7 @@ fn fallback_bootstrap_peers() -> Vec<String> {
 fn is_supported_bootstrap_peer(peer: &str) -> bool {
     matches!(
         url::Url::parse(peer).ok().map(|url| url.scheme().to_ascii_lowercase()),
-        Some(scheme) if scheme == "tcp" || scheme == "udp"
+        Some(scheme) if matches!(scheme.as_str(), "tcp" | "udp" | "ws" | "wss")
     )
 }
 
@@ -432,7 +432,7 @@ fn build_embedded_easytier_config(
 
     let mut flags = gen_default_flags();
     flags.bind_device = false;
-    flags.no_tun = false;
+    flags.no_tun = true;
     flags.use_smoltcp = false;
     flags.disable_p2p = false;
     flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
@@ -444,9 +444,6 @@ fn build_embedded_easytier_config(
     if let Some(opts) = options.clone() {
         if let Some(v) = opts.disable_p2p {
             flags.disable_p2p = v;
-        }
-        if let Some(v) = opts.no_tun {
-            flags.no_tun = v;
         }
         if let Some(v) = opts.compression {
             let raw = v.trim().to_ascii_lowercase();
@@ -476,19 +473,15 @@ fn build_embedded_easytier_config(
     }
 
     let hostname_value = cfg.get_hostname();
-    if let Some(port_text) = hostname_value.trim().strip_prefix("paper-connect-server-") {
-        if let Ok(protocol_port) = port_text.parse::<u16>() {
-            if (1025..=65535).contains(&protocol_port) {
-                host_port_from_hostname = Some(protocol_port);
-            }
-        }
-    }
+    host_port_from_hostname = paperconnect::parse_server_hostname(hostname_value.trim())
+        .map(|hostname| hostname.server_port);
 
     let is_paperconnect_network = network_name_for_policy.starts_with("paper-connect-");
     let is_paperconnect_host = is_paperconnect_network && host_port_from_hostname.is_some();
 
     if is_paperconnect_network
-        && hostname_value.trim().starts_with("paper-connect-server-")
+        && (hostname_value.trim().starts_with("paper-connect-server-")
+            || hostname_value.trim().starts_with("pcs-"))
         && !is_paperconnect_host
     {
         return Err(anyhow!(
@@ -506,17 +499,7 @@ fn build_embedded_easytier_config(
         }
     }
 
-    let no_tun_enabled = flags.no_tun;
     cfg.set_flags(flags);
-
-    if is_paperconnect_network && !no_tun_enabled {
-        let acl = build_paperconnect_acl(
-            is_paperconnect_host,
-            DEFAULT_PAPERCONNECT_VIP,
-            host_port_from_hostname,
-        );
-        cfg.set_acl(Some(acl));
-    }
 
     let resolved_ipv4 = ipv4.as_ref().map(|inet| {
         let s = inet.to_string();
@@ -551,9 +534,9 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
         network_name,
         network_secret,
         peers,
-        hostname,
+        mut hostname,
         player_name,
-        game_port,
+        mut game_port,
         options,
     } = request;
     if !(1025..=65535).contains(&game_port) {
@@ -563,7 +546,18 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
         return Err("PaperConnect player name is empty".to_string());
     }
 
-    ensure_easytier_runtime_ready()?;
+    {
+        let instance_id = ONLINE_STATE.easytier_instance_id.lock().unwrap();
+        if instance_id.is_some() {
+            return Err("EasyTier already running".to_string());
+        }
+        if ONLINE_STATE
+            .easytier_cleanup_in_progress
+            .load(Ordering::Acquire)
+        {
+            return Err("上一条联机连接仍在清理，请稍候再试".to_string());
+        }
+    }
 
     let peers = if peers.iter().any(|p| !p.trim().is_empty()) {
         let sanitized = sanitize_bootstrap_peers(peers);
@@ -577,25 +571,47 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
         default_bootstrap_peers().await
     };
 
+    let host_server_port = hostname
+        .as_deref()
+        .and_then(paperconnect::server_port_from_hostname);
+    let mut host_protocol = None;
+    if let Some(server_port) = host_server_port {
+        let transport = paperconnect_transport::start_host().await?;
+        game_port = transport.game_port;
+        hostname = Some(paperconnect::build_server_hostname(
+            server_port,
+            transport.protocol,
+            game_port,
+        )?);
+        host_protocol = Some(transport.protocol);
+    }
+
     {
         let mut id = ONLINE_STATE.easytier_instance_id.lock().unwrap();
         if id.is_some() {
+            paperconnect_transport::stop_all();
             return Err("EasyTier already running".to_string());
         }
         if ONLINE_STATE
             .easytier_cleanup_in_progress
             .load(Ordering::Acquire)
         {
+            paperconnect_transport::stop_all();
             return Err("上一条联机连接仍在清理，请稍候再试".to_string());
         }
-        let (cfg, resolved_hostname, resolved_ipv4) = build_embedded_easytier_config(
+        let (cfg, resolved_hostname, resolved_ipv4) = match build_embedded_easytier_config(
             network_name.clone(),
             network_secret.clone(),
             peers.clone(),
             hostname.clone(),
             options.clone(),
-        )
-        .map_err(|e| e.to_string())?;
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                paperconnect_transport::stop_all();
+                return Err(error.to_string());
+            }
+        };
 
         *ONLINE_STATE.easytier_last_start.lock().unwrap() = Some(EasyTierLastStart {
             network_name: network_name.clone(),
@@ -608,28 +624,27 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
             options: options.clone(),
         });
 
-        let no_tun = options
-            .as_ref()
-            .and_then(|value| value.no_tun)
-            .unwrap_or(false);
         let is_host = hostname
             .as_deref()
             .and_then(paperconnect::server_port_from_hostname)
             .is_some();
         *ONLINE_STATE.easytier_game_endpoint.lock().unwrap() =
             is_host.then(|| EasyTierGameEndpoint {
-                host: if no_tun {
-                    "127.0.0.1".to_string()
-                } else {
-                    DEFAULT_PAPERCONNECT_VIP.to_string()
-                },
+                host: "127.0.0.1".to_string(),
                 port: game_port,
             });
 
-        let instance_id = ONLINE_STATE
-            .easytier_manager
-            .run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)
-            .map_err(|e| format!("start embedded EasyTier failed: {e}"))?;
+        let instance_id = match ONLINE_STATE.easytier_manager.run_network_instance(
+            cfg,
+            true,
+            ConfigFileControl::STATIC_CONFIG,
+        ) {
+            Ok(instance_id) => instance_id,
+            Err(error) => {
+                paperconnect_transport::stop_all();
+                return Err(format!("start embedded EasyTier failed: {error}"));
+            }
+        };
         *id = Some(instance_id);
     }
 
@@ -661,6 +676,7 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
         }
 
         if !is_running {
+            paperconnect_transport::stop_all();
             *ONLINE_STATE.easytier_instance_id.lock().unwrap() = None;
             *ONLINE_STATE.easytier_last_start.lock().unwrap() = None;
             *ONLINE_STATE.easytier_game_endpoint.lock().unwrap() = None;
@@ -683,8 +699,13 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
         .as_deref()
         .and_then(paperconnect::server_port_from_hostname)
     {
-        if let Err(error) =
-            paperconnect::start_server(server_port, game_port, player_name.clone()).await
+        if let Err(error) = paperconnect::start_server(
+            server_port,
+            game_port,
+            host_protocol.unwrap_or_default(),
+            player_name.clone(),
+        )
+        .await
         {
             easytier_stop().await?;
             return Err(error);
@@ -714,6 +735,7 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
 }
 
 pub async fn easytier_stop() -> Result<(), String> {
+    paperconnect_transport::stop_all();
     paperconnect::stop_server();
     paperconnect::stop_client();
     paperconnect::clear_players();
@@ -878,24 +900,14 @@ struct PaperConnectControlEndpoint {
     host: String,
     port: u16,
     remote_addr: SocketAddr,
-    forward: Option<EasyTierPortForward>,
+    forward: EasyTierPortForward,
 }
 
 async fn create_paperconnect_control_endpoint(
     host_addr: IpAddr,
     server_port: u16,
-    no_tun: bool,
 ) -> Result<PaperConnectControlEndpoint, String> {
     let remote_addr = SocketAddr::new(host_addr, server_port);
-    if !no_tun {
-        return Ok(PaperConnectControlEndpoint {
-            host: host_addr.to_string(),
-            port: server_port,
-            remote_addr,
-            forward: None,
-        });
-    }
-
     let local_port = paperconnect_pick_listen_port()?;
     let forward = EasyTierPortForward {
         protocol: SocketType::Tcp,
@@ -907,7 +919,7 @@ async fn create_paperconnect_control_endpoint(
         host: "127.0.0.1".to_string(),
         port: local_port,
         remote_addr,
-        forward: Some(forward),
+        forward,
     })
 }
 
@@ -948,44 +960,28 @@ async fn probe_paperconnect_control_endpoint(
 async fn configure_paperconnect_game_endpoint(
     mut server: paperconnect::ServerInfo,
     host_addr: IpAddr,
-    no_tun: bool,
 ) -> Result<paperconnect::ServerInfo, String> {
-    if no_tun {
-        let local_game_port = paperconnect_pick_udp_port()?;
-        EasyTierPortForward {
-            protocol: SocketType::Udp,
-            bind_addr: SocketAddr::from(([0, 0, 0, 0], local_game_port)),
-            destination_addr: SocketAddr::new(host_addr, server.game_port),
-        }
-        .add()
-        .await?;
-        tracing::info!(
-            local_port = local_game_port,
-            remote = %SocketAddr::new(host_addr, server.game_port),
-            "PaperConnect 游戏端口转发已建立"
-        );
-        server.game_host = "127.0.0.1".to_string();
-        server.game_port = local_game_port;
-    } else {
-        server.game_host = server.host.clone();
+    let local_game_port = paperconnect_pick_udp_port()?;
+    EasyTierPortForward {
+        protocol: SocketType::Udp,
+        bind_addr: SocketAddr::from(([0, 0, 0, 0], local_game_port)),
+        destination_addr: SocketAddr::new(host_addr, server.game_port),
     }
+    .add()
+    .await?;
+    tracing::info!(
+        local_port = local_game_port,
+        remote = %SocketAddr::new(host_addr, server.game_port),
+        "PaperConnect 游戏端口转发已建立"
+    );
+    server.game_host = "127.0.0.1".to_string();
+    server.game_port = local_game_port;
 
     *ONLINE_STATE.easytier_game_endpoint.lock().unwrap() = Some(EasyTierGameEndpoint {
         host: server.game_host.clone(),
         port: server.game_port,
     });
     Ok(server)
-}
-
-fn easytier_no_tun() -> bool {
-    ONLINE_STATE
-        .easytier_last_start
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|value| value.options.as_ref())
-        .and_then(|value| value.no_tun)
-        .unwrap_or(false)
 }
 
 pub async fn easytier_embedded_status() -> Result<Option<EasyTierEmbeddedStatus>, String> {
@@ -1060,11 +1056,6 @@ pub async fn easytier_embedded_status() -> Result<Option<EasyTierEmbeddedStatus>
     }
 
     let game_endpoint = ONLINE_STATE.easytier_game_endpoint.lock().unwrap().clone();
-    let no_tun = last_start
-        .as_ref()
-        .and_then(|value| value.options.as_ref())
-        .and_then(|value| value.no_tun)
-        .unwrap_or(false);
     let game_port = game_endpoint
         .as_ref()
         .map(|endpoint| endpoint.port)
@@ -1075,7 +1066,6 @@ pub async fn easytier_embedded_status() -> Result<Option<EasyTierEmbeddedStatus>
         instance_id: inst_id,
         hostname,
         ipv4,
-        no_tun,
         game_host,
         game_port,
     }))
@@ -1216,7 +1206,6 @@ fn preferred_peer_connection(peer: &PeerInfo) -> Option<&PeerConnInfo> {
 }
 
 pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, String> {
-    let no_tun = easytier_no_tun();
     let deadline = Instant::now() + PAPERCONNECT_DISCOVERY_TIMEOUT;
     let mut last_probe_error = None;
     loop {
@@ -1228,9 +1217,10 @@ pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, Str
             }
         };
         for peer in peers {
-            let Some(server_port) = paperconnect::server_port_from_hostname(&peer.hostname) else {
+            let Some(announcement) = paperconnect::parse_server_hostname(&peer.hostname) else {
                 continue;
             };
+            let server_port = announcement.server_port;
             let Some(host) = peer.ipv4 else {
                 last_probe_error = Some("已发现房主节点，但节点没有虚拟 IP".to_string());
                 continue;
@@ -1239,9 +1229,7 @@ pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, Str
                 last_probe_error = Some(format!("房主节点返回了无效虚拟 IP：{host}"));
                 continue;
             };
-            let control = match create_paperconnect_control_endpoint(host_addr, server_port, no_tun)
-                .await
-            {
+            let control = match create_paperconnect_control_endpoint(host_addr, server_port).await {
                 Ok(control) => control,
                 Err(error) => {
                     last_probe_error = Some(format!("创建 PaperConnect 控制端口转发失败：{error}"));
@@ -1250,9 +1238,29 @@ pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, Str
             };
             match probe_paperconnect_control_endpoint(&control, deadline).await {
                 Ok(mut server) => {
+                    if let Some(protocol) = announcement.protocol
+                        && protocol != server.protocol
+                    {
+                        last_probe_error = Some(format!(
+                            "房主节点协议标识与 c:ping 不一致：{:?} / {:?}",
+                            protocol, server.protocol
+                        ));
+                        control.forward.remove("控制端口转发").await;
+                        continue;
+                    }
+                    if let Some(game_port) = announcement.game_port
+                        && game_port != server.game_port
+                    {
+                        last_probe_error = Some(format!(
+                            "房主节点游戏端口与 c:ping 不一致：{game_port} / {}",
+                            server.game_port
+                        ));
+                        control.forward.remove("控制端口转发").await;
+                        continue;
+                    }
                     server.host = control.host.clone();
                     server.server_port = control.port;
-                    match configure_paperconnect_game_endpoint(server, host_addr, no_tun).await {
+                    match configure_paperconnect_game_endpoint(server, host_addr).await {
                         Ok(server) => return Ok(server),
                         Err(error) => {
                             last_probe_error =
@@ -1262,9 +1270,7 @@ pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, Str
                 }
                 Err(error) => last_probe_error = Some(error),
             }
-            if let Some(forward) = control.forward {
-                forward.remove("控制端口转发").await;
-            }
+            control.forward.remove("控制端口转发").await;
         }
         if Instant::now() >= deadline {
             return Err(last_probe_error.unwrap_or_else(|| {
@@ -1276,11 +1282,16 @@ pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, Str
 }
 
 pub async fn paperconnect_start_client(
-    host: String,
-    port: u16,
+    server: paperconnect::ServerInfo,
     player_name: String,
 ) -> Result<(), String> {
-    paperconnect::start_client(host, port, player_name).await
+    paperconnect::start_client(server.host.clone(), server.server_port, player_name.clone())
+        .await?;
+    if let Err(error) = paperconnect_transport::start_guest(&server, &player_name).await {
+        paperconnect::stop_client();
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub fn paperconnect_players() -> Vec<PaperConnectPlayer> {
@@ -1302,6 +1313,256 @@ mod tests {
         EasyTierStartOptions, build_embedded_easytier_config, merge_bootstrap_peers,
         paperconnect_parse_room_code, sanitize_bootstrap_peers,
     };
+
+    /// Raw-UDP diagnostic: verifies the EasyTier UDP port forward passes
+    /// RakNet unconnected ping/pong to the live host, independent of any
+    /// RakNet client implementation.
+    ///
+    /// Run with:
+    /// `cargo test --lib udp_forward_diagnostic -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires live PaperConnect room and network access"]
+    async fn udp_forward_diagnostic() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+            .with_test_writer()
+            .try_init();
+        crate::tasks::runtime::initialize_app_runtime().expect("initialize application runtime");
+
+        let room = paperconnect_parse_room_code("P/NPR4-E6J4-DYAG-VZH2".to_string())
+            .await
+            .expect("room code should parse");
+        super::easytier_start(super::EasyTierStartRequest {
+            network_name: room.network_name,
+            network_secret: room.network_secret,
+            peers: Vec::new(),
+            hostname: Some("bmcbl-client-diag".to_string()),
+            player_name: "DiagGuest".to_string(),
+            game_port: 7551,
+            options: None,
+        })
+        .await
+        .expect("easytier_start should succeed");
+
+        let server = super::paperconnect_probe_server()
+            .await
+            .expect("probe should find the host");
+        eprintln!(
+            "[diag] game endpoint {}:{} protocol={:?}",
+            server.game_host, server.game_port, server.protocol
+        );
+
+        let socket = tokio::net::UdpSocket::bind(("0.0.0.0", 0))
+            .await
+            .expect("bind diag socket");
+        socket
+            .connect((server.game_host.as_str(), server.game_port))
+            .await
+            .expect("connect diag socket");
+
+        // RakNet unconnected ping (0x01 + time + magic + client guid).
+        let mut ping = [0_u8; 33];
+        ping[0] = 0x01;
+        ping[1..9].copy_from_slice(&1_u64.to_be_bytes());
+        ping[9..25].copy_from_slice(&[
+            0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0x12, 0x34,
+            0x56, 0x78,
+        ]);
+        ping[25..33].copy_from_slice(&7_u64.to_be_bytes());
+
+        let mut got_reply = false;
+        let mut buffer = [0_u8; 2048];
+        for attempt in 0..10 {
+            socket.send(&ping).await.expect("send unconnected ping");
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                socket.recv(&mut buffer),
+            )
+            .await
+            {
+                Ok(Ok(length)) => {
+                    eprintln!(
+                        "[diag] attempt {attempt}: reply {} bytes, id=0x{:02x}",
+                        length, buffer[0]
+                    );
+                    got_reply = true;
+                    break;
+                }
+                Ok(Err(error)) => eprintln!("[diag] attempt {attempt}: recv error {error}"),
+                Err(_) => eprintln!("[diag] attempt {attempt}: no reply within 1s"),
+            }
+        }
+
+        // Manual RakNet open-connection handshake, mirroring what
+        // raknet-tokio's client sends, to find where the exchange stalls.
+        let magic: [u8; 16] = [
+            0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0x12, 0x34,
+            0x56, 0x78,
+        ];
+        for request_size in [400_usize, 576, 1200] {
+            let mut ocr1 = vec![0_u8; request_size];
+            ocr1[0] = 0x05;
+            ocr1[1..17].copy_from_slice(&magic);
+            ocr1[17] = 11; // RakNet protocol version
+            socket.send(&ocr1).await.expect("send OCR1");
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                socket.recv(&mut buffer),
+            )
+            .await
+            {
+                Ok(Ok(length)) => {
+                    eprintln!(
+                        "[diag] OCR1(size={request_size}): reply {length} bytes id=0x{:02x} raw={:02x?}",
+                        buffer[0],
+                        &buffer[..length.min(40)]
+                    );
+                    if buffer[0] == 0x06 && length >= 28 {
+                        // reply1: id(1) magic(16) guid(8) has_cookie(1) [cookie(4)] mtu(2)
+                        let has_cookie = buffer[25] != 0;
+                        let (cookie, mtu_offset) = if has_cookie {
+                            (Some(&buffer[26..30]), 30)
+                        } else {
+                            (None, 26)
+                        };
+                        let server_mtu =
+                            u16::from_be_bytes([buffer[mtu_offset], buffer[mtu_offset + 1]]);
+                        eprintln!(
+                            "[diag] server mtu={server_mtu} cookie={:02x?}",
+                            cookie
+                        );
+                        // OCR2: id + magic + [cookie + challenge flag] + addr(v4) + mtu + guid
+                        let mut ocr2 = Vec::new();
+                        ocr2.push(0x07);
+                        ocr2.extend_from_slice(&magic);
+                        if let Some(cookie) = cookie {
+                            ocr2.extend_from_slice(cookie);
+                            ocr2.push(0); // no security challenge
+                        }
+                        ocr2.push(4); // address version
+                        // RakNet encodes IPv4 bytes complemented.
+                        ocr2.extend_from_slice(&[!127_u8, !0, !0, !1]);
+                        ocr2.extend_from_slice(&server.game_port.to_be_bytes());
+                        ocr2.extend_from_slice(&server_mtu.to_be_bytes());
+                        // go-raknet requires a vanilla-style negative i64 GUID.
+                        ocr2.extend_from_slice(&(-7_i64).to_be_bytes());
+                        socket.send(&ocr2).await.expect("send OCR2");
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            socket.recv(&mut buffer),
+                        )
+                        .await
+                        {
+                            Ok(Ok(length)) => eprintln!(
+                                "[diag] OCR2: reply {length} bytes id=0x{:02x} raw={:02x?}",
+                                buffer[0],
+                                &buffer[..length.min(48)]
+                            ),
+                            Ok(Err(error)) => eprintln!("[diag] OCR2 recv error: {error}"),
+                            Err(_) => eprintln!("[diag] OCR2: no reply within 2s"),
+                        }
+                        break;
+                    }
+                }
+                Ok(Err(error)) => eprintln!("[diag] OCR1(size={request_size}) recv error: {error}"),
+                Err(_) => eprintln!("[diag] OCR1(size={request_size}): no reply within 2s"),
+            }
+        }
+
+        let stop = super::easytier_stop().await;
+        eprintln!("[diag] stop result: {stop:?}");
+        assert!(got_reply, "UDP forward should pass RakNet ping/pong");
+    }
+
+    /// Manual reproduction harness for the "players cannot join" bug.
+    ///
+    /// Run with:
+    /// `cargo test --lib join_room_reproduction -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires live PaperConnect room and network access"]
+    async fn join_room_reproduction() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,easytier=debug")),
+            )
+            .with_test_writer()
+            .try_init();
+        crate::tasks::runtime::initialize_app_runtime().expect("initialize application runtime");
+
+        let room_code = std::env::var("BMCBL_TEST_ROOM_CODE")
+            .unwrap_or_else(|_| "P/NPR4-E6J4-DYAG-VZH2".to_string());
+        let room = paperconnect_parse_room_code(room_code)
+            .await
+            .expect("room code should parse");
+        eprintln!(
+            "[repro] network_name={} network_secret={}",
+            room.network_name, room.network_secret
+        );
+
+        super::easytier_start(super::EasyTierStartRequest {
+            network_name: room.network_name.clone(),
+            network_secret: room.network_secret.clone(),
+            peers: Vec::new(),
+            hostname: Some("bmcbl-client-repro".to_string()),
+            player_name: "ReproGuest".to_string(),
+            game_port: 7551,
+            options: Some(EasyTierStartOptions {
+                disable_p2p: Some(false),
+                compression: Some("zstd".to_string()),
+                ipv4: None,
+            }),
+        })
+        .await
+        .expect("easytier_start should succeed");
+
+        // Watch route table while discovery runs so we can see what the guest observes.
+        let watcher = tokio::spawn(async {
+            for i in 0..12 {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                match super::easytier_embedded_peers().await {
+                    Ok(peers) => {
+                        eprintln!("[repro] t+{}s routes:", (i + 1) * 3);
+                        for peer in &peers {
+                            eprintln!(
+                                "[repro]   hostname={} ipv4={:?} kind={:?} proto={:?} endpoint={:?}",
+                                peer.hostname,
+                                peer.ipv4,
+                                peer.connection_kind,
+                                peer.protocol,
+                                peer.remote_endpoint
+                            );
+                        }
+                    }
+                    Err(error) => eprintln!("[repro] peers error: {error}"),
+                }
+            }
+        });
+
+        let probe = super::paperconnect_probe_server().await;
+        eprintln!("[repro] probe result: {probe:?}");
+        watcher.abort();
+
+        let joined = match &probe {
+            Ok(server) => {
+                // Full production guest path: c:player heartbeat + RakNet tunnel
+                // connection to the host through the EasyTier port forward.
+                let join =
+                    super::paperconnect_start_client(server.clone(), "ReproGuest".to_string())
+                        .await;
+                eprintln!("[repro] start_client result: {join:?}");
+                eprintln!("[repro] players: {:?}", super::paperconnect_players());
+                join
+            }
+            Err(error) => Err(error.clone()),
+        };
+
+        let stop = super::easytier_stop().await;
+        eprintln!("[repro] stop result: {stop:?}");
+
+        probe.expect("guest should discover the PaperConnect host");
+        joined.expect("guest transport should connect to the host tunnel");
+    }
 
     #[tokio::test]
     async fn paperconnect_parser_accepts_published_format_and_rejects_malformed_code() {
@@ -1339,6 +1600,8 @@ mod tests {
         let peers = sanitize_bootstrap_peers(vec![
             " tcp://node.example:54321 ".to_string(),
             "udp://node.example:54321".to_string(),
+            "ws://node.example/easytier".to_string(),
+            "wss://center.node.1tmc.top".to_string(),
             "https://node.example/peers".to_string(),
             "".to_string(),
         ]);
@@ -1348,15 +1611,25 @@ mod tests {
             vec![
                 "tcp://node.example:54321".to_string(),
                 "udp://node.example:54321".to_string(),
+                "ws://node.example/easytier".to_string(),
+                "wss://center.node.1tmc.top".to_string(),
             ]
         );
     }
 
     #[test]
-    fn paperconnect_config_preserves_requested_tun_mode() {
+    fn gravitycone_center_is_a_default_bootstrap_peer() {
+        assert!(
+            super::fallback_bootstrap_peers()
+                .iter()
+                .any(|peer| peer == "wss://center.node.1tmc.top")
+        );
+    }
+
+    #[test]
+    fn paperconnect_config_is_always_no_tun() {
         let options = EasyTierStartOptions {
             disable_p2p: None,
-            no_tun: Some(true),
             compression: None,
             ipv4: None,
         };
@@ -1375,27 +1648,5 @@ mod tests {
             Some("10.144.144.1/24".to_string())
         );
         assert!(!config.get_dhcp());
-    }
-
-    #[test]
-    fn paperconnect_config_keeps_tun_enabled_when_requested() {
-        let options = EasyTierStartOptions {
-            disable_p2p: None,
-            no_tun: Some(false),
-            compression: None,
-            ipv4: None,
-        };
-        let (config, _, _) = build_embedded_easytier_config(
-            "paper-connect-TEST-ROOM".to_string(),
-            "TEST-KEY".to_string(),
-            vec!["tcp://public.example:54321".to_string()],
-            Some("bmcbl-client-player".to_string()),
-            Some(options),
-        )
-        .expect("PaperConnect TUN config should be valid");
-
-        assert!(!config.get_flags().no_tun);
-        assert!(config.get_dhcp());
-        assert!(config.get_ipv4().is_none());
     }
 }

@@ -26,12 +26,12 @@ struct StatsIngestPayload {
     client_id: String,
 }
 
-pub fn spawn_startup_ingest() {
-    spawn_startup_ingest_after(STARTUP_INGEST_DELAY);
+pub fn spawn_startup_ingest() -> Result<(), String> {
+    spawn_startup_ingest_after(STARTUP_INGEST_DELAY)
 }
 
-pub fn spawn_startup_ingest_after(delay: Duration) {
-    tokio::spawn(async move {
+pub fn spawn_startup_ingest_after(delay: Duration) -> Result<(), String> {
+    crate::tasks::runtime::spawn_io(async move {
         if delay > Duration::ZERO {
             tokio::time::sleep(delay).await;
         }
@@ -39,7 +39,8 @@ pub fn spawn_startup_ingest_after(delay: Duration) {
             Ok(_) => debug!("stats ingest task finished"),
             Err(e) => warn!("stats ingest task failed: {e:#}"),
         }
-    });
+    })?;
+    Ok(())
 }
 
 async fn report_startup_ingest_once() -> anyhow::Result<()> {

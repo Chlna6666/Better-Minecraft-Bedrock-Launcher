@@ -15,6 +15,7 @@ static NEXT_LOCAL_VERSION_REFRESH_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LocalVersionsSnapshot {
+    pub revision: u64,
     pub loaded: bool,
     pub loading: bool,
     pub error: Option<SharedString>,
@@ -54,6 +55,7 @@ pub fn launch_version_icon_path(custom_icon_path: Option<&str>, name: &str) -> L
 
 pub fn read_local_versions_snapshot(cx: &App) -> LocalVersionsSnapshot {
     cx.read_global(|state: &LocalVersionsState, _cx| LocalVersionsSnapshot {
+        revision: state.snapshot_revision,
         loaded: state.loaded,
         loading: state.loading,
         error: state.error.clone(),
@@ -117,6 +119,7 @@ fn sync_manage_page_state_from_local_versions(cx: &mut App) {
     let versions = managed_versions_from_local_versions(&snapshot);
 
     cx.update_global(|state: &mut ManagePageState, _cx| {
+        state.versions_revision = snapshot.revision;
         state.loaded = snapshot.loaded;
         state.loading = snapshot.loading;
         state.error = snapshot.error.clone();
@@ -140,12 +143,15 @@ fn sync_manage_page_state_from_local_versions(cx: &mut App) {
 pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
     let mut versions = versions.to_vec();
     sort_launch_versions(&mut versions);
+    let catalog_generation = crate::core::version::catalog_events::local_version_generation();
 
     cx.update_global(|state: &mut LocalVersionsState, _cx| {
         if state.loaded || state.loading || !state.versions.is_empty() {
             return;
         }
         state.versions = Arc::from(versions);
+        state.catalog_generation = catalog_generation;
+        state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
         state.loaded = true;
         state.loading = false;
         state.error = None;
@@ -165,6 +171,7 @@ pub fn remove_local_version(folder_name: &str, cx: &mut App) {
             .collect::<Vec<_>>();
         sort_launch_versions(&mut versions);
         state.versions = Arc::from(versions);
+        state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
         state.loaded = true;
         state.loading = false;
         state.error = None;
@@ -173,7 +180,12 @@ pub fn remove_local_version(folder_name: &str, cx: &mut App) {
     sync_manage_page_state_from_local_versions(cx);
 }
 
-fn request_local_versions_refresh(state: &mut LocalVersionsState, force_refresh: bool) -> bool {
+fn request_local_versions_refresh(
+    state: &mut LocalVersionsState,
+    force_refresh: bool,
+    catalog_generation: u64,
+) -> bool {
+    let force_refresh = force_refresh || state.catalog_generation < catalog_generation;
     if state.loading {
         if force_refresh {
             state.refresh_pending = true;
@@ -195,13 +207,15 @@ fn take_pending_local_versions_refresh(state: &mut LocalVersionsState) -> bool {
 }
 
 pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
+    let catalog_generation = crate::core::version::catalog_events::local_version_generation();
     let should_spawn = cx.update_global(|state: &mut LocalVersionsState, _cx| {
-        request_local_versions_refresh(state, force_refresh)
+        request_local_versions_refresh(state, force_refresh, catalog_generation)
     });
 
     if !should_spawn {
         info!(
             force_refresh,
+            catalog_generation,
             "ensure_local_versions_loaded: refresh skipped (already loading or loaded)"
         );
         sync_manage_page_state_from_local_versions(cx);
@@ -210,21 +224,26 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
 
     let refresh_id = NEXT_LOCAL_VERSION_REFRESH_ID.fetch_add(1, Ordering::Relaxed);
     let started_at = Instant::now();
-    info!(refresh_id, force_refresh, "local version refresh started");
+    info!(
+        refresh_id,
+        force_refresh, catalog_generation, "local version refresh started"
+    );
     sync_manage_page_state_from_local_versions(cx);
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
+        let mut versions = crate::core::version::api::get_version_list().await?;
+        sort_launch_versions(&mut versions);
+        Ok::<_, anyhow::Error>(versions)
+    });
     cx.spawn(async move |cx| {
-        let result = async {
-            let mut versions = crate::core::version::api::get_version_list().await?;
-            sort_launch_versions(&mut versions);
-            Ok::<_, anyhow::Error>(versions)
-        }
-        .await;
+        let result = load_task.await;
 
         let refresh_again = match result {
             Ok(versions) => {
                 let version_count = versions.len();
                 match cx.update_global(|state: &mut LocalVersionsState, _cx| {
                     state.versions = Arc::from(versions);
+                    state.catalog_generation = state.catalog_generation.max(catalog_generation);
+                    state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
                     state.loaded = true;
                     state.loading = false;
                     state.loading_force_refresh = false;
@@ -458,7 +477,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!request_local_versions_refresh(&mut state, true));
+        assert!(!request_local_versions_refresh(&mut state, true, 0));
         assert!(state.refresh_pending);
         assert!(take_pending_local_versions_refresh(&mut state));
         assert!(!take_pending_local_versions_refresh(&mut state));
@@ -472,7 +491,32 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!request_local_versions_refresh(&mut state, true));
+        assert!(!request_local_versions_refresh(&mut state, true, 0));
         assert!(state.refresh_pending);
+    }
+
+    #[test]
+    fn stale_catalog_generation_forces_refresh_without_event_delivery() {
+        let mut state = LocalVersionsState {
+            catalog_generation: 3,
+            loaded: true,
+            ..Default::default()
+        };
+
+        assert!(request_local_versions_refresh(&mut state, false, 4));
+        assert!(state.loading);
+        assert!(state.loading_force_refresh);
+    }
+
+    #[test]
+    fn current_catalog_generation_keeps_loaded_snapshot() {
+        let mut state = LocalVersionsState {
+            catalog_generation: 4,
+            loaded: true,
+            ..Default::default()
+        };
+
+        assert!(!request_local_versions_refresh(&mut state, false, 4));
+        assert!(!state.loading);
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::views::tasks::ThreadSegment;
+use crate::ui::views::tasks::{DownloadedRangeSegment, ThreadSegment};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TaskProgressMode {
@@ -26,7 +26,6 @@ fn progress_mode(status: &str, percent_opt: Option<f64>) -> TaskProgressMode {
 struct ThreadSegmentGeometry {
     left: f32,
     width: f32,
-    progress: f32,
 }
 
 fn thread_segment_geometry(segment: &ThreadSegment) -> Option<ThreadSegmentGeometry> {
@@ -41,11 +40,7 @@ fn thread_segment_geometry(segment: &ThreadSegment) -> Option<ThreadSegmentGeome
         return None;
     }
 
-    Some(ThreadSegmentGeometry {
-        left,
-        width,
-        progress: segment.progress.clamp(0.0, 1.0),
-    })
+    Some(ThreadSegmentGeometry { left, width })
 }
 
 fn thread_progress_overlay(
@@ -68,14 +63,19 @@ fn thread_progress_overlay(
                 ..colors.surface
             })
             .bg(Hsla { a: 0.18, ..accent })
-            .child(
-                div()
-                    .h_full()
-                    .w(relative(geometry.progress))
-                    .bg(Hsla { a: 0.82, ..accent }),
-            )
             .into_any_element(),
     )
+}
+
+fn downloaded_range_fill(segment: &DownloadedRangeSegment, fill: Hsla) -> AnyElement {
+    div()
+        .absolute()
+        .top(px(0.))
+        .bottom(px(0.))
+        .left(relative(segment.start_offset))
+        .w(relative(segment.width_fraction))
+        .bg(fill)
+        .into_any_element()
 }
 
 pub(crate) fn progress_panel(
@@ -84,6 +84,7 @@ pub(crate) fn progress_panel(
     colors: &ThemeColors,
     status: &str,
     percent_opt: Option<f64>,
+    downloaded_segments: Option<&[DownloadedRangeSegment]>,
     thread_segments: &[ThreadSegment],
 ) -> Div {
     let progress_mode = progress_mode(status, percent_opt);
@@ -101,8 +102,9 @@ pub(crate) fn progress_panel(
         .relative()
         .overflow_hidden();
 
-    match progress_mode {
-        TaskProgressMode::Determinate(progress) => {
+    match (progress_mode, downloaded_segments.is_some()) {
+        (_, true) => {}
+        (TaskProgressMode::Determinate(progress), false) => {
             let fill_bar = div()
                 .relative()
                 .h_full()
@@ -111,7 +113,7 @@ pub(crate) fn progress_panel(
                 .bg(fill);
             bar = bar.child(fill_bar);
         }
-        TaskProgressMode::Indeterminate => {
+        (TaskProgressMode::Indeterminate, false) => {
             bar = bar.child(
                 div()
                     .absolute()
@@ -136,7 +138,7 @@ pub(crate) fn progress_panel(
                     ),
             );
         }
-        TaskProgressMode::Idle(progress) => {
+        (TaskProgressMode::Idle(progress), false) => {
             bar = bar.child(
                 div()
                     .h_full()
@@ -145,6 +147,14 @@ pub(crate) fn progress_panel(
                     .bg(fill),
             );
         }
+    }
+
+    if let Some(downloaded_segments) = downloaded_segments {
+        bar = bar.children(
+            downloaded_segments
+                .iter()
+                .map(|segment| downloaded_range_fill(segment, fill)),
+        );
     }
 
     if thread_segments.len() > 1 && !matches!(status, "completed" | "cancelled" | "error") {
@@ -213,7 +223,6 @@ mod tests {
             Some(ThreadSegmentGeometry {
                 left: 0.25,
                 width: 0.125,
-                progress: 0.4,
             })
         );
     }
@@ -237,6 +246,5 @@ mod tests {
 
         assert!((geometry.left - 0.9).abs() < f32::EPSILON);
         assert!((geometry.width - 0.1).abs() < 1e-6);
-        assert!((geometry.progress - 0.5).abs() < f32::EPSILON);
     }
 }

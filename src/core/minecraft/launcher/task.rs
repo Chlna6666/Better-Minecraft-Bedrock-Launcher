@@ -120,7 +120,7 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
     );
 
     let task_id_for_task = task_id.clone();
-    let join_handle = tokio::spawn(async move {
+    let join_handle = match crate::tasks::runtime::spawn_io(async move {
         info!(
             task_id = %task_id_for_task,
             display_name = %request.display_name,
@@ -162,7 +162,14 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
                 finish_task(&task_id_for_task, "error", Some(error));
             }
         }
-    });
+    }) {
+        Ok(join_handle) => join_handle,
+        Err(error) => {
+            append_log(&task_id, format!("无法调度启动任务: {error}"));
+            finish_task(&task_id, "error", Some(error));
+            return task_id;
+        }
+    };
     register_abort_handle(&task_id, join_handle);
     task_id
 }

@@ -1,8 +1,8 @@
 use crate::{
     AnyImageCache, App, AssetLogger, Bounds, DefiniteLength, Element, ElementId, Entity,
-    GlobalElementId, Hitbox, ImageCache, InspectorElementId, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, StyleRefinement, Styled, Task,
-    Window, px,
+    GlobalElementId, Hitbox, ImageCache, ImageDecodePolicy, InspectorElementId, InteractiveElement,
+    Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, StyleRefinement,
+    Styled, Task, Window, px,
 };
 use anyhow::Result;
 
@@ -139,8 +139,9 @@ impl Img {
         ElementId::NamedInteger("img".into(), hasher.finish())
     }
 
-    fn should_decode_to_bounds(&self) -> bool {
-        self.style.decode_to_bounds && matches!(self.source, ImageSource::Resource(_))
+    fn should_decode_to_bounds(&self, decode_policy: ImageDecodePolicy) -> bool {
+        matches!(self.source, ImageSource::Resource(_))
+            && (self.style.decode_to_bounds || decode_policy == ImageDecodePolicy::Visible)
     }
 }
 
@@ -155,6 +156,26 @@ impl Deref for Stateful<Img> {
 impl DerefMut for Stateful<Img> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.element
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_policy_enables_bounds_aware_resource_decode() {
+        let image = img("images/test.png");
+
+        assert!(image.should_decode_to_bounds(ImageDecodePolicy::Visible));
+        assert!(!image.should_decode_to_bounds(ImageDecodePolicy::Explicit));
+    }
+
+    #[test]
+    fn explicit_bounds_decode_remains_available() {
+        let image = img("images/test.png").decode_to_bounds();
+
+        assert!(image.should_decode_to_bounds(ImageDecodePolicy::Explicit));
     }
 }
 
@@ -184,7 +205,8 @@ impl Element for Img {
             frame: None,
             replacement: None,
         };
-        let decode_to_bounds = self.should_decode_to_bounds();
+        let decode_to_bounds =
+            self.should_decode_to_bounds(cx.image_pipeline_config().decode_policy);
 
         window.with_optional_element_state(global_id, |state, window| {
             let mut state = state.map(|state| {
@@ -353,7 +375,8 @@ impl Element for Img {
         cx: &mut App,
     ) {
         let source = self.source.clone();
-        let decode_to_bounds = self.should_decode_to_bounds();
+        let decode_to_bounds =
+            self.should_decode_to_bounds(cx.image_pipeline_config().decode_policy);
         let object_fit = self.style.object_fit;
         let grayscale = self.style.grayscale;
         let animation_policy = self.animation_policy;

@@ -3,6 +3,7 @@ use super::*;
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ManageRenderSignature {
     pub(super) tab: ManageTab,
+    pub(super) versions_revision: u64,
     pub(super) loaded: bool,
     pub(super) loading: bool,
     pub(super) error: Option<SharedString>,
@@ -55,6 +56,7 @@ impl ManageRenderSignature {
     pub(super) fn from_state(state: &ManagePageState) -> Self {
         Self {
             tab: state.tab,
+            versions_revision: state.versions_revision,
             loaded: state.loaded,
             loading: state.loading,
             error: state.error.clone(),
@@ -265,12 +267,18 @@ impl ManagePageView {
     }
 
     pub(super) fn sync_selected_version(&mut self, cx: &mut Context<Self>) {
-        let selected_folder = cx.global::<ManagePageState>().selected_folder.clone();
-        if self.last_selected_folder == selected_folder {
+        let selected_instance_revision =
+            cx.global::<ManagePageState>().selected_instance_revision();
+        if self.last_selected_instance_revision == selected_instance_revision {
             return;
         }
 
-        self.last_selected_folder = selected_folder;
+        tracing::debug!(
+            folder = ?selected_instance_revision.folder,
+            versions_revision = selected_instance_revision.versions_revision,
+            "manage selected instance snapshot changed; invalidating dependent requests"
+        );
+        self.last_selected_instance_revision = selected_instance_revision;
         self.reset_asset_list_view();
         self.reset_screenshot_list_view();
         self.reset_server_list_view();
@@ -503,7 +511,13 @@ impl ManagePageView {
         });
 
         cx.spawn(async move |handle, cx| {
-            let result = data::load_version_config(&version).await;
+            let version_for_load = version.clone();
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::load_version_config(&version_for_load)
+                    .await
+                    .map_err(anyhow::Error::msg)
+            })
+            .await;
             let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
                 if state.version_config_request_id != request_id
                     || state.selected_folder.as_ref() != Some(&version.folder)
@@ -517,7 +531,7 @@ impl ManagePageView {
                         state.version_config_error = None;
                     }
                     Err(ref error) => {
-                        state.version_config_error = Some(SharedString::from(error.clone()));
+                        state.version_config_error = Some(SharedString::from(error.to_string()));
                     }
                 }
                 true
@@ -549,7 +563,13 @@ impl ManagePageView {
         });
 
         cx.spawn(async move |handle, cx| {
-            let result = data::load_gdk_users(&version, &config).await;
+            let version_for_load = version.clone();
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::load_gdk_users(&version_for_load, &config)
+                    .await
+                    .map_err(anyhow::Error::msg)
+            })
+            .await;
 
             let applied = cx.update_global(|state: &mut ManagePageState, _cx| {
                 if state.gdk_users_request_id != request_id
@@ -578,7 +598,7 @@ impl ManagePageView {
                         state.gdk_users_error = None;
                     }
                     Err(error) => {
-                        state.gdk_users_error = Some(SharedString::from(error));
+                        state.gdk_users_error = Some(SharedString::from(error.to_string()));
                     }
                 }
                 true
@@ -663,14 +683,19 @@ impl ManagePageView {
         });
 
         cx.spawn(async move |handle, cx| {
-            let result = data::load_assets(
-                &version,
-                &config,
-                tab,
-                pack_subtype,
-                selected_gdk_user.as_ref().map(SharedString::as_ref),
-                locale_code.as_ref(),
-            )
+            let version_for_load = version.clone();
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::load_assets(
+                    &version_for_load,
+                    &config,
+                    tab,
+                    pack_subtype,
+                    selected_gdk_user.as_ref().map(SharedString::as_ref),
+                    locale_code.as_ref(),
+                )
+                .await
+                .map_err(anyhow::Error::msg)
+            })
             .await;
 
             let applied = cx
@@ -691,7 +716,7 @@ impl ManagePageView {
                                 .retain(|key| state.assets.iter().any(|asset| asset.key == *key));
                         }
                         Err(error) => {
-                            state.assets_error = Some(SharedString::from(error));
+                            state.assets_error = Some(SharedString::from(error.to_string()));
                             state.assets = Arc::from(Vec::new());
                             state.selected_asset_keys.clear();
                         }
@@ -731,11 +756,16 @@ impl ManagePageView {
         });
 
         cx.spawn(async move |handle, cx| {
-            let result = data::load_screenshots(
-                &version,
-                &config,
-                selected_gdk_user.as_ref().map(SharedString::as_ref),
-            )
+            let version_for_load = version.clone();
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::load_screenshots(
+                    &version_for_load,
+                    &config,
+                    selected_gdk_user.as_ref().map(SharedString::as_ref),
+                )
+                .await
+                .map_err(anyhow::Error::msg)
+            })
             .await;
 
             let applied = cx
@@ -753,7 +783,7 @@ impl ManagePageView {
                             state.screenshots_error = None;
                         }
                         Err(error) => {
-                            state.screenshots_error = Some(SharedString::from(error));
+                            state.screenshots_error = Some(SharedString::from(error.to_string()));
                             state.screenshots = Arc::from(Vec::new());
                         }
                     }
@@ -792,11 +822,16 @@ impl ManagePageView {
         });
 
         cx.spawn(async move |handle, cx| {
-            let result = data::load_external_servers(
-                &version,
-                &config,
-                selected_gdk_user.as_ref().map(SharedString::as_ref),
-            )
+            let version_for_load = version.clone();
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::load_external_servers(
+                    &version_for_load,
+                    &config,
+                    selected_gdk_user.as_ref().map(SharedString::as_ref),
+                )
+                .await
+                .map_err(anyhow::Error::msg)
+            })
             .await;
 
             let mut servers_for_motd = Vec::new();
@@ -818,7 +853,7 @@ impl ManagePageView {
                             state.server_motd = Arc::new(HashMap::new());
                         }
                         Err(error) => {
-                            state.servers_error = Some(SharedString::from(error));
+                            state.servers_error = Some(SharedString::from(error.to_string()));
                             state.servers = Arc::from(Vec::new());
                             state.server_motd = Arc::new(HashMap::new());
                         }
@@ -882,8 +917,11 @@ impl ManagePageView {
             state.server_motd_request_id
         });
 
+        let query_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+            Ok::<_, anyhow::Error>(data::query_server_motd_batch(servers).await)
+        });
         cx.spawn(async move |_handle, cx| {
-            let result = data::query_server_motd_batch(servers).await;
+            let result = query_task.await?;
             cx.update_global(|state: &mut ManagePageState, _cx| {
                 if state.server_motd_request_id != request_id {
                     return;

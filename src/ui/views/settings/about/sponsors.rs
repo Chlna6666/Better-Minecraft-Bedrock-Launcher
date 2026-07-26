@@ -184,7 +184,9 @@ fn spawn_load_sponsors(cx: &mut App) {
     cx.spawn({
         async move |cx| {
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(180))
+                    .await;
 
                 let should_continue = cx
                     .update_global(|state: &mut SettingsPageState, cx| {
@@ -208,11 +210,16 @@ fn spawn_load_sponsors(cx: &mut App) {
     })
     .detach();
 
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
+        crate::core::sponsors::load_sponsors()
+            .await
+            .map_err(anyhow::Error::msg)
+    });
     cx.spawn(async move |cx| {
-        let result = crate::core::sponsors::load_sponsors().await;
+        let result = load_task.await;
         let (list, error) = match result {
             Ok(records) => (sponsor_records_to_state(records), None),
-            Err(error) => (Vec::new(), Some(SharedString::from(error))),
+            Err(error) => (Vec::new(), Some(SharedString::from(error.to_string()))),
         };
 
         let _ = cx.update_global(|state: &mut SettingsPageState, cx| {

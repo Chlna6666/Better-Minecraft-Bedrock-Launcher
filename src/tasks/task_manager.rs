@@ -43,6 +43,13 @@ static TASK_EVENTS: Lazy<broadcast::Sender<TaskEvent>> = Lazy::new(|| {
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ByteRangeVisualization {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ThreadVisualization {
     pub index: u32,
     pub label: Option<String>,
@@ -63,6 +70,8 @@ pub struct TaskVisualization {
     pub unit_total: Option<u64>,
     pub unit_done: Option<u64>,
     pub current_item: Option<String>,
+    #[serde(default)]
+    pub downloaded_ranges: Option<Vec<ByteRangeVisualization>>,
     pub threads: Option<Vec<ThreadVisualization>>,
 }
 
@@ -74,6 +83,7 @@ impl TaskVisualization {
             && self.unit_total.is_none()
             && self.unit_done.is_none()
             && self.current_item.is_none()
+            && self.downloaded_ranges.is_none()
             && self
                 .threads
                 .as_ref()

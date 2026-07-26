@@ -12,16 +12,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinSet;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep, timeout};
 use tracing::{debug, error, warn};
 
 use crate::downloads::md5::{is_md5_digest, verify_md5};
+use crate::downloads::progress_ranges::DownloadedRangeSet;
 use crate::downloads::single::download_file;
 use crate::http::proxy::{apply_download_request_headers, validate_download_response_headers};
 use crate::result::{CoreError, CoreResult};
 use crate::tasks::task_manager::{
-    TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast, set_task_visualization,
-    set_total, task_visualization_enabled, update_progress, wait_until_active_fast,
+    ByteRangeVisualization, TaskControl, TaskVisualization, ThreadVisualization, is_cancelled_fast,
+    set_task_visualization, set_total, task_visualization_enabled, update_progress,
+    wait_until_active_fast,
 };
 
 // =========================================================================
@@ -35,10 +37,16 @@ const WRITE_CHANNEL_SIZE: usize = 64;
 const DEFAULT_DYNAMIC_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
 const MIN_DYNAMIC_CHUNK_SIZE: u64 = 2 * 1024 * 1024;
 const MAX_DYNAMIC_CHUNK_SIZE: u64 = 32 * 1024 * 1024;
-const MIN_STEAL_SIZE: u64 = 2 * 1024 * 1024;
+const MIN_STEAL_SIZE: u64 = 256 * 1024;
 const TARGET_CHUNK_DURATION_SECS: f64 = 1.0;
+const STRAGGLER_EVALUATION_SECS: u64 = 5;
+const STRAGGLER_SPEED_RATIO: f64 = 0.2;
 
 const RANGE_REQUEST_TIMEOUT_SECS: u64 = 5 * 60;
+#[cfg(not(test))]
+const RANGE_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(test)]
+const RANGE_BODY_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 const DOWNLOAD_METADATA_TIMEOUT_SECS: u64 = 30;
 const RANGE_REQUEST_ATTEMPTS: usize = 10;
 
@@ -58,7 +66,7 @@ struct PrimaryPartition {
     active_request_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct WorkUnit {
     partition_id: usize,
     start: u64,
@@ -114,24 +122,68 @@ impl DynamicRangeScheduler {
         self.partitions.lock().await.len()
     }
 
-    async fn claim_retry(&self) -> Option<WorkUnit> {
-        let mut retry_queue_guard = self.retry_queue.lock().await;
-        if let Some(unit) = retry_queue_guard.pop_front() {
-            self.active_work_units.fetch_add(1, Ordering::Relaxed);
-            Some(unit)
-        } else {
-            None
+    async fn claim_retry(&self, desired_size: u64) -> Option<WorkUnit> {
+        let unit = {
+            let mut retry_queue = self.retry_queue.lock().await;
+            let mut unit = retry_queue.pop_front()?;
+            let claim_end = unit.start.saturating_add(desired_size.max(1)).min(unit.end);
+            let claimed_unit = WorkUnit {
+                end: claim_end,
+                ..unit
+            };
+            if claim_end < unit.end {
+                unit.start = claim_end;
+                retry_queue.push_front(unit);
+            }
+            claimed_unit
+        };
+        if let Some(partition) = self
+            .partitions
+            .lock()
+            .await
+            .iter_mut()
+            .find(|partition| partition.id == unit.partition_id)
+        {
+            partition.active_request_count += 1;
         }
+        self.active_work_units.fetch_add(1, Ordering::Relaxed);
+        Some(unit)
     }
 
-    async fn push_retry(&self, mut unit: WorkUnit) {
+    async fn requeue_active_unit(&self, mut unit: WorkUnit) {
+        let partition_id = unit.partition_id;
         unit.attempt += 1;
         unit.is_retry = true;
         {
             let mut retry_queue_guard = self.retry_queue.lock().await;
             retry_queue_guard.push_back(unit);
         }
+        if let Some(partition) = self
+            .partitions
+            .lock()
+            .await
+            .iter_mut()
+            .find(|partition| partition.id == partition_id)
+        {
+            partition.active_request_count = partition.active_request_count.saturating_sub(1);
+        }
+        self.active_work_units.fetch_sub(1, Ordering::Relaxed);
         self.notify.notify_waiters();
+    }
+
+    async fn tail_aware_claim_size(&self, desired_size: u64, worker_count: usize) -> u64 {
+        let remaining_unclaimed = self
+            .partitions
+            .lock()
+            .await
+            .iter()
+            .map(|partition| partition.back_cursor.saturating_sub(partition.front_cursor))
+            .sum::<u64>();
+        let fair_share = remaining_unclaimed
+            .div_ceil(worker_count.max(1) as u64)
+            .max(MIN_DYNAMIC_CHUNK_SIZE);
+
+        desired_size.min(fair_share)
     }
 
     async fn claim_local(&self, worker_id: usize, desired_size: u64) -> Option<WorkUnit> {
@@ -252,7 +304,16 @@ impl DynamicRangeScheduler {
         self.notify.notify_waiters();
     }
 
-    async fn record_unit_released(&self) {
+    async fn record_unit_released(&self, partition_id: usize) {
+        if let Some(partition) = self
+            .partitions
+            .lock()
+            .await
+            .iter_mut()
+            .find(|partition| partition.id == partition_id)
+        {
+            partition.active_request_count = partition.active_request_count.saturating_sub(1);
+        }
         self.active_work_units.fetch_sub(1, Ordering::Relaxed);
         self.notify.notify_waiters();
     }
@@ -304,6 +365,7 @@ fn build_download_visualization(
     unit_total: usize,
     unit_done: usize,
     current_item: impl Into<Option<String>>,
+    downloaded_ranges: Option<Vec<ByteRangeVisualization>>,
     threads: Option<Vec<ThreadVisualization>>,
 ) -> TaskVisualization {
     TaskVisualization {
@@ -313,6 +375,7 @@ fn build_download_visualization(
         unit_total: Some(unit_total as u64),
         unit_done: Some(unit_done as u64),
         current_item: current_item.into(),
+        downloaded_ranges,
         threads,
     }
 }
@@ -331,8 +394,41 @@ fn build_thread_visualizations(worker_total: usize) -> Vec<ThreadVisualization> 
         .collect()
 }
 
+#[derive(Debug)]
+struct DownloadVisualizationState {
+    threads: Vec<ThreadVisualization>,
+    downloaded_ranges: DownloadedRangeSet,
+}
+
+impl DownloadVisualizationState {
+    fn new(worker_total: usize) -> Self {
+        Self {
+            threads: build_thread_visualizations(worker_total),
+            downloaded_ranges: DownloadedRangeSet::default(),
+        }
+    }
+}
+
 fn half_open_range_len(start: u64, end: u64) -> u64 {
     end.saturating_sub(start)
+}
+
+fn is_range_straggler(
+    expected_speed: f64,
+    downloaded_bytes: u64,
+    elapsed: Duration,
+    remaining_bytes: u64,
+) -> bool {
+    if expected_speed <= 0.0
+        || downloaded_bytes == 0
+        || elapsed < Duration::from_secs(STRAGGLER_EVALUATION_SECS)
+        || remaining_bytes < MIN_STEAL_SIZE
+    {
+        return false;
+    }
+
+    let observed_speed = downloaded_bytes as f64 / elapsed.as_secs_f64();
+    observed_speed < expected_speed * STRAGGLER_SPEED_RATIO
 }
 
 #[derive(Clone, Copy)]
@@ -428,7 +524,7 @@ async fn resolve_reliable_range_url(
 }
 
 async fn update_thread_visualization(
-    thread_visualizations: &Mutex<Vec<ThreadVisualization>>,
+    visualization: &Mutex<DownloadVisualizationState>,
     worker_index: usize,
     active: bool,
     start: u64,
@@ -436,11 +532,15 @@ async fn update_thread_visualization(
     total: u64,
     current_item: Option<String>,
 ) {
-    let mut guard = thread_visualizations.lock().await;
-    if let Some(thread) = guard.get_mut(worker_index) {
+    let done = done.min(total);
+    let mut visualization = visualization.lock().await;
+    visualization
+        .downloaded_ranges
+        .insert(start, start.saturating_add(done));
+    if let Some(thread) = visualization.threads.get_mut(worker_index) {
         thread.active = active;
         thread.start = start;
-        thread.done = done.min(total);
+        thread.done = done;
         thread.total = total;
         thread.current_item = current_item;
     }
@@ -453,13 +553,19 @@ async fn set_download_visualization(
     unit_total: usize,
     unit_done: usize,
     current_item: Option<String>,
-    thread_visualizations: &Mutex<Vec<ThreadVisualization>>,
+    visualization: &Mutex<DownloadVisualizationState>,
 ) {
     if !task_visualization_enabled() {
         return;
     }
 
-    let threads = thread_visualizations.lock().await.clone();
+    let (threads, downloaded_ranges) = {
+        let visualization = visualization.lock().await;
+        (
+            visualization.threads.clone(),
+            visualization.downloaded_ranges.to_vec(),
+        )
+    };
     set_task_visualization(
         task_id,
         Some(build_download_visualization(
@@ -468,6 +574,7 @@ async fn set_download_visualization(
             unit_total,
             unit_done,
             current_item,
+            Some(downloaded_ranges),
             Some(threads),
         )),
     );
@@ -480,7 +587,7 @@ async fn set_download_visualization_throttled(
     unit_total: usize,
     unit_done: usize,
     current_item: Option<String>,
-    thread_visualizations: &Mutex<Vec<ThreadVisualization>>,
+    visualization: &Mutex<DownloadVisualizationState>,
     last_emit_at: &Mutex<Instant>,
     force_emit: bool,
 ) -> bool {
@@ -511,7 +618,7 @@ async fn set_download_visualization_throttled(
         unit_total,
         unit_done,
         current_item,
-        thread_visualizations,
+        visualization,
     )
     .await;
     true
@@ -648,25 +755,24 @@ async fn download_multi_partitioned(
 
     let completed_units = Arc::new(AtomicUsize::new(0));
     let active_workers = Arc::new(AtomicUsize::new(0));
-    let thread_visualizations = Arc::new(Mutex::new(build_thread_visualizations(active_threads)));
+    let download_visualization =
+        Arc::new(Mutex::new(DownloadVisualizationState::new(active_threads)));
     let visualization_last_emit_at = Arc::new(Mutex::new(
         Instant::now() - Duration::from_millis(VISUALIZATION_EMIT_INTERVAL_MS),
     ));
 
     if task_visualization_enabled() {
         let (total_units, _) = scheduler.partition_summary().await;
-        let threads_snapshot = thread_visualizations.lock().await.clone();
-        set_task_visualization(
+        set_download_visualization(
             task_id,
-            Some(build_download_visualization(
-                active_threads,
-                0,
-                total_units,
-                0,
-                None,
-                Some(threads_snapshot),
-            )),
-        );
+            active_threads,
+            0,
+            total_units,
+            0,
+            None,
+            download_visualization.as_ref(),
+        )
+        .await;
     }
 
     let downloaded_global = Arc::new(AtomicU64::new(0));
@@ -686,7 +792,7 @@ async fn download_multi_partitioned(
         let downloaded_global = downloaded_global.clone();
         let completed_units = completed_units.clone();
         let active_workers = active_workers.clone();
-        let thread_visualizations = thread_visualizations.clone();
+        let download_visualization = download_visualization.clone();
         let visualization_last_emit_at = visualization_last_emit_at.clone();
         let task_id = task_id.to_string();
         let error_occurred = error_occurred.clone();
@@ -698,6 +804,7 @@ async fn download_multi_partitioned(
             let mut pending_progress = 0u64;
             let mut last_update_time = Instant::now();
             let mut worker_smoothed_speed = 0.0f64;
+            let mut straggler_recovery_used = false;
 
             loop {
                 if !wait_until_active_fast(task_control.as_ref()).await {
@@ -714,8 +821,11 @@ async fn download_multi_partitioned(
                 } else {
                     DEFAULT_DYNAMIC_CHUNK_SIZE
                 };
+                let desired_size = scheduler
+                    .tail_aware_claim_size(desired_size, active_threads)
+                    .await;
 
-                let mut work_unit = scheduler.claim_retry().await;
+                let mut work_unit = scheduler.claim_retry(desired_size).await;
                 if work_unit.is_none() {
                     work_unit = scheduler.claim_local(worker_id, desired_size).await;
                 }
@@ -728,13 +838,16 @@ async fn download_multi_partitioned(
                     None => {
                         if scheduler.is_all_finished().await {
                             let (thread_start, thread_done, thread_total) = {
-                                let guard = thread_visualizations.lock().await;
-                                guard.get(worker_id).map_or((0, 0, 0), |thread| {
-                                    (thread.start, thread.done, thread.total)
-                                })
+                                let visualization = download_visualization.lock().await;
+                                visualization
+                                    .threads
+                                    .get(worker_id)
+                                    .map_or((0, 0, 0), |thread| {
+                                        (thread.start, thread.done, thread.total)
+                                    })
                             };
                             update_thread_visualization(
-                                thread_visualizations.as_ref(),
+                                download_visualization.as_ref(),
                                 worker_id,
                                 false,
                                 thread_start,
@@ -762,7 +875,7 @@ async fn download_multi_partitioned(
 
                 let (total_units, done_units) = scheduler.partition_summary().await;
                 update_thread_visualization(
-                    thread_visualizations.as_ref(),
+                    download_visualization.as_ref(),
                     worker_id,
                     true,
                     unit_start,
@@ -778,7 +891,7 @@ async fn download_multi_partitioned(
                     total_units,
                     done_units,
                     None,
-                    thread_visualizations.as_ref(),
+                    download_visualization.as_ref(),
                     visualization_last_emit_at.as_ref(),
                     true,
                 )
@@ -806,9 +919,9 @@ async fn download_multi_partitioned(
                     Err(error) => {
                         last_error = Some(format!("range request failed: {error}"));
                         if unit.attempt < RANGE_REQUEST_ATTEMPTS {
-                            scheduler.push_retry(unit).await;
+                            scheduler.requeue_active_unit(unit).await;
                         } else {
-                            scheduler.record_unit_released().await;
+                            scheduler.record_unit_released(unit.partition_id).await;
                             *error_store.lock().await = Some(CoreError::Other(format!(
                                 "WorkUnit [{unit_start}, {unit_end}) Range 请求失败: {}",
                                 last_error.unwrap_or_default()
@@ -846,9 +959,9 @@ async fn download_multi_partitioned(
 
                 if stream_err {
                     if unit.attempt < RANGE_REQUEST_ATTEMPTS {
-                        scheduler.push_retry(unit).await;
+                        scheduler.requeue_active_unit(unit).await;
                     } else {
-                        scheduler.record_unit_released().await;
+                        scheduler.record_unit_released(unit.partition_id).await;
                         *error_store.lock().await = Some(CoreError::Other(format!(
                             "WorkUnit [{unit_start}, {unit_end}) Range 校验失败: {}",
                             last_error.unwrap_or_default()
@@ -864,7 +977,19 @@ async fn download_multi_partitioned(
                 let mut batch_chunks: Vec<Bytes> = Vec::with_capacity(16);
                 let mut batch_size = 0usize;
 
-                while let Some(item) = stream.next().await {
+                loop {
+                    let item = match timeout(RANGE_BODY_IDLE_TIMEOUT, stream.next()).await {
+                        Ok(Some(item)) => item,
+                        Ok(None) => break,
+                        Err(_) => {
+                            last_error = Some(format!(
+                                "range body made no progress for {RANGE_BODY_IDLE_TIMEOUT:?}"
+                            ));
+                            stream_err = true;
+                            break;
+                        }
+                    };
+
                     if !wait_until_active_fast(task_control.as_ref()).await
                         || is_cancelled_fast(task_control.as_ref())
                     {
@@ -931,7 +1056,7 @@ async fn download_multi_partitioned(
                     {
                         let (total_units, done_units) = scheduler.partition_summary().await;
                         update_thread_visualization(
-                            thread_visualizations.as_ref(),
+                            download_visualization.as_ref(),
                             worker_id,
                             true,
                             unit_start,
@@ -953,7 +1078,7 @@ async fn download_multi_partitioned(
                             total_units,
                             done_units,
                             None,
-                            thread_visualizations.as_ref(),
+                            download_visualization.as_ref(),
                             visualization_last_emit_at.as_ref(),
                             false,
                         )
@@ -961,9 +1086,29 @@ async fn download_multi_partitioned(
                         pending_progress = 0;
                         last_update_time = Instant::now();
                     }
+
+                    let elapsed = chunk_start_time.elapsed();
+                    let remaining_bytes = unit_end.saturating_sub(local_curr);
+                    if !straggler_recovery_used
+                        && is_range_straggler(
+                            worker_smoothed_speed,
+                            current_unit_done,
+                            elapsed,
+                            remaining_bytes,
+                        )
+                    {
+                        let observed_speed = current_unit_done as f64 / elapsed.as_secs_f64();
+                        worker_smoothed_speed = observed_speed;
+                        straggler_recovery_used = true;
+                        last_error = Some(format!(
+                            "range throughput degraded to {observed_speed:.0} B/s from expected speed"
+                        ));
+                        stream_err = true;
+                        break;
+                    }
                 }
 
-                if !stream_err && !batch_chunks.is_empty() {
+                if !batch_chunks.is_empty() {
                     let chunks = std::mem::take(&mut batch_chunks);
                     if write_tx
                         .send(WriterMsg::Write {
@@ -976,6 +1121,12 @@ async fn download_multi_partitioned(
                         last_error = Some("download writer stopped".to_string());
                         stream_err = true;
                     }
+                }
+
+                if pending_progress > 0 {
+                    update_progress(&task_id, pending_progress, Some(total), Some("downloading"));
+                    pending_progress = 0;
+                    last_update_time = Instant::now();
                 }
 
                 let bytes_downloaded_this_run = local_curr.saturating_sub(unit_start);
@@ -998,7 +1149,7 @@ async fn download_multi_partitioned(
 
                     let (total_units, done_units) = scheduler.partition_summary().await;
                     update_thread_visualization(
-                        thread_visualizations.as_ref(),
+                        download_visualization.as_ref(),
                         worker_id,
                         false,
                         unit_start,
@@ -1014,12 +1165,22 @@ async fn download_multi_partitioned(
                         total_units,
                         done_units,
                         None,
-                        thread_visualizations.as_ref(),
+                        download_visualization.as_ref(),
                         visualization_last_emit_at.as_ref(),
                         true,
                     )
                     .await;
                 } else {
+                    update_thread_visualization(
+                        download_visualization.as_ref(),
+                        worker_id,
+                        false,
+                        unit_start,
+                        bytes_downloaded_this_run,
+                        unit_total,
+                        None,
+                    )
+                    .await;
                     if local_curr < unit_end && unit.attempt < RANGE_REQUEST_ATTEMPTS {
                         let retry_unit = WorkUnit {
                             partition_id: unit.partition_id,
@@ -1028,9 +1189,9 @@ async fn download_multi_partitioned(
                             attempt: unit.attempt,
                             is_retry: true,
                         };
-                        scheduler.push_retry(retry_unit).await;
+                        scheduler.requeue_active_unit(retry_unit).await;
                     } else {
-                        scheduler.record_unit_released().await;
+                        scheduler.record_unit_released(unit.partition_id).await;
                         *error_store.lock().await = Some(CoreError::Other(format!(
                             "WorkUnit [{unit_start}, {unit_end}) 下载失败: {}",
                             last_error.unwrap_or_else(|| "unknown error".to_string())
@@ -1040,6 +1201,19 @@ async fn download_multi_partitioned(
                         return;
                     }
                     drop(active_guard);
+                    let (total_units, done_units) = scheduler.partition_summary().await;
+                    set_download_visualization_throttled(
+                        &task_id,
+                        active_threads,
+                        active_workers.load(Ordering::Relaxed),
+                        total_units,
+                        done_units,
+                        None,
+                        download_visualization.as_ref(),
+                        visualization_last_emit_at.as_ref(),
+                        true,
+                    )
+                    .await;
                 }
             }
         });
@@ -1293,6 +1467,25 @@ mod tests {
     use tokio::task::JoinHandle;
 
     #[tokio::test]
+    async fn thread_updates_record_and_merge_real_file_ranges() {
+        let visualization = Mutex::new(DownloadVisualizationState::new(2));
+
+        update_thread_visualization(&visualization, 0, true, 100, 40, 100, None).await;
+        update_thread_visualization(&visualization, 1, true, 140, 60, 100, None).await;
+
+        let visualization = visualization.lock().await;
+        assert_eq!(
+            visualization.downloaded_ranges.to_vec(),
+            vec![ByteRangeVisualization {
+                start: 100,
+                end: 200,
+            }]
+        );
+        assert_eq!(visualization.threads[0].done, 40);
+        assert_eq!(visualization.threads[1].done, 60);
+    }
+
+    #[tokio::test]
     async fn primary_partitions_cover_entire_file_without_gaps_or_overlaps() {
         let total_size = 100_000_000u64;
         let worker_count = 8;
@@ -1417,7 +1610,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remaining_data_below_min_steal_size_is_not_stolen() {
+    async fn idle_worker_steals_sub_two_megabyte_tail_fragments() {
         let total_size = 3 * 1024 * 1024;
         let scheduler = DynamicRangeScheduler::new(total_size, 2);
 
@@ -1428,9 +1621,65 @@ mod tests {
         };
         let _ = scheduler.claim_local(1, p1_len).await;
 
-        // Worker 0 partition remaining size is 1.5MB (< MIN_STEAL_SIZE 2MB)
+        // The old 2 MiB threshold left this 1.5 MiB tail on one worker.
         let steal_result = scheduler.steal(1, 2 * 1024 * 1024).await;
-        assert!(steal_result.is_none());
+        assert!(steal_result.is_some());
+    }
+
+    #[tokio::test]
+    async fn tail_claim_size_shrinks_with_remaining_unclaimed_work() {
+        let scheduler = DynamicRangeScheduler::new(320 * 1024 * 1024, 16);
+
+        assert_eq!(
+            scheduler
+                .tail_aware_claim_size(MAX_DYNAMIC_CHUNK_SIZE, 16)
+                .await,
+            20 * 1024 * 1024
+        );
+
+        {
+            let mut partitions = scheduler.partitions.lock().await;
+            for partition in partitions.iter_mut() {
+                partition.front_cursor = partition.end.saturating_sub(2 * 1024 * 1024);
+            }
+        }
+
+        assert_eq!(
+            scheduler
+                .tail_aware_claim_size(MAX_DYNAMIC_CHUNK_SIZE, 16)
+                .await,
+            MIN_DYNAMIC_CHUNK_SIZE
+        );
+    }
+
+    #[test]
+    fn straggler_detection_uses_worker_history_and_preserves_small_tails() {
+        let expected_speed = 10.0 * 1024.0 * 1024.0;
+
+        assert!(is_range_straggler(
+            expected_speed,
+            1024 * 1024,
+            Duration::from_secs(5),
+            4 * 1024 * 1024,
+        ));
+        assert!(!is_range_straggler(
+            expected_speed,
+            20 * 1024 * 1024,
+            Duration::from_secs(5),
+            4 * 1024 * 1024,
+        ));
+        assert!(!is_range_straggler(
+            expected_speed,
+            1024 * 1024,
+            Duration::from_secs(4),
+            4 * 1024 * 1024,
+        ));
+        assert!(!is_range_straggler(
+            expected_speed,
+            1024 * 1024,
+            Duration::from_secs(5),
+            MIN_STEAL_SIZE - 1,
+        ));
     }
 
     #[tokio::test]
@@ -1452,14 +1701,17 @@ mod tests {
             attempt: unit.attempt,
             is_retry: true,
         };
-        scheduler.push_retry(retry_unit).await;
+        scheduler.requeue_active_unit(retry_unit).await;
+
+        assert_eq!(scheduler.active_work_units.load(Ordering::Relaxed), 0);
 
         // Verify claim_retry yields the remaining [1.5MB, 4MB)
-        let claimed_retry = scheduler.claim_retry().await.unwrap();
+        let claimed_retry = scheduler.claim_retry(MAX_DYNAMIC_CHUNK_SIZE).await.unwrap();
         assert_eq!(claimed_retry.start, 1_500_000);
         assert_eq!(claimed_retry.end, 4 * 1024 * 1024);
         assert_eq!(claimed_retry.attempt, 1);
         assert!(claimed_retry.is_retry);
+        assert_eq!(scheduler.active_work_units.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
@@ -1467,21 +1719,31 @@ mod tests {
         let total_size = 20 * 1024 * 1024;
         let scheduler = DynamicRangeScheduler::new(total_size, 2);
 
-        let retry_unit = WorkUnit {
-            partition_id: 0,
-            start: 100,
-            end: 500,
-            attempt: 0,
-            is_retry: false,
-        };
-        scheduler.push_retry(retry_unit).await;
+        let retry_unit = scheduler.claim_local(0, 400).await.unwrap();
+        scheduler.requeue_active_unit(retry_unit).await;
 
         // Worker 1 should receive retry unit first before local claim
-        let claimed = scheduler.claim_retry().await;
+        let claimed = scheduler.claim_retry(MAX_DYNAMIC_CHUNK_SIZE).await;
         assert!(claimed.is_some());
         let unit = claimed.unwrap();
-        assert_eq!(unit.start, 100);
-        assert_eq!(unit.end, 500);
+        assert_eq!(unit.start, 0);
+        assert_eq!(unit.end, 400);
+    }
+
+    #[tokio::test]
+    async fn large_retry_range_is_split_across_parallel_claims() {
+        let scheduler = DynamicRangeScheduler::new(32 * 1024 * 1024, 2);
+        let original = scheduler.claim_local(0, 16 * 1024 * 1024).await.unwrap();
+        scheduler.requeue_active_unit(original).await;
+
+        let first = scheduler.claim_retry(MIN_DYNAMIC_CHUNK_SIZE).await.unwrap();
+        let second = scheduler.claim_retry(MIN_DYNAMIC_CHUNK_SIZE).await.unwrap();
+
+        assert_eq!(first.start, 0);
+        assert_eq!(first.end, MIN_DYNAMIC_CHUNK_SIZE);
+        assert_eq!(second.start, MIN_DYNAMIC_CHUNK_SIZE);
+        assert_eq!(second.end, MIN_DYNAMIC_CHUNK_SIZE * 2);
+        assert_eq!(scheduler.active_work_units.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1562,6 +1824,43 @@ mod tests {
         assert_eq!(downloaded, data.as_slice());
 
         assert!(request_counts.load(AtomicOrdering::Relaxed) > 4);
+
+        remove_test_file_if_exists(&dest).await;
+        server_handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stalled_range_body_is_requeued_and_completed_by_another_request() {
+        let data_len = usize::try_from(MIN_DYNAMIC_CHUNK_SIZE * 2 + 4096)
+            .expect("test payload length should fit usize");
+        let data = Arc::new(build_test_payload(data_len));
+        let request_counts = Arc::new(AtomicUsize::new(0));
+
+        let (url, server_handle) =
+            spawn_stalling_range_server(data.clone(), request_counts.clone())
+                .await
+                .expect("stalling range test server should start");
+        let dest = temp_test_path("bmcbl-multi-stall-recovery.bin");
+        remove_test_file_if_exists(&dest).await;
+
+        let task_id = unique_task_id("multi-stall-recovery-test");
+        create_task_with_options(Some(task_id.clone()), "downloading", None, true);
+        let control = task_control(&task_id).expect("task control should exist");
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("test client should build");
+
+        let result = download_multi(client, control, &task_id, &url, &dest, 2, None, None)
+            .await
+            .expect("multi download should recover from a stalled range body");
+
+        assert!(matches!(result, CoreResult::Success(())));
+        let downloaded = tokio::fs::read(&dest)
+            .await
+            .expect("downloaded file should be readable");
+        assert_eq!(downloaded, data.as_slice());
+        assert!(request_counts.load(AtomicOrdering::Relaxed) >= 5);
 
         remove_test_file_if_exists(&dest).await;
         server_handle.abort();
@@ -1672,6 +1971,7 @@ mod tests {
         Exact,
         ExtraByteAfterRange,
         SlowPartition0,
+        StallFirstBody,
     }
 
     async fn spawn_range_server(data: Arc<Vec<u8>>) -> std::io::Result<(String, JoinHandle<()>)> {
@@ -1683,6 +1983,14 @@ mod tests {
         request_counter: Arc<AtomicUsize>,
     ) -> std::io::Result<(String, JoinHandle<()>)> {
         spawn_range_server_with_mode(data, TestRangeMode::SlowPartition0, Some(request_counter))
+            .await
+    }
+
+    async fn spawn_stalling_range_server(
+        data: Arc<Vec<u8>>,
+        request_counter: Arc<AtomicUsize>,
+    ) -> std::io::Result<(String, JoinHandle<()>)> {
+        spawn_range_server_with_mode(data, TestRangeMode::StallFirstBody, Some(request_counter))
             .await
     }
 
@@ -1730,9 +2038,8 @@ mod tests {
         let request_line = request_text.lines().next().unwrap_or_default();
         let total = data.len() as u64;
 
-        if let Some(counter) = request_counter {
-            counter.fetch_add(1, AtomicOrdering::Relaxed);
-        }
+        let request_number =
+            request_counter.map(|counter| counter.fetch_add(1, AtomicOrdering::Relaxed));
 
         if request_line.starts_with("HEAD ") {
             let response =
@@ -1781,6 +2088,17 @@ mod tests {
 
         if matches!(mode, TestRangeMode::SlowPartition0) && start < total / 4 {
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        if matches!(mode, TestRangeMode::StallFirstBody) && request_number == Some(2) {
+            let response = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {body_len}\r\nContent-Range: bytes {start}-{end}/{total}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await?;
+            let initial_len = body.len().min(128 * 1024);
+            stream.write_all(&body[..initial_len]).await?;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            return stream.write_all(&body[initial_len..]).await;
         }
 
         let extra_range_byte =

@@ -384,7 +384,7 @@ impl ImportWindowView {
             delay.as_millis()
         );
         cx.spawn(async move |handle, cx| {
-            tokio::time::sleep(delay).await;
+            cx.background_executor().timer(delay).await;
             let should_close = handle
                 .read_with(cx, |this, _cx| {
                     this.status

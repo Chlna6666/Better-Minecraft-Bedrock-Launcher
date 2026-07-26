@@ -30,6 +30,7 @@ toml = "1.0.3"
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx", "nova-gfx-dx12", "nova-gfx-vulkan", "wayland", "x11"] }
+gpui_tokio = { path = "crates/gpui_tokio" }
 gpui-router = { version = "0.3.0", default-features = false, features = [] }
 gpui_hooks = { path = "crates/gpui-hooks" }
 lucide-gpui = { path = "crates/lucide-gpui" }
@@ -94,9 +95,12 @@ tinywasm = { version = "0.9.0", default-features = false, features = ["std", "pa
 notify = "8.2.0"
 bmcbl_plugin_api = { path = "crates/bmcbl-plugin-api" }
 
-# Enable `socks5` (implies `smoltcp`) so `no_tun` mode can still proxy/port-forward traffic
-# to EasyTier overlay IPs, matching PaperConnect's typical usage.
-easytier = { git = "https://github.com/Chlna6666/EasyTier", branch = "main", default-features = false, features = ["tun", "wireguard", "socks5", "zstd"] }
+# PaperConnect uses EasyTier as an embedded no-TUN transport with local port forwarding.
+easytier = { path = "crates/easytier", default-features = false, features = ["aes-gcm", "socks5", "websocket", "zstd"] }
+bedrock-nethernet = { path = "crates/bedrock-nethernet" }
+# Vendored from bedrock-crustaceans/raknet (rev 798654f) with PaperConnect
+# interop fixes for go-raknet hosts; see crates/raknet/VENDOR.md.
+raknet-tokio = { path = "crates/raknet/raknet-tokio" }
 rfd = "0.17.2"
 
 [features]
@@ -110,8 +114,10 @@ members = [
     "crates/egpui-build",
     "crates/egpui-manifest",
     "crates/gpui",
+    "crates/gpui_tokio",
     "crates/bmcbl-plugin-api",
     "crates/bmcbl-plugin-macros",
+    "crates/bedrock-nethernet",
     "crates/nova-gfx/gfx-core",
     "crates/nova-gfx/gfx-memory",
     "crates/nova-gfx/gfx-shader",
@@ -129,6 +135,7 @@ members = [
     "crates/nova-gfx/examples/public-api-smoke",
     "crates/nova-gfx/examples/gpui-minimal-window-smoke",
 ]
+exclude = ["crates/easytier", "crates/raknet"]
 
 [target.'cfg(windows)'.dependencies]
 bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }
@@ -162,3 +169,15 @@ debug = 0
 [profile.dev]
 opt-level = 3
 panic = "unwind"        # 开发模式保留回溯，便于定位崩溃
+
+[profile.dev.package.easytier]
+opt-level = "s"
+
+[profile.dev.package.bedrock-nethernet]
+opt-level = "s"
+
+[profile.dev.package.raknet]
+opt-level = "s"
+
+[profile.dev.package.raknet-tokio]
+opt-level = "s"

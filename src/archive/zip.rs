@@ -60,6 +60,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                     unit_total: Some(entry_total),
                     unit_done: Some(0),
                     current_item: Some("等待解压文件".to_string()),
+                    downloaded_ranges: None,
                     threads: None,
                 }),
             );
@@ -83,6 +84,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                         unit_total: Some(entry_total),
                         unit_done: Some(finished_entries),
                         current_item: Some(display_name.clone()),
+                        downloaded_ranges: None,
                         threads: None,
                     }),
                 );
@@ -208,6 +210,7 @@ pub async fn extract_zip<R: Read + Seek + Send + 'static>(
                         unit_total: Some(entry_total),
                         unit_done: Some(finished_entries),
                         current_item: Some(display_name),
+                        downloaded_ranges: None,
                         threads: None,
                     }),
                 );

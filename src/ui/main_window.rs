@@ -1020,30 +1020,13 @@ impl MainWindowView {
         );
         self.notify_download_page(cx);
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        if let Err(error) = crate::tasks::runtime::spawn_io(async move {
-            let result = remote_versions::load_or_fetch_versions(force_refresh).await;
-            if tx.send(result).is_err() {
-                tracing::debug!("remote version result receiver was released");
-            }
-        }) {
-            tracing::error!(%error, "failed to schedule remote version loading");
-            cx.update_global(
-                |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
-                    if s.versions_request_id == request_id {
-                        s.loading = false;
-                        s.error = Some(SharedString::from(error));
-                    }
-                },
-            );
-        }
+        let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+            remote_versions::load_or_fetch_versions(force_refresh).await
+        });
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
         cx.spawn(async move |handle, cx| {
-            let result = match rx.await {
-                Ok(v) => v,
-                Err(_) => Err(anyhow::anyhow!("remote version loader task dropped")),
-            };
+            let result = load_task.await;
 
             match result {
                 Ok(remote) => {
@@ -1145,32 +1128,28 @@ impl MainWindowView {
         );
         self.notify_download_page(cx);
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        if let Err(error) = crate::tasks::runtime::spawn_io(async move {
-            let result = async {
-                let client = crate::core::curseforge::CurseForgeClient::new()?;
+        let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+            async {
+                let client =
+                    crate::core::curseforge::CurseForgeClient::new().map_err(anyhow::Error::msg)?;
                 let (categories, versions) =
                     tokio::join!(client.get_categories(), client.get_minecraft_versions());
-                Ok::<_, String>((categories?, versions?))
+                Ok::<_, anyhow::Error>((
+                    categories.map_err(anyhow::Error::msg)?,
+                    versions.map_err(anyhow::Error::msg)?,
+                ))
             }
-            .await;
-            if tx.send(result).is_err() {
-                tracing::debug!("CurseForge metadata receiver was released");
-            }
-        }) {
-            tracing::error!(%error, "failed to schedule CurseForge metadata loading");
-        }
+            .await
+        });
 
         let download_page_view = self.download_page_view.as_ref().map(Entity::downgrade);
         let curseforge_view_epoch = cx
             .global::<crate::ui::views::download::state::DownloadPageState>()
             .curseforge_view_epoch;
         cx.spawn(async move |_this, cx| {
-            let result = rx
-                .await
-                .map_err(|_| "curseforge load task dropped".to_string());
+            let result = load_task.await;
             match result {
-                Ok(Ok((categories, versions))) => {
+                Ok((categories, versions)) => {
                     let mut entries = categories
                         .into_iter()
                         .map(
@@ -1216,7 +1195,7 @@ impl MainWindowView {
                         Err(err) => tracing::warn!("update_global failed: {err:?}"),
                     }
                 }
-                Ok(Err(e)) | Err(e) => {
+                Err(e) => {
                     match cx.update_global(
                         |s: &mut crate::ui::views::download::state::DownloadPageState, _cx| {
                             if s.curseforge_view_epoch != curseforge_view_epoch

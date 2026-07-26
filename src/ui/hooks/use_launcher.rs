@@ -1439,7 +1439,9 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
 
                 if terminal {
                     if snapshot.status.as_ref() == "completed" {
-                        tokio::time::sleep(Duration::from_millis(900)).await;
+                        cx.background_executor()
+                            .timer(Duration::from_millis(900))
+                            .await;
                         let now = std::time::Instant::now();
                         let _ = cx.update_global(|state: &mut LauncherState, _cx| {
                             if state.task_id.as_deref() == Some(task_id.as_ref()) {

@@ -29,6 +29,7 @@ pub(super) struct NovaAtlasState {
     pub(super) next_tile_id: u32,
     pub(super) texture_lists: [NovaAtlasTextureList; NOVA_ATLAS_KIND_COUNT],
     tiles: FxHashMap<AtlasKey, AtlasTile>,
+    pending_removals: Vec<PendingAtlasRemoval>,
     fallback_tiles: [Option<AtlasTile>; NOVA_ATLAS_KIND_COUNT],
     full_kinds_logged: FxHashSet<AtlasTextureKind>,
     #[cfg(test)]
@@ -45,6 +46,7 @@ impl Default for NovaAtlasState {
             next_tile_id: 0,
             texture_lists: std::array::from_fn(|_| NovaAtlasTextureList::default()),
             tiles: FxHashMap::default(),
+            pending_removals: Vec::new(),
             fallback_tiles: [None; NOVA_ATLAS_KIND_COUNT],
             full_kinds_logged: FxHashSet::default(),
             #[cfg(test)]
@@ -68,6 +70,11 @@ pub(super) struct NovaAtlasTexture {
     pub(super) size: Size<DevicePixels>,
     allocator: BucketedAtlasAllocator,
     live_tile_count: usize,
+}
+
+struct PendingAtlasRemoval {
+    key: AtlasKey,
+    tile: AtlasTile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -114,6 +121,23 @@ impl NovaAtlas {
             })
             .collect()
     }
+
+    pub(super) fn has_pending_removals(&self) -> bool {
+        !self
+            .state
+            .lock()
+            .expect("nova atlas lock poisoned")
+            .pending_removals
+            .is_empty()
+    }
+
+    pub(super) fn apply_pending_removals(&self) {
+        let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        let pending_removals = std::mem::take(&mut state.pending_removals);
+        for pending in pending_removals {
+            state.deallocate_tile(pending.tile);
+        }
+    }
 }
 
 impl PlatformAtlas for NovaAtlas {
@@ -134,6 +158,15 @@ impl PlatformAtlas for NovaAtlas {
             .expect("nova placeholder atlas lock poisoned");
         if let Some(tile) = state.tiles.get(key) {
             return Ok(Some(*tile));
+        }
+        if let Some(index) = state
+            .pending_removals
+            .iter()
+            .rposition(|pending| pending.key == *key)
+        {
+            let pending = state.pending_removals.swap_remove(index);
+            state.tiles.insert(pending.key, pending.tile);
+            return Ok(Some(pending.tile));
         }
         drop(state);
 
@@ -190,9 +223,17 @@ impl PlatformAtlas for NovaAtlas {
                 return Ok(Some(tile));
             }
         }
-        drop(state);
-        self.remove(key);
-        self.ensure_tile_with(key, &mut || Ok(Some((size, Cow::Borrowed(bytes.as_ref())))))
+        if let Some(tile) = state.tiles.remove(key) {
+            state.pending_removals.push(PendingAtlasRemoval {
+                key: key.clone(),
+                tile,
+            });
+        }
+        let Some(tile) = state.allocate_and_upload(key, size, bytes.as_ref()) else {
+            return Ok(state.fallback_tile(key.texture_kind()));
+        };
+        state.tiles.insert(key.clone(), tile);
+        Ok(Some(tile))
     }
 
     fn ensure_glyph_with(
@@ -284,7 +325,12 @@ impl PlatformAtlas for NovaAtlas {
     fn remove(&self, key: &AtlasKey) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         if let Some(tile) = state.tiles.remove(key) {
-            state.deallocate_tile(tile);
+            if !state.is_fallback_tile(tile) {
+                state.pending_removals.push(PendingAtlasRemoval {
+                    key: key.clone(),
+                    tile,
+                });
+            }
         }
     }
 }
@@ -542,6 +588,7 @@ impl NovaAtlasState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ImageId, RenderImageParams, RenderImagePixelFormat, size};
 
     #[test]
     fn deallocating_last_texture_tile_removes_pending_uploads() {
@@ -568,6 +615,85 @@ mod tests {
                 .iter()
                 .all(Option::is_none)
         );
+    }
+
+    #[test]
+    fn removed_tile_is_not_reused_until_pending_removals_are_applied() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let first_key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(1),
+            frame_slot: 0,
+            pixel_format: RenderImagePixelFormat::Rgba8,
+        });
+        let second_key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(2),
+            frame_slot: 0,
+            pixel_format: RenderImagePixelFormat::Rgba8,
+        });
+        let pixels = vec![255; 64 * 64 * NOVA_ATLAS_BYTES_PER_PIXEL];
+        let first_tile = atlas
+            .ensure_tile_with(&first_key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(64), DevicePixels(64)),
+                    Cow::Borrowed(pixels.as_slice()),
+                )))
+            })
+            .expect("first tile allocation should succeed")
+            .expect("first tile should exist");
+
+        atlas.remove(&first_key);
+        assert!(atlas.has_pending_removals());
+        let second_tile = atlas
+            .ensure_tile_with(&second_key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(64), DevicePixels(64)),
+                    Cow::Borrowed(pixels.as_slice()),
+                )))
+            })
+            .expect("second tile allocation should succeed")
+            .expect("second tile should exist");
+
+        assert_ne!(first_tile.bounds, second_tile.bounds);
+        atlas.apply_pending_removals();
+        assert!(!atlas.has_pending_removals());
+    }
+
+    #[test]
+    fn repainting_a_pending_image_cancels_its_removal() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(3),
+            frame_slot: 0,
+            pixel_format: RenderImagePixelFormat::Rgba8,
+        });
+        let original_tile = atlas
+            .ensure_tile_with(&key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(1), DevicePixels(1)),
+                    Cow::Borrowed(&[1, 2, 3, 4]),
+                )))
+            })
+            .expect("initial tile allocation should succeed")
+            .expect("initial tile should exist");
+        atlas.remove(&key);
+
+        let build_called = std::cell::Cell::new(false);
+        let restored_tile = atlas
+            .ensure_tile_with(&key, &mut || {
+                build_called.set(true);
+                Ok(Some((
+                    size(DevicePixels(1), DevicePixels(1)),
+                    Cow::Borrowed(&[5, 6, 7, 8]),
+                )))
+            })
+            .expect("pending tile restoration should succeed")
+            .expect("pending tile should be restored");
+
+        assert_eq!(restored_tile, original_tile);
+        assert!(!build_called.get());
+        assert!(!atlas.has_pending_removals());
     }
 
     #[test]

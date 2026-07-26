@@ -241,7 +241,7 @@ pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String
     set_task_message(&task_id, Some("正在获取可安装版本".to_string()));
 
     let worker_task_id = task_id.clone();
-    tokio::spawn(async move {
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         match install_latest_proton_gdk(source, &worker_task_id).await {
             Ok(install_path) => finish_task(
                 &worker_task_id,
@@ -253,7 +253,13 @@ pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String
                 finish_task(&worker_task_id, "error", Some(error));
             }
         }
-    });
+    }) {
+        finish_task(
+            &task_id,
+            "error",
+            Some(format!("无法调度 Proton-GDK 安装任务：{error}")),
+        );
+    }
     task_id
 }
 
@@ -462,7 +468,7 @@ pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
     set_task_message(&task_id, Some("等待系统授权窗口确认".to_string()));
 
     let task_id_for_task = task_id.clone();
-    tokio::spawn(async move {
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let outcome = run_install_command(&plan, &task_id_for_task).await;
         match outcome {
             Ok(()) => finish_task(
@@ -472,7 +478,13 @@ pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
             ),
             Err(error) => finish_task(&task_id_for_task, "error", Some(error)),
         }
-    });
+    }) {
+        finish_task(
+            &task_id,
+            "error",
+            Some(format!("无法调度 Linux 兼容环境安装任务：{error}")),
+        );
+    }
     task_id
 }
 

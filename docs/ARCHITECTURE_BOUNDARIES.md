@@ -122,10 +122,13 @@ GPUI owns the foreground UI executor and UI-specific helper work. Small native
 dialogs and bounded UI-only preparation may use `background_spawn_blocking`.
 BMCBL business work—including filesystem access, version/resource parsing,
 decoding, downloads, networking, processes, and long-lived timers—must be
-scheduled through the semantic APIs in `src/tasks/runtime.rs`. Page and view
-code calls a domain service; it must not construct a Tokio runtime or Rayon
-pool, probe `Handle::try_current()`, select a Tokio blocking pool directly, or
-fall back to an unowned system thread. Route-scoped request state must
+scheduled through the semantic APIs in `src/tasks/runtime.rs`. A bounded Tokio
+request initiated by a GPUI lifecycle task crosses the executor boundary with
+the sibling `gpui_tokio` crate; its owned result is then applied on the GPUI
+foreground. Page and view code must not poll a Tokio reactor future directly,
+construct a Tokio runtime or Rayon pool, probe `Handle::try_current()`, select a
+Tokio blocking pool directly, or fall back to an unowned system thread.
+Route-scoped request state must
 invalidate outstanding request identifiers and clear transient loading flags
 when its owning view is released or recreated.
 

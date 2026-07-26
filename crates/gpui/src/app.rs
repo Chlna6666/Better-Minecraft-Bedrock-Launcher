@@ -18,6 +18,9 @@ mod menus;
 pub mod ownership_and_data_flow;
 mod platform_services;
 mod state;
+mod stream;
+#[cfg(test)]
+mod stream_tests;
 mod system_window_tab;
 #[cfg(any(test, feature = "test-support"))]
 mod test_context;

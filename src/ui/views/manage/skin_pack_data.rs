@@ -46,8 +46,12 @@ impl ManagePageView {
         };
 
         cx.spawn(async move |handle, cx| {
-            let result =
-                data::set_vanilla_skin_pack_redirect(&version, &config, Some(&asset)).await;
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::set_vanilla_skin_pack_redirect(&version, &config, Some(&asset))
+                    .await
+                    .map_err(anyhow::Error::msg)
+            })
+            .await;
             let _ = handle.update(cx, |_this, cx| {
                 match result {
                     Ok(next_config) => {
@@ -58,7 +62,7 @@ impl ManagePageView {
                         toast::success(cx, SharedString::from("默认皮肤已更新"));
                     }
                     Err(error) => {
-                        toast::error(cx, SharedString::from(error));
+                        toast::error(cx, SharedString::from(error.to_string()));
                     }
                 }
                 cx.notify();
@@ -78,7 +82,12 @@ impl ManagePageView {
         };
 
         cx.spawn(async move |handle, cx| {
-            let result = data::set_vanilla_skin_pack_redirect(&version, &config, None).await;
+            let result = gpui_tokio::Tokio::spawn_result(cx, async move {
+                data::set_vanilla_skin_pack_redirect(&version, &config, None)
+                    .await
+                    .map_err(anyhow::Error::msg)
+            })
+            .await;
             let _ = handle.update(cx, |_this, cx| {
                 match result {
                     Ok(next_config) => {
@@ -89,7 +98,7 @@ impl ManagePageView {
                         toast::success(cx, SharedString::from("默认皮肤已清除"));
                     }
                     Err(error) => {
-                        toast::error(cx, SharedString::from(error));
+                        toast::error(cx, SharedString::from(error.to_string()));
                     }
                 }
                 cx.notify();

@@ -145,14 +145,6 @@ fn render_settings_body(colors: &ThemeColors, state: &ToolsPageState) -> Div {
             state.disable_p2p,
             |state| state.disable_p2p = !state.disable_p2p,
         ))
-        .child(render_toggle_row(
-            colors,
-            "online-no-tun",
-            "兼容模式",
-            "不创建虚拟网卡，减少驱动和权限问题。",
-            state.no_tun,
-            |state| state.no_tun = !state.no_tun,
-        ))
 }
 
 fn render_settings_footer(colors: &ThemeColors) -> Div {

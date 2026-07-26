@@ -24,7 +24,10 @@ The model separates two concerns:
 
 1. The active BMCBL `AppRuntime` owns current execution, concurrency budgets,
    and task submission.
-2. Domain event bridges own the transition from background data to GPUI state.
+2. The sibling `gpui_tokio` crate bridges bounded, view-scoped Tokio requests
+   back to GPUI foreground tasks.
+3. Domain event bridges own the transition from durable background data to GPUI
+   state.
 
 New application hosts use `egpui::ApplicationRuntime` and its
 `RuntimeProvider`. The BMCBL runtime remains the owner of existing
@@ -68,10 +71,27 @@ initialized once during startup and owns these execution domains:
 | Blocking archive extraction | `run_archive_blocking` | Archive blocking pool |
 | Owned CPU work | `run_cpu` | Application Rayon pool |
 | Nested Rayon parallelism in synchronous code | `install_cpu` | Application Rayon pool |
+| View-scoped Tokio request/result | `gpui_tokio::Tokio::spawn_result` | AppRuntime IO handle, result awaited by GPUI |
 | Entity mutation and rendering | `cx.spawn`, `Entity::update` | GPUI foreground executor |
 
 Business modules select the semantic work type. They do not select or construct
 the physical executor.
+
+The GPUI event loop is synchronous and owns its foreground thread. It must be
+entered after every finite startup `Runtime::block_on` call has returned. Never
+run `Application::run` inside a Tokio task or a non-returning `block_on`: doing
+so lends the event loop one Tokio cooperative budget that can never be reset.
+
+`gpui_tokio` is a sibling integration crate, not part of GPUI and not a second
+runtime owner. BMCBL initializes it with `AppRuntime`'s existing IO handle.
+Use it when a GPUI lifecycle task needs the result of a bounded network, timer,
+process, or Tokio filesystem future. The Tokio producer returns owned data; the
+GPUI consumer applies it to a Global or Entity and notifies. Dropping the GPUI
+task cancels that view-scoped producer.
+
+Do not use `gpui_tokio` to own downloads, extraction, installation, EasyTier
+services, or any workflow that must survive page teardown. Those remain
+AppRuntime-owned and publish events or snapshots to a foreground consumer.
 
 ### Forbidden Runtime Patterns
 
@@ -79,6 +99,8 @@ Production business and UI code must not:
 
 - construct `tokio::runtime::Runtime` or `tokio::runtime::Builder`;
 - call `Handle::try_current()` or depend on an implicit Tokio context;
+- poll a Tokio reactor future directly from `cx.spawn` instead of using
+  `gpui_tokio`;
 - call `tokio::task::spawn_blocking` from a GPUI task;
 - construct a Rayon `ThreadPool`;
 - use `std::thread::spawn` as a general fallback;
@@ -214,6 +236,8 @@ GPUI owns only generic concurrency integration:
 
 BMCBL owns physical runtimes, concurrency budgets, domain channels, snapshots,
 lag recovery, retry rules, and workflow semantics for its existing workflows.
+The sibling `gpui_tokio` crate owns only the generic GPUI-to-Tokio task adapter
+and uses the BMCBL runtime handle supplied at startup.
 `egpui` owns the replaceable generic application provider and lifecycle for new
 hosts. Do not add Tokio, download, archive, Minecraft, music, or task-manager
 policy to GPUI. Do not add another page-local bridge when a domain stream
@@ -293,6 +317,9 @@ must still update foreground state immediately.
 Before approving async, task, or GPUI state code:
 
 - [ ] The work uses the correct `AppRuntime` semantic API.
+- [ ] A bounded Tokio future started by GPUI uses `gpui_tokio`; a durable
+      workflow does not.
+- [ ] `Application::run` remains outside every Tokio task and `block_on`.
 - [ ] No new runtime, Rayon pool, implicit Tokio-context probe, or generic
       system-thread fallback was added.
 - [ ] Durable work is owned outside GPUI.
@@ -313,6 +340,7 @@ Useful static checks:
 
 ```powershell
 rg "Handle::try_current|tokio::task::spawn_blocking|Runtime::new" src
+rg "tokio::(fs|net|process|time)::" src/ui
 rg "ThreadPoolBuilder|rayon::ThreadPool" src
 rg "std::thread::spawn|thread::spawn|thread::Builder" src
 rg "Timer::after" src/ui

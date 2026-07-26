@@ -2,6 +2,7 @@ pub mod api;
 mod integrity;
 pub mod manager;
 mod multi;
+mod progress_ranges;
 mod single;
 
 mod md5;

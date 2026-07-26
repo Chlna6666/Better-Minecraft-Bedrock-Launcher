@@ -1043,9 +1043,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
         });
         match event {
-            // Drain in `about_to_wait`, after winit has dispatched the current batch of native
-            // window messages. This keeps mouse, non-client drag, and redraw events responsive.
-            WindowsUserEvent::RunMainThreadTasks => {}
+            WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
             WindowsUserEvent::DockMenuAction(action_index) => {
                 self.inner.handle_dock_action_event(action_index);
             }
@@ -1620,6 +1618,8 @@ fn should_auto_hide_scrollbars() -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::Cell, rc::Rc, sync::atomic::Ordering};
+
     use super::WINDOWS_AUTO_RENDERER_BACKEND_ORDER;
     use crate::{ClipboardItem, RendererBackend, read_from_clipboard, write_to_clipboard};
 
@@ -1711,5 +1711,28 @@ mod tests {
         assert_eq!(platform.renderer_backend, RendererBackend::HeadlessTest);
         assert!(!platform.ole_initialized);
         assert!(platform.disable_direct_composition);
+    }
+
+    #[test]
+    fn windows_foreground_task_drain_clears_coalesced_wakeup() {
+        let (inner, _background_executor, foreground_executor, _event_loop_proxy) =
+            super::WindowsPlatform::new_common_parts();
+        let task_ran = Rc::new(Cell::new(false));
+
+        foreground_executor
+            .spawn({
+                let task_ran = task_ran.clone();
+                async move {
+                    task_ran.set(true);
+                }
+            })
+            .detach();
+        inner
+            .main_thread_wakeup_pending
+            .store(true, Ordering::Release);
+
+        assert!(!inner.run_foreground_tasks());
+        assert!(task_ran.get());
+        assert!(!inner.main_thread_wakeup_pending.load(Ordering::Acquire));
     }
 }

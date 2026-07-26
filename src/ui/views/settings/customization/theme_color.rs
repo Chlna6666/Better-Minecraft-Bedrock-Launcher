@@ -73,10 +73,11 @@ fn schedule_theme_color_persist_debounced(cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut observed_revision = 0u64;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(
-                THEME_COLOR_PERSIST_DEBOUNCE_MS,
-            ))
-            .await;
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    THEME_COLOR_PERSIST_DEBOUNCE_MS,
+                ))
+                .await;
 
             let (latest_revision, snapshot) =
                 match cx.read_global(|state: &SettingsPageState, _cx| {

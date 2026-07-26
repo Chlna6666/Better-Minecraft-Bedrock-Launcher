@@ -9,14 +9,13 @@ use super::online_state_text;
 use super::widgets::icon_button;
 
 pub(crate) fn persist_tools_online_settings(cx: &mut App) {
-    let (bootstrap_peers, player_name, game_ports, disable_p2p, no_tun) =
+    let (bootstrap_peers, player_name, game_ports, disable_p2p) =
         cx.read_global(|state: &ToolsPageState, _cx| {
             (
                 state.bootstrap_peers.to_string(),
                 state.player_name.to_string(),
                 state.game_ports.to_string(),
                 state.disable_p2p,
-                state.no_tun,
             )
         });
 
@@ -27,7 +26,6 @@ pub(crate) fn persist_tools_online_settings(cx: &mut App) {
                 config.online.player_name = player_name;
                 config.online.game_ports = game_ports;
                 config.online.disable_p2p = disable_p2p;
-                config.online.no_tun = no_tun;
             })
         })
         .await;
