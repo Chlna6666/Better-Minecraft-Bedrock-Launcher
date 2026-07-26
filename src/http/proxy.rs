@@ -1,5 +1,5 @@
 // src/http/proxy.rs
-use crate::config::config::{ProxyConfig, ProxyType, read_config};
+use crate::config::config::{ProxyConfig, ProxyType, read_proxy_config};
 use crate::http::request::{DEFAULT_USER_AGENT, GLOBAL_CLIENT};
 use crate::result::CoreError;
 use once_cell::sync::Lazy;
@@ -249,16 +249,100 @@ mod tests {
     }
 }
 
-/// 从配置文件读取当前 proxy 配置：若读取失败则返回默认 ProxyConfig（即 None）
+/// 从配置缓存读取当前 proxy 配置：若读取失败则返回默认 ProxyConfig（即 None）
 fn load_current_proxy_config() -> ProxyConfig {
-    match read_config() {
-        Ok(conf) => conf.launcher.download.proxy,
+    match read_proxy_config() {
+        Ok(proxy) => proxy,
         Err(err) => {
             error!(
                 "Failed to read config when building http client for proxy: {:?}",
                 err
             );
             ProxyConfig::default()
+        }
+    }
+}
+
+/// 当前代理配置的缓存指纹（与本模块 client 缓存 key 一致），
+/// 供其他模块（如禁重定向 client 缓存）在配置变化时判断是否需要重建 client。
+pub(crate) fn current_proxy_cache_key() -> String {
+    client_key_from_config(&load_current_proxy_config())
+}
+
+/// 把当前代理配置应用到 async ClientBuilder；代理 URL 非法时回退 no_proxy。
+pub(crate) fn apply_current_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let cfg = load_current_proxy_config();
+    match cfg.proxy_type {
+        ProxyType::None => builder.no_proxy(),
+        ProxyType::System => builder,
+        ProxyType::Http => {
+            let (normalized, _) = normalize_and_prepare_url(&ProxyType::Http, &cfg.http_proxy_url);
+            if normalized.is_empty() {
+                builder.no_proxy()
+            } else {
+                match Proxy::all(&normalized) {
+                    Ok(proxy) => builder.proxy(proxy),
+                    Err(error) => {
+                        warn!("HTTP 代理地址无效，回退 no_proxy: {error}");
+                        builder.no_proxy()
+                    }
+                }
+            }
+        }
+        ProxyType::Socks5 => {
+            let (normalized, _) =
+                normalize_and_prepare_url(&ProxyType::Socks5, &cfg.socks_proxy_url);
+            if normalized.is_empty() {
+                builder.no_proxy()
+            } else {
+                match Proxy::all(&normalized) {
+                    Ok(proxy) => builder.proxy(proxy),
+                    Err(error) => {
+                        warn!("SOCKS5 代理地址无效，回退 no_proxy: {error}");
+                        builder.no_proxy()
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 把当前代理配置应用到 blocking ClientBuilder；代理 URL 非法时回退 no_proxy。
+pub(crate) fn apply_current_proxy_blocking(
+    builder: reqwest::blocking::ClientBuilder,
+) -> reqwest::blocking::ClientBuilder {
+    let cfg = load_current_proxy_config();
+    match cfg.proxy_type {
+        ProxyType::None => builder.no_proxy(),
+        ProxyType::System => builder,
+        ProxyType::Http => {
+            let (normalized, _) = normalize_and_prepare_url(&ProxyType::Http, &cfg.http_proxy_url);
+            if normalized.is_empty() {
+                builder.no_proxy()
+            } else {
+                match Proxy::all(&normalized) {
+                    Ok(proxy) => builder.proxy(proxy),
+                    Err(error) => {
+                        warn!("HTTP 代理地址无效，回退 no_proxy: {error}");
+                        builder.no_proxy()
+                    }
+                }
+            }
+        }
+        ProxyType::Socks5 => {
+            let (normalized, _) =
+                normalize_and_prepare_url(&ProxyType::Socks5, &cfg.socks_proxy_url);
+            if normalized.is_empty() {
+                builder.no_proxy()
+            } else {
+                match Proxy::all(&normalized) {
+                    Ok(proxy) => builder.proxy(proxy),
+                    Err(error) => {
+                        warn!("SOCKS5 代理地址无效，回退 no_proxy: {error}");
+                        builder.no_proxy()
+                    }
+                }
+            }
         }
     }
 }

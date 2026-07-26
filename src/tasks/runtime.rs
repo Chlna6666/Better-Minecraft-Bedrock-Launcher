@@ -18,47 +18,63 @@ use super::task_manager::{
 const DEFAULT_BLOCKING_TIMEOUT: Duration = Duration::from_secs(30);
 const FALLBACK_LOGICAL_THREADS: usize = 2;
 const MAX_CONCURRENT_DOWNLOAD_TASKS: usize = 2;
-const MAX_CONCURRENT_ARCHIVE_TASKS: usize = 1;
+const MAX_CONCURRENT_ARCHIVE_TASKS: usize = 2;
 
 static APP_RUNTIME: OnceCell<AppRuntime> = OnceCell::new();
 
 pub struct AppRuntime {
     io: Runtime,
-    download: Runtime,
-    archive: Runtime,
+    /// download / archive 运行时按需惰性创建，避免启动时就构建 3 个多线程运行时。
+    /// 没有显式 shutdown 路径：运行时随进程存活，未初始化的 OnceCell 在进程退出时无需清理。
+    download: OnceCell<Runtime>,
+    archive: OnceCell<Runtime>,
     cpu: ThreadPool,
     blocking_slots: Arc<Semaphore>,
     download_slots: Arc<Semaphore>,
     archive_slots: Arc<Semaphore>,
 }
 
+fn logical_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(NonZeroUsize::get)
+        .unwrap_or(FALLBACK_LOGICAL_THREADS)
+}
+
+fn build_download_runtime() -> std::io::Result<Runtime> {
+    let logical_threads = logical_thread_count();
+    let download_workers = logical_threads.saturating_sub(1).clamp(2, 6);
+    TokioRuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(download_workers)
+        .max_blocking_threads(logical_threads.saturating_add(2).clamp(4, 8))
+        .thread_name("bmcbl-download")
+        .build()
+}
+
+fn build_archive_runtime() -> std::io::Result<Runtime> {
+    let logical_threads = logical_thread_count();
+    let archive_workers = logical_threads.saturating_sub(1).clamp(2, 4);
+    TokioRuntimeBuilder::new_multi_thread()
+        .enable_all()
+        .worker_threads(archive_workers)
+        .max_blocking_threads(logical_threads.saturating_add(1).clamp(4, 6))
+        .thread_name("bmcbl-archive")
+        .build()
+}
+
 impl AppRuntime {
     fn build() -> anyhow::Result<Self> {
-        let logical_threads = std::thread::available_parallelism()
-            .map(NonZeroUsize::get)
-            .unwrap_or(FALLBACK_LOGICAL_THREADS);
+        let logical_threads = logical_thread_count();
         let background_threads = background_thread_limit(logical_threads);
-        let download_workers = logical_threads.saturating_sub(1).clamp(2, 6);
-        let archive_workers = logical_threads.saturating_sub(1).clamp(2, 4);
+        // io runtime 的 worker 数不再按逻辑核 x2 超订；阻塞线程上限保持 x2。
+        let io_workers = logical_threads.max(4);
 
         let io = TokioRuntimeBuilder::new_multi_thread()
             .enable_all()
-            .worker_threads(background_threads)
+            .worker_threads(io_workers)
             .max_blocking_threads(background_threads)
             .thread_stack_size(1024 * 1024)
             .thread_name("bmcbl-io")
-            .build()?;
-        let download = TokioRuntimeBuilder::new_multi_thread()
-            .enable_all()
-            .worker_threads(download_workers)
-            .max_blocking_threads(logical_threads.saturating_add(2).clamp(4, 8))
-            .thread_name("bmcbl-download")
-            .build()?;
-        let archive = TokioRuntimeBuilder::new_multi_thread()
-            .enable_all()
-            .worker_threads(archive_workers)
-            .max_blocking_threads(logical_threads.saturating_add(1).clamp(4, 6))
-            .thread_name("bmcbl-archive")
             .build()?;
         let cpu = ThreadPoolBuilder::new()
             .num_threads(logical_threads.max(1))
@@ -67,13 +83,25 @@ impl AppRuntime {
 
         Ok(Self {
             io,
-            download,
-            archive,
+            download: OnceCell::new(),
+            archive: OnceCell::new(),
             cpu,
             blocking_slots: Arc::new(Semaphore::new(background_threads)),
             download_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOAD_TASKS)),
             archive_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_ARCHIVE_TASKS)),
         })
+    }
+
+    fn download_runtime(&self) -> Result<&Runtime, String> {
+        self.download
+            .get_or_try_init(build_download_runtime)
+            .map_err(|error| format!("初始化下载运行时失败: {error}"))
+    }
+
+    fn archive_runtime(&self) -> Result<&Runtime, String> {
+        self.archive
+            .get_or_try_init(build_archive_runtime)
+            .map_err(|error| format!("初始化安装运行时失败: {error}"))
     }
 
     pub fn io_handle(&self) -> &Handle {
@@ -92,28 +120,28 @@ impl AppRuntime {
         self.io.spawn(future)
     }
 
-    fn spawn_download<F>(&self, future: F) -> JoinHandle<F::Output>
+    fn spawn_download<F>(&self, future: F) -> Result<JoinHandle<F::Output>, String>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.download.spawn(future)
+        Ok(self.download_runtime()?.spawn(future))
     }
 
-    fn spawn_download_blocking<T, F>(&self, operation: F) -> JoinHandle<T>
+    fn spawn_download_blocking<T, F>(&self, operation: F) -> Result<JoinHandle<T>, String>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
-        self.download.spawn_blocking(operation)
+        Ok(self.download_runtime()?.spawn_blocking(operation))
     }
 
-    fn spawn_archive<F>(&self, future: F) -> JoinHandle<F::Output>
+    fn spawn_archive<F>(&self, future: F) -> Result<JoinHandle<F::Output>, String>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.archive.spawn(future)
+        Ok(self.archive_runtime()?.spawn(future))
     }
 
     fn spawn_io_blocking<T, F>(&self, operation: F) -> JoinHandle<T>
@@ -124,12 +152,12 @@ impl AppRuntime {
         self.io.spawn_blocking(operation)
     }
 
-    fn spawn_archive_blocking<T, F>(&self, operation: F) -> JoinHandle<T>
+    fn spawn_archive_blocking<T, F>(&self, operation: F) -> Result<JoinHandle<T>, String>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
-        self.archive.spawn_blocking(operation)
+        Ok(self.archive_runtime()?.spawn_blocking(operation))
     }
 
     fn spawn_cpu<T, F>(&self, operation: F) -> oneshot::Receiver<T>
@@ -174,7 +202,7 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    Ok(app_runtime()?.spawn_download_blocking(operation))
+    app_runtime()?.spawn_download_blocking(operation)
 }
 
 pub async fn run_cpu<T, F>(operation: F) -> Result<T, String>
@@ -213,7 +241,7 @@ where
     F: FnOnce() -> T + Send + 'static,
 {
     app_runtime()?
-        .spawn_archive_blocking(operation)
+        .spawn_archive_blocking(operation)?
         .await
         .map_err(|error| format!("安装阻塞任务异常结束: {error}"))
 }
@@ -241,10 +269,10 @@ where
         if !is_cancelled(&task_id_for_worker) {
             future.await;
         }
-    });
+    })?;
 
     let abort_handle = join_handle.abort_handle();
-    runtime.spawn_download(async move {
+    let _ = runtime.spawn_download(async move {
         match join_handle.await {
             Ok(()) => {}
             Err(error) if error.is_cancelled() => {}
@@ -285,9 +313,9 @@ where
         if !is_cancelled(&task_id_for_worker) {
             future.await;
         }
-    });
+    })?;
 
-    runtime.spawn_archive(async move {
+    let _ = runtime.spawn_archive(async move {
         match join_handle.await {
             Ok(()) => {
                 let still_running =

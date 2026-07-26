@@ -9,12 +9,104 @@ use crate::{http::proxy, utils::file_ops};
 use once_cell::sync::Lazy;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Condvar, Mutex, Once, RwLock};
+use std::time::{Duration, Instant};
 use std::{fs, io};
 use tracing::{debug, error};
 
 static CONFIG_CACHE: Lazy<RwLock<Option<Config>>> = Lazy::new(|| RwLock::new(None));
 static CONFIG_SYNC_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// 配置写盘合并：任意设置项改动先更新内存缓存并标记 dirty，
+/// 由后台线程在 ~500ms 静默期后统一序列化 + fsync + rename，
+/// 避免连续调节设置（如滑块）时每次改动都全量写盘。
+const CONFIG_FLUSH_DEBOUNCE: Duration = Duration::from_millis(500);
+
+struct ConfigFlushState {
+    dirty_at: Option<Instant>,
+}
+
+static CONFIG_FLUSH: Lazy<(Mutex<ConfigFlushState>, Condvar)> = Lazy::new(|| {
+    (
+        Mutex::new(ConfigFlushState { dirty_at: None }),
+        Condvar::new(),
+    )
+});
+
+fn schedule_config_flush() {
+    ensure_config_flush_thread();
+    let (lock, condvar) = &*CONFIG_FLUSH;
+    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.dirty_at = Some(Instant::now());
+    condvar.notify_all();
+}
+
+fn ensure_config_flush_thread() {
+    static SPAWN_FLUSH_THREAD: Once = Once::new();
+    SPAWN_FLUSH_THREAD.call_once(|| {
+        if let Err(spawn_error) = std::thread::Builder::new()
+            .name("bmcbl-config-flush".to_string())
+            .spawn(config_flush_worker)
+        {
+            error!("Failed to spawn config flush thread: {spawn_error}");
+        }
+    });
+}
+
+fn config_flush_worker() {
+    let (lock, condvar) = &*CONFIG_FLUSH;
+    loop {
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.dirty_at.is_none() {
+            state = condvar
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        // 静默期等待：期间新的改动会重置计时；flush_config_now 会清空 dirty_at。
+        loop {
+            let Some(dirty_at) = state.dirty_at else {
+                break;
+            };
+            let elapsed = dirty_at.elapsed();
+            if elapsed >= CONFIG_FLUSH_DEBOUNCE {
+                break;
+            }
+            let (guard, _timeout) = condvar
+                .wait_timeout(state, CONFIG_FLUSH_DEBOUNCE - elapsed)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = guard;
+        }
+        if state.dirty_at.take().is_none() {
+            continue;
+        }
+        drop(state);
+        flush_cached_config_to_disk();
+    }
+}
+
+fn flush_cached_config_to_disk() {
+    let _sync_guard = CONFIG_SYNC_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(config) = read_cached_config() else {
+        return;
+    };
+    if let Err(persist_error) = persist_config_to_disk(&config) {
+        error!("Failed to persist config to disk: {:?}", persist_error);
+    }
+}
+
+/// 立即把内存中未落盘的配置写入磁盘（供应用退出路径调用）。
+pub fn flush_config_now() {
+    let (lock, _) = &*CONFIG_FLUSH;
+    {
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.dirty_at.take().is_none() {
+            return;
+        }
+    }
+    flush_cached_config_to_disk();
+}
 
 #[cfg(test)]
 pub(super) fn clear_config_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
@@ -82,6 +174,16 @@ fn read_cached_config() -> Option<Config> {
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
+}
+
+/// 只读取代理配置：只在缓存读锁内克隆小结构，避免为读一个字段深拷贝整个 Config。
+pub fn read_proxy_config() -> io::Result<super::config::ProxyConfig> {
+    CONFIG_CACHE
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|config| config.launcher.download.proxy.clone())
+        .ok_or_else(config_cache_not_initialized_error)
 }
 
 fn store_cached_config(config: &Config) {
@@ -382,20 +484,33 @@ fn merge_tables(
     default
 }
 
+/// 写入完整配置：立即更新内存缓存（`read_config` 马上可见），
+/// 磁盘写入由后台线程按静默期合并执行。
 pub fn write_config(config: &Config) -> std::io::Result<()> {
     let _sync_guard = CONFIG_SYNC_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let previous_config = read_cached_config().ok_or_else(config_cache_not_initialized_error)?;
-    persist_config_to_disk(config)?;
-    store_cached_config(config);
+    let proxy_changed = {
+        let mut cache = CONFIG_CACHE
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(cached) = cache.as_mut() else {
+            return Err(config_cache_not_initialized_error());
+        };
+        let changed = cached.launcher.download.proxy != config.launcher.download.proxy;
+        *cached = config.clone();
+        changed
+    };
+    schedule_config_flush();
 
-    if should_clear_proxy_client_cache(Some(&previous_config), config) {
+    if proxy_changed {
         proxy::clear_client_cache();
     }
     Ok(())
 }
 
+/// 更新配置：直接在缓存上原地修改（避免多次全量 Config 克隆），
+/// 磁盘写入由后台线程按静默期合并执行。
 pub fn update_config<T, F>(mutator: F) -> io::Result<T>
 where
     F: FnOnce(&mut Config) -> T,
@@ -404,28 +519,23 @@ where
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let previous_config = read_cached_config().ok_or_else(config_cache_not_initialized_error)?;
+    let (result, proxy_changed) = {
+        let mut cache = CONFIG_CACHE
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(config) = cache.as_mut() else {
+            return Err(config_cache_not_initialized_error());
+        };
+        let previous_proxy = config.launcher.download.proxy.clone();
+        let result = mutator(config);
+        let proxy_changed = config.launcher.download.proxy != previous_proxy;
+        (result, proxy_changed)
+    };
+    schedule_config_flush();
 
-    let mut next_config = previous_config.clone();
-    let result = mutator(&mut next_config);
-    persist_config_to_disk(&next_config)?;
-    store_cached_config(&next_config);
-
-    let should_clear_proxy_cache =
-        should_clear_proxy_client_cache(Some(&previous_config), &next_config);
-
-    if should_clear_proxy_cache {
+    if proxy_changed {
         proxy::clear_client_cache();
     }
 
     Ok(result)
-}
-
-fn should_clear_proxy_client_cache(previous: Option<&Config>, next: &Config) -> bool {
-    match previous {
-        Some(previous_config) => {
-            previous_config.launcher.download.proxy != next.launcher.download.proxy
-        }
-        None => false,
-    }
 }

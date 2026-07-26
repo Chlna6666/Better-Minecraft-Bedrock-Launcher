@@ -81,6 +81,10 @@ struct DynamicRangeScheduler {
     retry_queue: Mutex<VecDeque<WorkUnit>>,
     active_work_units: AtomicUsize,
     notify: Arc<Notify>,
+    /// 分区总数（创建后不变）与已完全认领的分区数：
+    /// 供热路径进度上报无锁读取，避免与 claim/steal 争抢 partitions 互斥锁。
+    total_units: usize,
+    done_units: AtomicUsize,
 }
 
 impl DynamicRangeScheduler {
@@ -109,12 +113,20 @@ impl DynamicRangeScheduler {
             });
         }
 
+        let total_units = partitions.len();
+        let done_at_start = partitions
+            .iter()
+            .filter(|partition| partition.front_cursor >= partition.back_cursor)
+            .count();
+
         Self {
             total_size,
             partitions: Mutex::new(partitions),
             retry_queue: Mutex::new(VecDeque::new()),
             active_work_units: AtomicUsize::new(0),
             notify: Arc::new(Notify::new()),
+            total_units,
+            done_units: AtomicUsize::new(done_at_start),
         }
     }
 
@@ -195,6 +207,10 @@ impl DynamicRangeScheduler {
             let start = partition.front_cursor;
             let end = start + claim_size;
             partition.front_cursor = end;
+            if partition.front_cursor >= partition.back_cursor {
+                // 分区被完全认领（游标只会单向靠拢，至多触发一次）
+                self.done_units.fetch_add(1, Ordering::Relaxed);
+            }
             partition.active_request_count += 1;
             self.active_work_units.fetch_add(1, Ordering::Relaxed);
             Some(WorkUnit {
@@ -266,6 +282,10 @@ impl DynamicRangeScheduler {
         }
 
         partition.back_cursor = steal_start;
+        if partition.back_cursor <= partition.front_cursor {
+            // 分区被完全认领（游标只会单向靠拢，至多触发一次）
+            self.done_units.fetch_add(1, Ordering::Relaxed);
+        }
         partition.active_request_count += 1;
         self.active_work_units.fetch_add(1, Ordering::Relaxed);
 
@@ -331,14 +351,9 @@ impl DynamicRangeScheduler {
             .all(|partition| partition.front_cursor >= partition.back_cursor)
     }
 
-    async fn partition_summary(&self) -> (usize, usize) {
-        let partitions_guard = self.partitions.lock().await;
-        let total = partitions_guard.len();
-        let done = partitions_guard
-            .iter()
-            .filter(|partition| partition.front_cursor >= partition.back_cursor)
-            .count();
-        (total, done)
+    /// 无锁读取 (分区总数, 已完全认领的分区数)，供进度/可视化热路径使用。
+    fn partition_summary_fast(&self) -> (usize, usize) {
+        (self.total_units, self.done_units.load(Ordering::Relaxed))
     }
 }
 
@@ -708,15 +723,25 @@ fn spawn_direct_writer(
             );
         }
 
+        // 同一批次内的 chunk 来自同一个工作单元的顺序流式读取，
+        // 偏移天然连续（生产侧按累计长度推进 offset），因此可以合并成一次大块写入，
+        // 把每个 8-64KB 网络 chunk 一次 syscall 降为每批次一次。
+        let mut merge_buffer: Vec<u8> = Vec::new();
         while let Some(message) = rx.blocking_recv() {
             match message {
-                WriterMsg::Write { offset, chunks } => {
-                    let mut current_offset = offset;
-                    for chunk in chunks {
-                        write_all_at(&file, current_offset, &chunk)?;
-                        current_offset = current_offset.saturating_add(chunk.len() as u64);
+                WriterMsg::Write { offset, chunks } => match chunks.as_slice() {
+                    [] => {}
+                    [chunk] => write_all_at(&file, offset, chunk)?,
+                    chunk_slice => {
+                        let total_len: usize = chunk_slice.iter().map(|chunk| chunk.len()).sum();
+                        merge_buffer.clear();
+                        merge_buffer.reserve(total_len);
+                        for chunk in chunk_slice {
+                            merge_buffer.extend_from_slice(chunk);
+                        }
+                        write_all_at(&file, offset, &merge_buffer)?;
                     }
-                }
+                },
             }
         }
 
@@ -762,7 +787,7 @@ async fn download_multi_partitioned(
     ));
 
     if task_visualization_enabled() {
-        let (total_units, _) = scheduler.partition_summary().await;
+        let (total_units, _) = scheduler.partition_summary_fast();
         set_download_visualization(
             task_id,
             active_threads,
@@ -779,6 +804,8 @@ async fn download_multi_partitioned(
     let client = Arc::new(client);
     let error_occurred = Arc::new(Notify::new());
     let error_store = Arc::new(Mutex::new(None));
+    // worker 循环热路径只读该原子标志，避免每轮争抢 error_store 的互斥锁。
+    let has_error = Arc::new(AtomicBool::new(false));
     let (write_tx, write_rx) = mpsc::channel::<WriterMsg>(WRITE_CHANNEL_SIZE);
     let writer_task = spawn_direct_writer(dest_path.as_ref().clone(), total, write_rx)
         .map_err(CoreError::Other)?;
@@ -797,6 +824,7 @@ async fn download_multi_partitioned(
         let task_id = task_id.to_string();
         let error_occurred = error_occurred.clone();
         let error_store = error_store.clone();
+        let has_error = has_error.clone();
         let headers = headers.clone();
         let write_tx = write_tx.clone();
 
@@ -811,7 +839,7 @@ async fn download_multi_partitioned(
                     return;
                 }
 
-                if is_cancelled_fast(task_control.as_ref()) || error_store.lock().await.is_some() {
+                if is_cancelled_fast(task_control.as_ref()) || has_error.load(Ordering::Relaxed) {
                     return;
                 }
 
@@ -873,7 +901,7 @@ async fn download_multi_partitioned(
                 let http_range_end = unit_end.saturating_sub(1);
                 let mut reported_unit_bytes = 0u64;
 
-                let (total_units, done_units) = scheduler.partition_summary().await;
+                let (total_units, done_units) = scheduler.partition_summary_fast();
                 update_thread_visualization(
                     download_visualization.as_ref(),
                     worker_id,
@@ -926,6 +954,7 @@ async fn download_multi_partitioned(
                                 "WorkUnit [{unit_start}, {unit_end}) Range 请求失败: {}",
                                 last_error.unwrap_or_default()
                             )));
+                            has_error.store(true, Ordering::Relaxed);
                             error_occurred.notify_waiters();
                         }
                         drop(active_guard);
@@ -966,6 +995,7 @@ async fn download_multi_partitioned(
                             "WorkUnit [{unit_start}, {unit_end}) Range 校验失败: {}",
                             last_error.unwrap_or_default()
                         )));
+                        has_error.store(true, Ordering::Relaxed);
                         error_occurred.notify_waiters();
                     }
                     drop(active_guard);
@@ -1054,7 +1084,7 @@ async fn download_multi_partitioned(
                         && (last_update_time.elapsed().as_millis() > 100
                             || pending_progress > WORKER_BATCH_SIZE as u64)
                     {
-                        let (total_units, done_units) = scheduler.partition_summary().await;
+                        let (total_units, done_units) = scheduler.partition_summary_fast();
                         update_thread_visualization(
                             download_visualization.as_ref(),
                             worker_id,
@@ -1147,7 +1177,7 @@ async fn download_multi_partitioned(
                     completed_units.fetch_add(1, Ordering::Relaxed);
                     drop(active_guard);
 
-                    let (total_units, done_units) = scheduler.partition_summary().await;
+                    let (total_units, done_units) = scheduler.partition_summary_fast();
                     update_thread_visualization(
                         download_visualization.as_ref(),
                         worker_id,
@@ -1196,12 +1226,13 @@ async fn download_multi_partitioned(
                             "WorkUnit [{unit_start}, {unit_end}) 下载失败: {}",
                             last_error.unwrap_or_else(|| "unknown error".to_string())
                         )));
+                        has_error.store(true, Ordering::Relaxed);
                         error_occurred.notify_waiters();
                         drop(active_guard);
                         return;
                     }
                     drop(active_guard);
-                    let (total_units, done_units) = scheduler.partition_summary().await;
+                    let (total_units, done_units) = scheduler.partition_summary_fast();
                     set_download_visualization_throttled(
                         &task_id,
                         active_threads,
@@ -1235,14 +1266,8 @@ async fn download_multi_partitioned(
             all_workers_finished = true;
         },
         _ = error_occurred.notified() => {},
-        _ = async {
-            loop {
-                if is_cancelled_fast(cancel_task_control.as_ref()) {
-                    return;
-                }
-                sleep(Duration::from_millis(100)).await;
-            }
-        } => {}
+        // 事件驱动等待取消：cancel() 会 notify_waiters，无需 100ms 轮询。
+        _ = cancel_task_control.wait_cancelled() => {}
     }
     drop(join_all_workers);
 

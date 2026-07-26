@@ -9,7 +9,7 @@ use crate::tasks::task_manager::{
     wait_until_active_fast,
 };
 use futures_util::StreamExt;
-use reqwest::header::HeaderMap;
+use reqwest::header::{self, HeaderMap};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,30 +86,51 @@ pub async fn download_file(
             req_builder = req_builder.headers(h.clone());
         }
         req_builder = apply_download_request_headers(req_builder);
+        // 断点续传：本地已有部分文件时请求剩余区间；服务器不支持时会返回 200，走全量重下。
+        if resume_from > 0 {
+            req_builder = req_builder.header(header::RANGE, format!("bytes={resume_from}-"));
+        }
 
         match req_builder.send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && resume_from > 0 {
-                    if let Some(expected) = md5_expected
-                        .map(str::trim)
-                        .filter(|value| is_md5_digest(value))
-                    {
-                        if !verify_md5(&dest_buf, expected).await.unwrap_or(false) {
-                            return Err(CoreError::ChecksumMismatch(format!(
-                                "expected {}",
-                                expected
-                            )));
+                    // 416：请求区间超出远端文件。只有当远端总大小恰好等于本地文件大小时
+                    // 才视为已下载完成；否则保守回退全量重下。
+                    let remote_total = parse_unsatisfied_content_range_total(resp.headers());
+                    if remote_total == Some(resume_from) {
+                        if let Some(expected) = md5_expected
+                            .map(str::trim)
+                            .filter(|value| is_md5_digest(value))
+                        {
+                            if !verify_md5(&dest_buf, expected).await.unwrap_or(false) {
+                                debug!(
+                                    "断点续传本地文件 MD5 不匹配，回退全量重新下载: {}",
+                                    dest_buf.display()
+                                );
+                                resume_from = 0;
+                                continue;
+                            }
                         }
+                        set_task_visualization(task_id, None);
+                        return Ok(CoreResult::Success(()));
                     }
-                    set_task_visualization(task_id, None);
-                    return Ok(CoreResult::Success(()));
+                    debug!("服务器返回 416 且本地文件大小与远端不一致，回退全量重新下载");
+                    resume_from = 0;
+                    continue;
                 }
 
                 let resp = resp.error_for_status()?;
                 validate_download_response_headers(url, &resp)?;
                 let supports_resume =
                     status == reqwest::StatusCode::PARTIAL_CONTENT && resume_from > 0;
+                if supports_resume && parse_content_range_start(resp.headers()) != Some(resume_from)
+                {
+                    // 206 响应的 Content-Range 与请求偏移不一致，保守回退全量重下。
+                    debug!("206 响应 Content-Range 与请求偏移不一致，回退全量重新下载");
+                    resume_from = 0;
+                    continue;
+                }
                 if !supports_resume {
                     resume_from = 0;
                 }
@@ -255,4 +276,21 @@ pub async fn download_file(
             }
         }
     }
+}
+
+/// 解析 416 响应的 `Content-Range: bytes */<total>`，返回远端文件总大小。
+fn parse_unsatisfied_content_range_total(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(header::CONTENT_RANGE)?.to_str().ok()?.trim();
+    let rest = value.strip_prefix("bytes ")?;
+    let (_, total_text) = rest.split_once('/')?;
+    total_text.trim().parse::<u64>().ok()
+}
+
+/// 解析 206 响应的 `Content-Range: bytes <start>-<end>/<total>` 中的起始偏移。
+fn parse_content_range_start(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(header::CONTENT_RANGE)?.to_str().ok()?.trim();
+    let rest = value.strip_prefix("bytes ")?;
+    let (range_part, _) = rest.split_once('/')?;
+    let (start_text, _) = range_part.split_once('-')?;
+    start_text.trim().parse::<u64>().ok()
 }

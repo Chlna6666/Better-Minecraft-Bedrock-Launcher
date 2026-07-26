@@ -317,6 +317,8 @@ pub struct PluginRegistry {
     watcher_task: Option<gpui::Task<()>>,
     last_error: Option<SharedString>,
     loaded_once: bool,
+    /// 启动阶段的清单扫描正在后台执行；期间跳过同步 reload，避免阻塞首帧。
+    initial_reload_pending: bool,
     active_modal: Option<PluginModalState>,
 }
 
@@ -392,6 +394,7 @@ impl PluginRegistry {
             watcher_task: None,
             last_error: None,
             loaded_once: false,
+            initial_reload_pending: false,
             active_modal: None,
         }
     }
@@ -843,11 +846,9 @@ impl PluginRegistry {
     ) -> Option<Vec<RenderedInjection>> {
         self.render_cache
             .injections
-            .get(&InjectionRenderCacheKey {
-                slot,
-                page: page.map(str::to_string),
-            })
-            .cloned()
+            .iter()
+            .find(|(key, _)| key.slot == slot && key.page.as_deref() == page)
+            .map(|(_, trees)| trees.clone())
     }
 
     pub fn last_error(&self) -> Option<SharedString> {
@@ -1391,6 +1392,17 @@ impl PluginRegistry {
                     .as_deref()
                     .is_none_or(|registration_page| Some(registration_page) == page)
             })
+    }
+
+    /// 是否存在尚未惰性加载的 UiHook 插件；此时注入注册表还不完整，
+    /// 不能仅凭 `has_injections` 判定该 slot 没有注入。
+    fn has_pending_ui_hook_loads(&self) -> bool {
+        self.plugins.values().any(|instance| {
+            instance.enabled
+                && instance.manifest.has_capability(&PluginCapability::UiHook)
+                && !matches!(instance.state, PluginLoadState::Failed { .. })
+                && instance.runtime.is_none()
+        })
     }
 
     fn render_injection(
@@ -3365,8 +3377,52 @@ fn theme_token_from_abi(token: abi::ThemeToken) -> ui_dsl::ThemeToken {
 
 pub fn init(cx: &mut App) {
     cx.default_global::<PluginRegistry>();
-    reload_all(cx);
     start_watcher(cx);
+    spawn_initial_reload(cx);
+}
+
+/// 把启动阶段的插件清单扫描放到 IO 线程执行，完成后回主线程提交注册表，
+/// 避免目录扫描与 manifest 解析阻塞首帧。
+fn spawn_initial_reload(cx: &mut App) {
+    let (plugins_dir, package_cache_dir) = {
+        let registry = cx.global::<PluginRegistry>();
+        (
+            registry.plugins_dir().to_path_buf(),
+            registry.package_cache_dir().to_path_buf(),
+        )
+    };
+    cx.update_global(|registry: &mut PluginRegistry, _cx| {
+        registry.initial_reload_pending = true;
+    });
+
+    cx.spawn(async move |cx| {
+        let manifests = crate::tasks::runtime::run_io_blocking(move || {
+            crate::plugins::manifest::load_manifests_from_sources(&plugins_dir, &package_cache_dir)
+        })
+        .await;
+
+        cx.update(|cx| {
+            cx.update_global(|registry: &mut PluginRegistry, _cx| {
+                registry.initial_reload_pending = false;
+                if registry.loaded_once() {
+                    return;
+                }
+                let result = match manifests {
+                    Ok(Ok(manifests)) => registry.reload_manifests(manifests),
+                    Ok(Err(error)) => Err(error),
+                    Err(error) => Err(anyhow!("{error}")),
+                };
+                if let Err(error) = result {
+                    let error_message = crate::plugins::manifest::format_error_chain(&error);
+                    error!(error = %error_message, "plugin initial load failed");
+                    registry.last_error = Some(SharedString::from(error_message));
+                }
+            });
+            cx.refresh_windows();
+        })?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
 }
 
 pub fn reload_all(cx: &mut App) {
@@ -3386,7 +3442,11 @@ pub fn reload_all(cx: &mut App) {
 }
 
 pub fn ensure_manifest_index(cx: &mut App) {
-    if !cx.global::<PluginRegistry>().loaded_once() {
+    let needs_sync_reload = {
+        let registry = cx.global::<PluginRegistry>();
+        !registry.loaded_once() && !registry.initial_reload_pending
+    };
+    if needs_sync_reload {
         reload_all(cx);
     }
     start_watcher(cx);
@@ -3446,17 +3506,19 @@ fn notify_http_refresh_finished() {
 pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<ViewTree>> {
     ensure_loaded(cx);
     drain_http_refreshes(cx);
+
+    {
+        let registry = cx.global::<PluginRegistry>();
+        if let Some(tree) = registry.cached_page(plugin_id, page_id) {
+            return Ok(tree);
+        }
+        if let Some(error) = registry.cached_page_error(plugin_id, page_id) {
+            return Err(anyhow!("{}", error));
+        }
+    }
+
     let theme_snapshot = current_theme_snapshot(cx);
     let clipboard_text = clipboard_text_snapshot(cx);
-
-    let registry = cx.global::<PluginRegistry>();
-    if let Some(tree) = registry.cached_page(plugin_id, page_id) {
-        return Ok(tree);
-    }
-    if let Some(error) = registry.cached_page_error(plugin_id, page_id) {
-        return Err(anyhow!("{}", error));
-    }
-
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
         registry.set_clipboard_snapshot(clipboard_text);
@@ -3471,13 +3533,19 @@ pub fn render_injections(
 ) -> Vec<RenderedInjection> {
     ensure_loaded(cx);
     drain_http_refreshes(cx);
-    let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
 
-    if let Some(trees) = cx.global::<PluginRegistry>().cached_injections(slot, page) {
-        return trees;
+    {
+        let registry = cx.global::<PluginRegistry>();
+        if !registry.has_pending_ui_hook_loads() && !registry.has_injections(slot, page) {
+            return Vec::new();
+        }
+        if let Some(trees) = registry.cached_injections(slot, page) {
+            return trees;
+        }
     }
 
+    let theme_snapshot = current_theme_snapshot(cx);
+    let clipboard_text = clipboard_text_snapshot(cx);
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
         registry.set_clipboard_snapshot(clipboard_text);

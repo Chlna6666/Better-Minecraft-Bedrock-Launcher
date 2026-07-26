@@ -198,6 +198,9 @@ pub fn run() -> Result<()> {
     // the main thread and must never inherit a Tokio task's cooperative budget.
     crate::app::run(bootstrap)?;
 
+    // 配置写盘为 ~500ms 合并延迟，退出前把未落盘的改动立即写入磁盘。
+    crate::config::config::flush_config_now();
+
     Ok(())
 }
 
@@ -355,5 +358,7 @@ async fn run_silent_direct_launch(version_folder: &str) -> Result<()> {
     info!(task_id = %task_id, "已触发游戏静默启动任务");
 
     tokio::time::sleep(Duration::from_secs(3)).await;
+    // process::exit 不会执行常规退出路径，手动冲刷未落盘配置。
+    crate::config::config::flush_config_now();
     process::exit(0);
 }

@@ -383,18 +383,31 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     );
 
     if bootstrap.launch_mode.is_main() {
-        match crate::utils::diagnostics::load_pending_report() {
-            Ok(report) => {
-                cx.update_global(
-                    |diagnostics: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
-                        diagnostics.set_pending_report(report);
-                    },
-                );
-            }
-            Err(error) => {
-                tracing::warn!(?error, "failed to load pending diagnostics report");
-            }
-        }
+        // 诊断报告读盘放到 IO 线程执行，避免阻塞主窗口创建；
+        // 结果回填 DiagnosticsState 后由观察者驱动弹窗展示。
+        cx.spawn(async move |cx| {
+            let report = crate::tasks::runtime::run_io_blocking(
+                crate::utils::diagnostics::load_pending_report,
+            )
+            .await;
+            cx.update(|cx| match report {
+                Ok(Ok(report)) => {
+                    cx.update_global(
+                        |diagnostics: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                            diagnostics.set_pending_report(report);
+                        },
+                    );
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(?error, "failed to load pending diagnostics report");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "pending diagnostics report load task failed");
+                }
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 }
 

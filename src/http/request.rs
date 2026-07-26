@@ -7,6 +7,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT},
 };
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 use tracing::debug;
 
@@ -41,6 +42,63 @@ pub(crate) static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
         .build()
         .expect("reqwest client")
 });
+
+/// 禁重定向 client 缓存：(代理配置指纹, client)。
+/// 以前每次禁重定向请求都会重建连接池 + TLS，这里按代理指纹缓存，
+/// 代理配置变化（指纹不匹配）时重建并替换缓存。
+static NO_REDIRECT_CLIENT: Lazy<Mutex<Option<(String, Client)>>> = Lazy::new(|| Mutex::new(None));
+static NO_REDIRECT_BLOCKING_CLIENT: Lazy<Mutex<Option<(String, BlockingClient)>>> =
+    Lazy::new(|| Mutex::new(None));
+
+fn no_redirect_client() -> Result<Client, String> {
+    let key = crate::http::proxy::current_proxy_cache_key();
+    let mut slot = NO_REDIRECT_CLIENT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_key, client)) = slot.as_ref()
+        && *cached_key == key
+    {
+        return Ok(client.clone());
+    }
+
+    let builder = reqwest::Client::builder()
+        .gzip(true)
+        .brotli(true)
+        .deflate(true)
+        .zstd(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(DEFAULT_USER_AGENT.as_str());
+    let client = crate::http::proxy::apply_current_proxy(builder)
+        .build()
+        .map_err(|e| format!("构建临时 client 失败: {}", e))?;
+    *slot = Some((key, client.clone()));
+    Ok(client)
+}
+
+fn no_redirect_blocking_client() -> Result<BlockingClient, String> {
+    let key = crate::http::proxy::current_proxy_cache_key();
+    let mut slot = NO_REDIRECT_BLOCKING_CLIENT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_key, client)) = slot.as_ref()
+        && *cached_key == key
+    {
+        return Ok(client.clone());
+    }
+
+    let builder = reqwest::blocking::Client::builder()
+        .gzip(true)
+        .brotli(true)
+        .deflate(true)
+        .zstd(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(DEFAULT_USER_AGENT.as_str());
+    let client = crate::http::proxy::apply_current_proxy_blocking(builder)
+        .build()
+        .map_err(|e| format!("构建临时 blocking client 失败: {}", e))?;
+    *slot = Some((key, client.clone()));
+    Ok(client)
+}
 
 /// 构造并发送请求的选项（与 UI 兼容）
 pub struct RequestOptions<'a> {
@@ -85,25 +143,15 @@ pub async fn send_request_with_options(
     // 解析 method
     let method = Method::from_bytes(opts.method.as_bytes()).unwrap_or(Method::GET);
 
-    // 如果用户显式要求禁止重定向，我们创建一个临时 client（基于原 client 的常用配置无法直接复制），
-    // 这里做一个简单实现：仅在需要禁止重定向时构建一个短生命周期 client，
+    // 如果用户显式要求禁止重定向，使用按代理指纹缓存的禁重定向 client
+    // （redirect 策略是 client 级别的，无法基于传入 client 修改），
     // 否则使用传入的 client 复用连接池。
     let allow_redirects = opts.allow_redirects.unwrap_or(true);
     if !allow_redirects {
-        debug!("创建临时 client 禁止重定向");
-        let builder = reqwest::Client::builder()
-            .gzip(true)
-            .brotli(true)
-            .deflate(true)
-            .zstd(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(DEFAULT_USER_AGENT.as_str());
-
+        debug!("使用禁重定向缓存 client");
         // 如果 timeout_ms 提供，我们可以在请求上设置，但部分 reqwest 版本对 client.timeout 与 request.timeout 行为不同，
         // 这里优先在 request 上设置 timeout（下面会设置 request.timeout）
-        let temp_client = builder
-            .build()
-            .map_err(|e| format!("构建临时 client 失败: {}", e))?;
+        let temp_client = no_redirect_client()?;
 
         let mut rb = temp_client.request(method, url.clone());
         let header_map = build_header_map(opts.headers);
@@ -138,15 +186,7 @@ pub fn send_blocking_request_with_options(
     let method = Method::from_bytes(opts.method.as_bytes()).unwrap_or(Method::GET);
     let allow_redirects = opts.allow_redirects.unwrap_or(true);
     if !allow_redirects {
-        let temp_client = reqwest::blocking::Client::builder()
-            .gzip(true)
-            .brotli(true)
-            .deflate(true)
-            .zstd(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(DEFAULT_USER_AGENT.as_str())
-            .build()
-            .map_err(|e| format!("构建临时 blocking client 失败: {}", e))?;
+        let temp_client = no_redirect_blocking_client()?;
 
         let mut request = temp_client.request(method, url.clone());
         let header_map = build_header_map(opts.headers);

@@ -1374,11 +1374,8 @@ mod tests {
         let mut buffer = [0_u8; 2048];
         for attempt in 0..10 {
             socket.send(&ping).await.expect("send unconnected ping");
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                socket.recv(&mut buffer),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(1), socket.recv(&mut buffer))
+                .await
             {
                 Ok(Ok(length)) => {
                     eprintln!(
@@ -1405,11 +1402,8 @@ mod tests {
             ocr1[1..17].copy_from_slice(&magic);
             ocr1[17] = 11; // RakNet protocol version
             socket.send(&ocr1).await.expect("send OCR1");
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                socket.recv(&mut buffer),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(2), socket.recv(&mut buffer))
+                .await
             {
                 Ok(Ok(length)) => {
                     eprintln!(
@@ -1427,10 +1421,7 @@ mod tests {
                         };
                         let server_mtu =
                             u16::from_be_bytes([buffer[mtu_offset], buffer[mtu_offset + 1]]);
-                        eprintln!(
-                            "[diag] server mtu={server_mtu} cookie={:02x?}",
-                            cookie
-                        );
+                        eprintln!("[diag] server mtu={server_mtu} cookie={:02x?}", cookie);
                         // OCR2: id + magic + [cookie + challenge flag] + addr(v4) + mtu + guid
                         let mut ocr2 = Vec::new();
                         ocr2.push(0x07);

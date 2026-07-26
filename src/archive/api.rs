@@ -1,4 +1,4 @@
-use crate::archive::zip::extract_zip;
+use crate::archive::zip::extract_zip_from_path;
 use crate::config::config::read_config;
 #[cfg(target_os = "windows")]
 use crate::core::minecraft::appx::utils::{get_manifest_identity, patch_manifest};
@@ -12,7 +12,6 @@ use crate::tasks::task_manager::{
 };
 use crate::utils::file_ops;
 use std::fs;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
 
@@ -134,11 +133,6 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
         return;
     }
 
-    let archive = match open_zip_archive(source, &task_id) {
-        Some(archive) => archive,
-        None => return,
-    };
-
     let extract_to_str = match extract_to.to_str() {
         Some(value) => value.to_string(),
         None => {
@@ -150,7 +144,7 @@ async fn run_import_appx_task(task_id: String, source_path: String, file_name: O
         }
     };
 
-    match extract_zip(archive, &extract_to_str, true, task_id.clone()).await {
+    match extract_zip_from_path(source, &extract_to_str, true, task_id.clone()).await {
         Ok(CoreResult::Success(())) => {
             update_progress(&task_id, 0, None, Some("preparing_files"));
             let signature_path = extract_to.join("AppxSignature.p7x");
@@ -276,11 +270,6 @@ async fn run_extract_zip_appx_task(
         return;
     }
 
-    let archive = match open_zip_archive(Path::new(&destination), &task_id) {
-        Some(archive) => archive,
-        None => return,
-    };
-
     let extract_to_str = match extract_to.to_str() {
         Some(value) => value.to_string(),
         None => {
@@ -292,7 +281,14 @@ async fn run_extract_zip_appx_task(
         }
     };
 
-    match extract_zip(archive, &extract_to_str, force_replace, task_id.clone()).await {
+    match extract_zip_from_path(
+        Path::new(&destination),
+        &extract_to_str,
+        force_replace,
+        task_id.clone(),
+    )
+    .await
+    {
         Ok(CoreResult::Success(())) => {
             if task_was_cancelled(&task_id) {
                 remove_dir_all_if_exists(&extract_to, "取消安装时删除解压目录失败");
@@ -322,30 +318,6 @@ async fn run_extract_zip_appx_task(
         Err(error) => {
             remove_dir_all_if_exists(&extract_to, "安装失败后删除解压目录失败");
             finish_error(&task_id, format!("extract failed: {error}"));
-        }
-    }
-}
-
-fn open_zip_archive(path: &Path, task_id: &str) -> Option<zip::ZipArchive<File>> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) => {
-            finish_error(
-                task_id,
-                format!("打开安装包失败：{} ({})", error, path.display()),
-            );
-            return None;
-        }
-    };
-
-    match zip::ZipArchive::new(file) {
-        Ok(archive) => Some(archive),
-        Err(error) => {
-            finish_error(
-                task_id,
-                format!("创建 ZipArchive 失败：{} ({})", error, path.display()),
-            );
-            None
         }
     }
 }

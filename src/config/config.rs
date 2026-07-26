@@ -43,6 +43,11 @@ pub fn read_config() -> std::io::Result<Config> {
     super::storage::read_config()
 }
 
+/// 只读取代理配置（避免深拷贝整个 Config）。
+pub fn read_proxy_config() -> std::io::Result<ProxyConfig> {
+    super::storage::read_proxy_config()
+}
+
 pub fn reload_config() -> std::io::Result<Config> {
     super::storage::reload_config()
 }
@@ -56,6 +61,11 @@ where
     F: FnOnce(&mut Config) -> T,
 {
     super::storage::update_config(mutator)
+}
+
+/// 立即把内存中未落盘的配置写入磁盘（供应用退出路径调用）。
+pub fn flush_config_now() {
+    super::storage::flush_config_now()
 }
 
 pub fn resolved_error_report_sentry_dsn(launcher: &Launcher) -> Option<String> {

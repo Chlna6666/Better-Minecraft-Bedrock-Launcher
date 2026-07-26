@@ -129,6 +129,20 @@ impl TaskControl {
     pub fn paused_requested(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
     }
+
+    /// 挂起等待直到任务被取消（`cancel()` 会通过 `notify_waiters` 唤醒），
+    /// 用于替代热路径上的 sleep 轮询。
+    pub async fn wait_cancelled(&self) {
+        loop {
+            let mut notified = std::pin::pin!(self.notify.notified());
+            // 先注册 waiter 再检查标志，避免在检查与等待之间丢失通知。
+            notified.as_mut().enable();
+            if self.cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -147,7 +161,8 @@ pub struct TaskSnapshot {
     pub cancel_requested: bool,
     pub message: Option<Arc<str>>,
     pub supports_pause: bool,
-    pub visualization: Option<TaskVisualization>,
+    /// 用 Arc 包裹使 snapshot 构建时的 clone 变为浅拷贝（threads/downloaded_ranges 可能较大）。
+    pub visualization: Option<Arc<TaskVisualization>>,
     pub started_at_unix: u64,
     pub last_update_unix: u64,
     #[serde(default)]
@@ -232,7 +247,7 @@ struct Task {
     message: Option<Arc<str>>,
     paused: bool,
     supports_pause: bool,
-    visualization: TaskVisualization,
+    visualization: Arc<TaskVisualization>,
     last_emit_instant: Instant,
     sequence: u64,
     visibility: TaskVisibility,
@@ -265,7 +280,7 @@ impl Task {
             message: None,
             paused: false,
             supports_pause,
-            visualization: TaskVisualization::default(),
+            visualization: Arc::new(TaskVisualization::default()),
             last_emit_instant: now,
             sequence: 0,
             visibility,
@@ -277,6 +292,7 @@ impl Task {
     }
 
     fn snapshot(&self) -> TaskSnapshot {
+        let now_unix = unix_now_seconds();
         let (percent_opt, eta_str, done_clamped) = match self.total {
             Some(tot) => {
                 let done_clamped = std::cmp::min(self.done, tot);
@@ -312,10 +328,10 @@ impl Task {
             cancel_requested: self.cancel_requested,
             message: self.message.clone(),
             supports_pause: self.supports_pause,
-            visualization: (!self.visualization.is_empty()).then(|| self.visualization.clone()),
-            started_at_unix: unix_now_seconds()
-                .saturating_sub(self.start_instant.elapsed().as_secs()),
-            last_update_unix: unix_now_seconds(),
+            visualization: (!self.visualization.is_empty())
+                .then(|| Arc::clone(&self.visualization)),
+            started_at_unix: now_unix.saturating_sub(self.start_instant.elapsed().as_secs()),
+            last_update_unix: now_unix,
             sequence: self.sequence,
             visibility: self.visibility,
         }
@@ -337,10 +353,15 @@ fn localize_task_stage(stage: &str) -> Arc<str> {
         return label.clone();
     }
 
+    // 常见内置阶段用共享 Arc，避免每次快照都重新分配。
+    static STAGE_LABEL_READY: Lazy<Arc<str>> = Lazy::new(|| Arc::<str>::from("等待开始"));
+    static STAGE_LABEL_QUEUED: Lazy<Arc<str>> = Lazy::new(|| Arc::<str>::from("排队中"));
+    static STAGE_LABEL_STARTING: Lazy<Arc<str>> = Lazy::new(|| Arc::<str>::from("准备中"));
+
     match stage {
-        "ready" => Arc::<str>::from("等待开始"),
-        "queued" => Arc::<str>::from("排队中"),
-        "starting" => Arc::<str>::from("准备中"),
+        "ready" => STAGE_LABEL_READY.clone(),
+        "queued" => STAGE_LABEL_QUEUED.clone(),
+        "starting" => STAGE_LABEL_STARTING.clone(),
         other => Arc::<str>::from(other),
     }
 }
@@ -758,7 +779,7 @@ pub fn reset_progress(task_id: &str, total: Option<u64>, stage: Option<&str>) {
             t.last_done = 0;
             t.speed_ema = 0.0;
             t.last_instant = Instant::now();
-            t.visualization = TaskVisualization::default();
+            t.visualization = Arc::new(TaskVisualization::default());
             if let Some(stage) = stage {
                 t.stage = Arc::from(stage);
             }
@@ -786,8 +807,8 @@ pub fn set_task_visualization(task_id: &str, visualization: Option<TaskVisualiza
                 return false;
             }
             let next_visualization = visualization.unwrap_or_default();
-            if task.visualization != next_visualization {
-                task.visualization = next_visualization;
+            if *task.visualization != next_visualization {
+                task.visualization = Arc::new(next_visualization);
                 task.touch();
                 changed = true;
                 let now = Instant::now();
@@ -839,15 +860,19 @@ pub fn finish_task(task_id: &str, status: &str, message: Option<String>) {
                 t.last_done = t.done;
                 t.last_instant = Instant::now();
             }
-            if t.visualization.worker_total.is_some() || t.visualization.worker_active.is_some() {
-                t.visualization.worker_active = Some(0);
-            }
-            if status == "completed" {
-                if let Some(unit_total) = t.visualization.unit_total {
-                    t.visualization.unit_done = Some(unit_total);
+            {
+                // 终态更新只发生一次，Arc::make_mut 的写时拷贝成本可接受。
+                let visualization = Arc::make_mut(&mut t.visualization);
+                if visualization.worker_total.is_some() || visualization.worker_active.is_some() {
+                    visualization.worker_active = Some(0);
                 }
+                if status == "completed"
+                    && let Some(unit_total) = visualization.unit_total
+                {
+                    visualization.unit_done = Some(unit_total);
+                }
+                visualization.current_item = None;
             }
-            t.visualization.current_item = None;
             t.touch();
             snapshot_to_emit = Some(t.snapshot());
         }
@@ -894,9 +919,12 @@ pub fn cancel_task(task_id: &str) {
             t.speed_ema = 0.0;
             t.last_done = t.done;
             t.last_instant = Instant::now();
-            t.visualization.current_item = Some("正在取消并清理资源".to_string());
-            if t.visualization.worker_total.is_some() || t.visualization.worker_active.is_some() {
-                t.visualization.worker_active = Some(0);
+            {
+                let visualization = Arc::make_mut(&mut t.visualization);
+                visualization.current_item = Some("正在取消并清理资源".to_string());
+                if visualization.worker_total.is_some() || visualization.worker_active.is_some() {
+                    visualization.worker_active = Some(0);
+                }
             }
             t.touch();
             snapshot_to_emit = Some(t.snapshot());
