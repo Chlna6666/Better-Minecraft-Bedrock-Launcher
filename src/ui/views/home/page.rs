@@ -225,7 +225,11 @@ impl HomePageView {
 
         let now = Instant::now();
         self.dropdown_open = open;
-        let spring = if open { spring_bouncy() } else { spring_snappy() };
+        let spring = if open {
+            spring_bouncy()
+        } else {
+            spring_snappy()
+        };
         self.dropdown_spring
             .retarget_with_spring(if open { 1.0 } else { 0.0 }, spring, now);
         self.dropdown_animating = true;

@@ -1,9 +1,10 @@
 use gpui::{App, AppContext, BorrowAppContext, Context, ImageSource, SharedString, Subscription};
 use gpui_hooks::hooks::{UseRefHook, UseStateHook};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Instant, SystemTime};
 use tracing::{info, warn};
 
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
@@ -82,6 +83,17 @@ fn managed_versions_from_local_versions(state: &LocalVersionsSnapshot) -> Vec<Ma
         .collect()
 }
 
+fn local_versions_snapshot_changed(
+    previous: &LocalVersionsSnapshot,
+    current: &LocalVersionsSnapshot,
+) -> bool {
+    // versions 只随 revision 递增而变化，比较 revision 即可避免逐元素深比较。
+    previous.revision != current.revision
+        || previous.loaded != current.loaded
+        || previous.loading != current.loading
+        || previous.error != current.error
+}
+
 pub fn use_local_versions<Hooks, View>(
     hooks: &Hooks,
     cx: &mut Context<View>,
@@ -96,14 +108,17 @@ where
     if subscription.borrow().is_none() {
         let snapshot = snapshot.clone();
         let observer = cx.observe_global::<LocalVersionsState>(move |_, cx| {
-            snapshot.set(read_local_versions_snapshot(cx));
-            cx.notify();
+            let current = read_local_versions_snapshot(cx);
+            if snapshot.with(|value| local_versions_snapshot_changed(value, &current)) {
+                snapshot.set(current);
+                cx.notify();
+            }
         });
         *subscription.borrow_mut() = Some(observer);
     }
 
     let current = read_local_versions_snapshot(cx);
-    if snapshot.with(|value| value != &current) {
+    if snapshot.with(|value| local_versions_snapshot_changed(value, &current)) {
         snapshot.set(current.clone());
     }
 
@@ -123,7 +138,7 @@ fn sync_manage_page_state_from_local_versions(cx: &mut App) {
         state.loaded = snapshot.loaded;
         state.loading = snapshot.loading;
         state.error = snapshot.error.clone();
-        state.versions = versions;
+        state.versions = Arc::from(versions);
 
         if let Some(selected) = state.selected_folder.clone() {
             let exists = state
@@ -330,8 +345,11 @@ pub fn version_edition(version: &LaunchVersionEntry) -> Edition {
     }
 }
 
-pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
-    let config_path = std::path::Path::new(&*version.path).join("config.json");
+/// 按 (config.json 路径, mtime) 缓存版本隔离开关，避免渲染热路径重复读盘与解析 JSON。
+static VERSION_ISOLATION_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Option<SystemTime>, bool)>>> =
+    OnceLock::new();
+
+fn read_enable_isolation_from_config(config_path: &std::path::Path) -> bool {
     let content = match std::fs::read_to_string(config_path) {
         Ok(content) => content,
         Err(_) => return false,
@@ -344,6 +362,27 @@ pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
         .get("enable_redirection")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
+    let config_path = std::path::Path::new(&*version.path).join("config.json");
+    let mtime = std::fs::metadata(&config_path)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+
+    let cache = VERSION_ISOLATION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock()
+        && let Some((cached_mtime, cached_value)) = cache.get(&config_path)
+        && *cached_mtime == mtime
+    {
+        return *cached_value;
+    }
+
+    let value = read_enable_isolation_from_config(&config_path);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(config_path, (mtime, value));
+    }
+    value
 }
 
 pub fn version_target_root_path(version: &LaunchVersionEntry) -> Option<SharedString> {

@@ -1,10 +1,10 @@
 use crate::ui::animation::{SpringValue, apple_spring, spring_snappy};
-use crate::ui::theme::tokens::radius;
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::music::{MusicDragTarget, MusicSnapshot};
 use crate::ui::state::quit::QuitState;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
+use crate::ui::theme::tokens::radius;
 use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;

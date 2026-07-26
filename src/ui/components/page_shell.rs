@@ -96,8 +96,11 @@ pub fn page_panel(colors: &ThemeColors) -> Div {
         })
         .shadow(panel_shadow())
         .child(
-            div().absolute().inset_0().rounded(px(radius::LG)).bg(
-                linear_gradient(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(radius::LG))
+                .bg(linear_gradient(
                     180.0,
                     linear_color_stop(
                         Hsla {
@@ -113,8 +116,7 @@ pub fn page_panel(colors: &ThemeColors) -> Div {
                         },
                         1.0,
                     ),
-                ),
-            ),
+                )),
         )
         .child(
             div()

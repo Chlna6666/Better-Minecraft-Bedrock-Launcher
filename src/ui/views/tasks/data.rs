@@ -4,7 +4,6 @@ use crate::ui::components::toast;
 use gpui::*;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 impl TasksPageView {
     pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
@@ -50,7 +49,6 @@ impl TasksPageView {
         let mut this = Self {
             _subscriptions: Vec::new(),
             confirm_dialog: None,
-            update_apply_task: None,
             task_snapshots: task_manager::snapshot_arcs_map(),
             render_model: super::TasksPageRenderModel::loading(),
             card_motions: Default::default(),
@@ -113,23 +111,6 @@ impl TasksPageView {
             drop(stream_task);
         }));
 
-        let update_apply_task = cx.spawn(async move |handle, cx| {
-            loop {
-                Timer::after(Duration::from_millis(100)).await;
-
-                let next_render_model = super::build_render_model();
-                let update_result = handle.update(cx, move |this, cx| {
-                    if this.active {
-                        this.apply_render_model(next_render_model, cx);
-                    }
-                });
-                if update_result.is_err() {
-                    break;
-                }
-            }
-        });
-
-        this.update_apply_task = Some(update_apply_task);
         this
     }
 

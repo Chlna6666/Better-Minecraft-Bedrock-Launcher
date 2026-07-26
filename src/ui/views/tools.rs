@@ -1,7 +1,9 @@
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::ui::views::settings::state::SettingsPageState;
-use crate::ui::views::tools::state::{ToolsPageState, ToolsTab};
+use crate::ui::views::tools::state::{
+    OnlineOperation, OnlinePeerEntry, OnlinePlayerEntry, ToolsPageState, ToolsTab,
+};
 use gpui::*;
 use std::time::Duration;
 
@@ -11,16 +13,94 @@ pub(crate) mod online;
 mod sidebar;
 pub mod state;
 
+#[derive(PartialEq)]
+struct ToolsRenderSignature {
+    tab: ToolsTab,
+    nat_checking: bool,
+    nat_udp_type: Option<i32>,
+    nat_tcp_type: Option<i32>,
+    nat_error: Option<SharedString>,
+    has_room_code_input: bool,
+    room_code: SharedString,
+    has_bootstrap_peers_input: bool,
+    bootstrap_peers: SharedString,
+    has_player_name_input: bool,
+    player_name: SharedString,
+    has_game_ports_input: bool,
+    game_ports: SharedString,
+    room_advanced_open: bool,
+    easytier_settings_open: bool,
+    disable_p2p: bool,
+    online_operation: OnlineOperation,
+    online_error: Option<SharedString>,
+    online_log: SharedString,
+    easytier_running: bool,
+    easytier_hostname: SharedString,
+    easytier_ipv4: Option<SharedString>,
+    easytier_game_host: SharedString,
+    easytier_game_port: Option<u16>,
+    active_room_code: SharedString,
+    active_network_name: SharedString,
+    host_room_code: SharedString,
+    peers_loading: bool,
+    network_nodes_expanded: bool,
+    players: Vec<OnlinePlayerEntry>,
+    peers: Vec<OnlinePeerEntry>,
+}
+
+impl ToolsRenderSignature {
+    fn from_state(state: &ToolsPageState) -> Self {
+        Self {
+            tab: state.tab,
+            nat_checking: state.nat_checking,
+            nat_udp_type: state.nat_udp_type,
+            nat_tcp_type: state.nat_tcp_type,
+            nat_error: state.nat_error.clone(),
+            has_room_code_input: state.room_code_input.is_some(),
+            room_code: state.room_code.clone(),
+            has_bootstrap_peers_input: state.bootstrap_peers_input.is_some(),
+            bootstrap_peers: state.bootstrap_peers.clone(),
+            has_player_name_input: state.player_name_input.is_some(),
+            player_name: state.player_name.clone(),
+            has_game_ports_input: state.game_ports_input.is_some(),
+            game_ports: state.game_ports.clone(),
+            room_advanced_open: state.room_advanced_open,
+            easytier_settings_open: state.easytier_settings_open,
+            disable_p2p: state.disable_p2p,
+            online_operation: state.online_operation,
+            online_error: state.online_error.clone(),
+            online_log: state.online_log.clone(),
+            easytier_running: state.easytier_running,
+            easytier_hostname: state.easytier_hostname.clone(),
+            easytier_ipv4: state.easytier_ipv4.clone(),
+            easytier_game_host: state.easytier_game_host.clone(),
+            easytier_game_port: state.easytier_game_port,
+            active_room_code: state.active_room_code.clone(),
+            active_network_name: state.active_network_name.clone(),
+            host_room_code: state.host_room_code.clone(),
+            peers_loading: state.peers_loading,
+            network_nodes_expanded: state.network_nodes_expanded,
+            players: state.players.clone(),
+            peers: state.peers.clone(),
+        }
+    }
+}
+
 pub struct ToolsPageView {
     _subscriptions: Vec<Subscription>,
     _online_refresh_task: Task<()>,
+    last_render_signature: Option<ToolsRenderSignature>,
 }
 
 impl ToolsPageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            cx.observe_global::<ToolsPageState>(|_, cx| {
-                cx.notify();
+            cx.observe_global::<ToolsPageState>(|this: &mut Self, cx| {
+                let signature = ToolsRenderSignature::from_state(cx.global::<ToolsPageState>());
+                if this.last_render_signature.as_ref() != Some(&signature) {
+                    this.last_render_signature = Some(signature);
+                    cx.notify();
+                }
             }),
             cx.observe_global::<ThemeState>(|_, cx| {
                 cx.notify();
@@ -43,6 +123,9 @@ impl ToolsPageView {
         Self {
             _subscriptions: subscriptions,
             _online_refresh_task: online_refresh_task,
+            last_render_signature: Some(ToolsRenderSignature::from_state(
+                cx.global::<ToolsPageState>(),
+            )),
         }
     }
 }

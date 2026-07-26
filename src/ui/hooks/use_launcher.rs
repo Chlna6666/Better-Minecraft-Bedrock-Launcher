@@ -127,9 +127,13 @@ impl DependencyEventBatch {
 
 pub fn read_launcher_snapshot(now: std::time::Instant, cx: &App) -> LauncherSnapshot {
     cx.read_global(|state: &LauncherState, _cx| {
+        // 模态框不可见时不取任务日志，避免每帧锁 TASK_LOGS 并克隆全部日志。
+        let modal_relevant =
+            state.show_modal || state.modal_visible || state.is_modal_animating(now);
         let logs = state
             .task_id
             .as_ref()
+            .filter(|_| modal_relevant)
             .map(|task_id| task_manager::task_logs(task_id.as_ref()))
             .unwrap_or_else(|| Arc::<[Arc<str>]>::from(Vec::<Arc<str>>::new()));
         let log_version = launcher_log_version(&logs, state.last_snapshot.as_deref());

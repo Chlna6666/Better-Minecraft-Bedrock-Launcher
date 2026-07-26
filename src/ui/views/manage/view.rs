@@ -360,148 +360,153 @@ impl ManagePageView {
                         div()
                             .h(px(MANAGE_VERSION_ROW_PITCH_PX))
                             .pb(px(MANAGE_VERSION_ROW_GAP_PX))
-                            .child(div()
-                            .id(SharedString::from(format!("manage-version-{}", folder)))
-                            .w_full()
-                            .h_full()
-                            .px(px(10.))
-                            .py(px(9.))
-                            .rounded(px(12.))
-                            .cursor_pointer()
-                            .active(|style| style.scale(0.98))
-                            .border_1()
-                            .border_color(if selected {
-                                Hsla {
-                                    a: 0.34,
-                                    ..colors.accent
-                                }
-                            } else {
-                                Hsla {
-                                    a: 0.0,
-                                    ..colors.border
-                                }
-                            })
-                            .bg(if selected {
-                                Hsla {
-                                    a: 0.05,
-                                    ..colors.accent
-                                }
-                            } else {
-                                Hsla {
-                                    a: 0.0,
-                                    ..colors.surface
-                                }
-                            })
-                            .hover(|style| {
-                                style.bg(Hsla {
-                                    a: 0.06,
-                                    ..colors.surface_hover
-                                })
-                            })
-                            .shadow(if selected {
-                                vec![BoxShadow {
-                                    color: Hsla {
-                                        a: 0.10,
-                                        ..colors.accent
-                                    },
-                                    blur_radius: px(10.0),
-                                    spread_radius: px(-6.0),
-                                    offset: point(px(0.), px(2.)),
-                                }]
-                            } else {
-                                Vec::new()
-                            })
                             .child(
                                 div()
-                                    .flex()
-                                    .gap(px(10.))
-                                    .items_center()
+                                    .id(SharedString::from(format!("manage-version-{}", folder)))
+                                    .w_full()
+                                    .h_full()
+                                    .px(px(10.))
+                                    .py(px(9.))
+                                    .rounded(px(12.))
+                                    .cursor_pointer()
+                                    .active(|style| style.scale(0.98))
+                                    .border_1()
+                                    .border_color(if selected {
+                                        Hsla {
+                                            a: 0.34,
+                                            ..colors.accent
+                                        }
+                                    } else {
+                                        Hsla {
+                                            a: 0.0,
+                                            ..colors.border
+                                        }
+                                    })
+                                    .bg(if selected {
+                                        Hsla {
+                                            a: 0.05,
+                                            ..colors.accent
+                                        }
+                                    } else {
+                                        Hsla {
+                                            a: 0.0,
+                                            ..colors.surface
+                                        }
+                                    })
+                                    .hover(|style| {
+                                        style.bg(Hsla {
+                                            a: 0.06,
+                                            ..colors.surface_hover
+                                        })
+                                    })
+                                    .shadow(if selected {
+                                        vec![BoxShadow {
+                                            color: Hsla {
+                                                a: 0.10,
+                                                ..colors.accent
+                                            },
+                                            blur_radius: px(10.0),
+                                            spread_radius: px(-6.0),
+                                            offset: point(px(0.), px(2.)),
+                                        }]
+                                    } else {
+                                        Vec::new()
+                                    })
                                     .child(
                                         div()
-                                            .w(px(46.))
-                                            .h(px(46.))
-                                            .rounded(px(12.))
-                                            .overflow_hidden()
-                                            .border_1()
-                                            .border_color(Hsla {
-                                                a: 0.22,
-                                                ..colors.border
-                                            })
-                                            .shadow(vec![BoxShadow {
-                                                color: Hsla {
-                                                    h: 0.0,
-                                                    s: 0.0,
-                                                    l: 0.0,
-                                                    a: 0.10,
-                                                },
-                                                blur_radius: px(8.0),
-                                                spread_radius: px(-4.0),
-                                                offset: point(px(0.), px(2.)),
-                                            }])
                                             .flex()
+                                            .gap(px(10.))
                                             .items_center()
-                                            .justify_center()
-                                            .child(
-                                                img(icon)
-                                                    .size_full()
-                                                    .rounded(px(12.))
-                                                    .object_fit(ObjectFit::Cover),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(2.))
                                             .child(
                                                 div()
-                                                    .text_size(px(14.))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(colors.text_primary)
+                                                    .w(px(46.))
+                                                    .h(px(46.))
+                                                    .rounded(px(12.))
                                                     .overflow_hidden()
-                                                    .text_ellipsis()
-                                                    .child(version.folder.clone()),
+                                                    .border_1()
+                                                    .border_color(Hsla {
+                                                        a: 0.22,
+                                                        ..colors.border
+                                                    })
+                                                    .shadow(vec![BoxShadow {
+                                                        color: Hsla {
+                                                            h: 0.0,
+                                                            s: 0.0,
+                                                            l: 0.0,
+                                                            a: 0.10,
+                                                        },
+                                                        blur_radius: px(8.0),
+                                                        spread_radius: px(-4.0),
+                                                        offset: point(px(0.), px(2.)),
+                                                    }])
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        img(icon)
+                                                            .size_full()
+                                                            .rounded(px(12.))
+                                                            .object_fit(ObjectFit::Cover),
+                                                    ),
                                             )
                                             .child(
                                                 div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
                                                     .flex()
-                                                    .items_center()
-                                                    .gap(px(6.))
-                                                    .overflow_hidden()
+                                                    .flex_col()
+                                                    .gap(px(2.))
                                                     .child(
                                                         div()
-                                                            .text_size(px(11.))
-                                                            .text_color(colors.text_secondary)
+                                                            .text_size(px(14.))
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(colors.text_primary)
                                                             .overflow_hidden()
                                                             .text_ellipsis()
-                                                            .child(version.version.clone()),
+                                                            .child(version.folder.clone()),
                                                     )
                                                     .child(
                                                         div()
-                                                            .px(px(5.))
-                                                            .py(px(1.))
-                                                            .rounded(px(4.))
-                                                            .bg(badge_bg)
-                                                            .text_size(px(9.))
-                                                            .font_weight(FontWeight::BOLD)
-                                                            .text_color(badge_fg)
-                                                            .child(version_badge),
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(6.))
+                                                            .overflow_hidden()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(11.))
+                                                                    .text_color(
+                                                                        colors.text_secondary,
+                                                                    )
+                                                                    .overflow_hidden()
+                                                                    .text_ellipsis()
+                                                                    .child(version.version.clone()),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .px(px(5.))
+                                                                    .py(px(1.))
+                                                                    .rounded(px(4.))
+                                                                    .bg(badge_bg)
+                                                                    .text_size(px(9.))
+                                                                    .font_weight(FontWeight::BOLD)
+                                                                    .text_color(badge_fg)
+                                                                    .child(version_badge),
+                                                            ),
                                                     ),
                                             ),
-                                    ),
+                                    )
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let folder = folder.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.select_version(folder.clone(), cx);
+                                        })
+                                    }),
                             )
-                            .on_mouse_down(MouseButton::Left, {
-                                let folder = folder.clone();
-                                cx.listener(move |this, _, _, cx| {
-                                    this.select_version(folder.clone(), cx);
-                                })
-                            }))
                     }))
-                    .when(virtual_list_plan.render_slice.bottom_spacer > px(0.), |this| {
-                        this.child(div().h(virtual_list_plan.render_slice.bottom_spacer))
-                    }),
+                    .when(
+                        virtual_list_plan.render_slice.bottom_spacer > px(0.),
+                        |this| this.child(div().h(virtual_list_plan.render_slice.bottom_spacer)),
+                    ),
             )
     }
 

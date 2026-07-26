@@ -163,17 +163,39 @@ impl MainWindowView {
         self._reactor_subscriptions
             .push(
                 cx.observe_global::<crate::ui::state::quit::QuitState>(|_this, cx| {
-                    cx.notify();
+                    let now = Instant::now();
+                    let state = cx.global::<crate::ui::state::quit::QuitState>();
+                    if state.is_animating(now) || state.factor(now) > 0.0 {
+                        cx.notify();
+                    }
                 }),
             );
         self._reactor_subscriptions.push(
-            cx.observe_global::<crate::ui::state::diagnostics::DiagnosticsState>(|_this, cx| {
-                cx.notify();
+            cx.observe_global::<crate::ui::state::diagnostics::DiagnosticsState>(|this, cx| {
+                let state = cx.global::<crate::ui::state::diagnostics::DiagnosticsState>();
+                let signature = (
+                    state
+                        .pending_report
+                        .as_ref()
+                        .map(|report| report.id.clone()),
+                    state.submitting_sentry,
+                    state.auto_report_attempted,
+                );
+                if this.last_diagnostics_render_signature != signature {
+                    this.last_diagnostics_render_signature = signature;
+                    cx.notify();
+                }
             }),
         );
         self._reactor_subscriptions.push(
-            cx.observe_global::<crate::ui::components::toast::ToastState>(|_this, cx| {
-                cx.notify();
+            cx.observe_global::<crate::ui::components::toast::ToastState>(|this, cx| {
+                let has_content = cx
+                    .global::<crate::ui::components::toast::ToastState>()
+                    .has_content();
+                if has_content || this.last_toast_had_content {
+                    this.last_toast_had_content = has_content;
+                    cx.notify();
+                }
             }),
         );
         self._reactor_subscriptions.push(
@@ -649,6 +671,8 @@ impl MainWindowView {
             startup_deferred_ready: false,
             was_window_minimized: false,
             theme_color_cache: None,
+            last_diagnostics_render_signature: (None, false, false),
+            last_toast_had_content: false,
         };
 
         this.install_reactors(cx);

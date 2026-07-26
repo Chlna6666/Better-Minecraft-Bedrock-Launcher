@@ -1,5 +1,5 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
-use gpui::{Context, RenderFingerprint, SharedString, Subscription, Task, Timer};
+use gpui::{Context, RenderFingerprint, SharedString, Subscription, Timer};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -28,7 +28,6 @@ const TASK_FINISHED_HOLD_TERMINAL_DEFAULT_MS: u64 = 800;
 pub struct TasksPageView {
     _subscriptions: Vec<Subscription>,
     confirm_dialog: Option<TaskConfirmDialog>,
-    update_apply_task: Option<Task<()>>,
     task_snapshots: HashMap<Arc<str>, Arc<TaskSnapshot>>,
     render_model: TasksPageRenderModel,
     card_motions: HashMap<Arc<str>, TaskCardMotionState>,
@@ -922,12 +921,6 @@ impl TasksPageView {
     fn next_motion_sequence(&mut self) -> u64 {
         self.motion_sequence = self.motion_sequence.saturating_add(1);
         self.motion_sequence
-    }
-}
-
-impl Drop for TasksPageView {
-    fn drop(&mut self) {
-        self.update_apply_task.take();
     }
 }
 

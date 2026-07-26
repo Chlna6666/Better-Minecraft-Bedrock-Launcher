@@ -1,5 +1,6 @@
 use crate::ui::state::navigation::NavState;
 use gpui::BorrowAppContext;
+use std::borrow::Cow;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,11 +111,11 @@ impl RouteTarget {
     }
 
     #[must_use]
-    pub fn pathname(&self) -> String {
+    pub fn pathname(&self) -> Cow<'static, str> {
         match self {
-            Self::Builtin(route) => route.pathname().to_string(),
+            Self::Builtin(route) => Cow::Borrowed(route.pathname()),
             Self::Plugin { plugin_id, page_id } => {
-                format!("/plugins/{plugin_id}/{page_id}")
+                Cow::Owned(format!("/plugins/{plugin_id}/{page_id}"))
             }
         }
     }
@@ -196,7 +197,7 @@ pub fn navigate_plugin(cx: &mut gpui::App, plugin_id: String, page_id: String) {
 }
 
 pub fn navigate_target(cx: &mut gpui::App, target: RouteTarget) {
-    let path = target.pathname();
+    let path = target.pathname().into_owned();
     let visual_index = target.visual_index(cx);
     let now = Instant::now();
     cx.update_global(|nav: &mut NavState, _cx| {
