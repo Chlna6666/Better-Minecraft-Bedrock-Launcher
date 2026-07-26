@@ -1,13 +1,10 @@
 [package]
 name = "bedrock-nethernet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-only"
 rust-version = "1.85"
-
-[lib]
-name = "bedrock_nethernet"
-path = "bedrock_nethernet.rs"
+description = "Minecraft 基岩版 NetherNet（WebRTC）传输的 Rust 实现"
 
 [lints.rust]
 unsafe_code = "warn"
