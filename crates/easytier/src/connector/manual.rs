@@ -35,6 +35,9 @@ use crate::{
 
 use super::create_connector_by_url;
 
+const DIRECT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const LONG_RECONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
 type ConnectorMap = Arc<DashSet<url::Url>>;
 
 #[derive(Debug, Clone)]
@@ -92,7 +95,14 @@ impl ManualConnectorManager {
             TunnelScheme::Http | TunnelScheme::Https | TunnelScheme::Txt | TunnelScheme::Srv
         ) || matches!(dead_url.scheme(), "ws" | "wss");
 
-        Duration::from_secs(if use_long_timeout { 20 } else { 2 })
+        // PeerConn waits up to five seconds for the handshake response. The
+        // reconnect budget must also leave room for DNS resolution and socket
+        // establishment before that stage begins.
+        if use_long_timeout {
+            LONG_RECONNECT_TIMEOUT
+        } else {
+            DIRECT_RECONNECT_TIMEOUT
+        }
     }
 
     fn remaining_budget(started_at: Instant, total_timeout: Duration) -> Option<Duration> {
@@ -497,6 +507,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, 123);
+    }
+
+    #[test]
+    fn reconnect_timeout_covers_direct_handshake_window() {
+        let tcp: url::Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        let udp: url::Url = "udp://127.0.0.1:11010".parse().unwrap();
+        let websocket: url::Url = "wss://example.com".parse().unwrap();
+
+        assert_eq!(
+            ManualConnectorManager::reconnect_timeout(&tcp),
+            DIRECT_RECONNECT_TIMEOUT
+        );
+        assert_eq!(
+            ManualConnectorManager::reconnect_timeout(&udp),
+            DIRECT_RECONNECT_TIMEOUT
+        );
+        assert_eq!(
+            ManualConnectorManager::reconnect_timeout(&websocket),
+            LONG_RECONNECT_TIMEOUT
+        );
+        assert!(DIRECT_RECONNECT_TIMEOUT >= Duration::from_secs(5));
     }
 
     #[tokio::test]
