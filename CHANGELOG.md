@@ -10,6 +10,28 @@ not copied into this file.
 
 ### Highlights
 
+- Rewrote the bundled NetherNet transport (`crates/bedrock-nethernet`) as a
+  layered, zero-copy implementation with its wire format verified byte-for-byte
+  against go-nethernet, including its own test vectors. Fixed two hard 64 KiB
+  ceilings in webrtc-rs that silently broke every game packet above that size:
+  the SCTP send limit is now raised to 256 KiB, and the data channels are
+  detached so the read loop uses a buffer sized for NetherNet's 256 KiB
+  segments rather than the built-in 65535-byte one. Also added the full
+  `CONNECTERROR` code table, a `Signaling` abstraction, discovery entry
+  expiry, per-source rate limiting, and session statistics. The public API is
+  unchanged.
+
+- Replaced the vendored bedrock-crustaceans RakNet crates with an in-house
+  implementation (`crates/raknet`): go-raknet-style connection model on a
+  zero-copy (`bytes::Bytes`) reliability engine with proper reliable-frame
+  deduplication, RFC 6298 retransmission timing, AIMD congestion control,
+  u24 sequence-wrap safety, and hardening limits for split reassembly and
+  ordering buffers. The tokio driver keeps the previous `raknet_tokio::prelude`
+  API (no caller changes) while removing the per-send actor round-trips;
+  loopback throughput improved from 5.6 MiB/s to 78 MiB/s in the bundled
+  benchmark. go-raknet host interop (cookie echo, negative client GUID) is
+  preserved.
+
 - Added a version-management flow for custom icons, thumbnails, version settings,
   and generated Minecraft entity icon assets.
 - Reworked the map viewer around visible-tile demand loading, render sessions,
