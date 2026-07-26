@@ -5,8 +5,8 @@ use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
 use crate::ui::animation::{
-    ease_in_cubic, ease_out_back, ease_out_cubic, ease_out_elastic, raw_progress,
-    request_animation_frame_if,
+    SpringValue, apple_spring, ease_out_back, request_animation_frame_if, spring_bouncy,
+    spring_snappy,
 };
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::hooks::use_launcher::{LaunchVersionDescriptor, start_launcher};
@@ -24,10 +24,8 @@ use gpui_hooks::{hook_element, hook_render};
 use lucide_gpui::icons as lucide_icons;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::time::Duration;
 use std::time::Instant;
 
-const DROPDOWN_ANIMATION_DURATION: Duration = Duration::from_millis(300);
 const TITLEBAR_TOP_OFFSET_PX: f32 = 0.0;
 const TITLEBAR_HEIGHT_PX: f32 = 60.0;
 const TITLEBAR_CLEARANCE_PX: f32 = 12.0;
@@ -71,18 +69,38 @@ pub(crate) struct HomePageView {
     versions_error: Option<SharedString>,
     versions: Vec<LaunchVersionEntry>,
     launch_counts: HashMap<SharedString, u32>,
+    /// launch_counts 每次变更时递增，用于跳过未变化时的整表克隆与重排。
+    launch_counts_generation: u64,
+    applied_versions_revision: Option<u64>,
+    applied_launch_counts_generation: u64,
     selected_folder: Option<SharedString>,
     dropdown_open: bool,
-    dropdown_anim_at: Option<Instant>,
-    dropdown_anim_from_open: bool,
+    /// 下拉展开进度弹簧：展开 Q 弹、收起干脆，中途切换目标不跳变。
+    dropdown_spring: SpringValue,
     dropdown_animating: bool,
     active: bool,
     active_at: Option<Instant>,
+    /// 启动区入场弹簧。
+    entrance: SpringValue,
     _subscriptions: Vec<Subscription>,
 }
 
 impl HomePageView {
     fn apply_local_versions_snapshot(&mut self, snapshot: &LocalVersionsSnapshot) {
+        if self.applied_versions_revision == Some(snapshot.revision)
+            && self.applied_launch_counts_generation == self.launch_counts_generation
+        {
+            // 版本列表与启动次数都未变化时只同步轻量状态，跳过整表克隆与重排。
+            self.versions_loading = snapshot.loading;
+            self.versions_error = snapshot.error.clone();
+            if self.versions.is_empty() && !self.versions_loading {
+                self.dropdown_open = false;
+            }
+            return;
+        }
+
+        self.applied_versions_revision = Some(snapshot.revision);
+        self.applied_launch_counts_generation = self.launch_counts_generation;
         self.versions_loading = snapshot.loading;
         self.versions_error = snapshot.error.clone();
         self.versions = snapshot.versions.iter().cloned().collect();
@@ -141,13 +159,16 @@ impl HomePageView {
             versions_error,
             versions,
             launch_counts: HashMap::new(),
+            launch_counts_generation: 0,
+            applied_versions_revision: None,
+            applied_launch_counts_generation: 0,
             selected_folder,
             dropdown_open: false,
-            dropdown_anim_at: None,
-            dropdown_anim_from_open: false,
+            dropdown_spring: SpringValue::new(0.0).with_spring(spring_bouncy()),
             dropdown_animating: false,
             active: false,
             active_at: None,
+            entrance: SpringValue::new(1.0).with_spring(apple_spring(0.55, 0.72)),
             _subscriptions: subscriptions,
             __gpui_hooks: RefCell::new(Vec::new()),
             __gpui_hook_index: Cell::new(0),
@@ -171,13 +192,16 @@ impl HomePageView {
         self.active = active;
         if !active {
             self.dropdown_open = false;
-            self.dropdown_anim_at = None;
+            self.dropdown_spring.snap_to(0.0);
             self.dropdown_animating = false;
             self.active_at = None;
             return;
         }
 
-        self.active_at = Some(Instant::now());
+        let now = Instant::now();
+        self.active_at = Some(now);
+        self.entrance.snap_to(0.0);
+        self.entrance.retarget(1.0, now);
         self.ensure_versions_loaded(false, cx);
         cx.notify();
     }
@@ -187,41 +211,23 @@ impl HomePageView {
         crate::ui::hooks::use_local_versions::ensure_local_versions_loaded(force_refresh, cx);
     }
 
-    fn dropdown_factor(&self, now: Instant) -> f32 {
-        let Some(started_at) = self.dropdown_anim_at else {
-            return if self.dropdown_open { 1.0 } else { 0.0 };
-        };
-
-        let progress = raw_progress(now, started_at, DROPDOWN_ANIMATION_DURATION);
-        if self.dropdown_anim_from_open {
-            1.0 - ease_in_cubic(progress)
-        } else {
-            ease_out_back(progress, 0.5)
-        }
-    }
-
     fn sync_dropdown_animation(&mut self, now: Instant) -> f32 {
-        let dropdown_factor = self.dropdown_factor(now).clamp(0.0, 1.0);
-        let dropdown_animating = self.dropdown_anim_at.is_some_and(|started_at| {
-            now.saturating_duration_since(started_at) < DROPDOWN_ANIMATION_DURATION
-        });
-
-        self.dropdown_animating = dropdown_animating;
-        if !dropdown_animating {
-            self.dropdown_anim_at = None;
-        }
-
-        dropdown_factor
+        let sample = self.dropdown_spring.sample(now);
+        self.dropdown_animating = !sample.done;
+        // 允许轻微过冲（>1），让列表展开时有 Q 弹的“撑开”质感。
+        sample.value.clamp(0.0, 1.08)
     }
 
     fn begin_dropdown_transition(&mut self, open: bool) {
-        if self.dropdown_open == open && !self.dropdown_animating {
+        if self.dropdown_open == open {
             return;
         }
 
-        self.dropdown_anim_from_open = self.dropdown_open;
+        let now = Instant::now();
         self.dropdown_open = open;
-        self.dropdown_anim_at = Some(Instant::now());
+        let spring = if open { spring_bouncy() } else { spring_snappy() };
+        self.dropdown_spring
+            .retarget_with_spring(if open { 1.0 } else { 0.0 }, spring, now);
         self.dropdown_animating = true;
     }
 
@@ -262,7 +268,7 @@ impl HomePageView {
                 spread_radius: px(-5.0),
                 offset: point(px(0.0), px(20.0)),
             }])
-            .opacity(dropdown_factor)
+            .opacity(dropdown_factor.min(1.0))
             .child(
                 div()
                     .id("home-version-list-scroll")
@@ -361,6 +367,7 @@ impl HomePageView {
             launch_version_icon_path(version.custom_icon_path.as_deref(), version.name.as_ref());
 
         div()
+            .id(SharedString::from(format!("home-version-item-{index}")))
             .relative()
             .top(px(10.0 * (1.0 - item_factor)))
             .opacity(item_factor)
@@ -374,6 +381,7 @@ impl HomePageView {
             .rounded(px(12.0))
             .bg(item_bg)
             .hover(move |style| if selected { style } else { style.bg(hover_bg) })
+            .active(|style| style.scale(0.97))
             .cursor_pointer()
             .child(
                 div()
@@ -526,7 +534,7 @@ impl HomePageView {
                     a: 0.08,
                 })
             })
-            .active(|style| style.opacity(0.75))
+            .active(|style| style.scale(0.985).opacity(0.9))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
@@ -539,6 +547,8 @@ impl HomePageView {
                     if let Some(selected) = this.selected_folder.clone() {
                         let next = this.launch_counts.get(&selected).copied().unwrap_or(0) + 1;
                         this.launch_counts.insert(selected, next);
+                        this.launch_counts_generation =
+                            this.launch_counts_generation.wrapping_add(1);
                         sort_versions_by_launch_counts(&mut this.versions, |folder| {
                             this.launch_counts.get(folder).copied().unwrap_or(0)
                         });
@@ -585,7 +595,7 @@ impl HomePageView {
                     a: 0.12,
                 })
             })
-            .active(|style| style.opacity(0.75))
+            .active(|style| style.scale(0.94).opacity(0.9))
             .when(!is_empty, |style| {
                 style.on_mouse_down(
                     MouseButton::Left,
@@ -753,19 +763,9 @@ impl Render for HomePageView {
         let dropdown_visible = self.dropdown_open || self.dropdown_animating;
         let i18n = cx.global::<I18n>();
 
-        let entrance_factor = self
-            .active_at
-            .map(|at| {
-                let elapsed = now.saturating_duration_since(at);
-                let duration = Duration::from_millis(600);
-                if elapsed < duration {
-                    raw_progress(now, at, duration)
-                } else {
-                    1.0
-                }
-            })
-            .unwrap_or(1.0);
-        let entrance_eased = ease_out_elastic(entrance_factor);
+        let entrance_sample = self.entrance.sample(now);
+        let entrance_animating = !entrance_sample.done;
+        let entrance_eased = entrance_sample.value;
 
         let initial_versions_loading = self.versions_loading && self.versions.is_empty();
         let is_empty = self.versions.is_empty() && !initial_versions_loading;
@@ -842,7 +842,7 @@ impl Render for HomePageView {
             .absolute()
             .right(px(40.0))
             .bottom(px(40.0 - 20.0 * (1.0 - entrance_eased)))
-            .opacity(entrance_eased)
+            .opacity(entrance_eased.clamp(0.0, 1.0))
             .w(px(launcher_width_px))
             .flex()
             .flex_col()
@@ -896,20 +896,36 @@ impl Render for HomePageView {
         let launch_bar = div()
             .w_full()
             .h(px(72.0))
-            .rounded(px(24.0))
+            .rounded(px(crate::ui::theme::tokens::radius::XL))
             .overflow_hidden()
-            .bg(launch_bg)
+            // 现代化视觉：主色渐变 + 分层阴影（环境光 + 主色光晕）。
+            .bg(linear_gradient(
+                135.0,
+                linear_color_stop(launch_bg, 0.0),
+                linear_color_stop(theme_colors.accent_hover, 1.0),
+            ))
             .opacity(loading_pulse)
             .child(div().absolute().inset_0())
-            .shadow(vec![BoxShadow {
-                color: Hsla {
-                    a: 0.12,
-                    ..launch_bg
+            .shadow(vec![
+                BoxShadow {
+                    color: Hsla {
+                        a: 0.30,
+                        ..launch_bg
+                    },
+                    blur_radius: px(24.0),
+                    spread_radius: px(-8.0),
+                    offset: point(px(0.0), px(10.0)),
                 },
-                blur_radius: px(16.0),
-                spread_radius: px(-6.0),
-                offset: point(px(0.0), px(4.0)),
-            }])
+                BoxShadow {
+                    color: Hsla {
+                        a: 0.10,
+                        ..rgb(0x000000).into()
+                    },
+                    blur_radius: px(6.0),
+                    spread_radius: px(-2.0),
+                    offset: point(px(0.0), px(2.0)),
+                },
+            ])
             .child(
                 div()
                     .size_full()
@@ -962,7 +978,7 @@ impl Render for HomePageView {
 
         request_animation_frame_if(
             window,
-            self.dropdown_animating || entrance_factor < 1.0 || initial_versions_loading,
+            self.dropdown_animating || entrance_animating || initial_versions_loading,
         );
 
         overlay.into_any_element()

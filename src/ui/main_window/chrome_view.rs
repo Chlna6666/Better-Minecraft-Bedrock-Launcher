@@ -46,7 +46,7 @@ type MusicRenderSignature = (
 type ChromeRenderSignature = (bool, bool);
 type ChromeAnimationFlags = (bool, bool, bool, bool);
 type NavRenderSignature = (usize, Option<usize>, usize, usize, bool);
-type PluginNavigationPages = Vec<crate::plugins::runtime::PluginPage>;
+type PluginNavigationPages = std::sync::Arc<Vec<crate::plugins::runtime::PluginPage>>;
 type PluginNavigationSignature = Vec<PluginNavigationSignatureEntry>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,7 +193,8 @@ impl AppChromeView {
         let initial_glass_effect_enabled = cx
             .global::<crate::ui::views::settings::state::SettingsPageState>()
             .glass_effect_enabled;
-        let initial_plugin_navigation_pages = crate::plugins::runtime::navigation_pages(cx);
+        let initial_plugin_navigation_pages =
+            std::sync::Arc::new(crate::plugins::runtime::navigation_pages(cx));
         let initial_plugin_navigation_signature =
             build_plugin_navigation_signature(&initial_plugin_navigation_pages);
         let mut subscriptions = Vec::new();
@@ -271,7 +272,7 @@ impl AppChromeView {
                 let signature = build_plugin_navigation_signature(&pages);
                 if this.plugin_navigation_signature != signature {
                     this.plugin_navigation_signature = signature;
-                    this.plugin_navigation_pages = pages;
+                    this.plugin_navigation_pages = std::sync::Arc::new(pages);
                     cx.notify();
                 }
             }),
@@ -728,21 +729,18 @@ impl AppChromeView {
 
         let (
             visual_active_index,
-            pill_steps,
-            pill_direction,
-            pill_leading_progress,
-            pill_trailing_progress,
+            pill_left_steps,
+            pill_right_steps,
             labels_layout_factor,
             labels_opacity_factor,
             nav_animating,
         ) = {
             let nav: &NavState = cx.global::<NavState>();
+            let (pill_left_steps, pill_right_steps) = nav.pill_edges(now);
             (
                 nav.visual_active_index(),
-                nav.pill_steps(now),
-                nav.pill_direction(),
-                nav.pill_leading_progress(now),
-                nav.pill_trailing_progress(now),
+                pill_left_steps,
+                pill_right_steps,
                 nav.labels_layout_factor(now),
                 nav.labels_opacity_factor(now),
                 nav.is_animating(now),
@@ -770,10 +768,8 @@ impl AppChromeView {
             music_inline_animating,
             update_available,
             visual_active_index,
-            pill_steps,
-            pill_direction,
-            pill_leading_progress,
-            pill_trailing_progress,
+            pill_left_steps,
+            pill_right_steps,
             labels_layout_factor,
             labels_opacity_factor,
             nav_animating,
@@ -857,18 +853,25 @@ impl AppChromeView {
         (width_px / 12.0).round() as i32
     }
 
+    fn version_label() -> SharedString {
+        static VERSION_LABEL: std::sync::OnceLock<SharedString> = std::sync::OnceLock::new();
+        VERSION_LABEL
+            .get_or_init(|| {
+                SharedString::from(format!("v{}", crate::utils::app_info::get_version()))
+            })
+            .clone()
+    }
+
     fn render_with_state(
         topbar_state: TopbarRenderState,
         show_modal: bool,
         route: crate::ui::navigation::RouteTarget,
     ) -> AnyElement {
         crate::ui::main_window::chrome::render_app_chrome(
-            format!("v{}", crate::utils::app_info::get_version()).into(),
+            Self::version_label(),
             topbar_state.visual_active_index,
-            topbar_state.pill_steps,
-            topbar_state.pill_direction,
-            topbar_state.pill_leading_progress,
-            topbar_state.pill_trailing_progress,
+            topbar_state.pill_left_steps,
+            topbar_state.pill_right_steps,
             topbar_state.labels_layout_factor,
             topbar_state.labels_opacity_factor,
             topbar_state.music_snapshot,

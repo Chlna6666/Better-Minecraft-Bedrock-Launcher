@@ -1,4 +1,5 @@
-use crate::ui::animation::{ease_in_back, ease_out_back, is_running, raw_progress};
+use crate::ui::animation::{SpringValue, apple_spring, spring_snappy};
+use crate::ui::theme::tokens::radius;
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::music::{MusicDragTarget, MusicSnapshot};
 use crate::ui::state::quit::QuitState;
@@ -8,7 +9,6 @@ use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
-use std::time::Duration;
 use std::time::Instant;
 
 fn icon_path(path: &'static str) -> Svg {
@@ -40,10 +40,8 @@ struct NavItem {
 
 pub struct AppChromeState {
     pub titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState,
-    music_inline_from: f32,
-    music_inline_to: f32,
-    music_inline_started_at: Option<Instant>,
-    music_inline_duration: Duration,
+    /// 音乐胶囊展开进度（弹簧驱动，可中断）。
+    music_inline: SpringValue,
     music_inline_target_expanded: bool,
 }
 
@@ -53,10 +51,7 @@ impl Default for AppChromeState {
     fn default() -> Self {
         Self {
             titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState::default(),
-            music_inline_from: 0.0,
-            music_inline_to: 0.0,
-            music_inline_started_at: None,
-            music_inline_duration: Duration::from_millis(180),
+            music_inline: SpringValue::new(0.0).with_spring(apple_spring(0.38, 0.66)),
             music_inline_target_expanded: false,
         }
     }
@@ -64,49 +59,29 @@ impl Default for AppChromeState {
 
 impl AppChromeState {
     pub fn set_music_inline_expanded(&mut self, expanded: bool, now: Instant) {
-        // 目标态未变化时直接返回，避免重复重启动画。
+        // 目标态未变化时直接返回；弹簧重定向本身保留当前位置与速度。
         if self.music_inline_target_expanded == expanded {
             return;
         }
 
         self.music_inline_target_expanded = expanded;
-        self.music_inline_from = self.music_inline_factor(now);
-        self.music_inline_to = if expanded { 1.0 } else { 0.0 };
-        self.music_inline_started_at = Some(now);
-        self.music_inline_duration = if expanded {
-            Duration::from_millis(280)
+        let spring = if expanded {
+            // 展开：Q 弹，带轻微过冲。
+            apple_spring(0.38, 0.66)
         } else {
-            Duration::from_millis(220)
+            // 收起：干脆利落，避免“慢触发”体感。
+            spring_snappy()
         };
+        self.music_inline
+            .retarget_with_spring(if expanded { 1.0 } else { 0.0 }, spring, now);
     }
 
     pub fn music_inline_factor(&self, now: Instant) -> f32 {
-        let Some(started_at) = self.music_inline_started_at else {
-            return if self.music_inline_target_expanded {
-                1.0
-            } else {
-                0.0
-            };
-        };
-
-        let t = raw_progress(now, started_at, self.music_inline_duration);
-        // 展开与收起都增加回弹感，收起更快一些以降低“慢触发”体感。
-        let eased = if self.music_inline_to > self.music_inline_from {
-            ease_out_back(t, 0.48).clamp(0.0, 1.12)
-        } else {
-            // 先轻微反向再收回，形成“回收回弹”观感。
-            (1.0 - ease_in_back(1.0 - t, 0.34)).clamp(-0.08, 1.0)
-        };
-        (self.music_inline_from + (self.music_inline_to - self.music_inline_from) * eased)
-            .clamp(-0.06, 1.12)
+        self.music_inline.value(now).clamp(-0.06, 1.12)
     }
 
     pub fn music_inline_animating(&self, now: Instant) -> bool {
-        is_running(
-            now,
-            self.music_inline_started_at,
-            self.music_inline_duration,
-        )
+        self.music_inline.is_animating(now)
     }
 
     pub fn music_inline_target_expanded(&self) -> bool {
@@ -117,10 +92,8 @@ impl AppChromeState {
 pub fn render_app_chrome(
     app_version: SharedString,
     active_index: usize,
-    pill_steps: f32,
-    pill_direction: f32,
-    pill_leading_progress: f32,
-    pill_trailing_progress: f32,
+    pill_left_steps: f32,
+    pill_right_steps: f32,
     labels_layout_factor: f32,
     labels_opacity_factor: f32,
     music_snapshot: MusicSnapshot,
@@ -137,7 +110,7 @@ pub fn render_app_chrome(
     _update_modal_open: bool,
     accent_override: Option<Hsla>,
     glass_effect_enabled: bool,
-    plugin_pages: Vec<crate::plugins::runtime::PluginPage>,
+    plugin_pages: std::sync::Arc<Vec<crate::plugins::runtime::PluginPage>>,
 ) -> AnyElement {
     let topbar_top = px(0.);
     let topbar_h = px(60.);
@@ -162,8 +135,13 @@ pub fn render_app_chrome(
     );
 
     let theme_k = theme_k.clamp(0.0, 1.0);
+    // 开启玻璃效果时降低不透明度，让毛玻璃背板透出内容。
     let nav_bg = Hsla {
-        a: if theme_k < 0.5 { 0.75 } else { 0.60 },
+        a: if glass_effect_enabled {
+            lerp_f32(0.58, 0.46, theme_k)
+        } else {
+            lerp_f32(0.75, 0.60, theme_k)
+        },
         ..colors.surface
     };
     let text_color = colors.text_primary;
@@ -247,16 +225,16 @@ pub fn render_app_chrome(
             target: RouteTarget::Builtin(AppRoute::Settings),
         },
     ];
-    nav_items.extend(plugin_pages.into_iter().map(|page| NavItem {
+    nav_items.extend(plugin_pages.iter().map(|page| NavItem {
         icon_path: lucide_icons::icon_plug(),
-        image_icon_path: page.icon_path,
+        image_icon_path: page.icon_path.clone(),
         label: page.navigation.as_ref().map_or_else(
             || page.title.clone(),
             |navigation| SharedString::from(navigation.label.clone()),
         ),
         target: RouteTarget::Plugin {
-            plugin_id: page.plugin_id,
-            page_id: page.page_id,
+            plugin_id: page.plugin_id.clone(),
+            page_id: page.page_id.clone(),
         },
     }));
 
@@ -332,54 +310,25 @@ pub fn render_app_chrome(
     let center_slot_w = (inner_w - left_slot_w - right_slot_w).max(capsule_w);
     let capsule_offset_in_center = ((center_slot_w - capsule_w) / 2.0).max(px(0.0));
 
+    // 胶囊左右边缘由两条弹簧直接给出（tab 序号空间），移动时被拉伸、
+    // 到位时回弹收拢；允许轻微过冲以保留 Q 弹质感。
     let step_w_px = (item_w / px(1.)) + (capsule_gap / px(1.));
     let max_offset = step_w_px * (nav_len.saturating_sub(1) as f32);
-    let current_left_px = (step_w_px * pill_steps).clamp(0.0, max_offset);
-    let previous_left_px = (current_left_px - step_w_px * pill_direction).clamp(0.0, max_offset);
-    let current_inner_left_px = current_left_px;
-    let previous_inner_left_px = previous_left_px;
-    let current_inner_right_px = current_left_px + item_w / px(1.);
-    let previous_inner_right_px = previous_left_px + item_w / px(1.);
-
-    let (left_edge_px, right_edge_px) = if pill_direction >= 0.0 {
-        let left = lerp_f32(
-            previous_inner_left_px,
-            current_inner_left_px,
-            pill_trailing_progress,
-        );
-        let right = lerp_f32(
-            previous_inner_right_px,
-            current_inner_right_px,
-            pill_leading_progress,
-        );
-        (left, right)
-    } else {
-        let left = lerp_f32(
-            previous_inner_left_px,
-            current_inner_left_px,
-            pill_leading_progress,
-        );
-        let right = lerp_f32(
-            previous_inner_right_px,
-            current_inner_right_px,
-            pill_trailing_progress,
-        );
-        (left, right)
-    };
-
+    let overshoot_slack_px = step_w_px * 0.30;
     let max_right_px = max_offset + item_w / px(1.);
-    let clamped_left_px = left_edge_px.clamp(0.0, max_right_px);
-    let clamped_right_px = right_edge_px.clamp(0.0, max_right_px);
+    let left_edge_px = (step_w_px * pill_left_steps).clamp(-overshoot_slack_px, max_right_px);
+    let right_edge_px = (step_w_px * pill_right_steps + item_w / px(1.))
+        .clamp(0.0, max_right_px + overshoot_slack_px);
     let pill_inner_inset = 1.5;
-    let pill_offset = px(clamped_left_px.min(clamped_right_px) + pill_inner_inset);
-    let pill_w = px(((clamped_right_px - clamped_left_px).abs() - pill_inner_inset * 2.0).max(0.0));
+    let pill_offset = px(left_edge_px.min(right_edge_px) + pill_inner_inset);
+    let pill_w = px(((right_edge_px - left_edge_px).abs() - pill_inner_inset * 2.0).max(0.0));
 
-    let icon_btn_path = move |id: &'static str, icon_path_value: &'static str, close: bool| {
+    let icon_btn_path = move |id: &'static str, icon_path_value: &'static str, _close: bool| {
         div()
             .id(id)
             .w(px(40.))
             .h(px(40.))
-            .rounded(px(12.))
+            .rounded(px(radius::SM))
             .relative()
             .flex()
             .items_center()
@@ -387,14 +336,9 @@ pub fn render_app_chrome(
             .opacity(0.7)
             .cursor_pointer()
             .text_color(text_color)
-            .hover(move |style| {
-                if close {
-                    style.bg(icon_hover_bg).opacity(1.0)
-                } else {
-                    style.bg(icon_hover_bg).opacity(1.0)
-                }
-            })
-            .active(|style| style.opacity(1.0).top(px(1.5)))
+            .hover(move |style| style.bg(icon_hover_bg).opacity(1.0))
+            // Apple 风格按压反馈：整体轻微缩小，而不是位移。
+            .active(|style| style.opacity(1.0).scale(0.90))
             .child(
                 icon_path(icon_path_value)
                     .size(px(16.0))
@@ -456,7 +400,7 @@ pub fn render_app_chrome(
                         .gap(px(5.))
                         .h(px(19.))
                         .px(px(9.))
-                        .rounded(px(999.))
+                        .rounded(px(radius::FULL))
                         .bg(Hsla {
                             a: 0.15,
                             ..colors.accent
@@ -606,7 +550,7 @@ pub fn render_app_chrome(
                         .cursor_pointer()
                         .occlude()
                         .hover(|s| s.opacity(1.0))
-                        .active(|s| s.top(px(1.5)))
+                        .active(|s| s.scale(0.94))
                         .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
                             cx.stop_propagation();
                             navigation::navigate_target(cx, item.target.clone());
@@ -839,6 +783,14 @@ pub fn render_app_chrome(
         .right(inset_x)
         .h(topbar_h)
         .rounded(topbar_radius)
+        .when(glass_effect_enabled, |this| {
+            // 毛玻璃顶栏：GPU backdrop blur + 轻微提饱和。
+            this.backdrop_blur(
+                BackdropBlurStyle::new(px(18.0))
+                    .auto_quality()
+                    .saturation(1.05),
+            )
+        })
         .bg(nav_bg)
         .overflow_hidden()
         .border_b_1()

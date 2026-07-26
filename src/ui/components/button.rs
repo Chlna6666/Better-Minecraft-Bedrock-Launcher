@@ -163,6 +163,7 @@ pub fn secondary_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
 ) -> gpui::Stateful<gpui::Div> {
+    let hover_bg = colors.surface_hover;
     div()
         .id(id)
         .flex()
@@ -170,11 +171,14 @@ pub fn secondary_button(
         .justify_center()
         .px(px(16.))
         .py(px(10.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(colors.border)
         .bg(colors.surface)
         .cursor_pointer()
+        .hover(move |style| style.bg(hover_bg))
+        // Apple 风格按压反馈：整体轻微缩小。
+        .active(|style| style.scale(0.97).opacity(0.9))
         .child(
             div()
                 .text_size(px(13.))
@@ -189,6 +193,7 @@ pub fn ghost_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
 ) -> gpui::Stateful<gpui::Div> {
+    let hover_bg = colors.btn_ghost_hover_bg;
     div()
         .id(id)
         .flex()
@@ -198,6 +203,8 @@ pub fn ghost_button(
         .py(px(6.))
         .rounded(px(10.))
         .cursor_pointer()
+        .hover(move |style| style.bg(hover_bg))
+        .active(|style| style.scale(0.97).opacity(0.85))
         .child(
             div()
                 .text_size(px(13.))
@@ -212,6 +219,7 @@ pub fn primary_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
 ) -> gpui::Stateful<gpui::Div> {
+    let hover_bg = colors.accent_hover;
     div()
         .id(id)
         .flex()
@@ -219,9 +227,20 @@ pub fn primary_button(
         .justify_center()
         .px(px(16.))
         .py(px(10.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.accent)
+        .shadow(vec![gpui::BoxShadow {
+            color: gpui::Hsla {
+                a: 0.25,
+                ..colors.accent
+            },
+            blur_radius: px(12.),
+            spread_radius: px(-4.),
+            offset: gpui::point(px(0.), px(4.)),
+        }])
         .cursor_pointer()
+        .hover(move |style| style.bg(hover_bg))
+        .active(|style| style.scale(0.97).opacity(0.92))
         .child(
             div()
                 .text_size(px(13.))

@@ -1,6 +1,6 @@
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
-use crate::ui::animation::{ease_out_back, request_animation_frame_if};
+use crate::ui::animation::{apple_spring, request_animation_frame_if, spring_motion};
 use crate::ui::components::color_picker::normalize_hex_color;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{InputEvent, InputState};
@@ -98,6 +98,22 @@ pub(crate) fn preload_startup_background_target_from_values(
         .unwrap_or(0)
 }
 
+fn route_enter_animation_key(route: &RouteTarget) -> SharedString {
+    match route {
+        RouteTarget::Builtin(builtin) => SharedString::from(match builtin {
+            AppRoute::Home => "main-route-page-enter:/",
+            AppRoute::Download => "main-route-page-enter:/download",
+            AppRoute::Manage => "main-route-page-enter:/list",
+            AppRoute::Tools => "main-route-page-enter:/tools/online",
+            AppRoute::Tasks => "main-route-page-enter:/tasks",
+            AppRoute::Settings => "main-route-page-enter:/settings",
+        }),
+        RouteTarget::Plugin { .. } => {
+            SharedString::from(format!("main-route-page-enter:{}", route.pathname()))
+        }
+    }
+}
+
 fn optional_page_view_element<T>(route_key: &str, view: Option<Entity<T>>) -> AnyElement
 where
     T: Render + 'static,
@@ -143,15 +159,13 @@ struct TopbarRenderState {
     music_inline_animating: bool,
     update_available: bool,
     visual_active_index: usize,
-    pill_steps: f32,
-    pill_direction: f32,
-    pill_leading_progress: f32,
-    pill_trailing_progress: f32,
+    pill_left_steps: f32,
+    pill_right_steps: f32,
     labels_layout_factor: f32,
     labels_opacity_factor: f32,
     nav_animating: bool,
     glass_effect_enabled: bool,
-    plugin_navigation_pages: Vec<crate::plugins::runtime::PluginPage>,
+    plugin_navigation_pages: std::sync::Arc<Vec<crate::plugins::runtime::PluginPage>>,
 }
 
 struct MainWindowRenderModel {
@@ -230,6 +244,8 @@ pub struct MainWindowView {
     startup_deferred_ready: bool,
     was_window_minimized: bool,
     theme_color_cache: Option<ThemeColorCache>,
+    last_diagnostics_render_signature: (Option<String>, bool, bool),
+    last_toast_had_content: bool,
 }
 
 impl MainWindowView {
@@ -437,15 +453,15 @@ impl MainWindowView {
             ),
             RouteTarget::Plugin { .. } => {
                 let route_key = route.pathname();
-                optional_page_view_element(route_key.as_str(), self.plugin_page_view.clone())
+                optional_page_view_element(route_key.as_ref(), self.plugin_page_view.clone())
             }
         };
-        let route_key = SharedString::from(format!("main-route-page-enter:{}", route.pathname()));
+        let route_key = route_enter_animation_key(route);
+        // 页面进场：Apple 风格弹簧滑入，带轻微 Q 弹回稳。
         let animated_page = div().size_full().child(page).with_animation(
             route_key,
-            Animation::new(Duration::from_millis(260)),
+            spring_motion(apple_spring(0.36, 0.74), Duration::from_millis(520)),
             move |page, progress| {
-                let progress = ease_out_back(progress, 0.22);
                 page.opacity(progress.clamp(0.0, 1.0))
                     .relative()
                     .left(px((1.0 - progress) * 18.0 * transition_direction))
@@ -1452,6 +1468,7 @@ impl MainWindowView {
                 let active = cx.read_global(
                     |s: &crate::ui::views::download::state::DownloadPageState, _cx| {
                         s.game_dialog.is_some()
+                            || s.levilauncher_modal_open
                             || (matches!(
                                 s.tab,
                                 crate::ui::views::download::state::DownloadTab::ResourcePack
