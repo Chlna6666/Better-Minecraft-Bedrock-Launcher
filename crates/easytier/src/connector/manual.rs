@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use quanta::Instant;
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 
@@ -37,12 +37,12 @@ use super::create_connector_by_url;
 
 const DIRECT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const LONG_RECONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_RECONNECT_FAILURES: u8 = 3;
 
 type ConnectorMap = Arc<DashSet<url::Url>>;
 
 #[derive(Debug, Clone)]
 struct ReconnResult {
-    dead_url: String,
     peer_id: PeerId,
     conn_id: PeerConnId,
 }
@@ -50,6 +50,7 @@ struct ReconnResult {
 struct ConnectorManagerData {
     connectors: ConnectorMap,
     reconnecting: DashSet<url::Url>,
+    reconnect_failures: DashMap<url::Url, u8>,
     peer_manager: Weak<PeerManager>,
     alive_conn_urls: Arc<DashSet<url::Url>>,
     // user removed connector urls
@@ -74,6 +75,7 @@ impl ManualConnectorManager {
             data: Arc::new(ConnectorManagerData {
                 connectors,
                 reconnecting: DashSet::new(),
+                reconnect_failures: DashMap::new(),
                 peer_manager: Arc::downgrade(&peer_manager),
                 alive_conn_urls: Arc::new(DashSet::new()),
                 removed_conn_urls: Arc::new(DashSet::new()),
@@ -103,6 +105,10 @@ impl ManualConnectorManager {
         } else {
             DIRECT_RECONNECT_TIMEOUT
         }
+    }
+
+    fn should_abandon(failed_attempts: u8) -> bool {
+        failed_attempts >= MAX_RECONNECT_FAILURES
     }
 
     fn remaining_budget(started_at: Instant, total_timeout: Duration) -> Option<Duration> {
@@ -150,10 +156,13 @@ impl ManualConnectorManager {
         T: TunnelConnector + 'static,
     {
         tracing::info!("add_connector: {}", connector.remote_url());
-        self.data.connectors.insert(connector.remote_url());
+        let remote_url = connector.remote_url();
+        self.data.reconnect_failures.remove(&remote_url);
+        self.data.connectors.insert(remote_url);
     }
 
     pub async fn add_connector_by_url(&self, url: url::Url) -> Result<(), Error> {
+        self.data.reconnect_failures.remove(&url);
         self.data.connectors.insert(url);
         Ok(())
     }
@@ -221,7 +230,7 @@ impl ManualConnectorManager {
     }
 
     async fn conn_mgr_reconn_routine(data: Arc<ConnectorManagerData>) {
-        tracing::warn!("conn_mgr_routine started");
+        tracing::debug!("manual connector manager started");
         let mut reconn_interval = tokio::time::interval(std::time::Duration::from_millis(
             use_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS),
         ));
@@ -239,23 +248,74 @@ impl ManualConnectorManager {
                     for dead_url in dead_urls {
                         let data_clone = data.clone();
                         let sender = reconn_result_send.clone();
-                        data.connectors.remove(&dead_url).unwrap();
-                        let insert_succ = data.reconnecting.insert(dead_url.clone());
-                        assert!(insert_succ);
+                        if data.connectors.remove(&dead_url).is_none()
+                            || !data.reconnecting.insert(dead_url.clone())
+                        {
+                            continue;
+                        }
 
                         tasks.lock().unwrap().spawn(async move {
                             let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone() ).await;
-                            let _ = sender.send(reconn_ret).await;
-
-                            data_clone.reconnecting.remove(&dead_url).unwrap();
-                            data_clone.connectors.insert(dead_url.clone());
+                            data_clone.reconnecting.remove(&dead_url);
+                            if sender.send((dead_url.clone(), reconn_ret)).await.is_err() {
+                                tracing::debug!(%dead_url, "reconnect result receiver closed");
+                            }
                         });
                     }
-                    tracing::info!("reconn_interval tick, done");
+                    tracing::debug!("manual connector reconnect interval processed");
                 }
 
                 ret = reconn_result_recv.recv() => {
-                    tracing::warn!("reconn_tasks done, reconn result: {:?}", ret);
+                    let Some((dead_url, result)) = ret else {
+                        return;
+                    };
+                    match result {
+                        Ok(result) => {
+                            data.reconnect_failures.remove(&dead_url);
+                            data.connectors.insert(dead_url.clone());
+                            tracing::info!(
+                                %dead_url,
+                                peer_id = %result.peer_id,
+                                conn_id = %result.conn_id,
+                                "manual connector reconnected"
+                            );
+                        }
+                        Err(error) => {
+                            let failed_attempts = {
+                                let mut entry = data
+                                    .reconnect_failures
+                                    .entry(dead_url.clone())
+                                    .or_insert(0);
+                                *entry = entry.saturating_add(1);
+                                *entry
+                            };
+                            if Self::should_abandon(failed_attempts) {
+                                data.reconnect_failures.remove(&dead_url);
+                                let error_message = format!("{error:#?}");
+                                data.global_ctx.issue_event(
+                                    GlobalCtxEvent::ConnectorAbandoned(
+                                        dead_url.to_string(),
+                                        error_message,
+                                        failed_attempts,
+                                    ),
+                                );
+                                tracing::warn!(
+                                    %dead_url,
+                                    failed_attempts,
+                                    "manual connector abandoned for this session"
+                                );
+                            } else {
+                                data.connectors.insert(dead_url.clone());
+                                tracing::warn!(
+                                    %dead_url,
+                                    failed_attempts,
+                                    max_attempts = MAX_RECONNECT_FAILURES,
+                                    error = ?error,
+                                    "manual connector reconnect failed"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -266,6 +326,7 @@ impl ManualConnectorManager {
         for it in data.removed_conn_urls.iter() {
             let url = it.key();
             if data.connectors.remove(url).is_some() {
+                data.reconnect_failures.remove(url);
                 tracing::warn!("connector: {}, removed", url);
                 continue;
             } else if data.reconnecting.contains(url) {
@@ -319,7 +380,7 @@ impl ManualConnectorManager {
 
         data.global_ctx
             .issue_event(GlobalCtxEvent::Connecting(connector.remote_url()));
-        tracing::info!("reconnect try connect... conn: {:?}", connector);
+        tracing::debug!("reconnect try connect... conn: {:?}", connector);
         let Some(pm) = data.peer_manager.upgrade() else {
             return Err(Error::AnyhowError(anyhow::anyhow!(
                 "peer manager is gone, cannot reconnect"
@@ -343,18 +404,14 @@ impl ManualConnectorManager {
         .await?;
 
         tracing::info!("reconnect succ: {} {} {}", peer_id, conn_id, dead_url);
-        Ok(ReconnResult {
-            dead_url: dead_url.to_string(),
-            peer_id,
-            conn_id,
-        })
+        Ok(ReconnResult { peer_id, conn_id })
     }
 
     async fn conn_reconnect(
         data: Arc<ConnectorManagerData>,
         dead_url: url::Url,
     ) -> Result<ReconnResult, Error> {
-        tracing::info!("reconnect: {}", dead_url);
+        tracing::debug!("reconnect: {}", dead_url);
 
         let mut ip_versions = vec![];
         if matches_scheme!(
@@ -386,7 +443,7 @@ impl ManualConnectorManager {
                     return Err(error);
                 }
             };
-            tracing::info!(?addrs, ?dead_url, "get ip from url done");
+            tracing::debug!(?addrs, ?dead_url, "get ip from url done");
             let mut has_ipv4 = false;
             let mut has_ipv6 = false;
             for addr in addrs {
@@ -417,7 +474,7 @@ impl ManualConnectorManager {
                 Self::reconnect_timeout(&dead_url),
             )
             .await;
-            tracing::info!("reconnect: {} done, ret: {:?}", dead_url, ret);
+            tracing::debug!("reconnect: {} done, ret: {:?}", dead_url, ret);
 
             match ret {
                 Ok(result) => return Ok(result),
@@ -453,13 +510,17 @@ impl ConnectorManageRpc for ConnectorManagerRpcService {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        peers::tests::create_mock_peer_manager,
-        set_global_var,
-        tunnel::{Tunnel, TunnelError},
-    };
+    use crate::{peers::tests::create_mock_peer_manager, set_global_var};
 
     use super::*;
+
+    #[test]
+    fn connector_is_abandoned_after_three_consecutive_failures() {
+        assert!(!ManualConnectorManager::should_abandon(1));
+        assert!(!ManualConnectorManager::should_abandon(2));
+        assert!(ManualConnectorManager::should_abandon(3));
+        assert!(ManualConnectorManager::should_abandon(4));
+    }
 
     #[tokio::test]
     async fn reconnect_timeout_reports_exhausted_budget_for_stage() {
@@ -531,26 +592,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reconnect_with_connecting_addr() {
+    async fn connector_is_removed_after_third_failed_reconnect() {
         set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 1);
 
         let peer_mgr = create_mock_peer_manager().await;
-        let mgr = ManualConnectorManager::new(peer_mgr.get_global_ctx(), peer_mgr);
+        let global_ctx = peer_mgr.get_global_ctx();
+        let mut events = global_ctx.subscribe();
+        let mgr = ManualConnectorManager::new(global_ctx, peer_mgr.clone());
+        let connector_url: url::Url = "tcp://127.0.0.1:1"
+            .parse()
+            .expect("test connector URL should parse");
+        mgr.add_connector_by_url(connector_url.clone())
+            .await
+            .expect("test connector should be added");
 
-        struct MockConnector {}
-        #[async_trait::async_trait]
-        impl TunnelConnector for MockConnector {
-            fn remote_url(&self) -> url::Url {
-                url::Url::parse("tcp://aa.com").unwrap()
+        let abandoned_attempts = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let GlobalCtxEvent::ConnectorAbandoned(url, _, failed_attempts) = events
+                    .recv()
+                    .await
+                    .expect("connector event channel should remain open")
+                    && url == connector_url.as_str()
+                {
+                    break failed_attempts;
+                }
             }
-            async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                Err(TunnelError::InvalidPacket("fake error".into()))
-            }
-        }
+        })
+        .await
+        .expect("unreachable connector should be abandoned within the test timeout");
 
-        mgr.add_connector(MockConnector {});
-
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        assert_eq!(abandoned_attempts, MAX_RECONNECT_FAILURES);
+        assert!(mgr.list_connectors().await.is_empty());
     }
 }

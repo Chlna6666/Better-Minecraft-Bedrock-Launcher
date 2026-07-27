@@ -61,6 +61,7 @@ pub enum GlobalCtxEvent {
 
     Connecting(url::Url),
     ConnectError(String, String, String), // (dst, ip version, error message)
+    ConnectorAbandoned(String, String, u8), // (dst, last error, failed attempts)
 
     VpnPortalStarted(String),                    // (portal)
     VpnPortalClientConnected(String, String),    // (portal, client ip)

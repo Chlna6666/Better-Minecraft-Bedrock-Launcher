@@ -302,6 +302,12 @@ impl NetworkInstanceManager {
             .and_then(|instance| instance.value().get_api_service())
     }
 
+    pub fn subscribe_instance_event(&self, instance_id: &uuid::Uuid) -> Option<EventBusSubscriber> {
+        self.instance_map
+            .get(instance_id)
+            .and_then(|instance| instance.value().subscribe_event())
+    }
+
     pub fn set_tun_fd(&self, instance_id: &uuid::Uuid, fd: i32) -> Result<(), anyhow::Error> {
         let sender = self
             .instance_map
@@ -455,17 +461,29 @@ fn handle_event(
                     }
 
                     GlobalCtxEvent::Connecting(dst) => {
-                        event!(info, category: "CONNECTION", %dst, "[{}] connecting to peer", instance_id);
+                        event!(debug, category: "CONNECTION", %dst, "[{}] connecting to peer", instance_id);
                     }
 
                     GlobalCtxEvent::ConnectError(dst, ip_version, error) => {
                         event!(
-                            info,
+                            debug,
                             category: "CONNECTION",
                             dst,
                             ip_version,
                             %error,
                             "[{}] connect to peer error",
+                            instance_id
+                        );
+                    }
+
+                    GlobalCtxEvent::ConnectorAbandoned(dst, error, failed_attempts) => {
+                        event!(
+                            warn,
+                            category: "CONNECTION",
+                            dst,
+                            failed_attempts,
+                            %error,
+                            "[{}] connector abandoned for this session",
                             instance_id
                         );
                     }
