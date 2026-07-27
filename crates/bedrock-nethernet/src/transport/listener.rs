@@ -13,7 +13,7 @@ use crate::{RELIABLE_CHANNEL, UNRELIABLE_CHANNEL};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -43,11 +43,22 @@ impl NethernetListener {
     ///
     /// 当前实现在信令绑定之后没有会失败的初始化步骤。
     pub fn bind(signaling: LanSignaling, local_addr: SocketAddr) -> Result<Self> {
+        tracing::info!(
+            signaling_addr = ?signaling.local_addr().ok(),
+            network_id = signaling.network_id(),
+            %local_addr,
+            "NetherNet 会话监听器已启动"
+        );
         let signaling = Arc::new(signaling);
+        // 必须在返回 Listener 前完成订阅。若把 subscribe 放进 spawn 的
+        // dispatch_loop，Minecraft 可能在发现响应后立刻发送 Offer，而后台
+        // 任务尚未获得调度，broadcast 会因零订阅者直接丢弃该 Offer。
+        let signals = signaling.subscribe();
         let (incoming_tx, incoming) = mpsc::channel(INCOMING_CAPACITY);
         let cancel = CancellationToken::new();
         let task = tokio::spawn(dispatch_loop(
             Arc::clone(&signaling),
+            signals,
             incoming_tx,
             cancel.clone(),
         ));
@@ -65,7 +76,9 @@ impl NethernetListener {
     ///
     /// 监听器已关闭时返回错误。
     pub async fn accept(&mut self) -> Result<Arc<NethernetSession>> {
-        self.incoming.recv().await.ok_or(NethernetError::Closed)
+        let session = self.incoming.recv().await.ok_or(NethernetError::Closed)?;
+        tracing::info!(local_addr = %self.local_addr, "NetherNet 会话已进入 accept 队列");
+        Ok(session)
     }
 
     #[must_use]
@@ -84,10 +97,10 @@ impl Drop for NethernetListener {
 /// 信令分发：按连接编号把信令路由到各自的协商任务。
 async fn dispatch_loop(
     signaling: Arc<LanSignaling>,
+    mut signals: broadcast::Receiver<Signal>,
     incoming_tx: mpsc::Sender<Arc<NethernetSession>>,
     cancel: CancellationToken,
 ) {
-    let mut signals = signaling.subscribe();
     let mut routes: HashMap<u64, mpsc::Sender<Signal>> = HashMap::new();
     let mut buffered: HashMap<u64, Vec<Signal>> = HashMap::new();
 
@@ -109,15 +122,27 @@ async fn dispatch_loop(
                 if routes.contains_key(&signal.connection_id) {
                     continue; // 重复 offer。
                 }
+                tracing::info!(
+                    connection_id = signal.connection_id,
+                    remote_network_id = signal.network_id,
+                    "开始接受 NetherNet Offer"
+                );
                 if routes.len() >= MAX_CONCURRENT_NEGOTIATIONS {
-                    tracing::debug!("并发协商数已达上限，拒绝新 offer");
-                    let _ = signaling
+                    tracing::warn!(
+                        connection_id = signal.connection_id,
+                        remote_network_id = signal.network_id,
+                        "NetherNet 并发协商数已达上限，拒绝新 Offer"
+                    );
+                    if let Err(error) = signaling
                         .signal(Signal::error(
                             signal.connection_id,
                             SignalErrorCode::IncomingConnectionIgnored,
                             signal.network_id,
                         ))
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("发送 NetherNet 拒绝信令失败：{error}");
+                    }
                     continue;
                 }
                 let connection_id = signal.connection_id;
@@ -168,15 +193,26 @@ async fn handle_offer(
     let connection_id = offer.connection_id;
     let remote_network_id = offer.network_id;
     if let Err(error) = negotiate_incoming(offer, &signaling, signals, incoming_tx).await {
-        tracing::debug!(connection_id, "接受 NetherNet 会话失败：{error}");
+        tracing::warn!(
+            connection_id,
+            remote_network_id,
+            "接受 NetherNet 会话失败：{error}"
+        );
         let code = match &error {
             NethernetError::Timeout => SignalErrorCode::NegotiationTimeout,
             NethernetError::Refused(code) => *code,
             _ => SignalErrorCode::Ice,
         };
-        let _ = signaling
+        if let Err(signal_error) = signaling
             .signal(Signal::error(connection_id, code, remote_network_id))
-            .await;
+            .await
+        {
+            tracing::warn!(
+                connection_id,
+                remote_network_id,
+                "发送 NetherNet 协商错误失败：{signal_error}"
+            );
+        }
     }
 }
 
@@ -195,7 +231,9 @@ async fn negotiate_incoming(
     // ——32 个伪造 offer 即可让监听器此后拒绝一切新连接。
     let result = negotiate_answer(&peer_connection, &session, offer, signaling, signals).await;
     if result.is_err() {
-        let _ = session.close().await;
+        if let Err(error) = session.close().await {
+            tracing::debug!("清理失败的 NetherNet 入站会话失败：{error}");
+        }
         return result;
     }
 
@@ -225,6 +263,11 @@ async fn negotiate_answer(
             offer.network_id,
         ))
         .await?;
+    tracing::info!(
+        connection_id = offer.connection_id,
+        remote_network_id = offer.network_id,
+        "NetherNet Answer 已发送，等待 ICE 和数据通道"
+    );
 
     // 协商期与建立后共用同一个候选接收任务，随会话取消令牌一起结束。
     let cancel = session.cancellation_token();
@@ -262,6 +305,11 @@ async fn negotiate_answer(
     if session.is_closed() {
         return Err(NethernetError::Closed);
     }
+    tracing::info!(
+        connection_id = offer.connection_id,
+        remote_network_id = offer.network_id,
+        "NetherNet ICE 与数据通道已就绪"
+    );
     Ok(())
 }
 
@@ -285,4 +333,59 @@ fn install_incoming_channels(peer_connection: &RTCPeerConnection, session: &Arc<
             }
         })
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consts::MAX_DISCOVERY_PACKET;
+    use crate::protocol::DiscoveryPacket;
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+    use tokio::net::UdpSocket;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn immediate_offer_after_bind_reaches_dispatcher() {
+        let client = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let server = LanSignaling::server(
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            crate::protocol::ServerData::default(),
+        )
+        .await
+        .unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let server_id = server.network_id();
+        let client_id = server_id.wrapping_add(1);
+        let _listener =
+            NethernetListener::bind(server, SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+
+        let offer = Signal::offer(77, String::new(), server_id).to_string();
+        let packet = DiscoveryPacket::Message {
+            recipient_id: server_id,
+            data: offer,
+        }
+        .encode(client_id)
+        .unwrap();
+        client.send_to(&packet, server_addr).unwrap();
+        client.set_nonblocking(true).unwrap();
+        let client = UdpSocket::from_std(client).unwrap();
+
+        let mut buffer = vec![0_u8; MAX_DISCOVERY_PACKET];
+        let (length, source) =
+            tokio::time::timeout(Duration::from_secs(5), client.recv_from(&mut buffer))
+                .await
+                .expect("立即发送的 Offer 不应因订阅竞态而丢失")
+                .unwrap();
+        assert_eq!(source, server_addr);
+
+        let (response, sender_id) = DiscoveryPacket::decode(&buffer[..length]).unwrap();
+        let DiscoveryPacket::Message { recipient_id, data } = response else {
+            panic!("无效 Offer 应收到 CONNECTERROR");
+        };
+        let signal = Signal::parse(&data, sender_id).unwrap();
+        assert_eq!(sender_id, server_id);
+        assert_eq!(recipient_id, client_id);
+        assert_eq!(signal.kind, SignalType::Error);
+        assert_eq!(signal.connection_id, 77);
+    }
 }

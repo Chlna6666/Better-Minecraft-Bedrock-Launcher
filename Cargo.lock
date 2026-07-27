@@ -1095,6 +1095,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "socket2 0.6.3",
  "sysinfo 0.39.5",
  "thiserror 2.0.18",
  "tinywasm",

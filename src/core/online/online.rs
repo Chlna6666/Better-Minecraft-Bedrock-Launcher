@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 mod paperconnect;
 mod paperconnect_discovery;
+mod paperconnect_guest;
 mod paperconnect_transport;
 mod paperconnect_tunnel;
 
@@ -59,6 +60,12 @@ pub struct PaperConnectRoom {
     pub network_secret: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PaperConnectClientState {
+    Ready,
+    DiscoveryPortOccupied,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EasyTierPeer {
@@ -69,6 +76,12 @@ pub struct EasyTierPeer {
     pub remote_endpoint: Option<String>,
     pub latency_ms: Option<u64>,
     pub via_hostname: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EasyTierAbandonedConnector {
+    pub url: String,
+    pub failed_attempts: u8,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq)]
@@ -140,6 +153,8 @@ struct OnlineState {
     easytier_instance_id: Mutex<Option<Uuid>>,
     easytier_last_start: Mutex<Option<EasyTierLastStart>>,
     easytier_game_endpoint: Mutex<Option<EasyTierGameEndpoint>>,
+    paperconnect_guest_transport: Mutex<Option<(paperconnect::ServerInfo, String)>>,
+    easytier_abandoned_connectors: Mutex<Vec<EasyTierAbandonedConnector>>,
     easytier_cleanup_in_progress: Arc<AtomicBool>,
 }
 
@@ -148,6 +163,8 @@ static ONLINE_STATE: Lazy<OnlineState> = Lazy::new(|| OnlineState {
     easytier_instance_id: Mutex::new(None),
     easytier_last_start: Mutex::new(None),
     easytier_game_endpoint: Mutex::new(None),
+    paperconnect_guest_transport: Mutex::new(None),
+    easytier_abandoned_connectors: Mutex::new(Vec::new()),
     easytier_cleanup_in_progress: Arc::new(AtomicBool::new(false)),
 });
 static BOOTSTRAP_PEERS_CACHE: Lazy<Mutex<Option<BootstrapPeersCache>>> =
@@ -545,7 +562,6 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
     if player_name.trim().is_empty() {
         return Err("PaperConnect player name is empty".to_string());
     }
-
     {
         let instance_id = ONLINE_STATE.easytier_instance_id.lock().unwrap();
         if instance_id.is_some() {
@@ -558,6 +574,11 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
             return Err("上一条联机连接仍在清理，请稍候再试".to_string());
         }
     }
+    ONLINE_STATE
+        .easytier_abandoned_connectors
+        .lock()
+        .map_err(|_| "EasyTier 放弃节点状态锁已损坏".to_string())?
+        .clear();
 
     let peers = if peers.iter().any(|p| !p.trim().is_empty()) {
         let sanitized = sanitize_bootstrap_peers(peers);
@@ -654,6 +675,7 @@ pub async fn easytier_start(request: EasyTierStartRequest) -> Result<(), String>
         .unwrap()
         .as_ref()
         .unwrap();
+    start_easytier_event_monitor(instance_id);
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let has_api = ONLINE_STATE
@@ -738,6 +760,10 @@ pub async fn easytier_stop() -> Result<(), String> {
     paperconnect_transport::stop_all();
     paperconnect::stop_server();
     paperconnect::stop_client();
+    *ONLINE_STATE
+        .paperconnect_guest_transport
+        .lock()
+        .map_err(|_| "PaperConnect 成员传输状态锁已损坏".to_string())? = None;
     paperconnect::clear_players();
     let instance_id = {
         let mut instance_id = ONLINE_STATE.easytier_instance_id.lock().unwrap();
@@ -954,6 +980,18 @@ async fn probe_paperconnect_control_endpoint(
                 tokio::time::sleep(PAPERCONNECT_PROBE_RETRY_INTERVAL).await;
             }
         }
+    }
+}
+
+fn apply_paperconnect_announcement(
+    server: &mut paperconnect::ServerInfo,
+    announcement: paperconnect::ServerHostname,
+) {
+    if let Some(protocol) = announcement.protocol {
+        server.protocol = protocol;
+    }
+    if let Some(game_port) = announcement.game_port {
+        server.game_port = game_port;
     }
 }
 
@@ -1238,30 +1276,22 @@ pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, Str
             };
             match probe_paperconnect_control_endpoint(&control, deadline).await {
                 Ok(mut server) => {
-                    if let Some(protocol) = announcement.protocol
-                        && protocol != server.protocol
-                    {
-                        last_probe_error = Some(format!(
-                            "房主节点协议标识与 c:ping 不一致：{:?} / {:?}",
-                            protocol, server.protocol
-                        ));
-                        control.forward.remove("控制端口转发").await;
-                        continue;
-                    }
-                    if let Some(game_port) = announcement.game_port
-                        && game_port != server.game_port
-                    {
-                        last_probe_error = Some(format!(
-                            "房主节点游戏端口与 c:ping 不一致：{game_port} / {}",
-                            server.game_port
-                        ));
-                        control.forward.remove("控制端口转发").await;
-                        continue;
-                    }
+                    apply_paperconnect_announcement(&mut server, announcement);
+                    let remote_game_port = server.game_port;
                     server.host = control.host.clone();
                     server.server_port = control.port;
                     match configure_paperconnect_game_endpoint(server, host_addr).await {
-                        Ok(server) => return Ok(server),
+                        Ok(server) => {
+                            tracing::info!(
+                                hostname = %peer.hostname,
+                                host = %host_addr,
+                                control_port = server_port,
+                                remote_game_port,
+                                local_proxy_port = server.game_port,
+                                "PaperConnect 成员步骤 2/6：房主 g 端口已解析并通过 EasyTier 连通"
+                            );
+                            return Ok(server);
+                        }
                         Err(error) => {
                             last_probe_error =
                                 Some(format!("创建 PaperConnect 游戏端口转发失败：{error}"));
@@ -1284,14 +1314,115 @@ pub async fn paperconnect_probe_server() -> Result<paperconnect::ServerInfo, Str
 pub async fn paperconnect_start_client(
     server: paperconnect::ServerInfo,
     player_name: String,
-) -> Result<(), String> {
+) -> Result<PaperConnectClientState, String> {
     paperconnect::start_client(server.host.clone(), server.server_port, player_name.clone())
         .await?;
-    if let Err(error) = paperconnect_transport::start_guest(&server, &player_name).await {
-        paperconnect::stop_client();
-        return Err(error);
+    *ONLINE_STATE
+        .paperconnect_guest_transport
+        .lock()
+        .map_err(|_| "PaperConnect 成员传输状态锁已损坏".to_string())? =
+        Some((server.clone(), player_name.clone()));
+    match paperconnect_transport::start_guest(&server, &player_name).await {
+        Ok(state) => Ok(state),
+        Err(error) => {
+            if let Ok(mut transport) = ONLINE_STATE.paperconnect_guest_transport.lock() {
+                *transport = None;
+            } else {
+                tracing::warn!("PaperConnect 成员传输状态锁已损坏");
+            }
+            paperconnect::stop_client();
+            Err(error)
+        }
     }
-    Ok(())
+}
+
+pub async fn paperconnect_retry_guest_transport() -> Result<PaperConnectClientState, String> {
+    let (server, player_name) = ONLINE_STATE
+        .paperconnect_guest_transport
+        .lock()
+        .map_err(|_| "PaperConnect 成员传输状态锁已损坏".to_string())?
+        .clone()
+        .ok_or_else(|| "当前房间没有可重新启动的成员游戏代理".to_string())?;
+
+    tracing::info!(
+        proxy_port = server.game_port,
+        "PaperConnect 成员重新检测 UDP 7551 并启动本机模拟代理"
+    );
+    paperconnect_transport::start_guest(&server, &player_name).await
+}
+
+fn start_easytier_event_monitor(instance_id: Uuid) {
+    let Some(mut events) = ONLINE_STATE
+        .easytier_manager
+        .subscribe_instance_event(&instance_id)
+    else {
+        tracing::warn!(%instance_id, "无法订阅 EasyTier 实例事件");
+        return;
+    };
+
+    let task = crate::tasks::runtime::spawn_io(async move {
+        loop {
+            match events.recv().await {
+                Ok(easytier::common::global_ctx::GlobalCtxEvent::ConnectorAbandoned(
+                    url,
+                    _error,
+                    failed_attempts,
+                )) => {
+                    let is_current_instance = match ONLINE_STATE.easytier_instance_id.lock() {
+                        Ok(current_instance) => current_instance.as_ref() == Some(&instance_id),
+                        Err(_) => {
+                            tracing::warn!("EasyTier 实例状态锁已损坏");
+                            return;
+                        }
+                    };
+                    if !is_current_instance {
+                        tracing::debug!(
+                            %instance_id,
+                            %url,
+                            "忽略已结束 EasyTier 会话的节点放弃事件"
+                        );
+                        continue;
+                    }
+                    match ONLINE_STATE.easytier_abandoned_connectors.lock() {
+                        Ok(mut abandoned) => {
+                            if !abandoned.iter().any(|connector| connector.url == url) {
+                                abandoned.push(EasyTierAbandonedConnector {
+                                    url: url.clone(),
+                                    failed_attempts,
+                                });
+                            }
+                        }
+                        Err(_) => {
+                            tracing::warn!("EasyTier 放弃节点状态锁已损坏");
+                        }
+                    }
+                    tracing::warn!(
+                        %url,
+                        failed_attempts,
+                        "EasyTier 节点连续连接失败，本次联机已放弃该节点"
+                    );
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "EasyTier 节点事件接收滞后");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
+    if let Err(error) = task {
+        tracing::warn!(%instance_id, "启动 EasyTier 节点事件监听失败：{error}");
+    }
+}
+
+pub fn easytier_take_abandoned_connectors() -> Vec<EasyTierAbandonedConnector> {
+    match ONLINE_STATE.easytier_abandoned_connectors.lock() {
+        Ok(mut abandoned) => std::mem::take(&mut *abandoned),
+        Err(_) => {
+            tracing::warn!("EasyTier 放弃节点状态锁已损坏");
+            Vec::new()
+        }
+    }
 }
 
 pub fn paperconnect_players() -> Vec<PaperConnectPlayer> {
@@ -1310,9 +1441,33 @@ mod tests {
     use easytier::common::config::ConfigLoader as _;
 
     use super::{
-        EasyTierStartOptions, build_embedded_easytier_config, merge_bootstrap_peers,
-        paperconnect_parse_room_code, sanitize_bootstrap_peers,
+        EasyTierStartOptions, apply_paperconnect_announcement, build_embedded_easytier_config,
+        merge_bootstrap_peers, paperconnect, paperconnect_parse_room_code,
+        sanitize_bootstrap_peers,
     };
+
+    #[test]
+    fn easytier_hostname_game_endpoint_overrides_ping_metadata() {
+        let mut server = paperconnect::ServerInfo {
+            host: "127.0.0.1".to_string(),
+            server_port: 22000,
+            game_host: "127.0.0.1".to_string(),
+            game_port: 25000,
+            game_type: "MinecraftBedrock".to_string(),
+            game_protocol_type: "UDP".to_string(),
+            protocol: paperconnect::PaperConnectProtocol::Raknet,
+        };
+        let announcement = paperconnect::parse_server_hostname("pcs-22000-g-23000")
+            .expect("应解析 GravityCone NetherNet 房主节点");
+
+        apply_paperconnect_announcement(&mut server, announcement);
+
+        assert_eq!(server.game_port, 23000);
+        assert_eq!(
+            server.protocol,
+            paperconnect::PaperConnectProtocol::Nethernet
+        );
+    }
 
     /// Raw-UDP diagnostic: verifies the EasyTier UDP port forward passes
     /// RakNet unconnected ping/pong to the live host, independent of any
@@ -1481,6 +1636,8 @@ mod tests {
             .try_init();
         crate::tasks::runtime::initialize_app_runtime().expect("initialize application runtime");
 
+        let expect_discovery_port_occupied =
+            std::env::var_os("BMCBL_TEST_EXPECT_7551_OCCUPIED").is_some();
         let room_code = std::env::var("BMCBL_TEST_ROOM_CODE")
             .unwrap_or_else(|_| "P/NPR4-E6J4-DYAG-VZH2".to_string());
         let room = paperconnect_parse_room_code(room_code)
@@ -1548,11 +1705,51 @@ mod tests {
             Err(error) => Err(error.clone()),
         };
 
+        let local_discovery = match &joined {
+            Ok(super::PaperConnectClientState::Ready) => {
+                let signaling = bedrock_nethernet::LanSignaling::client(
+                    std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+                    std::net::SocketAddr::from(([255, 255, 255, 255], 7551)),
+                )
+                .await
+                .map_err(|error| format!("启动 7551 测试监听失败：{error}"));
+                match signaling {
+                    Ok(signaling) => signaling
+                        .discover(std::time::Duration::from_secs(5))
+                        .await
+                        .map_err(|error| format!("监听 7551 响应失败：{error}")),
+                    Err(error) => Err(error),
+                }
+            }
+            Ok(super::PaperConnectClientState::DiscoveryPortOccupied) => {
+                Err("本机 UDP 7551 已被占用，模拟代理未创建".to_string())
+            }
+            Err(error) => Err(error.clone()),
+        };
+        eprintln!("[repro] local 7551 discovery result: {local_discovery:?}");
+
         let stop = super::easytier_stop().await;
         eprintln!("[repro] stop result: {stop:?}");
 
         probe.expect("guest should discover the PaperConnect host");
+        if expect_discovery_port_occupied {
+            assert_eq!(
+                joined,
+                Ok(super::PaperConnectClientState::DiscoveryPortOccupied),
+                "Minecraft 占用 7551 时必须保留 EasyTier 房间并拒绝创建模拟代理"
+            );
+            return;
+        }
         joined.expect("guest transport should connect to the host tunnel");
+        let discovered = local_discovery.expect("local UDP 7551 proxy should answer discovery");
+        eprintln!(
+            "[repro] local 7551 response: network_id={} address={} server_name={} level_name={} transport_layer={}",
+            discovered.network_id,
+            discovered.address,
+            discovered.server_data.server_name,
+            discovered.server_data.level_name,
+            discovered.server_data.transport_layer
+        );
     }
 
     #[tokio::test]

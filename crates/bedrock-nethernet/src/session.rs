@@ -119,7 +119,7 @@ impl NethernetSession {
                             | RTCIceConnectionState::Closed
                     ) && let Some(session) = session.upgrade()
                     {
-                        tracing::debug!(?state, "ICE 链路终结，关闭会话");
+                        tracing::warn!(?state, "NetherNet ICE 链路终结，关闭会话");
                         session.mark_closed();
                     }
                 })
@@ -179,7 +179,9 @@ impl NethernetSession {
             tracing::debug!(%label, "忽略重复的数据通道");
             return;
         }
-        if self.open_channels.fetch_add(1, Ordering::AcqRel) + 1 >= CHANNEL_COUNT {
+        let open_channels = self.open_channels.fetch_add(1, Ordering::AcqRel) + 1;
+        tracing::info!(%label, reliable, open_channels, "NetherNet 数据通道已打开");
+        if open_channels >= CHANNEL_COUNT {
             self.ready_signal.cancel();
         }
         // 读任务只持 Weak：持强引用会让会话在用户丢弃最后一个 Arc 后
@@ -373,10 +375,13 @@ async fn read_loop(
             read = channel.read(&mut buffer) => read,
         };
         let length = match read {
-            Ok(0) => break, // 对端关闭。
+            Ok(0) => {
+                tracing::info!(%label, "NetherNet 数据通道由对端关闭");
+                break;
+            }
             Ok(length) => length,
             Err(error) => {
-                tracing::debug!(%label, "数据通道读取结束：{error}");
+                tracing::info!(%label, "NetherNet 数据通道读取结束：{error}");
                 break;
             }
         };

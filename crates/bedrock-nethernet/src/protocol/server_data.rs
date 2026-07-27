@@ -1,7 +1,7 @@
 //! `ServerData`：局域网世界卡片的应用层数据。
 //!
 //! 线格式与 go-nethernet `discovery/server_data.go` 逐字节一致（v5），
-//! 并额外兼容旧版 v4 载荷。
+//! 并兼容旧版 v4 载荷。
 
 use crate::error::{NethernetError, Result};
 use crate::protocol::codec::{Rd, put_var_bytes, put_var_i32};
@@ -100,6 +100,26 @@ impl ServerData {
         Ok(buf.freeze())
     }
 
+    /// 编码为兼容旧版 Bedrock 客户端的 v4 载荷。
+    ///
+    /// # Errors
+    ///
+    /// 字符串超过 255 字节，或枚举值无法用 v4 的单字节格式表示时返回错误。
+    pub(crate) fn encode_v4(&self) -> Result<Bytes> {
+        let mut buf = BytesMut::with_capacity(24 + self.server_name.len() + self.level_name.len());
+        buf.put_u8(4);
+        put_u8_bytes(&mut buf, self.server_name.as_bytes(), "服务器名")?;
+        put_u8_bytes(&mut buf, self.level_name.as_bytes(), "世界名")?;
+        buf.put_u8(encode_v4_enum(self.game_type, "游戏模式")?);
+        buf.put_i32_le(self.player_count);
+        buf.put_i32_le(self.max_player_count);
+        buf.put_u8(u8::from(self.editor_world));
+        buf.put_u8(u8::from(self.hardcore));
+        buf.put_u8(encode_v4_enum(self.transport_layer, "传输层")?);
+        buf.put_u8(encode_v4_enum(self.connection_type, "连接类型")?);
+        Ok(buf.freeze())
+    }
+
     /// 解析 v5 或旧版 v4 载荷。
     ///
     /// # Errors
@@ -165,6 +185,22 @@ impl ServerData {
             connection_type,
         })
     }
+}
+
+fn put_u8_bytes(buf: &mut BytesMut, data: &[u8], field: &str) -> Result<()> {
+    let length = u8::try_from(data.len())
+        .map_err(|_| NethernetError::protocol(format!("ServerData v4 {field}超过 255 字节")))?;
+    buf.put_u8(length);
+    buf.put_slice(data);
+    Ok(())
+}
+
+fn encode_v4_enum(value: i32, field: &str) -> Result<u8> {
+    let value = u8::try_from(value)
+        .map_err(|_| NethernetError::protocol(format!("ServerData v4 {field}超出范围")))?;
+    value
+        .checked_mul(2)
+        .ok_or_else(|| NethernetError::protocol(format!("ServerData v4 {field}超出范围")))
 }
 
 #[cfg(test)]
@@ -236,6 +272,32 @@ mod tests {
             0x08,
         ];
         assert_eq!(&data.encode().unwrap()[..], expected);
+        assert_eq!(
+            ServerData::decode(Bytes::from_static(expected)).unwrap(),
+            data
+        );
+    }
+
+    #[test]
+    fn matches_reference_v4_vector() {
+        let data = ServerData {
+            server_name: "server".to_string(),
+            level_name: "world".to_string(),
+            game_type: 2,
+            player_count: 1,
+            max_player_count: 8,
+            editor_world: false,
+            hardcore: true,
+            accepts_online_auth: true,
+            accepts_self_signed_auth: true,
+            transport_layer: 2,
+            connection_type: 4,
+        };
+        let expected: &[u8] = &[
+            0x04, 0x06, b's', b'e', b'r', b'v', b'e', b'r', 0x05, b'w', b'o', b'r', b'l', b'd',
+            0x04, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x04, 0x08,
+        ];
+        assert_eq!(&data.encode_v4().unwrap()[..], expected);
         assert_eq!(
             ServerData::decode(Bytes::from_static(expected)).unwrap(),
             data

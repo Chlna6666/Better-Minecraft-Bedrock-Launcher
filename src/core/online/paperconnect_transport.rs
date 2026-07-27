@@ -1,14 +1,17 @@
+use super::PaperConnectClientState;
 use super::paperconnect::{PaperConnectProtocol, ServerInfo};
 use super::paperconnect_discovery::{
     RakNetServerInfo, scan_local_raknet, start_fake_raknet_server,
 };
-use super::paperconnect_tunnel::{TunnelDecoder, encode_packet};
-use bedrock_nethernet::{
-    LanSignaling, NethernetListener, NethernetSession, NethernetStream, ServerData,
+use super::paperconnect_guest::{
+    bind_listener as bind_guest_listener, connect_raknet as connect_guest_raknet,
+    is_port_occupied as is_discovery_port_occupied,
 };
+use super::paperconnect_tunnel::{TunnelDecoder, encode_packet};
+use bedrock_nethernet::{LanSignaling, NethernetSession, NethernetStream, ServerData};
 use bytes::Bytes;
 use once_cell::sync::Lazy;
-use raknet_tokio::prelude::{RakClient, RakPriority, RakReliability, RakServer, RakSession};
+use raknet_tokio::prelude::{RakPriority, RakReliability, RakServer, RakSession};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -87,8 +90,17 @@ fn raknet_host_info(server: RakNetServerInfo) -> HostTransportInfo {
     }
 }
 
-pub async fn start_guest(server: &ServerInfo, player_name: &str) -> Result<(), String> {
+pub async fn start_guest(
+    server: &ServerInfo,
+    player_name: &str,
+) -> Result<PaperConnectClientState, String> {
     stop_guest();
+    tracing::info!(
+        protocol = ?server.protocol,
+        proxy_port = server.game_port,
+        discovery_port = NETHERNET_DISCOVERY_PORT,
+        "PaperConnect 成员传输启动"
+    );
     let host_player = super::paperconnect::players()
         .into_iter()
         .find(|player| player.is_room_host)
@@ -99,7 +111,10 @@ pub async fn start_guest(server: &ServerInfo, player_name: &str) -> Result<(), S
         PaperConnectProtocol::Nethernet => {
             start_nethernet_guest(server.game_port, display_name, player_name).await
         }
-        PaperConnectProtocol::Raknet => start_raknet_guest(server.game_port, display_name).await,
+        PaperConnectProtocol::Raknet => {
+            start_raknet_guest(server.game_port, display_name).await?;
+            Ok(PaperConnectClientState::Ready)
+        }
     }
 }
 
@@ -247,21 +262,10 @@ async fn start_nethernet_guest(
     proxy_port: u16,
     display_name: String,
     player_name: &str,
-) -> Result<(), String> {
-    let mut raknet_client = RakClient::new(|config| {
-        config.max_mtu_size = RAKNET_MTU;
-    });
-    raknet_client
-        .start()
-        .await
-        .map_err(|error| format!("启动 PaperConnect RakNet 客户端失败：{error}"))?;
-    let mut raknet = tokio::time::timeout(
-        RAKNET_CONNECT_TIMEOUT,
-        raknet_client.connect(SocketAddr::from(([127, 0, 0, 1], proxy_port))),
-    )
-    .await
-    .map_err(|_| "连接房主 RakNet 隧道超时".to_string())?
-    .map_err(|error| format!("连接房主 RakNet 隧道失败：{error}"))?;
+) -> Result<PaperConnectClientState, String> {
+    let (mut raknet_client, mut raknet) =
+        connect_guest_raknet(proxy_port, RAKNET_MTU, RAKNET_CONNECT_TIMEOUT).await?;
+    tracing::info!(proxy_port, "PaperConnect 成员步骤 3/6：RakNet 隧道握手成功");
 
     let server_data = ServerData {
         server_name: display_name,
@@ -276,32 +280,90 @@ async fn start_nethernet_guest(
         transport_layer: 2,
         connection_type: 4,
     };
-    let signaling = LanSignaling::server(
-        SocketAddr::from(([0, 0, 0, 0], NETHERNET_DISCOVERY_PORT)),
-        server_data,
-    )
-    .await
-    .map_err(|error| format!("启动本机 NetherNet 7551 服务失败：{error}"))?;
-    let mut listener = NethernetListener::bind(signaling, SocketAddr::from(([127, 0, 0, 1], 0)))
-        .map_err(|error| format!("启动本机 NetherNet 房间失败：{error}"))?;
+    let discovery_addr = SocketAddr::from(([0, 0, 0, 0], NETHERNET_DISCOVERY_PORT));
+    tracing::info!(
+        %discovery_addr,
+        proxy_port,
+        "PaperConnect 成员步骤 4/6：开始检测本机 UDP 7551 占用"
+    );
+    let listener = match bind_guest_listener(discovery_addr, server_data, proxy_port).await {
+        Ok(listener) => listener,
+        Err(error) if is_discovery_port_occupied(&error) => {
+            tracing::warn!(
+                port = NETHERNET_DISCOVERY_PORT,
+                "PaperConnect 成员步骤 4/6：UDP 7551 已被占用，本机游戏代理未启动；EasyTier 房间保持连接"
+            );
+            if let Err(close_error) = raknet.close().await {
+                tracing::debug!("关闭房客 RakNet 隧道失败：{close_error}");
+            }
+            raknet_client.stop();
+            return Ok(PaperConnectClientState::DiscoveryPortOccupied);
+        }
+        Err(error) => {
+            if let Err(close_error) = raknet.close().await {
+                tracing::debug!("关闭房客 RakNet 隧道失败：{close_error}");
+            }
+            raknet_client.stop();
+            return Err(format!("启动本机 NetherNet 7551 服务失败：{error}"));
+        }
+    };
 
     let (cancel_sender, mut cancel_receiver) = oneshot::channel();
     let task = crate::tasks::runtime::spawn_io(async move {
-        tokio::select! {
-            _ = &mut cancel_receiver => {}
-            accepted = listener.accept() => {
-                match accepted {
-                    Ok(nethernet) => {
-                        if let Err(error) =
-                            proxy_session_to_raknet(&nethernet, &mut raknet, &mut cancel_receiver).await
-                        {
-                            tracing::debug!("PaperConnect 客户端桥接结束：{error}");
+        let mut listener = listener;
+
+        loop {
+            tokio::select! {
+                _ = &mut cancel_receiver => break,
+                accepted = listener.accept() => {
+                    let nethernet = match accepted {
+                        Ok(nethernet) => {
+                            tracing::info!(proxy_port, "Minecraft NetherNet 会话已接受，开始桥接 RakNet");
+                            nethernet
                         }
-                        if let Err(error) = nethernet.close().await {
-                            tracing::debug!("关闭客户端 NetherNet 会话失败：{error}");
+                        Err(error) => {
+                            tracing::warn!(proxy_port, "接受本机 NetherNet 会话失败：{error}");
+                            break;
+                        }
+                    };
+                    if let Err(error) =
+                        proxy_session_to_raknet(&nethernet, &mut raknet, &mut cancel_receiver).await
+                    {
+                        tracing::warn!(proxy_port, "PaperConnect 成员桥接结束：{error}");
+                    }
+                    if let Err(error) = nethernet.close().await {
+                        tracing::debug!("关闭客户端 NetherNet 会话失败：{error}");
+                    }
+
+                    match cancel_receiver.try_recv() {
+                        Ok(()) | Err(oneshot::error::TryRecvError::Closed) => break,
+                        Err(oneshot::error::TryRecvError::Empty) => {}
+                    }
+
+                    if let Err(error) = raknet.close().await {
+                        tracing::debug!("关闭已断开的 RakNet 隧道失败：{error}");
+                    }
+                    raknet_client.stop();
+                    tracing::info!(proxy_port, "正在重连 PaperConnect 成员 RakNet 隧道");
+                    let reconnect =
+                        connect_guest_raknet(proxy_port, RAKNET_MTU, RAKNET_CONNECT_TIMEOUT);
+                    tokio::pin!(reconnect);
+                    tokio::select! {
+                        _ = &mut cancel_receiver => break,
+                        result = &mut reconnect => {
+                            match result {
+                                Ok((client, session)) => {
+                                    raknet_client = client;
+                                    raknet = session;
+                                    tracing::info!(proxy_port, "PaperConnect 成员 RakNet 隧道重连成功");
+                                }
+                                Err(error) => {
+                                    tracing::warn!(proxy_port, "PaperConnect RakNet 隧道重连失败：{error}");
+                                    break;
+                                }
+                            }
                         }
                     }
-                    Err(error) => tracing::debug!("接受本机 NetherNet 会话失败：{error}"),
                 }
             }
         }
@@ -317,7 +379,8 @@ async fn start_nethernet_guest(
             task,
         },
         "客户端",
-    )
+    )?;
+    Ok(PaperConnectClientState::Ready)
 }
 
 async fn start_raknet_guest(proxy_port: u16, display_name: String) -> Result<(), String> {

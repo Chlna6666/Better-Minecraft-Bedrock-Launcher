@@ -90,9 +90,9 @@ impl DiscoveryPacket {
                 )));
             }
         };
-        if !rd.is_empty() {
-            return Err(NethernetError::protocol("发现报文含有尾随数据"));
-        }
+        // 真实 Bedrock 的 Message/Response 有时会在内层声明长度之后附加填充。
+        // go-nethernet 同样只解析已声明的字段并忽略剩余字节；HMAC 已覆盖整个
+        // 明文，因此容忍这些字节不会绕过完整性校验。
         Ok(packet)
     }
 
@@ -236,6 +236,29 @@ mod tests {
     }
 
     #[test]
+    fn response_matches_gravitycone_wire_vector() {
+        let application_data =
+            hex_decode(b"050673657276657205776f726c64040100000008000000000101010408").unwrap();
+        let response = DiscoveryPacket::Response {
+            application_data: application_data.clone(),
+        };
+        let expected = hex_decode(
+            b"83fa57c952db80741b7c86c8a1ab1cd99c0b4f05f1b7492504c5bfb5603fd4c9\
+              7246c0d4857a93589e058bc307e2ac104321c241ed41ad8f82a21ab0fa2e6ccc\
+              37365ef81c9b16fb1d9deaf48d91271b59c635dc2f2639236d24b92379c12b27\
+              ae339e038cae33cf5beef026706c5b95421b0592adef3dd7825400cc0bbb3c3e",
+        )
+        .unwrap();
+
+        let encoded = response.encode(0x1020_3040_5060_7080).unwrap();
+
+        assert_eq!(encoded, expected);
+        let (decoded, sender_id) = DiscoveryPacket::decode(&expected).unwrap();
+        assert_eq!(decoded, response);
+        assert_eq!(sender_id, 0x1020_3040_5060_7080);
+    }
+
+    #[test]
     fn message_round_trips() {
         let original = DiscoveryPacket::Message {
             recipient_id: u64::MAX,
@@ -244,6 +267,30 @@ mod tests {
         let (packet, sender) = DiscoveryPacket::decode(&original.encode(1).unwrap()).unwrap();
         assert_eq!(packet, original);
         assert_eq!(sender, 1);
+    }
+
+    #[test]
+    fn message_with_authenticated_trailing_bytes_is_accepted() {
+        let original = DiscoveryPacket::Message {
+            recipient_id: 42,
+            data: "CONNECTREQUEST 1234 v=0\r\n".to_string(),
+        };
+        let encoded = original.encode(7).unwrap();
+        let mut plaintext = encoded[CHECKSUM_SIZE..].to_vec();
+        crypto::decrypt_in_place(&mut plaintext).unwrap();
+        plaintext.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+        let total = u16::try_from(plaintext.len()).unwrap();
+        plaintext[..2].copy_from_slice(&total.to_le_bytes());
+
+        let mac = crypto::checksum(&plaintext);
+        crypto::encrypt_in_place(&mut plaintext);
+        let mut packet = Vec::with_capacity(CHECKSUM_SIZE + plaintext.len());
+        packet.extend_from_slice(&mac);
+        packet.extend_from_slice(&plaintext);
+
+        let (decoded, sender) = DiscoveryPacket::decode(&packet).unwrap();
+        assert_eq!(decoded, original);
+        assert_eq!(sender, 7);
     }
 
     #[test]

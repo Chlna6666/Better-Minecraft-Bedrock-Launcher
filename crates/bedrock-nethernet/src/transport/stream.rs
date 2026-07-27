@@ -44,6 +44,13 @@ impl NethernetStream {
         remote_addr: SocketAddr,
     ) -> Result<Self> {
         let connection_id = rand::rng().random::<u64>();
+        tracing::info!(
+            connection_id,
+            remote_network_id,
+            %remote_addr,
+            local_network_id = signaling.network_id(),
+            "开始连接 NetherNet 对端"
+        );
         let peer_connection = create_peer_connection().await?;
         let session = NethernetSession::new(Arc::clone(&peer_connection));
         let result = Self::negotiate(
@@ -58,16 +65,31 @@ impl NethernetStream {
         if let Err(error) = &result {
             // 拆除半开的对等连接：webrtc-rs 无 Drop 实现，仅丢弃句柄
             // 会永久泄漏 ICE agent、UDP 套接字与候选接收任务。
-            let _ = session.close().await;
+            if let Err(close_error) = session.close().await {
+                tracing::debug!(
+                    connection_id,
+                    "清理失败的 NetherNet 出站会话失败：{close_error}"
+                );
+            }
             // 尽力把失败原因告知对端，让它及时释放半开状态。
             let code = match error {
                 NethernetError::Timeout => SignalErrorCode::NegotiationTimeout,
                 NethernetError::Refused(code) => *code,
                 _ => SignalErrorCode::Ice,
             };
-            let _ = signaling
+            if let Err(signal_error) = signaling
                 .signal(Signal::error(connection_id, code, remote_network_id))
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    connection_id,
+                    remote_network_id,
+                    "发送 NetherNet 协商错误失败：{signal_error}"
+                );
+            }
+            tracing::warn!(connection_id, remote_network_id, %remote_addr, "连接 NetherNet 对端失败：{error}");
+        } else {
+            tracing::info!(connection_id, remote_network_id, %remote_addr, "NetherNet 对端连接成功");
         }
         result
     }
@@ -92,6 +114,12 @@ impl NethernetStream {
         signaling
             .signal(Signal::offer(connection_id, offer, remote_network_id))
             .await?;
+        tracing::info!(
+            connection_id,
+            remote_network_id,
+            %remote_addr,
+            "NetherNet Offer 已发送，等待 Answer"
+        );
 
         let (answer, pending) = tokio::time::timeout(
             NEGOTIATION_TIMEOUT,
@@ -99,6 +127,12 @@ impl NethernetStream {
         )
         .await
         .map_err(|_| NethernetError::Timeout)??;
+        tracing::info!(
+            connection_id,
+            remote_network_id,
+            pending_candidates = pending.len(),
+            "NetherNet Answer 已收到"
+        );
 
         peer_connection
             .set_remote_description(RTCSessionDescription::answer(answer)?)
@@ -125,6 +159,12 @@ impl NethernetStream {
         if session.is_closed() {
             return Err(NethernetError::Closed);
         }
+        tracing::info!(
+            connection_id,
+            remote_network_id,
+            %remote_addr,
+            "NetherNet ICE 与数据通道已就绪"
+        );
 
         Ok(Self {
             session: Arc::clone(session),

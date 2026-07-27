@@ -9,7 +9,7 @@ use crate::consts::{
     MAX_SIGNAL_SIZE,
 };
 use crate::error::{NethernetError, Result};
-use crate::protocol::{DiscoveryPacket, ServerData, Signal};
+use crate::protocol::{DiscoveryPacket, ServerData, Signal, SignalType};
 use crate::signaling::Signaling;
 use rand::RngExt as _;
 use std::collections::HashMap;
@@ -57,6 +57,8 @@ struct Shared {
     discovered: RwLock<HashMap<u64, Entry>>,
     /// 本端作为服务端时对外通告的数据；`None` 表示纯客户端。
     advertised: RwLock<Option<ServerData>>,
+    /// 发现响应的固定目标；未设置时按协议回复请求源。
+    response_target: Option<SocketAddr>,
 }
 
 impl Shared {
@@ -169,17 +171,57 @@ impl LanSignaling {
         Self::new(bind_addr, None, Some(server_data)).await
     }
 
+    /// 使用已绑定的 UDP 套接字创建服务端端点。
+    ///
+    /// 套接字的共享、独占和平台选项由调用方在绑定前决定。
+    ///
+    /// # Errors
+    ///
+    /// 无法读取套接字地址时返回错误。启用广播失败不会阻止单播信令。
+    pub async fn server_from_socket(socket: UdpSocket, server_data: ServerData) -> Result<Self> {
+        Self::from_socket(socket, None, Some(server_data), None)
+    }
+
+    /// 使用已绑定的 UDP 套接字创建服务端，并把发现响应发送到固定目标。
+    ///
+    /// 信令消息仍发送给网络 ID 对应的请求源地址；固定目标只影响发现响应。
+    ///
+    /// # Errors
+    ///
+    /// 无法读取套接字地址时返回错误。启用广播失败不会阻止单播信令。
+    pub async fn server_from_socket_with_target(
+        socket: UdpSocket,
+        server_data: ServerData,
+        response_target: SocketAddr,
+    ) -> Result<Self> {
+        Self::from_socket(socket, None, Some(server_data), Some(response_target))
+    }
+
     async fn new(
         bind_addr: SocketAddr,
         target: Option<SocketAddr>,
         server_data: Option<ServerData>,
     ) -> Result<Self> {
-        let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
+        let socket = UdpSocket::bind(bind_addr).await?;
+        Self::from_socket(socket, target, server_data, None)
+    }
+
+    fn from_socket(
+        socket: UdpSocket,
+        target: Option<SocketAddr>,
+        server_data: Option<ServerData>,
+        response_target: Option<SocketAddr>,
+    ) -> Result<Self> {
+        let is_server = server_data.is_some();
+        let socket = Arc::new(socket);
         // 广播失败不致命：回环或受限环境下仍可单播工作。
         if let Err(error) = socket.set_broadcast(true) {
             tracing::debug!("启用 UDP 广播失败：{error}");
         }
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            response_target,
+            ..Shared::default()
+        });
         *shared
             .advertised
             .write()
@@ -190,6 +232,14 @@ impl LanSignaling {
         let discovered_notify = Arc::new(Notify::new());
         let cancel = CancellationToken::new();
         let dropped = Arc::new(AtomicU64::new(0));
+        let local_addr = socket.local_addr()?;
+        tracing::info!(
+            %local_addr,
+            ?target,
+            network_id,
+            mode = if is_server { "server" } else { "client" },
+            "NetherNet LAN 信令端点已启动"
+        );
 
         tokio::spawn(receive_loop(
             Arc::clone(&socket),
@@ -440,14 +490,33 @@ async fn handle_packet(
             let Some(server_data) = advertised else {
                 return Ok(()); // 纯客户端不应答。
             };
-            let response = DiscoveryPacket::Response {
-                application_data: server_data.encode()?,
+            let response_destination = shared.response_target.unwrap_or(source);
+            let responses = encode_server_responses(&server_data, own_network_id)?;
+            for response in &responses {
+                socket.send_to(response, response_destination).await?;
             }
-            .encode(own_network_id)?;
-            socket.send_to(&response, source).await?;
+            tracing::info!(
+                request_source = %source,
+                %response_destination,
+                remote_network_id = sender_id,
+                local_network_id = own_network_id,
+                server_name = %server_data.server_name,
+                transport_layer = server_data.transport_layer,
+                connection_type = server_data.connection_type,
+                "NetherNet 已发送房间发现响应（v5 + v4）"
+            );
         }
         DiscoveryPacket::Response { application_data } => {
             let server_data = ServerData::decode(application_data)?;
+            tracing::info!(
+                %source,
+                remote_network_id = sender_id,
+                server_name = %server_data.server_name,
+                level_name = %server_data.level_name,
+                transport_layer = server_data.transport_layer,
+                connection_type = server_data.connection_type,
+                "发现 NetherNet 局域网世界"
+            );
             shared.record_discovery(sender_id, server_data, now);
             discovered_notify.notify_waiters();
         }
@@ -462,11 +531,40 @@ async fn handle_packet(
                 return Ok(());
             }
             let signal = Signal::parse(&data, sender_id)?;
+            if matches!(
+                signal.kind,
+                SignalType::Offer | SignalType::Answer | SignalType::Error
+            ) {
+                tracing::info!(
+                    %source,
+                    remote_network_id = sender_id,
+                    connection_id = signal.connection_id,
+                    signal_type = ?signal.kind,
+                    "收到 NetherNet 协商信令"
+                );
+            }
             // 没有订阅者不是错误：可能尚未 accept。
-            let _ = signal_tx.send(signal);
+            if signal_tx.send(signal).is_err() {
+                tracing::debug!(
+                    remote_network_id = sender_id,
+                    "NetherNet 信令暂时没有订阅者"
+                );
+            }
         }
     }
     Ok(())
+}
+
+fn encode_server_responses(server_data: &ServerData, network_id: u64) -> Result<[bytes::Bytes; 2]> {
+    let v5 = DiscoveryPacket::Response {
+        application_data: server_data.encode()?,
+    }
+    .encode(network_id)?;
+    let v4 = DiscoveryPacket::Response {
+        application_data: server_data.encode_v4()?,
+    }
+    .encode(network_id)?;
+    Ok([v5, v4])
 }
 
 /// 默认的局域网发现广播地址。
@@ -512,6 +610,20 @@ mod tests {
         .await
         .unwrap();
         assert!(server.probe().await.is_err());
+    }
+
+    #[test]
+    fn server_responses_use_reference_v5_and_v4_payloads() {
+        let encoded = encode_server_responses(&ServerData::default(), 42).unwrap();
+        for (response, version) in encoded.iter().zip([5, 4]) {
+            let (packet, sender) = DiscoveryPacket::decode(response).unwrap();
+            let DiscoveryPacket::Response { application_data } = packet else {
+                panic!("服务端应发送发现响应");
+            };
+
+            assert_eq!(sender, 42);
+            assert_eq!(application_data.first(), Some(&version));
+        }
     }
 
     #[tokio::test]

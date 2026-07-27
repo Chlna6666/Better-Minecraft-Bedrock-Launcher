@@ -17,6 +17,7 @@ pub mod mod_manager;
 pub mod mouse_lock;
 pub mod nbt;
 pub mod paths;
+pub mod process;
 pub mod remote_versions;
 pub mod resource_packs;
 pub mod screenshots;
