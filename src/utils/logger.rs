@@ -257,7 +257,7 @@ fn default_log_filter(debug_enabled: bool) -> String {
     } else {
         "info"
     };
-    format!("{log_level},blade_graphics=warn")
+    format!("{log_level},blade_graphics=warn,easytier=warn")
 }
 
 fn install_panic_hook() {
@@ -487,11 +487,15 @@ mod tests {
         assert!(filter.contains("bmcbl=debug"));
         assert!(filter.contains("gpui=debug"));
         assert!(filter.contains("blade_graphics=warn"));
+        assert!(filter.contains("easytier=warn"));
     }
 
     #[test]
     fn default_non_debug_filter_stays_at_info() {
-        assert_eq!(default_log_filter(false), "info,blade_graphics=warn");
+        assert_eq!(
+            default_log_filter(false),
+            "info,blade_graphics=warn,easytier=warn"
+        );
     }
 
     #[test]
