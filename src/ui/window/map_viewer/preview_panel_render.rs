@@ -26,7 +26,7 @@ impl MapViewerWindowView {
                 .size_full()
                 .min_w(px(0.0))
                 .min_h(px(0.0))
-                .rounded(px(6.0))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.24,
@@ -147,7 +147,7 @@ impl MapViewerWindowView {
             .min_h(px(0.0))
             .mx(px(10.0))
             .mb(px(10.0))
-            .rounded(px(6.0))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .border_1()
             .border_color(Hsla {
                 a: 0.20,
@@ -339,7 +339,7 @@ fn preview_3d_axis_overlay(
         .right(px(8.0))
         .w(px(72.0))
         .h(px(72.0))
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.16,

@@ -253,7 +253,7 @@ pub(crate) fn render_result_logo_placeholder(colors: ThemeColors) -> AnyElement 
     div()
         .w(px(42.))
         .h(px(42.))
-        .rounded(px(9.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.10,
             ..colors.surface
@@ -270,7 +270,7 @@ pub(crate) fn render_result_logo_placeholder(colors: ThemeColors) -> AnyElement 
 }
 
 fn curseforge_results_skeleton_bar(colors: &ThemeColors, width: Pixels, height: Pixels) -> Div {
-    div().w(width).h(height).rounded(px(999.)).bg(Hsla {
+    div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
         a: 0.10,
         ..colors.text_secondary
     })
@@ -281,13 +281,13 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors) -> Div {
         .w_full()
         .h(px(78.))
         .min_h(px(78.))
-        .rounded(px(8.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .px(px(12.))
         .py(px(9.))
         .flex()
         .items_center()
         .gap(px(10.))
-        .child(div().w(px(42.)).h(px(42.)).rounded(px(9.)).bg(Hsla {
+        .child(div().w(px(42.)).h(px(42.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
             a: 0.08,
             ..colors.text_secondary
         }))
@@ -313,7 +313,7 @@ fn curseforge_results_skeleton_card(colors: &ThemeColors) -> Div {
                         .child(curseforge_results_skeleton_bar(colors, px(92.), px(10.))),
                 ),
         )
-        .child(div().w(px(92.)).h(px(30.)).rounded(px(6.)).bg(Hsla {
+        .child(div().w(px(92.)).h(px(30.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
             a: 0.10,
             ..colors.accent
         }))
@@ -331,7 +331,7 @@ fn curseforge_results_skeleton_row(colors: &ThemeColors) -> Div {
 
 pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(999.)).bg(Hsla {
+        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
             a: 0.08,
             ..colors.text_secondary
         })
@@ -358,7 +358,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
     let skeleton_card = || {
         div()
             .w_full()
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .px(px(12.))
             .py(px(10.))
             .relative()
@@ -366,7 +366,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().w(px(42.)).h(px(42.)).rounded(px(9.)).bg(Hsla {
+            .child(div().w(px(42.)).h(px(42.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                 a: 0.10,
                 ..colors.text_secondary
             }))
@@ -401,7 +401,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
                             .child(skeleton_bar(px(90.), px(10.))),
                     ),
             )
-            .child(div().w(px(92.)).h(px(30.)).rounded(px(6.)).bg(Hsla {
+            .child(div().w(px(92.)).h(px(30.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                 a: 0.10,
                 ..colors.accent
             }))
@@ -410,7 +410,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
 
     div()
         .size_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.06,
@@ -448,7 +448,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
                                 .child(skeleton_bar(px(72.), px(20.)))
                                 .child(skeleton_bar(px(52.), px(20.))),
                         )
-                        .child(div().w(px(88.)).h(px(28.)).rounded(px(999.)).bg(Hsla {
+                        .child(div().w(px(88.)).h(px(28.)).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
                             a: 0.06,
                             ..colors.text_secondary
                         })),
@@ -476,7 +476,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
                     a: 0.06,
                     ..colors.border
                 })
-                .child(div().w_full().h(px(32.)).rounded(px(10.)).bg(Hsla {
+                .child(div().w_full().h(px(32.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                     a: 0.05,
                     ..colors.text_secondary
                 })),
@@ -485,7 +485,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
 
 pub(crate) fn render_curseforge_results_list_placeholder(colors: &ThemeColors) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(999.)).bg(Hsla {
+        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
             a: 0.08,
             ..colors.text_secondary
         })
@@ -494,7 +494,7 @@ pub(crate) fn render_curseforge_results_list_placeholder(colors: &ThemeColors) -
     let skeleton_card = || {
         div()
             .w_full()
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .px(px(12.))
             .py(px(10.))
             .relative()
@@ -502,7 +502,7 @@ pub(crate) fn render_curseforge_results_list_placeholder(colors: &ThemeColors) -
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().w(px(42.)).h(px(42.)).rounded(px(9.)).bg(Hsla {
+            .child(div().w(px(42.)).h(px(42.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                 a: 0.10,
                 ..colors.text_secondary
             }))
@@ -537,7 +537,7 @@ pub(crate) fn render_curseforge_results_list_placeholder(colors: &ThemeColors) -
                             .child(skeleton_bar(px(90.), px(10.))),
                     ),
             )
-            .child(div().w(px(92.)).h(px(32.)).rounded(px(10.)).bg(Hsla {
+            .child(div().w(px(92.)).h(px(32.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                 a: 0.10,
                 ..colors.accent
             }))

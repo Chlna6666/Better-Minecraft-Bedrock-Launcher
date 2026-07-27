@@ -5,10 +5,11 @@ use crate::core::online::{
 };
 use crate::ui::components::toast;
 use crate::ui::views::tools::state::{
-    OnlineOperation, OnlinePeerEntry, OnlinePeerRole, OnlinePlayerEntry, ToolsPageState,
+    OnlineBlockingIssue, OnlineOperation, OnlinePeerEntry, OnlinePeerRole, OnlinePlayerEntry,
+    ToolsPageState,
 };
 use gpui::*;
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{append_online_log, normalized_player_name, parse_bootstrap_peers, primary_game_port};
 
@@ -186,7 +187,12 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
         return;
     }
 
+    let mut client_state = None;
     if matches!(intent, RoomIntent::Join) {
+        info!(
+            network_name = %room.network_name,
+            "PaperConnect 成员步骤 1/6：EasyTier 房间连接成功"
+        );
         let server = match run_online(cx, crate::core::online::paperconnect_probe_server()).await {
             Ok(server) => server,
             Err(error) => {
@@ -198,22 +204,28 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
                 return;
             }
         };
-        if let Err(error) = run_online(
+        match run_online(
             cx,
             crate::core::online::paperconnect_start_client(server, player_name.clone()),
         )
         .await
         {
-            if let Err(stop_error) = run_online(cx, crate::core::online::easytier_stop()).await {
-                warn!("failed to stop after PaperConnect player heartbeat failure: {stop_error}");
+            Ok(state) => client_state = Some(state),
+            Err(error) => {
+                if let Err(stop_error) = run_online(cx, crate::core::online::easytier_stop()).await
+                {
+                    warn!(
+                        "failed to stop after PaperConnect player heartbeat failure: {stop_error}"
+                    );
+                }
+                apply_room_error(
+                    generation,
+                    action,
+                    format!("PaperConnect 玩家心跳失败：{error}"),
+                    cx,
+                );
+                return;
             }
-            apply_room_error(
-                generation,
-                action,
-                format!("PaperConnect 玩家心跳失败：{error}"),
-                cx,
-            );
-            return;
         }
     }
 
@@ -229,7 +241,16 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
     let status = status_result.ok().flatten();
     let peers = peers_result.map(peer_entries).unwrap_or_default();
     let players = player_entries(crate::core::online::paperconnect_players());
-    apply_room_success(generation, intent, room, status, players, peers, cx);
+    apply_room_success(
+        generation,
+        intent,
+        room,
+        status,
+        players,
+        peers,
+        client_state,
+        cx,
+    );
 }
 
 async fn resolve_room(intent: RoomIntent, room_code: String) -> Result<PaperConnectRoom, String> {
@@ -250,12 +271,15 @@ where
 }
 
 fn apply_room_error(generation: u64, action: &'static str, error: String, cx: &mut AsyncApp) {
+    let abandoned_connectors = crate::core::online::easytier_take_abandoned_connectors();
     let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
         if !state.finish_room_operation(generation) {
             return false;
         }
+        state.set_online_blocking_issue(OnlineBlockingIssue::from_room_error(&error));
         state.online_error = Some(SharedString::from(error.clone()));
         state.peers_loading = false;
+        apply_abandoned_connectors(state, &abandoned_connectors);
         true
     });
     match applied {
@@ -266,6 +290,7 @@ fn apply_room_error(generation: u64, action: &'static str, error: String, cx: &m
                     cx,
                     SharedString::from(format!("{action}失败，请检查联机设置")),
                 );
+                append_abandoned_connector_logs(&abandoned_connectors, cx);
             }) {
                 warn!("failed to report online room error: {update_error:?}");
             }
@@ -282,14 +307,25 @@ fn apply_room_success(
     status: Option<crate::core::online::EasyTierEmbeddedStatus>,
     players: Vec<OnlinePlayerEntry>,
     peers: Vec<OnlinePeerEntry>,
+    client_state: Option<crate::core::online::PaperConnectClientState>,
     cx: &mut AsyncApp,
 ) {
     let room_code = room.room_code.clone();
+    let abandoned_connectors = crate::core::online::easytier_take_abandoned_connectors();
+    let discovery_port_occupied = matches!(
+        client_state,
+        Some(crate::core::online::PaperConnectClientState::DiscoveryPortOccupied)
+    );
     let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
         if !state.finish_room_operation(generation) {
             return false;
         }
-        state.online_error = None;
+        state.online_error = discovery_port_occupied.then(|| {
+            SharedString::from("本机 UDP 7551 已被占用，游戏代理未启动；关闭占用程序后请重新检查")
+        });
+        state.set_online_blocking_issue(
+            discovery_port_occupied.then_some(OnlineBlockingIssue::DiscoveryPortOccupied),
+        );
         state.easytier_running = true;
         state.active_room_code = SharedString::from(room.room_code);
         state.active_network_name = SharedString::from(room.network_name);
@@ -310,6 +346,7 @@ fn apply_room_success(
         state.players = players;
         state.peers = peers;
         state.peers_loading = false;
+        apply_abandoned_connectors(state, &abandoned_connectors);
         true
     });
     match applied {
@@ -318,10 +355,31 @@ fn apply_room_success(
                 if matches!(intent, RoomIntent::Create) {
                     cx.write_to_clipboard(ClipboardItem::new_string(room_code.clone()));
                     toast::push(cx, SharedString::from("房间已创建，联机码已复制"));
+                    append_online_log(format!("联机成功：{room_code}"), cx);
+                } else if discovery_port_occupied {
+                    toast::error(
+                        cx,
+                        SharedString::from(
+                            "已加入房间，但本机 UDP 7551 已被占用；关闭占用程序后请重新检查",
+                        ),
+                    );
+                    append_online_log(
+                        "房间连接已保留，但本机 7551 游戏代理启动失败；关闭占用程序后可直接重新检查",
+                        cx,
+                    );
+                    warn!(
+                        room_code,
+                        "PaperConnect 成员联机未完成：EasyTier 已连接，但 UDP 7551 模拟代理未启动"
+                    );
                 } else {
                     toast::push(cx, SharedString::from("已加入房间"));
+                    append_online_log(format!("联机成功：{room_code}"), cx);
+                    info!(
+                        room_code,
+                        "PaperConnect 成员步骤 6/6：前端联机成功状态已应用"
+                    );
                 }
-                append_online_log(format!("联机成功：{room_code}"), cx);
+                append_abandoned_connector_logs(&abandoned_connectors, cx);
             }) {
                 warn!("failed to report online room success: {update_error:?}");
             }
@@ -329,6 +387,163 @@ fn apply_room_success(
         Ok(false) => {}
         Err(update_error) => warn!("failed to apply online room success: {update_error:?}"),
     }
+}
+
+pub(super) fn retry_discovery_proxy(cx: &mut App) {
+    let generation =
+        cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_discovery_retry());
+    let Some(generation) = generation else {
+        return;
+    };
+
+    append_online_log("正在重新检测 UDP 7551 并启动本机游戏代理", cx);
+    info!("PaperConnect 成员开始重新检测 UDP 7551");
+    cx.spawn(async move |cx| {
+        let result = run_online(
+            cx,
+            crate::core::online::paperconnect_retry_guest_transport(),
+        )
+        .await;
+        let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
+            if !state.finish_discovery_retry(generation) {
+                return false;
+            }
+
+            match &result {
+                Ok(crate::core::online::PaperConnectClientState::Ready) => {
+                    state.set_online_blocking_issue(None);
+                    state.online_error = None;
+                }
+                Ok(crate::core::online::PaperConnectClientState::DiscoveryPortOccupied) => {
+                    state.set_online_blocking_issue(Some(
+                        OnlineBlockingIssue::DiscoveryPortOccupied,
+                    ));
+                    state.online_error = Some(SharedString::from(
+                        "本机 UDP 7551 仍被占用，游戏代理尚未启动",
+                    ));
+                }
+                Err(error) => {
+                    state.online_error = Some(SharedString::from(format!(
+                        "重新启动 7551 游戏代理失败：{error}"
+                    )));
+                }
+            }
+            true
+        });
+
+        match applied {
+            Ok(true) => {
+                if let Err(update_error) = cx.update(|cx| match result {
+                    Ok(crate::core::online::PaperConnectClientState::Ready) => {
+                        append_online_log("UDP 7551 已释放，本机游戏代理启动成功", cx);
+                        toast::push(cx, SharedString::from("7551 游戏代理已启动，可以进入游戏"));
+                        info!("PaperConnect 成员重新检测成功：本机 UDP 7551 模拟代理已启动");
+                    }
+                    Ok(crate::core::online::PaperConnectClientState::DiscoveryPortOccupied) => {
+                        append_online_log("UDP 7551 仍被占用，请关闭占用程序后再次检查", cx);
+                        toast::error(cx, SharedString::from("UDP 7551 仍被占用"));
+                        warn!("PaperConnect 成员重新检测失败：UDP 7551 仍被占用");
+                    }
+                    Err(error) => {
+                        append_online_log(format!("重新启动 7551 游戏代理失败：{error}"), cx);
+                        toast::error(cx, SharedString::from("7551 游戏代理重新启动失败"));
+                        warn!("PaperConnect 成员重新启动 7551 游戏代理失败：{error}");
+                    }
+                }) {
+                    warn!("failed to report discovery proxy retry result: {update_error:?}");
+                }
+            }
+            Ok(false) => {}
+            Err(update_error) => {
+                warn!("failed to apply discovery proxy retry result: {update_error:?}")
+            }
+        }
+    })
+    .detach();
+}
+
+pub(super) fn open_minecraft_termination_dialog(cx: &mut App) {
+    cx.update_global(|state: &mut ToolsPageState, _cx| {
+        state.open_minecraft_termination_dialog();
+    });
+}
+
+pub(super) fn dismiss_minecraft_termination_dialog(cx: &mut App) {
+    cx.update_global(|state: &mut ToolsPageState, _cx| {
+        state.dismiss_minecraft_termination_dialog();
+    });
+}
+
+pub(super) fn confirm_minecraft_termination(cx: &mut App) {
+    let started =
+        cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_minecraft_termination());
+    if !started {
+        return;
+    }
+
+    append_online_log("正在结束占用 UDP 7551 的应用", cx);
+    cx.spawn(async move |cx| {
+        let result = run_online(
+            cx,
+            crate::core::minecraft::process::terminate_discovery_port_owners(),
+        )
+        .await;
+        let state_result = result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| SharedString::from(format!("结束 UDP 7551 占用应用失败：{error}")));
+        let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
+            state.finish_minecraft_termination(state_result)
+        });
+
+        match applied {
+            Ok(true) => match result {
+                Ok(summary) => {
+                    if let Err(update_error) = cx.update(|cx| {
+                        if summary.matched == 0 {
+                            append_online_log("未查询到 UDP 7551 占用进程，继续重新检查端口", cx);
+                            toast::error(
+                                cx,
+                                SharedString::from("未查询到占用进程，正在重新检查 7551"),
+                            );
+                        } else {
+                            append_online_log(
+                                format!(
+                                    "已结束 {} 个 UDP 7551 占用进程，正在重新检查端口",
+                                    summary.terminated
+                                ),
+                                cx,
+                            );
+                            toast::push(
+                                cx,
+                                SharedString::from("占用应用已结束，正在重新检查 7551"),
+                            );
+                        }
+                        retry_discovery_proxy(cx);
+                    }) {
+                        warn!(
+                            "failed to retry discovery proxy after termination: {update_error:?}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    if let Err(update_error) = cx.update(|cx| {
+                        append_online_log(format!("结束 UDP 7551 占用应用失败：{error}"), cx);
+                        toast::error(cx, SharedString::from("结束 7551 占用应用失败"));
+                    }) {
+                        warn!(
+                            "failed to report UDP 7551 owner termination error: {update_error:?}"
+                        );
+                    }
+                }
+            },
+            Ok(false) => {}
+            Err(update_error) => {
+                warn!("failed to apply Minecraft termination result: {update_error:?}")
+            }
+        }
+    })
+    .detach();
 }
 
 pub(super) fn stop_session(cx: &mut App) {
@@ -377,19 +592,8 @@ pub(super) fn stop_session(cx: &mut App) {
 }
 
 pub(crate) fn refresh_status(cx: &mut App) {
-    // 未运行时直接返回，避免 update_global 触发全部观察者。
-    if !cx.read_global(|state: &ToolsPageState, _cx| state.easytier_running) {
-        return;
-    }
-
-    let generation = cx.update_global(|state: &mut ToolsPageState, _cx| {
-        if !state.easytier_running {
-            return None;
-        }
-        let generation = state.begin_online_operation(OnlineOperation::Refreshing)?;
-        state.peers_loading = true;
-        Some(generation)
-    });
+    let generation =
+        cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_status_refresh());
     let Some(generation) = generation else {
         return;
     };
@@ -405,11 +609,11 @@ pub(crate) fn refresh_status(cx: &mut App) {
         .await
         .unwrap_or_else(|error| (Err(error.clone()), Err(error)));
         let players = player_entries(crate::core::online::paperconnect_players());
+        let abandoned_connectors = crate::core::online::easytier_take_abandoned_connectors();
         let applied = cx.update_global(|state: &mut ToolsPageState, _cx| {
-            if !state.finish_online_operation(generation) {
+            if !state.finish_status_refresh(generation) {
                 return false;
             }
-            state.peers_loading = false;
             match status_result {
                 Ok(Some(status)) => {
                     state.easytier_running = true;
@@ -420,7 +624,9 @@ pub(crate) fn refresh_status(cx: &mut App) {
                         .map(SharedString::from)
                         .unwrap_or_else(|| SharedString::from(""));
                     state.easytier_game_port = status.game_port;
-                    state.online_error = None;
+                    if state.online_blocking_issue.is_none() {
+                        state.online_error = None;
+                    }
                 }
                 Ok(None) => {
                     state.clear_online_session();
@@ -432,13 +638,55 @@ pub(crate) fn refresh_status(cx: &mut App) {
                 state.peers = peer_entries(peers);
             }
             state.players = players;
+            apply_abandoned_connectors(state, &abandoned_connectors);
             true
         });
-        if let Err(update_error) = applied {
-            warn!("failed to refresh online status: {update_error:?}");
+        match applied {
+            Ok(true) if !abandoned_connectors.is_empty() => {
+                if let Err(update_error) = cx.update(|cx| {
+                    append_abandoned_connector_logs(&abandoned_connectors, cx);
+                    toast::error(
+                        cx,
+                        SharedString::from(format!(
+                            "{} 个联机节点连续失败，已停止重试",
+                            abandoned_connectors.len()
+                        )),
+                    );
+                }) {
+                    warn!("failed to report abandoned EasyTier connectors: {update_error:?}");
+                }
+            }
+            Ok(_) => {}
+            Err(update_error) => {
+                warn!("failed to refresh online status: {update_error:?}");
+            }
         }
     })
     .detach();
+}
+
+fn apply_abandoned_connectors(
+    state: &mut ToolsPageState,
+    connectors: &[crate::core::online::EasyTierAbandonedConnector],
+) {
+    for connector in connectors {
+        state.add_abandoned_node(SharedString::from(connector.url.clone()));
+    }
+}
+
+fn append_abandoned_connector_logs(
+    connectors: &[crate::core::online::EasyTierAbandonedConnector],
+    cx: &mut App,
+) {
+    for connector in connectors {
+        append_online_log(
+            format!(
+                "节点 {} 连续连接失败 {} 次，本次联机已停止使用",
+                connector.url, connector.failed_attempts
+            ),
+            cx,
+        );
+    }
 }
 
 pub(super) fn refresh_peers(cx: &mut App) {
@@ -463,7 +711,9 @@ pub(super) fn refresh_peers(cx: &mut App) {
                 Ok(peers) => {
                     state.peers = peer_entries(peers);
                     state.players = players;
-                    state.online_error = None;
+                    if state.online_blocking_issue.is_none() {
+                        state.online_error = None;
+                    }
                 }
                 Err(error) => state.online_error = Some(SharedString::from(error)),
             }
@@ -477,22 +727,10 @@ pub(super) fn refresh_peers(cx: &mut App) {
 }
 
 pub(crate) fn check_nat(cx: &mut App) {
-    // 未运行或已在检测时直接返回，避免 update_global 触发全部观察者。
-    if cx.read_global(|state: &ToolsPageState, _cx| !state.easytier_running || state.nat_checking) {
+    let generation = cx.update_global(|state: &mut ToolsPageState, _cx| state.begin_nat_check());
+    let Some(generation) = generation else {
         return;
-    }
-
-    let started = cx.update_global(|state: &mut ToolsPageState, _cx| {
-        if !state.easytier_running || state.nat_checking {
-            return false;
-        }
-        state.nat_checking = true;
-        state.nat_error = None;
-        true
-    });
-    if !started {
-        return;
-    }
+    };
 
     cx.spawn(async move |cx| {
         let snapshot_task = gpui_tokio::Tokio::spawn_result(cx, async {
@@ -502,7 +740,9 @@ pub(crate) fn check_nat(cx: &mut App) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 if let Err(update_error) = cx.update_global(|state: &mut ToolsPageState, _cx| {
-                    state.nat_checking = false;
+                    if !state.finish_nat_check(generation) {
+                        return;
+                    }
                     state.nat_error = Some(SharedString::from(error.to_string()));
                 }) {
                     warn!("failed to apply NAT error: {update_error:?}");
@@ -511,7 +751,9 @@ pub(crate) fn check_nat(cx: &mut App) {
             }
         };
         if let Err(update_error) = cx.update_global(|state: &mut ToolsPageState, _cx| {
-            state.nat_checking = false;
+            if !state.finish_nat_check(generation) {
+                return;
+            }
             state.nat_udp_type = Some(snapshot.udp_nat_type);
             state.nat_tcp_type = Some(snapshot.tcp_nat_type);
         }) {
@@ -561,5 +803,40 @@ fn classify_peer_role(hostname: &str) -> OnlinePeerRole {
         OnlinePeerRole::Relay
     } else {
         OnlinePeerRole::Unknown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_abandoned_connectors;
+    use crate::core::online::EasyTierAbandonedConnector;
+    use crate::ui::views::tools::state::ToolsPageState;
+
+    #[test]
+    fn abandoned_connector_notice_keeps_builtin_and_custom_nodes() {
+        let mut state = ToolsPageState::default();
+        let connectors = [
+            EasyTierAbandonedConnector {
+                url: "wss://center.node.1tmc.top".to_string(),
+                failed_attempts: 3,
+            },
+            EasyTierAbandonedConnector {
+                url: "tcp://custom.example:11010".to_string(),
+                failed_attempts: 3,
+            },
+        ];
+
+        apply_abandoned_connectors(&mut state, &connectors);
+        apply_abandoned_connectors(&mut state, &connectors);
+
+        assert_eq!(state.abandoned_nodes.len(), 2);
+        assert_eq!(
+            state.abandoned_nodes[0].as_ref(),
+            "wss://center.node.1tmc.top"
+        );
+        assert_eq!(
+            state.abandoned_nodes[1].as_ref(),
+            "tcp://custom.example:11010"
+        );
     }
 }

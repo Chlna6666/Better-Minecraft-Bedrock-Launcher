@@ -20,7 +20,7 @@ pub fn render_tasks_overlay(
             div()
                 .w(px(500.))
                 .max_w(px(500.))
-                .rounded(px(20.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.18,
@@ -56,7 +56,7 @@ pub fn render_tasks_overlay(
                             Button::new("task-confirm-cancel")
                                 .h(px(38.))
                                 .px(px(16.))
-                                .rounded(px(12.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
                                 .bg(Hsla {
                                     a: 0.06,
                                     ..colors.text_secondary
@@ -76,7 +76,7 @@ pub fn render_tasks_overlay(
                             Button::new("task-confirm-ok")
                                 .h(px(38.))
                                 .px(px(16.))
-                                .rounded(px(12.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
                                 .bg(colors.accent)
                                 .border_0()
                                 .text_size(px(13.))

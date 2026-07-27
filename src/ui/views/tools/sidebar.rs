@@ -53,7 +53,7 @@ fn render_navigation_item(
     div()
         .id(item.id)
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(palette.border)
         .bg(palette.background)
@@ -112,7 +112,7 @@ fn navigation_palette(colors: &ThemeColors, selected: bool) -> NavigationPalette
 fn render_navigation_icon(icon: &'static str, accent: Hsla) -> Div {
     div()
         .size(px(34.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla { a: 0.12, ..accent })
         .flex()
         .items_center()

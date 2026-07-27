@@ -91,7 +91,7 @@ fn render_session_identity(colors: &ThemeColors, state: &ToolsPageState, accent:
         .child(
             div()
                 .size(px(34.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla { a: 0.14, ..accent })
                 .flex()
                 .items_center()

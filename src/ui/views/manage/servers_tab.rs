@@ -547,7 +547,7 @@ pub(super) fn render_server_row(
         )))
         .w_full()
         .h(px(MANAGE_ASSET_ROW_HEIGHT_PX))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(colors.border)
         .bg(colors.surface)
@@ -559,7 +559,7 @@ pub(super) fn render_server_row(
             div()
                 .w(px(32.))
                 .h(px(32.))
-                .rounded(px(8.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(colors.surface_hover)
                 .flex()
                 .items_center()
@@ -646,7 +646,7 @@ pub(super) fn render_server_editor_dialog(
         div()
             .w_full()
             .max_w(px(520.))
-            .rounded(px(22.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .border_1()
             .border_color(Hsla {
                 a: 0.18,

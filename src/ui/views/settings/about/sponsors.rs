@@ -10,9 +10,9 @@ use std::rc::Rc;
 use super::{action_btn, icon_btn};
 
 const SPONSOR_AVATAR_SIZE: f32 = 32.0;
-const SPONSOR_AVATAR_RADIUS: f32 = 10.0;
+const SPONSOR_AVATAR_RADIUS: f32 = crate::ui::theme::tokens::radius::SM;
 const SPONSOR_CARD_WIDTH: f32 = 210.0;
-const SPONSOR_MODAL_RADIUS: f32 = 18.0;
+const SPONSOR_MODAL_RADIUS: f32 = crate::ui::theme::tokens::radius::MD;
 
 pub(super) fn open_sponsors_modal(cx: &mut App) {
     let should_load = cx.update_global(|state: &mut SettingsPageState, cx| {
@@ -411,7 +411,7 @@ fn sponsor_item(colors: &ThemeColors, item: AboutSponsorEntry) -> Stateful<Div> 
             item.user_id.as_ref()
         )))
         .w(px(SPONSOR_CARD_WIDTH))
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.20,
@@ -499,7 +499,7 @@ fn sponsor_skeleton_grid(colors: &ThemeColors, phase: u8) -> Div {
             div()
                 .id(SharedString::from(format!("sponsor-skel-{}", index)))
                 .w(px(SPONSOR_CARD_WIDTH))
-                .rounded(px(14.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.10,
@@ -524,7 +524,7 @@ fn sponsor_skeleton_grid(colors: &ThemeColors, phase: u8) -> Div {
                     div()
                         .h(px(10.))
                         .w(px(120.))
-                        .rounded(px(6.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(colors.border),
                 ),
         );

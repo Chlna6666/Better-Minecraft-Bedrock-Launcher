@@ -62,7 +62,7 @@ pub(super) fn render_about_tab(
         img(IMG_DEV)
             .w(px(44.))
             .h(px(44.))
-            .rounded(px(14.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .opacity(0.95),
         SharedString::from("Chlna6666"),
         i18n.t("AboutSection.dev.description"),
@@ -82,7 +82,7 @@ pub(super) fn render_about_tab(
         img(IMG_LOGO)
             .w(px(44.))
             .h(px(44.))
-            .rounded(px(14.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .opacity(0.95),
         SharedString::from("Better-Minecraft-Bedrock-Launcher"),
         version_line,
@@ -240,7 +240,7 @@ fn icon_btn(
         .id(SharedString::from(format!("icon-btn-{}", title.as_ref())))
         .w(px(34.))
         .h(px(34.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()
@@ -304,7 +304,7 @@ fn about_big_card(
         .flex()
         .items_center()
         .gap(px(14.))
-        .child(div().w(px(44.)).h(px(44.)).rounded(px(14.)).child(icon))
+        .child(div().w(px(44.)).h(px(44.)).rounded(px(crate::ui::theme::tokens::radius::MD)).child(icon))
         .child(
             div()
                 .flex()
@@ -498,12 +498,12 @@ fn thanks_card(
 ) -> Stateful<Div> {
     let mut icon = img(item.img.clone()).w(px(44.)).h(px(44.)).opacity(0.95);
     if item.is_square {
-        icon = icon.rounded(px(14.));
+        icon = icon.rounded(px(crate::ui::theme::tokens::radius::MD));
     } else {
         icon = icon.rounded_full();
     }
     if item.is_small {
-        icon = icon.w(px(36.)).h(px(36.)).rounded(px(12.)).opacity(0.92);
+        icon = icon.w(px(36.)).h(px(36.)).rounded(px(crate::ui::theme::tokens::radius::SM)).opacity(0.92);
     }
 
     let has_action = item.link.is_some() || item.action.is_some();
@@ -512,7 +512,7 @@ fn thanks_card(
         .items_center()
         .gap(px(14.))
         .h(px(100.))
-        .child(div().w(px(44.)).h(px(44.)).rounded(px(14.)).child(icon))
+        .child(div().w(px(44.)).h(px(44.)).rounded(px(crate::ui::theme::tokens::radius::MD)).child(icon))
         .child(
             div()
                 .flex()
@@ -627,7 +627,7 @@ fn render_dependencies_card(colors: &ThemeColors, i18n: &I18n) -> Stateful<Div> 
             div()
                 .w(px(44.))
                 .h(px(44.))
-                .rounded(px(14.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.12,
                     ..colors.accent
@@ -747,7 +747,7 @@ fn action_btn(
         .id(SharedString::from(format!("btn-{}", label.as_ref())))
         .px(px(14.))
         .py(px(10.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.24,

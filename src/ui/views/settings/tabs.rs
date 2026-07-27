@@ -89,7 +89,7 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
             .gap(px(9.))
             .px(px(14.))
             .py(px(10.))
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(bg)
             .border_1()
             .border_color(border)
@@ -158,7 +158,7 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
 
     let container = div()
         .w_full()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.42,
             ..colors.surface

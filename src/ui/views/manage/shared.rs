@@ -314,7 +314,7 @@ pub(super) fn compact_icon_button(
         .id(id)
         .w(px(28.))
         .h(px(28.))
-        .rounded(px(8.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .flex()
         .items_center()
         .justify_center()
@@ -342,7 +342,7 @@ pub(super) fn icon_badge(colors: &ThemeColors, icon_path: &'static str) -> Div {
     div()
         .w(px(40.))
         .h(px(40.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.12,
             ..colors.accent
@@ -386,7 +386,7 @@ pub(super) fn error_panel(colors: &ThemeColors, error: SharedString) -> AnyEleme
     div()
         .w_full()
         .h_full()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.10,
             ..colors.danger

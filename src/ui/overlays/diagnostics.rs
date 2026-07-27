@@ -56,7 +56,7 @@ pub fn render_diagnostics_overlay(
             )
             .child(
                 div()
-                    .rounded(px(12.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .border_1()
                     .border_color(Hsla {
                         a: 0.18,
@@ -84,7 +84,7 @@ pub fn render_diagnostics_overlay(
         .w(card_width)
         .max_w(card_width)
         .max_h(card_height)
-        .rounded(px(20.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.18,
@@ -118,7 +118,7 @@ pub fn render_diagnostics_overlay(
         )
         .child(
             div()
-                .rounded(px(14.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.18,
@@ -435,7 +435,7 @@ fn action_button(
     let mut button = Button::new(id)
         .h(px(38.))
         .px(px(16.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .text_size(px(13.))
         .font_weight(FontWeight::SEMIBOLD)

@@ -235,7 +235,7 @@ fn toolbar_group(colors: &ThemeColors) -> Div {
         .flex()
         .items_center()
         .gap(px(3.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: CHROME_HAIRLINE_ALPHA,
@@ -273,7 +273,7 @@ fn top_icon_button(colors: &ThemeColors, icon_path: &'static str) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .cursor(CursorStyle::PointingHand)
         .hover(|style| {
             style.bg(Hsla {
@@ -296,7 +296,7 @@ fn top_command_button(colors: &ThemeColors, icon_path: &'static str, label: &'st
         .flex()
         .items_center()
         .gap(px(5.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: CHROME_HAIRLINE_ALPHA,
@@ -358,7 +358,7 @@ fn transfer_progress_badge(colors: &ThemeColors, progress: &ChunkTransferProgres
         .w(px(146.0))
         .px(px(8.0))
         .py(px(5.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: CHROME_ELEVATED_ALPHA,
             ..colors.surface_hover

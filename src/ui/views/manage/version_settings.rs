@@ -58,7 +58,7 @@ pub fn render(
             .max_w(relative(1.0))
             .min_w(px(0.))
             .max_h(px(540.))
-            .rounded(px(22.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .border_1()
             .border_color(Hsla {
                 a: 0.22,
@@ -293,7 +293,7 @@ fn render_mouse_lock_card(
                     .id(SharedString::from(format!("mouse-hotkey-{hotkey}")))
                     .px(px(10.))
                     .py(px(6.))
-                    .rounded(px(10.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .border_1()
                     .border_color(if is_active {
                         colors.accent

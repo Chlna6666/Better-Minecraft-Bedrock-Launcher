@@ -88,73 +88,73 @@ pub struct ThemeColors {
 impl LightColors {
     pub fn colors() -> ThemeColors {
         ThemeColors {
-            // 基础颜色 - 参考 update-modal.css :root (浅色模式)
-            bg: rgb(0xffffff).into(),             // #ffffff 纯白背景
-            text_primary: rgb(0x1e293b).into(),   // #1e293b 主文本
-            text_secondary: rgb(0x64748b).into(), // #64748b 次级文本
-            text_muted: rgb(0x94a3b8).into(),     // #94a3b8 淡化文本
+            // 基础颜色 - 暖纸张：微暖米白底 + 暖炭色文字
+            bg: rgb(0xfaf8f4).into(),             // 暖纸张白
+            text_primary: rgb(0x2b2620).into(),   // 暖炭
+            text_secondary: rgb(0x6f675c).into(), // 暖灰棕
+            text_muted: rgb(0x9c9285).into(),     // 淡暖灰
 
-            // 强调色 - 蓝色
-            accent: rgb(0x3b82f6).into(),       // #3b82f6
-            accent_hover: rgb(0x2563eb).into(), // #2563eb
+            // 强调色 - 琥珀橙
+            accent: rgb(0xd97706).into(),       // amber-600
+            accent_hover: rgb(0xb45309).into(), // amber-700
             accent_glow: Hsla {
-                a: 0.40,
-                ..rgb(0x3b82f6).into()
+                a: 0.32,
+                ..rgb(0xd97706).into()
             },
 
-            // 危险色 - 避免红色主题（更中性的橙色）
-            danger: rgb(0xf97316).into(),
+            // 危险色 - 暖赤陶红，与琥珀强调区分
+            danger: rgb(0xc2410c).into(),
 
-            // 表面颜色 - 浅灰色
-            border: rgb(0xd1d5db).into(),        // #d1d5db gray line
-            surface: rgb(0xf8fafc).into(),       // #f8fafc
-            surface_hover: rgb(0xf1f5f9).into(), // #f1f5f9
+            // 表面颜色 - 暖米灰层次
+            border: rgb(0xe4ddd2).into(),        // 暖沙线
+            surface: rgb(0xf3efe8).into(),       // 暖米面
+            surface_hover: rgb(0xebe5da).into(), // 略深一档
             settings_panel_bg: Hsla {
-                a: 0.92,
-                ..rgb(0xffffff).into()
+                a: 0.94,
+                ..rgb(0xfaf8f4).into()
             },
             settings_card_bg: Hsla {
-                a: 0.92,
-                ..rgb(0xf1f5f9).into()
+                a: 0.94,
+                ..rgb(0xf3efe8).into()
             },
             settings_field_bg: Hsla {
-                a: 0.92,
-                ..rgb(0xffffff).into()
+                a: 0.94,
+                ..rgb(0xfaf8f4).into()
             },
 
-            // 导航/玻璃背景 - 参考 index.css: --nav-bg rgba(255, 255, 255, 0.7)
+            // 导航/玻璃背景 - 暖白磨砂
             backdrop: Hsla {
-                a: 0.70,
-                ..rgb(0xffffff).into()
+                a: 0.72,
+                ..rgb(0xfaf8f4).into()
             },
 
             // 进度条
-            progress_track: rgb(0xf8fafc).into(),
-            progress_fill: rgb(0x3b82f6).into(),
+            progress_track: rgb(0xebe5da).into(),
+            progress_fill: rgb(0xd97706).into(),
 
             // 徽章颜色 - 固定色相，只调整明度
-            badge_stable_bg: rgb(0xdcfce7).into(), // 稳定版背景（浅绿）
-            badge_stable_text: rgb(0x166534).into(), // 深绿色文字
-            badge_beta_bg: rgb(0xffedd5).into(),   // 预览版背景（浅橙）
-            badge_beta_text: rgb(0x9a3412).into(), // 橙色文字
+            badge_stable_bg: rgb(0xe3edd8).into(), // 稳定版背景（暖调浅绿）
+            badge_stable_text: rgb(0x3f6212).into(), // 橄榄绿文字
+            badge_beta_bg: rgb(0xfbe8cc).into(),   // 预览版背景（浅琥珀）
+            badge_beta_text: rgb(0x92400e).into(), // 深琥珀文字
 
             // 按钮颜色
-            btn_ghost_text: rgb(0x94a3b8).into(),
-            btn_ghost_hover_bg: rgb(0xf8fafc).into(),
-            btn_primary_text: rgb(0xffffff).into(),
+            btn_ghost_text: rgb(0x9c9285).into(),
+            btn_ghost_hover_bg: rgb(0xf3efe8).into(),
+            btn_primary_text: rgb(0xfffdf9).into(),
 
             // 统计卡片图标颜色
-            stat_blue_bg: rgb(0xdbeafe).into(),
-            stat_blue_text: rgb(0x3b82f6).into(),
-            stat_orange_bg: rgb(0xffedd5).into(),
-            stat_orange_text: rgb(0xf97316).into(),
-            stat_green_bg: rgb(0xdcfce7).into(),
-            stat_green_text: rgb(0x22c55e).into(),
+            stat_blue_bg: rgb(0xdfe8ef).into(),
+            stat_blue_text: rgb(0x40668c).into(),
+            stat_orange_bg: rgb(0xfbe8cc).into(),
+            stat_orange_text: rgb(0xd97706).into(),
+            stat_green_bg: rgb(0xe3edd8).into(),
+            stat_green_text: rgb(0x5f8c3f).into(),
 
             // 窗口控制按钮
-            window_control_normal: rgb(0x94a3b8).into(),
-            window_control_hover_bg: rgb(0xf8fafc).into(),
-            window_control_disabled: rgb(0xcbd5e1).into(),
+            window_control_normal: rgb(0x9c9285).into(),
+            window_control_hover_bg: rgb(0xf3efe8).into(),
+            window_control_disabled: rgb(0xd4ccc0).into(),
         }
     }
 }
@@ -162,71 +162,70 @@ impl LightColors {
 impl DarkColors {
     pub fn colors() -> ThemeColors {
         ThemeColors {
-            // 基础颜色 - 参考 update-modal.css [data-theme='dark'] (深色模式)
-            bg: rgb(0x1e293b).into(),             // #1e293b 深蓝背景
-            text_primary: rgb(0xf8fafc).into(),   // #f8fafc 主文本
-            text_secondary: rgb(0xcbd5e1).into(), // #cbd5e1 次级文本
-            text_muted: rgb(0x64748b).into(),     // #64748b 淡化文本
+            // 基础颜色 - 暖炭底：微暖深棕灰 + 暖纸色文字
+            bg: rgb(0x211e1a).into(),             // 暖炭
+            text_primary: rgb(0xf2ede4).into(),   // 暖纸白
+            text_secondary: rgb(0xb5aca0).into(), // 暖灰
+            text_muted: rgb(0x7d7468).into(),     // 淡暖灰
 
-            // 强调色 - 亮蓝色
-            accent: rgb(0x60a5fa).into(), // #60a5fa
-            accent_hover: rgb(0x3b82f6).into(),
+            // 强调色 - 亮琥珀
+            accent: rgb(0xf59e0b).into(), // amber-500
+            accent_hover: rgb(0xd97706).into(),
             accent_glow: Hsla {
-                a: 0.50,
-                ..rgb(0x60a5fa).into()
+                a: 0.45,
+                ..rgb(0xf59e0b).into()
             },
 
-            // 危险色 - 避免红色主题（更中性的橙色）
-            danger: rgb(0xfb923c).into(),
+            // 危险色 - 暖赤陶红
+            danger: rgb(0xe8663d).into(),
 
-            // 表面颜色 - 深色
-            border: rgb(0x334155).into(),  // #334155 softer slate line
-            surface: rgb(0x0f172a).into(), // #0f172a
-            surface_hover: rgb(0x1e293b).into(), // #1e293b
+            // 表面颜色 - 暖深棕层次
+            border: rgb(0x3d3831).into(),  // 暖深线
+            surface: rgb(0x181512).into(), // 更深底面
+            surface_hover: rgb(0x2b2620).into(),
             settings_panel_bg: Hsla {
-                a: 0.92,
-                ..rgb(0x1e293b).into()
+                a: 0.94,
+                ..rgb(0x211e1a).into()
             },
             settings_card_bg: Hsla {
-                a: 0.92,
-                ..rgb(0x1e293b).into()
+                a: 0.94,
+                ..rgb(0x2b2620).into()
             },
             settings_field_bg: Hsla {
-                a: 0.92,
-                ..rgb(0x0f172a).into()
+                a: 0.94,
+                ..rgb(0x181512).into()
             },
 
-            // 导航/玻璃背景 - keep neutral during theme interpolation to avoid a blue cast.
-            // This matches a CSS glass overlay better when animated.
+            // 导航/玻璃背景 - keep neutral during theme interpolation to avoid a color cast.
             backdrop: hsla(0.0, 0.0, 0.0, 0.70),
 
             // 进度条
-            progress_track: rgb(0x1e293b).into(),
-            progress_fill: rgb(0x60a5fa).into(),
+            progress_track: rgb(0x2b2620).into(),
+            progress_fill: rgb(0xf59e0b).into(),
 
             // 徽章颜色 - 固定色相，只调整明度
-            badge_stable_bg: rgb(0x052e16).into(), // 稳定版背景（深绿）
-            badge_stable_text: rgb(0x86efac).into(), // 浅绿色文字
-            badge_beta_bg: rgb(0x431407).into(),   // 预览版背景（深橙）
-            badge_beta_text: rgb(0xfdba74).into(), // 浅橙色文字
+            badge_stable_bg: rgb(0x232d14).into(), // 稳定版背景（深橄榄）
+            badge_stable_text: rgb(0xbcd69a).into(), // 浅橄榄文字
+            badge_beta_bg: rgb(0x3b2506).into(),   // 预览版背景（深琥珀）
+            badge_beta_text: rgb(0xfbc880).into(), // 浅琥珀文字
 
             // 按钮颜色
-            btn_ghost_text: rgb(0x64748b).into(),
-            btn_ghost_hover_bg: rgb(0x0f172a).into(),
-            btn_primary_text: rgb(0xffffff).into(),
+            btn_ghost_text: rgb(0x7d7468).into(),
+            btn_ghost_hover_bg: rgb(0x181512).into(),
+            btn_primary_text: rgb(0x211404).into(),
 
             // 统计卡片图标颜色
-            stat_blue_bg: rgb(0x0b254f).into(),
-            stat_blue_text: rgb(0x60a5fa).into(),
-            stat_orange_bg: rgb(0x3b1d06).into(),
-            stat_orange_text: rgb(0xfdba74).into(),
-            stat_green_bg: rgb(0x052e16).into(),
-            stat_green_text: rgb(0x86efac).into(),
+            stat_blue_bg: rgb(0x1e2a36).into(),
+            stat_blue_text: rgb(0x8fb3d4).into(),
+            stat_orange_bg: rgb(0x3b2506).into(),
+            stat_orange_text: rgb(0xfbc880).into(),
+            stat_green_bg: rgb(0x232d14).into(),
+            stat_green_text: rgb(0xbcd69a).into(),
 
             // 窗口控制按钮
-            window_control_normal: rgb(0x64748b).into(),
-            window_control_hover_bg: rgb(0x0f172a).into(),
-            window_control_disabled: rgb(0x475569).into(),
+            window_control_normal: rgb(0x7d7468).into(),
+            window_control_hover_bg: rgb(0x181512).into(),
+            window_control_disabled: rgb(0x4d463d).into(),
         }
     }
 }

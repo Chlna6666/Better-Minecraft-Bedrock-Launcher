@@ -98,7 +98,7 @@ impl MapViewerWindowView {
                     .gap(px(4.0))
                     .px(px(10.0))
                     .py(px(5.0))
-                    .rounded(px(5.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::XS))
                     .cursor_pointer()
                     .text_size(px(12.0))
                     .text_color(colors.text_secondary)
@@ -154,7 +154,7 @@ impl MapViewerWindowView {
                     .w(px(380.0))
                     .flex_none()
                     .min_h(px(0.0))
-                    .rounded(px(6.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .border_1()
                     .border_color(Hsla {
                         a: 0.24,
@@ -184,7 +184,7 @@ impl MapViewerWindowView {
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .rounded(px(6.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .border_1()
                     .border_color(Hsla {
                         a: 0.24,
@@ -224,7 +224,7 @@ impl MapViewerWindowView {
             .px(px(8.0))
             .py(px(6.0))
             .ml(px((node.depth as f32) * 14.0))
-            .rounded(px(5.0))
+            .rounded(px(crate::ui::theme::tokens::radius::XS))
             .cursor(CursorStyle::PointingHand)
             .text_size(px(12.0))
             .text_color(if selected {
@@ -311,7 +311,7 @@ impl MapViewerWindowView {
                 || {
                     div()
                         .size_full()
-                        .rounded(px(6.0))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .border_1()
                         .border_color(Hsla {
                             a: 0.24,

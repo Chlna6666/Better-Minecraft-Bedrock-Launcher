@@ -256,7 +256,7 @@ impl HomePageView {
             .h(px(desired_list_h_px * dropdown_factor))
             .relative()
             .top(px(10.0 * (1.0 - dropdown_factor)))
-            .rounded(px(20.0))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .bg(list_bg)
             .border_1()
@@ -382,7 +382,7 @@ impl HomePageView {
             .flex()
             .items_center()
             .gap(px(12.0))
-            .rounded(px(12.0))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(item_bg)
             .hover(move |style| if selected { style } else { style.bg(hover_bg) })
             .active(|style| style.scale(0.97))
@@ -391,7 +391,7 @@ impl HomePageView {
                 div()
                     .w(px(40.0))
                     .h(px(40.0))
-                    .rounded(px(10.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .overflow_hidden()
                     .bg(icon_bg)
                     .flex()
@@ -400,7 +400,7 @@ impl HomePageView {
                     .child(
                         img(icon)
                             .size_full()
-                            .rounded(px(10.0))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .object_fit(ObjectFit::Cover),
                     ),
             )
@@ -432,7 +432,7 @@ impl HomePageView {
                                 div()
                                     .px(px(6.0))
                                     .py(px(2.0))
-                                    .rounded(px(4.0))
+                                    .rounded(px(crate::ui::theme::tokens::radius::XS))
                                     .bg(kind_bg)
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::BOLD)
@@ -682,7 +682,7 @@ impl HomePageView {
             .flex_col()
             .gap(px(8.0))
             .p(px(8.0))
-            .rounded(px(8.0))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .border_1()
             .border_color(panel_border)
@@ -860,7 +860,7 @@ impl Render for HomePageView {
             launcher_root = launcher_root.child(
                 div()
                     .w_full()
-                    .rounded_xl()
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
                     .bg(lerp_color(
                         Hsla {
                             a: 0.12,

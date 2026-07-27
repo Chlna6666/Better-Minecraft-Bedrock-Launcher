@@ -6,6 +6,7 @@ use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
+use crate::ui::theme::colors::ThemeColors;
 use crate::ui::window::debug::devtools;
 use crate::ui::window::debug::state::{DebugRuntimeSnapshot, DebugState, snapshot_runtime_metrics};
 use crate::utils::file_ops;
@@ -449,21 +450,6 @@ fn memory_attribution_summary(runtime: &DebugRuntimeSnapshot) -> String {
         .join("\n")
 }
 
-fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-fn lerp_color(a: impl Into<Hsla>, b: impl Into<Hsla>, t: f32) -> Hsla {
-    let a: Hsla = a.into();
-    let b: Hsla = b.into();
-    Hsla {
-        h: lerp_f32(a.h, b.h, t),
-        s: lerp_f32(a.s, b.s, t),
-        l: lerp_f32(a.l, b.l, t),
-        a: lerp_f32(a.a, b.a, t),
-    }
-}
-
 fn panel_card(
     card: Hsla,
     border: Hsla,
@@ -472,7 +458,7 @@ fn panel_card(
 ) -> Div {
     let title = title.into();
     div()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(card)
         .border_1()
         .border_color(border)
@@ -556,7 +542,7 @@ fn sparkline(history: &std::collections::VecDeque<f32>, accent: Hsla) -> Div {
             div()
                 .w(px(3.))
                 .h(px(56.0 * ratio))
-                .rounded(px(999.))
+                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                 .bg(Hsla { a: 0.88, ..accent })
                 .into_any_element()
         }))
@@ -913,38 +899,27 @@ fn detect_log_tone(line: &str) -> LogLevelTone {
     }
 }
 
-fn log_tone_colors(tone: LogLevelTone, theme_k: f32) -> (Hsla, Hsla, Hsla) {
+fn log_tone_colors(tone: LogLevelTone, colors: &ThemeColors) -> (Hsla, Hsla, Hsla) {
+    let tinted = |foreground: Hsla| {
+        (
+            Hsla {
+                a: 0.10,
+                ..foreground
+            },
+            Hsla {
+                a: 0.26,
+                ..foreground
+            },
+            foreground,
+        )
+    };
     match tone {
-        LogLevelTone::Error => (
-            lerp_color(rgb(0xfef2f2), rgb(0x2a1113), theme_k),
-            lerp_color(rgb(0xfecaca), rgb(0x7f1d1d), theme_k),
-            lerp_color(rgb(0xb91c1c), rgb(0xfca5a5), theme_k),
-        ),
-        LogLevelTone::Warn => (
-            lerp_color(rgb(0xfffbeb), rgb(0x2b2110), theme_k),
-            lerp_color(rgb(0xfde68a), rgb(0x854d0e), theme_k),
-            lerp_color(rgb(0xb45309), rgb(0xfcd34d), theme_k),
-        ),
-        LogLevelTone::Info => (
-            lerp_color(rgb(0xeff6ff), rgb(0x101f33), theme_k),
-            lerp_color(rgb(0xbfdbfe), rgb(0x1d4ed8), theme_k),
-            lerp_color(rgb(0x1d4ed8), rgb(0x93c5fd), theme_k),
-        ),
-        LogLevelTone::Debug => (
-            lerp_color(rgb(0xf0fdf4), rgb(0x0f2218), theme_k),
-            lerp_color(rgb(0xbbf7d0), rgb(0x166534), theme_k),
-            lerp_color(rgb(0x15803d), rgb(0x86efac), theme_k),
-        ),
-        LogLevelTone::Trace => (
-            lerp_color(rgb(0xf5f3ff), rgb(0x1c1633), theme_k),
-            lerp_color(rgb(0xddd6fe), rgb(0x6d28d9), theme_k),
-            lerp_color(rgb(0x7c3aed), rgb(0xc4b5fd), theme_k),
-        ),
-        LogLevelTone::Plain => (
-            lerp_color(rgb(0xf8fafc), rgb(0x0b1020), theme_k),
-            lerp_color(rgb(0xe2e8f0), rgb(0x223044), theme_k),
-            lerp_color(rgb(0x475569), rgb(0xcbd5e1), theme_k),
-        ),
+        LogLevelTone::Error => tinted(colors.danger),
+        LogLevelTone::Warn => tinted(colors.stat_orange_text),
+        LogLevelTone::Info => tinted(colors.stat_blue_text),
+        LogLevelTone::Debug => tinted(colors.stat_green_text),
+        LogLevelTone::Trace => tinted(colors.text_muted),
+        LogLevelTone::Plain => (colors.surface, colors.border, colors.text_secondary),
     }
 }
 
@@ -975,8 +950,7 @@ fn render_log_console(
     text: Hsla,
     border: Hsla,
     muted: Hsla,
-    theme_k: f32,
-    mono: &'static str,
+    colors: &ThemeColors,
     copy: DebugCopy,
     filter: ConsoleFilter,
     height: Pixels,
@@ -991,8 +965,8 @@ fn render_log_console(
     div()
         .h(height)
         .min_h(px(220.))
-        .rounded(px(10.))
-        .bg(lerp_color(rgb(0xf8fafc), rgb(0x0b1020), theme_k))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .bg(colors.surface)
         .border_1()
         .border_color(border)
         .p(px(10.))
@@ -1017,10 +991,10 @@ fn render_log_console(
                         .into_iter()
                         .map(|line| {
                             let tone = detect_log_tone(line);
-                            let (row_bg, row_border, badge) = log_tone_colors(tone, theme_k);
+                            let (row_bg, row_border, badge) = log_tone_colors(tone, colors);
                             div()
                                 .w_full()
-                                .rounded(px(8.))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .bg(row_bg)
                                 .border_1()
                                 .border_color(row_border)
@@ -1035,7 +1009,7 @@ fn render_log_console(
                                         .min_w(px(52.))
                                         .px(px(6.))
                                         .py(px(2.))
-                                        .rounded(px(999.))
+                                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                         .bg(Hsla { a: 0.18, ..badge })
                                         .text_size(px(10.))
                                         .font_weight(FontWeight::SEMIBOLD)
@@ -1090,13 +1064,19 @@ impl Render for DebugView {
             px(460.)
         };
 
-        let bg = lerp_color(rgb(0xf6f7fb), rgb(0x0b1220), theme_k);
-        let card = lerp_color(rgb(0xffffff), rgb(0x111827), theme_k);
-        let border = lerp_color(rgb(0xe5e7eb), rgb(0x223044), theme_k);
-        let text = lerp_color(rgb(0x0f172a), rgb(0xe5e7eb), theme_k);
-        let muted = lerp_color(rgb(0x64748b), rgb(0x94a3b8), theme_k);
-        let accent = lerp_color(rgb(0x0ea5e9), rgb(0x67e8f9), theme_k);
-        let mono = "Consolas";
+        let theme_state = cx.global::<ThemeState>();
+        let colors = crate::ui::theme::colors::lerp_theme_colors(
+            &crate::ui::theme::colors::LightColors::colors(),
+            &crate::ui::theme::colors::DarkColors::colors(),
+            theme_k,
+            theme_state.accent,
+        );
+        let bg = colors.bg;
+        let card = colors.settings_card_bg;
+        let border = colors.border;
+        let text = colors.text_primary;
+        let muted = colors.text_muted;
+        let accent = colors.accent;
 
         let update_modal = format!(
             "show_modal={} modal_visible={} downloading={}",
@@ -1119,7 +1099,7 @@ impl Render for DebugView {
                 .when(narrow_layout, |this| this.min_w(px(120.)))
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(px(10.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(if active {
                     Hsla { a: 0.18, ..accent }
                 } else {
@@ -1144,7 +1124,7 @@ impl Render for DebugView {
             div()
                 .px(px(8.))
                 .py(px(5.))
-                .rounded(px(999.))
+                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                 .bg(if active {
                     Hsla { a: 0.18, ..accent }
                 } else {
@@ -1162,15 +1142,15 @@ impl Render for DebugView {
         let action_button = |id: &'static str, label: &'static str| {
             Button::new(id)
                 .label(label)
-                .bg(lerp_color(rgb(0xf8fafc), rgb(0x0f172a), theme_k))
+                .bg(colors.surface)
                 .border_color(border)
                 .text_color(text)
         };
 
         let path_block = |label: &'static str, value: SharedString| {
             div()
-                .rounded(px(10.))
-                .bg(lerp_color(rgb(0xf8fafc), rgb(0x0b1020), theme_k))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                .bg(colors.surface)
                 .border_1()
                 .border_color(border)
                 .p(px(10.))
@@ -1195,8 +1175,8 @@ impl Render for DebugView {
                 px(180.).into()
             })
             .min_w(px(0.))
-            .rounded(px(12.))
-            .bg(lerp_color(rgb(0xf8fafc), rgb(0x0f172a), theme_k))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
+            .bg(colors.surface)
             .border_1()
             .border_color(border)
             .p(px(10.))
@@ -1608,8 +1588,8 @@ impl Render for DebugView {
                             .gap(px(8.))
                             .child(
                                 div()
-                                    .rounded(px(10.))
-                                    .bg(lerp_color(rgb(0xf8fafc), rgb(0x0b1020), theme_k))
+                                    .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                    .bg(colors.surface)
                                     .border_1()
                                     .border_color(border)
                                     .p(px(10.))
@@ -1657,12 +1637,8 @@ impl Render for DebugView {
                                     .children(if debug.inspector_history.is_empty() {
                                         vec![
                                             div()
-                                                .rounded(px(8.))
-                                                .bg(lerp_color(
-                                                    rgb(0xf8fafc),
-                                                    rgb(0x0f172a),
-                                                    theme_k,
-                                                ))
+                                                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                                                .bg(colors.surface)
                                                 .border_1()
                                                 .border_color(border)
                                                 .p(px(10.))
@@ -1679,12 +1655,8 @@ impl Render for DebugView {
                                             .enumerate()
                                             .map(|(index, entry)| {
                                                 div()
-                                                    .rounded(px(8.))
-                                                    .bg(lerp_color(
-                                                        rgb(0xf8fafc),
-                                                        rgb(0x0f172a),
-                                                        theme_k,
-                                                    ))
+                                                    .rounded(px(crate::ui::theme::tokens::radius::MD))
+                                                    .bg(colors.surface)
                                                     .border_1()
                                                     .border_color(border)
                                                     .p(px(10.))
@@ -1744,8 +1716,8 @@ impl Render for DebugView {
                         copy.element_viewer,
                         div().flex().flex_col().gap(px(10.)).child(
                             div()
-                                .rounded(px(10.))
-                                .bg(lerp_color(rgb(0xf8fafc), rgb(0x0b1020), theme_k))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                .bg(colors.surface)
                                 .border_1()
                                 .border_color(border)
                                 .p(px(12.))
@@ -1797,7 +1769,7 @@ impl Render for DebugView {
                                     .gap(px(12.))
                                     .children([
                                         panel_card(
-                                            lerp_color(rgb(0xf8fafc), rgb(0x101826), theme_k),
+                                            colors.surface,
                                             border,
                                             copy.layout,
                                             div()
@@ -1824,7 +1796,7 @@ impl Render for DebugView {
                                         .flex_1()
                                         .into_any_element(),
                                         panel_card(
-                                            lerp_color(rgb(0xf8fafc), rgb(0x101826), theme_k),
+                                            colors.surface,
                                             border,
                                             copy.appearance,
                                             div()
@@ -1864,7 +1836,7 @@ impl Render for DebugView {
                                     ]),
                             )
                             .child(panel_card(
-                                lerp_color(rgb(0xf8fafc), rgb(0x101826), theme_k),
+                                colors.surface,
                                 border,
                                 copy.live_style,
                                 div()
@@ -1877,11 +1849,11 @@ impl Render for DebugView {
                                                 crate::ui::theme::colors::parse_hex_color_to_hsla(
                                                     hex,
                                                 )
-                                                .unwrap_or_else(|| rgb(0x0ea5e9).into());
+                                                .unwrap_or(colors.accent);
                                             div()
                                                 .w(px(28.))
                                                 .h(px(28.))
-                                                .rounded(px(999.))
+                                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                                 .bg(color)
                                                 .border_1()
                                                 .border_color(Hsla { a: 0.24, ..text })
@@ -1912,7 +1884,7 @@ impl Render for DebugView {
                                     ),
                             ))
                             .child(panel_card(
-                                lerp_color(rgb(0xf8fafc), rgb(0x101826), theme_k),
+                                colors.surface,
                                 border,
                                 copy.tools,
                                 inspector_controls,
@@ -2128,7 +2100,7 @@ impl Render for DebugView {
                                 ))
                                 .child(sparkline(
                                     &runtime.render_time_history_ms,
-                                    lerp_color(rgb(0xf97316), rgb(0xfbbf24), theme_k),
+                                    colors.stat_orange_text,
                                 )),
                         )
                         .flex_1()
@@ -2811,8 +2783,8 @@ impl Render for DebugView {
                 border,
                 copy.stall_monitor,
                 div()
-                    .rounded(px(10.))
-                    .bg(lerp_color(rgb(0xf8fafc), rgb(0x0b1020), theme_k))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
+                    .bg(colors.surface)
                     .border_1()
                     .border_color(border)
                     .p(px(10.))
@@ -3052,7 +3024,7 @@ impl Render for DebugView {
                     .children(active_console_error.map(|error| {
                         div()
                             .text_size(px(11.))
-                            .text_color(lerp_color(rgb(0xb91c1c), rgb(0xfca5a5), theme_k))
+                            .text_color(colors.danger)
                             .whitespace_normal()
                             .child(error)
                     }))
@@ -3075,8 +3047,7 @@ impl Render for DebugView {
                         text,
                         border,
                         muted,
-                        theme_k,
-                        mono,
+                        &colors,
                         copy,
                         self.console_filter,
                         console_height,
@@ -3108,7 +3079,7 @@ impl Render for DebugView {
                 .size_full()
                 .min_h(px(0.))
                 .min_w(px(0.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(card)
                 .border_1()
                 .border_color(border)

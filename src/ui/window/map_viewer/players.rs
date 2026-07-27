@@ -445,7 +445,7 @@ pub(super) fn render_player_item_row(
         .gap(px(8.0))
         .px(px(8.0))
         .py(px(5.0))
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.20,
             ..colors.surface_hover

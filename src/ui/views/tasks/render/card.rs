@@ -1,6 +1,7 @@
 use super::*;
-use crate::ui::animation::{ease_in_cubic_motion, ease_out_cubic_motion};
+use crate::ui::animation::{spring_motion, spring_smooth, spring_snappy};
 use crate::ui::components::icon::themed_icon;
+use crate::ui::theme::tokens::motion;
 use crate::ui::views::tasks::TaskCardMotionKind;
 use crate::ui::views::tasks::{TaskCardViewModel, TaskConfirmAction, TasksPageView};
 use gpui::AnimationExt;
@@ -9,6 +10,10 @@ use gpui::render_fingerprint;
 use lucide_gpui::icons as lucide_icons;
 use std::sync::Arc;
 use std::time::Duration;
+
+// 与 tasks.rs 的 TASK_CARD_EXIT_ANIMATION_MS 对齐：过渡卡片会在该时刻被移除，
+// 弹簧窗口不能超过清理时限，否则卡片会在动画中途消失。
+const TASK_CARD_EXIT_WINDOW_MS: u64 = 600;
 
 fn stable_task_id(task_id: &str) -> u64 {
     render_fingerprint(task_id)
@@ -41,7 +46,7 @@ fn meta_item(
 }
 
 fn meta_separator(colors: &ThemeColors) -> Div {
-    div().w(px(2.)).h(px(2.)).rounded(px(999.)).bg(Hsla {
+    div().w(px(2.)).h(px(2.)).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
         a: 0.16,
         ..task_text_secondary(colors)
     })
@@ -231,7 +236,7 @@ pub(crate) fn render_task_card(
             div()
                 .w(px(46.))
                 .h(px(46.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -304,11 +309,11 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Enter => base_card
                 .with_animation(
                     ("task-card-motion-enter", stable_task_id(model.id.as_ref())),
-                    ease_out_cubic_motion(Duration::from_millis(240)),
+                    spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
                     |card, progress| {
                         card.opacity(0.15 + progress * 0.85)
                             .relative()
-                            .top(px((1.0 - progress) * 18.0))
+                            .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
                     },
                 )
                 .into_any_element(),
@@ -318,16 +323,14 @@ pub(crate) fn render_task_card(
                         "task-card-motion-complete",
                         stable_task_id(model.id.as_ref()),
                     ),
-                    ease_out_cubic_motion(Duration::from_millis(320)),
+                    spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
                     move |card, progress| {
                         let pulse = if progress < 0.5 {
                             progress * 2.0
                         } else {
-                            (1.0 - progress) * 2.0
+                            ((1.0 - progress) * 2.0).clamp(0.0, 1.0)
                         };
                         card.opacity(0.88 + pulse * 0.12)
-                            .relative()
-                            .top(px(-4.0 * pulse))
                             .border_color(Hsla {
                                 a: 0.10 + pulse * 0.26,
                                 ..completed_accent
@@ -342,12 +345,12 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Warn => base_card
                 .with_animation(
                     ("task-card-motion-warn", stable_task_id(model.id.as_ref())),
-                    ease_out_cubic_motion(Duration::from_millis(220)),
+                    spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
                     move |card, progress| {
                         let pulse = if progress < 0.5 {
                             progress * 2.0
                         } else {
-                            (1.0 - progress) * 2.0
+                            ((1.0 - progress) * 2.0).clamp(0.0, 1.0)
                         };
                         card.opacity(0.92 + pulse * 0.08)
                             .border_color(Hsla {
@@ -364,13 +367,14 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Exit => base_card
                 .with_animation(
                     ("task-card-motion-exit", stable_task_id(model.id.as_ref())),
-                    ease_in_cubic_motion(Duration::from_millis(220)),
+                    spring_motion(spring_snappy(), Duration::from_millis(TASK_CARD_EXIT_WINDOW_MS)),
                     move |card, progress| {
+                        let progress = progress.clamp(0.0, 1.0);
                         let fade = 1.0 - progress;
-                        let collapsed = (1.0 - progress).clamp(0.0, 1.0);
+                        let collapsed = fade;
                         card.opacity(fade)
                             .relative()
-                            .top(px(-10.0 * progress))
+                            .top(px(-motion::ENTRANCE_OFFSET * progress))
                             .max_h(px(144.0 * collapsed))
                             .px(px(16.0 * collapsed))
                             .py(px(14.0 * collapsed))

@@ -731,7 +731,7 @@ fn render_window_header(
                         .flex_none()
                         .w(px(28.))
                         .h(px(28.))
-                        .rounded(px(9.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -809,7 +809,7 @@ fn section_divider(colors: &ThemeColors) -> Div {
 fn section_shell(colors: &ThemeColors) -> Div {
     div()
         .w_full()
-        .rounded(px(18.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .px(px(18.))
         .py(px(18.))
         .bg(Hsla {
@@ -828,7 +828,7 @@ fn section_shell(colors: &ThemeColors) -> Div {
 
 fn overlay_panel(colors: &ThemeColors) -> Div {
     div()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.88,
             ..colors.settings_panel_bg
@@ -877,7 +877,7 @@ fn titlebar_button(
         .flex_shrink_0()
         .w(if compact { px(24.) } else { px(32.) })
         .h(px(32.))
-        .rounded(px(9.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()
@@ -1126,7 +1126,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                     .unwrap_or_else(|| i18n.t("Import.errors.missingUuid").to_string());
                 card = card.child(
                     div()
-                        .rounded(px(10.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .px(px(10.))
                         .py(px(8.))
                         .bg(Hsla {
@@ -1267,7 +1267,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                     .unwrap_or_else(|| i18n.t("Import.errors.missingUuid").to_string());
                 card = card.child(
                     div()
-                        .rounded(px(10.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .px(px(10.))
                         .py(px(8.))
                         .bg(Hsla {
@@ -1360,7 +1360,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                 .unwrap_or_else(|| i18n.t("Import.errors.missingUuid").to_string());
             card = card.child(
                 div()
-                    .rounded(px(10.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .px(px(10.))
                     .py(px(8.))
                     .bg(Hsla {
@@ -1409,7 +1409,7 @@ fn render_preview_card(this: &ImportWindowView, colors: &ThemeColors, cx: &App) 
                 list = list.child(
                     div()
                         .id(("import-sub-pack", index))
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .px(px(10.))
                         .py(px(8.))
                         .bg(Hsla {
@@ -1646,7 +1646,7 @@ fn preview_info_row(
 ) -> AnyElement {
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .px(px(12.))
         .py(px(10.))
         .bg(Hsla {
@@ -1721,7 +1721,7 @@ fn render_embedded_pack_list(
         list = list.child(
             div()
                 .id(("import-embedded-pack", index))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .px(px(10.))
                 .py(px(8.))
                 .bg(Hsla {
@@ -1844,7 +1844,7 @@ fn render_world_pack_reference_list(
         list = list.child(
             div()
                 .id(("world-pack-reference", index))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .px(px(12.))
                 .py(px(10.))
                 .bg(Hsla {
@@ -1906,7 +1906,7 @@ fn render_world_pack_reference_list(
                 .when(!matched, |this| {
                     this.child(
                         div()
-                            .rounded(px(10.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .px(px(10.))
                             .py(px(8.))
                             .bg(Hsla {
@@ -1981,7 +1981,7 @@ fn info_summary_panel(
         .unwrap_or_else(|| SharedString::from("-"));
 
     div()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .px(px(12.))
         .py(px(12.))
         .flex()
@@ -2192,7 +2192,7 @@ fn render_status_box(this: &ImportWindowView, colors: &ThemeColors) -> Option<An
     };
     Some(
         div()
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .px(px(12.))
             .py(px(10.))
             .bg(Hsla { a: 0.10, ..tone })
@@ -2370,7 +2370,7 @@ fn render_conflict_dialog(
                                 panel =
                                     panel.child(
                                         div()
-                                            .rounded(px(18.))
+                                            .rounded(px(crate::ui::theme::tokens::radius::MD))
                                             .bg(Hsla {
                                                 a: 0.42,
                                                 ..colors.surface
@@ -2487,7 +2487,7 @@ fn render_conflict_compare_panel(
     cx: &App,
 ) -> AnyElement {
     div()
-        .rounded(px(18.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.42,
             ..colors.surface
@@ -2595,7 +2595,7 @@ fn render_conflict_pack_card(
     div()
         .flex_1()
         .min_w(px(0.))
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(card_background)
         .border_1()
         .border_color(Hsla {
@@ -2682,7 +2682,7 @@ fn render_conflict_pack_card(
 fn primary_button(colors: &ThemeColors, label: SharedString, disabled: bool) -> Div {
     div()
         .h(px(46.))
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .flex()
         .items_center()
         .justify_center()
@@ -2706,7 +2706,7 @@ fn primary_button(colors: &ThemeColors, label: SharedString, disabled: bool) -> 
 fn secondary_button(colors: &ThemeColors, label: SharedString, disabled: bool) -> Div {
     div()
         .h(px(46.))
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .flex()
         .items_center()
         .justify_center()
@@ -2750,7 +2750,7 @@ fn meta_pill(colors: &ThemeColors, label: SharedString, accent: bool) -> AnyElem
     div()
         .px(px(7.))
         .py(px(4.))
-        .rounded(px(7.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(background)
         .text_size(px(10.))
         .font_weight(FontWeight::MEDIUM)

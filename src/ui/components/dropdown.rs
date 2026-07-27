@@ -289,7 +289,7 @@ pub fn render_overlay(
         .top(panel_top_left.y)
         .w(active.width)
         .h(active.animated_h)
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .overflow_hidden()
         .relative()
         .occlude()
@@ -367,7 +367,7 @@ pub fn render_overlay(
 
                         div()
                             .h(px(MENU_ROW_HEIGHT))
-                            .rounded(px(8.))
+                            .rounded(px(crate::ui::theme::tokens::radius::MD))
                             .px(px(10.))
                             .flex()
                             .items_center()

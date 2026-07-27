@@ -473,7 +473,7 @@ pub fn render_app_chrome(
                         |path| {
                             img(path)
                                 .size(icon_w)
-                                .rounded(px(5.0))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .object_fit(ObjectFit::Contain)
                                 .decode_to_bounds()
                                 .into_any_element()

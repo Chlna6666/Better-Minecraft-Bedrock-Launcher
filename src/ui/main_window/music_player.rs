@@ -26,7 +26,7 @@ const POPUP_WIDTH: f32 = 324.0;
 const POPUP_HEIGHT: f32 = 164.0;
 const POPUP_PAD: f32 = 14.0;
 const COVER_SIZE: f32 = 78.0;
-const COVER_RADIUS: f32 = 16.0;
+const COVER_RADIUS: f32 = crate::ui::theme::tokens::radius::MD;
 const POPUP_GAP: f32 = 10.0;
 const LEFT_COLUMN_WIDTH: f32 = COVER_SIZE;
 const RIGHT_COLUMN_WIDTH: f32 = POPUP_WIDTH - POPUP_PAD * 2.0 - LEFT_COLUMN_WIDTH - POPUP_GAP;
@@ -488,7 +488,7 @@ pub fn render_music_player(
                 .right(popup_right)
                 .w(popup_width)
                 .h(popup_height)
-                .rounded(px(20.0))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .overflow_hidden()
                 .opacity(popup_opacity)
                 .bg(popup_bg)

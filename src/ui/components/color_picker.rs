@@ -356,7 +356,7 @@ pub fn color_picker_control(
     let input = div()
         .w(px(180.0))
         .h(px(36.0))
-        .rounded(px(12.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .text_color(colors.text_primary)
         .bg(Hsla {
             a: 0.82,
@@ -375,7 +375,7 @@ pub fn color_picker_control(
             div()
                 .w(px(12.0))
                 .h(px(12.0))
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::theme::tokens::radius::XS))
                 .bg(preview_swatch)
                 .border_1()
                 .border_color(Hsla {
@@ -394,7 +394,7 @@ pub fn color_picker_control(
         let mut chip = div()
             .w(px(PRESET_CHIP_SIZE))
             .h(px(PRESET_CHIP_SIZE))
-            .rounded(px(6.0))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(swatch)
             .border_1()
             .border_color(if active {
@@ -431,7 +431,7 @@ pub fn color_picker_control(
         .relative()
         .w(px(SATURATION_VALUE_WIDTH))
         .h(px(SATURATION_VALUE_HEIGHT))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .overflow_hidden()
         .border_1()
         .border_color(Hsla {
@@ -453,7 +453,7 @@ pub fn color_picker_control(
     let mut hue_bar_fill = div()
         .w_full()
         .h_full()
-        .rounded(px(999.0))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .overflow_hidden()
         .flex();
     for segment in 0..HUE_SEGMENTS {
@@ -474,7 +474,7 @@ pub fn color_picker_control(
         .relative()
         .w(px(HUE_BAR_WIDTH))
         .h(px(COLOR_BAR_HEIGHT))
-        .rounded(px(999.0))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .border_1()
         .border_color(Hsla {
             a: 0.40,
@@ -497,7 +497,7 @@ pub fn color_picker_control(
         .relative()
         .w_full()
         .h_full()
-        .rounded(px(999.0))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .overflow_hidden()
         .child(alpha_checker_grid)
         .child(div().absolute().inset_0().bg(linear_gradient(
@@ -516,7 +516,7 @@ pub fn color_picker_control(
         .relative()
         .w(px(ALPHA_BAR_WIDTH))
         .h(px(COLOR_BAR_HEIGHT))
-        .rounded(px(999.0))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .border_1()
         .border_color(Hsla {
             a: 0.40,
@@ -527,7 +527,7 @@ pub fn color_picker_control(
 
     let popup = div()
         .w(px(286.0))
-        .rounded(px(12.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.97,
             ..colors.settings_panel_bg
@@ -693,7 +693,7 @@ pub fn color_picker_control(
                         .top(px(-2.0))
                         .w(px(BAR_HANDLE_WIDTH))
                         .h(px(BAR_HANDLE_HEIGHT))
-                        .rounded(px(999.0))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(hsla(0.0, 0.0, 1.0, 0.96))
                         .border_2()
                         .border_color(hsla(0.0, 0.0, 0.08, 0.82))
@@ -707,7 +707,7 @@ pub fn color_picker_control(
                             div()
                                 .w(px(2.0))
                                 .h(px(8.0))
-                                .rounded(px(999.0))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .bg(hsla(0.0, 0.0, 0.20, 0.60))
                                 .mx_auto()
                                 .mt(px(3.0)),
@@ -774,7 +774,7 @@ pub fn color_picker_control(
                         .top(px(-2.0))
                         .w(px(BAR_HANDLE_WIDTH))
                         .h(px(BAR_HANDLE_HEIGHT))
-                        .rounded(px(999.0))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(hsla(0.0, 0.0, 1.0, 0.96))
                         .border_2()
                         .border_color(hsla(0.0, 0.0, 0.08, 0.82))
@@ -788,7 +788,7 @@ pub fn color_picker_control(
                             div()
                                 .w(px(2.0))
                                 .h(px(8.0))
-                                .rounded(px(999.0))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .bg(hsla(0.0, 0.0, 0.20, 0.60))
                                 .mx_auto()
                                 .mt(px(3.0)),
@@ -811,7 +811,7 @@ pub fn color_picker_control(
                     div()
                         .w(px(PRESET_CHIP_SIZE))
                         .h(px(PRESET_CHIP_SIZE))
-                        .rounded(px(6.0))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(preview_swatch)
                         .border_1()
                         .border_color(Hsla {
@@ -824,7 +824,7 @@ pub fn color_picker_control(
     let popup_toggle = div()
         .h(px(32.0))
         .px(px(6.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(colors.settings_field_bg)
         .border_1()
         .border_color(Hsla {
@@ -849,7 +849,7 @@ pub fn color_picker_control(
             div()
                 .w(px(PRESET_CHIP_SIZE))
                 .h(px(PRESET_CHIP_SIZE))
-                .rounded(px(7.0))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(preview_swatch)
                 .border_1()
                 .border_color(Hsla {

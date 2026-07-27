@@ -253,7 +253,7 @@ impl MapViewerWindowView {
                     .w_full()
                     .h(px(30.0))
                     .px(px(8.0))
-                    .rounded(px(8.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
                     .border_1()
                     .border_color(if invalid {
                         colors.danger
@@ -745,7 +745,7 @@ pub(super) fn dock_close_button(colors: &ThemeColors) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .cursor(CursorStyle::PointingHand)
         .text_color(colors.text_secondary)
         .hover(|style| {
@@ -774,7 +774,7 @@ pub(super) fn tab_button_with_icon(
         .gap(px(5.0))
         .px(px(10.0))
         .py(px(5.0))
-        .rounded(px(5.0))
+        .rounded(px(crate::ui::theme::tokens::radius::XS))
         .text_size(px(12.0))
         .cursor(CursorStyle::PointingHand)
         .text_color(if active {
@@ -819,7 +819,7 @@ pub(super) fn overlay_panel(colors: &ThemeColors) -> Div {
         .absolute()
         .px(px(8.0))
         .py(px(8.0))
-        .rounded(px(10.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.14,
@@ -849,7 +849,7 @@ pub(super) fn toolbar_button(colors: &ThemeColors, label: impl Into<SharedString
     div()
         .px(px(10.0))
         .py(px(6.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: CHROME_HAIRLINE_ALPHA,
@@ -880,7 +880,7 @@ pub(super) fn mode_button(
     div()
         .px(px(10.0))
         .py(px(6.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(if active { colors.accent } else { colors.border })
         .bg(if active {
@@ -919,7 +919,7 @@ pub(super) fn status_badge(colors: &ThemeColors, label: impl Into<SharedString>)
     div()
         .px(px(9.0))
         .py(px(5.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: CHROME_ELEVATED_ALPHA,
             ..colors.surface_hover
@@ -933,7 +933,7 @@ pub(super) fn danger_button(colors: &ThemeColors, label: impl Into<SharedString>
     div()
         .px(px(10.0))
         .py(px(6.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.40,

@@ -169,7 +169,7 @@ fn stat_metric(
                     div()
                         .w(px(28.))
                         .h(px(28.))
-                        .rounded(px(9.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(icon_bg)
                         .flex()
                         .items_center()
@@ -354,7 +354,7 @@ pub fn render_update_modal(
                             div()
                                 .px(px(8.))
                                 .py(px(3.))
-                                .rounded(px(99.))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .bg(channel_bg)
                                 .text_size(px(11.))
                                 .font_weight(FontWeight::BOLD)
@@ -366,7 +366,7 @@ pub fn render_update_modal(
                             div()
                                 .px(px(6.))
                                 .py(px(2.))
-                                .rounded(px(4.))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .bg(colors.surface)
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
@@ -542,7 +542,7 @@ pub fn render_update_modal(
                 div()
                     .h(px(11.))
                     .w_full()
-                    .rounded(px(99.))
+                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
                     .bg(with_alpha(colors.accent, 0.10))
                     .border_1()
                     .border_color(with_alpha(colors.accent, 0.16))
@@ -554,7 +554,7 @@ pub fn render_update_modal(
                             .top(px(2.))
                             .bottom(px(2.))
                             .w(relative(0.36))
-                            .rounded(px(99.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                             .bg(linear_gradient(
                                 90.0,
                                 linear_color_stop(with_alpha(colors.progress_fill, 0.22), 0.0),
@@ -571,18 +571,12 @@ pub fn render_update_modal(
                             .relative()
                             .h_full()
                             .w(relative(progress_width))
-                            .rounded(px(99.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                             .bg(linear_gradient(
                                 90.0,
                                 linear_color_stop(colors.progress_fill, 0.0),
                                 linear_color_stop(colors.accent_hover, 1.0),
                             ))
-                            .shadow(vec![BoxShadow {
-                                color: with_alpha(colors.accent_glow, 0.24),
-                                blur_radius: px(16.0),
-                                spread_radius: px(-3.0),
-                                offset: point(px(0.0), px(0.0)),
-                            }])
                             .child(
                                 div()
                                     .absolute()
@@ -590,7 +584,7 @@ pub fn render_update_modal(
                                     .bottom(px(1.))
                                     .right(px(4.))
                                     .w(px(36.))
-                                    .rounded(px(99.))
+                                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                     .bg(with_alpha(colors.btn_primary_text, 0.20)),
                             )
                             .into_any_element()
@@ -634,7 +628,7 @@ pub fn render_update_modal(
         .h(card_h)
         .flex()
         .flex_col()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .overflow_hidden()
         .occlude()
         .bg(card_bg)
@@ -643,11 +637,11 @@ pub fn render_update_modal(
                 h: 0.,
                 s: 0.,
                 l: 0.,
-                a: 0.30,
+                a: 0.16,
             },
-            blur_radius: px(40.),
+            blur_radius: px(24.),
             spread_radius: px(0.),
-            offset: point(px(0.), px(16.)),
+            offset: point(px(0.), px(12.)),
         }])
         .border_0()
         .child(div().px(px(24.)).pt(px(24.)).pb(px(0.)).child(header))
@@ -671,7 +665,7 @@ pub fn render_update_modal(
                         .min_h(px(46.))
                         .px(px(18.))
                         .py(px(10.))
-                        .rounded(px(10.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .cursor_pointer()
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
@@ -680,6 +674,7 @@ pub fn render_update_modal(
                         .border_1()
                         .border_color(with_alpha(colors.danger, 0.18))
                         .hover(|this| this.bg(with_alpha(colors.danger, 0.13)))
+                        .active(|this| this.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
                         .on_mouse_down(MouseButton::Left, {
                             let id = task_id.clone();
                             move |_, _window, cx| {
@@ -779,7 +774,7 @@ pub fn render_update_modal(
                         );
                     let download_summary = div()
                         .w_full()
-                        .rounded(px(14.))
+                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                         .bg(accent_tint(colors.accent, 0.12))
                         .border_l_2()
                         .border_color(with_alpha(colors.accent, 0.70))
@@ -829,7 +824,7 @@ pub fn render_update_modal(
                         .children(download_error.clone().map(|e| {
                             div()
                                 .flex_none()
-                                .rounded(px(10.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
                                 .border_1()
                                 .border_color(with_alpha(colors.danger, 0.18))
                                 .bg(with_alpha(colors.danger, 0.07))
@@ -888,7 +883,7 @@ pub fn render_update_modal(
                         .id("update-later")
                         .px(px(20.))
                         .py(px(10.))
-                        .rounded(px(8.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .cursor_pointer()
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
@@ -907,13 +902,16 @@ pub fn render_update_modal(
                             .id("update-now")
                             .px(px(20.))
                             .py(px(10.))
-                            .rounded(px(8.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .cursor_pointer()
                             .text_size(px(14.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(hsla(0., 0., 1., 1.0))
+                            .text_color(colors.btn_primary_text)
                             .bg(colors.accent)
-                            .hover(|this| this.bg(colors.accent_hover));
+                            .hover(|this| this.bg(colors.accent_hover))
+                            .active(|this| {
+                                this.scale(crate::ui::theme::tokens::motion::PRESS_SCALE)
+                            });
                         if let Some(url) = asset_url.clone() {
                             let filename_hint = asset_name.clone();
                             el = el.on_mouse_down(MouseButton::Left, move |_, _window, cx| {
@@ -1025,7 +1023,7 @@ pub fn render_update_modal(
                                 .bg(colors.surface)
                                 .border_1()
                                 .border_color(panel_edge_color)
-                                .rounded(px(8.))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .px(px(10.))
                                 .py(px(6.))
                                 .child(
@@ -1050,7 +1048,7 @@ pub fn render_update_modal(
                                 .bg(colors.surface)
                                 .border_1()
                                 .border_color(panel_edge_color)
-                                .rounded(px(8.))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .px(px(10.))
                                 .py(px(6.))
                                 .child(
@@ -1073,7 +1071,7 @@ pub fn render_update_modal(
                         .flex_none()
                         .h(changelog_container_height)
                         .min_h(changelog_container_height)
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(colors.surface)
                         .border_1()
                         .border_color(panel_edge_color)

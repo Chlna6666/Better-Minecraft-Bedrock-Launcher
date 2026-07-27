@@ -39,7 +39,7 @@ fn empty_state(colors: &ThemeColors) -> AnyElement {
                 .child(
                     div()
                         .size(px(54.))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.10,
                             ..colors.accent

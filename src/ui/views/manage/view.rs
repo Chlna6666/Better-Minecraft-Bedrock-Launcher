@@ -300,7 +300,7 @@ impl ManagePageView {
                     .when_some(state.error.clone(), |this, error| {
                         this.child(
                             div()
-                                .rounded(px(12.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
                                 .p(px(10.))
                                 .bg(Hsla {
                                     a: 0.12,
@@ -367,7 +367,7 @@ impl ManagePageView {
                                     .h_full()
                                     .px(px(10.))
                                     .py(px(9.))
-                                    .rounded(px(12.))
+                                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                                     .cursor_pointer()
                                     .active(|style| style.scale(0.98))
                                     .border_1()
@@ -421,7 +421,7 @@ impl ManagePageView {
                                                 div()
                                                     .w(px(46.))
                                                     .h(px(46.))
-                                                    .rounded(px(12.))
+                                                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                                                     .overflow_hidden()
                                                     .border_1()
                                                     .border_color(Hsla {
@@ -445,7 +445,7 @@ impl ManagePageView {
                                                     .child(
                                                         img(icon)
                                                             .size_full()
-                                                            .rounded(px(12.))
+                                                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                                                             .object_fit(ObjectFit::Cover),
                                                     ),
                                             )
@@ -485,7 +485,7 @@ impl ManagePageView {
                                                                 div()
                                                                     .px(px(5.))
                                                                     .py(px(1.))
-                                                                    .rounded(px(4.))
+                                                                    .rounded(px(crate::ui::theme::tokens::radius::XS))
                                                                     .bg(badge_bg)
                                                                     .text_size(px(9.))
                                                                     .font_weight(FontWeight::BOLD)

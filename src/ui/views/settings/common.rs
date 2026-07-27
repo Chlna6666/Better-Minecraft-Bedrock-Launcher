@@ -314,7 +314,7 @@ pub(super) fn settings_badge(colors: &ThemeColors, label: SharedString) -> Div {
         .max_w(px(260.))
         .h(px(28.))
         .px(px(10.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(Hsla {
             a: 0.14,
             ..colors.accent
@@ -413,7 +413,7 @@ pub(super) fn settings_control_box(
         .w(width)
         .min_w(px(0.))
         .h(px(30.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .text_color(colors.text_primary)
         .bg(Hsla {
             a: 0.84,
@@ -471,7 +471,7 @@ pub(super) fn settings_action_button(
         .flex_shrink_0()
         .h(px(30.))
         .px(px(8.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.84,
             ..colors.settings_field_bg

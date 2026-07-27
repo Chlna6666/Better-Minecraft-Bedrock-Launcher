@@ -46,7 +46,7 @@ fn render_room_members_header(colors: &ThemeColors, state: &ToolsPageState, disa
                 )
                 .child(
                     div()
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.12,
                             ..colors.accent
@@ -89,7 +89,7 @@ fn render_room_members_list(colors: &ThemeColors, state: &ToolsPageState) -> imp
         .flex()
         .flex_col()
         .gap(px(7.))
-        .when(state.peers_loading, |this| {
+        .when(state.peers_loading && sorted_players.is_empty(), |this| {
             this.child(empty_row(colors, "正在同步房间成员…"))
         })
         .when(sorted_players.is_empty() && !state.peers_loading, |this| {
@@ -168,7 +168,7 @@ fn render_network_nodes_header(
                 )
                 .child(
                     div()
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.12,
                             ..colors.settings_field_bg
@@ -256,7 +256,7 @@ fn render_peer_list(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoEl
         .flex()
         .flex_col()
         .gap(px(8.))
-        .when(state.peers_loading, |this| {
+        .when(state.peers_loading && state.peers.is_empty(), |this| {
             this.child(empty_row(colors, "正在同步节点列表…"))
         })
         .when(state.peers.is_empty() && !state.peers_loading, |this| {
@@ -409,7 +409,7 @@ fn render_player_row(
         .child(
             div()
                 .flex_none()
-                .rounded(px(8.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .px(px(7.))
                 .py(px(3.))
                 .bg(if is_host {

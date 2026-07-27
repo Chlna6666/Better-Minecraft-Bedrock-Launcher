@@ -90,7 +90,7 @@ pub(super) fn launcher_connectivity_row(
 
     let mut row = settings_card(colors, "settings-launcher-connectivity")
         .overflow_hidden()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .p(px(16.))
         .flex()
         .items_center()
@@ -142,7 +142,7 @@ pub(super) fn launcher_connectivity_row(
         div()
             .px(px(10.))
             .py(px(6.))
-            .rounded(px(999.))
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
             .border_1()
             .border_color(Hsla {
                 a: 0.18,
@@ -241,7 +241,7 @@ pub(super) fn render_connectivity_modal(
                             div()
                                 .w(px(34.))
                                 .h(px(34.))
-                                .rounded(px(12.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
                                 .bg(Hsla {
                                     a: 0.16,
                                     ..colors.accent
@@ -348,7 +348,7 @@ pub(super) fn render_connectivity_modal(
         .max_h(card_height)
         .flex()
         .flex_col()
-        .rounded(px(20.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .overflow_hidden()
         .border_1()
         .border_color(Hsla {
@@ -676,7 +676,7 @@ fn connectivity_item_row(
 
     div()
         .w_full()
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.14,
@@ -730,7 +730,7 @@ fn connectivity_stat_chip(
         .min_h(px(34.))
         .px(px(8.))
         .py(px(6.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .border_1()
         .border_color(Hsla { a: 0.12, ..accent })
         .bg(Hsla { a: 0.12, ..accent })
@@ -770,7 +770,7 @@ fn status_badge(
         .min_w(px(92.))
         .px(px(8.))
         .py(px(6.))
-        .rounded(px(9.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(background)
         .flex()
         .items_center()
@@ -807,7 +807,7 @@ fn pending_badge(foreground: Hsla, background: Hsla) -> AnyElement {
         .min_w(px(30.))
         .px(px(10.))
         .py(px(6.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(background)
         .flex()
         .items_center()
@@ -827,7 +827,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
         .relative()
         .w(px(48.))
         .h(px(14.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(Hsla {
             a: 0.09,
             ..colors.accent
@@ -844,7 +844,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                     div()
                         .w(px(3.5))
                         .h(px(3.5))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.85,
                             ..colors.accent
@@ -866,7 +866,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                     div()
                         .w(px(4.))
                         .h(px(4.))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.85,
                             ..colors.accent
@@ -888,7 +888,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                     div()
                         .w(px(3.5))
                         .h(px(3.5))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.85,
                             ..colors.accent
@@ -921,7 +921,7 @@ fn icon_button(
         .id(id)
         .w(px(32.))
         .h(px(32.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()

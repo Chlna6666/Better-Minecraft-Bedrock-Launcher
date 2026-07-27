@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::components::dialog;
+use crate::ui::components::{dialog, scroll::ScrollableElement};
 
 #[derive(Clone)]
 pub(super) enum ConfirmAction {
@@ -645,99 +645,95 @@ pub(super) fn render_mod_type_dialog(
     let cancel_dismiss = modal_dismiss_handle.clone();
     let save_view_handle = view_handle.clone();
 
-    let content = dialog::dialog_container(
-        colors,
-        px(540.),
-        div()
-            .child(
-                div()
-                    .p(px(22.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(colors.text_primary)
-                            .child("Mod 设置"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(colors.text_secondary)
-                            .child(dialog.asset.display_name.clone()),
-                    )
-                    .child(
+    let content = dialog::dialog_container(colors, px(540.))
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scrollbar()
+                .p(px(22.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .text_size(px(18.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(colors.text_primary)
+                        .child("Mod 设置"),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(colors.text_secondary)
+                        .child(dialog.asset.display_name.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors.text_primary)
+                                .child("注入方式"),
+                        )
+                        .child(dropdown),
+                )
+                .when(dialog.selected_mod_type.as_ref() == "hot-inject", |this| {
+                    this.child(
                         div()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(12.))
+                            .flex_col()
+                            .gap(px(8.))
                             .child(
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(colors.text_primary)
-                                    .child("注入方式"),
+                                    .child("注入延迟"),
                             )
-                            .child(dropdown),
-                    )
-                    .when(
-                        dialog.selected_mod_type.as_ref() == "hot-inject",
-                        |this: Div| {
-                            this.child(
+                            .child(
+                                Input::new(&dialog.delay_input)
+                                    .with_size(InputSize::Medium)
+                                    .w_full(),
+                            )
+                            .child(
                                 div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(8.))
-                                    .child(
-                                        div()
-                                            .text_size(px(13.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(colors.text_primary)
-                                            .child("注入延迟"),
-                                    )
-                                    .child(
-                                        Input::new(&dialog.delay_input)
-                                            .with_size(InputSize::Medium)
-                                            .w_full(),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(colors.text_muted)
-                                            .child("单位为毫秒，适用于 hot-inject。"),
-                                    ),
-                            )
-                        },
-                    ),
-            )
-            .child(dialog::dialog_actions(
-                colors,
-                ghost_button(colors, "manage-mod-type-cancel", "取消").on_mouse_down(
-                    MouseButton::Left,
-                    move |_, _, cx| {
-                        cancel_dismiss.dismiss(cx);
-                    },
-                ),
-                primary_button(
-                    colors,
-                    "manage-mod-type-save",
-                    if dialog.pending {
-                        SharedString::from("保存中...")
-                    } else {
-                        SharedString::from("保存 Mod 设置")
-                    },
-                )
-                .opacity(if dialog.pending { 0.72 } else { 1.0 })
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    let _ = save_view_handle.update(cx, |this, cx| {
-                        this.save_mod_type_dialog(cx);
-                    });
+                                    .text_size(px(11.))
+                                    .text_color(colors.text_muted)
+                                    .child("单位为毫秒，适用于 hot-inject。"),
+                            ),
+                    )
                 }),
-            )),
-    );
+        )
+        .child(dialog::dialog_actions(
+            colors,
+            ghost_button(colors, "manage-mod-type-cancel", "取消").on_mouse_down(
+                MouseButton::Left,
+                move |_, _, cx| {
+                    cancel_dismiss.dismiss(cx);
+                },
+            ),
+            primary_button(
+                colors,
+                "manage-mod-type-save",
+                if dialog.pending {
+                    SharedString::from("保存中...")
+                } else {
+                    SharedString::from("保存 Mod 设置")
+                },
+            )
+            .opacity(if dialog.pending { 0.72 } else { 1.0 })
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                let _ = save_view_handle.update(cx, |this, cx| {
+                    this.save_mod_type_dialog(cx);
+                });
+            }),
+        ));
 
     modal::modal_layer_dismissible_with_handle(
         modal_dismiss_handle,

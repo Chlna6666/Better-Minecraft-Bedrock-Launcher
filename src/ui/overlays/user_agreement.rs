@@ -70,7 +70,7 @@ pub fn render_user_agreement_modal(
             div()
                 .w(px(38.))
                 .h(px(38.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla {
                     h: colors.accent.h,
                     s: colors.accent.s,
@@ -103,7 +103,7 @@ pub fn render_user_agreement_modal(
                     .id("agreement-close")
                     .w(px(34.))
                     .h(px(34.))
-                    .rounded(px(10.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -167,20 +167,22 @@ pub fn render_user_agreement_modal(
 
     let accept_button = if accept_unlocked {
         div()
+            .id("user-agreement-accept-button")
             .w_full()
             .h(px(48.))
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(colors.accent)
             .border_1()
             .border_color(colors.accent)
             .cursor_pointer()
             .hover(|s| s.bg(colors.accent_hover))
+            .active(|s| s.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
             .flex()
             .items_center()
             .justify_center()
             .text_size(px(15.))
             .font_weight(FontWeight::BOLD)
-            .text_color(hsla(0., 0., 1., 1.0))
+            .text_color(colors.btn_primary_text)
             .child(accept_label)
             .on_mouse_down(MouseButton::Left, |_, _window, cx| {
                 cx.update_global(|agreement: &mut AgreementState, cx| {
@@ -213,7 +215,7 @@ pub fn render_user_agreement_modal(
         div()
             .w_full()
             .h(px(48.))
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(colors.surface)
             .border_1()
             .border_color(colors.border)
@@ -236,7 +238,7 @@ pub fn render_user_agreement_modal(
     let card = div()
         .w(card_w)
         .h(card_h)
-        .rounded(px(22.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .overflow_hidden()
         .occlude()
         .bg(colors.bg)
@@ -247,11 +249,11 @@ pub fn render_user_agreement_modal(
                 h: 0.,
                 s: 0.,
                 l: 0.,
-                a: 0.35,
+                a: 0.16,
             },
-            blur_radius: px(40.),
+            blur_radius: px(24.),
             spread_radius: px(0.),
-            offset: point(px(0.), px(16.)),
+            offset: point(px(0.), px(12.)),
         }])
         .flex()
         .flex_col()

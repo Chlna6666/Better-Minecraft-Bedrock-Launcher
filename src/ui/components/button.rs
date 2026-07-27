@@ -50,9 +50,10 @@ impl RenderOnce for Button {
             .id(self.id)
             .px(px(12.))
             .py(px(8.))
-            .rounded(px(10.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .border_1()
             .cursor_pointer()
+            .active(|style| style.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
             .child(self.label.unwrap_or_default());
 
         if let Some(on_click) = self.on_click {
@@ -176,9 +177,14 @@ pub fn secondary_button(
         .border_color(colors.border)
         .bg(colors.surface)
         .cursor_pointer()
+        // hover 仅做即时颜色切换，无位移/缩放/阴影动效。
         .hover(move |style| style.bg(hover_bg))
         // Apple 风格按压反馈：整体轻微缩小。
-        .active(|style| style.scale(0.97).opacity(0.9))
+        .active(|style| {
+            style
+                .scale(crate::ui::theme::tokens::motion::PRESS_SCALE)
+                .opacity(0.9)
+        })
         .child(
             div()
                 .text_size(px(13.))
@@ -201,10 +207,14 @@ pub fn ghost_button(
         .justify_center()
         .px(px(8.))
         .py(px(6.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .cursor_pointer()
         .hover(move |style| style.bg(hover_bg))
-        .active(|style| style.scale(0.97).opacity(0.85))
+        .active(|style| {
+            style
+                .scale(crate::ui::theme::tokens::motion::PRESS_SCALE)
+                .opacity(0.85)
+        })
         .child(
             div()
                 .text_size(px(13.))
@@ -229,18 +239,13 @@ pub fn primary_button(
         .py(px(10.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.accent)
-        .shadow(vec![gpui::BoxShadow {
-            color: gpui::Hsla {
-                a: 0.25,
-                ..colors.accent
-            },
-            blur_radius: px(12.),
-            spread_radius: px(-4.),
-            offset: gpui::point(px(0.), px(4.)),
-        }])
         .cursor_pointer()
         .hover(move |style| style.bg(hover_bg))
-        .active(|style| style.scale(0.97).opacity(0.92))
+        .active(|style| {
+            style
+                .scale(crate::ui::theme::tokens::motion::PRESS_SCALE)
+                .opacity(0.92)
+        })
         .child(
             div()
                 .text_size(px(13.))

@@ -655,7 +655,7 @@ fn render_curseforge_detail_file_row(
     div()
         .flex_1()
         .min_w(px(0.))
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.42,
             ..colors.surface
@@ -695,7 +695,7 @@ fn render_curseforge_detail_file_row(
                             div()
                                 .h(px(24.))
                                 .px(px(8.))
-                                .rounded(px(999.))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .bg(Hsla {
                                     a: 0.10,
                                     ..colors.accent
@@ -718,7 +718,7 @@ fn render_curseforge_detail_files_panel(
 ) -> Div {
     let Some(mod_entry) = state.curseforge_mod_page_mod.as_ref().cloned() else {
         return div()
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .child(status_card(colors, "未选择资源", None));
     };
 
@@ -732,7 +732,7 @@ fn render_curseforge_detail_files_panel(
         None
     };
     div()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.72,
             ..colors.surface
@@ -772,7 +772,7 @@ fn render_curseforge_detail_files_panel(
                     div()
                         .h(px(30.))
                         .px(px(12.))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.10,
                             ..colors.accent
@@ -818,7 +818,7 @@ fn render_curseforge_detail_files_panel(
                 let action = div()
                     .h(px(40.))
                     .px(px(14.))
-                    .rounded(px(12.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .bg(colors.accent)
                     .cursor_pointer()
                     .flex()
@@ -868,7 +868,7 @@ fn render_curseforge_detail_description_panel(
     let description_empty = description_document.blocks.is_empty();
 
     div()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.72,
             ..colors.surface
@@ -1031,7 +1031,7 @@ fn render_curseforge_sidebar(
                     img(url)
                         .w(px(18.))
                         .h(px(18.))
-                        .rounded(px(5.))
+                        .rounded(px(crate::ui::theme::tokens::radius::XS))
                         .object_fit(ObjectFit::Cover)
                         .image_cache(sidebar_image_cache)
                         .with_loading({
@@ -1040,7 +1040,7 @@ fn render_curseforge_sidebar(
                                 div()
                                     .w(px(18.))
                                     .h(px(18.))
-                                    .rounded(px(5.))
+                                    .rounded(px(crate::ui::theme::tokens::radius::XS))
                                     .bg(Hsla {
                                         a: 0.12,
                                         ..colors.surface
@@ -1054,7 +1054,7 @@ fn render_curseforge_sidebar(
                                 div()
                                     .w(px(18.))
                                     .h(px(18.))
-                                    .rounded(px(5.))
+                                    .rounded(px(crate::ui::theme::tokens::radius::XS))
                                     .bg(Hsla {
                                         a: 0.12,
                                         ..colors.surface
@@ -1067,7 +1067,7 @@ fn render_curseforge_sidebar(
                     div()
                         .w(px(18.))
                         .h(px(18.))
-                        .rounded(px(5.))
+                        .rounded(px(crate::ui::theme::tokens::radius::XS))
                         .bg(Hsla {
                             a: 0.08,
                             ..colors.surface
@@ -1113,7 +1113,7 @@ fn render_curseforge_sidebar(
                 .w_full()
                 .px(px(12.))
                 .py(px(9.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(bg)
                 .hover(move |s| if active { s } else { s.bg(hover_bg) })
                 .cursor_pointer()
@@ -1252,7 +1252,7 @@ fn render_curseforge_sidebar(
     };
 
     let share_card = div()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(colors.border)
         .bg(Hsla {
@@ -1281,7 +1281,7 @@ fn render_curseforge_sidebar(
         .child(
             div()
                 .h(px(36.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla {
                     a: 0.06,
                     ..colors.text_secondary
@@ -1344,7 +1344,7 @@ fn render_curseforge_sidebar(
 
     div()
         .size_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.12,
@@ -1378,7 +1378,7 @@ fn render_curseforge_content(
 ) -> Div {
     let state = cx.global::<DownloadPageState>();
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(999.)).bg(Hsla {
+        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
             a: 0.08,
             ..colors.text_secondary
         })
@@ -1405,7 +1405,7 @@ fn render_curseforge_content(
     let skeleton_card = || {
         div()
             .w_full()
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(Hsla {
                 a: 0.90,
                 ..colors.surface
@@ -1422,7 +1422,7 @@ fn render_curseforge_content(
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().w(px(42.)).h(px(42.)).rounded(px(8.)).bg(Hsla {
+            .child(div().w(px(42.)).h(px(42.)).rounded(px(crate::ui::theme::tokens::radius::MD)).bg(Hsla {
                 a: 0.10,
                 ..colors.text_secondary
             }))
@@ -1457,7 +1457,7 @@ fn render_curseforge_content(
                             .child(skeleton_bar(px(90.), px(10.))),
                     ),
             )
-            .child(div().w(px(92.)).h(px(32.)).rounded(px(10.)).bg(Hsla {
+            .child(div().w(px(92.)).h(px(32.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                 a: 0.10,
                 ..colors.accent
             }))
@@ -1467,7 +1467,7 @@ fn render_curseforge_content(
     let shell = |child: Div| {
         child
             .size_full()
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .border_1()
             .border_color(Hsla {
                 a: 0.06,
@@ -1516,7 +1516,7 @@ fn render_curseforge_content(
     let status_chip = div()
         .px(px(12.))
         .h(px(28.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(Hsla {
             a: 0.15,
             ..colors.accent
@@ -1542,7 +1542,7 @@ fn render_curseforge_content(
         div()
             .h(px(24.))
             .px(px(10.))
-            .rounded(px(999.))
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
             .border_1()
             .border_color(Hsla {
                 a: 0.08,
@@ -1569,7 +1569,7 @@ fn render_curseforge_content(
     let topbar = div()
         .flex_none()
         .m(px(12.))
-        .rounded(px(8.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.78,
             ..colors.surface
@@ -1684,7 +1684,7 @@ fn render_curseforge_content(
                         div()
                             .h(px(24.))
                             .px(px(10.))
-                            .rounded(px(999.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                             .border_1()
                             .border_color(Hsla {
                                 a: 0.12,
@@ -2097,7 +2097,7 @@ fn render_curseforge_result_card(
         .w_full()
         .min_w(px(0.))
         .h(px(78.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(card_bg)
         .border_1()
         .border_color(Hsla {
@@ -2140,7 +2140,7 @@ fn render_curseforge_result_card(
                                 .id(("curseforge-result-logo", result_element_id))
                                 .w(px(42.))
                                 .h(px(42.))
-                                .rounded(px(8.))
+                                .rounded(px(crate::ui::theme::tokens::radius::MD))
                                 .overflow_hidden()
                                 .bg(Hsla {
                                     a: 0.10,
@@ -2151,7 +2151,7 @@ fn render_curseforge_result_card(
                                         .image_cache(result_logo_cache)
                                         .w_full()
                                         .h_full()
-                                        .rounded(px(8.))
+                                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                                         .bg(gpui::transparent_black())
                                         .object_fit(ObjectFit::Cover)
                                         .with_loading({
@@ -2276,7 +2276,7 @@ fn render_curseforge_result_card(
                 .flex_none()
                 .flex_shrink_0()
                 .h(px(30.))
-                .rounded(px(6.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla {
                     a: 0.18,
                     ..colors.accent
@@ -2394,7 +2394,7 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
         div()
             .min_w(px(32.))
             .h(px(32.))
-            .rounded(px(6.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -2441,7 +2441,7 @@ fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColo
         div()
             .min_w(px(32.))
             .h(px(32.))
-            .rounded(px(6.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -2617,7 +2617,7 @@ fn close_curseforge_install_modal_from_ui(cx: &mut App) {
 fn render_curseforge_install_close_button(colors: &ThemeColors) -> Div {
     div()
         .size(px(34.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.70,
             ..colors.surface
@@ -2675,7 +2675,7 @@ fn render_curseforge_install_header(
                     div()
                         .size(px(48.))
                         .flex_none()
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.10,
                             ..colors.accent
@@ -2870,7 +2870,7 @@ fn render_install_target_dropdown(
             });
         },
     )
-    .rounded(px(10.))
+    .rounded(px(crate::ui::theme::tokens::radius::SM))
 }
 
 fn render_curseforge_install_file_option(
@@ -2891,7 +2891,7 @@ fn render_curseforge_install_file_option(
     div()
         .w_full()
         .min_h(px(60.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.52,
             ..colors.surface
@@ -2946,7 +2946,7 @@ fn render_curseforge_install_file_option(
                     div()
                         .h(px(26.))
                         .px(px(9.))
-                        .rounded(px(7.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.10,
                             ..colors.accent
@@ -2969,7 +2969,7 @@ fn render_curseforge_install_file_option(
                     div()
                         .h(px(36.))
                         .px(px(13.))
-                        .rounded(px(9.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(if disabled {
                             colors.surface_hover
                         } else {
@@ -3079,7 +3079,7 @@ fn render_curseforge_install_file_selection_modal(
                     div()
                         .h(px(28.))
                         .px(px(10.))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.10,
                             ..colors.accent
@@ -3215,7 +3215,7 @@ fn render_curseforge_install_modal(
         let pct = snap.percent.unwrap_or(0.0).clamp(0.0, 100.0) as f32;
         div()
             .w_full()
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(colors.surface)
             .border_1()
             .border_color(colors.border)
@@ -3242,7 +3242,7 @@ fn render_curseforge_install_modal(
                 div()
                     .mt(px(10.))
                     .h(px(8.))
-                    .rounded(px(999.))
+                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
                     .w_full()
                     .bg(Hsla {
                         a: 0.10,
@@ -3251,7 +3251,7 @@ fn render_curseforge_install_modal(
                     .child(
                         div()
                             .h(px(8.))
-                            .rounded(px(999.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                             .bg(colors.accent)
                             .w(relative(pct / 100.0)),
                     ),
@@ -3296,7 +3296,7 @@ fn render_curseforge_install_modal(
     let primary_btn = div()
         .px(px(16.))
         .py(px(10.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(if primary_enabled {
             colors.accent
         } else {
@@ -3535,7 +3535,7 @@ fn render_curseforge_install_modal(
 
     let version_card = div()
         .w_full()
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.44,
             ..colors.surface
@@ -3567,7 +3567,7 @@ fn render_curseforge_install_modal(
 
             this.child(
                 div()
-                    .rounded(px(10.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .px(px(10.))
                     .py(px(10.))
                     .flex()
@@ -3708,7 +3708,7 @@ fn render_curseforge_install_modal(
         .child(version_card)
         .child(
             div()
-                .rounded(px(14.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.44,
                     ..colors.surface
@@ -3792,7 +3792,7 @@ fn render_curseforge_mod_page_modal(
         div()
             .h(px(42.))
             .px(px(16.))
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(if primary {
                 colors.accent
             } else {
@@ -3833,7 +3833,7 @@ fn render_curseforge_mod_page_modal(
     let icon_button = |icon_path: &'static str| {
         div()
             .size(px(42.))
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(Hsla {
                 a: 0.62,
                 ..colors.surface
@@ -3854,7 +3854,7 @@ fn render_curseforge_mod_page_modal(
         div()
             .flex_1()
             .min_w(px(0.))
-            .rounded(px(10.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(Hsla {
                 a: 0.58,
                 ..colors.surface
@@ -3892,7 +3892,7 @@ fn render_curseforge_mod_page_modal(
     let detail_row = |label: &'static str, value: SharedString| {
         div()
             .w_full()
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(Hsla {
                 a: 0.42,
                 ..colors.surface
@@ -4108,7 +4108,7 @@ fn render_curseforge_mod_page_modal(
                     .h(px(28.))
                     .px(px(10.))
                     .max_w(px(220.))
-                    .rounded(px(999.))
+                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
                     .bg(Hsla {
                         a: 0.70,
                         ..colors.surface
@@ -4130,7 +4130,7 @@ fn render_curseforge_mod_page_modal(
                             img(icon_url)
                                 .w(px(12.))
                                 .h(px(12.))
-                                .rounded(px(3.))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .object_fit(ObjectFit::Contain)
                                 .image_cache(detail_image_cache),
                         )
@@ -4196,7 +4196,7 @@ fn render_curseforge_mod_page_modal(
                                             .relative()
                                             .w_full()
                                             .h(px(280.))
-                                            .rounded(px(12.))
+                                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                                             .overflow_hidden()
                                             .bg(Hsla {
                                                 a: 0.18,
@@ -4284,7 +4284,7 @@ fn render_curseforge_mod_page_modal(
                                     )
                                     .child(
                                         div()
-                                            .rounded(px(18.))
+                                            .rounded(px(crate::ui::theme::tokens::radius::MD))
                                             .bg(Hsla {
                                                 a: 0.56,
                                                 ..colors.surface
@@ -4316,7 +4316,7 @@ fn render_curseforge_mod_page_modal(
                                     .when(!mod_entry.category_ids.is_empty(), |this| {
                                         this.child(
                                             div()
-                                                .rounded(px(18.))
+                                                .rounded(px(crate::ui::theme::tokens::radius::MD))
                                                 .bg(Hsla {
                                                     a: 0.50,
                                                     ..colors.surface
@@ -4345,7 +4345,7 @@ fn render_curseforge_mod_page_modal(
                                         for line in &highlight_lines {
                                             notes = notes.child(
                                                 div()
-                                                    .rounded(px(12.))
+                                                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                                                     .bg(Hsla {
                                                         a: 0.44,
                                                         ..colors.surface
@@ -4364,7 +4364,7 @@ fn render_curseforge_mod_page_modal(
                                         }
                                         this.child(
                                             div()
-                                                .rounded(px(18.))
+                                                .rounded(px(crate::ui::theme::tokens::radius::MD))
                                                 .bg(Hsla {
                                                     a: 0.50,
                                                     ..colors.surface

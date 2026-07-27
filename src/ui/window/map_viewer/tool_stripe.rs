@@ -198,7 +198,7 @@ fn stripe_button(
         .items_center()
         .justify_center()
         .gap(px(3.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .cursor(CursorStyle::PointingHand)
         .bg(if active {
             active_bg

@@ -44,14 +44,14 @@ pub(super) fn render_icon_card(
                 div()
                     .flex_none()
                     .size(px(48.))
-                    .rounded(px(10.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .overflow_hidden()
                     .border_1()
                     .border_color(colors.border)
                     .child(
                         img(preview_icon)
                             .size_full()
-                            .rounded(px(10.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .object_fit(ObjectFit::Cover),
                     ),
             )

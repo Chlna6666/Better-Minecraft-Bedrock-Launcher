@@ -95,7 +95,7 @@ fn render_activity_header(colors: &ThemeColors) -> Div {
 fn render_error_banner(colors: &ThemeColors, error: SharedString) -> Div {
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.30,
@@ -126,7 +126,7 @@ fn render_log_lines(colors: &ThemeColors, state: &ToolsPageState) -> impl IntoEl
         state.online_log.as_ref().lines().rev().take(8).map(|line| {
             div()
                 .w_full()
-                .rounded(px(8.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.38,
                     ..colors.settings_field_bg

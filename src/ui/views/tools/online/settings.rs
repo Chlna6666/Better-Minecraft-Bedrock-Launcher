@@ -1,14 +1,14 @@
-use crate::ui::animation::ease_out_cubic_motion;
+use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::components::input::Input;
 use crate::ui::components::modal;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
 use std::rc::Rc;
-use std::time::Duration;
 
 use super::controls::persist_tools_online_settings;
 use super::widgets::{action_button, icon_button};
@@ -37,11 +37,11 @@ pub(super) fn render_settings_overlay(
     });
     let card = render_settings_card(colors, width, state, dismiss.clone()).with_animation(
         "online-settings-card-enter",
-        ease_out_cubic_motion(Duration::from_millis(240)),
+        spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
         |card, progress| {
-            card.opacity(progress)
+            card.opacity(progress.clamp(0.0, 1.0))
                 .relative()
-                .top(px((1.0 - progress) * 14.0))
+                .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
         },
     );
 
@@ -57,7 +57,7 @@ fn render_settings_card(
     div()
         .w(width)
         .max_w(px(620.))
-        .rounded(px(20.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.22,
@@ -187,7 +187,7 @@ fn render_bootstrap_field(colors: &ThemeColors, state: &ToolsPageState) -> Div {
         .child(
             div()
                 .w_full()
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.16,
@@ -240,7 +240,7 @@ fn render_toggle_row(
 ) -> Div {
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.12,

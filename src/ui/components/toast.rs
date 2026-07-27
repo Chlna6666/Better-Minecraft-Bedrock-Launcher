@@ -21,7 +21,7 @@ const FADE_OUT: Duration = Duration::from_millis(280); // 退出 + 回收（折�
 const STAGGER_IN_MS: u64 = 0;
 
 // 外观几何参数。
-const TOAST_RADIUS_PX: f32 = 12.0; // 圆角半径（紧凑浮层统一 12）
+const TOAST_RADIUS_PX: f32 = crate::ui::theme::tokens::radius::MD; // 圆角半径（紧凑浮层统一 12）
 const TOAST_SPACING_PX: f32 = 6.0; // Toast 堆叠间距（垂直）
 const TOAST_MIN_WIDTH_PX: f32 = 120.0;
 const TOAST_MAX_WIDTH_PX: f32 = 240.0;

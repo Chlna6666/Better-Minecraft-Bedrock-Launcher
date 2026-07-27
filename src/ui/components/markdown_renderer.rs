@@ -591,7 +591,7 @@ fn render_code_block(
     div()
         .w_full()
         .mt(px(2.))
-        .rounded(px(8.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(if is_dark {
             hsla(0.60, 0.09, 0.22, 1.0)
         } else {

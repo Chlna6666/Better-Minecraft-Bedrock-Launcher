@@ -424,7 +424,7 @@ fn render_json_body(
                     .min_h(px(0.))
                     .w_full()
                     .h_full()
-                    .rounded(px(14.))
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
                     .border_1()
                     .border_color(Hsla {
                         a: 0.14,
@@ -503,7 +503,7 @@ fn render_json_body(
                         .min_h(px(0.))
                         .w_full()
                         .h_full()
-                        .rounded(px(16.))
+                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                         .border_1()
                         .border_color(Hsla {
                             a: 0.16,
@@ -653,7 +653,7 @@ fn compact_secondary_button(
         .id(id)
         .px(px(12.))
         .py(px(8.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(colors.border)
         .bg(colors.surface)
@@ -676,7 +676,7 @@ fn compact_primary_button(
         .id(id)
         .px(px(12.))
         .py(px(8.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.accent)
         .cursor_pointer()
         .child(
@@ -835,7 +835,7 @@ fn render_choice_card(
                     div()
                         .px(px(10.))
                         .h(px(30.))
-                        .rounded(px(8.))
+                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                         .border_1()
                         .border_color(if selected {
                             Hsla {
@@ -964,7 +964,7 @@ fn render_bool_card(
                                         div()
                                             .px(px(6.))
                                             .py(px(2.))
-                                            .rounded(px(999.))
+                                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                             .text_size(px(10.))
                                             .text_color(colors.text_muted)
                                             .bg(Hsla {
@@ -1008,7 +1008,7 @@ fn render_missing_input_shell(colors: &ThemeColors, multiline: bool) -> Div {
     div()
         .w_full()
         .h(if multiline { px(50.) } else { px(34.) })
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.12,
@@ -1070,7 +1070,7 @@ fn render_field_title(
                                 div()
                                     .px(px(6.))
                                     .py(px(2.))
-                                    .rounded(px(999.))
+                                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                     .text_size(px(10.))
                                     .text_color(colors.text_muted)
                                     .bg(Hsla {
@@ -1109,7 +1109,7 @@ fn toned_status_badge(_colors: &ThemeColors, label: &'static str, accent: Hsla) 
     div()
         .px(px(10.))
         .py(px(4.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(Hsla { a: 0.12, ..accent })
         .text_size(px(11.))
         .font_weight(FontWeight::SEMIBOLD)

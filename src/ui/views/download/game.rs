@@ -270,7 +270,7 @@ fn rebuild_game_panel_render_cache(
 
 fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(999.)).bg(Hsla {
+        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
             a: 0.08,
             ..colors.text_secondary
         })
@@ -298,7 +298,7 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
         div()
             .w_full()
             .min_h(px(77.))
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .px(px(16.))
             .py(px(14.))
             .relative()
@@ -331,7 +331,7 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
                     .items_center()
                     .gap(px(10.))
                     .child(skeleton_bar(px(78.), px(16.)))
-                    .child(div().w(px(88.)).h(px(28.)).rounded(px(999.)).bg(Hsla {
+                    .child(div().w(px(88.)).h(px(28.)).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
                         a: 0.10,
                         ..colors.accent
                     })),
@@ -363,7 +363,7 @@ fn stable_game_row_element_id(package_id: &SharedString) -> u64 {
 
 fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &DownloadPageState) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(999.)).bg(Hsla {
+        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
             a: 0.10,
             ..colors.text_secondary
         })
@@ -410,7 +410,7 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                     .min_w(px(0.))
                     .flex_1()
                     .child(div().w(px(64.)).flex().items_center().child(
-                        div().w(px(42.)).h(px(42.)).rounded(px(10.)).bg(Hsla {
+                        div().w(px(42.)).h(px(42.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                             a: 0.12,
                             ..colors.surface
                         }),
@@ -430,7 +430,7 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                                     .items_center()
                                     .gap(px(10.))
                                     .child(skeleton_bar(px(240.), px(16.)))
-                                    .child(div().w(px(74.)).h(px(20.)).rounded(px(6.)).bg(Hsla {
+                                    .child(div().w(px(74.)).h(px(20.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
                                         a: 0.08,
                                         ..colors.text_secondary
                                     })),
@@ -451,7 +451,7 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                     .items_center()
                     .gap(px(10.))
                     .child(skeleton_bar(px(78.), px(16.)))
-                    .child(div().w(px(88.)).h(px(28.)).rounded(px(999.)).bg(Hsla {
+                    .child(div().w(px(88.)).h(px(28.)).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
                         a: 0.12,
                         ..colors.accent
                     })),
@@ -503,7 +503,7 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                             a: 0.30,
                             ..colors.surface
                         })
-                        .child(div().w_full().h(px(32.)).rounded(px(8.)).bg(Hsla {
+                        .child(div().w_full().h(px(32.)).rounded(px(crate::ui::theme::tokens::radius::MD)).bg(Hsla {
                             a: 0.08,
                             ..colors.text_secondary
                         })),
@@ -778,7 +778,7 @@ fn render_pager(
             .id(id)
             .min_w(px(32.))
             .h(px(32.))
-            .rounded(px(6.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -820,7 +820,7 @@ fn render_pager(
             .id(("download-page-btn", page))
             .min_w(px(32.))
             .h(px(32.))
-            .rounded(px(6.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -1029,7 +1029,7 @@ fn render_version_row(
         div()
             .px(px(8.))
             .py(px(2.))
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(bg)
             .text_size(px(12.))
             .text_color(fg)
@@ -1073,7 +1073,7 @@ fn render_version_row(
         .h(px(84.))
         .px(px(20.))
         .py(px(12.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(card_bg)
         .border_1()
         .border_color(Hsla {
@@ -1096,7 +1096,7 @@ fn render_version_row(
                         img(icon_path)
                             .w(px(42.))
                             .h(px(42.))
-                            .rounded(px(12.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .p(px(4.))
                             .bg(Hsla {
                                 a: 0.05,
@@ -1129,7 +1129,7 @@ fn render_version_row(
                                     div()
                                         .px(px(8.))
                                         .py(px(3.))
-                                        .rounded(px(8.))
+                                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                                         .bg(channel_bg)
                                         .text_size(px(11.))
                                         .font_weight(FontWeight::BOLD)
@@ -1217,7 +1217,7 @@ fn render_version_row(
                         .id(("download-game-action-btn", row_element_id))
                         .w(px(140.))
                         .h(px(36.))
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(btn_bg)
                         .cursor_pointer()
                         .text_size(px(14.))
@@ -1772,7 +1772,7 @@ where
     F: Fn(&mut Window, &mut App) + 'static,
 {
     div()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: if primary { 0.18 } else { 0.16 },
@@ -1825,7 +1825,7 @@ where
                     div()
                         .w(px(36.))
                         .h(px(36.))
-                        .rounded(px(10.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla { a: 0.14, ..accent })
                         .flex()
                         .items_center()
@@ -1917,7 +1917,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                 .flex_none()
                 .w(px(32.))
                 .h(px(32.))
-                .rounded(px(10.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .cursor_pointer()
                 .flex()
                 .items_center()
@@ -1938,7 +1938,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
         }));
 
     let package_card = div()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.16,
@@ -1962,7 +1962,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                     div()
                         .w(px(36.))
                         .h(px(36.))
-                        .rounded(px(10.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.12,
                             ..colors.accent
@@ -2006,7 +2006,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                     div()
                         .px(px(7.))
                         .py(px(2.))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.18,
                             ..colors.badge_stable_bg
@@ -2020,7 +2020,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                     div()
                         .px(px(7.))
                         .py(px(2.))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.16,
                             ..colors.accent
@@ -2034,7 +2034,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
                     div()
                         .w(px(30.))
                         .h(px(30.))
-                        .rounded(px(9.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .border_1()
                         .border_color(Hsla {
                             a: 0.16,
@@ -2140,7 +2140,7 @@ fn render_local_actions_dialog(colors: &ThemeColors, dialog: GameDialogState) ->
         .w(px(560.))
         .max_w(px(560.))
         .max_h(px(880.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.18,
@@ -2215,7 +2215,7 @@ pub(super) fn render_game_dialog(
                             .w_full()
                             .h(px(40.))
                             .px(px(12.))
-                            .rounded(px(10.)),
+                            .rounded(px(crate::ui::theme::tokens::radius::SM)),
                     )
             })
         })
@@ -2223,7 +2223,7 @@ pub(super) fn render_game_dialog(
 
     let delete_notice = matches!(dialog.kind, GameDialogKind::ConfirmDelete).then(|| {
         div()
-            .rounded(px(10.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .border_1()
             .border_color(Hsla {
                 a: 0.18,
@@ -2305,7 +2305,7 @@ pub(super) fn render_game_dialog(
             };
 
             let card = div()
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .border_1()
                 .border_color(if is_selected {
                     Hsla {
@@ -2371,7 +2371,7 @@ pub(super) fn render_game_dialog(
                             div()
                                 .px(px(8.))
                                 .py(px(4.))
-                                .rounded(px(999.))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .bg(Hsla {
                                     a: 0.12,
                                     ..badge_color
@@ -2476,7 +2476,7 @@ pub(super) fn render_game_dialog(
         .max_w(relative(0.92))
         .max_h(px(490.))
         .min_h(px(0.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.18,
@@ -2506,7 +2506,7 @@ pub(super) fn render_game_dialog(
                             div()
                                 .w(px(44.))
                                 .h(px(44.))
-                                .rounded(px(999.))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .bg(Hsla {
                                     a: 0.12,
                                     ..colors.accent
@@ -2549,7 +2549,7 @@ pub(super) fn render_game_dialog(
                             div()
                                 .px(px(10.))
                                 .py(px(5.))
-                                .rounded(px(999.))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .border_1()
                                 .border_color(Hsla {
                                     a: 0.10,
@@ -2564,7 +2564,7 @@ pub(super) fn render_game_dialog(
                             div()
                                 .px(px(10.))
                                 .py(px(5.))
-                                .rounded(px(999.))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .border_1()
                                 .border_color(Hsla {
                                     a: 0.10,
@@ -2579,7 +2579,7 @@ pub(super) fn render_game_dialog(
                             div()
                                 .px(px(10.))
                                 .py(px(5.))
-                                .rounded(px(999.))
+                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                 .bg(Hsla {
                                     a: 0.10,
                                     ..colors.stat_green_text
@@ -2604,7 +2604,7 @@ pub(super) fn render_game_dialog(
                 .overflow_y_scrollbar()
                 .scrollbar_width(px(6.))
                 .px(px(22.))
-                .rounded(px(16.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.12,
@@ -2736,7 +2736,7 @@ where
     div()
         .h(px(38.))
         .px(px(16.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(bg)
         .cursor_pointer()
         .flex()

@@ -383,7 +383,7 @@ impl Render for LevelDatCodeWindowView {
                         .h_full()
                         .min_w(px(0.))
                         .min_h(px(0.))
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .border_1()
                         .border_color(Hsla {
                             a: 0.14,
@@ -416,7 +416,7 @@ fn info_badge(colors: &ThemeColors, label: SharedString) -> Div {
     div()
         .px(px(10.))
         .py(px(4.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(Hsla {
             a: 0.08,
             ..colors.surface
@@ -430,7 +430,7 @@ fn status_badge(colors: &ThemeColors, label: &'static str, accent: Hsla) -> Div 
     div()
         .px(px(10.))
         .py(px(4.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(Hsla { a: 0.12, ..accent })
         .text_size(px(11.))
         .font_weight(FontWeight::SEMIBOLD)
@@ -442,7 +442,7 @@ fn action_button(colors: &ThemeColors, primary: bool, label: &'static str) -> Di
     div()
         .px(px(16.))
         .h(px(38.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(if primary {
             Hsla {

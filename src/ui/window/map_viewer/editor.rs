@@ -1708,7 +1708,7 @@ pub(super) fn render_edit_row(colors: &ThemeColors, row: &EditRow) -> Div {
         .gap(px(8.0))
         .px(px(8.0))
         .py(px(5.0))
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: if row.editable { 0.28 } else { 0.16 },
             ..colors.surface_hover

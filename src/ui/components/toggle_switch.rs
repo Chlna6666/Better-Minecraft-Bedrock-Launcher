@@ -85,7 +85,7 @@ impl ToggleSwitchView {
         div()
             .w(px(TRACK_WIDTH))
             .h(px(TRACK_HEIGHT))
-            .rounded(px(999.0))
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
             .bg(track_color)
             .px(px(KNOB_INSET_X))
             .flex()
@@ -96,7 +96,7 @@ impl ToggleSwitchView {
                 div()
                     .w(px(KNOB_SIZE))
                     .h(px(KNOB_SIZE))
-                    .rounded(px(999.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
                     .bg(self.colors.btn_primary_text)
                     .shadow(knob_shadow())
                     .ml(px(KNOB_TRAVEL * progress)),

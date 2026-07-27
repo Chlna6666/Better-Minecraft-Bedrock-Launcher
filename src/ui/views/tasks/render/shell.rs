@@ -129,7 +129,7 @@ pub(crate) fn task_icon_button(
         button = button
             .cursor_pointer()
             .hover(|this| this.bg(colors.surface_hover))
-            .active(|this| this.scale(0.94));
+            .active(|this| this.scale(crate::ui::theme::tokens::motion::PRESS_SCALE));
     } else {
         button = button.opacity(0.45);
     }

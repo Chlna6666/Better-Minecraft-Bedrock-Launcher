@@ -224,7 +224,7 @@ impl MapViewerWindowView {
             .w(px(width))
             .flex_none()
             .min_h(px(0.0))
-            .rounded(px(6.0))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .border_1()
             .border_color(Hsla {
                 a: 0.24,
@@ -251,7 +251,7 @@ impl MapViewerWindowView {
                 |this| {
                     this.child(
                         div()
-                            .rounded(px(6.0))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .border_1()
                             .border_color(Hsla {
                                 a: 0.18,
@@ -372,7 +372,7 @@ fn local_progress_inline(
         .flex_none()
         .h(px(22.0))
         .px(px(8.0))
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: CHROME_HAIRLINE_ALPHA,
@@ -426,7 +426,7 @@ fn task_progress_inline(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
         .flex_none()
         .h(px(22.0))
         .px(px(8.0))
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: CHROME_HAIRLINE_ALPHA,
@@ -573,7 +573,7 @@ fn finished_task_row(colors: &ThemeColors, snapshot: &TaskSnapshot) -> Div {
 
 fn progress_card_shell(colors: &ThemeColors) -> Div {
     div()
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.18,

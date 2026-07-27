@@ -96,7 +96,7 @@ impl MapViewerWindowView {
                             .gap(px(5.0))
                             .px(px(10.0))
                             .py(px(6.0))
-                            .rounded(px(8.0))
+                            .rounded(px(crate::ui::theme::tokens::radius::MD))
                             .border_1()
                             .border_color(Hsla {
                                 a: CHROME_HAIRLINE_ALPHA,

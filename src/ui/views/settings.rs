@@ -233,7 +233,7 @@ fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
         div()
             .w(px(460.))
             .max_w(px(460.))
-            .rounded(px(22.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .border_1()
             .border_color(Hsla {
                 a: 0.18,
@@ -265,7 +265,7 @@ fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                         div()
                             .w(px(42.))
                             .h(px(42.))
-                            .rounded(px(14.))
+                            .rounded(px(crate::ui::theme::tokens::radius::MD))
                             .bg(Hsla {
                                 a: 0.14,
                                 ..colors.accent
@@ -321,7 +321,7 @@ fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                         Button::new("settings-font-restart-cancel")
                             .h(px(38.))
                             .px(px(16.))
-                            .rounded(px(11.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .border_1()
                             .border_color(Hsla {
                                 a: 0.20,
@@ -343,7 +343,7 @@ fn render_font_restart_modal(colors: &ThemeColors, i18n: &I18n) -> AnyElement {
                         Button::new("settings-font-restart-confirm")
                             .h(px(38.))
                             .px(px(16.))
-                            .rounded(px(11.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .border_0()
                             .bg(colors.accent)
                             .text_size(px(13.))

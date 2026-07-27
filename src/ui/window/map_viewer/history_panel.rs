@@ -207,7 +207,7 @@ impl MapViewerWindowView {
                         div()
                             .flex_1()
                             .min_h(px(0.0))
-                            .rounded(px(6.0))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .border_1()
                             .border_color(Hsla {
                                 a: 0.24,
@@ -242,7 +242,7 @@ impl MapViewerWindowView {
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .rounded(px(6.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .border_1()
                     .border_color(Hsla {
                         a: 0.24,

@@ -1,19 +1,23 @@
+use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::Input;
 use crate::ui::components::toast;
 use crate::ui::theme::colors::ThemeColors;
-use crate::ui::views::tools::state::ToolsPageState;
+use crate::ui::theme::tokens::motion;
+use crate::ui::views::tools::state::{OnlineBlockingIssue, ToolsPageState};
+use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
+use std::time::Duration;
 
 use super::actions;
 use super::room_options;
 use super::widgets::{action_button, icon_button};
 
 pub(super) fn render_room_card(colors: &ThemeColors, state: &ToolsPageState) -> Div {
-    let busy = state.online_operation.is_busy();
-    let actions_disabled = busy || state.easytier_running;
+    let changing_room = state.online_operation.changes_room_content();
+    let actions_disabled = state.online_operation.is_busy() || state.easytier_running;
 
     crate::ui::components::page_shell::glass_card(colors)
         .w_full()
@@ -22,20 +26,273 @@ pub(super) fn render_room_card(colors: &ThemeColors, state: &ToolsPageState) -> 
         .flex_col()
         .gap(px(18.))
         .child(render_header(colors, state))
-        .when(!busy && !state.easytier_running, |this| {
+        .when(state.is_online_blocking_issue_visible(), |this| {
+            this.when_some(state.online_blocking_issue, |this, issue| {
+                this.child(render_blocking_issue(colors, state, issue))
+            })
+        })
+        .when(state.are_abandoned_nodes_visible(), |this| {
+            this.child(render_abandoned_nodes(colors, &state.abandoned_nodes))
+        })
+        .when(!changing_room && !state.easytier_running, |this| {
             this.child(render_create_action(colors, actions_disabled))
                 .child(render_join_action(colors, state, actions_disabled))
                 .child(room_options::render_advanced_section(colors, state))
         })
-        .when(busy, |this| {
+        .when(changing_room, |this| {
             this.child(render_connecting_state(colors, state))
         })
-        .when(!busy && state.easytier_running, |this| {
+        .when(!changing_room && state.easytier_running, |this| {
             this.child(render_connected_state(colors, state))
         })
         .when(!state.host_room_code.as_ref().trim().is_empty(), |this| {
             this.child(render_host_room_code(colors, state.host_room_code.clone()))
         })
+}
+
+fn render_abandoned_nodes(colors: &ThemeColors, nodes: &[SharedString]) -> impl IntoElement {
+    let node_list = nodes
+        .iter()
+        .map(|node| node.as_ref())
+        .collect::<Vec<_>>()
+        .join("、");
+    div()
+        .w_full()
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.30,
+            ..colors.stat_orange_text
+        })
+        .bg(Hsla {
+            a: 0.10,
+            ..colors.stat_orange_text
+        })
+        .p(px(14.))
+        .flex()
+        .items_start()
+        .gap(px(10.))
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .flex()
+                .items_start()
+                .gap(px(10.))
+                .child(themed_icon(
+                    lucide_icons::icon_triangle_alert(),
+                    18.0,
+                    colors.stat_orange_text,
+                ))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors.stat_orange_text)
+                                .child("部分联机节点已停止重试"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(18.))
+                                .text_color(colors.text_secondary)
+                                .child(format!(
+                                    "以下内置或自定义节点连续连接失败 3 次，本次联机不再使用，以减少后台重试与日志开销：{node_list}"
+                                )),
+                        ),
+                ),
+        )
+        .child(
+            notice_close_button(
+                "online-abandoned-nodes-dismiss",
+                colors.stat_orange_text,
+            )
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.update_global(|state: &mut ToolsPageState, _cx| {
+                    state.dismiss_abandoned_nodes();
+                });
+            }),
+        )
+        .with_animation(
+            "online-abandoned-nodes-enter",
+            spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+            |card, progress| {
+                card.opacity(progress.clamp(0.0, 1.0))
+                    .relative()
+                    .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
+            },
+        )
+}
+
+fn render_blocking_issue(
+    colors: &ThemeColors,
+    state: &ToolsPageState,
+    issue: OnlineBlockingIssue,
+) -> impl IntoElement {
+    let (title, description) = match issue {
+        OnlineBlockingIssue::LocalWorldMissing => (
+            "未检测到本机 Minecraft 基岩版局域网世界",
+            "请先进入游戏世界并开启局域网联机，然后再次创建房间。",
+        ),
+        OnlineBlockingIssue::DiscoveryPortOccupied => (
+            "本机 UDP 7551 已被占用",
+            "房间连接仍然保留，但本机游戏代理尚未启动。关闭占用程序后可直接重新检查，无需退出房间。",
+        ),
+    };
+
+    div()
+        .w_full()
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.34,
+            ..colors.danger
+        })
+        .bg(Hsla {
+            a: 0.11,
+            ..colors.danger
+        })
+        .p(px(14.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(14.))
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .flex()
+                .items_start()
+                .gap(px(10.))
+                .child(themed_icon(
+                    lucide_icons::icon_triangle_alert(),
+                    18.0,
+                    colors.danger,
+                ))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors.danger)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(18.))
+                                .text_color(colors.text_secondary)
+                                .child(description),
+                        ),
+                ),
+        )
+        .when(
+            issue == OnlineBlockingIssue::DiscoveryPortOccupied,
+            |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            action_button(
+                                colors,
+                                "online-recheck-discovery-port",
+                                if state.discovery_retrying {
+                                    "正在检查"
+                                } else {
+                                    "重新检查"
+                                },
+                                lucide_icons::icon_refresh_cw(),
+                                state.discovery_retrying,
+                                false,
+                            )
+                            .when(!state.discovery_retrying, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                                    actions::retry_discovery_proxy(cx);
+                                })
+                            }),
+                        )
+                        .child(
+                            action_button(
+                                colors,
+                                "online-force-stop-minecraft",
+                                "结束占用应用",
+                                lucide_icons::icon_circle_x(),
+                                state.discovery_retrying,
+                                true,
+                            )
+                            .when(!state.discovery_retrying, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                                    actions::open_minecraft_termination_dialog(cx);
+                                })
+                            }),
+                        )
+                        .child(
+                            notice_close_button("online-blocking-issue-dismiss", colors.danger)
+                                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                                    cx.update_global(|state: &mut ToolsPageState, _cx| {
+                                        state.dismiss_online_blocking_issue();
+                                    });
+                                }),
+                        ),
+                )
+            },
+        )
+        .when(issue == OnlineBlockingIssue::LocalWorldMissing, |this| {
+            this.child(
+                notice_close_button("online-blocking-issue-dismiss", colors.danger).on_mouse_down(
+                    MouseButton::Left,
+                    |_event, _window, cx| {
+                        cx.update_global(|state: &mut ToolsPageState, _cx| {
+                            state.dismiss_online_blocking_issue();
+                        });
+                    },
+                ),
+            )
+        })
+        .with_animation(
+            "online-blocking-issue-enter",
+            spring_motion(spring_smooth(), motion::SMOOTH_WINDOW),
+            |card, progress| {
+                card.opacity(progress.clamp(0.0, 1.0))
+                    .relative()
+                    .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
+            },
+        )
+}
+
+fn notice_close_button(id: &'static str, foreground: Hsla) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .size(px(28.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(foreground)
+        .hover(move |style| {
+            style.bg(Hsla {
+                a: 0.14,
+                ..foreground
+            })
+        })
+        .active(|style| style.scale(0.88))
+        .child(themed_icon(lucide_icons::icon_x(), 16.0, foreground))
 }
 
 fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
@@ -80,7 +337,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                             .flex()
                                             .items_center()
                                             .gap(px(4.))
-                                            .rounded(px(999.))
+                                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                             .bg(Hsla {
                                                 a: 0.12,
                                                 ..colors.accent
@@ -105,7 +362,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                                             .flex()
                                             .items_center()
                                             .gap(px(4.))
-                                            .rounded(px(999.))
+                                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                             .bg(Hsla {
                                                 a: 0.12,
                                                 ..colors.accent
@@ -142,7 +399,7 @@ fn render_header(colors: &ThemeColors, state: &ToolsPageState) -> Div {
                     this.child(
                         div()
                             .flex_none()
-                            .rounded(px(999.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                             .border_1()
                             .border_color(Hsla {
                                 a: 0.24,
@@ -192,7 +449,7 @@ fn render_quick_action(colors: &ThemeColors, state: &ToolsPageState) -> Stateful
 fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.24,
@@ -206,11 +463,21 @@ fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div 
         .flex()
         .items_center()
         .gap(px(12.))
-        .child(themed_icon(
-            lucide_icons::icon_loader_circle(),
-            20.0,
-            colors.accent,
-        ))
+        .child(
+            svg()
+                .path(lucide_icons::icon_loader_circle())
+                .size(px(20.))
+                .text_color(colors.accent)
+                .with_animation(
+                    "online-room-connecting-spinner",
+                    crate::ui::animation::repeating_linear_motion(Duration::from_millis(900)),
+                    |icon, progress| {
+                        icon.with_transformation(Transformation::rotate(radians(
+                            progress * std::f32::consts::TAU,
+                        )))
+                    },
+                ),
+        )
         .child(
             div()
                 .flex()
@@ -235,7 +502,7 @@ fn render_connecting_state(colors: &ThemeColors, state: &ToolsPageState) -> Div 
 fn render_connected_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.24,
@@ -267,7 +534,7 @@ fn render_connected_state(colors: &ThemeColors, state: &ToolsPageState) -> Div {
 fn render_create_action(colors: &ThemeColors, disabled: bool) -> Div {
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.24,
@@ -295,7 +562,7 @@ fn render_create_description(colors: &ThemeColors) -> Div {
         .child(
             div()
                 .size(px(42.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla {
                     a: 0.18,
                     ..colors.accent
@@ -436,7 +703,7 @@ fn render_join_input(colors: &ThemeColors, state: &ToolsPageState) -> Div {
     div()
         .flex_1()
         .min_w(px(180.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.18,
@@ -450,7 +717,7 @@ fn render_host_room_code(colors: &ThemeColors, room_code: SharedString) -> Div {
     let copy_room_code = room_code.clone();
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.24,

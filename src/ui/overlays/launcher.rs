@@ -69,18 +69,18 @@ pub fn render_launcher_overlay(
         "取消"
     };
     let action_fg = if is_error {
-        rgb(0x92400e)
+        colors.badge_beta_text
     } else if is_terminal {
-        rgb(0x334155)
+        colors.text_primary
     } else {
-        rgb(0x475569)
+        colors.text_secondary
     };
     let progress_fill = if status == "error" {
-        rgb(0xef4444)
+        colors.danger
     } else if status == "completed" {
-        rgb(0x22c55e)
+        colors.stat_green_text
     } else {
-        rgb(0x4f46e5)
+        colors.accent
     };
     let status_text = snapshot
         .last_snapshot
@@ -96,7 +96,7 @@ pub fn render_launcher_overlay(
                 .filter(|line| !line.is_empty())
         })
         .unwrap_or_else(|| stage.clone());
-    let status_color = line_color(&status_text);
+    let status_color = line_color(&colors, &status_text);
     let visible_logs = snapshot
         .logs
         .iter()
@@ -127,7 +127,7 @@ pub fn render_launcher_overlay(
         }
     }
 
-    let card_radius = px(18.);
+    let card_radius = px(crate::ui::theme::tokens::radius::MD);
     let card_width = px(640.0);
     let card_height = px(392.0);
 
@@ -137,20 +137,12 @@ pub fn render_launcher_overlay(
         .max_w(relative(1.0))
         .max_h(relative(1.0))
         .rounded(card_radius)
-        .shadow(vec![
-            BoxShadow {
-                color: hsla(0., 0., 0., 0.10 * smooth),
-                blur_radius: px(40.),
-                spread_radius: px(0.),
-                offset: point(px(0.), px(20.)),
-            },
-            BoxShadow {
-                color: hsla(0., 0., 0., 0.05 * smooth),
-                blur_radius: px(0.),
-                spread_radius: px(1.),
-                offset: point(px(0.), px(0.)),
-            },
-        ])
+        .shadow(vec![BoxShadow {
+            color: hsla(0., 0., 0., 0.14 * smooth),
+            blur_radius: px(24.),
+            spread_radius: px(0.),
+            offset: point(px(0.), px(12.)),
+        }])
         .child(
             div()
                 .size_full()
@@ -159,7 +151,7 @@ pub fn render_launcher_overlay(
                 .rounded(card_radius)
                 .occlude()
                 .overflow_hidden()
-                .bg(rgb(0xffffff))
+                .bg(colors.bg)
                 .child(
                     div()
                         .flex()
@@ -168,7 +160,10 @@ pub fn render_launcher_overlay(
                         .px(px(28.))
                         .py(px(16.))
                         .border_b_1()
-                        .border_color(hsla(0., 0., 0., 0.05))
+                        .border_color(Hsla {
+                            a: 0.55,
+                            ..colors.border
+                        })
                         .child(
                             div()
                                 .flex()
@@ -178,7 +173,7 @@ pub fn render_launcher_overlay(
                                     img(icon_path)
                                         .w(px(44.))
                                         .h(px(44.))
-                                        .rounded(px(8.))
+                                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                                         .object_fit(ObjectFit::Cover),
                                 )
                                 .child(
@@ -191,7 +186,7 @@ pub fn render_launcher_overlay(
                                             div()
                                                 .text_size(px(16.))
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0x1e293b))
+                                                .text_color(colors.text_primary)
                                                 .truncate()
                                                 .child(format!(
                                                     "正在启动 {}",
@@ -201,7 +196,7 @@ pub fn render_launcher_overlay(
                                         .child(
                                             div()
                                                 .text_size(px(11.))
-                                                .text_color(rgb(0x64748b))
+                                                .text_color(colors.text_secondary)
                                                 .truncate()
                                                 .child(format!(
                                                     "版本: {} | 构建类型: {}",
@@ -211,7 +206,7 @@ pub fn render_launcher_overlay(
                                         .child(
                                             div()
                                                 .text_size(px(11.))
-                                                .text_color(rgb(0x64748b))
+                                                .text_color(colors.text_secondary)
                                                 .truncate()
                                                 .child(format!(
                                                     "BLoader.dll: {}",
@@ -229,12 +224,12 @@ pub fn render_launcher_overlay(
                                     div()
                                         .w(px(32.))
                                         .h(px(32.))
-                                        .rounded(px(7.))
+                                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                                         .cursor_pointer()
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .hover(|style| style.bg(rgb(0xf1f5f9)))
+                                        .hover(|style| style.bg(colors.surface_hover))
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             move |_ev, _window, cx| {
@@ -246,19 +241,19 @@ pub fn render_launcher_overlay(
                                             svg()
                                                 .path(lucide_icons::icon_copy())
                                                 .size(px(16.))
-                                                .text_color(rgb(0x64748b)),
+                                                .text_color(colors.text_secondary),
                                         ),
                                 )
                                 .child(
                                     div()
                                         .w(px(32.))
                                         .h(px(32.))
-                                        .rounded(px(7.))
+                                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                                         .cursor_pointer()
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .hover(|style| style.bg(rgb(0xf1f5f9)))
+                                        .hover(|style| style.bg(colors.surface_hover))
                                         .on_mouse_down(MouseButton::Left, |_ev, _window, cx| {
                                             minimize_launcher(cx);
                                             cx.stop_propagation();
@@ -267,7 +262,7 @@ pub fn render_launcher_overlay(
                                             svg()
                                                 .path(lucide_icons::icon_minus())
                                                 .size(px(16.))
-                                                .text_color(rgb(0x64748b)),
+                                                .text_color(colors.text_secondary),
                                         ),
                                 ),
                         ),
@@ -279,7 +274,7 @@ pub fn render_launcher_overlay(
                         .px(px(28.))
                         .pt(px(12.))
                         .pb(px(10.))
-                        .bg(rgb(0xf8fafc))
+                        .bg(colors.surface)
                         .flex()
                         .flex_col()
                         .child(
@@ -287,10 +282,13 @@ pub fn render_launcher_overlay(
                                 .id("launcher-log-scroll")
                                 .flex_1()
                                 .min_h(px(0.))
-                                .rounded(px(10.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
                                 .border_1()
-                                .border_color(hsla(0., 0., 0., 0.05))
-                                .bg(rgb(0xffffff))
+                                .border_color(Hsla {
+                                    a: 0.55,
+                                    ..colors.border
+                                })
+                                .bg(colors.bg)
                                 .overflow_y_scroll()
                                 .scrollbar_width(px(0.))
                                 .track_scroll(&log_scroll_handle)
@@ -303,23 +301,20 @@ pub fn render_launcher_overlay(
                                 .gap(px(4.))
                                 .children(visible_logs.into_iter().map(|line| {
                                     let line_ref = line.as_ref();
-                                    let line_color = line_color(line_ref);
+                                    let line_color = line_color(&colors, line_ref);
                                     let accent_color = if is_error_line(line_ref) {
-                                        rgb(0xef4444)
+                                        colors.danger
                                     } else if is_warning_line(line_ref) {
-                                        rgb(0xf59e0b)
+                                        colors.stat_orange_text
                                     } else if is_success_line(line_ref) {
-                                        rgb(0x22c55e)
+                                        colors.stat_green_text
                                     } else {
-                                        rgb(0xe2e8f0)
+                                        colors.border
                                     };
                                     div()
                                         .pl(px(8.))
                                         .border_l_2()
-                                        .border_color(Hsla {
-                                            a: 1.0,
-                                            ..accent_color.into()
-                                        })
+                                        .border_color(accent_color)
                                         .text_size(px(12.))
                                         .line_height(px(18.))
                                         .text_color(line_color)
@@ -332,7 +327,7 @@ pub fn render_launcher_overlay(
                     div()
                         .px(px(28.))
                         .py(px(12.))
-                        .bg(rgb(0xffffff))
+                        .bg(colors.bg)
                         .rounded_b(card_radius)
                         .when(!is_error, |this| {
                             this.flex()
@@ -363,15 +358,15 @@ pub fn render_launcher_overlay(
                                                     div()
                                                         .text_size(px(12.))
                                                         .font_weight(FontWeight::SEMIBOLD)
-                                                        .text_color(rgb(0x64748b))
+                                                        .text_color(colors.text_secondary)
                                                         .child(format!("{percent:.0}%")),
                                                 )
                                                 .child(
                                                     div()
                                                         .w(px(220.))
                                                         .h(px(6.))
-                                                        .rounded(px(10.))
-                                                        .bg(rgb(0xf1f5f9))
+                                                        .rounded(px(crate::ui::theme::tokens::radius::XS))
+                                                        .bg(colors.progress_track)
                                                         .overflow_hidden()
                                                         .child(
                                                             div()
@@ -381,19 +376,14 @@ pub fn render_launcher_overlay(
                                                                         .clamp(0.0, 1.0),
                                                                 ))
                                                                 .bg(progress_fill)
-                                                                .rounded(px(10.)),
+                                                                .rounded(px(crate::ui::theme::tokens::radius::XS)),
                                                         ),
                                                 ),
                                         ),
                                 )
                                 .child(
                                     div().flex().justify_end().child(
-                                        action_button(
-                                            button_label,
-                                            None,
-                                            is_terminal,
-                                            action_fg.into(),
-                                        )
+                                        action_button(&colors, button_label, None, action_fg)
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             move |_ev, _window, cx| {
@@ -429,7 +419,11 @@ pub fn render_launcher_overlay(
                                             .items_center()
                                             .gap(px(8.))
                                             .child(
-                                                ghost_button("复制错误", lucide_icons::icon_copy())
+                                                ghost_button(
+                                                    &colors,
+                                                    "复制错误",
+                                                    lucide_icons::icon_copy(),
+                                                )
                                                     .on_mouse_down(
                                                         MouseButton::Left,
                                                         move |_ev, _window, cx| {
@@ -460,7 +454,7 @@ pub fn render_launcher_overlay(
 
     modal::animated_modal_layer(
         card,
-        hsla(0.0, 0.0, 1.0, 0.30),
+        hsla(0.0, 0.0, 0.0, 0.30),
         smooth,
         snapshot.modal_visible,
     )
@@ -482,60 +476,62 @@ fn is_success_line(line: &str) -> bool {
     line.contains("成功") || line.contains("完成") || line.contains("已就绪")
 }
 
-fn line_color(line: &str) -> Hsla {
+fn line_color(colors: &ThemeColors, line: &str) -> Hsla {
     if is_error_line(line) {
-        rgb(0xdc2626).into()
+        colors.danger
     } else if is_warning_line(line) {
-        rgb(0xd97706).into()
+        colors.stat_orange_text
     } else if is_success_line(line) {
-        rgb(0x16a34a).into()
+        colors.stat_green_text
     } else {
-        rgb(0x475569).into()
+        colors.text_secondary
     }
 }
 
-fn ghost_button(label: &'static str, icon_path: &'static str) -> Div {
+fn ghost_button(colors: &ThemeColors, label: &'static str, icon_path: &'static str) -> Div {
+    let hover_bg = colors.btn_ghost_hover_bg;
+    let hover_fg = colors.text_primary;
     div()
         .h(px(36.))
         .px(px(10.))
         .flex()
         .items_center()
         .gap(px(6.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .cursor_pointer()
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(rgb(0x475569))
-        .hover(|style| style.text_color(rgb(0x1e293b)).bg(rgb(0xf8fafc)))
+        .text_color(colors.text_secondary)
+        .hover(move |style| style.text_color(hover_fg).bg(hover_bg))
         .child(
             svg()
                 .path(icon_path)
                 .size(px(14.))
-                .text_color(rgb(0x64748b)),
+                .text_color(colors.text_secondary),
         )
         .child(label)
 }
 
-fn primary_button(colors: &ThemeColors, label: &'static str, icon_path: &'static str) -> Div {
+fn primary_button(
+    colors: &ThemeColors,
+    label: &'static str,
+    icon_path: &'static str,
+) -> Stateful<Div> {
     div()
+        .id("launcher-primary-button")
         .h(px(36.))
         .px(px(14.))
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.accent)
         .cursor_pointer()
         .text_size(px(13.))
         .font_weight(FontWeight::BOLD)
         .text_color(colors.btn_primary_text)
-        .shadow(vec![BoxShadow {
-            color: colors.accent_glow,
-            blur_radius: px(16.),
-            spread_radius: px(0.),
-            offset: point(px(0.), px(8.)),
-        }])
         .hover(|style| style.bg(colors.accent_hover))
+        .active(|style| style.scale(crate::ui::theme::tokens::motion::PRESS_SCALE))
         .child(
             svg()
                 .path(icon_path)
@@ -546,37 +542,30 @@ fn primary_button(colors: &ThemeColors, label: &'static str, icon_path: &'static
 }
 
 fn action_button(
+    colors: &ThemeColors,
     label: &'static str,
     icon_path: Option<&'static str>,
-    is_terminal: bool,
     action_fg: Hsla,
-) -> Div {
-    let border_color = if is_terminal {
-        rgb(0xcbd5e1)
-    } else {
-        rgb(0xcbd5e1)
-    };
-    let background = if is_terminal {
-        rgb(0xf8fafc)
-    } else {
-        rgb(0xf8fafc)
-    };
-
+) -> Stateful<Div> {
+    let hover_bg = colors.surface_hover;
+    let hover_fg = colors.text_primary;
     let button = div()
+        .id("launcher-action-button")
         .h(px(34.))
         .px(px(12.))
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(9.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
-        .border_color(border_color)
-        .bg(background)
+        .border_color(colors.border)
+        .bg(colors.surface)
         .cursor_pointer()
         .text_size(px(13.))
         .font_weight(FontWeight::BOLD)
         .text_color(action_fg)
-        .hover(|style| style.bg(rgb(0xf1f5f9)).text_color(rgb(0x1e293b)));
+        .hover(move |style| style.bg(hover_bg).text_color(hover_fg))
+        .active(|style| style.scale(crate::ui::theme::tokens::motion::PRESS_SCALE));
 
     if let Some(icon_path) = icon_path {
         button

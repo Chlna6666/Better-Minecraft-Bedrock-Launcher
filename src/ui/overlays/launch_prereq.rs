@@ -148,10 +148,7 @@ pub fn render_launch_prereq_overlay(
             recheck_button,
             close_button,
         ),
-        Hsla {
-            a: 0.50,
-            ..rgb(0x020617).into()
-        },
+        hsla(0.0, 0.0, 0.0, 0.34),
     )
     .into_any_element()
 }
@@ -516,7 +513,7 @@ fn render_issue_sections(
 fn render_logs_section(state: &LaunchPrereqState, colors: &ThemeColors, i18n: &I18n) -> AnyElement {
     let logs = state.log_lines();
     div()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(launch_prereq_section_bg(colors))
         .border_1()
         .border_color(launch_prereq_section_border(colors))
@@ -578,7 +575,7 @@ fn render_shell(
     recheck_button: Div,
     close_button: Div,
 ) -> Div {
-    let shell_radius = px(22.);
+    let shell_radius = px(crate::ui::theme::tokens::radius::MD);
 
     div()
         .w(px(696.))
@@ -741,11 +738,10 @@ fn issue_card(
 
 fn section_card(colors: &ThemeColors) -> Div {
     div()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(launch_prereq_section_bg(colors))
         .border_1()
         .border_color(launch_prereq_section_border(colors))
-        .shadow(launch_prereq_section_shadow(colors))
         .p(px(14.))
         .flex()
         .flex_col()
@@ -768,7 +764,7 @@ fn icon_shell(colors: &ThemeColors, icon_path: &'static str, icon_color: Hsla) -
     div()
         .w(px(36.))
         .h(px(36.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()
@@ -788,7 +784,7 @@ fn spinning_icon_shell(
     div()
         .w(px(36.))
         .h(px(36.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()
@@ -809,7 +805,7 @@ fn progress_bar(colors: &ThemeColors, ratio: f32) -> Div {
     div()
         .w_full()
         .h(px(8.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(Hsla {
             a: 0.72,
             ..colors.progress_track
@@ -820,7 +816,7 @@ fn progress_bar(colors: &ThemeColors, ratio: f32) -> Div {
                 .h_full()
                 .w(relative(ratio.clamp(0.0, 1.0)))
                 .bg(colors.progress_fill)
-                .rounded(px(999.)),
+                .rounded(px(crate::ui::theme::tokens::radius::FULL)),
         )
 }
 
@@ -828,10 +824,10 @@ fn metadata_chip(colors: &ThemeColors, label: SharedString) -> AnyElement {
     div()
         .px(px(8.))
         .py(px(5.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(launch_prereq_nested_bg(colors))
         .border_1()
-        .border_color(launch_prereq_nested_border(colors))
+        .border_color(colors.border)
         .text_size(px(10.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(colors.text_secondary)
@@ -861,7 +857,7 @@ fn render_uwp_dependency_issue_row(
     };
 
     div()
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(launch_prereq_issue_row_bg(colors, &dependency.issue_kind))
         .border_1()
         .border_color(launch_prereq_issue_row_border(
@@ -936,7 +932,7 @@ fn metadata_chip_with_color(
     div()
         .px(px(8.))
         .py(px(5.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(launch_prereq_nested_bg(colors))
         .border_1()
         .border_color(Hsla {
@@ -958,7 +954,7 @@ fn status_banner(
     message: SharedString,
 ) -> AnyElement {
     div()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(background)
         .border_1()
         .border_color(Hsla {
@@ -1000,7 +996,7 @@ fn platform_badge(
     div()
         .px(px(10.))
         .py(px(6.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(background)
         .text_size(px(11.))
         .font_weight(FontWeight::BOLD)
@@ -1014,7 +1010,7 @@ fn primary_button(colors: &ThemeColors, label: SharedString, enabled: bool) -> D
         .h(px(36.))
         .min_w(px(82.))
         .px(px(14.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()
@@ -1035,7 +1031,7 @@ fn secondary_button(colors: &ThemeColors, label: SharedString, enabled: bool) ->
         .h(px(36.))
         .min_w(px(82.))
         .px(px(14.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex()
         .items_center()
         .justify_center()
@@ -1102,171 +1098,50 @@ fn launch_prereq_is_dark(colors: &ThemeColors) -> bool {
 }
 
 fn launch_prereq_shell_bg(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.98,
-            ..rgb(0x111827).into()
-        }
-    } else {
-        Hsla {
-            a: 0.98,
-            ..rgb(0xffffff).into()
-        }
-    }
+    Hsla { a: 0.98, ..colors.bg }
 }
 
 fn launch_prereq_shell_border(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.82,
-            ..rgb(0x334155).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xe2e8f0).into()
-        }
-    }
+    colors.border
 }
 
 fn launch_prereq_shell_shadow(colors: &ThemeColors) -> Vec<BoxShadow> {
-    let shadow_color = if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.34,
-            ..rgb(0x020617).into()
-        }
+    let shadow_alpha = if launch_prereq_is_dark(colors) {
+        0.18
     } else {
-        Hsla {
-            a: 0.18,
-            ..rgb(0x0f172a).into()
-        }
+        0.14
     };
 
     vec![BoxShadow {
-        color: shadow_color,
-        blur_radius: px(40.),
+        color: hsla(0.0, 0.0, 0.0, shadow_alpha),
+        blur_radius: px(24.),
         spread_radius: px(-12.),
-        offset: point(px(0.), px(18.)),
+        offset: point(px(0.), px(12.)),
     }]
 }
 
 fn launch_prereq_header_bg(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.98,
-            ..rgb(0x172033).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xf8fafc).into()
-        }
-    }
+    colors.surface
 }
 
 fn launch_prereq_body_bg(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.98,
-            ..rgb(0x111827).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xfcfdff).into()
-        }
-    }
+    colors.bg
 }
 
 fn launch_prereq_footer_bg(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.98,
-            ..rgb(0x0f172a).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xf8fafc).into()
-        }
-    }
+    colors.surface
 }
 
 fn launch_prereq_section_bg(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.98,
-            ..rgb(0x0f172a).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xf3f6fb).into()
-        }
-    }
+    colors.settings_card_bg
 }
 
 fn launch_prereq_section_border(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.88,
-            ..rgb(0x334155).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xe2e8f0).into()
-        }
-    }
-}
-
-fn launch_prereq_section_shadow(colors: &ThemeColors) -> Vec<BoxShadow> {
-    let shadow_color = if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.14,
-            ..rgb(0x020617).into()
-        }
-    } else {
-        Hsla {
-            a: 0.05,
-            ..rgb(0x0f172a).into()
-        }
-    };
-
-    vec![BoxShadow {
-        color: shadow_color,
-        blur_radius: px(24.),
-        spread_radius: px(-16.),
-        offset: point(px(0.), px(10.)),
-    }]
+    colors.border
 }
 
 fn launch_prereq_nested_bg(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.98,
-            ..rgb(0x162033).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xffffff).into()
-        }
-    }
-}
-
-fn launch_prereq_nested_border(colors: &ThemeColors) -> Hsla {
-    if launch_prereq_is_dark(colors) {
-        Hsla {
-            a: 0.86,
-            ..rgb(0x475569).into()
-        }
-    } else {
-        Hsla {
-            a: 1.0,
-            ..rgb(0xe5edf6).into()
-        }
-    }
+    colors.settings_field_bg
 }
 
 fn launch_prereq_issue_row_bg(

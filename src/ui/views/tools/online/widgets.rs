@@ -16,7 +16,7 @@ pub(super) fn action_button(
         .id(id)
         .min_h(px(40.))
         .px(px(14.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla { a: 0.24, ..accent })
         .bg(Hsla { a: 0.12, ..accent })
@@ -51,7 +51,7 @@ pub(super) fn subtle_button(
         .id(id)
         .min_h(px(40.))
         .px(px(14.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.16,
@@ -90,7 +90,7 @@ pub(super) fn icon_button(
     div()
         .id(id)
         .size(px(40.))
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.16,

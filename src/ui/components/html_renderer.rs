@@ -2695,7 +2695,7 @@ fn render_block(
             let code_len = code_str.len();
             div()
                 .w_full()
-                .rounded(px(style.border_radius.max(10.0)))
+                .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
                 .bg(style.background_color.unwrap_or(Hsla {
                     a: 0.08,
                     ..colors.surface
@@ -2745,7 +2745,7 @@ fn render_block(
             };
             let block = div()
                 .w_full()
-                .rounded(px(style.border_radius.max(12.0)))
+                .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
                 .overflow_hidden()
                 .when(
                     style.border_width > 0.0 || style.border_color.is_some(),
@@ -2912,7 +2912,7 @@ fn render_video_block(
 ) -> AnyElement {
     let card = div()
         .w_full()
-        .rounded(px(style.border_radius.max(18.0)))
+        .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
         .overflow_hidden()
         .cursor_pointer()
         .border_1()
@@ -2952,7 +2952,7 @@ fn render_video_block(
                 div()
                     .w_full()
                     .h(px(180.0))
-                    .rounded(px(16.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
                     .bg(Hsla {
                         a: 0.36,
                         ..colors.surface
@@ -2968,7 +2968,7 @@ fn render_video_block(
                     .child(
                         div()
                             .size(px(56.0))
-                            .rounded(px(999.0))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
                             .bg(colors.accent)
                             .flex()
                             .items_center()
@@ -3017,7 +3017,7 @@ fn render_video_block(
                         div()
                             .h(px(40.0))
                             .px(px(14.0))
-                            .rounded(px(12.0))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .bg(colors.accent)
                             .cursor_pointer()
                             .flex()
@@ -3059,7 +3059,7 @@ fn render_table(
     let line_height = px(style.line_height.unwrap_or(20.0));
     let mut table = div()
         .w_full()
-        .rounded(px(style.border_radius.max(10.0)))
+        .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
         .border_1()
         .border_color(style.border_color.unwrap_or(colors.border))
         .overflow_hidden()

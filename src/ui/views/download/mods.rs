@@ -185,7 +185,7 @@ fn render_loading_state(colors: &ThemeColors) -> Div {
             div()
                 .w(px(64.))
                 .h(px(64.))
-                .rounded(px(16.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.08,
                     ..colors.accent
@@ -228,7 +228,7 @@ fn render_error_state(colors: &ThemeColors, err: &SharedString) -> Div {
             div()
                 .w(px(64.))
                 .h(px(64.))
-                .rounded(px(16.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.1,
                     ..colors.danger
@@ -347,7 +347,7 @@ fn render_stats_bar(
                     div()
                         .px(px(8.))
                         .py(px(2.))
-                        .rounded(px(6.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.1,
                             ..colors.accent
@@ -399,14 +399,14 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
         img(mod_entry.avatar_url.clone())
             .w(px(48.))
             .h(px(48.))
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .object_fit(ObjectFit::Cover)
             .into_any_element()
     } else {
         div()
             .w(px(48.))
             .h(px(48.))
-            .rounded(px(12.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .bg(Hsla {
                 a: 0.08,
                 ..colors.accent
@@ -444,7 +444,7 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
             a: 0.22,
             ..colors.border
         })
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .shadow(crate::ui::components::page_shell::card_shadow())
         .p(px(14.))
         .flex()
@@ -533,7 +533,7 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
                             div()
                                 .px(px(6.))
                                 .py(px(2.))
-                                .rounded(px(4.))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .bg(Hsla {
                                     a: 0.08,
                                     ..colors.accent
@@ -709,7 +709,7 @@ pub(super) fn render_detail_modal_content(
         },
     )
     .with_height(px(32.))
-    .rounded(px(6.))
+    .rounded(px(crate::ui::theme::tokens::radius::SM))
     .into_any_element();
 
     let lip_cmd = format!("lip install {}@{}", mod_id, current_ver);
@@ -734,14 +734,14 @@ pub(super) fn render_detail_modal_content(
                     img(mod_entry.avatar_url.clone())
                         .w(px(52.))
                         .h(px(52.))
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .object_fit(ObjectFit::Cover)
                         .into_any_element()
                 } else {
                     div()
                         .w(px(52.))
                         .h(px(52.))
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.1,
                             ..colors.accent
@@ -832,7 +832,7 @@ pub(super) fn render_detail_modal_content(
         .child(
             div()
                 .p(px(12.))
-                .rounded(px(8.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.04,
                     ..colors.text_primary
@@ -875,7 +875,7 @@ pub(super) fn render_detail_modal_content(
         .child(
             div()
                 .p(px(12.))
-                .rounded(px(8.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.08,
                     ..colors.danger
@@ -913,7 +913,7 @@ pub(super) fn render_detail_modal_content(
                 .child(
                     div()
                         .p(px(10.))
-                        .rounded(px(6.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.08,
                             ..colors.settings_card_bg
@@ -980,7 +980,7 @@ pub(super) fn render_detail_modal_content(
         .w(px(540.))
         .max_h(px(560.))
         .bg(colors.surface)
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(colors.border)
         .flex()
@@ -1018,7 +1018,7 @@ fn render_dependencies_list(
                 .justify_between()
                 .px(px(8.))
                 .py(px(4.))
-                .rounded(px(4.))
+                .rounded(px(crate::ui::theme::tokens::radius::XS))
                 .bg(Hsla {
                     a: 0.04,
                     ..colors.text_primary

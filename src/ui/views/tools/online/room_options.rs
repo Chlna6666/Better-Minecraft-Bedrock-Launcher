@@ -1,12 +1,12 @@
-use crate::ui::animation::ease_out_cubic_motion;
+use crate::ui::animation::{spring_bouncy, spring_motion};
 use crate::ui::components::input::Input;
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
-use std::time::Duration;
 
 use super::widgets::subtle_button;
 
@@ -62,12 +62,12 @@ fn render_advanced_panel(colors: &ThemeColors, state: &ToolsPageState) -> impl I
         ))
         .with_animation(
             "online-room-advanced-panel",
-            ease_out_cubic_motion(Duration::from_millis(220)),
+            spring_motion(spring_bouncy(), motion::BOUNCY_WINDOW),
             |panel, progress| {
                 panel
-                    .opacity(progress)
+                    .opacity(progress.clamp(0.0, 1.0))
                     .relative()
-                    .top(px((1.0 - progress) * 9.0))
+                    .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
             },
         )
 }
@@ -135,7 +135,7 @@ fn render_input_label(colors: &ThemeColors, label: &'static str, helper: &'stati
 fn render_input_field(colors: &ThemeColors, field: AnyElement) -> Div {
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.16,

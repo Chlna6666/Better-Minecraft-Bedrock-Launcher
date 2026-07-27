@@ -165,7 +165,7 @@ fn background_blur_row(
                 div()
                     .w(px(56.))
                     .h(px(28.))
-                    .rounded(px(9.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .bg(Hsla {
                         a: 0.84,
                         ..colors.settings_field_bg

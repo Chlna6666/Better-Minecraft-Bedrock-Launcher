@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use super::icon_btn;
 
-const DEPENDENCIES_MODAL_RADIUS: f32 = 18.0;
+const DEPENDENCIES_MODAL_RADIUS: f32 = crate::ui::theme::tokens::radius::MD;
 const DEPENDENCIES_MODAL_OUTER_PADDING: f32 = 18.0;
 const DEPENDENCIES_MODAL_MAX_WIDTH: f32 = 940.0;
 const DEPENDENCIES_MODAL_MAX_HEIGHT: f32 = 720.0;
@@ -275,7 +275,7 @@ fn scroll_event_delta_y(event: &ScrollWheelEvent) -> Pixels {
 fn render_font_info(colors: &ThemeColors, i18n: &I18n, font_family: SharedString) -> Div {
     div()
         .flex_none()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.20,
@@ -330,7 +330,7 @@ fn render_dependency_group(colors: &ThemeColors, i18n: &I18n, group: DependencyG
 
     div()
         .flex_none()
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.20,
@@ -461,7 +461,7 @@ fn metadata_chip(
 
     div()
         .max_w(px(260.))
-        .rounded(px(9.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.14,
@@ -501,7 +501,7 @@ fn dependency_source_button(
         )))
         .w(px(32.))
         .h(px(32.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .flex_none()
         .flex()
         .items_center()

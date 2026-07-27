@@ -324,7 +324,7 @@ fn skin_default_action_button(
         .id(id)
         .w(px(28.))
         .h(px(28.))
-        .rounded(px(8.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .flex()
         .items_center()
         .justify_center()
@@ -668,7 +668,7 @@ pub(super) fn render_asset_list(
             return div()
                 .w_full()
                 .h_full()
-                .rounded(px(16.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(Hsla {
                     a: 0.10,
                     ..colors.danger
@@ -705,7 +705,7 @@ pub(super) fn render_asset_list(
         return div()
             .w_full()
             .h_full()
-            .rounded(px(16.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(Hsla {
                 a: 0.10,
                 ..colors.danger
@@ -1027,7 +1027,7 @@ pub(super) fn render_asset_row(
         .w_full()
         .h(px(MANAGE_ASSET_ROW_HEIGHT_PX))
         .flex_none()
-        .rounded(px(12.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(if is_selected {
             Hsla {
@@ -1067,7 +1067,7 @@ pub(super) fn render_asset_row(
                             div()
                                 .w(px(18.))
                                 .h(px(18.))
-                                .rounded(px(8.))
+                                .rounded(px(crate::ui::theme::tokens::radius::MD))
                                 .border_1()
                                 .border_color(if is_selected {
                                     colors.accent

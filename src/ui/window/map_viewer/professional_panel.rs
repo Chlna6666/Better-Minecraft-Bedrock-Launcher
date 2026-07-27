@@ -58,7 +58,7 @@ impl MapViewerWindowView {
                     .overflow_y_scrollbar()
                     .px(px(8.0))
                     .py(px(8.0))
-                    .rounded(px(6.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .bg(Hsla {
                         a: 0.46,
                         ..colors.surface_hover

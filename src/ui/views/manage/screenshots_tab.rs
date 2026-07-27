@@ -344,7 +344,7 @@ pub(super) fn render_screenshot_row(
         )))
         .w_full()
         .h(px(MANAGE_ASSET_ROW_HEIGHT_PX))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(colors.border)
         .bg(row_background)

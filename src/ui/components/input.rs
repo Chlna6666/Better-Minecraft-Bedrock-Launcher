@@ -84,7 +84,7 @@ impl InputSize {
         match self {
             Self::Small => InputMetrics {
                 height: 28.0,
-                radius: 8.0,
+                radius: crate::ui::theme::tokens::radius::SM,
                 gap: 2.0,
                 padding_x: 6.0,
                 clear_slot: 14.0,
@@ -94,7 +94,7 @@ impl InputSize {
             },
             Self::Medium => InputMetrics {
                 height: 38.0,
-                radius: 12.0,
+                radius: crate::ui::theme::tokens::radius::MD,
                 gap: 3.0,
                 padding_x: 6.0,
                 clear_slot: 16.0,

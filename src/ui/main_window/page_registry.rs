@@ -673,6 +673,10 @@ impl MainWindowView {
             theme_color_cache: None,
             last_diagnostics_render_signature: (None, false, false),
             last_toast_had_content: false,
+            last_minecraft_termination_dialog: cx
+                .global::<crate::ui::views::tools::state::ToolsPageState>()
+                .minecraft_termination_dialog
+                .clone(),
         };
 
         this.install_reactors(cx);

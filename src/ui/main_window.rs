@@ -246,6 +246,8 @@ pub struct MainWindowView {
     theme_color_cache: Option<ThemeColorCache>,
     last_diagnostics_render_signature: (Option<String>, bool, bool),
     last_toast_had_content: bool,
+    last_minecraft_termination_dialog:
+        crate::ui::views::tools::state::MinecraftTerminationDialogState,
 }
 
 impl MainWindowView {
@@ -253,6 +255,19 @@ impl MainWindowView {
         if !self._reactor_subscriptions.is_empty() {
             return;
         }
+
+        let subscription =
+            cx.observe_global::<crate::ui::views::tools::state::ToolsPageState>(|this, cx| {
+                let dialog = cx
+                    .global::<crate::ui::views::tools::state::ToolsPageState>()
+                    .minecraft_termination_dialog
+                    .clone();
+                if this.last_minecraft_termination_dialog != dialog {
+                    this.last_minecraft_termination_dialog = dialog;
+                    cx.notify();
+                }
+            });
+        self._reactor_subscriptions.push(subscription);
     }
 
     fn ensure_music_library_load_started(&mut self, cx: &mut Context<Self>) {
@@ -716,6 +731,16 @@ impl MainWindowView {
             root = root.child(self.render_plugin_modal(modal, model, window, cx));
         }
 
+        if !model.agreement_render_state.visible
+            && let Some(dialog) =
+                crate::ui::views::tools::online::render_minecraft_termination_dialog(
+                    &model.theme_colors,
+                    cx.global::<crate::ui::views::tools::state::ToolsPageState>(),
+                )
+        {
+            root = root.child(dialog);
+        }
+
         if model.toast_visible {
             let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
             root = root.child(crate::ui::components::toast::render_overlay(
@@ -772,7 +797,9 @@ impl MainWindowView {
                 window.set_client_inset(px(0.));
             } else {
                 window.set_client_inset(px(6.));
-                root = root.rounded(px(14.)).overflow_hidden();
+                root = root
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
+                    .overflow_hidden();
             }
         }
         root
@@ -816,7 +843,7 @@ impl MainWindowView {
             .h(height)
             .max_h(px(model.window_height / px(1.0) - 40.0))
             .overflow_hidden()
-            .rounded(px(10.0))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .border_1()
             .border_color(Hsla {
                 a: 0.56,

@@ -145,7 +145,7 @@ fn source_selector(
     div()
         .w_full()
         .p(px(14.))
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.18,
@@ -209,7 +209,7 @@ fn source_option(
         .id(SharedString::from(format!("proton-gdk-source-{label}")))
         .h(px(34.))
         .px(px(11.))
-        .rounded(px(9.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(if active {
             Hsla {
@@ -290,7 +290,7 @@ fn environment_overview(colors: &ThemeColors, is_ready: bool) -> Div {
     div()
         .w_full()
         .p(px(18.))
-        .rounded(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla { a: 0.22, ..tone })
         .bg(Hsla { a: 0.08, ..tone })
@@ -306,7 +306,7 @@ fn environment_overview(colors: &ThemeColors, is_ready: bool) -> Div {
                 .child(
                     div()
                         .size(px(42.))
-                        .rounded(px(12.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -349,7 +349,7 @@ fn environment_overview(colors: &ThemeColors, is_ready: bool) -> Div {
                 .id("proton-gdk-status-action")
                 .px(px(10.))
                 .py(px(5.))
-                .rounded(px(999.))
+                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                 .bg(Hsla { a: 0.14, ..tone })
                 .text_size(px(11.5))
                 .font_weight(FontWeight::MEDIUM)
@@ -426,7 +426,7 @@ fn installed_runner_card(
         )))
         .w_full()
         .p(px(16.))
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(if selected {
             Hsla {
@@ -458,7 +458,7 @@ fn installed_runner_card(
                 .child(
                     div()
                         .size(px(38.))
-                        .rounded(px(10.))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.12,
                             ..colors.accent
@@ -507,7 +507,7 @@ fn installed_runner_card(
                     div()
                         .px(px(10.))
                         .py(px(5.))
-                        .rounded(px(999.))
+                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
                         .bg(Hsla {
                             a: 0.14,
                             ..colors.accent
@@ -527,7 +527,7 @@ fn installed_runner_card(
                             executable.display()
                         )))
                         .size(px(30.))
-                        .rounded(px(8.))
+                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -577,7 +577,7 @@ fn empty_runner_card(colors: &ThemeColors) -> Div {
     div()
         .w_full()
         .min_h(px(150.))
-        .rounded(px(14.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.20,
@@ -595,7 +595,7 @@ fn empty_runner_card(colors: &ThemeColors) -> Div {
         .child(
             div()
                 .size(px(42.))
-                .rounded(px(12.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .bg(Hsla {
                     a: 0.10,
                     ..colors.text_muted
@@ -724,7 +724,7 @@ fn action_button(
         .id(SharedString::from(format!("proton-gdk-action-{label}")))
         .h(px(36.))
         .px(px(12.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(if primary {
             Hsla {

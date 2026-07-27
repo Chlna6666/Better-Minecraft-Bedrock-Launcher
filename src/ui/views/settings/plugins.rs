@@ -468,7 +468,7 @@ fn compact_status_pill(
     div()
         .px(px(6.))
         .py(px(2.))
-        .rounded(px(999.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
         .bg(bg_color)
         .text_size(px(10.))
         .font_weight(FontWeight::SEMIBOLD)
@@ -480,7 +480,7 @@ fn small_icon_button(colors: &ThemeColors, label: &'static str, icon_path: &'sta
     div()
         .h(px(26.))
         .px(px(8.))
-        .rounded(px(6.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.12,
@@ -598,7 +598,7 @@ fn plugin_list(
                     "settings-plugin-item-{}",
                     status.id
                 )))
-                .rounded(px(8.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .px(px(8.))
                 .py(px(7.))
                 .flex()
@@ -648,8 +648,10 @@ fn plugin_list(
                                 .gap(px(1.))
                                 .min_w(px(0.))
                                 .flex_1()
+                                .w_full()
                                 .child(
                                     div()
+                                        .w_full()
                                         .text_size(px(12.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text_primary)
@@ -660,6 +662,7 @@ fn plugin_list(
                                 )
                                 .child(
                                     div()
+                                        .w_full()
                                         .text_size(px(10.))
                                         .text_color(colors.text_muted)
                                         .overflow_hidden()
@@ -669,13 +672,10 @@ fn plugin_list(
                                 ),
                         ),
                 )
-                .child(compact_status_pill(
-                    colors,
-                    status_text,
-                    is_success,
-                    is_warning,
-                    is_disabled,
-                )),
+                .child(
+                    compact_status_pill(colors, status_text, is_success, is_warning, is_disabled)
+                        .flex_shrink_0(),
+                ),
         );
     }
 
@@ -749,7 +749,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
 
     div()
         .w_full()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
             a: 0.35,
             ..colors.surface_hover
@@ -798,7 +798,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                                             div()
                                                 .px(px(6.))
                                                 .py(px(1.))
-                                                .rounded(px(999.))
+                                                .rounded(px(crate::ui::theme::tokens::radius::FULL))
                                                 .bg(Hsla {
                                                     a: 0.12,
                                                     ..colors.text_muted
@@ -877,7 +877,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                             div()
                                 .px(px(7.))
                                 .py(px(2.))
-                                .rounded(px(4.))
+                                .rounded(px(crate::ui::theme::tokens::radius::XS))
                                 .bg(Hsla {
                                     a: 0.08,
                                     ..colors.accent
@@ -970,7 +970,7 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                 div()
                     .px(px(10.))
                     .py(px(6.))
-                    .rounded(px(6.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .bg(Hsla {
                         a: 0.10,
                         ..colors.danger
@@ -994,7 +994,7 @@ fn plugin_sub_tabs(
         div()
             .h(px(28.))
             .px(px(12.))
-            .rounded(px(6.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .cursor_pointer()
             .bg(if is_active {
                 colors.surface_hover
@@ -1030,7 +1030,7 @@ fn plugin_sub_tabs(
         .flex()
         .gap(px(4.))
         .p(px(3.))
-        .rounded(px(8.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
             a: 0.25,
             ..colors.surface_hover
@@ -1129,7 +1129,7 @@ fn plugin_permissions_panel(colors: &ThemeColors, status: &PluginStatus) -> AnyE
 fn plugin_info_row(colors: &ThemeColors, label: &str, value: String) -> Div {
     div()
         .w_full()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.16,
@@ -1283,7 +1283,7 @@ fn render_config_field(
         .w_full()
         .px(px(12.))
         .py(px(11.))
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.16,
@@ -1480,7 +1480,7 @@ fn render_input_control(
 fn raw_config_panel(colors: &ThemeColors, i18n: &I18n, content: &str) -> AnyElement {
     div()
         .w_full()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.22,
@@ -1520,7 +1520,7 @@ fn plugin_logs_panel(colors: &ThemeColors, i18n: &I18n, model: &PluginSettingsMo
         .children(model.logs.iter().cloned().map(|entry| {
             div()
                 .w_full()
-                .rounded(px(8.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .px(px(10.))
                 .py(px(7.))
                 .bg(Hsla {
@@ -1538,7 +1538,7 @@ fn plugin_logs_panel(colors: &ThemeColors, i18n: &I18n, model: &PluginSettingsMo
 fn empty_panel(colors: &ThemeColors, message: SharedString) -> AnyElement {
     div()
         .w_full()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.22,
@@ -1556,7 +1556,7 @@ fn plugin_icon(status: &PluginStatus, colors: &ThemeColors, size: Pixels) -> Any
         div()
             .w(size)
             .h(size)
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .bg(Hsla {
                 a: 0.12,
                 ..colors.accent
@@ -1575,7 +1575,7 @@ fn plugin_icon(status: &PluginStatus, colors: &ThemeColors, size: Pixels) -> Any
         div()
             .w(size)
             .h(size)
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .bg(colors.surface)
             .child(img(path.clone()).size_full().object_fit(ObjectFit::Contain))
@@ -1588,7 +1588,7 @@ fn icon_only_button(colors: &ThemeColors, icon_path: &'static str, enabled: bool
         .id(SharedString::from(format!("icon-only-btn-{icon_path}")))
         .w(px(28.))
         .h(px(28.))
-        .rounded(px(6.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.12,

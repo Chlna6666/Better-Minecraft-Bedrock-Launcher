@@ -253,7 +253,7 @@ impl RenderOnce for ContextMenu {
             .top(px(self.placement.top))
             .w(px(self.placement.width))
             .max_h(px(self.placement.max_height))
-            .rounded(px(12.0))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
             .border_1()
             .border_color(Hsla {
                 a: 0.22,
@@ -445,7 +445,7 @@ fn menu_row(colors: ThemeColors, disabled: bool, danger: bool) -> Div {
         .mx(px(5.0))
         .px(px(7.0))
         .py(px(7.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .flex()
         .items_center()
         .gap(px(7.0))

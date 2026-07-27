@@ -81,8 +81,8 @@ pub(super) fn render_skin_selector(
     } else {
         SELECTOR_COLLAPSED_IMAGE_SIZE
     };
-    let item_radius = if expanded { 9.0 } else { 10.0 };
-    let image_radius = if expanded { 6.0 } else { 7.0 };
+    let item_radius = crate::ui::theme::tokens::radius::SM;
+    let image_radius = crate::ui::theme::tokens::radius::XS;
     let mut list = div()
         .flex()
         .items_center()
@@ -258,7 +258,7 @@ fn selector_icon_button(
         .w(px(34.0))
         .h(px(34.0))
         .flex_none()
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(colors.border)
         .bg(colors.surface)

@@ -294,7 +294,7 @@ impl SkinPreviewWindowView {
             .id(id)
             .w(px(34.))
             .h(px(34.))
-            .rounded(px(8.))
+            .rounded(px(crate::ui::theme::tokens::radius::MD))
             .border_1()
             .border_color(if active { colors.accent } else { colors.border })
             .bg(if active {
@@ -575,7 +575,7 @@ impl Render for SkinPreviewWindowView {
                             .h_full()
                             .max_w(px(SKIN_PREVIEW_STAGE_MAX_WIDTH))
                             .max_h(px(SKIN_PREVIEW_STAGE_MAX_HEIGHT))
-                            .rounded(px(10.))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
                             .border_1()
                             .border_color(colors.border)
                             .overflow_hidden()

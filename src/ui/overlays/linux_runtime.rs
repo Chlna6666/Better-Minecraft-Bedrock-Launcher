@@ -89,7 +89,7 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
     if let Some(error) = state.error_message.as_ref() {
         details = details.child(
             div()
-                .rounded(px(10.))
+                .rounded(px(crate::ui::theme::tokens::radius::SM))
                 .border_1()
                 .border_color(Hsla {
                     a: 0.40,
@@ -163,7 +163,7 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
             .child(
                 div()
                     .size(px(42.))
-                    .rounded(px(12.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .bg(colors.stat_orange_bg)
                     .flex()
                     .items_center()
@@ -232,7 +232,7 @@ pub fn render_linux_runtime_overlay(state: &LinuxRuntimeState, colors: &ThemeCol
             )
             .child(
                 div()
-                    .rounded(px(10.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .bg(colors.stat_green_bg)
                     .px(px(12.))
                     .py(px(9.))
@@ -280,7 +280,7 @@ fn install_progress(
     current_output: SharedString,
 ) -> AnyElement {
     div()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.24,
@@ -373,7 +373,7 @@ fn info_row(
     value: SharedString,
 ) -> AnyElement {
     div()
-        .rounded(px(10.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(colors.settings_card_bg)
         .border_1()
         .border_color(colors.border)

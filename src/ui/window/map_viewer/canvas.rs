@@ -839,7 +839,7 @@ fn render_paste_controls(
                     ))
                     .px(px(7.0))
                     .py(px(3.0))
-                    .rounded(px(6.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
                     .bg(Hsla {
                         a: 0.86,
                         ..colors.surface
@@ -858,7 +858,7 @@ fn render_paste_controls(
                     .gap(px(6.0))
                     .px(px(8.0))
                     .py(px(7.0))
-                    .rounded(px(8.0))
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
                     .border_1()
                     .border_color(Hsla {
                         a: 0.26,
@@ -933,7 +933,7 @@ fn render_paste_controls(
                         .gap(px(6.0))
                         .px(px(8.0))
                         .py(px(8.0))
-                        .rounded(px(8.0))
+                        .rounded(px(crate::ui::theme::tokens::radius::MD))
                         .border_1()
                         .border_color(Hsla {
                             a: 0.26,
@@ -997,7 +997,7 @@ fn paste_control_button(colors: &ThemeColors, label: impl Into<SharedString>) ->
     div()
         .px(px(8.0))
         .py(px(5.0))
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
         .border_color(Hsla {
             a: 0.24,
@@ -1275,7 +1275,7 @@ fn render_markers(snapshot: &MarkerLayerSnapshot) -> Div {
                     div()
                         .px(px(6.0))
                         .py(px(2.0))
-                        .rounded(px(6.0))
+                        .rounded(px(crate::ui::theme::tokens::radius::SM))
                         .bg(Hsla {
                             a: 0.78,
                             ..snapshot.colors.surface
@@ -1308,7 +1308,7 @@ fn hud_pill(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
     div()
         .px(px(10.0))
         .py(px(6.0))
-        .rounded(px(8.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(Hsla {
             a: 0.28,
