@@ -437,11 +437,19 @@ where
         title = options.title,
         "hidden blocking task started"
     );
-    let joined = match options.timeout {
-        Some(timeout) => tokio::time::timeout(timeout, join_handle)
-            .await
-            .map_err(|_| format!("{}超时（{} 秒）", options.title, timeout.as_secs())),
-        None => Ok(join_handle.await),
+    let title = options.title;
+    let timeout = options.timeout;
+    let wait_handle = runtime.spawn_io(async move {
+        match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, join_handle)
+                .await
+                .map_err(|_| format!("{title}超时（{} 秒）", timeout.as_secs())),
+            None => Ok(join_handle.await),
+        }
+    });
+    let joined = match wait_handle.await {
+        Ok(joined) => joined,
+        Err(error) => Err(format!("{title}等待任务失败: {error}")),
     };
 
     if joined.is_err() {
@@ -487,6 +495,18 @@ mod tests {
 
     fn initialize_test_runtime() {
         initialize_app_runtime().expect("application runtime should initialize");
+    }
+
+    #[test]
+    fn hidden_blocking_task_can_be_awaited_without_tokio_context() {
+        initialize_test_runtime();
+        let value = futures::executor::block_on(run_blocking(
+            BlockingTaskOptions::hidden("非 Tokio 上下文任务测试"),
+            || Ok(42),
+        ))
+        .expect("hidden task should complete outside a Tokio context");
+
+        assert_eq!(value, 42);
     }
 
     #[tokio::test]
