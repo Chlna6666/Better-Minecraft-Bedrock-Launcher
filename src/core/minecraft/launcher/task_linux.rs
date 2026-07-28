@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -19,7 +19,9 @@ const LAUNCH_TOTAL_STEPS: u64 = 3;
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_secs(8);
 const GAME_INPUT_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const GAME_INPUT_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
+const PROTON_PREFIX_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(120);
 const RECENT_RUNNER_OUTPUT_LIMIT: usize = 32;
+const GDK_GNUTLS_PRIORITY: &[u8] = b"[priorities]\nSYSTEM = NORMAL:-VERS-TLS1.3:%COMPAT\n";
 const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 4] = [
     ("resolving_runner", "检测兼容环境"),
     ("preparing_prefix", "准备 Proton Prefix"),
@@ -57,75 +59,219 @@ impl LaunchRequest {
     }
 }
 
-fn resolve_wine64(runner: &crate::core::linux_runtime::Runner) -> Result<PathBuf, String> {
-    let proton_root = runner
-        .executable
-        .parent()
-        .ok_or_else(|| "无法确定 Proton-GDK 安装目录".to_string())?;
-    let wine64 = proton_root.join("files/bin/wine64");
-    if !wine64.is_file() {
-        return Err(format!(
-            "Proton-GDK 中没有找到 wine64：{}",
-            wine64.display()
-        ));
-    }
-    Ok(wine64)
-}
-
 fn set_runner_ld_library_path(command: &mut Command, runner: &crate::core::linux_runtime::Runner) {
     let Some(proton_root) = runner.executable.parent() else {
         return;
     };
-    let lib_paths = [
+    let mut lib_paths = [
         proton_root.join("files/lib64"),
         proton_root.join("files/lib"),
     ]
     .into_iter()
+    .filter(|path| path.is_dir())
     .map(|path| path.to_string_lossy().into_owned())
     .collect::<Vec<_>>();
-    command.env("LD_LIBRARY_PATH", lib_paths.join(":"));
+    if let Some(inherited) = env::var_os("LD_LIBRARY_PATH").filter(|value| !value.is_empty()) {
+        lib_paths.push(inherited.to_string_lossy().into_owned());
+    }
+    if !lib_paths.is_empty() {
+        command.env("LD_LIBRARY_PATH", lib_paths.join(":"));
+    }
 }
 
-async fn copy_runner_dlls(
+fn proton_steam_client_path(
+    runner: &crate::core::linux_runtime::Runner,
+) -> Result<PathBuf, String> {
+    if let Some(steam_root) = runner.steam_root.as_ref() {
+        return Ok(steam_root.clone());
+    }
+    if let Some(configured) = env::var_os("STEAM_COMPAT_CLIENT_INSTALL_PATH") {
+        return Ok(PathBuf::from(configured));
+    }
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".local/share/Steam"))
+        .ok_or_else(|| "无法确定 HOME，不能设置 STEAM_COMPAT_CLIENT_INSTALL_PATH".to_string())
+}
+
+async fn configure_proton_command(
+    command: &mut Command,
     runner: &crate::core::linux_runtime::Runner,
     prefix_path: &Path,
+    task_id: &str,
 ) -> Result<(), String> {
-    let proton_root = runner
-        .executable
-        .parent()
-        .ok_or_else(|| "无法确定 Proton-GDK 安装目录".to_string())?;
-    let default_pfx = proton_root.join("files/share/default_pfx/drive_c/windows/system32");
-    if !default_pfx.is_dir() {
-        return Ok(());
+    if runner.executable.parent().is_none() {
+        return Err("无法确定 Proton-GDK 安装目录".to_string());
     }
-    let target = prefix_path.join("pfx/drive_c/windows/system32");
-    tokio::fs::create_dir_all(&target)
+    let steam_client_path = proton_steam_client_path(runner)?;
+    let proton_log_directory = crate::utils::file_ops::logs_dir().join("proton");
+    let gnutls_priority_file =
+        crate::utils::file_ops::config_dir().join("compat/gnutls-no-tls13.cfg");
+    tokio::fs::create_dir_all(&steam_client_path)
         .await
-        .map_err(|error| format!("创建 Wine system32 目录失败：{error}"))?;
-    let mut entries = tokio::fs::read_dir(&default_pfx)
-        .await
-        .map_err(|error| format!("读取 default_pfx 目录失败：{error}"))?;
-    let mut copied = 0usize;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let file_name = entry.file_name();
-        let source = entry.path();
-        if !source.is_file() {
-            continue;
-        }
-        let dest = target.join(&file_name);
-        if dest.exists() {
-            continue;
-        }
-        tokio::fs::copy(&source, &dest).await.map_err(|error| {
+        .map_err(|error| {
             format!(
-                "复制 {} 到 {} 失败：{error}",
-                source.display(),
-                dest.display()
+                "创建 Proton Steam 兼容目录 {} 失败：{error}",
+                steam_client_path.display()
             )
         })?;
-        copied += 1;
+    tokio::fs::create_dir_all(&proton_log_directory)
+        .await
+        .map_err(|error| {
+            format!(
+                "创建 Proton 日志目录 {} 失败：{error}",
+                proton_log_directory.display()
+            )
+        })?;
+    if let Some(parent) = gnutls_priority_file.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("创建 GDK TLS 配置目录失败：{error}"))?;
     }
-    debug!(copied, "copied Proton runtime DLLs to Wine prefix");
+    let priority_is_current = tokio::fs::read(&gnutls_priority_file)
+        .await
+        .is_ok_and(|contents| contents == GDK_GNUTLS_PRIORITY);
+    if !priority_is_current {
+        tokio::fs::write(&gnutls_priority_file, GDK_GNUTLS_PRIORITY)
+            .await
+            .map_err(|error| format!("写入 GDK TLS 兼容配置失败：{error}"))?;
+    }
+
+    command
+        .env("STEAM_COMPAT_DATA_PATH", prefix_path)
+        .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_client_path)
+        .env("UMU_ID", "bmcbl-minecraft-bedrock")
+        .env("STORE", "none")
+        .env("PROTON_LOG", "1")
+        .env("PROTON_LOG_DIR", &proton_log_directory)
+        .env("GNUTLS_SYSTEM_PRIORITY_FILE", &gnutls_priority_file)
+        .env("GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID", "0")
+        .env("WINEDLLOVERRIDES", "dxgi,d3d11,d3d10core,d3d9=b")
+        .env("VKD3D_CONFIG", "force_raw_va_cbv")
+        .env(
+            "MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_SHOWUI",
+            "0",
+        )
+        .env(
+            "MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_FAILFAST",
+            "0",
+        )
+        .env(
+            "MICROSOFT_WINDOWSAPPRUNTIME_DEPLOYMENT_INITIALIZE_ONERRORSHOWUI",
+            "0",
+        );
+    set_runner_ld_library_path(command, runner);
+    append_task_log(
+        task_id,
+        format!("Proton 日志目录：{}", proton_log_directory.display()),
+    );
+    Ok(())
+}
+
+fn proton_prefix_has_metadata(prefix_path: &Path) -> bool {
+    ["version", "tracked_files", "config_info"]
+        .into_iter()
+        .any(|name| prefix_path.join(name).is_file())
+}
+
+fn proton_prefix_has_registry(prefix_path: &Path) -> bool {
+    let prefix = prefix_path.join("pfx");
+    prefix.join("system.reg").is_file() || prefix.join("user.reg").is_file()
+}
+
+fn incompatible_proton_prefix_needs_backup(prefix_path: &Path) -> bool {
+    proton_prefix_has_registry(prefix_path) && !proton_prefix_has_metadata(prefix_path)
+}
+
+async fn backup_incompatible_proton_prefix(
+    prefix_path: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    if !incompatible_proton_prefix_needs_backup(prefix_path) {
+        return Ok(());
+    }
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("生成旧 Prefix 备份时间戳失败：{error}"))?
+        .as_secs();
+    let current_prefix = prefix_path.join("pfx");
+    let backup_prefix = prefix_path.join(format!("pfx.bmcbl-wine-backup-{timestamp}"));
+    tokio::fs::rename(&current_prefix, &backup_prefix)
+        .await
+        .map_err(|error| {
+            format!(
+                "备份不兼容 Prefix {} 到 {} 失败：{error}",
+                current_prefix.display(),
+                backup_prefix.display()
+            )
+        })?;
+    let marker = prefix_path.join(".bmcbl-proton-gameinput-installed");
+    if let Err(error) = tokio::fs::remove_file(&marker).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!(
+            "清理旧 GameInput 状态 {} 失败：{error}",
+            marker.display()
+        ));
+    }
+    append_task_log(
+        task_id,
+        format!(
+            "检测到由裸 Wine 创建的旧 Prefix，已保留备份：{}",
+            backup_prefix.display()
+        ),
+    );
+    Ok(())
+}
+
+async fn initialize_proton_prefix(
+    runner: &crate::core::linux_runtime::Runner,
+    prefix_path: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    backup_incompatible_proton_prefix(prefix_path, task_id).await?;
+    let dosdevices = prefix_path.join("pfx/dosdevices");
+    tokio::fs::create_dir_all(&dosdevices)
+        .await
+        .map_err(|error| format!("创建 Proton dosdevices 目录失败：{error}"))?;
+    let mut command = Command::new(&runner.executable);
+    configure_proton_command(&mut command, runner, prefix_path, task_id).await?;
+    command
+        .arg("run")
+        .arg(r"C:\windows\system32\cmd.exe")
+        .arg("/c")
+        .arg("exit")
+        .arg("0")
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    debug!(task_id, command = ?command, "prepared Proton prefix initialization command");
+    append_task_log(task_id, "正在通过 Proton wrapper 初始化 Prefix");
+
+    let output = tokio::time::timeout(PROTON_PREFIX_INITIALIZATION_TIMEOUT, command.output())
+        .await
+        .map_err(|_| "Proton Prefix 初始化超时".to_string())?
+        .map_err(|error| format!("无法启动 Proton Prefix 初始化：{error}"))?;
+    append_command_output(task_id, &output.stdout, false);
+    append_command_output(task_id, &output.stderr, true);
+    if !output.status.success() {
+        return Err(format!(
+            "Proton Prefix 初始化失败，退出代码 {}",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    let prefix = prefix_path.join("pfx");
+    if !prefix.join("system.reg").is_file()
+        || !prefix.join("user.reg").is_file()
+        || !prefix.join("drive_c/windows/system32").is_dir()
+    {
+        return Err(format!(
+            "Proton wrapper 已退出，但 Prefix 不完整：{}",
+            prefix.display()
+        ));
+    }
+    append_task_log(task_id, "Proton Prefix 初始化完成");
     Ok(())
 }
 
@@ -265,15 +411,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
 
     match runner.kind {
         RunnerKind::Proton => {
-            // Ensure the dosdevices directory exists before any Wine
-            // operations. Copy the full Proton default_pfx content so
-            // both msiexec (GameInput) and the game (BLoader.dll) find
-            // their DLL dependencies.
-            let dosdevices = prefix_path.join("pfx").join("dosdevices");
-            tokio::fs::create_dir_all(&dosdevices)
-                .await
-                .map_err(|error| format!("创建 dosdevices 目录失败：{error}"))?;
-            copy_runner_dlls(&runner, &prefix_path).await?;
+            initialize_proton_prefix(&runner, &prefix_path, task_id).await?;
             install_proton_game_input(&runner, &prefix_path, &package_path, task_id).await?;
             stop_lingering_proton_processes(&runner, &prefix_path, task_id).await?;
         }
@@ -293,9 +431,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
 
     let mut command = match runner.kind {
         RunnerKind::Proton => {
-            let wine64 = resolve_wine64(&runner)?;
-            let mut command = Command::new(&wine64);
-            set_runner_ld_library_path(&mut command, &runner);
+            let mut command = Command::new(&runner.executable);
+            configure_proton_command(&mut command, &runner, &prefix_path, task_id).await?;
             let windows_game_executable = wine_z_path(&game_executable)?;
             append_task_log(
                 task_id,
@@ -305,10 +442,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 ),
             );
             command
-                .env("WINEPREFIX", prefix_path.join("pfx"))
-                .env("WINEARCH", "win64")
-                .env("WINEDLLOVERRIDES", "dxgi,d3d11,d3d10core,d3d9=b")
-                .arg(&windows_game_executable);
+                .arg("run")
+                .arg(&windows_game_executable)
+                .current_dir(game_executable.parent().unwrap_or(&package_path));
             command
         }
         RunnerKind::Wine => {
@@ -353,7 +489,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         .ok_or_else(|| "兼容环境已启动，但没有返回进程 PID".to_string())?;
 
     let recent_output = Arc::new(Mutex::new(VecDeque::new()));
-    let stdout_pump = child.stdout.take().map(|stdout| {
+    let mut stdout_pump = child.stdout.take().map(|stdout| {
         spawn_output_pump(
             task_id.to_string(),
             stdout,
@@ -362,7 +498,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             None,
         )
     });
-    let stderr_pump = child.stderr.take().map(|stderr| {
+    let mut stderr_pump = child.stderr.take().map(|stderr| {
         spawn_output_pump(
             task_id.to_string(),
             stderr,
@@ -372,35 +508,30 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         )
     });
 
-    // Do not perform an early-exit check — let the game run as long as
-    // it needs via WaitForExitAsync.
-    // When Proton dispatches through start.exe /unix the wrapper process
-    // can exit before the game, and the game itself may produce no output
-    // until the window appears. Treat any early exit as a transition to
-    // "running_game" so the process monitor can observe the real outcome.
     tokio::time::sleep(EARLY_EXIT_GRACE_PERIOD).await;
     match child.try_wait() {
         Ok(Some(status)) => {
-            finish_output_pumps(task_id, stdout_pump, stderr_pump).await;
-            if !status.success() {
-                let output = recent_runner_output(&recent_output);
-                let detail = if output.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{output}")
-                };
-                append_task_log(
-                    task_id,
-                    format!("兼容环境在启动检测期内退出（{status}），继续监控游戏进程{detail}"),
-                );
-            }
+            finish_output_pumps(task_id, stdout_pump.take(), stderr_pump.take()).await;
+            let output = recent_runner_output(&recent_output);
+            let detail = if output.is_empty() {
+                "\nProton wrapper 没有输出；请查看任务中记录的 Proton 日志目录".to_string()
+            } else {
+                format!("\n{output}")
+            };
+            return Err(format!("兼容运行器在启动检测期内退出（{status}）{detail}"));
         }
         Ok(None) => {}
         Err(error) => {
-            append_task_log(task_id, format!("检查兼容环境进程状态失败：{error}"));
+            return Err(format!("检查兼容运行器进程状态失败：{error}"));
         }
     }
-    spawn_process_monitor(task_id.to_string(), child);
+    spawn_process_monitor(
+        task_id.to_string(),
+        child,
+        stdout_pump,
+        stderr_pump,
+        recent_output,
+    );
     update_progress(task_id, 1, Some(LAUNCH_TOTAL_STEPS), Some("launching"));
     update_progress(task_id, 0, Some(LAUNCH_TOTAL_STEPS), Some("running_game"));
     Ok(Some(process_id))
@@ -429,18 +560,17 @@ async fn stop_lingering_proton_processes(
     })?;
 
     append_task_log(task_id, "正在清理该实例遗留的 Wine 进程");
-    let output = tokio::time::timeout(
-        Duration::from_secs(15),
-        Command::new(&wineserver)
-            .arg("-k")
-            .arg("-w")
-            .env("WINEPREFIX", prefix_path.join("pfx"))
-            .stdin(Stdio::null())
-            .output(),
-    )
-    .await
-    .map_err(|_| "清理遗留的 Wine 进程超时".to_string())?
-    .map_err(|error| format!("无法执行 wineserver {} 清理：{error}", wineserver.display()))?;
+    let mut command = Command::new(&wineserver);
+    set_runner_ld_library_path(&mut command, runner);
+    command
+        .arg("-k")
+        .arg("-w")
+        .env("WINEPREFIX", prefix_path.join("pfx"))
+        .stdin(Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(15), command.output())
+        .await
+        .map_err(|_| "清理遗留的 Wine 进程超时".to_string())?
+        .map_err(|error| format!("无法执行 wineserver {} 清理：{error}", wineserver.display()))?;
     append_command_output(task_id, &output.stdout, false);
     append_command_output(task_id, &output.stderr, true);
     if !output.status.success() {
@@ -592,11 +722,7 @@ async fn install_proton_game_input(
     task_id: &str,
 ) -> Result<(), String> {
     let marker = prefix_path.join(".bmcbl-proton-gameinput-installed");
-    if marker.is_file() {
-        append_task_log(task_id, "Proton-GDK GameInput 已安装，跳过初始化");
-        return Ok(());
-    }
-    if proton_game_input_is_registered(prefix_path).await? {
+    if proton_game_input_is_ready(prefix_path).await? {
         tokio::fs::write(&marker, b"installed\n")
             .await
             .map_err(|error| format!("写入 Proton-GDK GameInput 状态失败：{error}"))?;
@@ -605,6 +731,12 @@ async fn install_proton_game_input(
             "已在 Proton prefix 中检测到 GameInput，跳过重复安装",
         );
         return Ok(());
+    }
+    if marker.is_file() {
+        tokio::fs::remove_file(&marker)
+            .await
+            .map_err(|error| format!("清理失效的 Proton-GDK GameInput 状态失败：{error}"))?;
+        append_task_log(task_id, "检测到失效的 GameInput 状态，正在重新安装");
     }
 
     let Some(installer) = find_game_input_installer(package_path) else {
@@ -635,13 +767,11 @@ async fn install_proton_game_input(
             normalized_installer.display()
         ),
     );
-    let wine64 = resolve_wine64(runner)?;
-    let mut command = Command::new(&wine64);
-    set_runner_ld_library_path(&mut command, runner);
+    let mut command = Command::new(&runner.executable);
+    configure_proton_command(&mut command, runner, prefix_path, task_id).await?;
     let windows_installer = wine_z_path(normalized_installer)?;
     command
-        .env("WINEPREFIX", prefix_path.join("pfx"))
-        .env("WINEARCH", "win64")
+        .arg("runinprefix")
         .arg("msiexec")
         .arg("/i")
         .arg(&windows_installer)
@@ -662,24 +792,24 @@ async fn install_proton_game_input(
     })?;
     let recent_output = Arc::new(Mutex::new(VecDeque::new()));
     let (failure_sender, mut failure_receiver) = mpsc::unbounded_channel();
-    if let Some(stdout) = child.stdout.take() {
-        drop(spawn_output_pump(
+    let mut stdout_pump = child.stdout.take().map(|stdout| {
+        spawn_output_pump(
             task_id.to_string(),
             stdout,
             false,
             recent_output.clone(),
             Some(failure_sender.clone()),
-        ));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        drop(spawn_output_pump(
+        )
+    });
+    let mut stderr_pump = child.stderr.take().map(|stderr| {
+        spawn_output_pump(
             task_id.to_string(),
             stderr,
             true,
             recent_output.clone(),
             Some(failure_sender),
-        ));
-    }
+        )
+    });
 
     enum InstallOutcome {
         Exited(std::io::Result<std::process::ExitStatus>),
@@ -700,16 +830,20 @@ async fn install_proton_game_input(
             if let Err(error) = child.kill().await {
                 append_task_log(task_id, format!("终止失败的 GameInput 安装器失败：{error}"));
             }
+            finish_output_pumps(task_id, stdout_pump.take(), stderr_pump.take()).await;
             return Err(failure);
         }
         InstallOutcome::TimedOut => {
             if let Err(error) = child.kill().await {
                 append_task_log(task_id, format!("终止超时的 GameInput 安装器失败：{error}"));
             }
-            append_task_log(task_id, "GameInput 安装超时，跳过（不影响基础游戏启动）");
-            return Ok(());
+            finish_output_pumps(task_id, stdout_pump.take(), stderr_pump.take()).await;
+            return Err(
+                "GameInput 安装超时；已停止启动，避免使用缺少原生 GameInput 的 Prefix".to_string(),
+            );
         }
     };
+    finish_output_pumps(task_id, stdout_pump.take(), stderr_pump.take()).await;
     if !status.success() {
         let detail = recent_runner_output(&recent_output);
         let detail = if detail.is_empty() {
@@ -717,32 +851,18 @@ async fn install_proton_game_input(
         } else {
             format!("\n{detail}")
         };
-        append_task_log(
-            task_id,
-            format!(
-                "GameInput 安装未完成（退出代码 {}）{detail}，继续尝试启动游戏",
-                status.code().unwrap_or(-1)
-            ),
-        );
-        return Ok(());
+        return Err(format!(
+            "GameInput 安装失败，退出代码 {}{detail}",
+            status.code().unwrap_or(-1)
+        ));
     }
 
-    append_task_log(task_id, "等待 Proton 写入 GameInput 注册状态");
-    if !wait_for_proton_game_input_registration(prefix_path, GAME_INPUT_REGISTRATION_TIMEOUT)
-        .await?
-    {
-        // Proton may return before wineserver flushes system.reg. Treat
-        // a successful installer exit as completion; retain the extra
-        // verification without turning delayed persistence into a false error.
-        warn!(
-            task_id,
-            prefix = %prefix_path.display(),
-            "GameInput installer succeeded but registry persistence is still pending"
-        );
-        append_task_log(
-            task_id,
-            "GameInput 安装器已成功退出，注册表仍在异步写入，按成功结果继续",
-        );
+    append_task_log(task_id, "等待 Proton 写入 GameInput 文件与注册状态");
+    if !wait_for_proton_game_input_ready(prefix_path, GAME_INPUT_REGISTRATION_TIMEOUT).await? {
+        return Err(format!(
+            "GameInput 安装器已退出，但未检测到原生 GameInputRedist.dll、服务程序或注册表；Prefix：{}",
+            prefix_path.join("pfx").display()
+        ));
     }
 
     if let Some(temporary_installer) = temporary_installer {
@@ -758,11 +878,18 @@ async fn install_proton_game_input(
     Ok(())
 }
 
-async fn proton_game_input_is_registered(prefix_path: &Path) -> Result<bool, String> {
-    for registry_path in [
-        prefix_path.join("pfx/system.reg"),
-        prefix_path.join("pfx/user.reg"),
-    ] {
+async fn proton_game_input_is_ready(prefix_path: &Path) -> Result<bool, String> {
+    let prefix = prefix_path.join("pfx");
+    let game_input_directory = prefix.join("drive_c/Program Files/Microsoft GameInput/x64");
+    if !game_input_directory.join("GameInputRedist.dll").is_file()
+        || !game_input_directory
+            .join("GameInputRedistService.exe")
+            .is_file()
+    {
+        return Ok(false);
+    }
+
+    for registry_path in [prefix.join("system.reg"), prefix.join("user.reg")] {
         match tokio::fs::read_to_string(&registry_path).await {
             Ok(registry) => {
                 if registry.contains("GameInput3Redist")
@@ -783,13 +910,13 @@ async fn proton_game_input_is_registered(prefix_path: &Path) -> Result<bool, Str
     Ok(false)
 }
 
-async fn wait_for_proton_game_input_registration(
+async fn wait_for_proton_game_input_ready(
     prefix_path: &Path,
     timeout: Duration,
 ) -> Result<bool, String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if proton_game_input_is_registered(prefix_path).await? {
+        if proton_game_input_is_ready(prefix_path).await? {
             return Ok(true);
         }
         if tokio::time::Instant::now() >= deadline {
@@ -974,7 +1101,7 @@ fn normalize_runner_output_line(line: &str) -> &str {
 fn classify_runner_failure(line: &str) -> Option<String> {
     if line.contains("unimplemented function combase.dll.RoOriginateErrorW") {
         return Some(
-            "当前 Proton-GDK 的 combase.dll 没有实现 RoOriginateErrorW，无法启动该 Minecraft 版本。请在 Proton-GDK 设置中安装并选择 LukasPAH Custom 版本"
+            "当前 Proton-GDK 的 combase.dll 没有实现 RoOriginateErrorW，无法启动该 Minecraft 版本。请在 Proton-GDK 设置中安装并选择支持登录的 RoundMCDev 版本"
                 .to_string(),
         );
     }
@@ -1003,15 +1130,27 @@ fn recent_runner_output(output: &Arc<Mutex<VecDeque<String>>>) -> String {
         .join("\n")
 }
 
-fn spawn_process_monitor(task_id: String, mut child: tokio::process::Child) {
+fn spawn_process_monitor(
+    task_id: String,
+    mut child: tokio::process::Child,
+    stdout_pump: Option<tokio::task::JoinHandle<()>>,
+    stderr_pump: Option<tokio::task::JoinHandle<()>>,
+    recent_output: Arc<Mutex<VecDeque<String>>>,
+) {
     tokio::spawn(async move {
         match child.wait().await {
             Ok(status) => {
+                finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
                 append_task_log(&task_id, format!("游戏进程已退出：{status}"));
                 if status.success() {
                     finish_task(&task_id, "completed", Some("游戏已退出".to_string()));
                 } else {
-                    let message = format!("游戏进程异常退出：{status}");
+                    let output = recent_runner_output(&recent_output);
+                    let message = if output.is_empty() {
+                        format!("游戏进程异常退出：{status}")
+                    } else {
+                        format!("游戏进程异常退出：{status}\n{output}")
+                    };
                     warn!(task_id, %status, "compatibility runner exited with failure");
                     finish_task(&task_id, "error", Some(message));
                 }

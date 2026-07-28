@@ -25,6 +25,12 @@ Linux 构建在父模块层跳过 UWP/AppX 注册、AUMID 启动、注册表、W
 
 root 主进程会在创建 GPUI 之前被拒绝。系统依赖检测、安装计划预览和 Polkit helper 仍是后续工作；当前未找到 runner 时会在启动任务中显示可操作错误，不会静默失败。
 
+GDK 游戏不再直接执行 Proton 内部的 `files/bin/wine64`。启动链路统一通过
+runner 根目录的 `proton` wrapper；由 wrapper 创建和升级 compatdata、加载
+ProtonFixes、DXVK/VKD3D 与 runner profile。旧版本由裸 Wine 创建的 `pfx`
+缺少 Proton 元数据，首次启动时会保留为带时间戳的备份，再建立 Proton
+管理的 prefix。
+
 ## 平台边界
 
 应用层保留一个跨平台入口，在模块声明与启动任务层按目标平台选择实现：
@@ -96,7 +102,33 @@ $XDG_STATE_HOME/bmcbl/diagnostics/
 - `LD_LIBRARY_PATH` 仅在运行器确实要求时设置，不覆盖用户已有值；
 - 命令和参数使用 `std::process::Command::arg`，不经过 shell。
 
-下载后的运行器先校验摘要和解压路径，再以原子目录替换完成安装。删除、覆盖和迁移 prefix 必须是显式用户操作。运行器及游戏进程始终属于当前普通用户。
+下载后的运行器先校验摘要和解压路径，再以原子目录替换完成安装。删除、覆盖和不可逆迁移 prefix 必须是显式用户操作；自动修复只能把不兼容的旧 `pfx` 重命名为可恢复的时间戳备份。运行器及游戏进程始终属于当前普通用户。
+
+### GDK 启动链路对比
+
+| 环节 | BedrockBoot.Linux | BedrockOnLinux | BMCBL |
+| --- | --- | --- | --- |
+| runner 入口 | `<runner>/proton run <exe>` | `umu-run`，通过 `PROTONPATH` 选择 Proton | `<runner>/proton run <exe>` |
+| compatdata | `STEAM_COMPAT_DATA_PATH` | `WINEPREFIX` 由 UMU 映射 | 每实例 `STEAM_COMPAT_DATA_PATH` |
+| Steam runtime | 设置 Steam client 路径，由 Proton wrapper 运行 | UMU + Steam Linux Runtime，GDK 联网的首选链路 | 当前使用 Proton wrapper；runner profile 可继续接入 UMU |
+| prefix 初始化 | wrapper 隐式创建 | `umu-run wineboot` | `proton run C:\windows\system32\cmd.exe /c exit 0` 显式触发 wrapper 初始化 |
+| GameInput | 未单独处理 | 离线解包 MSI/CAB 并写入 prefix | 初始化后用 `proton runinprefix msiexec` 安装，并校验 DLL、服务程序和注册表 |
+| 图形与 TLS | runner 自带 DXVK/VKD3D | `force_raw_va_cbv`，并为 Azure/GDK 禁用 Wine TLS 1.3 | runner 自带 DXVK/VKD3D，设置 `force_raw_va_cbv` 和进程级 GnuTLS profile |
+| 诊断 | 收集子进程输出 | UMU/Proton/Wine 日志 | 任务日志、近期 stderr/stdout、独立 Proton 日志目录和退出码 |
+
+`runinprefix` 只用于已存在 prefix 中的辅助命令；它不会调用 Proton 的
+compatdata 初始化。游戏与首次初始化必须使用 `run`。GameInput 安装成功不能
+只依赖 marker 文件，必须同时检测 `GameInputRedist.dll`、
+`GameInputRedistService.exe` 和注册表状态。
+
+Proton-GDK 安装页默认推荐 `RoundMCDev/ProtonGDK-Release`，用于需要游戏登录
+的场景。`Weather-OS/GDK-Proton` 与 `LukasPAH/GDK-Proton-Custom` 仍可选择，
+但界面只标注“无法登录”，不使用新旧版本描述。
+
+新安装的运行器目录使用 `<source>-<release>` 命名，并在目录内写入
+`.bmcbl-proton-gdk.json` 安装记录。设置页据此分别显示来源、Release 名称、
+标签和登录能力；没有安装记录的旧目录仅在名称包含明确来源前缀时推断来源，
+其余显示“来源未知”，避免将三个 ProtonGDK 项目误认成彼此。
 
 ## 依赖检测与安装
 

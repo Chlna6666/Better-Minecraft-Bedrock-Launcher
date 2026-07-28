@@ -9,8 +9,14 @@ pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
     let config = crate::config::config::read_config().unwrap_or_default();
     let mut runners = crate::core::linux_runtime::installed_proton_gdk_runners();
     let configured_path = std::path::PathBuf::from(&config.launcher.proton_gdk_runner);
-    if configured_path.is_file() && !runners.contains(&configured_path) {
-        runners.push(configured_path);
+    if configured_path.is_file()
+        && !runners
+            .iter()
+            .any(|runner| runner.executable() == configured_path)
+    {
+        runners.push(crate::core::linux_runtime::installed_proton_gdk_runner(
+            configured_path,
+        ));
     }
     let selected_runner = if config.launcher.proton_gdk_runner.trim().is_empty() {
         crate::core::linux_runtime::resolve_proton_runner()
@@ -102,7 +108,7 @@ pub(super) fn render(colors: &ThemeColors) -> impl IntoElement {
                     .flex_col()
                     .gap(px(8.))
                     .children(runners.into_iter().map(|runner| {
-                        let selected = selected_runner == runner.to_string_lossy();
+                        let selected = selected_runner == runner.executable().to_string_lossy();
                         installed_runner_card(colors, runner, selected)
                     })),
             )
@@ -181,17 +187,24 @@ fn source_selector(
         .child(
             div()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(8.))
                 .child(source_option(
                     colors,
-                    "LukasPAH Custom（推荐）",
+                    "RoundMCDev（推荐 · 支持登录）",
+                    crate::core::linux_runtime::ProtonGdkSource::RoundMcDev,
+                    selected,
+                ))
+                .child(source_option(
+                    colors,
+                    "LukasPAH（无法登录）",
                     crate::core::linux_runtime::ProtonGdkSource::LukasPah,
                     selected,
                 ))
                 .child(source_option(
                     colors,
-                    "Weather-OS（旧版）",
+                    "Weather-OS（无法登录）",
                     crate::core::linux_runtime::ProtonGdkSource::WeatherOs,
                     selected,
                 )),
@@ -376,7 +389,7 @@ fn start_latest_install(cx: &mut App) {
                 &config.launcher.proton_gdk_source,
             )
         })
-        .unwrap_or(crate::core::linux_runtime::ProtonGdkSource::LukasPah);
+        .unwrap_or(crate::core::linux_runtime::ProtonGdkSource::RoundMcDev);
     let task_id = crate::core::linux_runtime::start_proton_gdk_install_latest(source);
     toast::success(
         cx,
@@ -414,11 +427,20 @@ fn register_local_runner(window: &Window, cx: &mut App) {
 
 fn installed_runner_card(
     colors: &ThemeColors,
-    executable: std::path::PathBuf,
+    runner: crate::core::linux_runtime::InstalledProtonGdkRunner,
     selected: bool,
 ) -> Stateful<Div> {
+    let executable = runner.executable().to_path_buf();
     let executable_for_action = executable.clone();
     let executable_for_delete = executable.clone();
+    let display_name = runner.display_name().to_string();
+    let source_summary = format!(
+        "{} · {} · {}",
+        runner.source_label(),
+        runner.identity_label(),
+        runner.login_capability()
+    );
+    let release_tag = runner.release_tag().map(str::to_string);
     div()
         .id(SharedString::from(format!(
             "proton-gdk-runner-{}",
@@ -480,17 +502,29 @@ fn installed_runner_card(
                         .min_w(px(0.))
                         .flex()
                         .flex_col()
-                        .gap(px(4.))
+                        .gap(px(3.))
                         .child(
                             div()
                                 .text_size(px(14.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(colors.text_primary)
-                                .child("Proton-GDK"),
+                                .child(display_name),
                         )
                         .child(
                             div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
                                 .text_size(px(11.5))
+                                .text_color(colors.text_secondary)
+                                .child(source_summary)
+                                .when_some(release_tag, |this, release_tag| {
+                                    this.child("·").child(release_tag)
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.5))
                                 .text_color(colors.text_muted)
                                 .overflow_hidden()
                                 .child(executable.to_string_lossy().into_owned()),

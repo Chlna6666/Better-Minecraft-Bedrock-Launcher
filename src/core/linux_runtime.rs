@@ -18,14 +18,20 @@ const INSTALL_STAGE_LABELS: [(&str, &str); 2] = [
     ("installing_linux_packages", "安装兼容环境依赖"),
 ];
 
-pub(crate) const PROTON_GDK_RELEASE_SOURCES: [&str; 2] =
-    ["Weather-OS/GDK-Proton", "LukasPAH/GDK-Proton-Custom"];
+pub(crate) const PROTON_GDK_RELEASE_SOURCES: [&str; 3] = [
+    "RoundMCDev/ProtonGDK-Release",
+    "Weather-OS/GDK-Proton",
+    "LukasPAH/GDK-Proton-Custom",
+];
 
 const PROTON_GDK_INSTALL_STAGE_LABELS: [(&str, &str); 3] = [
     ("resolving_proton_gdk", "获取 Proton-GDK 版本"),
     ("downloading_proton_gdk", "下载 Proton-GDK"),
     ("extracting_proton_gdk", "安装 Proton-GDK"),
 ];
+
+const PROTON_GDK_METADATA_FILE: &str = ".bmcbl-proton-gdk.json";
+const PROTON_GDK_METADATA_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, serde::Deserialize)]
 struct GithubRelease {
@@ -41,23 +47,43 @@ struct GithubReleaseAsset {
     size: u64,
 }
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ProtonGdkRunnerMetadata {
+    schema_version: u32,
+    source: String,
+    repository: String,
+    release_tag: String,
+    release_name: String,
+    asset_name: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProtonGdkSource {
+    RoundMcDev,
     WeatherOs,
     LukasPah,
 }
 
 impl ProtonGdkSource {
     pub(crate) fn from_config(value: &str) -> Self {
-        if value.eq_ignore_ascii_case("lukaspah") {
-            Self::LukasPah
+        Self::from_stored_value(value).unwrap_or(Self::RoundMcDev)
+    }
+
+    fn from_stored_value(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("roundmcdev") {
+            Some(Self::RoundMcDev)
+        } else if value.eq_ignore_ascii_case("weather-os") {
+            Some(Self::WeatherOs)
+        } else if value.eq_ignore_ascii_case("lukaspah") {
+            Some(Self::LukasPah)
         } else {
-            Self::WeatherOs
+            None
         }
     }
 
     pub(crate) fn config_value(self) -> &'static str {
         match self {
+            Self::RoundMcDev => "roundmcdev",
             Self::WeatherOs => "weather-os",
             Self::LukasPah => "lukaspah",
         }
@@ -65,17 +91,84 @@ impl ProtonGdkSource {
 
     pub(crate) fn repository(self) -> &'static str {
         match self {
+            Self::RoundMcDev => "RoundMCDev/ProtonGDK-Release",
             Self::WeatherOs => "Weather-OS/GDK-Proton",
             Self::LukasPah => "LukasPAH/GDK-Proton-Custom",
         }
     }
 
+    pub(crate) fn display_name(self) -> &'static str {
+        match self {
+            Self::RoundMcDev => "RoundMCDev",
+            Self::WeatherOs => "Weather-OS",
+            Self::LukasPah => "LukasPAH",
+        }
+    }
+
+    pub(crate) fn login_capability(self) -> &'static str {
+        match self {
+            Self::RoundMcDev => "支持登录",
+            Self::WeatherOs | Self::LukasPah => "无法登录",
+        }
+    }
+
     fn latest_release_api(self) -> &'static str {
         match self {
+            Self::RoundMcDev => {
+                "https://api.github.com/repos/RoundMCDev/ProtonGDK-Release/releases/latest"
+            }
             Self::WeatherOs => "https://api.github.com/repos/Weather-OS/GDK-Proton/releases/latest",
             Self::LukasPah => {
                 "https://api.github.com/repos/LukasPAH/GDK-Proton-Custom/releases/latest"
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProtonGdkIdentity {
+    Metadata,
+    DirectoryName,
+    Unknown,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InstalledProtonGdkRunner {
+    executable: PathBuf,
+    display_name: String,
+    source: Option<ProtonGdkSource>,
+    release_tag: Option<String>,
+    identity: ProtonGdkIdentity,
+}
+
+impl InstalledProtonGdkRunner {
+    pub(crate) fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    pub(crate) fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub(crate) fn release_tag(&self) -> Option<&str> {
+        self.release_tag.as_deref()
+    }
+
+    pub(crate) fn source_label(&self) -> &'static str {
+        self.source
+            .map_or("来源未知", ProtonGdkSource::display_name)
+    }
+
+    pub(crate) fn login_capability(&self) -> &'static str {
+        self.source
+            .map_or("登录能力未知", ProtonGdkSource::login_capability)
+    }
+
+    pub(crate) fn identity_label(&self) -> &'static str {
+        match self.identity {
+            ProtonGdkIdentity::Metadata => "安装记录",
+            ProtonGdkIdentity::DirectoryName => "目录识别",
+            ProtonGdkIdentity::Unknown => "未识别",
         }
     }
 }
@@ -181,7 +274,7 @@ pub(crate) fn check_linux_runtime() -> LinuxRuntimeCheck {
                         )
                     } else {
                         Arc::from(
-                            "请前往 Proton-GDK 设置页安装并选择 LukasPAH Custom 版本，不要为此错误授权安装系统软件包。",
+                            "请前往 Proton-GDK 设置页安装并选择 RoundMCDev 版本，不要为此错误授权安装系统软件包。",
                         )
                     },
                 }
@@ -289,14 +382,16 @@ async fn install_latest_proton_gdk(
             name.contains("proton") && (name.ends_with(".tar.gz") || name.ends_with(".tgz"))
         })
         .ok_or_else(|| "最新版本没有可安装的 Proton-GDK tar.gz 资源".to_string())?;
-    let version_name = sanitize_instance_name(
-        release
-            .name
-            .as_deref()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or(&release.tag_name),
-    );
-    let download_dir = file_ops::downloads_dir().join("proton-gdk");
+    let release_name = release
+        .name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(&release.tag_name)
+        .to_string();
+    let version_name = proton_gdk_install_directory_name(source, &release_name);
+    let download_dir = file_ops::downloads_dir()
+        .join("proton-gdk")
+        .join(source.config_value());
     tokio::fs::create_dir_all(&download_dir)
         .await
         .map_err(|error| format!("创建 Proton-GDK 下载目录失败：{error}"))?;
@@ -344,6 +439,15 @@ async fn install_latest_proton_gdk(
     tokio::fs::set_permissions(&proton, permissions)
         .await
         .map_err(|error| format!("设置 Proton-GDK 可执行权限失败：{error}"))?;
+    let metadata = ProtonGdkRunnerMetadata {
+        schema_version: PROTON_GDK_METADATA_SCHEMA_VERSION,
+        source: source.config_value().to_string(),
+        repository: source.repository().to_string(),
+        release_tag: release.tag_name.clone(),
+        release_name,
+        asset_name: asset.name.clone(),
+    };
+    write_proton_gdk_metadata(&install_path, &metadata).await?;
     let selected_runner = proton.to_string_lossy().into_owned();
     crate::config::config::update_config(|config| {
         config.launcher.proton_gdk_runner = selected_runner.clone();
@@ -351,6 +455,17 @@ async fn install_latest_proton_gdk(
     })
     .map_err(|error| format!("保存 Proton-GDK 默认版本失败：{error}"))?;
     Ok(install_path)
+}
+
+async fn write_proton_gdk_metadata(
+    install_path: &Path,
+    metadata: &ProtonGdkRunnerMetadata,
+) -> Result<(), String> {
+    let contents = serde_json::to_vec_pretty(metadata)
+        .map_err(|error| format!("生成 Proton-GDK 安装记录失败：{error}"))?;
+    tokio::fs::write(install_path.join(PROTON_GDK_METADATA_FILE), contents)
+        .await
+        .map_err(|error| format!("保存 Proton-GDK 安装记录失败：{error}"))
 }
 
 async fn download_proton_gdk_asset(
@@ -401,6 +516,14 @@ fn sanitize_instance_name(name: &str) -> String {
     }
 }
 
+fn proton_gdk_install_directory_name(source: ProtonGdkSource, release_name: &str) -> String {
+    format!(
+        "{}-{}",
+        source.config_value(),
+        sanitize_instance_name(release_name)
+    )
+}
+
 pub(crate) fn resolve_runner() -> Result<Runner, String> {
     if let Some(executable) = env::var_os("BMCBL_PROTON_GDK_RUNNER")
         .or_else(|| env::var_os("BMCBL_PROTON_RUNNER"))
@@ -432,7 +555,7 @@ pub(crate) fn resolve_runner() -> Result<Runner, String> {
     Err("未找到 Proton-GDK。请安装兼容的 GDK-Proton，或用 BMCBL_PROTON_GDK_RUNNER 指定 proton 可执行文件".to_string())
 }
 
-pub(crate) fn installed_proton_gdk_runners() -> Vec<PathBuf> {
+pub(crate) fn installed_proton_gdk_runners() -> Vec<InstalledProtonGdkRunner> {
     let Ok(entries) = std::fs::read_dir(file_ops::runners_dir()) else {
         return Vec::new();
     };
@@ -444,9 +567,76 @@ pub(crate) fn installed_proton_gdk_runners() -> Vec<PathBuf> {
                 .into_iter()
                 .find(|candidate| is_executable_file(candidate))
         })
+        .map(installed_proton_gdk_runner)
         .collect::<Vec<_>>();
-    runners.sort();
+    runners.sort_by(|left, right| left.executable.cmp(&right.executable));
     runners
+}
+
+pub(crate) fn installed_proton_gdk_runner(executable: PathBuf) -> InstalledProtonGdkRunner {
+    let runner_root = proton_gdk_runner_root(&executable);
+    if let Some(metadata) = runner_root
+        .as_deref()
+        .and_then(read_proton_gdk_metadata)
+        .filter(|metadata| metadata.schema_version == PROTON_GDK_METADATA_SCHEMA_VERSION)
+        && let Some(source) = ProtonGdkSource::from_stored_value(&metadata.source)
+    {
+        return InstalledProtonGdkRunner {
+            executable,
+            display_name: metadata.release_name,
+            source: Some(source),
+            release_tag: Some(metadata.release_tag),
+            identity: ProtonGdkIdentity::Metadata,
+        };
+    }
+
+    let directory_name = runner_root
+        .as_deref()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or("Proton-GDK")
+        .to_string();
+    let source = infer_proton_gdk_source_from_directory(&directory_name);
+    InstalledProtonGdkRunner {
+        executable,
+        display_name: directory_name,
+        source,
+        release_tag: None,
+        identity: if source.is_some() {
+            ProtonGdkIdentity::DirectoryName
+        } else {
+            ProtonGdkIdentity::Unknown
+        },
+    }
+}
+
+fn proton_gdk_runner_root(executable: &Path) -> Option<PathBuf> {
+    let parent = executable.parent()?;
+    if parent.file_name().is_some_and(|name| name == "bin") {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
+fn read_proton_gdk_metadata(runner_root: &Path) -> Option<ProtonGdkRunnerMetadata> {
+    let contents = std::fs::read(runner_root.join(PROTON_GDK_METADATA_FILE)).ok()?;
+    serde_json::from_slice(&contents).ok()
+}
+
+fn infer_proton_gdk_source_from_directory(directory_name: &str) -> Option<ProtonGdkSource> {
+    let directory_name = directory_name.to_ascii_lowercase();
+    if directory_name.starts_with("roundmcdev-") {
+        Some(ProtonGdkSource::RoundMcDev)
+    } else if directory_name.starts_with("weather-os-") {
+        Some(ProtonGdkSource::WeatherOs)
+    } else if directory_name.starts_with("lukaspah-")
+        || directory_name.contains("gdk-proton-custom")
+    {
+        Some(ProtonGdkSource::LukasPah)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn start_linux_runtime_install(plan: LinuxInstallPlan) -> String {
@@ -800,7 +990,13 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_os_release;
+    use super::{
+        PROTON_GDK_METADATA_FILE, PROTON_GDK_METADATA_SCHEMA_VERSION, ProtonGdkIdentity,
+        ProtonGdkRunnerMetadata, ProtonGdkSource, infer_proton_gdk_source_from_directory,
+        installed_proton_gdk_runner, parse_os_release, proton_gdk_install_directory_name,
+    };
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_os_release_identity() {
@@ -811,5 +1007,130 @@ mod tests {
         assert_eq!(release.id, "fedora");
         assert_eq!(release.id_like, "rhel centos");
         assert_eq!(release.pretty_name, "Fedora Linux 44");
+    }
+
+    #[test]
+    fn proton_gdk_source_defaults_to_round_mc_dev() {
+        assert_eq!(
+            ProtonGdkSource::from_config(""),
+            ProtonGdkSource::RoundMcDev
+        );
+        assert_eq!(
+            ProtonGdkSource::from_config("unknown"),
+            ProtonGdkSource::RoundMcDev
+        );
+    }
+
+    #[test]
+    fn proton_gdk_source_preserves_explicit_alternative_choices() {
+        assert_eq!(
+            ProtonGdkSource::from_config("weather-os"),
+            ProtonGdkSource::WeatherOs
+        );
+        assert_eq!(
+            ProtonGdkSource::from_config("lukaspah"),
+            ProtonGdkSource::LukasPah
+        );
+    }
+
+    #[test]
+    fn proton_gdk_round_mc_dev_source_uses_login_capable_release_repository() {
+        let source = ProtonGdkSource::RoundMcDev;
+
+        assert_eq!(source.config_value(), "roundmcdev");
+        assert_eq!(source.repository(), "RoundMCDev/ProtonGDK-Release");
+        assert_eq!(
+            source.latest_release_api(),
+            "https://api.github.com/repos/RoundMCDev/ProtonGDK-Release/releases/latest"
+        );
+    }
+
+    #[test]
+    fn proton_gdk_install_directory_identifies_source_and_release() {
+        assert_eq!(
+            proton_gdk_install_directory_name(
+                ProtonGdkSource::RoundMcDev,
+                "GDK-Proton10-32 Fix.01"
+            ),
+            "roundmcdev-GDK-Proton10-32-Fix.01"
+        );
+        assert_eq!(
+            proton_gdk_install_directory_name(ProtonGdkSource::WeatherOs, "Release 10/32"),
+            "weather-os-Release-10-32"
+        );
+    }
+
+    #[test]
+    fn legacy_directory_inference_requires_unambiguous_source_name() {
+        assert_eq!(
+            infer_proton_gdk_source_from_directory("lukaspah-GDK-Proton-Custom"),
+            Some(ProtonGdkSource::LukasPah)
+        );
+        assert_eq!(
+            infer_proton_gdk_source_from_directory("weather-os-GDK-Proton10-32"),
+            Some(ProtonGdkSource::WeatherOs)
+        );
+        assert_eq!(
+            infer_proton_gdk_source_from_directory("GDK-Proton10-32"),
+            None
+        );
+    }
+
+    #[test]
+    fn installed_runner_uses_bmcbl_metadata_for_exact_identity() {
+        let runner_root = unique_test_directory("proton-gdk-metadata");
+        std::fs::create_dir_all(&runner_root).expect("test runner directory should be created");
+        let metadata = ProtonGdkRunnerMetadata {
+            schema_version: PROTON_GDK_METADATA_SCHEMA_VERSION,
+            source: "roundmcdev".to_string(),
+            repository: "RoundMCDev/ProtonGDK-Release".to_string(),
+            release_tag: "Release10-32".to_string(),
+            release_name: "GDK-Proton10-32-Fix.01".to_string(),
+            asset_name: "GDK-Proton10-32-Fix.01.tar.gz".to_string(),
+        };
+        let contents =
+            serde_json::to_vec(&metadata).expect("test metadata should serialize successfully");
+        std::fs::write(runner_root.join(PROTON_GDK_METADATA_FILE), contents)
+            .expect("test metadata should be written");
+
+        let runner = installed_proton_gdk_runner(runner_root.join("proton"));
+
+        assert_eq!(runner.source, Some(ProtonGdkSource::RoundMcDev));
+        assert_eq!(runner.display_name, "GDK-Proton10-32-Fix.01");
+        assert_eq!(runner.release_tag.as_deref(), Some("Release10-32"));
+        assert_eq!(runner.identity, ProtonGdkIdentity::Metadata);
+        std::fs::remove_dir_all(&runner_root).expect("test runner directory should be removed");
+    }
+
+    #[test]
+    fn unknown_metadata_source_is_not_reported_as_round_mc_dev() {
+        let runner_root = unique_test_directory("proton-gdk-unknown-source");
+        std::fs::create_dir_all(&runner_root).expect("test runner directory should be created");
+        let metadata = ProtonGdkRunnerMetadata {
+            schema_version: PROTON_GDK_METADATA_SCHEMA_VERSION,
+            source: "unrecognized".to_string(),
+            repository: "example/unknown".to_string(),
+            release_tag: "test".to_string(),
+            release_name: "Unknown Proton".to_string(),
+            asset_name: "unknown.tar.gz".to_string(),
+        };
+        let contents =
+            serde_json::to_vec(&metadata).expect("test metadata should serialize successfully");
+        std::fs::write(runner_root.join(PROTON_GDK_METADATA_FILE), contents)
+            .expect("test metadata should be written");
+
+        let runner = installed_proton_gdk_runner(runner_root.join("proton"));
+
+        assert_eq!(runner.source, None);
+        assert_eq!(runner.identity, ProtonGdkIdentity::Unknown);
+        std::fs::remove_dir_all(&runner_root).expect("test runner directory should be removed");
+    }
+
+    fn unique_test_directory(label: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("bmcbl-{label}-{}-{timestamp}", std::process::id()))
     }
 }

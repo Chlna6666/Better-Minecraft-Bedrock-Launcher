@@ -1,14 +1,18 @@
 use super::{
-    classify_runner_failure, normalize_runner_output_line, sanitize_instance_folder_name,
-    wine_z_path,
+    classify_runner_failure, incompatible_proton_prefix_needs_backup, normalize_runner_output_line,
+    proton_game_input_is_ready, sanitize_instance_folder_name, wine_z_path,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn temporary_test_directory(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("bmcbl-{name}-{}", uuid::Uuid::new_v4()))
+}
 
 #[test]
 fn instance_folder_name_cannot_escape_prefix_root() {
     assert_eq!(sanitize_instance_folder_name("."), "default");
     assert_eq!(sanitize_instance_folder_name(".."), "default");
-    assert_eq!(sanitize_instance_folder_name("../preview"), "___preview");
+    assert_eq!(sanitize_instance_folder_name("../preview"), ".._preview");
     assert_eq!(sanitize_instance_folder_name("folder/name"), "folder_name");
 }
 
@@ -53,7 +57,7 @@ fn unimplemented_combase_api_recommends_compatible_runner() {
     assert!(
         failure
             .as_deref()
-            .is_some_and(|message| message.contains("LukasPAH Custom"))
+            .is_some_and(|message| message.contains("RoundMCDev"))
     );
 }
 
@@ -70,4 +74,57 @@ fn protonfixes_external_launcher_warning_is_not_reported_as_unit_test() {
         ),
         "ProtonFixes: 外部启动器模式，跳过游戏专用 fixes"
     );
+}
+
+#[test]
+fn wine_created_prefix_without_proton_metadata_requires_backup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let prefix = temporary_test_directory("wine-prefix");
+    std::fs::create_dir_all(prefix.join("pfx"))?;
+    std::fs::write(prefix.join("pfx/system.reg"), b"WINE REGISTRY Version 2\n")?;
+
+    assert!(incompatible_proton_prefix_needs_backup(&prefix));
+
+    std::fs::remove_dir_all(prefix)?;
+    Ok(())
+}
+
+#[test]
+fn proton_managed_prefix_does_not_require_backup() -> Result<(), Box<dyn std::error::Error>> {
+    let prefix = temporary_test_directory("proton-prefix");
+    std::fs::create_dir_all(prefix.join("pfx"))?;
+    std::fs::write(prefix.join("pfx/system.reg"), b"WINE REGISTRY Version 2\n")?;
+    std::fs::write(prefix.join("version"), b"10-32\n")?;
+
+    assert!(!incompatible_proton_prefix_needs_backup(&prefix));
+
+    std::fs::remove_dir_all(prefix)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn game_input_requires_native_files_and_registry() -> Result<(), Box<dyn std::error::Error>> {
+    let prefix = temporary_test_directory("game-input");
+    let native_directory = prefix.join("pfx/drive_c/Program Files/Microsoft GameInput/x64");
+    std::fs::create_dir_all(&native_directory)?;
+    std::fs::write(
+        native_directory.join("GameInputRedist.dll"),
+        b"native game input",
+    )?;
+    std::fs::write(
+        native_directory.join("GameInputRedistService.exe"),
+        b"native game input service",
+    )?;
+    std::fs::write(prefix.join("pfx/system.reg"), b"WINE REGISTRY Version 2\n")?;
+
+    assert!(!proton_game_input_is_ready(&prefix).await?);
+
+    std::fs::write(
+        prefix.join("pfx/system.reg"),
+        b"WINE REGISTRY Version 2\nGameInput Redist Service\n",
+    )?;
+    assert!(proton_game_input_is_ready(&prefix).await?);
+
+    std::fs::remove_dir_all(prefix)?;
+    Ok(())
 }
