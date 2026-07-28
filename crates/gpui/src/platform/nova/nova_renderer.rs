@@ -128,6 +128,7 @@ pub(crate) struct NovaRenderer {
     frame_upload: NovaFrameUpload,
     draw_step_scratch: NovaDrawStepScratch,
     current_size: DrawableSize,
+    pending_drawable_size: Option<Size<DevicePixels>>,
     atlas: Arc<NovaAtlas>,
     rendering_parameters: NovaRenderingParameters,
     diagnostics: NovaRenderDiagnostics,
@@ -172,6 +173,7 @@ impl PresentCopySpriteUploadCache {
 
 impl NovaRenderer {
     pub(crate) fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
+        self.apply_pending_drawable_size()?;
         self.observe_render_plan(render_plan);
         let render_plan =
             resolve_surface_render_plan(render_plan, self.needs_full_redraw_after_resize);
@@ -264,6 +266,7 @@ impl NovaRenderer {
         &mut self,
         render_plan: FrameRenderPlan<'_>,
     ) -> Result<()> {
+        self.apply_pending_drawable_size()?;
         self.observe_render_plan(render_plan);
         if can_present_retained_cache_only(
             self.present_cache_valid,
@@ -294,6 +297,7 @@ impl NovaRenderer {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn draw_scene_for_platform(&mut self, scene: &crate::Scene) -> Result<()> {
+        self.apply_pending_drawable_size()?;
         let backdrop_blur_quality = NovaBackdropBlurQuality::Full;
         let upload = self.frame_upload.encode(
             scene,

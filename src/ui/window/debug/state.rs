@@ -243,6 +243,7 @@ impl From<WindowMetricsSnapshot> for DebugWindowMetrics {
 struct RuntimeMetricsState {
     snapshot: DebugRuntimeSnapshot,
     last_main_frame_at: Option<Instant>,
+    main_window_first_render_finished: bool,
     main_fps_ema: f32,
     render_time_ema: f32,
 }
@@ -390,6 +391,7 @@ pub fn record_main_window_render_finished(render_time: Duration) {
     let mut metrics = RUNTIME_METRICS
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    metrics.main_window_first_render_finished = true;
     let render_time_ms = render_time.as_secs_f32() * 1000.0;
     metrics.snapshot.main_render_time_ms = render_time_ms;
     RuntimeMetricsState::push_history(&mut metrics.snapshot.render_time_history_ms, render_time_ms);
@@ -399,6 +401,13 @@ pub fn record_main_window_render_finished(render_time: Duration) {
         metrics.render_time_ema = metrics.render_time_ema * 0.9 + render_time_ms * 0.1;
     }
     metrics.snapshot.main_render_time_avg_ms = metrics.render_time_ema;
+}
+
+pub fn main_window_first_render_finished() -> bool {
+    let metrics = RUNTIME_METRICS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    metrics.main_window_first_render_finished
 }
 
 pub fn record_debug_window_frame(width_px: f32, height_px: f32) {

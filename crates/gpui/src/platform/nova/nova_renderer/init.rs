@@ -167,6 +167,7 @@ impl NovaRenderer {
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
+                    pending_drawable_size: None,
                     atlas: atlas.0.clone(),
                     rendering_parameters: NovaRenderingParameters::from_env(),
                     diagnostics: NovaRenderDiagnostics::from_env(),
@@ -300,6 +301,7 @@ impl NovaRenderer {
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
+                    pending_drawable_size: None,
                     atlas: atlas.0.clone(),
                     rendering_parameters: NovaRenderingParameters::from_env(),
                     diagnostics: NovaRenderDiagnostics::from_env(),
@@ -324,18 +326,23 @@ impl NovaRenderer {
             ))]
             RendererBackend::NovaVulkan => {
                 let shader_binaries = cached_nova_vulkan_shader_binaries()?;
+                let device_started_at = Instant::now();
                 let mut device = VulkanDevice::new(&DeviceDescriptor {
                     application_name: "gpui nova vulkan".to_string(),
                     adapter_name: renderer_options.adapter_name.clone(),
                     power_preference: nova_power_preference(renderer_options),
                 })
                 .context("creating nova Vulkan device")?;
+                let device_elapsed = device_started_at.elapsed();
+                let surface_started_at = Instant::now();
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova Vulkan surface")?;
                 let swapchain = device
                     .create_swapchain(surface, surface_config)
                     .context("creating nova Vulkan swapchain")?;
+                let surface_elapsed = surface_started_at.elapsed();
+                let resources_started_at = Instant::now();
                 let resources = create_renderer_resources(
                     &mut device,
                     surface_config,
@@ -343,6 +350,13 @@ impl NovaRenderer {
                     shader_binaries,
                 )
                 .context("creating GPUI nova Vulkan render resources")?;
+                log::info!(
+                    "GPUI nova-gfx Vulkan startup: total_ms={} device_ms={} surface_swapchain_ms={} resources_ms={}",
+                    metrics_started_at.elapsed().as_millis(),
+                    device_elapsed.as_millis(),
+                    surface_elapsed.as_millis(),
+                    resources_started_at.elapsed().as_millis(),
+                );
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
                 let frame_resources = resources.frame_resources;
                 let current_frame_resources = frame_resources
@@ -436,6 +450,7 @@ impl NovaRenderer {
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
+                    pending_drawable_size: None,
                     atlas: atlas.0.clone(),
                     rendering_parameters: NovaRenderingParameters::from_env(),
                     diagnostics: NovaRenderDiagnostics::from_env(),

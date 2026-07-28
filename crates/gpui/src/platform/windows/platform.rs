@@ -938,9 +938,10 @@ impl WindowsApplication {
         event_loop.set_control_flow(control_flow);
     }
 
-    fn dispatch_pending_frame_requests(&self) {
+    fn dispatch_pending_window_updates(&self) {
         let windows: Vec<_> = self.windows.values().cloned().collect();
         for window in windows {
+            window.dispatch_pending_resize();
             let options = window.take_pending_frame_request();
             if options.requires_frame() {
                 window.invoke_request_frame(options);
@@ -952,21 +953,15 @@ impl WindowsApplication {
         window: &WindowsWindow,
         physical_size: winit::dpi::PhysicalSize<u32>,
         scale_factor: f32,
-    ) -> Option<(Size<Pixels>, f32)> {
+    ) {
         if physical_size.width == 0 || physical_size.height == 0 {
-            return None;
+            return;
         }
 
         let logical_size = Size {
             width: Pixels(physical_size.width as f32 / scale_factor),
             height: Pixels(physical_size.height as f32 / scale_factor),
         };
-        // Keep resize callbacks responsive; the renderer applies the latest size
-        // from the frame path where repeated Windows resize events are coalesced.
-        window.queue_renderer_resize(Size {
-            width: DevicePixels(physical_size.width as i32),
-            height: DevicePixels(physical_size.height as i32),
-        });
         if let Ok(state) = window.try_borrow_state() {
             state.logical_size.set(logical_size);
             state.scale_factor.set(scale_factor);
@@ -974,7 +969,14 @@ impl WindowsApplication {
             log::warn!("window state is already borrowed while synchronizing Windows size");
         }
 
-        Some((logical_size, scale_factor))
+        window.queue_resize(PendingWindowsResize {
+            logical_size,
+            drawable_size: Size {
+                width: DevicePixels(physical_size.width as i32),
+                height: DevicePixels(physical_size.height as i32),
+            },
+            scale_factor,
+        });
     }
 
     fn refresh_display_cache(&mut self, event_loop: &ActiveEventLoop) {
@@ -1060,9 +1062,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         });
         self.run_foreground_tasks(event_loop);
         // `RedrawRequested` can be suppressed while a native window is being mapped or when
-        // Windows coalesces redraws. Consume any request that survived the event cycle so the
-        // frame watchdog does not become the normal delivery path.
-        self.dispatch_pending_frame_requests();
+        // Windows coalesces redraws. Consume resize and frame work that survived the event cycle
+        // so the frame watchdog does not become the normal delivery path.
+        self.dispatch_pending_window_updates();
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = None;
         });
@@ -1088,13 +1090,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         match event {
             winit::event::WindowEvent::Resized(physical_size) => {
                 let scale_factor = window.scale_factor();
-                if let Some((logical_size, scale_factor)) =
-                    Self::sync_window_size(&window, physical_size, scale_factor)
-                {
-                    window.invoke_resize(logical_size, scale_factor);
-                    window.request_frame(RequestFrameOptions::from_refresh());
-                }
-                self.refresh_display_cache(event_loop);
+                Self::sync_window_size(&window, physical_size, scale_factor);
             }
             winit::event::WindowEvent::Moved(_) => {
                 self.refresh_display_cache(event_loop);
@@ -1116,15 +1112,8 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             }
             winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let physical_size = window.window().inner_size();
-                if let Some((logical_size, scale_factor)) =
-                    Self::sync_window_size(&window, physical_size, scale_factor as f32)
-                {
-                    self.refresh_display_cache(event_loop);
-                    window.invoke_resize(logical_size, scale_factor);
-                    window.request_frame(RequestFrameOptions::from_refresh());
-                } else {
-                    self.refresh_display_cache(event_loop);
-                }
+                Self::sync_window_size(&window, physical_size, scale_factor as f32);
+                self.refresh_display_cache(event_loop);
             }
             winit::event::WindowEvent::ThemeChanged(_) => {
                 let callback = window
@@ -1157,6 +1146,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 }
             }
             winit::event::WindowEvent::RedrawRequested => {
+                window.dispatch_pending_resize();
                 let options = window.take_pending_frame_request();
                 if options.requires_frame() {
                     window.invoke_request_frame(options);

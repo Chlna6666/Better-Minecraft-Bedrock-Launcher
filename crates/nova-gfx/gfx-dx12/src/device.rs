@@ -121,8 +121,8 @@ mod platform {
                 },
                 CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_PRESENT,
-                DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
-                DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+                DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING, DXGI_SCALING_STRETCH,
+                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
                 IDXGIFactory4, IDXGIFactory5, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain3,
@@ -345,12 +345,13 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // The swapchain is sized in physical pixels by GPUI. Stretching a
-                // composition swapchain lets DWM resample the entire frame when
-                // the HWND is on a non-100% DPI monitor, which softens every UI
-                // primitive instead of only affecting text.
+                // GPUI sizes the swapchain in physical pixels. During a native resize,
+                // the HWND can briefly be larger than the most recently presented
+                // buffer while the next frame rebuilds size-dependent targets. Stretching
+                // the composition content keeps the previous frame covering the client
+                // area during that interval; at a stable size no resampling occurs.
                 Scaling: if uses_composition {
-                    DXGI_SCALING_NONE
+                    DXGI_SCALING_STRETCH
                 } else {
                     DXGI_SCALING::default()
                 },

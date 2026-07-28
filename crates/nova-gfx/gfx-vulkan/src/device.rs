@@ -127,6 +127,7 @@ pub struct VulkanDevice {
     surfaces: ResourceRegistry<VulkanSurface>,
     swapchains: ResourceRegistry<VulkanSwapchain>,
     descriptor_pool: vk::DescriptorPool,
+    pipeline_cache: vk::PipelineCache,
     upload_ring: UploadRingAllocator,
     upload_pages: Vec<Option<VulkanBuffer>>,
     deferred_destroys: DeferredFreeQueue<DeferredResource>,
@@ -157,6 +158,10 @@ impl VulkanDevice {
         })?;
         let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())?;
         let descriptor_pool = create_descriptor_pool(&device)?;
+        let pipeline_cache_info = vk::PipelineCacheCreateInfo::default();
+        // SAFETY: The create info has no pointers and the logical device is live.
+        let pipeline_cache = unsafe { device.create_pipeline_cache(&pipeline_cache_info, None) }
+            .map_err(VulkanError::from)?;
 
         Ok(Self {
             entry,
@@ -185,6 +190,7 @@ impl VulkanDevice {
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
             descriptor_pool,
+            pipeline_cache,
             upload_ring,
             upload_pages: Vec::new(),
             deferred_destroys: DeferredFreeQueue::new(),
@@ -830,6 +836,7 @@ impl VulkanDevice {
             };
         let (pipeline_layout, pipeline) = create_graphics_pipeline(&GraphicsPipelineBuild {
             device: &self.device,
+            pipeline_cache: self.pipeline_cache,
             render_pass,
             pipeline_layout,
             vertex_shader,
@@ -2590,6 +2597,8 @@ impl Drop for VulkanDevice {
         unsafe {
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
+            self.device
+                .destroy_pipeline_cache(self.pipeline_cache, None);
         }
         // SAFETY: All resources using this device and instance have been destroyed above.
         unsafe {
@@ -3284,6 +3293,7 @@ fn create_empty_pipeline_layout(device: &ash::Device) -> Result<vk::PipelineLayo
 
 struct GraphicsPipelineBuild<'a> {
     device: &'a ash::Device,
+    pipeline_cache: vk::PipelineCache,
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
     vertex_shader: &'a VulkanShaderModule,
@@ -3438,7 +3448,7 @@ fn create_graphics_pipeline(
     let pipeline = unsafe {
         build
             .device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+            .create_graphics_pipelines(build.pipeline_cache, &[pipeline_info], None)
     }
     .map_err(|(_, error)| VulkanError::from(error))?[0];
     Ok((build.pipeline_layout, pipeline))

@@ -6,11 +6,13 @@ use anyhow::Result;
 use gpui::*;
 use std::env;
 use std::process;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 pub const APP_ID: &str = "com.bmcbl.app";
 const DEBUG_WINDOW_STARTUP_DELAY: Duration = Duration::from_millis(900);
+const DEBUG_WINDOW_RENDER_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEBUG_WINDOW_RENDER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STARTUP_WARMUP_DELAY: Duration = Duration::from_millis(1500);
 
 pub(crate) struct AppBootstrap {
@@ -465,6 +467,17 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
 fn schedule_debug_window_after_startup(cx: &mut App) {
     cx.spawn(async move |cx| {
         Timer::after(DEBUG_WINDOW_STARTUP_DELAY).await;
+
+        let wait_deadline = Instant::now() + DEBUG_WINDOW_RENDER_WAIT_TIMEOUT;
+        while !crate::ui::window::debug::state::main_window_first_render_finished() {
+            if Instant::now() >= wait_deadline {
+                warn!(
+                    "skipping delayed debug window because the main window did not finish its first render"
+                );
+                return Ok::<(), anyhow::Error>(());
+            }
+            Timer::after(DEBUG_WINDOW_RENDER_POLL_INTERVAL).await;
+        }
 
         match cx.update(|cx| {
             let already_open =

@@ -130,7 +130,6 @@ struct CjkRasterFrame {
 
 impl CosmicTextSystem {
     pub(crate) fn new() -> Self {
-        // todo(linux) make font loading non-blocking
         let (mut font_system, system_fonts_loaded) = minimal_startup_font_system();
         let platform_font_family: SharedString = resolved_platform_font_name(&font_system).into();
         font_system
@@ -1725,7 +1724,11 @@ fn minimal_startup_font_system() -> (FontSystem, bool) {
 
     #[cfg(not(target_os = "windows"))]
     {
-        (FontSystem::new(), true)
+        // Loading every font file can take seconds on Linux and must not happen
+        // while the GPUI event loop is bringing up the first window.
+        let locale = std::env::var("LANG").unwrap_or_else(|_| "en-US".to_owned());
+        let database = cosmic_text::fontdb::Database::new();
+        (FontSystem::new_with_locale_and_db(locale, database), false)
     }
 }
 
@@ -2404,6 +2407,15 @@ mod tests {
             Some("MiSans"),
             "embedded font was selected as GPUI automatic system fallback"
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn startup_font_system_defers_system_font_scan() {
+        let (font_system, system_fonts_loaded) = minimal_startup_font_system();
+
+        assert!(!system_fonts_loaded);
+        assert_eq!(font_system.db().faces().count(), 0);
     }
 
     #[test]

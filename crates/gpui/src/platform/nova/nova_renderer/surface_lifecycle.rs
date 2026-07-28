@@ -171,13 +171,25 @@ impl NovaRenderer {
     }
 
     pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        self.pending_drawable_size = Some(size);
+    }
+
+    pub(super) fn apply_pending_drawable_size(&mut self) -> Result<()> {
+        let Some(size) = self.pending_drawable_size.take() else {
+            return Ok(());
+        };
         if let Err(error) = self.resize(size) {
-            log::warn!("failed to resize nova-gfx drawable: {error:#}");
+            self.pending_drawable_size = Some(size);
+            return Err(error);
         }
+        Ok(())
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub(crate) fn viewport_size(&self) -> Size<DevicePixels> {
+        if let Some(size) = self.pending_drawable_size {
+            return size;
+        }
         Size {
             width: DevicePixels(self.current_size.width as i32),
             height: DevicePixels(self.current_size.height as i32),

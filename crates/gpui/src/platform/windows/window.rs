@@ -649,9 +649,17 @@ pub(crate) struct WindowsWindowInner {
     renderer: RefCell<WindowsRendererState>,
     renderer_atlas: NovaRendererAtlas,
     presentation_state: Cell<WindowsWindowPresentationState>,
+    pending_resize: Cell<Option<PendingWindowsResize>>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
     pub(crate) renderer_resize_retry_pending: Cell<bool>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PendingWindowsResize {
+    pub(crate) logical_size: Size<Pixels>,
+    pub(crate) drawable_size: Size<DevicePixels>,
+    pub(crate) scale_factor: f32,
 }
 
 impl WindowsWindowInner {
@@ -836,6 +844,7 @@ impl WindowsWindow {
             renderer: RefCell::new(WindowsRendererState::Initializing),
             renderer_atlas,
             presentation_state: Cell::new(presentation_state),
+            pending_resize: Cell::new(None),
             pending_renderer_size: Cell::new(None),
             renderer_resize_retry_pending: Cell::new(false),
             winit_window: cell,
@@ -941,9 +950,20 @@ impl WindowsWindow {
         }
     }
 
-    pub(crate) fn queue_renderer_resize(&self, size: Size<DevicePixels>) {
-        self.0.pending_renderer_size.set(Some(size));
+    pub(crate) fn queue_resize(&self, resize: PendingWindowsResize) {
+        // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
+        // without imposing a separate timer cadence on interactive resizing.
+        self.0.pending_resize.set(Some(resize));
+    }
+
+    pub(crate) fn dispatch_pending_resize(&self) {
+        let Some(resize) = self.0.pending_resize.take() else {
+            return;
+        };
+        self.0.pending_renderer_size.set(Some(resize.drawable_size));
         self.0.renderer_resize_retry_pending.set(false);
+        self.invoke_resize(resize.logical_size, resize.scale_factor);
+        self.request_frame(RequestFrameOptions::from_refresh());
     }
 
     fn try_apply_queued_renderer_resize(&self) -> bool {
