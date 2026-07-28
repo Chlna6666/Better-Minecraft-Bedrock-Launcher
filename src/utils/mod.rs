@@ -7,6 +7,7 @@ pub mod file_ops;
 pub mod file_picker;
 pub mod font_settings;
 pub mod format_bytes;
+pub(crate) mod log_manager;
 pub mod logger;
 #[cfg(target_os = "windows")]
 pub mod mc_dependency;
@@ -16,7 +17,6 @@ pub mod network;
 pub mod open_path;
 #[cfg(target_os = "windows")]
 pub mod registry;
-#[cfg(target_os = "windows")]
 pub mod shortcut;
 pub mod single_instance;
 pub mod stats;

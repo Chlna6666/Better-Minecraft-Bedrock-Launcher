@@ -131,7 +131,10 @@ pub fn run() -> Result<()> {
 
     if let LaunchMode::Updater(context) = &launch_mode {
         crate::utils::file_ops::create_initial_directories();
-        crate::utils::logger::init_logging(false);
+        crate::utils::logger::init_logging(
+            false,
+            &crate::config::config::LogManagementConfig::default(),
+        );
         return run_updater_mode(context);
     }
 
@@ -149,7 +152,7 @@ pub fn run() -> Result<()> {
             process::exit(1);
         }
     };
-    crate::utils::logger::init_logging(config.launcher.debug);
+    crate::utils::logger::init_logging(config.launcher.debug, &config.launcher.log_management);
     debug!(
         elapsed_ms = startup_started.elapsed().as_millis(),
         debug_enabled = config.launcher.debug,

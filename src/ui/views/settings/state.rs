@@ -79,6 +79,21 @@ pub struct SettingsPageState {
     pub update_channel_nightly: bool,
     pub auto_check_updates: bool,
     pub music_auto_play_on_startup: bool,
+    pub log_retention_days: u32,
+    pub log_active_file_size_mb: u32,
+    pub log_max_archive_files: u32,
+    pub log_max_total_size_mb: u32,
+    pub log_compression_level: i32,
+    pub log_advanced_open: bool,
+    pub log_storage_loading: bool,
+    pub log_cleanup_running: bool,
+    pub log_file_count: usize,
+    pub log_archive_count: usize,
+    pub log_pending_count: usize,
+    pub log_total_bytes: u64,
+    pub log_active_bytes: u64,
+    pub log_previous_bytes: u64,
+    pub log_oldest_archive: SharedString,
     pub download_multi_thread: bool,
     pub download_auto_thread_count: bool,
     pub download_max_threads: u32,
@@ -181,6 +196,21 @@ impl Default for SettingsPageState {
             update_channel_nightly: false,
             auto_check_updates: false,
             music_auto_play_on_startup: false,
+            log_retention_days: 7,
+            log_active_file_size_mb: 16,
+            log_max_archive_files: 64,
+            log_max_total_size_mb: 256,
+            log_compression_level: 3,
+            log_advanced_open: false,
+            log_storage_loading: false,
+            log_cleanup_running: false,
+            log_file_count: 0,
+            log_archive_count: 0,
+            log_pending_count: 0,
+            log_total_bytes: 0,
+            log_active_bytes: 0,
+            log_previous_bytes: 0,
+            log_oldest_archive: SharedString::from(""),
             download_multi_thread: false,
             download_auto_thread_count: false,
             download_max_threads: 1,
@@ -281,6 +311,12 @@ impl SettingsPageState {
         );
         self.auto_check_updates = config.launcher.auto_check_updates;
         self.music_auto_play_on_startup = config.music.auto_play_on_startup;
+        let log_management = config.launcher.log_management.normalized();
+        self.log_retention_days = log_management.retention_days;
+        self.log_active_file_size_mb = log_management.active_file_size_mb;
+        self.log_max_archive_files = log_management.max_archive_files;
+        self.log_max_total_size_mb = log_management.max_total_size_mb;
+        self.log_compression_level = log_management.compression_level;
         self.renderer_backend = SharedString::from(
             crate::config::config::normalize_renderer_backend(&config.launcher.renderer_backend),
         );

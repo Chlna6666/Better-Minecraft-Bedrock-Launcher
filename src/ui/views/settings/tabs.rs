@@ -138,6 +138,7 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
                 });
                 if tab == SettingsTab::Launcher {
                     refresh_gpu_adapters_if_needed(cx);
+                    super::launcher::logs::refresh_log_stats(cx);
                 }
             });
 

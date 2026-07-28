@@ -219,6 +219,7 @@ fn load_config_from_disk() -> io::Result<Config> {
     let has_music_section = content.contains("[music]");
     let has_online_section = content.contains("[online]");
     let has_online_player_name = content.contains("player_name");
+    let has_log_management = content.contains("[launcher.log_management]");
 
     let config: Config = match toml::from_str(&content) {
         Ok(parsed_config) => parsed_config,
@@ -351,6 +352,7 @@ fn load_config_from_disk() -> io::Result<Config> {
     }
     migrated |=
         normalize_update_check_settings(&mut config, has_auto_check_updates, has_check_on_start);
+    migrated |= normalize_log_management(&mut config, has_log_management);
     if has_legacy_keep_appx {
         migrated = true;
     }
@@ -449,6 +451,13 @@ pub(super) fn normalize_music_settings(config: &mut Config, has_music_section: b
         migrated = true;
     }
     migrated
+}
+
+pub(super) fn normalize_log_management(config: &mut Config, has_log_management: bool) -> bool {
+    let normalized = config.launcher.log_management.normalized();
+    let changed = normalized != config.launcher.log_management;
+    config.launcher.log_management = normalized;
+    changed || !has_log_management
 }
 
 fn extract_legacy_gpu_power_preference(content: &str) -> Option<String> {

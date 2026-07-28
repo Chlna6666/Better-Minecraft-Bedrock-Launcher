@@ -17,6 +17,7 @@ use crate::ui::components::toast::{self, ToastKind};
 
 mod connectivity;
 mod download;
+pub(super) mod logs;
 
 pub(super) fn render_launcher_tab(
     colors: &ThemeColors,
@@ -81,6 +82,7 @@ pub(super) fn render_launcher_tab(
             |settings| settings.error_report_sentry_auto = !settings.error_report_sentry_auto,
         ))
         .child(launcher_sentry_test_row(colors, i18n, state))
+        .child(logs::render(colors, i18n, state))
         .child(connectivity::launcher_connectivity_row(
             colors,
             i18n,

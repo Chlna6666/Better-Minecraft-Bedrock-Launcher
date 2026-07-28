@@ -29,11 +29,31 @@ pub(super) fn default_renderer_backend() -> String {
 }
 
 pub(super) fn default_proton_gdk_source() -> String {
-    "lukaspah".to_string()
+    "roundmcdev".to_string()
 }
 
 pub(super) fn default_update_check_interval_minutes() -> u32 {
     60
+}
+
+pub(super) fn default_log_retention_days() -> u32 {
+    7
+}
+
+pub(super) fn default_log_active_size_mb() -> u32 {
+    16
+}
+
+pub(super) fn default_log_archive_files() -> u32 {
+    64
+}
+
+pub(super) fn default_log_total_size_mb() -> u32 {
+    256
+}
+
+pub(super) fn default_log_compression_level() -> i32 {
+    3
 }
 
 pub fn default_gpu_adapter_name() -> String {
@@ -105,6 +125,7 @@ pub fn get_default_config() -> Config {
             auto_check_updates: true,
             check_on_start: true,
             update_check_interval_minutes: 60,
+            log_management: Default::default(),
             #[cfg(target_os = "linux")]
             proton_gdk_source: default_proton_gdk_source(),
             #[cfg(target_os = "linux")]

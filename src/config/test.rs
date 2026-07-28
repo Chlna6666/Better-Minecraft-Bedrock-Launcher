@@ -60,6 +60,7 @@ fn missing_glass_effect_enabled_defaults_to_true() {
         super::config::default_error_report_sentry_dsn()
     );
     assert!(config.music.auto_play_on_startup);
+    assert_eq!(config.launcher.log_management.retention_days, 7);
     assert_eq!(config.music.volume, super::defaults::default_music_volume());
     assert_eq!(config.music.playback_mode, MusicPlaybackMode::Repeat);
     assert_eq!(config.online.player_name.len(), 6);
@@ -84,6 +85,17 @@ fn default_online_player_name_is_six_alphanumeric_characters() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn default_proton_gdk_source_supports_game_login() {
+    assert_eq!(
+        super::config::get_default_config()
+            .launcher
+            .proton_gdk_source,
+        "roundmcdev"
+    );
+}
+
 #[test]
 fn music_volume_clamps_invalid_values() {
     assert_eq!(clamp_music_volume(-1.0), 0.0);
@@ -103,6 +115,33 @@ fn music_settings_migration_clamps_invalid_volume() {
 
     assert!(migrated);
     assert_eq!(config.music.volume, 1.0);
+}
+
+#[test]
+fn missing_log_management_uses_seven_day_retention() {
+    let config: super::config::LogManagementConfig =
+        toml::from_str("").expect("log management defaults should deserialize");
+
+    assert_eq!(config.retention_days, 7);
+}
+
+#[test]
+fn log_management_migration_clamps_unsafe_values() {
+    let mut config = super::config::get_default_config();
+    config.launcher.log_management.retention_days = 0;
+    config.launcher.log_management.active_file_size_mb = u32::MAX;
+    config.launcher.log_management.max_archive_files = 0;
+    config.launcher.log_management.max_total_size_mb = 1;
+    config.launcher.log_management.compression_level = 99;
+
+    let migrated = super::storage::normalize_log_management(&mut config, true);
+
+    assert!(migrated);
+    assert_eq!(config.launcher.log_management.retention_days, 1);
+    assert_eq!(config.launcher.log_management.active_file_size_mb, 512);
+    assert_eq!(config.launcher.log_management.max_archive_files, 1);
+    assert_eq!(config.launcher.log_management.max_total_size_mb, 16);
+    assert_eq!(config.launcher.log_management.compression_level, 9);
 }
 
 #[test]

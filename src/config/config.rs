@@ -8,9 +8,10 @@ pub use super::defaults::{
     default_theme_mode, get_default_config,
 };
 use super::defaults::{
-    default_config_version, default_error_report_sentry_enabled, default_music_volume,
-    default_proton_gdk_source, default_renderer_backend, default_true,
-    default_update_check_interval_minutes,
+    default_config_version, default_error_report_sentry_enabled, default_log_active_size_mb,
+    default_log_archive_files, default_log_compression_level, default_log_retention_days,
+    default_log_total_size_mb, default_music_volume, default_proton_gdk_source,
+    default_renderer_backend, default_true, default_update_check_interval_minutes,
 };
 
 pub(super) const CURRENT_CONFIG_VERSION: u32 = 1;
@@ -22,6 +23,16 @@ pub const FONT_SOURCE_SYSTEM: &str = "system";
 pub const THEME_MODE_LIGHT: &str = "light";
 pub const THEME_MODE_DARK: &str = "dark";
 pub const DEFAULT_MUSIC_VOLUME: f32 = 0.5;
+pub const MIN_LOG_RETENTION_DAYS: u32 = 1;
+pub const MAX_LOG_RETENTION_DAYS: u32 = 3_650;
+pub const MIN_LOG_ACTIVE_SIZE_MB: u32 = 1;
+pub const MAX_LOG_ACTIVE_SIZE_MB: u32 = 512;
+pub const MIN_LOG_ARCHIVE_FILES: u32 = 1;
+pub const MAX_LOG_ARCHIVE_FILES: u32 = 1_024;
+pub const MIN_LOG_TOTAL_SIZE_MB: u32 = 16;
+pub const MAX_LOG_TOTAL_SIZE_MB: u32 = 8_192;
+pub const MIN_LOG_COMPRESSION_LEVEL: i32 = 1;
+pub const MAX_LOG_COMPRESSION_LEVEL: i32 = 9;
 
 pub fn get_config_file_path() -> std::path::PathBuf {
     super::storage::get_config_file_path()
@@ -113,6 +124,56 @@ pub fn clamp_music_volume(value: f32) -> f32 {
         value.clamp(0.0, 1.0)
     } else {
         default_music_volume()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct LogManagementConfig {
+    #[serde(default = "default_log_retention_days")]
+    pub retention_days: u32,
+    #[serde(default = "default_log_active_size_mb")]
+    pub active_file_size_mb: u32,
+    #[serde(default = "default_log_archive_files")]
+    pub max_archive_files: u32,
+    #[serde(default = "default_log_total_size_mb")]
+    pub max_total_size_mb: u32,
+    #[serde(default = "default_log_compression_level")]
+    pub compression_level: i32,
+}
+
+impl Default for LogManagementConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: default_log_retention_days(),
+            active_file_size_mb: default_log_active_size_mb(),
+            max_archive_files: default_log_archive_files(),
+            max_total_size_mb: default_log_total_size_mb(),
+            compression_level: default_log_compression_level(),
+        }
+    }
+}
+
+impl LogManagementConfig {
+    #[must_use]
+    pub fn normalized(&self) -> Self {
+        Self {
+            retention_days: self
+                .retention_days
+                .clamp(MIN_LOG_RETENTION_DAYS, MAX_LOG_RETENTION_DAYS),
+            active_file_size_mb: self
+                .active_file_size_mb
+                .clamp(MIN_LOG_ACTIVE_SIZE_MB, MAX_LOG_ACTIVE_SIZE_MB),
+            max_archive_files: self
+                .max_archive_files
+                .clamp(MIN_LOG_ARCHIVE_FILES, MAX_LOG_ARCHIVE_FILES),
+            max_total_size_mb: self
+                .max_total_size_mb
+                .clamp(MIN_LOG_TOTAL_SIZE_MB, MAX_LOG_TOTAL_SIZE_MB),
+            compression_level: self
+                .compression_level
+                .clamp(MIN_LOG_COMPRESSION_LEVEL, MAX_LOG_COMPRESSION_LEVEL),
+        }
     }
 }
 
@@ -278,6 +339,8 @@ pub struct Launcher {
     pub check_on_start: bool,
     #[serde(default = "default_update_check_interval_minutes")]
     pub update_check_interval_minutes: u32,
+    #[serde(default)]
+    pub log_management: LogManagementConfig,
     #[cfg(target_os = "linux")]
     #[serde(default = "default_proton_gdk_source")]
     pub proton_gdk_source: String,

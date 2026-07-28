@@ -1,9 +1,9 @@
 use crate::utils::diagnostics;
 use crate::utils::file_ops;
-use chrono::Local;
+use crate::utils::log_manager::ManagedLogWriter;
 use once_cell::sync::{Lazy, OnceCell};
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions, create_dir_all};
+use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -25,7 +25,6 @@ const LOG_THROTTLE_WINDOW: Duration = Duration::from_secs(3);
 const LOG_THROTTLE_RETENTION: Duration = Duration::from_secs(120);
 const LOG_THROTTLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(15);
 const LOG_THROTTLE_MAX_TRACKED: usize = 4096;
-const PREVIOUS_LOG_FILE: &str = "previous.log";
 const DEBUG_LOG_FILTER: &str = "bmcbl=debug,bmcbl::ui::window::map_viewer=debug,bedrock_leveldb=info,bedrock_world=debug,bedrock_render=debug,gpui=debug,reqwest=info,hyper=warn,hyper_util=warn,h2=warn,rustls=warn,info";
 
 static LOG_THROTTLE_STATE: Lazy<Mutex<LogThrottleState>> =
@@ -235,21 +234,6 @@ fn append_crash_line(message: &str) {
     }
 }
 
-fn backup_previous_latest_log(logs_dir: &std::path::Path, latest_log_file: &std::path::Path) {
-    let previous_log_file = logs_dir.join(PREVIOUS_LOG_FILE);
-    if !latest_log_file.exists() {
-        return;
-    }
-
-    if let Err(error) = fs::copy(latest_log_file, &previous_log_file) {
-        eprintln!(
-            "Failed to back up previous latest.log to {}: {}",
-            previous_log_file.display(),
-            error
-        );
-    }
-}
-
 fn default_log_filter(debug_enabled: bool) -> String {
     let log_level = if debug_enabled {
         // Keep project diagnostics rich, but avoid frame-level network logs from dependencies.
@@ -364,57 +348,22 @@ pub fn log(level: &str, message: &str) {
 }
 
 // 初始化日志系统
-pub fn init_logging(debug_enabled: bool) {
+pub fn init_logging(
+    debug_enabled: bool,
+    log_management: &crate::config::config::LogManagementConfig,
+) {
     let logs_dir: PathBuf = file_ops::logs_dir();
     let latest_log_file = logs_dir.join("latest.log");
-    let daily_log_file = logs_dir.join(format!("{}.log", Local::now().format("%Y-%m-%d")));
-    let _ = LATEST_LOG_PATH.set(latest_log_file.clone());
-
-    // 确保日志目录存在
-    if let Err(e) = create_dir_all(&logs_dir) {
-        eprintln!("Failed to create logs directory: {}", e);
-        return;
+    if LATEST_LOG_PATH.set(latest_log_file.clone()).is_err() {
+        eprintln!("Latest log path was already initialized");
     }
 
-    backup_previous_latest_log(&logs_dir, &latest_log_file);
-
-    // 清空 `latest.log`
-    if let Err(e) = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true) // 清空文件内容
-        .open(&latest_log_file)
-    {
-        eprintln!("Failed to clear latest.log: {}", e);
-        return;
-    }
-
-    let daily_log_writer = match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&daily_log_file)
-    {
-        Ok(file) => file,
+    let log_writer = match ManagedLogWriter::initialize(&logs_dir, log_management) {
+        Ok(writer) => writer,
         Err(error) => {
             eprintln!(
-                "Failed to open daily log file {}: {}",
-                daily_log_file.display(),
-                error
-            );
-            return;
-        }
-    };
-
-    let latest_log_writer = match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&latest_log_file)
-    {
-        Ok(file) => file,
-        Err(error) => {
-            eprintln!(
-                "Failed to open latest log file {}: {}",
-                latest_log_file.display(),
+                "Failed to initialize managed logs in {}: {}",
+                logs_dir.display(),
                 error
             );
             return;
@@ -427,19 +376,11 @@ pub fn init_logging(debug_enabled: bool) {
         .with_ansi(true) // 控制台输出时使用 ANSI 转义字符
         .with_target(true); // 显示目标模块
 
-    // 文件层 - 按日期记录日志
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_timer(UptimeTimer)
-        .with_ansi(false) // 文件无 ANSI 转义
-        .with_target(true) // 显示目标模块
-        .with_writer(daily_log_writer); // 明确指定文件输出
-
-    // 文件层 - latest.log
     let latest_log_layer = tracing_subscriber::fmt::layer()
         .with_timer(UptimeTimer)
-        .with_ansi(false) // 文件无 ANSI 转义
-        .with_target(true) // 显示目标模块
-        .with_writer(latest_log_writer); // 明确指定文件输出
+        .with_ansi(false)
+        .with_target(true)
+        .with_writer(log_writer);
 
     let default_filter = default_log_filter(debug_enabled);
     let filter = EnvFilter::new(default_filter);
@@ -448,7 +389,6 @@ pub fn init_logging(debug_enabled: bool) {
         .with(filter) // 根据配置设置日志级别
         .with(LogThrottleLayer::default()) // 短时间内抑制重复 warn/error 日志风暴
         .with(console_layer) // 控制台日志层
-        .with(file_layer) // 按日期日志文件层
         .with(latest_log_layer); // 最新日志文件层
 
     if let Err(error) = registry.try_init() {
@@ -462,9 +402,9 @@ pub fn init_logging(debug_enabled: bool) {
     info!("Logging initialized");
     info!("Debug logging enabled: {}", debug_enabled);
     info!(
-        "Log files ready: latest={}, daily={}",
+        "Managed log files ready: latest={}, archive={}",
         latest_log_file.display(),
-        daily_log_file.display()
+        logs_dir.join("archive").display()
     );
 }
 #[cfg(test)]
@@ -500,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_logging_init() {
-        init_logging(true);
+        init_logging(true, &crate::config::config::LogManagementConfig::default());
         info!("这是 info 测试日志");
         debug!("这是 debug 测试日志");
         warn!("这是 warn 测试日志");
