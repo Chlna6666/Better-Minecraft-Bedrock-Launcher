@@ -778,23 +778,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bedrock-nethernet"
-version = "0.2.0"
-dependencies = [
- "aes",
- "bytes",
- "hmac",
- "rand 0.10.2",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "webrtc",
-]
-
-[[package]]
 name = "bedrock-render"
 version = "0.3.4"
 source = "git+https://github.com/BE-Community-Dev/bedrock-render.git?branch=main#244e17a4dd9194cc94fd0ec509e35deb39398885"
@@ -1047,7 +1030,6 @@ dependencies = [
  "anyhow",
  "bedrock-block-model",
  "bedrock-leveldb",
- "bedrock-nethernet",
  "bedrock-render",
  "bedrock-world",
  "bmcbl_plugin_api",
@@ -1075,6 +1057,8 @@ dependencies = [
  "mc-motd",
  "md5 0.8.0",
  "mimalloc",
+ "nethernet",
+ "network-interface",
  "notify",
  "num_cpus",
  "once_cell",
@@ -2668,8 +2652,6 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "dtls"
 version = "0.17.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01a431e87fc386bd5e02deb554a013f97bc406e47a7d8e97efb7c6366b980e9c"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -6071,6 +6053,25 @@ dependencies = [
  "once_cell",
  "system-configuration",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "nethernet"
+version = "0.2.0"
+dependencies = [
+ "aes",
+ "base64",
+ "bytes",
+ "hmac",
+ "p384",
+ "rand 0.10.2",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "webrtc",
 ]
 
 [[package]]

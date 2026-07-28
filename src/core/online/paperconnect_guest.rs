@@ -1,7 +1,65 @@
-use bedrock_nethernet::{LanSignaling, NethernetError, NethernetListener, ServerData};
+use nethernet::{LanSignaling, NegotiationConfig, NethernetError, NethernetListener, ServerData};
 use raknet_tokio::prelude::{RakClient, RakSession};
 use std::net::SocketAddr;
 use std::time::Duration;
+
+const GUEST_NEGOTIATION_CONFIG: NegotiationConfig = NegotiationConfig::non_trickle();
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiscoveryRoute {
+    local_ip: std::net::Ipv4Addr,
+    broadcast: SocketAddr,
+}
+
+#[cfg(windows)]
+fn is_virtual_tunnel_interface(interface_name: &str) -> bool {
+    let normalized_name = interface_name.trim().to_ascii_lowercase();
+    normalized_name.starts_with("utun")
+        || normalized_name.contains("wintun")
+        || normalized_name.contains("rust wintun")
+}
+
+#[cfg(windows)]
+fn local_discovery_routes(discovery_port: u16) -> std::io::Result<Vec<DiscoveryRoute>> {
+    use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
+
+    let interfaces = NetworkInterface::show().map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("读取本机网络接口失败：{error}"),
+        )
+    })?;
+    let mut routes = interfaces
+        .into_iter()
+        .filter(|interface| !interface.internal && !is_virtual_tunnel_interface(&interface.name))
+        .flat_map(|interface| interface.addr)
+        .filter_map(|address| match address {
+            Addr::V4(address)
+                if !address.ip.is_unspecified()
+                    && !address.ip.is_loopback()
+                    && !address.ip.is_link_local()
+                    && address.broadcast.is_some() =>
+            {
+                Some(DiscoveryRoute {
+                    local_ip: address.ip,
+                    broadcast: SocketAddr::from((address.broadcast?, discovery_port)),
+                })
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    routes.sort_unstable_by_key(|route| route.local_ip);
+    routes.dedup_by_key(|route| route.local_ip);
+
+    if routes.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "未找到可用于 PaperConnect 7551 发现的物理 IPv4 接口",
+        ));
+    }
+    Ok(routes)
+}
 
 #[cfg(windows)]
 fn probe_discovery_port(address: SocketAddr) -> std::io::Result<()> {
@@ -79,13 +137,13 @@ async fn create_guest_signaling(
     socket: tokio::net::UdpSocket,
     server_data: ServerData,
     discovery_port: u16,
-) -> bedrock_nethernet::Result<LanSignaling> {
-    LanSignaling::server_from_socket_with_target(
-        socket,
-        server_data,
-        SocketAddr::from((std::net::Ipv4Addr::BROADCAST, discovery_port)),
-    )
-    .await
+) -> nethernet::Result<LanSignaling> {
+    let routes = local_discovery_routes(discovery_port)?;
+    let routes = routes
+        .into_iter()
+        .map(|route| (route.local_ip.into(), route.broadcast))
+        .collect();
+    LanSignaling::server_from_socket_with_local_routes(socket, server_data, routes).await
 }
 
 #[cfg(not(windows))]
@@ -93,7 +151,7 @@ async fn create_guest_signaling(
     socket: tokio::net::UdpSocket,
     server_data: ServerData,
     _discovery_port: u16,
-) -> bedrock_nethernet::Result<LanSignaling> {
+) -> nethernet::Result<LanSignaling> {
     LanSignaling::server_from_socket(socket, server_data).await
 }
 
@@ -130,7 +188,7 @@ pub(super) async fn bind_listener(
     discovery_addr: SocketAddr,
     server_data: ServerData,
     proxy_port: u16,
-) -> bedrock_nethernet::Result<NethernetListener> {
+) -> nethernet::Result<NethernetListener> {
     probe_discovery_port(discovery_addr)?;
     tracing::info!(
         port = discovery_addr.port(),
@@ -138,7 +196,11 @@ pub(super) async fn bind_listener(
     );
     let socket = bind_discovery_socket(discovery_addr).await?;
     let signaling = create_guest_signaling(socket, server_data, discovery_addr.port()).await?;
-    let listener = NethernetListener::bind(signaling, SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    let listener = NethernetListener::bind_with_config(
+        signaling,
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+        GUEST_NEGOTIATION_CONFIG,
+    )?;
     tracing::info!(
         %discovery_addr,
         proxy_port,
@@ -162,6 +224,11 @@ pub(super) fn is_port_occupied(error: &NethernetError) -> bool {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, UdpSocket};
+
+    #[test]
+    fn guest_matches_gravity_cone_non_trickle_negotiation() {
+        assert_eq!(GUEST_NEGOTIATION_CONFIG, NegotiationConfig::non_trickle());
+    }
 
     #[test]
     fn address_conflicts_are_classified_as_occupied() {
@@ -270,9 +337,19 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[test]
+    fn virtual_tunnel_names_are_excluded_from_discovery_routes() {
+        assert!(is_virtual_tunnel_interface("utun8"));
+        assert!(is_virtual_tunnel_interface("Rust Wintun Tunnel"));
+        assert!(is_virtual_tunnel_interface("Wintun Userspace Tunnel"));
+        assert!(!is_virtual_tunnel_interface("Ethernet"));
+        assert!(!is_virtual_tunnel_interface("Wi-Fi"));
+    }
+
+    #[cfg(windows)]
     #[tokio::test]
     async fn minecraft_style_shared_socket_receives_discovery_response() {
-        use bedrock_nethernet::DiscoveryPacket;
+        use nethernet::DiscoveryPacket;
         use socket2::{Domain, Protocol, Socket, Type};
 
         let reservation =
@@ -330,5 +407,106 @@ mod tests {
         .expect("游戏 socket 未收到模拟代理的发现响应");
 
         assert_ne!(sender_id, 0x1234);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn minecraft_style_shared_socket_receives_negotiation_answer() {
+        use nethernet::{DiscoveryPacket, Signal, SignalType};
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let reservation =
+            UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).expect("应预留测试端口");
+        let port = reservation.local_addr().expect("应读取测试端口").port();
+        drop(reservation);
+
+        let discovery_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+        let proxy_socket = bind_discovery_socket(discovery_addr)
+            .await
+            .expect("应绑定本机代理 socket");
+        let signaling = create_guest_signaling(proxy_socket, ServerData::default(), port)
+            .await
+            .expect("应创建本机代理信令");
+        let route = local_discovery_routes(port)
+            .expect("应读取本机发现路由")
+            .into_iter()
+            .next()
+            .expect("应存在本机发现路由");
+
+        let game_socket =
+            Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).expect("应创建游戏 socket");
+        game_socket
+            .set_reuse_address(true)
+            .expect("游戏 socket 应允许共享端口");
+        game_socket
+            .set_broadcast(true)
+            .expect("游戏 socket 应允许广播");
+        game_socket
+            .bind(&discovery_addr.into())
+            .expect("游戏 socket 应与本机代理共享端口");
+        game_socket
+            .set_nonblocking(true)
+            .expect("游戏 socket 应切换为非阻塞");
+        let game_socket =
+            tokio::net::UdpSocket::from_std(game_socket.into()).expect("应接入 Tokio socket");
+
+        let game_network_id = 0x1234;
+        let connection_id = 77;
+        let offer = Signal::offer(
+            connection_id,
+            "v=0\r\na=ice-options:trickle\r\n".to_string(),
+            signaling.network_id(),
+        );
+        let packet = DiscoveryPacket::Message {
+            recipient_id: signaling.network_id(),
+            data: offer.to_string(),
+        }
+        .encode(game_network_id)
+        .expect("应编码 Offer");
+        let mut incoming = signaling.subscribe();
+        game_socket
+            .send_to(&packet, SocketAddr::from((route.local_ip, port)))
+            .await
+            .expect("游戏应把 Offer 发给本机代理");
+        let received = tokio::time::timeout(Duration::from_secs(1), incoming.recv())
+            .await
+            .expect("本机代理未收到游戏 Offer")
+            .expect("Offer 订阅通道不应关闭");
+        assert_eq!(received.kind, SignalType::Offer);
+
+        signaling
+            .signal(Signal::answer(
+                connection_id,
+                "v=0\r\n".to_string(),
+                game_network_id,
+            ))
+            .await
+            .expect("本机代理应发送 Answer");
+
+        let answer = tokio::time::timeout(Duration::from_secs(1), async {
+            let mut buffer = [0_u8; 2048];
+            loop {
+                let (length, _) = game_socket
+                    .recv_from(&mut buffer)
+                    .await
+                    .expect("游戏 socket 接收协商数据报失败");
+                let (packet, sender_id) = DiscoveryPacket::decode(&buffer[..length])
+                    .expect("游戏 socket 收到的协商数据报应有效");
+                let DiscoveryPacket::Message { recipient_id, data } = packet else {
+                    continue;
+                };
+                if recipient_id != game_network_id {
+                    continue;
+                }
+                let signal = Signal::parse(&data, sender_id).expect("应解析 Answer");
+                if signal.kind == SignalType::Answer {
+                    break signal;
+                }
+            }
+        })
+        .await
+        .expect("游戏共享 socket 未收到本机代理 Answer");
+
+        assert_eq!(answer.connection_id, connection_id);
     }
 }

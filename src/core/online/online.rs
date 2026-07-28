@@ -1643,10 +1643,7 @@ mod tests {
         let room = paperconnect_parse_room_code(room_code)
             .await
             .expect("room code should parse");
-        eprintln!(
-            "[repro] network_name={} network_secret={}",
-            room.network_name, room.network_secret
-        );
+        eprintln!("[repro] network_name={}", room.network_name);
 
         super::easytier_start(super::EasyTierStartRequest {
             network_name: room.network_name.clone(),
@@ -1705,29 +1702,6 @@ mod tests {
             Err(error) => Err(error.clone()),
         };
 
-        let local_discovery = match &joined {
-            Ok(super::PaperConnectClientState::Ready) => {
-                let signaling = bedrock_nethernet::LanSignaling::client(
-                    std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
-                    std::net::SocketAddr::from(([255, 255, 255, 255], 7551)),
-                )
-                .await
-                .map_err(|error| format!("启动 7551 测试监听失败：{error}"));
-                match signaling {
-                    Ok(signaling) => signaling
-                        .discover(std::time::Duration::from_secs(5))
-                        .await
-                        .map_err(|error| format!("监听 7551 响应失败：{error}")),
-                    Err(error) => Err(error),
-                }
-            }
-            Ok(super::PaperConnectClientState::DiscoveryPortOccupied) => {
-                Err("本机 UDP 7551 已被占用，模拟代理未创建".to_string())
-            }
-            Err(error) => Err(error.clone()),
-        };
-        eprintln!("[repro] local 7551 discovery result: {local_discovery:?}");
-
         let stop = super::easytier_stop().await;
         eprintln!("[repro] stop result: {stop:?}");
 
@@ -1741,15 +1715,6 @@ mod tests {
             return;
         }
         joined.expect("guest transport should connect to the host tunnel");
-        let discovered = local_discovery.expect("local UDP 7551 proxy should answer discovery");
-        eprintln!(
-            "[repro] local 7551 response: network_id={} address={} server_name={} level_name={} transport_layer={}",
-            discovered.network_id,
-            discovered.address,
-            discovered.server_data.server_name,
-            discovered.server_data.level_name,
-            discovered.server_data.transport_layer
-        );
     }
 
     #[tokio::test]

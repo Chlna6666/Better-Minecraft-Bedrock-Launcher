@@ -8,8 +8,8 @@ use super::paperconnect_guest::{
     is_port_occupied as is_discovery_port_occupied,
 };
 use super::paperconnect_tunnel::{TunnelDecoder, encode_packet};
-use bedrock_nethernet::{LanSignaling, NethernetSession, NethernetStream, ServerData};
 use bytes::Bytes;
+use nethernet::{LanSignaling, NethernetSession, NethernetStream, ServerData};
 use once_cell::sync::Lazy;
 use raknet_tokio::prelude::{RakPriority, RakReliability, RakServer, RakSession};
 use std::net::{Ipv4Addr, SocketAddr};

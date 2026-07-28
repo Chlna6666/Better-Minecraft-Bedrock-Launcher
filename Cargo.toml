@@ -97,7 +97,7 @@ bmcbl_plugin_api = { path = "crates/bmcbl-plugin-api" }
 
 # PaperConnect uses EasyTier as an embedded no-TUN transport with local port forwarding.
 easytier = { path = "crates/easytier", default-features = false, features = ["aes-gcm", "socks5", "websocket", "zstd"] }
-bedrock-nethernet = { path = "crates/bedrock-nethernet" }
+nethernet = { path = "crates/nethernet" }
 # 自研 RakNet 实现（crates/raknet）：go-raknet 风格连接模型 + tokio 驱动，
 # 零拷贝可靠层，兼容 go-raknet 主机（cookie 回显、负数 GUID）。
 raknet-tokio = { path = "crates/raknet/raknet-tokio" }
@@ -117,7 +117,7 @@ members = [
     "crates/gpui_tokio",
     "crates/bmcbl-plugin-api",
     "crates/bmcbl-plugin-macros",
-    "crates/bedrock-nethernet",
+    "crates/nethernet",
     "crates/nova-gfx/gfx-core",
     "crates/nova-gfx/gfx-memory",
     "crates/nova-gfx/gfx-shader",
@@ -140,6 +140,7 @@ exclude = ["crates/easytier", "crates/raknet"]
 [target.'cfg(windows)'.dependencies]
 bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }
 socket2 = "0.6.3"
+network-interface = "2.0"
 windows = { version = "0.62.2", features = ["ApplicationModel", "ApplicationModel_Activation", "Foundation", "Foundation_Collections", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Management", "Management_Deployment", "Storage_Search", "System", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.56.0"
 
@@ -153,6 +154,7 @@ bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git
 bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main" }
 
 [patch.crates-io]
+dtls = { path = "vendor/dtls" }
 gpui = { path = "crates/gpui" }
 gpu-allocator = { path = "vendor/gpu-allocator" }
 gpui-router = { path = "vendor/gpui-router" }
@@ -174,7 +176,7 @@ panic = "unwind"        # 开发模式保留回溯，便于定位崩溃
 [profile.dev.package.easytier]
 opt-level = "s"
 
-[profile.dev.package.bedrock-nethernet]
+[profile.dev.package.nethernet]
 opt-level = "s"
 
 [profile.dev.package.raknet]
