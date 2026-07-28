@@ -39,7 +39,7 @@ impl InterfaceFilter {
         self.iface
             .addr
             .iter()
-            .map(network_interface::Addr::ip)
+            .map(|address| address.clone().ip())
             .any(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
     }
 

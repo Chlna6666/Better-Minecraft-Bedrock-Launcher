@@ -833,8 +833,6 @@ fn main() {
     #[cfg(windows)]
     compile_windows_resources();
 
-    #[cfg(windows)]
-    // 自动生成图片与图标资源嵌入代码
     generate_asset_bundles_rs();
     generate_i18n_tables_rs();
     generate_dependency_metadata_rs();
