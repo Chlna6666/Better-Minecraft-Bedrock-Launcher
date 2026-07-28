@@ -270,10 +270,14 @@ fn rebuild_game_panel_render_cache(
 
 fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
-            a: 0.08,
-            ..colors.text_secondary
-        })
+        div()
+            .w(width)
+            .h(height)
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+            .bg(Hsla {
+                a: 0.08,
+                ..colors.text_secondary
+            })
     };
 
     let skeleton_shimmer = || {
@@ -331,10 +335,16 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
                     .items_center()
                     .gap(px(10.))
                     .child(skeleton_bar(px(78.), px(16.)))
-                    .child(div().w(px(88.)).h(px(28.)).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
-                        a: 0.10,
-                        ..colors.accent
-                    })),
+                    .child(
+                        div()
+                            .w(px(88.))
+                            .h(px(28.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+                            .bg(Hsla {
+                                a: 0.10,
+                                ..colors.accent
+                            }),
+                    ),
             )
             .child(skeleton_shimmer())
     };
@@ -363,10 +373,14 @@ fn stable_game_row_element_id(package_id: &SharedString) -> u64 {
 
 fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &DownloadPageState) -> Div {
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
-            a: 0.10,
-            ..colors.text_secondary
-        })
+        div()
+            .w(width)
+            .h(height)
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+            .bg(Hsla {
+                a: 0.10,
+                ..colors.text_secondary
+            })
     };
 
     let skeleton_shimmer = || {
@@ -409,12 +423,18 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                     .gap(px(0.))
                     .min_w(px(0.))
                     .flex_1()
-                    .child(div().w(px(64.)).flex().items_center().child(
-                        div().w(px(42.)).h(px(42.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
-                            a: 0.12,
-                            ..colors.surface
-                        }),
-                    ))
+                    .child(
+                        div().w(px(64.)).flex().items_center().child(
+                            div()
+                                .w(px(42.))
+                                .h(px(42.))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                .bg(Hsla {
+                                    a: 0.12,
+                                    ..colors.surface
+                                }),
+                        ),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -430,10 +450,16 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                                     .items_center()
                                     .gap(px(10.))
                                     .child(skeleton_bar(px(240.), px(16.)))
-                                    .child(div().w(px(74.)).h(px(20.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
-                                        a: 0.08,
-                                        ..colors.text_secondary
-                                    })),
+                                    .child(
+                                        div()
+                                            .w(px(74.))
+                                            .h(px(20.))
+                                            .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                            .bg(Hsla {
+                                                a: 0.08,
+                                                ..colors.text_secondary
+                                            }),
+                                    ),
                             )
                             .child(
                                 div()
@@ -451,10 +477,16 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                     .items_center()
                     .gap(px(10.))
                     .child(skeleton_bar(px(78.), px(16.)))
-                    .child(div().w(px(88.)).h(px(28.)).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
-                        a: 0.12,
-                        ..colors.accent
-                    })),
+                    .child(
+                        div()
+                            .w(px(88.))
+                            .h(px(28.))
+                            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+                            .bg(Hsla {
+                                a: 0.12,
+                                ..colors.accent
+                            }),
+                    ),
             )
             .child(skeleton_shimmer())
     };
@@ -503,10 +535,16 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                             a: 0.30,
                             ..colors.surface
                         })
-                        .child(div().w_full().h(px(32.)).rounded(px(crate::ui::theme::tokens::radius::MD)).bg(Hsla {
-                            a: 0.08,
-                            ..colors.text_secondary
-                        })),
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(32.))
+                                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                                .bg(Hsla {
+                                    a: 0.08,
+                                    ..colors.text_secondary
+                                }),
+                        ),
                 ),
         )
 }

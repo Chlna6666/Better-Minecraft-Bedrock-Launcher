@@ -46,10 +46,14 @@ fn meta_item(
 }
 
 fn meta_separator(colors: &ThemeColors) -> Div {
-    div().w(px(2.)).h(px(2.)).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
-        a: 0.16,
-        ..task_text_secondary(colors)
-    })
+    div()
+        .w(px(2.))
+        .h(px(2.))
+        .rounded(px(crate::ui::theme::tokens::radius::FULL))
+        .bg(Hsla {
+            a: 0.16,
+            ..task_text_secondary(colors)
+        })
 }
 
 fn thread_label_text(worker_active: Option<u32>, worker_total: Option<u32>) -> Option<Arc<str>> {
@@ -367,7 +371,10 @@ pub(crate) fn render_task_card(
             TaskCardMotionKind::Exit => base_card
                 .with_animation(
                     ("task-card-motion-exit", stable_task_id(model.id.as_ref())),
-                    spring_motion(spring_snappy(), Duration::from_millis(TASK_CARD_EXIT_WINDOW_MS)),
+                    spring_motion(
+                        spring_snappy(),
+                        Duration::from_millis(TASK_CARD_EXIT_WINDOW_MS),
+                    ),
                     move |card, progress| {
                         let progress = progress.clamp(0.0, 1.0);
                         let fade = 1.0 - progress;

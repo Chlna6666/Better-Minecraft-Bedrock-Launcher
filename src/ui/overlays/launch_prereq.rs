@@ -1098,7 +1098,10 @@ fn launch_prereq_is_dark(colors: &ThemeColors) -> bool {
 }
 
 fn launch_prereq_shell_bg(colors: &ThemeColors) -> Hsla {
-    Hsla { a: 0.98, ..colors.bg }
+    Hsla {
+        a: 0.98,
+        ..colors.bg
+    }
 }
 
 fn launch_prereq_shell_border(colors: &ThemeColors) -> Hsla {

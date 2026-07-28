@@ -304,7 +304,13 @@ fn about_big_card(
         .flex()
         .items_center()
         .gap(px(14.))
-        .child(div().w(px(44.)).h(px(44.)).rounded(px(crate::ui::theme::tokens::radius::MD)).child(icon))
+        .child(
+            div()
+                .w(px(44.))
+                .h(px(44.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .child(icon),
+        )
         .child(
             div()
                 .flex()
@@ -503,7 +509,11 @@ fn thanks_card(
         icon = icon.rounded_full();
     }
     if item.is_small {
-        icon = icon.w(px(36.)).h(px(36.)).rounded(px(crate::ui::theme::tokens::radius::SM)).opacity(0.92);
+        icon = icon
+            .w(px(36.))
+            .h(px(36.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
+            .opacity(0.92);
     }
 
     let has_action = item.link.is_some() || item.action.is_some();
@@ -512,7 +522,13 @@ fn thanks_card(
         .items_center()
         .gap(px(14.))
         .h(px(100.))
-        .child(div().w(px(44.)).h(px(44.)).rounded(px(crate::ui::theme::tokens::radius::MD)).child(icon))
+        .child(
+            div()
+                .w(px(44.))
+                .h(px(44.))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .child(icon),
+        )
         .child(
             div()
                 .flex()
