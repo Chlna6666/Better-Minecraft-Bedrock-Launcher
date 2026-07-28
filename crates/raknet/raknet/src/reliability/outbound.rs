@@ -40,7 +40,11 @@ impl OutFrame {
         1 + 2
             + if r.is_reliable() { 3 } else { 0 }
             + if r.is_sequenced() { 3 } else { 0 }
-            + if r.is_ordered() || r.is_sequenced() { 4 } else { 0 }
+            + if r.is_ordered() || r.is_sequenced() {
+                4
+            } else {
+                0
+            }
             + if self.split.is_some() { 10 } else { 0 }
             + self.payload.len()
     }
@@ -214,17 +218,26 @@ impl Outbound {
     ) -> Result<(), RakSessionError> {
         let max_message = self.max_frame_payload * MAX_SPLIT_PARTS as usize;
         if payload.len() > max_message {
-            return Err(RakSessionError::TooLarge { size: payload.len(), max: max_message });
+            return Err(RakSessionError::TooLarge {
+                size: payload.len(),
+                max: max_message,
+            });
         }
         if priority != RakPriority::Immediate
             && self.queued_bytes + payload.len() > self.max_queued_bytes
         {
-            return Err(RakSessionError::QueueFull { max: self.max_queued_bytes });
+            return Err(RakSessionError::QueueFull {
+                max: self.max_queued_bytes,
+            });
         }
 
         let channel = (order_channel as usize).min(MAX_ORDERING_CHANNELS - 1);
         let needs_split = payload.len() > self.max_frame_payload;
-        let reliability = if needs_split { reliability.upgrade_for_split() } else { reliability };
+        let reliability = if needs_split {
+            reliability.upgrade_for_split()
+        } else {
+            reliability
+        };
 
         // 序号分配与 RakNet 语义一致：
         // - sequenced：使用当前有序序号（不递增），序列号递增；
@@ -259,7 +272,11 @@ impl Outbound {
                     sequence_index,
                     order_index,
                     order_channel: channel as u8,
-                    split: Some(SplitInfo { count, id: split_id, index }),
+                    split: Some(SplitInfo {
+                        count,
+                        id: split_id,
+                        index,
+                    }),
                     payload: chunk,
                     retries: 0,
                     timeouts: 0,
@@ -342,7 +359,9 @@ impl Outbound {
                 }
                 found
             };
-            let Some((len, from_resend, qi)) = candidate else { break 'fill };
+            let Some((len, from_resend, qi)) = candidate else {
+                break 'fill;
+            };
             if buf.len() + len > cap {
                 break 'fill;
             }
@@ -377,7 +396,12 @@ impl Outbound {
             self.resend_timers.push(Reverse((now + backoff, seq)));
             self.unacked.insert(
                 seq,
-                SentDatagram { frames, sent_at: now, bytes: reliable_bytes, retransmitted: retries > 0 },
+                SentDatagram {
+                    frames,
+                    sent_at: now,
+                    bytes: reliable_bytes,
+                    retransmitted: retries > 0,
+                },
             );
             let _ = bytes;
         }
@@ -418,7 +442,9 @@ impl Outbound {
     /// 处理对端 ACK。
     pub fn on_ack(&mut self, ranges: &AckRanges, now: Instant) {
         for seq in self.matching_unacked(ranges) {
-            let Some(sent) = self.unacked.remove(&seq) else { continue };
+            let Some(sent) = self.unacked.remove(&seq) else {
+                continue;
+            };
             self.inflight_bytes = self.inflight_bytes.saturating_sub(sent.bytes);
             // Karn 算法：重传过的数据报不用于 RTT 采样。
             if !sent.retransmitted {
@@ -432,7 +458,9 @@ impl Outbound {
     pub fn on_nack(&mut self, ranges: &AckRanges) {
         let mut lost_any = false;
         for seq in self.matching_unacked(ranges) {
-            let Some(sent) = self.unacked.remove(&seq) else { continue };
+            let Some(sent) = self.unacked.remove(&seq) else {
+                continue;
+            };
             self.inflight_bytes = self.inflight_bytes.saturating_sub(sent.bytes);
             lost_any = true;
             // NACK 不计入死亡预算：NACK 未经认证，否则伪造十余个报文
@@ -511,8 +539,13 @@ mod tests {
     fn large_message_splits_and_respects_mtu() {
         let mut out = outbound();
         let payload = Bytes::from(vec![7u8; 5000]);
-        out.enqueue(payload, RakReliability::ReliableOrdered, RakPriority::Normal, 0)
-            .unwrap();
+        out.enqueue(
+            payload,
+            RakReliability::ReliableOrdered,
+            RakPriority::Normal,
+            0,
+        )
+        .unwrap();
         let mut dgrams = Vec::new();
         out.pump(Instant::now(), &mut dgrams);
         assert!(dgrams.len() >= 5);
@@ -541,8 +574,13 @@ mod tests {
     fn rto_requeues_then_ack_clears() {
         let mut out = outbound();
         let t0 = Instant::now();
-        out.enqueue(Bytes::from_static(b"x"), RakReliability::Reliable, RakPriority::High, 0)
-            .unwrap();
+        out.enqueue(
+            Bytes::from_static(b"x"),
+            RakReliability::Reliable,
+            RakPriority::High,
+            0,
+        )
+        .unwrap();
         let mut dgrams = Vec::new();
         out.pump(t0, &mut dgrams);
         assert_eq!(out.unacked.len(), 1);
@@ -557,7 +595,9 @@ mod tests {
         assert_eq!(out.unacked.len(), 1);
 
         // ACK 序号 1（重传使用了新序号）。
-        let ranges = AckRanges { ranges: vec![(1, 1)] };
+        let ranges = AckRanges {
+            ranges: vec![(1, 1)],
+        };
         out.on_ack(&ranges, t0 + RTO_INITIAL + Duration::from_millis(80));
         assert!(out.unacked.is_empty());
         assert_eq!(out.inflight_bytes, 0);
@@ -567,12 +607,19 @@ mod tests {
     fn nack_triggers_fast_resend_with_new_sequence() {
         let mut out = outbound();
         let t0 = Instant::now();
-        out.enqueue(Bytes::from_static(b"y"), RakReliability::Reliable, RakPriority::High, 0)
-            .unwrap();
+        out.enqueue(
+            Bytes::from_static(b"y"),
+            RakReliability::Reliable,
+            RakPriority::High,
+            0,
+        )
+        .unwrap();
         let mut dgrams = Vec::new();
         out.pump(t0, &mut dgrams);
 
-        out.on_nack(&AckRanges { ranges: vec![(0, 0)] });
+        out.on_nack(&AckRanges {
+            ranges: vec![(0, 0)],
+        });
         let mut dgrams2 = Vec::new();
         out.pump(t0, &mut dgrams2);
         assert_eq!(dgrams2.len(), 1);
@@ -585,8 +632,13 @@ mod tests {
     fn retries_exhaustion_marks_dead() {
         let mut out = outbound();
         let mut t = Instant::now();
-        out.enqueue(Bytes::from_static(b"z"), RakReliability::Reliable, RakPriority::High, 0)
-            .unwrap();
+        out.enqueue(
+            Bytes::from_static(b"z"),
+            RakReliability::Reliable,
+            RakPriority::High,
+            0,
+        )
+        .unwrap();
         for _ in 0..(MAX_RETRIES as usize + 2) {
             let mut dgrams = Vec::new();
             out.pump(t, &mut dgrams);
@@ -606,16 +658,28 @@ mod tests {
         let mut out = outbound();
         let t0 = Instant::now();
         for _ in 0..3 {
-            out.enqueue(Bytes::from_static(b"x"), RakReliability::Reliable, RakPriority::High, 0)
-                .unwrap();
+            out.enqueue(
+                Bytes::from_static(b"x"),
+                RakReliability::Reliable,
+                RakPriority::High,
+                0,
+            )
+            .unwrap();
             let mut dgrams = Vec::new();
             out.pump(t0, &mut dgrams);
         }
         assert_eq!(out.unacked.len(), 3);
         // 覆盖整个 u24 空间的单条记录。
-        let hits = out.matching_unacked(&AckRanges { ranges: vec![(0, 0xFF_FFFF)] });
+        let hits = out.matching_unacked(&AckRanges {
+            ranges: vec![(0, 0xFF_FFFF)],
+        });
         assert_eq!(hits.len(), 3, "只应命中实际在途的 3 个数据报");
-        out.on_ack(&AckRanges { ranges: vec![(0, 0xFF_FFFF)] }, t0);
+        out.on_ack(
+            &AckRanges {
+                ranges: vec![(0, 0xFF_FFFF)],
+            },
+            t0,
+        );
         assert!(out.unacked.is_empty());
         assert_eq!(out.inflight_bytes, 0);
     }
@@ -625,12 +689,19 @@ mod tests {
         // 回归：NACK 重传曾计入死亡预算，十余个伪造 NACK 即可判死会话。
         let mut out = outbound();
         let t0 = Instant::now();
-        out.enqueue(Bytes::from_static(b"y"), RakReliability::Reliable, RakPriority::High, 0)
-            .unwrap();
+        out.enqueue(
+            Bytes::from_static(b"y"),
+            RakReliability::Reliable,
+            RakPriority::High,
+            0,
+        )
+        .unwrap();
         for round in 0..(MAX_RETRIES as u64 * 3) {
             let mut dgrams = Vec::new();
             out.pump(t0, &mut dgrams);
-            out.on_nack(&AckRanges { ranges: vec![(0, 0xFF_FFFF)] });
+            out.on_nack(&AckRanges {
+                ranges: vec![(0, 0xFF_FFFF)],
+            });
             assert!(!out.is_dead(), "第 {round} 轮伪造 NACK 后不应判死");
         }
     }

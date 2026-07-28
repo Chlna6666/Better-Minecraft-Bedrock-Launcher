@@ -186,7 +186,10 @@ impl SessionShared {
     }
 
     pub fn push_incoming(&self, payload: Bytes) {
-        let tx = self.incoming_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tx = self
+            .incoming_tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(tx) = tx.as_ref() {
             let _ = tx.send(payload);
         }
@@ -278,7 +281,8 @@ impl RakSession {
         T: Into<Box<[u8]>>,
     {
         let boxed: Box<[u8]> = buf.into();
-        self.send_bytes(Bytes::from(boxed.into_vec()), reliability, priority).await
+        self.send_bytes(Bytes::from(boxed.into_vec()), reliability, priority)
+            .await
     }
 
     /// 零拷贝发送。
@@ -288,7 +292,9 @@ impl RakSession {
         reliability: RakReliability,
         priority: RakPriority,
     ) -> Result<(), RakSessionError> {
-        self.shared.send_payload(payload, reliability, priority).await
+        self.shared
+            .send_payload(payload, reliability, priority)
+            .await
     }
 
     /// 通知对端断开并关闭会话。重复关闭返回 `Err(Closed)`。

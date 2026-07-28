@@ -8,6 +8,7 @@ use bytes::{Bytes, BytesMut};
 use raknet::config::{RakClientConfig, RakSessionConfig};
 use raknet::consts::*;
 use raknet::error::RakClientError;
+use raknet::types::{RakPriority, RakReliability};
 use raknet::wire::connected::{
     ConnectionRequest, ConnectionRequestAccepted, NewIncomingConnection,
 };
@@ -15,7 +16,6 @@ use raknet::wire::offline::{
     IncompatibleProtocol, OpenConnectionReply1, OpenConnectionReply2, OpenConnectionRequest1,
     OpenConnectionRequest2, UnconnectedPing, UnconnectedPong,
 };
-use raknet::types::{RakPriority, RakReliability};
 use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -32,7 +32,10 @@ const PING_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum Ctl {
     Ping(SocketAddr, oneshot::Sender<(Box<[u8]>, Duration)>),
-    Connect(SocketAddr, oneshot::Sender<Result<RakSession, RakClientError>>),
+    Connect(
+        SocketAddr,
+        oneshot::Sender<Result<RakSession, RakClientError>>,
+    ),
 }
 
 enum State {
@@ -59,7 +62,9 @@ impl RakClient {
     {
         let mut config = RakClientConfig::default();
         conf(&mut config);
-        Self { state: State::Init { config } }
+        Self {
+            state: State::Init { config },
+        }
     }
 
     /// 绑定套接字并启动驱动任务。
@@ -67,14 +72,21 @@ impl RakClient {
         let State::Init { config } = &self.state else {
             return Ok(());
         };
-        let socket = Arc::new(crate::net::bind_udp(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?);
+        let socket = Arc::new(crate::net::bind_udp(SocketAddr::from((
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        )))?);
         let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
         let session_slot: SessionSlot = Arc::new(Mutex::new(None));
 
         let driver = Driver::new(socket, config.clone(), session_slot.clone(), ctl_rx);
         let handle = tokio::spawn(driver.run());
 
-        self.state = State::Running(Running { handle, ctl_tx, session_slot });
+        self.state = State::Running(Running {
+            handle,
+            ctl_tx,
+            session_slot,
+        });
         Ok(())
     }
 
@@ -232,9 +244,15 @@ impl Driver {
     async fn handle_ctl(&mut self, ctl: Ctl) {
         match ctl {
             Ctl::Ping(addr, tx) => {
-                let ping = UnconnectedPing { time_ms: wall_ms(), client_guid: self.config.guid };
+                let ping = UnconnectedPing {
+                    time_ms: wall_ms(),
+                    client_guid: self.config.guid,
+                };
                 if self.socket.send_to(&ping.encode(), addr).await.is_ok() {
-                    self.pings.entry(addr).or_default().push_back((tx, Instant::now()));
+                    self.pings
+                        .entry(addr)
+                        .or_default()
+                        .push_back((tx, Instant::now()));
                 }
                 // 发送失败：直接丢弃 tx，调用方收到 Closed。
             }
@@ -264,7 +282,9 @@ impl Driver {
     }
 
     async fn handle_datagram(&mut self, datagram: Bytes, addr: SocketAddr) {
-        let Some(&first) = datagram.first() else { return };
+        let Some(&first) = datagram.first() else {
+            return;
+        };
 
         if first & FLAG_VALID != 0 {
             let session = self.active_session();
@@ -281,7 +301,9 @@ impl Driver {
 
         match first {
             ID_UNCONNECTED_PONG => {
-                let Ok(pong) = UnconnectedPong::decode(datagram) else { return };
+                let Ok(pong) = UnconnectedPong::decode(datagram) else {
+                    return;
+                };
                 if let Some(queue) = self.pings.get_mut(&addr)
                     && let Some((tx, sent_at)) = queue.pop_front()
                 {
@@ -299,13 +321,17 @@ impl Driver {
         if dial.addr != addr {
             return;
         }
-        let Some(&first) = datagram.first() else { return };
+        let Some(&first) = datagram.first() else {
+            return;
+        };
         match first {
             ID_OPEN_CONNECTION_REPLY_1 => {
                 if !matches!(dial.stage, DialStage::Ocr1) {
                     return;
                 }
-                let Ok(reply) = OpenConnectionReply1::decode(datagram) else { return };
+                let Ok(reply) = OpenConnectionReply1::decode(datagram) else {
+                    return;
+                };
                 dial.cookie = reply.cookie;
                 dial.mtu = reply.mtu.clamp(MIN_MTU_SIZE, 1600);
                 dial.stage = DialStage::Ocr2;
@@ -316,7 +342,9 @@ impl Driver {
                 if !matches!(dial.stage, DialStage::Ocr2) {
                     return;
                 }
-                let Ok(reply) = OpenConnectionReply2::decode(datagram) else { return };
+                let Ok(reply) = OpenConnectionReply2::decode(datagram) else {
+                    return;
+                };
                 if reply.security {
                     self.fail_dial(RakClientError::SecurityUnsupported);
                     return;
@@ -383,8 +411,12 @@ impl Driver {
                 if !matches!(dial.stage, DialStage::Request) {
                     return;
                 }
-                let Ok(accepted) = ConnectionRequestAccepted::decode(packet) else { return };
-                let Some(shared) = dial.shared.clone() else { return };
+                let Ok(accepted) = ConnectionRequestAccepted::decode(packet) else {
+                    return;
+                };
+                let Some(shared) = dial.shared.clone() else {
+                    return;
+                };
                 let nic = NewIncomingConnection {
                     server_address: dial.addr,
                     request_time_ms: accepted.time_ms,
@@ -495,7 +527,9 @@ impl Driver {
     }
 
     async fn send_ocr1_current(&mut self) {
-        let Some(mut dial) = self.dial.take() else { return };
+        let Some(mut dial) = self.dial.take() else {
+            return;
+        };
         self.send_ocr1(&mut dial).await;
         self.dial = Some(dial);
     }

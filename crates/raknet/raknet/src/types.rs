@@ -34,7 +34,10 @@ impl RakReliability {
 
     #[inline]
     pub fn is_ordered(self) -> bool {
-        matches!(self, Self::ReliableOrdered | Self::ReliableOrderedWithAckReceipt)
+        matches!(
+            self,
+            Self::ReliableOrdered | Self::ReliableOrderedWithAckReceipt
+        )
     }
 
     /// 拆分时的升级规则：不可靠消息一旦拆分必须升级为可靠，

@@ -125,12 +125,22 @@ impl ManualConnectorManager {
         data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
             dead_url.to_string(),
             format!("{:?}", ip_version),
-            format!("{:#?}", error),
+            Self::compact_error(error),
         ));
     }
 
+    fn compact_error(error: &Error) -> String {
+        match error {
+            Error::AnyhowError(error) => format!("{error:#}"),
+            error => error.to_string(),
+        }
+    }
+
     fn reconnect_timeout_error(stage: &str, duration: Duration) -> Error {
-        Error::AnyhowError(anyhow::anyhow!("{} timeout after {:?}", stage, duration))
+        Error::AnyhowError(anyhow::anyhow!(
+            "{stage} timeout after {:.3}s",
+            duration.as_secs_f64()
+        ))
     }
 
     async fn with_reconnect_timeout<T, F>(
@@ -291,7 +301,7 @@ impl ManualConnectorManager {
                             };
                             if Self::should_abandon(failed_attempts) {
                                 data.reconnect_failures.remove(&dead_url);
-                                let error_message = format!("{error:#?}");
+                                let error_message = Self::compact_error(&error);
                                 data.global_ctx.issue_event(
                                     GlobalCtxEvent::ConnectorAbandoned(
                                         dead_url.to_string(),
@@ -306,11 +316,12 @@ impl ManualConnectorManager {
                                 );
                             } else {
                                 data.connectors.insert(dead_url.clone());
+                                let error_message = Self::compact_error(&error);
                                 tracing::warn!(
                                     %dead_url,
                                     failed_attempts,
                                     max_attempts = MAX_RECONNECT_FAILURES,
-                                    error = ?error,
+                                    error = %error_message,
                                     "manual connector reconnect failed"
                                 );
                             }
@@ -474,7 +485,22 @@ impl ManualConnectorManager {
                 Self::reconnect_timeout(&dead_url),
             )
             .await;
-            tracing::debug!("reconnect: {} done, ret: {:?}", dead_url, ret);
+            match &ret {
+                Ok(result) => tracing::debug!(
+                    %dead_url,
+                    peer_id = %result.peer_id,
+                    conn_id = %result.conn_id,
+                    "manual connector reconnect attempt succeeded"
+                ),
+                Err(error) => {
+                    let error_message = Self::compact_error(error);
+                    tracing::debug!(
+                        %dead_url,
+                        error = %error_message,
+                        "manual connector reconnect attempt failed"
+                    );
+                }
+            }
 
             match ret {
                 Ok(result) => return Ok(result),
@@ -520,6 +546,15 @@ mod tests {
         assert!(!ManualConnectorManager::should_abandon(2));
         assert!(ManualConnectorManager::should_abandon(3));
         assert!(ManualConnectorManager::should_abandon(4));
+    }
+
+    #[test]
+    fn compact_error_omits_anyhow_debug_backtrace() {
+        let error = Error::AnyhowError(anyhow::anyhow!("connect timeout"));
+        let summary = ManualConnectorManager::compact_error(&error);
+
+        assert_eq!(summary, "connect timeout");
+        assert!(!summary.contains("Stack backtrace"));
     }
 
     #[tokio::test]

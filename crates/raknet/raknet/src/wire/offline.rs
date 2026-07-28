@@ -37,7 +37,10 @@ impl UnconnectedPing {
         rd.magic()?;
         // 部分实现省略 client guid，容忍缺失。
         let client_guid = rd.u64_be().unwrap_or(0);
-        Ok(Self { time_ms, client_guid })
+        Ok(Self {
+            time_ms,
+            client_guid,
+        })
     }
 }
 
@@ -70,7 +73,11 @@ impl UnconnectedPong {
         rd.magic()?;
         let len = rd.u16_be()? as usize;
         let motd = rd.take(len.min(rd.remaining()))?;
-        Ok(Self { time_ms, server_guid, motd })
+        Ok(Self {
+            time_ms,
+            server_guid,
+            motd,
+        })
     }
 }
 
@@ -101,7 +108,10 @@ impl OpenConnectionRequest1 {
         rd.packet_id(ID_OPEN_CONNECTION_REQUEST_1)?;
         rd.magic()?;
         let protocol = rd.u8()?;
-        Ok(Self { protocol, mtu_payload })
+        Ok(Self {
+            protocol,
+            mtu_payload,
+        })
     }
 }
 
@@ -137,9 +147,17 @@ impl OpenConnectionReply1 {
         rd.packet_id(ID_OPEN_CONNECTION_REPLY_1)?;
         rd.magic()?;
         let server_guid = rd.u64_be()?;
-        let cookie = if rd.u8()? != 0 { Some(rd.i32_be()?) } else { None };
+        let cookie = if rd.u8()? != 0 {
+            Some(rd.i32_be()?)
+        } else {
+            None
+        };
         let mtu = rd.u16_be()?;
-        Ok(Self { server_guid, cookie, mtu })
+        Ok(Self {
+            server_guid,
+            cookie,
+            mtu,
+        })
     }
 }
 
@@ -185,7 +203,12 @@ impl OpenConnectionRequest2 {
         let server_address = rd.addr()?;
         let mtu = rd.u16_be()?;
         let client_guid = rd.u64_be()?;
-        Ok(Self { cookie, server_address, mtu, client_guid })
+        Ok(Self {
+            cookie,
+            server_address,
+            mtu,
+            client_guid,
+        })
     }
 }
 
@@ -218,7 +241,12 @@ impl OpenConnectionReply2 {
         let client_address = rd.addr()?;
         let mtu = rd.u16_be()?;
         let security = rd.u8()? != 0;
-        Ok(Self { server_guid, client_address, mtu, security })
+        Ok(Self {
+            server_guid,
+            client_address,
+            mtu,
+            security,
+        })
     }
 }
 
@@ -245,7 +273,10 @@ impl IncompatibleProtocol {
         let protocol = rd.u8()?;
         rd.magic()?;
         let server_guid = rd.u64_be()?;
-        Ok(Self { protocol, server_guid })
+        Ok(Self {
+            protocol,
+            server_guid,
+        })
     }
 }
 
@@ -265,7 +296,10 @@ mod tests {
 
     #[test]
     fn ping_pong_round_trip() {
-        let ping = UnconnectedPing { time_ms: 12345, client_guid: 0xDEAD_BEEF };
+        let ping = UnconnectedPing {
+            time_ms: 12345,
+            client_guid: 0xDEAD_BEEF,
+        };
         assert_eq!(UnconnectedPing::decode(ping.encode()).unwrap(), ping);
 
         let pong = UnconnectedPong {
@@ -278,7 +312,10 @@ mod tests {
 
     #[test]
     fn ocr1_pads_to_mtu() {
-        let req = OpenConnectionRequest1 { protocol: 11, mtu_payload: 1200 };
+        let req = OpenConnectionRequest1 {
+            protocol: 11,
+            mtu_payload: 1200,
+        };
         let encoded = req.encode();
         assert_eq!(encoded.len(), 1200);
         assert_eq!(OpenConnectionRequest1::decode(encoded).unwrap(), req);
@@ -287,7 +324,11 @@ mod tests {
     #[test]
     fn reply1_cookie_round_trip() {
         for cookie in [None, Some(-1), Some(0x1234_5678)] {
-            let reply = OpenConnectionReply1 { server_guid: 9, cookie, mtu: 1228 };
+            let reply = OpenConnectionReply1 {
+                server_guid: 9,
+                cookie,
+                mtu: 1228,
+            };
             assert_eq!(OpenConnectionReply1::decode(reply.encode()).unwrap(), reply);
         }
     }

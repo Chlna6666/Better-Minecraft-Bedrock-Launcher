@@ -4,12 +4,14 @@ use crate::session::{RakSession, SessionShared, wall_ms};
 use bytes::{Bytes, BytesMut};
 use raknet::config::{RakServerConfig, RakSessionConfig};
 use raknet::consts::*;
-use raknet::wire::connected::{ConnectionRequest, ConnectionRequestAccepted, NewIncomingConnection};
+use raknet::types::{RakPriority, RakReliability};
+use raknet::wire::connected::{
+    ConnectionRequest, ConnectionRequestAccepted, NewIncomingConnection,
+};
 use raknet::wire::offline::{
     IncompatibleProtocol, OpenConnectionReply1, OpenConnectionReply2, OpenConnectionRequest1,
     OpenConnectionRequest2, UnconnectedPing, UnconnectedPong, encode_simple_refusal,
 };
-use raknet::types::{RakPriority, RakReliability};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -36,7 +38,10 @@ enum Ctl {
 }
 
 enum State {
-    Init { addr: SocketAddr, config: RakServerConfig },
+    Init {
+        addr: SocketAddr,
+        config: RakServerConfig,
+    },
     Running(Running),
     Stopped,
 }
@@ -60,7 +65,9 @@ impl RakServer {
     {
         let mut config = RakServerConfig::default();
         conf(&mut config);
-        Self { state: State::Init { addr, config } }
+        Self {
+            state: State::Init { addr, config },
+        }
     }
 
     /// 更新 Unconnected Pong 返回的 MOTD。
@@ -101,7 +108,12 @@ impl RakServer {
         let driver = Driver::new(socket, config.clone(), sessions.clone(), accept_tx, ctl_rx);
         let handle = tokio::spawn(driver.run());
 
-        self.state = State::Running(Running { handle, accept_rx, ctl_tx, sessions });
+        self.state = State::Running(Running {
+            handle,
+            accept_rx,
+            ctl_tx,
+            sessions,
+        });
         Ok(())
     }
 
@@ -271,7 +283,9 @@ impl Driver {
     }
 
     async fn handle_datagram(&mut self, datagram: Bytes, addr: SocketAddr) {
-        let Some(&first) = datagram.first() else { return };
+        let Some(&first) = datagram.first() else {
+            return;
+        };
         if first & FLAG_VALID != 0 {
             let shared = self
                 .sessions
@@ -309,7 +323,9 @@ impl Driver {
     }
 
     async fn handle_unconnected_ping(&mut self, datagram: Bytes, addr: SocketAddr) {
-        let Ok(ping) = UnconnectedPing::decode(datagram) else { return };
+        let Ok(ping) = UnconnectedPing::decode(datagram) else {
+            return;
+        };
         let pong = UnconnectedPong {
             time_ms: ping.time_ms,
             server_guid: self.config.guid,
@@ -319,7 +335,9 @@ impl Driver {
     }
 
     async fn handle_ocr1(&mut self, datagram: Bytes, addr: SocketAddr) {
-        let Ok(request) = OpenConnectionRequest1::decode(datagram) else { return };
+        let Ok(request) = OpenConnectionRequest1::decode(datagram) else {
+            return;
+        };
         if !self.config.protocols.contains(&request.protocol) {
             let reply = IncompatibleProtocol {
                 protocol: self.config.protocols.first().copied().unwrap_or(PROTOCOL),
@@ -335,17 +353,29 @@ impl Driver {
             .clamp(self.config.min_mtu_size, self.config.max_mtu_size);
         let cookie = if self.config.security {
             let cookie = rand::random::<i32>();
-            self.pending_cookies.insert(addr, PendingCookie { cookie, at: Instant::now() });
+            self.pending_cookies.insert(
+                addr,
+                PendingCookie {
+                    cookie,
+                    at: Instant::now(),
+                },
+            );
             Some(cookie)
         } else {
             None
         };
-        let reply = OpenConnectionReply1 { server_guid: self.config.guid, cookie, mtu };
+        let reply = OpenConnectionReply1 {
+            server_guid: self.config.guid,
+            cookie,
+            mtu,
+        };
         let _ = self.socket.send_to(&reply.encode(), addr).await;
     }
 
     async fn handle_ocr2(&mut self, datagram: Bytes, addr: SocketAddr) {
-        let Ok(request) = OpenConnectionRequest2::decode(datagram) else { return };
+        let Ok(request) = OpenConnectionRequest2::decode(datagram) else {
+            return;
+        };
 
         if self.config.security {
             let Some(pending) = self.pending_cookies.get(&addr) else {
@@ -383,7 +413,9 @@ impl Driver {
             }
         }
 
-        let mtu = request.mtu.clamp(self.config.min_mtu_size, self.config.max_mtu_size);
+        let mtu = request
+            .mtu
+            .clamp(self.config.min_mtu_size, self.config.max_mtu_size);
         // 已关闭但尚未被 dead 通知清理的会话不占名额。
         let session_count = self
             .sessions
@@ -410,7 +442,13 @@ impl Driver {
             ordering_channels: self.config.max_ordering_channels,
             ..RakSessionConfig::default()
         };
-        let shared = SessionShared::new(addr, self.socket.clone(), &session_cfg, mtu, self.dead_tx.clone());
+        let shared = SessionShared::new(
+            addr,
+            self.socket.clone(),
+            &session_cfg,
+            mtu,
+            self.dead_tx.clone(),
+        );
         shared.spawn_ticker();
         self.sessions
             .lock()
@@ -421,7 +459,12 @@ impl Driver {
     }
 
     /// 处理握手期会话交付的在线控制包。
-    async fn handle_handshake(&mut self, shared: &Arc<SessionShared>, addr: SocketAddr, packets: Vec<Bytes>) {
+    async fn handle_handshake(
+        &mut self,
+        shared: &Arc<SessionShared>,
+        addr: SocketAddr,
+        packets: Vec<Bytes>,
+    ) {
         let mut connected = false;
         for packet in packets {
             if connected {
@@ -431,7 +474,9 @@ impl Driver {
             }
             match packet.first().copied() {
                 Some(ID_CONNECTION_REQUEST) => {
-                    let Ok(request) = ConnectionRequest::decode(packet) else { continue };
+                    let Ok(request) = ConnectionRequest::decode(packet) else {
+                        continue;
+                    };
                     let accepted = ConnectionRequestAccepted {
                         client_address: addr,
                         system_index: 0,

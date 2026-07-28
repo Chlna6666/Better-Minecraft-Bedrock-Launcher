@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn loopback_throughput() {
-    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
     let addr: SocketAddr = probe.local_addr().unwrap();
     drop(probe);
 
@@ -40,7 +42,11 @@ async fn loopback_throughput() {
     let sender = tokio::spawn(async move {
         for _ in 0..COUNT {
             guest
-                .send_bytes(payload.clone(), RakReliability::ReliableOrdered, RakPriority::High)
+                .send_bytes(
+                    payload.clone(),
+                    RakReliability::ReliableOrdered,
+                    RakPriority::High,
+                )
                 .await
                 .unwrap();
         }

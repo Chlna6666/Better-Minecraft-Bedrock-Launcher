@@ -54,7 +54,12 @@ struct OrderChannel {
 
 impl OrderChannel {
     fn new() -> Self {
-        Self { expected: 0, seq_epoch: 0, seq_next: 0, pending: BTreeMap::new() }
+        Self {
+            expected: 0,
+            seq_epoch: 0,
+            seq_next: 0,
+            pending: BTreeMap::new(),
+        }
     }
 }
 
@@ -100,7 +105,11 @@ impl Inbound {
     /// 处理一个 FrameSet，交付完整消息到 `deliveries`。
     ///
     /// `Err` 表示防护上限被击穿（对端异常/恶意），应断开会话。
-    pub fn ingest(&mut self, set: FrameSet, deliveries: &mut Vec<Bytes>) -> Result<(), &'static str> {
+    pub fn ingest(
+        &mut self,
+        set: FrameSet,
+        deliveries: &mut Vec<Bytes>,
+    ) -> Result<(), &'static str> {
         self.note_datagram(unwrap24(set.sequence, self.next_seq));
         let now = Instant::now();
         for frame in set.frames {
@@ -171,7 +180,14 @@ impl Inbound {
             )
         };
 
-        self.dispatch(payload, reliability, channel, ord_wire, seq_wire, deliveries)
+        self.dispatch(
+            payload,
+            reliability,
+            channel,
+            ord_wire,
+            seq_wire,
+            deliveries,
+        )
     }
 
     /// 拆分重组。返回 `Some` 表示消息集齐。
@@ -181,7 +197,9 @@ impl Inbound {
         frame: Frame,
         now: Instant,
     ) -> Result<Option<(Bytes, crate::types::RakReliability, u8, u32, u32)>, &'static str> {
-        let Some(split) = frame.split else { unreachable!() };
+        let Some(split) = frame.split else {
+            unreachable!()
+        };
         if split.count == 0 || split.count > MAX_SPLIT_PARTS || split.index >= split.count {
             return Err("拆分参数非法");
         }
@@ -204,9 +222,7 @@ impl Inbound {
             }
         };
 
-        if let std::collections::hash_map::Entry::Vacant(slot) =
-            entry.parts.entry(split.index)
-        {
+        if let std::collections::hash_map::Entry::Vacant(slot) = entry.parts.entry(split.index) {
             let payload = detach(frame.payload.clone());
             entry.bytes += payload.len();
             self.splits_bytes += payload.len();
@@ -391,15 +407,20 @@ mod tests {
     }
 
     fn set(seq: u32, frames: Vec<Frame>) -> FrameSet {
-        FrameSet { sequence: seq, frames }
+        FrameSet {
+            sequence: seq,
+            frames,
+        }
     }
 
     #[test]
     fn in_order_delivery() {
         let mut inn = Inbound::new(32);
         let mut got = Vec::new();
-        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got).unwrap();
-        inn.ingest(set(1, vec![frame(1, 1, b"b")]), &mut got).unwrap();
+        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
+        inn.ingest(set(1, vec![frame(1, 1, b"b")]), &mut got)
+            .unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!(&got[0][..], b"a");
         assert_eq!(&got[1][..], b"b");
@@ -409,9 +430,11 @@ mod tests {
     fn out_of_order_buffered_until_gap_filled() {
         let mut inn = Inbound::new(32);
         let mut got = Vec::new();
-        inn.ingest(set(1, vec![frame(1, 1, b"b")]), &mut got).unwrap();
+        inn.ingest(set(1, vec![frame(1, 1, b"b")]), &mut got)
+            .unwrap();
         assert!(got.is_empty());
-        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got).unwrap();
+        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!(&got[0][..], b"a");
         assert_eq!(&got[1][..], b"b");
@@ -421,12 +444,21 @@ mod tests {
     fn gap_generates_nack_and_late_arrival_clears() {
         let mut inn = Inbound::new(32);
         let mut got = Vec::new();
-        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got).unwrap();
-        inn.ingest(set(3, vec![frame(3, 3, b"d")]), &mut got).unwrap();
-        assert_eq!(inn.nack_pending.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
+        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
+        inn.ingest(set(3, vec![frame(3, 3, b"d")]), &mut got)
+            .unwrap();
+        assert_eq!(
+            inn.nack_pending.iter().copied().collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         // 迟到的 2 号到达后不再 NACK。
-        inn.ingest(set(2, vec![frame(2, 2, b"c")]), &mut got).unwrap();
-        assert_eq!(inn.nack_pending.iter().copied().collect::<Vec<_>>(), vec![1]);
+        inn.ingest(set(2, vec![frame(2, 2, b"c")]), &mut got)
+            .unwrap();
+        assert_eq!(
+            inn.nack_pending.iter().copied().collect::<Vec<_>>(),
+            vec![1]
+        );
         let nacks = inn.take_nacks();
         assert_eq!(nacks.ranges, vec![(1, 1)]);
         assert!(inn.take_nacks().is_empty());
@@ -436,9 +468,11 @@ mod tests {
     fn duplicate_reliable_frame_dropped() {
         let mut inn = Inbound::new(32);
         let mut got = Vec::new();
-        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got).unwrap();
+        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
         // 重传：新数据报序号、相同可靠序号。
-        inn.ingest(set(1, vec![frame(0, 0, b"a")]), &mut got).unwrap();
+        inn.ingest(set(1, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
         assert_eq!(got.len(), 1);
     }
 
@@ -452,7 +486,11 @@ mod tests {
             sequence_index: 0,
             order_index: 0,
             order_channel: 0,
-            split: Some(SplitInfo { count: 3, id: 9, index: idx }),
+            split: Some(SplitInfo {
+                count: 3,
+                id: 9,
+                index: idx,
+            }),
             payload: Bytes::copy_from_slice(data),
         };
         inn.ingest(set(0, vec![mk(2, 2, b"cc")]), &mut got).unwrap();
@@ -476,7 +514,11 @@ mod tests {
                 sequence_index: 0,
                 order_index: 0,
                 order_channel: 0,
-                split: Some(SplitInfo { count: 2, id, index: 0 }),
+                split: Some(SplitInfo {
+                    count: 2,
+                    id,
+                    index: 0,
+                }),
                 payload: Bytes::from_static(b"x"),
             };
             result = inn.ingest(set(id as u32, vec![f]), &mut got);
@@ -511,7 +553,8 @@ mod tests {
     #[test]
     fn ack_ranges_split_at_wrap_boundary() {
         let mut inn = Inbound::new(32);
-        inn.ack_pending.extend([(1u64 << 24) - 2, (1 << 24) - 1, 1 << 24, (1 << 24) + 1]);
+        inn.ack_pending
+            .extend([(1u64 << 24) - 2, (1 << 24) - 1, 1 << 24, (1 << 24) + 1]);
         let acks = inn.take_acks();
         assert_eq!(acks.ranges, vec![(0xFF_FFFE, 0xFF_FFFF), (0, 1)]);
     }
@@ -522,7 +565,8 @@ mod tests {
         // 形成永不填补的空洞、后续消息全部静默丢失。
         let mut inn = Inbound::new(32);
         let mut got = Vec::new();
-        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got).unwrap();
+        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
         let far = 200_000u32;
         let mut f = frame(far, 1, b"far");
         f.reliability = RakReliability::Reliable;
@@ -545,12 +589,17 @@ mod tests {
             sequence_index: 0,
             order_index: 0,
             order_channel: 0,
-            split: Some(SplitInfo { count, id: 0, index: 0 }),
+            split: Some(SplitInfo {
+                count,
+                id: 0,
+                index: 0,
+            }),
             payload: Bytes::from_static(b"x"),
         };
         inn.ingest(set(0, vec![mk(2, 0)]), &mut got).unwrap();
         for i in 1..50u32 {
-            inn.ingest(set(i, vec![mk(4096 - i % 2, i)]), &mut got).unwrap();
+            inn.ingest(set(i, vec![mk(4096 - i % 2, i)]), &mut got)
+                .unwrap();
         }
         assert_eq!(inn.splits.len(), 1);
         assert_eq!(inn.splits[&0].count, 2, "原有条目不应被 count 不符的帧重置");
@@ -568,7 +617,11 @@ mod tests {
             sequence_index: 0,
             order_index: 0,
             order_channel: 0,
-            split: Some(SplitInfo { count: 3, id: 1, index: idx }),
+            split: Some(SplitInfo {
+                count: 3,
+                id: 1,
+                index: idx,
+            }),
             payload: Bytes::from_static(b"pp"),
         };
         inn.ingest(set(0, vec![mk(0, 0)]), &mut got).unwrap();
@@ -609,9 +662,11 @@ mod tests {
     fn duplicate_datagram_still_acked() {
         let mut inn = Inbound::new(32);
         let mut got = Vec::new();
-        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got).unwrap();
+        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
         let _ = inn.take_acks();
-        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got).unwrap();
+        inn.ingest(set(0, vec![frame(0, 0, b"a")]), &mut got)
+            .unwrap();
         let acks = inn.take_acks();
         assert_eq!(acks.ranges, vec![(0, 0)], "重复数据报也必须重新 ACK");
         assert_eq!(got.len(), 1);

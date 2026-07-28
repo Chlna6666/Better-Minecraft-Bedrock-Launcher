@@ -95,7 +95,9 @@ mod tests {
     #[test]
     fn round_trip_preserves_range_endpoints() {
         // 回归：旧实现解码 `start..end` 丢失末端序号。
-        let ranges = AckRanges { ranges: vec![(10, 20), (30, 30), (40, 41)] };
+        let ranges = AckRanges {
+            ranges: vec![(10, 20), (30, 30), (40, 41)],
+        };
         for is_nack in [false, true] {
             let (decoded, nack) = AckRanges::decode(ranges.encode(is_nack)).unwrap();
             assert_eq!(nack, is_nack);

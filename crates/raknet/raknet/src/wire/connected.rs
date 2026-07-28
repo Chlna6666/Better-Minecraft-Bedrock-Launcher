@@ -31,7 +31,9 @@ impl ConnectedPing {
     pub fn decode(buf: Bytes) -> Result<Self, RakCodecError> {
         let mut rd = Rd::new(buf);
         rd.packet_id(ID_CONNECTED_PING)?;
-        Ok(Self { time_ms: rd.u64_be()? })
+        Ok(Self {
+            time_ms: rd.u64_be()?,
+        })
     }
 }
 
@@ -57,7 +59,10 @@ impl ConnectedPong {
         let ping_time_ms = rd.u64_be()?;
         // 个别实现省略第二个时间戳，容忍缺失。
         let pong_time_ms = rd.u64_be().unwrap_or(ping_time_ms);
-        Ok(Self { ping_time_ms, pong_time_ms })
+        Ok(Self {
+            ping_time_ms,
+            pong_time_ms,
+        })
     }
 }
 
@@ -85,7 +90,11 @@ impl ConnectionRequest {
         let client_guid = rd.u64_be()?;
         let time_ms = rd.u64_be()?;
         let security = rd.u8().map(|b| b != 0).unwrap_or(false);
-        Ok(Self { client_guid, time_ms, security })
+        Ok(Self {
+            client_guid,
+            time_ms,
+            security,
+        })
     }
 }
 
@@ -126,7 +135,12 @@ impl ConnectionRequestAccepted {
         }
         let request_time_ms = rd.u64_be()?;
         let time_ms = rd.u64_be()?;
-        Ok(Self { client_address, system_index, request_time_ms, time_ms })
+        Ok(Self {
+            client_address,
+            system_index,
+            request_time_ms,
+            time_ms,
+        })
     }
 }
 
@@ -162,7 +176,11 @@ impl NewIncomingConnection {
         }
         let request_time_ms = rd.u64_be()?;
         let time_ms = rd.u64_be()?;
-        Ok(Self { server_address, request_time_ms, time_ms })
+        Ok(Self {
+            server_address,
+            request_time_ms,
+            time_ms,
+        })
     }
 }
 
@@ -179,13 +197,20 @@ mod tests {
     fn ping_pong_round_trip() {
         let ping = ConnectedPing { time_ms: 1 };
         assert_eq!(ConnectedPing::decode(ping.encode()).unwrap(), ping);
-        let pong = ConnectedPong { ping_time_ms: 1, pong_time_ms: 2 };
+        let pong = ConnectedPong {
+            ping_time_ms: 1,
+            pong_time_ms: 2,
+        };
         assert_eq!(ConnectedPong::decode(pong.encode()).unwrap(), pong);
     }
 
     #[test]
     fn connection_request_round_trip() {
-        let req = ConnectionRequest { client_guid: u64::MAX, time_ms: 5, security: false };
+        let req = ConnectionRequest {
+            client_guid: u64::MAX,
+            time_ms: 5,
+            security: false,
+        };
         assert_eq!(ConnectionRequest::decode(req.encode()).unwrap(), req);
     }
 
@@ -197,7 +222,10 @@ mod tests {
             request_time_ms: 111,
             time_ms: 222,
         };
-        assert_eq!(ConnectionRequestAccepted::decode(acc.encode()).unwrap(), acc);
+        assert_eq!(
+            ConnectionRequestAccepted::decode(acc.encode()).unwrap(),
+            acc
+        );
 
         // 无系统地址（旧实现）也能解析。
         let mut short = BytesMut::new();

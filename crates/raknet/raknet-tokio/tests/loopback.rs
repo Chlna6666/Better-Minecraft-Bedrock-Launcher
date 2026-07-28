@@ -8,19 +8,20 @@ use std::time::Duration;
 const MTU: u16 = 1200;
 
 /// 绑定随机端口的服务端并返回实际地址。
-async fn server_on_random_port(
-    max_connections: usize,
-) -> (RakServer, SocketAddr) {
+async fn server_on_random_port(max_connections: usize) -> (RakServer, SocketAddr) {
     // 先用一个临时套接字拿到空闲端口，再让服务端绑定它。
     // （竞态概率极低，测试可接受。）
-    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
     let addr = probe.local_addr().unwrap();
     drop(probe);
 
     let mut server = RakServer::new(addr, |config| {
         config.max_connections = max_connections;
         config.max_mtu_size = MTU;
-        config.message = Box::from(&b"MCPE;LoopbackTest;589;1.20.0;0;20;42;World;Survival;0;19132;19132;"[..]);
+        config.message =
+            Box::from(&b"MCPE;LoopbackTest;589;1.20.0;0;20;42;World;Survival;0;19132;19132;"[..]);
     });
     server.start().await.expect("server start");
     (server, addr)
@@ -51,7 +52,11 @@ async fn handshake_and_echo() {
 
     // 客户端 → 服务端。
     guest
-        .send(&b"\xFEhello from guest"[..], RakReliability::ReliableOrdered, RakPriority::High)
+        .send(
+            &b"\xFEhello from guest"[..],
+            RakReliability::ReliableOrdered,
+            RakPriority::High,
+        )
         .await
         .expect("guest send");
     let received: Box<[u8]> =
@@ -63,9 +68,13 @@ async fn handshake_and_echo() {
 
     // 服务端 → 客户端。
     let mut guest = guest;
-    host.send(&b"\xFEhello from host"[..], RakReliability::ReliableOrdered, RakPriority::High)
-        .await
-        .expect("host send");
+    host.send(
+        &b"\xFEhello from host"[..],
+        RakReliability::ReliableOrdered,
+        RakPriority::High,
+    )
+    .await
+    .expect("host send");
     let received: Box<[u8]> =
         tokio::time::timeout(Duration::from_secs(5), guest.recv::<Box<[u8]>>())
             .await
@@ -149,7 +158,11 @@ async fn multiple_concurrent_sessions() {
     for i in 0..3u8 {
         let (client, session) = connect_client(addr).await;
         session
-            .send(vec![0xFE, i], RakReliability::ReliableOrdered, RakPriority::High)
+            .send(
+                vec![0xFE, i],
+                RakReliability::ReliableOrdered,
+                RakPriority::High,
+            )
             .await
             .expect("send");
         clients.push((client, session));
@@ -257,9 +270,13 @@ async fn send_via_shared_reference_while_recv_pending() {
         let host = host.clone();
         tokio::spawn(async move {
             for i in 0..50u8 {
-                host.send(vec![0xFE, i], RakReliability::ReliableOrdered, RakPriority::High)
-                    .await
-                    .expect("host send");
+                host.send(
+                    vec![0xFE, i],
+                    RakReliability::ReliableOrdered,
+                    RakPriority::High,
+                )
+                .await
+                .expect("host send");
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
         })
@@ -305,7 +322,11 @@ async fn immediate_reconnect_from_same_client() {
 
     let (mut client1, session1) = connect_client(addr).await;
     session1
-        .send(&b"\xFEfirst"[..], RakReliability::ReliableOrdered, RakPriority::High)
+        .send(
+            &b"\xFEfirst"[..],
+            RakReliability::ReliableOrdered,
+            RakPriority::High,
+        )
         .await
         .expect("send #1");
     session1.close().await.ok();
@@ -315,7 +336,11 @@ async fn immediate_reconnect_from_same_client() {
     // 插入的竞态窗口在这里被反复触发）。
     let (mut client2, session2) = connect_client(addr).await;
     session2
-        .send(&b"\xFEsecond"[..], RakReliability::ReliableOrdered, RakPriority::High)
+        .send(
+            &b"\xFEsecond"[..],
+            RakReliability::ReliableOrdered,
+            RakPriority::High,
+        )
         .await
         .expect("send #2");
 
@@ -333,7 +358,9 @@ async fn immediate_reconnect_from_same_client() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ping_to_dead_address_errors_instead_of_hanging() {
     // 回归：ping 等待者曾永不过期，对无响应地址的调用永久挂起。
-    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
     let dead: SocketAddr = probe.local_addr().unwrap();
     drop(probe);
 
@@ -351,7 +378,9 @@ async fn ping_to_dead_address_errors_instead_of_hanging() {
 async fn cancelled_connect_frees_the_dialer() {
     // 回归：connect() 被取消后拨号状态机继续占用，期间所有新 connect
     // 一律误报 AlreadyConnected。
-    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let probe = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
     let dead: SocketAddr = probe.local_addr().unwrap();
     drop(probe);
 

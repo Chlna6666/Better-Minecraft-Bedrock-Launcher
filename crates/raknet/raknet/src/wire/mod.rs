@@ -102,7 +102,11 @@ impl Rd {
     /// 校验并跳过离线魔数。
     pub fn magic(&mut self) -> Result<(), RakCodecError> {
         let m = self.array::<16>()?;
-        if m == MAGIC { Ok(()) } else { Err(RakCodecError::BadMagic) }
+        if m == MAGIC {
+            Ok(())
+        } else {
+            Err(RakCodecError::BadMagic)
+        }
     }
 
     /// 校验首字节报文 ID。
@@ -136,7 +140,9 @@ impl Rd {
                 let flowinfo = self.u32_be()?;
                 let ip = Ipv6Addr::from(self.array::<16>()?);
                 let scope_id = self.u32_be()?;
-                Ok(SocketAddr::V6(SocketAddrV6::new(ip, port, flowinfo, scope_id)))
+                Ok(SocketAddr::V6(SocketAddrV6::new(
+                    ip, port, flowinfo, scope_id,
+                )))
             }
             _ => Err(RakCodecError::Malformed("地址版本字节非法")),
         }

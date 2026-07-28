@@ -42,7 +42,11 @@ impl Frame {
         1 + 2
             + if r.is_reliable() { 3 } else { 0 }
             + if r.is_sequenced() { 3 } else { 0 }
-            + if r.is_ordered() || r.is_sequenced() { 4 } else { 0 }
+            + if r.is_ordered() || r.is_sequenced() {
+                4
+            } else {
+                0
+            }
             + if self.split.is_some() { 10 } else { 0 }
             + self.payload.len()
     }
@@ -201,12 +205,23 @@ mod tests {
     #[test]
     fn split_frame_round_trip() {
         let mut f = frame(RakReliability::Reliable, b"part");
-        f.split = Some(SplitInfo { count: 3, id: 55, index: 2 });
+        f.split = Some(SplitInfo {
+            count: 3,
+            id: 55,
+            index: 2,
+        });
         let mut buf = BytesMut::new();
         put_datagram_header(&mut buf, 1);
         f.encode_into(&mut buf);
         let set = FrameSet::decode(buf.freeze()).unwrap();
-        assert_eq!(set.frames[0].split, Some(SplitInfo { count: 3, id: 55, index: 2 }));
+        assert_eq!(
+            set.frames[0].split,
+            Some(SplitInfo {
+                count: 3,
+                id: 55,
+                index: 2
+            })
+        );
     }
 
     #[test]
