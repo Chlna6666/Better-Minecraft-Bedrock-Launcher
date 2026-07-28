@@ -243,8 +243,58 @@ pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<
         )
 }
 
+pub(super) fn settings_flat_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .relative()
+        .w_full()
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .overflow_hidden()
+        .border_1()
+        .border_color(Hsla {
+            a: 0.22,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.72,
+            ..colors.surface
+        })
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left(px(14.))
+                .right(px(14.))
+                .h(px(1.))
+                .bg(Hsla {
+                    a: 0.10,
+                    ..colors.border
+                }),
+        )
+}
+
 pub(super) fn settings_inline_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
     settings_card(colors, id)
+        .px(px(16.))
+        .py(px(16.))
+        .flex()
+        .items_start()
+        .justify_between()
+        .gap(px(22.))
+        .hover(|this| {
+            this.bg(Hsla {
+                a: 0.84,
+                ..colors.surface_hover
+            })
+            .border_color(Hsla {
+                a: 0.30,
+                ..colors.border
+            })
+        })
+}
+
+pub(super) fn settings_flat_inline_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
+    settings_flat_card(colors, id)
         .px(px(16.))
         .py(px(16.))
         .flex()
@@ -424,15 +474,6 @@ pub(super) fn settings_control_box(
             a: if active { 0.34 } else { 0.24 },
             ..if active { colors.accent } else { colors.border }
         })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.10,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(12.0),
-            spread_radius: px(-6.0),
-            offset: point(px(0.), px(4.)),
-        }])
         .px(px(10.))
         .flex()
         .items_center()
@@ -481,15 +522,6 @@ pub(super) fn settings_action_button(
             a: 0.24,
             ..colors.border
         })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.10,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(12.0),
-            spread_radius: px(-6.0),
-            offset: point(px(0.), px(4.)),
-        }])
         .when(enabled, |this| this.cursor_pointer())
         .when(!enabled, |this| this.opacity(0.72))
         .flex()

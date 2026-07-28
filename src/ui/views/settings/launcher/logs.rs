@@ -11,9 +11,9 @@ use gpui::*;
 use tracing::warn;
 
 use super::super::common::{
-    settings_action_button, settings_card, settings_card_header, settings_sub_row,
+    settings_action_button, settings_card_header, settings_flat_card, settings_sub_row,
 };
-use super::super::rows::setting_dropdown_row;
+use super::super::rows::setting_flat_dropdown_row;
 
 pub(super) fn render(
     colors: &ThemeColors,
@@ -51,7 +51,7 @@ pub(super) fn render(
             }),
         );
 
-    let card = settings_card(colors, "settings-launcher-log-management")
+    let card = settings_flat_card(colors, "settings-launcher-log-management")
         .child(
             settings_card_header(
                 colors,
@@ -239,7 +239,7 @@ fn compression_row(
         .iter()
         .position(|value| *value == state.log_compression_level)
         .unwrap_or(1);
-    setting_dropdown_row(
+    setting_flat_dropdown_row(
         colors,
         i18n.t("Settings.tabs.launcher"),
         i18n.t("LauncherSettings.logs.compression"),
@@ -277,7 +277,7 @@ fn log_setting_dropdown(
         .iter()
         .position(|value| *value == current)
         .unwrap_or(0);
-    setting_dropdown_row(
+    setting_flat_dropdown_row(
         colors,
         i18n.t("Settings.tabs.launcher"),
         i18n.t(text_keys.0),

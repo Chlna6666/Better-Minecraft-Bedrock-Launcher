@@ -1,5 +1,6 @@
 use super::common::{
-    settings_card_text, settings_inline_card, snapshot_from_state, spawn_persist_settings,
+    settings_card_text, settings_flat_inline_card, settings_inline_card, snapshot_from_state,
+    spawn_persist_settings,
 };
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::toggle_switch::ToggleSwitch;
@@ -68,6 +69,36 @@ pub(super) fn setting_dropdown_row(
             move |index, window, cx| {
                 on_select(index, window, cx);
                 // Settings page: keep toasts reserved for "save succeeded/failed" only.
+            },
+        )))
+}
+
+pub(super) fn setting_flat_dropdown_row(
+    colors: &ThemeColors,
+    section: SharedString,
+    title: SharedString,
+    desc: SharedString,
+    id: &'static str,
+    width: Pixels,
+    label: SharedString,
+    options: Vec<DropdownOption>,
+    selected_index: usize,
+    enabled: bool,
+    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let option_labels: Vec<SharedString> = options.iter().map(|opt| opt.label.clone()).collect();
+    settings_flat_inline_card(colors, id)
+        .child(settings_card_text(colors, title.clone(), desc))
+        .child(div().flex_shrink_0().pt(px(2.)).child(Dropdown::new(
+            SharedString::from(format!("{id}-dropdown")),
+            colors,
+            width,
+            label,
+            options,
+            selected_index,
+            enabled,
+            move |index, window, cx| {
+                on_select(index, window, cx);
             },
         )))
 }
