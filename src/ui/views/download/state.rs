@@ -213,7 +213,7 @@ pub struct DownloadPageState {
     pub curseforge_mod_page_error: Option<SharedString>,
     pub curseforge_mod_page_mod_id: Option<i32>,
     pub curseforge_mod_page_mod: Option<CurseForgeModEntry>,
-    pub curseforge_mod_page_description: SharedString,
+    pub curseforge_mod_page_description_len: usize,
     pub curseforge_mod_page_document: HtmlDocument,
     pub curseforge_install_open: bool,
     pub curseforge_install_stage: CurseForgeInstallStage,
@@ -324,7 +324,7 @@ impl Default for DownloadPageState {
             curseforge_mod_page_error: None,
             curseforge_mod_page_mod_id: None,
             curseforge_mod_page_mod: None,
-            curseforge_mod_page_description: SharedString::from(""),
+            curseforge_mod_page_description_len: 0,
             curseforge_mod_page_document: HtmlDocument::default(),
             curseforge_install_open: false,
             curseforge_install_stage: CurseForgeInstallStage::Idle,
@@ -397,7 +397,7 @@ impl DownloadPageState {
             || self.curseforge_mod_page_error.is_some()
             || self.curseforge_mod_page_mod_id.is_some()
             || self.curseforge_mod_page_mod.is_some()
-            || !self.curseforge_mod_page_description.as_ref().is_empty()
+            || self.curseforge_mod_page_description_len > 0
             || self.curseforge_install_open
             || self.curseforge_install_stage != CurseForgeInstallStage::Idle
             || self.curseforge_install_error.is_some()
@@ -427,9 +427,19 @@ impl DownloadPageState {
     }
 
     pub fn set_curseforge_mod_page_description(&mut self, description: SharedString) {
-        self.curseforge_mod_page_document =
+        let description_len = description.len();
+        let document =
             crate::ui::components::html_renderer::parse_html_document(description.as_ref());
-        self.curseforge_mod_page_description = description;
+        self.set_parsed_curseforge_mod_page_description(description_len, document);
+    }
+
+    pub fn set_parsed_curseforge_mod_page_description(
+        &mut self,
+        description_len: usize,
+        document: HtmlDocument,
+    ) {
+        self.curseforge_mod_page_document = document;
+        self.curseforge_mod_page_description_len = description_len;
     }
 
     pub fn release_game_tab_state(&mut self) {

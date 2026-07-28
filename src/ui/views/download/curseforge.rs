@@ -164,7 +164,7 @@ fn curseforge_resource_panel_signature(
         mod_page_error: state.curseforge_mod_page_error.clone(),
         mod_page_mod_id: state.curseforge_mod_page_mod_id,
         mod_page_mod: state.curseforge_mod_page_mod.clone(),
-        mod_page_description_len: state.curseforge_mod_page_description.as_ref().len(),
+        mod_page_description_len: state.curseforge_mod_page_description_len,
     }
 }
 
@@ -864,7 +864,7 @@ fn render_curseforge_detail_description_panel(
     colors: &ThemeColors,
     state: &DownloadPageState,
 ) -> Div {
-    let description_document = state.curseforge_mod_page_document.clone();
+    let description_document = &state.curseforge_mod_page_document;
     let description_empty = description_document.blocks.is_empty();
 
     div()
@@ -887,7 +887,7 @@ fn render_curseforge_detail_description_panel(
             ))
         })
         .when(!description_empty, |this| {
-            this.child(render_html_document(&description_document, colors, None))
+            this.child(render_html_document(description_document, colors, None))
         })
 }
 
@@ -1378,10 +1378,14 @@ fn render_curseforge_content(
 ) -> Div {
     let state = cx.global::<DownloadPageState>();
     let skeleton_bar = |width: Pixels, height: Pixels| {
-        div().w(width).h(height).rounded(px(crate::ui::theme::tokens::radius::FULL)).bg(Hsla {
-            a: 0.08,
-            ..colors.text_secondary
-        })
+        div()
+            .w(width)
+            .h(height)
+            .rounded(px(crate::ui::theme::tokens::radius::FULL))
+            .bg(Hsla {
+                a: 0.08,
+                ..colors.text_secondary
+            })
     };
 
     let skeleton_shimmer = || {
@@ -1422,10 +1426,16 @@ fn render_curseforge_content(
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().w(px(42.)).h(px(42.)).rounded(px(crate::ui::theme::tokens::radius::MD)).bg(Hsla {
-                a: 0.10,
-                ..colors.text_secondary
-            }))
+            .child(
+                div()
+                    .w(px(42.))
+                    .h(px(42.))
+                    .rounded(px(crate::ui::theme::tokens::radius::MD))
+                    .bg(Hsla {
+                        a: 0.10,
+                        ..colors.text_secondary
+                    }),
+            )
             .child(
                 div()
                     .flex_1()
@@ -1457,10 +1467,16 @@ fn render_curseforge_content(
                             .child(skeleton_bar(px(90.), px(10.))),
                     ),
             )
-            .child(div().w(px(92.)).h(px(32.)).rounded(px(crate::ui::theme::tokens::radius::SM)).bg(Hsla {
-                a: 0.10,
-                ..colors.accent
-            }))
+            .child(
+                div()
+                    .w(px(92.))
+                    .h(px(32.))
+                    .rounded(px(crate::ui::theme::tokens::radius::SM))
+                    .bg(Hsla {
+                        a: 0.10,
+                        ..colors.accent
+                    }),
+            )
             .child(skeleton_shimmer())
     };
 
@@ -4082,7 +4098,7 @@ fn render_curseforge_mod_page_modal(
                     .join(", "),
             )
         };
-        let description_document = state.curseforge_mod_page_document.clone();
+        let description_document = &state.curseforge_mod_page_document;
         let updated_at = format_date_ymd(mod_entry.date_modified.as_ref());
         let downloads = format_count(mod_entry.download_count);
         let open_link = share_actions::curseforge_project_url(mod_entry);
@@ -4345,7 +4361,9 @@ fn render_curseforge_mod_page_modal(
                                         for line in &highlight_lines {
                                             notes = notes.child(
                                                 div()
-                                                    .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                                    .rounded(px(
+                                                        crate::ui::theme::tokens::radius::SM,
+                                                    ))
                                                     .bg(Hsla {
                                                         a: 0.44,
                                                         ..colors.surface
@@ -4359,7 +4377,7 @@ fn render_curseforge_mod_page_modal(
                                                     .text_size(px(12.))
                                                     .line_height(relative(1.5))
                                                     .text_color(colors.text_secondary)
-                                                    .child(SharedString::from(line.to_string())),
+                                                    .child(line.clone()),
                                             );
                                         }
                                         this.child(

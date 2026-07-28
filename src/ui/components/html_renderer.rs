@@ -4,7 +4,9 @@ use ego_tree::NodeRef;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use scraper::{ElementRef, Html, Node, Selector};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::sync::Arc;
 
 const DEFAULT_ROOT_FONT_SIZE: f32 = 16.0;
@@ -249,12 +251,12 @@ pub struct HtmlInlineStyle {
     pub underline: bool,
     pub strike: bool,
     pub code: bool,
-    pub link: Option<String>,
+    pub link: Option<SharedString>,
     pub color: Option<Hsla>,
     pub background_color: Option<Hsla>,
     pub font_size: Option<f32>,
     pub line_height: Option<f32>,
-    pub font_family: Option<String>,
+    pub font_family: Option<SharedString>,
     pub opacity: f32,
     pub preserve_whitespace: bool,
 }
@@ -292,7 +294,7 @@ struct CssComputedStyle {
     display: HtmlDisplay,
     inline: HtmlInlineStyle,
     block: HtmlBlockStyle,
-    custom_properties: HashMap<String, String>,
+    custom_properties: Arc<HashMap<String, String>>,
 }
 
 impl Default for CssComputedStyle {
@@ -301,7 +303,7 @@ impl Default for CssComputedStyle {
             display: HtmlDisplay::Block,
             inline: HtmlInlineStyle::default(),
             block: HtmlBlockStyle::default(),
-            custom_properties: HashMap::new(),
+            custom_properties: Arc::new(HashMap::new()),
         }
     }
 }
@@ -390,6 +392,10 @@ impl CompiledHtmlCss {
 
     pub fn compile(html: &str, options: &HtmlRenderOptions) -> Self {
         let fragment = Html::parse_fragment(html);
+        Self::compile_fragment(&fragment, options)
+    }
+
+    fn compile_fragment(fragment: &Html, options: &HtmlRenderOptions) -> Self {
         let mut css_sources = Vec::<String>::new();
 
         if let Ok(selector) = Selector::parse("style") {
@@ -454,28 +460,28 @@ impl CompiledHtmlCss {
     }
 
     fn candidate_rule_indexes(&self, element: &ElementRef<'_>) -> Vec<usize> {
-        let mut candidates = HashSet::new();
-        candidates.extend(self.universal.iter().copied());
+        let mut candidates = Vec::with_capacity(self.universal.len().saturating_add(8));
+        candidates.extend_from_slice(&self.universal);
 
         if let Some(id) = element.value().attr("id") {
             if let Some(indexes) = self.by_id.get(&id.to_ascii_lowercase()) {
-                candidates.extend(indexes.iter().copied());
+                candidates.extend_from_slice(indexes);
             }
         }
         if let Some(classes) = element.value().attr("class") {
             for class in classes.split_ascii_whitespace() {
                 if let Some(indexes) = self.by_class.get(&class.to_ascii_lowercase()) {
-                    candidates.extend(indexes.iter().copied());
+                    candidates.extend_from_slice(indexes);
                 }
             }
         }
         let tag = element.value().name().to_ascii_lowercase();
         if let Some(indexes) = self.by_tag.get(&tag) {
-            candidates.extend(indexes.iter().copied());
+            candidates.extend_from_slice(indexes);
         }
 
-        let mut candidates = candidates.into_iter().collect::<Vec<_>>();
         candidates.sort_unstable();
+        candidates.dedup();
         candidates
     }
 
@@ -490,7 +496,12 @@ impl CompiledHtmlCss {
         apply_user_agent_style(&tag, &mut style);
         apply_semantic_inline_style(&tag, element, &mut style.inline);
 
-        let mut winners: HashMap<String, (CascadeRank, String)> = HashMap::new();
+        let inline_declarations = element
+            .value()
+            .attr("style")
+            .map(parse_css_declarations)
+            .unwrap_or_default();
+        let mut winners: HashMap<&str, (CascadeRank, &str)> = HashMap::new();
         for index in self.candidate_rule_indexes(element) {
             let Some(rule) = self.rules.get(index) else {
                 continue;
@@ -504,40 +515,34 @@ impl CompiledHtmlCss {
                     specificity: rule.selector.specificity,
                     order: rule.order,
                 };
-                update_cascade_winner(
-                    &mut winners,
-                    declaration.name.clone(),
-                    declaration.value.clone(),
-                    rank,
-                );
+                update_cascade_winner(&mut winners, &declaration.name, &declaration.value, rank);
             }
         }
 
-        if let Some(inline_css) = element.value().attr("style") {
-            for declaration in parse_css_declarations(inline_css) {
-                update_cascade_winner(
-                    &mut winners,
-                    declaration.name,
-                    declaration.value,
-                    CascadeRank {
-                        important: declaration.important,
-                        specificity: 1_000_000,
-                        order: u32::MAX,
-                    },
-                );
-            }
+        for declaration in &inline_declarations {
+            update_cascade_winner(
+                &mut winners,
+                &declaration.name,
+                &declaration.value,
+                CascadeRank {
+                    important: declaration.important,
+                    specificity: 1_000_000,
+                    order: u32::MAX,
+                },
+            );
         }
 
         // Custom properties are inherited and must be installed before var() is resolved.
         let mut custom_names = winners
             .keys()
             .filter(|name| name.starts_with("--"))
-            .cloned()
+            .copied()
             .collect::<Vec<_>>();
         custom_names.sort();
         for name in custom_names {
             if let Some((_, value)) = winners.get(&name) {
-                style.custom_properties.insert(name, value.clone());
+                Arc::make_mut(&mut style.custom_properties)
+                    .insert(name.to_string(), (*value).to_string());
             }
         }
 
@@ -562,17 +567,20 @@ impl CompiledHtmlCss {
         }
         if tag == "a" {
             if let Some(link) = style.inline.link.take() {
-                style.inline.link = Some(resolve_resource_url(options.base_url_str(), &link));
+                style.inline.link = Some(SharedString::from(resolve_resource_url(
+                    options.base_url_str(),
+                    link.as_ref(),
+                )));
             }
         }
         style
     }
 }
 
-fn update_cascade_winner(
-    winners: &mut HashMap<String, (CascadeRank, String)>,
-    name: String,
-    value: String,
+fn update_cascade_winner<'a>(
+    winners: &mut HashMap<&'a str, (CascadeRank, &'a str)>,
+    name: &'a str,
+    value: &'a str,
     rank: CascadeRank,
 ) {
     let replace = winners
@@ -586,6 +594,13 @@ fn update_cascade_winner(
 
 pub fn discover_html_stylesheets(html: &str, base_url: Option<&str>) -> Vec<HtmlStylesheetRequest> {
     let fragment = Html::parse_fragment(html);
+    discover_html_stylesheets_in_fragment(&fragment, base_url)
+}
+
+fn discover_html_stylesheets_in_fragment(
+    fragment: &Html,
+    base_url: Option<&str>,
+) -> Vec<HtmlStylesheetRequest> {
     let document_base = Selector::parse("base[href]")
         .ok()
         .and_then(|selector| fragment.select(&selector).next())
@@ -644,7 +659,13 @@ pub fn parse_html_document_with_loader<L: HtmlStylesheetLoader>(
     options: &HtmlRenderOptions,
     loader: &L,
 ) -> HtmlDocument {
-    let requests = discover_html_stylesheets(html, options.base_url_str());
+    let html = html.trim();
+    if html.is_empty() {
+        return HtmlDocument::default();
+    }
+
+    let fragment = Html::parse_fragment(html);
+    let requests = discover_html_stylesheets_in_fragment(&fragment, options.base_url_str());
     let mut resolved = options.clone();
     let mut load_diagnostics = Vec::new();
     for request in &requests {
@@ -660,7 +681,8 @@ pub fn parse_html_document_with_loader<L: HtmlStylesheetLoader>(
             ))),
         }
     }
-    let mut document = parse_html_document_with_options(html, &resolved);
+    let css = CompiledHtmlCss::compile_fragment(&fragment, &resolved);
+    let mut document = parse_html_document_with_compiled_css(&fragment, &css, &resolved);
     document.css_diagnostics.extend(load_diagnostics);
     document
 }
@@ -672,8 +694,8 @@ pub fn parse_html_document_with_options(html: &str, options: &HtmlRenderOptions)
     }
 
     let fragment = Html::parse_fragment(html);
-    let css = CompiledHtmlCss::compile(html, options);
-    parse_html_document_with_compiled_css(html, &fragment, &css, options)
+    let css = CompiledHtmlCss::compile_fragment(&fragment, options);
+    parse_html_document_with_compiled_css(&fragment, &css, options)
 }
 
 pub fn parse_html_document_with_precompiled_css(
@@ -686,11 +708,10 @@ pub fn parse_html_document_with_precompiled_css(
         return HtmlDocument::default();
     }
     let fragment = Html::parse_fragment(html);
-    parse_html_document_with_compiled_css(html, &fragment, css, options)
+    parse_html_document_with_compiled_css(&fragment, css, options)
 }
 
 fn parse_html_document_with_compiled_css(
-    html: &str,
     fragment: &Html,
     css: &CompiledHtmlCss,
     options: &HtmlRenderOptions,
@@ -715,7 +736,8 @@ fn parse_html_document_with_compiled_css(
     flush_pending_paragraph(&mut blocks, &mut block_styles, &mut pending_paragraph);
 
     let plain_text_lines = collect_plain_text_lines(&blocks);
-    let stylesheet_requests = discover_html_stylesheets(html, options.base_url_str());
+    let stylesheet_requests =
+        discover_html_stylesheets_in_fragment(fragment, options.base_url_str());
 
     HtmlDocument {
         blocks,
@@ -733,14 +755,11 @@ pub fn render_html_document(
     image_cache: Option<&HashMap<SharedString, Arc<RenderImage>>>,
 ) -> Div {
     let mut column = div().w_full().flex().flex_col();
+    let default_style = HtmlBlockStyle::default();
 
     for (index, block) in document.blocks.iter().enumerate() {
-        let style = document
-            .block_styles
-            .get(index)
-            .cloned()
-            .unwrap_or_default();
-        column = column.child(render_block(block, &style, colors, image_cache));
+        let style = document.block_styles.get(index).unwrap_or(&default_style);
+        column = column.child(render_block(block, style, colors, image_cache));
     }
 
     column
@@ -2210,7 +2229,10 @@ fn apply_semantic_inline_style(tag: &str, element: &ElementRef<'_>, style: &mut 
         "code" | "pre" | "kbd" | "samp" => style.code = true,
         "a" => {
             style.underline = true;
-            style.link = element.value().attr("href").map(ToString::to_string);
+            style.link = element
+                .value()
+                .attr("href")
+                .map(|href| SharedString::from(href.to_string()));
         }
         "font" => {
             if let Some(color) = element.value().attr("color").and_then(parse_css_color) {
@@ -2273,7 +2295,7 @@ fn apply_css_property(
                 .trim()
                 .trim_matches(|ch| ch == '\'' || ch == '"');
             if !family.is_empty() {
-                style.inline.font_family = Some(family.to_string());
+                style.inline.font_family = Some(SharedString::from(family.to_string()));
             }
         }
         "text-decoration-line" => {
@@ -2691,11 +2713,12 @@ fn render_block(
             ))
             .into_any_element(),
         HtmlBlock::CodeBlock { code } => {
-            let code_str = code.to_string();
-            let code_len = code_str.len();
+            let code_len = code.len();
             div()
                 .w_full()
-                .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
+                .rounded(px(style
+                    .border_radius
+                    .max(crate::ui::theme::tokens::radius::MD)))
                 .bg(style.background_color.unwrap_or(Hsla {
                     a: 0.08,
                     ..colors.surface
@@ -2709,26 +2732,22 @@ fn render_block(
                         .p(px(16.0))
                         .text_size(px(style.font_size.unwrap_or(13.0)))
                         .line_height(px(style.line_height.unwrap_or(21.0)))
-                        .child(
-                            StyledText::new(SharedString::from(code_str)).with_runs(vec![
-                                TextRun {
-                                    len: code_len,
-                                    font: Font {
-                                        family: "Cascadia Mono".into(),
-                                        features: FontFeatures::default(),
-                                        fallbacks: None,
-                                        weight: FontWeight::NORMAL,
-                                        style: FontStyle::Normal,
-                                    },
-                                    color: colors.text_primary,
-                                    background_color: None,
-                                    background_corner_radius: None,
-                                    background_padding: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                },
-                            ]),
-                        ),
+                        .child(StyledText::new(code.clone()).with_runs(vec![TextRun {
+                            len: code_len,
+                            font: Font {
+                                family: "Cascadia Mono".into(),
+                                features: FontFeatures::default(),
+                                fallbacks: None,
+                                weight: FontWeight::NORMAL,
+                                style: FontStyle::Normal,
+                            },
+                            color: colors.text_primary,
+                            background_color: None,
+                            background_corner_radius: None,
+                            background_padding: None,
+                            underline: None,
+                            strikethrough: None,
+                        }])),
                 )
                 .into_any_element()
         }
@@ -2745,7 +2764,9 @@ fn render_block(
             };
             let block = div()
                 .w_full()
-                .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
+                .rounded(px(style
+                    .border_radius
+                    .max(crate::ui::theme::tokens::radius::MD)))
                 .overflow_hidden()
                 .when(
                     style.border_width > 0.0 || style.border_color.is_some(),
@@ -2794,9 +2815,10 @@ fn render_block(
         }
         HtmlBlock::Group { blocks, styles } => {
             let mut column = div().w_full().flex().flex_col();
+            let default_style = HtmlBlockStyle::default();
             for (index, child) in blocks.iter().enumerate() {
-                let child_style = styles.get(index).cloned().unwrap_or_default();
-                column = column.child(render_block(child, &child_style, colors, image_cache));
+                let child_style = styles.get(index).unwrap_or(&default_style);
+                column = column.child(render_block(child, child_style, colors, image_cache));
             }
             column.into_any_element()
         }
@@ -2912,7 +2934,9 @@ fn render_video_block(
 ) -> AnyElement {
     let card = div()
         .w_full()
-        .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
+        .rounded(px(style
+            .border_radius
+            .max(crate::ui::theme::tokens::radius::MD)))
         .overflow_hidden()
         .cursor_pointer()
         .border_1()
@@ -3059,7 +3083,9 @@ fn render_table(
     let line_height = px(style.line_height.unwrap_or(20.0));
     let mut table = div()
         .w_full()
-        .rounded(px(style.border_radius.max(crate::ui::theme::tokens::radius::MD)))
+        .rounded(px(style
+            .border_radius
+            .max(crate::ui::theme::tokens::radius::MD)))
         .border_1()
         .border_color(style.border_color.unwrap_or(colors.border))
         .overflow_hidden()
@@ -3072,7 +3098,7 @@ fn render_table(
             ..colors.accent
         });
         for column in 0..col_count {
-            let cell = headers.get(column).cloned().unwrap_or_default();
+            let cell = headers.get(column).map(Vec::as_slice).unwrap_or_default();
             header_row = header_row.child(
                 div()
                     .flex_1()
@@ -3086,7 +3112,7 @@ fn render_table(
                         })
                     })
                     .child(render_inline_with_links(
-                        &cell,
+                        cell,
                         colors,
                         font_size,
                         line_height,
@@ -3107,7 +3133,7 @@ fn render_table(
                 ..colors.surface
             });
         for column in 0..col_count {
-            let cell = row.get(column).cloned().unwrap_or_default();
+            let cell = row.get(column).map(Vec::as_slice).unwrap_or_default();
             data_row = data_row.child(
                 div()
                     .flex_1()
@@ -3121,7 +3147,7 @@ fn render_table(
                         })
                     })
                     .child(render_inline_with_links(
-                        &cell,
+                        cell,
                         colors,
                         font_size,
                         line_height,
@@ -3271,164 +3297,94 @@ fn render_inline_with_links(
         return div().into_any_element();
     }
 
-    let groups = group_inline_spans(spans);
-    let mut row = div().w_full().flex().flex_wrap();
-    for group in groups {
-        row = row.children(render_inline_group(
-            &group,
+    let mut row = div().w_full().min_w(px(0.0)).flex().flex_wrap();
+    let mut group_start = 0;
+    let mut group_index = 0;
+    for index in 1..=spans.len() {
+        let group_ended = index == spans.len()
+            || !inline_metrics_compatible(&spans[index - 1].style, &spans[index].style);
+        if !group_ended {
+            continue;
+        }
+
+        row = row.child(render_inline_group(
+            &spans[group_start..index],
+            group_index,
             colors,
             font_size,
             line_height,
             is_heading,
         ));
+        group_start = index;
+        group_index += 1;
     }
     row.into_any_element()
 }
 
-fn group_inline_spans(spans: &[HtmlInline]) -> Vec<Vec<HtmlInline>> {
-    fn compatible(left: &HtmlInlineStyle, right: &HtmlInlineStyle) -> bool {
-        left.link == right.link
-            && left.font_size == right.font_size
-            && left.line_height == right.line_height
-            && left.font_family == right.font_family
-            && left.preserve_whitespace == right.preserve_whitespace
-    }
-
-    let mut groups: Vec<Vec<HtmlInline>> = Vec::new();
-    for span in spans {
-        if groups
-            .last()
-            .and_then(|group| group.last())
-            .is_some_and(|previous| compatible(&previous.style, &span.style))
-        {
-            groups.last_mut().unwrap().push(span.clone());
-        } else {
-            groups.push(vec![span.clone()]);
-        }
-    }
-    groups
-}
-
-fn is_cjk(ch: char) -> bool {
-    matches!(ch,
-        '\u{4e00}'..='\u{9fff}' |
-        '\u{3400}'..='\u{4dbf}' |
-        '\u{f900}'..='\u{faff}'
-    )
-}
-
-fn split_into_words_and_whitespaces(text: &str) -> Vec<String> {
-    let mut pieces = Vec::new();
-    let mut current = String::new();
-    enum Kind {
-        Whitespace,
-        Cjk,
-        Other,
-    }
-    let mut current_kind = None;
-
-    for ch in text.chars() {
-        let kind = if ch.is_whitespace() {
-            Kind::Whitespace
-        } else if is_cjk(ch) {
-            Kind::Cjk
-        } else {
-            Kind::Other
-        };
-
-        match (&mut current_kind, kind) {
-            (None, k) => {
-                current.push(ch);
-                current_kind = Some(k);
-            }
-            (Some(Kind::Whitespace), Kind::Whitespace) => {
-                current.push(ch);
-            }
-            (Some(Kind::Other), Kind::Other) => {
-                current.push(ch);
-            }
-            (Some(_), k) => {
-                pieces.push(current);
-                current = String::new();
-                current.push(ch);
-                current_kind = Some(k);
-            }
-        }
-    }
-
-    if !current.is_empty() {
-        pieces.push(current);
-    }
-    pieces
+fn inline_metrics_compatible(left: &HtmlInlineStyle, right: &HtmlInlineStyle) -> bool {
+    left.font_size == right.font_size
+        && left.line_height == right.line_height
+        && left.preserve_whitespace == right.preserve_whitespace
 }
 
 fn render_inline_group(
     spans: &[HtmlInline],
+    group_index: usize,
     colors: &ThemeColors,
     default_font_size: Pixels,
     default_line_height: Pixels,
     is_heading: bool,
-) -> Vec<AnyElement> {
+) -> AnyElement {
     let first = &spans[0].style;
     let font_size = first.font_size.map(px).unwrap_or(default_font_size);
     let line_height = first.line_height.map(px).unwrap_or(default_line_height);
-    let link = first.link.clone();
-
-    if first.preserve_whitespace {
-        let mut element = div()
-            .text_size(font_size)
-            .line_height(line_height)
-            .whitespace_nowrap()
-            .when(link.is_some(), |this| this.cursor_pointer())
-            .child(render_inline_text(spans, colors, is_heading));
-
-        if let Some(url) = &link {
-            let url = url.clone();
-            element = element.on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                cx.open_url(&url);
-            });
-        }
-        vec![element.into_any_element()]
-    } else {
-        let mut elements = Vec::new();
-        for span in spans {
-            let pieces = split_into_words_and_whitespaces(&span.text);
-            for piece in pieces {
-                let single_span = HtmlInline {
-                    text: piece,
-                    style: span.style.clone(),
-                };
-                let mut element = div()
-                    .flex_none()
-                    .text_size(font_size)
-                    .line_height(line_height)
-                    .whitespace_normal()
-                    .when(link.is_some(), |this| this.cursor_pointer())
-                    .child(render_inline_text(&[single_span], colors, is_heading));
-
-                if let Some(url) = &link {
-                    let url = url.clone();
-                    element =
-                        element.on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                            cx.open_url(&url);
-                        });
+    let (styled_text, link_ranges, link_targets) = render_inline_text(spans, colors, is_heading);
+    let has_links = !link_ranges.is_empty();
+    let text = if has_links {
+        let link_targets: Arc<[SharedString]> = link_targets.into();
+        InteractiveText::new(("html-inline", group_index), styled_text)
+            .on_click(link_ranges, move |index, _window, cx| {
+                if let Some(url) = link_targets.get(index) {
+                    cx.open_url(url);
                 }
-                elements.push(element.into_any_element());
-            }
-        }
-        elements
-    }
+            })
+            .into_any_element()
+    } else {
+        styled_text.into_any_element()
+    };
+
+    div()
+        .min_w(px(0.0))
+        .max_w_full()
+        .text_size(font_size)
+        .line_height(line_height)
+        .when(first.preserve_whitespace, |this| this.whitespace_nowrap())
+        .when(!first.preserve_whitespace, |this| this.whitespace_normal())
+        .when(has_links, |this| this.cursor_pointer())
+        .child(text)
+        .into_any_element()
 }
 
-fn render_inline_text(spans: &[HtmlInline], colors: &ThemeColors, is_heading: bool) -> StyledText {
+fn render_inline_text(
+    spans: &[HtmlInline],
+    colors: &ThemeColors,
+    is_heading: bool,
+) -> (StyledText, Vec<Range<usize>>, Vec<SharedString>) {
     let mut combined_text = String::new();
     let mut runs = Vec::new();
+    let mut link_ranges: Vec<Range<usize>> = Vec::new();
+    let mut link_targets: Vec<SharedString> = Vec::new();
 
     for span in spans {
-        let text = span.text.replace("\r\n", "\n");
+        let text = if span.text.contains("\r\n") {
+            Cow::Owned(span.text.replace("\r\n", "\n"))
+        } else {
+            Cow::Borrowed(span.text.as_str())
+        };
         if text.is_empty() {
             continue;
         }
+        let range_start = combined_text.len();
         let mut color = span
             .style
             .color
@@ -3453,18 +3409,13 @@ fn render_inline_text(spans: &[HtmlInline], colors: &ThemeColors, is_heading: bo
         runs.push(TextRun {
             len: text.len(),
             font: Font {
-                family: span
-                    .style
-                    .font_family
-                    .clone()
-                    .unwrap_or_else(|| {
-                        if span.style.code {
-                            "Cascadia Mono".to_string()
-                        } else {
-                            "HarmonyOS Sans".to_string()
-                        }
-                    })
-                    .into(),
+                family: span.style.font_family.clone().unwrap_or_else(|| {
+                    if span.style.code {
+                        SharedString::from("Cascadia Mono")
+                    } else {
+                        SharedString::from("HarmonyOS Sans")
+                    }
+                }),
                 features: FontFeatures::default(),
                 fallbacks: None,
                 weight: if is_heading || span.style.bold {
@@ -3495,15 +3446,35 @@ fn render_inline_text(spans: &[HtmlInline], colors: &ThemeColors, is_heading: bo
             }),
         });
         combined_text.push_str(&text);
+        if let Some(link) = &span.style.link {
+            let range_end = combined_text.len();
+            if link_targets.last() == Some(link)
+                && link_ranges
+                    .last_mut()
+                    .is_some_and(|range| range.end == range_start)
+            {
+                if let Some(range) = link_ranges.last_mut() {
+                    range.end = range_end;
+                }
+            } else {
+                link_ranges.push(range_start..range_end);
+                link_targets.push(link.clone());
+            }
+        }
     }
 
-    StyledText::new(SharedString::from(combined_text)).with_runs(runs)
+    (
+        StyledText::new(SharedString::from(combined_text)).with_runs(runs),
+        link_ranges,
+        link_targets,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        HtmlBlock, discover_html_stylesheets, parse_html_document, split_into_words_and_whitespaces,
+        HtmlBlock, HtmlInlineStyle, discover_html_stylesheets, inline_metrics_compatible,
+        parse_html_document,
     };
 
     #[test]
@@ -3549,20 +3520,14 @@ mod tests {
     }
 
     #[test]
-    fn test_split_into_words_and_whitespaces() {
-        let text = "Hello, world! 如图html";
-        let pieces = split_into_words_and_whitespaces(text);
-        assert_eq!(
-            pieces,
-            vec![
-                "Hello,".to_string(),
-                " ".to_string(),
-                "world!".to_string(),
-                " ".to_string(),
-                "如".to_string(),
-                "图".to_string(),
-                "html".to_string()
-            ]
-        );
+    fn long_cjk_text_stays_in_one_metric_group() {
+        let style = HtmlInlineStyle::default();
+        assert!(inline_metrics_compatible(&style, &style));
+
+        let document = parse_html_document(&format!("<p>{}</p>", "如图".repeat(4_096)));
+        let HtmlBlock::Paragraph { spans } = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(spans.len(), 1);
     }
 }

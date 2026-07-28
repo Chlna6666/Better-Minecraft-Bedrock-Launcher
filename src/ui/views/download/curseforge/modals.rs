@@ -282,6 +282,17 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
                     description_html,
                 } = page_data;
                 let mod_entry = curseforge_mod_entry_from_query_data(mod_entry);
+                let description = SharedString::from(description_html);
+                let description_len = description.len();
+                let parse_task = cx.background_spawn({
+                    let description = description.clone();
+                    async move {
+                        crate::ui::components::html_renderer::parse_html_document(
+                            description.as_ref(),
+                        )
+                    }
+                });
+                let document = parse_task.await;
                 if let Err(error) = cx.update_global(|state: &mut DownloadPageState, _cx| {
                     if state.curseforge_mod_page_request_id != request_id
                         || state.curseforge_mod_page_mod_id != Some(mod_id)
@@ -291,7 +302,7 @@ pub(super) fn open_curseforge_mod_page(mod_id: i32, cx: &mut App) {
                     state.curseforge_mod_page_loading = false;
                     state.curseforge_mod_page_error = None;
                     state.curseforge_mod_page_mod = Some(mod_entry);
-                    state.set_curseforge_mod_page_description(SharedString::from(description_html));
+                    state.set_parsed_curseforge_mod_page_description(description_len, document);
                 }) {
                     tracing::debug!("skip curseforge mod page update: {error}");
                 }
