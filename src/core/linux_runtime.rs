@@ -389,6 +389,30 @@ async fn install_latest_proton_gdk(
         .unwrap_or(&release.tag_name)
         .to_string();
     let version_name = proton_gdk_install_directory_name(source, &release_name);
+    let install_path = file_ops::runners_dir().join(&version_name);
+    let metadata = ProtonGdkRunnerMetadata {
+        schema_version: PROTON_GDK_METADATA_SCHEMA_VERSION,
+        source: source.config_value().to_string(),
+        repository: source.repository().to_string(),
+        release_tag: release.tag_name.clone(),
+        release_name,
+        asset_name: asset.name.clone(),
+    };
+    if install_path.exists() {
+        if let Some(proton) = find_proton_file(&install_path) {
+            append_task_log(
+                task_id,
+                format!(
+                    "检测到已有 Proton-GDK 文件，正在修复安装：{}",
+                    proton.display()
+                ),
+            );
+            finalize_proton_gdk_install(source, &install_path, &proton, &metadata).await?;
+            return Ok(install_path);
+        }
+        preserve_incomplete_proton_gdk_install(&install_path).await?;
+    }
+
     let download_dir = file_ops::downloads_dir()
         .join("proton-gdk")
         .join(source.config_value());
@@ -398,39 +422,103 @@ async fn install_latest_proton_gdk(
     let archive_path = download_dir.join(&asset.name);
     download_proton_gdk_asset(&client, asset, &archive_path, task_id).await?;
 
-    let install_path = file_ops::runners_dir().join(version_name);
-    if install_path.exists() {
-        return Err(format!(
-            "该 Proton-GDK 版本已经安装：{}",
-            install_path.display()
-        ));
+    let staging_path = file_ops::runners_dir().join(format!(
+        ".{version_name}.installing-{}",
+        sanitize_instance_name(task_id)
+    ));
+    if staging_path.exists() {
+        tokio::fs::remove_dir_all(&staging_path)
+            .await
+            .map_err(|error| format!("清理 Proton-GDK 临时安装目录失败：{error}"))?;
     }
-    tokio::fs::create_dir_all(&install_path)
+    tokio::fs::create_dir_all(&staging_path)
         .await
-        .map_err(|error| format!("创建 Proton-GDK 安装目录失败：{error}"))?;
+        .map_err(|error| format!("创建 Proton-GDK 临时安装目录失败：{error}"))?;
     update_progress(task_id, 0, None, Some("extracting_proton_gdk"));
     set_task_message(task_id, Some("正在解压 Proton-GDK".to_string()));
-    append_task_log(task_id, format!("解压到 {}", install_path.display()));
-    let output = tokio::process::Command::new("tar")
+    append_task_log(
+        task_id,
+        format!("解压到临时目录 {}", staging_path.display()),
+    );
+    let output = match tokio::process::Command::new("tar")
         .arg("-xzf")
         .arg(&archive_path)
         .arg("-C")
-        .arg(&install_path)
-        .arg("--strip-components=1")
+        .arg(&staging_path)
         .output()
         .await
-        .map_err(|error| format!("无法启动 tar：{error}"))?;
+    {
+        Ok(output) => output,
+        Err(error) => {
+            if let Err(cleanup_error) = tokio::fs::remove_dir_all(&staging_path).await {
+                append_task_log(
+                    task_id,
+                    format!("清理未启动解压的临时目录失败：{cleanup_error}"),
+                );
+            }
+            return Err(format!("无法启动 tar：{error}"));
+        }
+    };
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
+        if let Err(cleanup_error) = tokio::fs::remove_dir_all(&staging_path).await {
+            append_task_log(
+                task_id,
+                format!("清理解压失败的临时目录失败：{cleanup_error}"),
+            );
+        }
         return Err(format!("解压 Proton-GDK 失败：{}", error.trim()));
     }
-    let proton = install_path.join("proton");
-    if !proton.is_file() {
-        return Err(format!(
-            "安装包中没有 proton 可执行文件：{}",
-            proton.display()
-        ));
+
+    let proton = match promote_staged_proton_gdk(&staging_path, &install_path).await {
+        Ok(proton) => proton,
+        Err(error) => {
+            if let Err(cleanup_error) = tokio::fs::remove_dir_all(&staging_path).await {
+                append_task_log(
+                    task_id,
+                    format!("清理无效 Proton-GDK 临时目录失败：{cleanup_error}"),
+                );
+            }
+            return Err(error);
+        }
+    };
+    if staging_path.exists()
+        && let Err(error) = tokio::fs::remove_dir_all(&staging_path).await
+    {
+        append_task_log(task_id, format!("清理 Proton-GDK 临时目录失败：{error}"));
     }
+    finalize_proton_gdk_install(source, &install_path, &proton, &metadata).await?;
+    Ok(install_path)
+}
+
+async fn promote_staged_proton_gdk(
+    staging_path: &Path,
+    install_path: &Path,
+) -> Result<PathBuf, String> {
+    let staged_proton = find_proton_file(staging_path).ok_or_else(|| {
+        format!(
+            "安装包中没有 proton 或 bin/proton：{}",
+            staging_path.display()
+        )
+    })?;
+    let staged_runner_root = proton_gdk_runner_root(&staged_proton)
+        .ok_or_else(|| "无法确定 Proton-GDK 解压后的运行器目录".to_string())?;
+    let proton_relative_path = staged_proton
+        .strip_prefix(&staged_runner_root)
+        .map(Path::to_path_buf)
+        .map_err(|error| format!("无法确定 Proton-GDK 可执行文件相对路径：{error}"))?;
+    tokio::fs::rename(&staged_runner_root, install_path)
+        .await
+        .map_err(|error| format!("完成 Proton-GDK 原子安装失败：{error}"))?;
+    Ok(install_path.join(proton_relative_path))
+}
+
+async fn finalize_proton_gdk_install(
+    source: ProtonGdkSource,
+    install_path: &Path,
+    proton: &Path,
+    metadata: &ProtonGdkRunnerMetadata,
+) -> Result<(), String> {
     let mut permissions = tokio::fs::metadata(&proton)
         .await
         .map_err(|error| format!("读取 Proton-GDK 权限失败：{error}"))?
@@ -439,22 +527,43 @@ async fn install_latest_proton_gdk(
     tokio::fs::set_permissions(&proton, permissions)
         .await
         .map_err(|error| format!("设置 Proton-GDK 可执行权限失败：{error}"))?;
-    let metadata = ProtonGdkRunnerMetadata {
-        schema_version: PROTON_GDK_METADATA_SCHEMA_VERSION,
-        source: source.config_value().to_string(),
-        repository: source.repository().to_string(),
-        release_tag: release.tag_name.clone(),
-        release_name,
-        asset_name: asset.name.clone(),
-    };
-    write_proton_gdk_metadata(&install_path, &metadata).await?;
+    let runner_root = proton_gdk_runner_root(proton)
+        .ok_or_else(|| "无法确定 Proton-GDK 安装记录目录".to_string())?;
+    write_proton_gdk_metadata(&runner_root, metadata).await?;
     let selected_runner = proton.to_string_lossy().into_owned();
     crate::config::config::update_config(|config| {
         config.launcher.proton_gdk_runner = selected_runner.clone();
         config.launcher.proton_gdk_source = source.config_value().to_string();
     })
     .map_err(|error| format!("保存 Proton-GDK 默认版本失败：{error}"))?;
-    Ok(install_path)
+    info!(
+        source = source.config_value(),
+        install_path = %install_path.display(),
+        proton = %proton.display(),
+        "Proton-GDK installation finalized"
+    );
+    Ok(())
+}
+
+async fn preserve_incomplete_proton_gdk_install(install_path: &Path) -> Result<(), String> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("生成 Proton-GDK 残留目录时间戳失败：{error}"))?
+        .as_secs();
+    let file_name = install_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("proton-gdk");
+    let backup_path = install_path.with_file_name(format!("{file_name}.incomplete-{timestamp}"));
+    tokio::fs::rename(install_path, &backup_path)
+        .await
+        .map_err(|error| {
+            format!(
+                "保存 Proton-GDK 未完成安装失败（{} -> {}）：{error}",
+                install_path.display(),
+                backup_path.display()
+            )
+        })
 }
 
 async fn write_proton_gdk_metadata(
@@ -563,9 +672,7 @@ pub(crate) fn installed_proton_gdk_runners() -> Vec<InstalledProtonGdkRunner> {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let root = entry.path();
-            [root.join("proton"), root.join("bin").join("proton")]
-                .into_iter()
-                .find(|candidate| is_executable_file(candidate))
+            find_proton_file(&root).filter(|candidate| is_executable_file(candidate))
         })
         .map(installed_proton_gdk_runner)
         .collect::<Vec<_>>();
@@ -617,6 +724,35 @@ fn proton_gdk_runner_root(executable: &Path) -> Option<PathBuf> {
     } else {
         Some(parent.to_path_buf())
     }
+}
+
+fn find_proton_file(search_root: &Path) -> Option<PathBuf> {
+    let direct_candidates = [
+        search_root.join("proton"),
+        search_root.join("bin").join("proton"),
+    ];
+    if let Some(proton) = direct_candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+    {
+        return Some(proton);
+    }
+
+    let mut child_directories = std::fs::read_dir(search_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    child_directories.sort();
+    child_directories.into_iter().find_map(|directory| {
+        [
+            directory.join("proton"),
+            directory.join("bin").join("proton"),
+        ]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+    })
 }
 
 fn read_proton_gdk_metadata(runner_root: &Path) -> Option<ProtonGdkRunnerMetadata> {
@@ -992,8 +1128,9 @@ fn is_executable_file(path: &Path) -> bool {
 mod tests {
     use super::{
         PROTON_GDK_METADATA_FILE, PROTON_GDK_METADATA_SCHEMA_VERSION, ProtonGdkIdentity,
-        ProtonGdkRunnerMetadata, ProtonGdkSource, infer_proton_gdk_source_from_directory,
-        installed_proton_gdk_runner, parse_os_release, proton_gdk_install_directory_name,
+        ProtonGdkRunnerMetadata, ProtonGdkSource, find_proton_file,
+        infer_proton_gdk_source_from_directory, installed_proton_gdk_runner, parse_os_release,
+        promote_staged_proton_gdk, proton_gdk_install_directory_name, proton_gdk_runner_root,
     };
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1074,6 +1211,42 @@ mod tests {
             infer_proton_gdk_source_from_directory("GDK-Proton10-32"),
             None
         );
+    }
+
+    #[test]
+    fn nested_release_directory_proton_is_discovered() {
+        let install_root = unique_test_directory("proton-gdk-nested-release");
+        let release_root = install_root.join("GDK-Proton10-32-Fix.01");
+        std::fs::create_dir_all(&release_root).expect("nested release directory should be created");
+        std::fs::write(release_root.join("proton"), b"#!/bin/sh\n")
+            .expect("nested proton file should be written");
+
+        let proton = find_proton_file(&install_root).expect("nested proton should be discovered");
+
+        assert_eq!(proton, release_root.join("proton"));
+        assert_eq!(proton_gdk_runner_root(&proton), Some(release_root));
+        std::fs::remove_dir_all(&install_root).expect("test install directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn staged_nested_release_is_promoted_to_single_install_directory() {
+        let test_root = unique_test_directory("proton-gdk-promote");
+        let staging_path = test_root.join("staging");
+        let nested_release = staging_path.join("GDK-Proton10-32-Fix.01");
+        let install_path = test_root.join("roundmcdev-GDK-Proton10-32-Fix.01");
+        std::fs::create_dir_all(&nested_release)
+            .expect("nested staged release directory should be created");
+        std::fs::write(nested_release.join("proton"), b"#!/bin/sh\n")
+            .expect("staged proton file should be written");
+
+        let proton = promote_staged_proton_gdk(&staging_path, &install_path)
+            .await
+            .expect("staged release should be promoted");
+
+        assert_eq!(proton, install_path.join("proton"));
+        assert!(proton.is_file());
+        assert!(!install_path.join("GDK-Proton10-32-Fix.01").exists());
+        std::fs::remove_dir_all(&test_root).expect("test promotion directory should be removed");
     }
 
     #[test]

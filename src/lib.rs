@@ -9,6 +9,7 @@ mod downloads;
 mod http;
 mod i18n;
 mod launch;
+#[cfg(target_os = "windows")]
 mod music;
 mod plugins;
 mod result;

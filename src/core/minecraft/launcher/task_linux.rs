@@ -8,7 +8,10 @@ use std::env;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
@@ -275,6 +278,57 @@ async fn initialize_proton_prefix(
     Ok(())
 }
 
+fn request_uses_preview_data(request: &LaunchRequest) -> bool {
+    [
+        request.folder_name.as_ref(),
+        request.display_name.as_ref(),
+        request.package_folder.as_ref(),
+    ]
+    .into_iter()
+    .any(|value| {
+        let value = value.to_ascii_lowercase();
+        value.contains("preview") || value.contains("beta") || value.contains("预览")
+    })
+}
+
+async fn ensure_gdk_data_directories(
+    prefix_path: &Path,
+    request: &LaunchRequest,
+    task_id: &str,
+) -> Result<(), String> {
+    let edition_folder = if request_uses_preview_data(request) {
+        "Minecraft Bedrock Preview"
+    } else {
+        "Minecraft Bedrock"
+    };
+    let com_mojang = prefix_path
+        .join("pfx/drive_c/users/steamuser/AppData/Roaming")
+        .join(edition_folder)
+        .join("Users/Shared/games/com.mojang");
+    for directory in [
+        "minecraftWorlds",
+        "resource_packs",
+        "behavior_packs",
+        "skin_packs",
+        "world_templates",
+        "minecraftpe",
+        "Screenshots",
+        "development_resource_packs",
+        "development_behavior_packs",
+        "development_skin_packs",
+    ] {
+        let path = com_mojang.join(directory);
+        tokio::fs::create_dir_all(&path)
+            .await
+            .map_err(|error| format!("创建 GDK 数据目录 {} 失败：{error}", path.display()))?;
+    }
+    append_task_log(
+        task_id,
+        format!("GDK 用户数据目录已就绪：{}", com_mojang.display()),
+    );
+    Ok(())
+}
+
 pub fn start_launch_task(request: LaunchRequest) -> String {
     register_task_stage_labels(LAUNCHER_TASK_STAGE_LABELS);
     let task_id = create_task_with_details(
@@ -295,6 +349,11 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
                 append_task_log(
                     &task_id_for_task,
                     format!("游戏进程已启动，PID {process_id}"),
+                );
+                finish_task(
+                    &task_id_for_task,
+                    "completed",
+                    Some(format!("游戏已启动，PID {process_id}")),
                 );
             }
             Ok(None) => {
@@ -412,6 +471,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     match runner.kind {
         RunnerKind::Proton => {
             initialize_proton_prefix(&runner, &prefix_path, task_id).await?;
+            ensure_gdk_data_directories(&prefix_path, request, task_id).await?;
             install_proton_game_input(&runner, &prefix_path, &package_path, task_id).await?;
             stop_lingering_proton_processes(&runner, &prefix_path, task_id).await?;
         }
@@ -428,6 +488,16 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         append_task_log(task_id, "已完成环境准备，未请求启动游戏");
         return Ok(None);
     }
+
+    let launch_auth = crate::core::bedrock_auth::prepare_launch(&prefix_path).await?;
+    append_task_log(
+        task_id,
+        if launch_auth.is_some() {
+            "已安全注入 Xbox 登录会话"
+        } else {
+            "未检测到 Xbox 登录凭证，将以未登录状态启动"
+        },
+    );
 
     let mut command = match runner.kind {
         RunnerKind::Proton => {
@@ -467,6 +537,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     {
         command.arg(argument);
     }
+    if let Some(auth) = &launch_auth {
+        auth.apply_to_command(&mut command)?;
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -489,24 +562,35 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         .ok_or_else(|| "兼容环境已启动，但没有返回进程 PID".to_string())?;
 
     let recent_output = Arc::new(Mutex::new(VecDeque::new()));
-    let mut stdout_pump = child.stdout.take().map(|stdout| {
-        spawn_output_pump(
-            task_id.to_string(),
-            stdout,
-            false,
-            recent_output.clone(),
-            None,
-        )
-    });
-    let mut stderr_pump = child.stderr.take().map(|stderr| {
-        spawn_output_pump(
-            task_id.to_string(),
-            stderr,
-            true,
-            recent_output.clone(),
-            None,
-        )
-    });
+    let publish_startup_output = Arc::new(AtomicBool::new(true));
+    let mut stdout_pump = child
+        .stdout
+        .take()
+        .map(|stdout| {
+            spawn_output_pump(
+                task_id.to_string(),
+                stdout,
+                false,
+                recent_output.clone(),
+                None,
+                Some(publish_startup_output.clone()),
+            )
+        })
+        .transpose()?;
+    let mut stderr_pump = child
+        .stderr
+        .take()
+        .map(|stderr| {
+            spawn_output_pump(
+                task_id.to_string(),
+                stderr,
+                true,
+                recent_output.clone(),
+                None,
+                Some(publish_startup_output.clone()),
+            )
+        })
+        .transpose()?;
 
     tokio::time::sleep(EARLY_EXIT_GRACE_PERIOD).await;
     match child.try_wait() {
@@ -525,12 +609,14 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             return Err(format!("检查兼容运行器进程状态失败：{error}"));
         }
     }
+    publish_startup_output.store(false, Ordering::Release);
     spawn_process_monitor(
         task_id.to_string(),
         child,
         stdout_pump,
         stderr_pump,
         recent_output,
+        launch_auth,
     );
     update_progress(task_id, 1, Some(LAUNCH_TOTAL_STEPS), Some("launching"));
     update_progress(task_id, 0, Some(LAUNCH_TOTAL_STEPS), Some("running_game"));
@@ -792,24 +878,34 @@ async fn install_proton_game_input(
     })?;
     let recent_output = Arc::new(Mutex::new(VecDeque::new()));
     let (failure_sender, mut failure_receiver) = mpsc::unbounded_channel();
-    let mut stdout_pump = child.stdout.take().map(|stdout| {
-        spawn_output_pump(
-            task_id.to_string(),
-            stdout,
-            false,
-            recent_output.clone(),
-            Some(failure_sender.clone()),
-        )
-    });
-    let mut stderr_pump = child.stderr.take().map(|stderr| {
-        spawn_output_pump(
-            task_id.to_string(),
-            stderr,
-            true,
-            recent_output.clone(),
-            Some(failure_sender),
-        )
-    });
+    let mut stdout_pump = child
+        .stdout
+        .take()
+        .map(|stdout| {
+            spawn_output_pump(
+                task_id.to_string(),
+                stdout,
+                false,
+                recent_output.clone(),
+                Some(failure_sender.clone()),
+                None,
+            )
+        })
+        .transpose()?;
+    let mut stderr_pump = child
+        .stderr
+        .take()
+        .map(|stderr| {
+            spawn_output_pump(
+                task_id.to_string(),
+                stderr,
+                true,
+                recent_output.clone(),
+                Some(failure_sender),
+                None,
+            )
+        })
+        .transpose()?;
 
     enum InstallOutcome {
         Exited(std::io::Result<std::process::ExitStatus>),
@@ -998,25 +1094,13 @@ fn resolve_game_executable(package_path: &Path) -> Result<PathBuf, String> {
 }
 
 fn proton_prefix_path(folder_name: &str) -> Result<PathBuf, String> {
-    Ok(crate::utils::file_ops::prefixes_dir().join(sanitize_instance_folder_name(folder_name)))
+    Ok(crate::core::minecraft::paths::compatibility_prefix_dir(
+        folder_name,
+    ))
 }
 
 fn sanitize_instance_folder_name(folder_name: &str) -> String {
-    let safe_folder_name: String = folder_name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if safe_folder_name.is_empty() || matches!(safe_folder_name.as_str(), "." | "..") {
-        "default".to_string()
-    } else {
-        safe_folder_name
-    }
+    crate::core::minecraft::paths::sanitize_compatibility_prefix_name(folder_name)
 }
 
 fn spawn_output_pump<R>(
@@ -1025,11 +1109,12 @@ fn spawn_output_pump<R>(
     is_error: bool,
     recent_output: Arc<Mutex<VecDeque<String>>>,
     failure_sender: Option<mpsc::UnboundedSender<String>>,
-) -> tokio::task::JoinHandle<()>
+    publish_to_task: Option<Arc<AtomicBool>>,
+) -> Result<tokio::task::JoinHandle<()>, String>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    crate::tasks::runtime::spawn_io(async move {
         let mut lines = BufReader::new(reader).lines();
         loop {
             match lines.next_line().await {
@@ -1037,7 +1122,14 @@ where
                     let prefix = if is_error { "runner stderr" } else { "runner" };
                     let displayed_line = normalize_runner_output_line(&line);
                     let log_line = format!("{prefix}: {displayed_line}");
-                    append_task_log(&task_id, log_line.clone());
+                    if publish_to_task
+                        .as_ref()
+                        .is_none_or(|publish| publish.load(Ordering::Acquire))
+                    {
+                        append_task_log(&task_id, log_line.clone());
+                    } else if is_error {
+                        debug!(task_id, line = %displayed_line, "compatibility runner stderr");
+                    }
                     if let Some(failure) = classify_runner_failure(&line)
                         && let Some(sender) = failure_sender.as_ref()
                         && let Err(error) = sender.send(failure)
@@ -1136,36 +1228,33 @@ fn spawn_process_monitor(
     stdout_pump: Option<tokio::task::JoinHandle<()>>,
     stderr_pump: Option<tokio::task::JoinHandle<()>>,
     recent_output: Arc<Mutex<VecDeque<String>>>,
+    _launch_auth: Option<crate::core::bedrock_auth::PreparedLaunchAuth>,
 ) {
-    tokio::spawn(async move {
+    let task_id_for_monitor = task_id.clone();
+    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+        let task_id = task_id_for_monitor;
         match child.wait().await {
             Ok(status) => {
                 finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
-                append_task_log(&task_id, format!("游戏进程已退出：{status}"));
-                if status.success() {
-                    finish_task(&task_id, "completed", Some("游戏已退出".to_string()));
-                } else {
+                if !status.success() {
                     let output = recent_runner_output(&recent_output);
-                    let message = if output.is_empty() {
-                        format!("游戏进程异常退出：{status}")
-                    } else {
-                        format!("游戏进程异常退出：{status}\n{output}")
-                    };
-                    warn!(task_id, %status, "compatibility runner exited with failure");
-                    finish_task(&task_id, "error", Some(message));
+                    warn!(
+                        task_id,
+                        %status,
+                        recent_output = %output,
+                        "compatibility runner exited with failure after successful launch"
+                    );
+                } else {
+                    info!(task_id, %status, "compatibility runner exited");
                 }
             }
             Err(error) => {
                 warn!(task_id, %error, "failed to wait for compatibility runner process");
-                append_task_log(&task_id, format!("等待游戏进程失败：{error}"));
-                finish_task(
-                    &task_id,
-                    "error",
-                    Some(format!("等待游戏进程失败：{error}")),
-                );
             }
         };
-    });
+    }) {
+        warn!(task_id, %error, "failed to schedule compatibility process monitor");
+    }
 }
 
 #[cfg(test)]

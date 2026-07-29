@@ -395,6 +395,24 @@ fn start_latest_install(cx: &mut App) {
         cx,
         SharedString::from(format!("已开始下载 Proton-GDK（任务 {task_id}）")),
     );
+    let terminal_task_id = task_id.clone();
+    let terminal_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::tasks::task_manager::wait_for_task_terminal(&terminal_task_id)
+            .await
+            .map_err(anyhow::Error::msg)
+    });
+    cx.spawn(async move |cx| {
+        let Ok(snapshot) = terminal_task.await else {
+            return anyhow::Ok(());
+        };
+        if snapshot.status.as_ref() == "completed" {
+            cx.update_global(
+                |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
+            )?;
+        }
+        anyhow::Ok(())
+    })
+    .detach();
 }
 
 fn register_local_runner(window: &Window, cx: &mut App) {

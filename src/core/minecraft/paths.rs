@@ -73,6 +73,29 @@ pub fn user_com_mojang_dir(root: &Path, user_id: &str) -> PathBuf {
         .join("com.mojang")
 }
 
+pub(crate) fn compatibility_prefix_dir(version_name: &str) -> PathBuf {
+    crate::utils::file_ops::prefixes_dir().join(sanitize_compatibility_prefix_name(version_name))
+}
+
+pub(crate) fn sanitize_compatibility_prefix_name(version_name: &str) -> String {
+    let safe_name = version_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+
+    if safe_name.is_empty() || matches!(safe_name.as_str(), "." | "..") {
+        "default".to_string()
+    } else {
+        safe_name
+    }
+}
+
 pub fn game_target_dirs(options: &GamePathOptions, target: GameTargetDir) -> Vec<PathBuf> {
     scan_game_dirs(options, target.name())
 }
@@ -267,7 +290,7 @@ pub fn resolve_game_target_parent(
 }
 
 fn read_version_redirection_enabled(version_name: &str) -> Option<bool> {
-    let config_path = Path::new("./BMCBL/versions")
+    let config_path = crate::utils::file_ops::bmcbl_subdir("versions")
         .join(version_name)
         .join("config.json");
     let content = fs::read_to_string(config_path).ok()?;
@@ -286,13 +309,12 @@ pub fn normalize_game_path_options(options: &GamePathOptions) -> GamePathOptions
 /// 获取游戏的根目录
 /// UWP: .../LocalState
 /// GDK: .../Users/<uid> (如果不传uid，返回上一级 Users)
-/// Isolation: ./BMCBL/versions/<ver>/Minecraft Bedrock/...
+/// Linux GDK: .../prefixes/<ver>/pfx/drive_c/users/steamuser/AppData/Roaming/...
+/// Isolation: .../versions/<ver>/Minecraft Bedrock/...
 pub fn get_game_root(options: &GamePathOptions) -> Option<PathBuf> {
     let options = normalize_game_path_options(options);
     if options.enable_isolation {
-        // === 隔离模式 ===
-        // 路径: ./BMCBL/versions/<version_name>/Minecraft Bedrock
-        let root = Path::new("./BMCBL/versions")
+        let root = crate::utils::file_ops::bmcbl_subdir("versions")
             .join(&options.version_name)
             .join("Minecraft Bedrock");
         return Some(root);
@@ -314,8 +336,21 @@ pub fn get_game_root(options: &GamePathOptions) -> Option<PathBuf> {
             Some(base.join(package_name).join("LocalState"))
         }
         BuildType::Gdk => {
+            #[cfg(target_os = "linux")]
+            let base = compatibility_prefix_dir(&options.version_name)
+                .join("pfx")
+                .join("drive_c")
+                .join("users")
+                .join("steamuser")
+                .join("AppData")
+                .join("Roaming");
+
+            #[cfg(not(target_os = "linux"))]
             let appdata = env::var("APPDATA").ok()?;
+
+            #[cfg(not(target_os = "linux"))]
             let base = PathBuf::from(appdata);
+
             let folder = match options.edition {
                 Edition::Release => "Minecraft Bedrock",
                 Edition::Preview => "Minecraft Bedrock Preview",
@@ -495,6 +530,40 @@ mod tests {
                 .join("4173542688423936997")
                 .join("games")
                 .join("com.mojang")
+        );
+    }
+
+    #[test]
+    fn compatibility_prefix_name_matches_linux_launcher_sanitization() {
+        assert_eq!(
+            compatibility_prefix_dir("Preview 1.21/unsafe"),
+            crate::utils::file_ops::prefixes_dir().join("Preview_1.21_unsafe")
+        );
+        assert_eq!(
+            compatibility_prefix_dir(".."),
+            crate::utils::file_ops::prefixes_dir().join("default")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_gdk_root_uses_version_proton_prefix() {
+        let options = GamePathOptions {
+            build_type: BuildType::Gdk,
+            edition: Edition::Preview,
+            version_name: "26.50.20".to_string(),
+            enable_isolation: false,
+            user_id: None,
+            allow_shared_fallback: false,
+        };
+
+        assert_eq!(
+            get_game_root(&options),
+            Some(
+                crate::utils::file_ops::prefixes_dir()
+                    .join("26.50.20")
+                    .join("pfx/drive_c/users/steamuser/AppData/Roaming/Minecraft Bedrock Preview")
+            )
         );
     }
 

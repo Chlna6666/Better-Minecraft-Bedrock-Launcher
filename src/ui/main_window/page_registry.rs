@@ -565,6 +565,7 @@ impl MainWindowView {
                     startup_trace_elapsed_ms()
                 );
                 this.ensure_startup_route_bootstrapped(cx);
+                #[cfg(target_os = "windows")]
                 this.ensure_music_library_load_started(cx);
                 Self::cache_agreement_document(cx);
 
@@ -636,6 +637,7 @@ impl MainWindowView {
         let mut this = Self {
             background_view,
             chrome_view: None,
+            #[cfg(target_os = "windows")]
             music_library_load_started: false,
             home_page_view: None,
             download_page_view: None,

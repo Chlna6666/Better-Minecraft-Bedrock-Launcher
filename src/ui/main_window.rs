@@ -25,9 +25,18 @@ use tracing::{debug, info, trace, warn};
 
 mod background;
 mod background_support;
+#[cfg(target_os = "windows")]
 mod chrome;
+#[cfg(target_os = "linux")]
+#[path = "main_window/chrome_linux.rs"]
+mod chrome;
+#[cfg(target_os = "windows")]
+mod chrome_view;
+#[cfg(target_os = "linux")]
+#[path = "main_window/chrome_view_linux.rs"]
 mod chrome_view;
 mod controls;
+#[cfg(target_os = "windows")]
 mod music_player;
 mod page_loading;
 mod page_registry;
@@ -149,14 +158,28 @@ struct TopbarRenderState {
     theme_animating: bool,
     theme_accent: Option<Hsla>,
     window_width: Pixels,
+    #[cfg(target_os = "windows")]
     music_snapshot: crate::ui::state::music::MusicSnapshot,
+    #[cfg(target_os = "windows")]
     music_expanded_factor: f32,
+    #[cfg(target_os = "windows")]
     music_progress_ratio: f32,
+    #[cfg(target_os = "windows")]
     music_volume_ratio: f32,
+    #[cfg(target_os = "windows")]
     music_drag_target: Option<crate::ui::state::music::MusicDragTarget>,
+    #[cfg(target_os = "windows")]
     music_popup_animating: bool,
+    #[cfg(target_os = "windows")]
     music_inline_factor: f32,
+    #[cfg(target_os = "windows")]
     music_inline_animating: bool,
+    #[cfg(target_os = "linux")]
+    auth_snapshot: crate::core::bedrock_auth::AuthSnapshot,
+    #[cfg(target_os = "linux")]
+    auth_dialog_open: bool,
+    #[cfg(target_os = "linux")]
+    auth_pending_delete_account_id: Option<String>,
     update_available: bool,
     visual_active_index: usize,
     pill_left_steps: f32,
@@ -208,6 +231,7 @@ struct ThemeColorCache {
 pub struct MainWindowView {
     background_view: Entity<background::AppBackgroundView>,
     chrome_view: Option<Entity<chrome_view::AppChromeView>>,
+    #[cfg(target_os = "windows")]
     music_library_load_started: bool,
     // 页面视图懒加载：首次进入路由时才创建，离开时可按需释放
     home_page_view: Option<Entity<crate::ui::views::home::HomePageView>>,
@@ -270,6 +294,7 @@ impl MainWindowView {
         self._reactor_subscriptions.push(subscription);
     }
 
+    #[cfg(target_os = "windows")]
     fn ensure_music_library_load_started(&mut self, cx: &mut Context<Self>) {
         if self.music_library_load_started {
             return;
@@ -1685,6 +1710,7 @@ impl Render for MainWindowView {
         if self.startup_deferred_ready {
             self.ensure_startup_route_bootstrapped(cx);
             self.ensure_route_controls(model.builtin_route, window, cx);
+            #[cfg(target_os = "windows")]
             self.ensure_music_library_load_started(cx);
         }
         request_animation_frame_if(window, model.quit_animating);

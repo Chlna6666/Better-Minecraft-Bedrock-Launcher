@@ -161,6 +161,12 @@ pub fn run() -> Result<()> {
         "configuration loaded and debug logging state applied"
     );
 
+    #[cfg(target_os = "linux")]
+    if launch_mode.is_main() {
+        crate::core::bedrock_auth::initialize();
+        debug!("startup Xbox account validation scheduled on the application IO runtime");
+    }
+
     if let LaunchMode::DirectLaunch(ref direct_ctx) = launch_mode {
         let version_config = runtime
             .block_on(crate::core::version::settings::get_version_config(

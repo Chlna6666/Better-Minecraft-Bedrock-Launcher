@@ -1,6 +1,7 @@
 use super::{
-    classify_runner_failure, incompatible_proton_prefix_needs_backup, normalize_runner_output_line,
-    proton_game_input_is_ready, sanitize_instance_folder_name, wine_z_path,
+    LaunchRequest, classify_runner_failure, incompatible_proton_prefix_needs_backup,
+    normalize_runner_output_line, proton_game_input_is_ready, request_uses_preview_data,
+    sanitize_instance_folder_name, wine_z_path,
 };
 use std::path::{Path, PathBuf};
 
@@ -74,6 +75,25 @@ fn protonfixes_external_launcher_warning_is_not_reported_as_unit_test() {
         ),
         "ProtonFixes: 外部启动器模式，跳过游戏专用 fixes"
     );
+}
+
+#[test]
+fn preview_launch_request_uses_preview_gdk_data_root() {
+    let request = LaunchRequest::new(
+        "1.21-preview",
+        "Minecraft Preview",
+        "1.21.0",
+        "/games/MinecraftWindowsBeta",
+    );
+
+    assert!(request_uses_preview_data(&request));
+}
+
+#[test]
+fn release_launch_request_uses_release_gdk_data_root() {
+    let request = LaunchRequest::new("1.21-release", "Minecraft", "1.21.0", "/games/Minecraft");
+
+    assert!(!request_uses_preview_data(&request));
 }
 
 #[test]
