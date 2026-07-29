@@ -75,6 +75,8 @@ wayland = [
     "winit/wayland",
     "winit/wayland-dlopen",
     "winit/wayland-csd-adwaita",
+    "dep:sctk-adwaita",
+    "dep:smithay-client-toolkit",
     "bytemuck",
     "ashpd/wayland",
     "calloop-wayland-source",
@@ -435,6 +437,15 @@ version = "1.0.6"
 [dependencies.smallvec]
 version = "1.6"
 features = ["union"]
+
+[dependencies.sctk-adwaita]
+version = "0.10.1"
+path = "../../vendor/sctk-adwaita"
+optional = true
+
+[dependencies.smithay-client-toolkit]
+version = "0.19.2"
+optional = true
 
 [dependencies.smol]
 version = "2.0"

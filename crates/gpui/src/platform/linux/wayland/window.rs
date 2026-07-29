@@ -1,13 +1,24 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
     ffi::c_void,
+    num::NonZeroU32,
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
+    time::Duration,
 };
 
 use collections::HashMap;
 use futures::channel::oneshot::Receiver;
+use sctk_adwaita::{AdwaitaFrame, FrameConfig, TitleMask};
+use smithay_client_toolkit::{
+    compositor::SurfaceData,
+    reexports::csd_frame::{
+        CursorIcon, DecorationsFrame, FrameAction, FrameClick, ResizeEdge as CsdResizeEdge,
+        WindowManagerCapabilities, WindowState,
+    },
+    shell::WaylandSurface,
+};
 
 use wayland_backend::client::ObjectId;
 use wayland_client::WEnum;
@@ -25,16 +36,17 @@ use winit::raw_window_handle as rwh;
 
 use crate::WindowKind;
 use crate::{
-    AnyWindowHandle, Bounds, Decorations, DevicePixels, FrameRenderPlan, Globals, GpuSpecs,
-    GpuiMemoryTrimLevel, Modifiers, Output, Pixels, PlatformDisplay, PlatformInput, Point,
-    PromptButton, PromptLevel, RendererOptions, RequestFrameOptions, ResizeEdge, Size, Tiling,
-    WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowControls, WindowDecorations, WindowParams, px, size,
+    AnyWindowHandle, Bounds, CursorStyle, Decorations, DevicePixels, FrameRenderPlan, Globals,
+    GpuSpecs, GpuiMemoryTrimLevel, Modifiers, MouseButton, Output, Pixels, PlatformDisplay,
+    PlatformInput, Point, PromptButton, PromptLevel, RendererOptions, RequestFrameOptions,
+    ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControlArea, WindowControls, WindowDecorations, WindowParams, point, px,
+    size,
 };
 use crate::{
     Capslock,
     platform::{
-        NovaRenderer, PlatformAtlas, PlatformInputHandler, PlatformWindow,
+        NovaRenderer, PlatformAtlas, PlatformInputHandler, PlatformTextSystem, PlatformWindow,
         linux::wayland::{display::WaylandDisplay, serial::SerialKind},
     },
 };
@@ -56,6 +68,14 @@ pub(crate) struct Callbacks {
 struct RawWindow {
     window: *mut c_void,
     display: *mut c_void,
+}
+
+struct BaseSurface(wl_surface::WlSurface);
+
+impl WaylandSurface for BaseSurface {
+    fn wl_surface(&self) -> &wl_surface::WlSurface {
+        &self.0
+    }
 }
 
 impl rwh::HasWindowHandle for RawWindow {
@@ -116,6 +136,11 @@ pub struct WaylandWindowState {
     client_inset: Option<Pixels>,
     pending_frame_request: RequestFrameOptions,
     frame_callback_pending: bool,
+    client_frame: Option<AdwaitaFrame<WaylandClientStatePtr>>,
+    text_system: Arc<dyn PlatformTextSystem>,
+    title: String,
+    requested_decorations: WindowDecorations,
+    decoration_mode_configured: bool,
 }
 
 #[derive(Clone)]
@@ -136,6 +161,7 @@ impl WaylandWindowState {
         client: WaylandClientStatePtr,
         globals: Globals,
         renderer_options: &RendererOptions,
+        text_system: Arc<dyn PlatformTextSystem>,
         options: WindowParams,
     ) -> anyhow::Result<Self> {
         let renderer = {
@@ -162,8 +188,49 @@ impl WaylandWindowState {
                 transparent,
             )?
         };
+        let title = options
+            .titlebar
+            .as_ref()
+            .and_then(|titlebar| titlebar.title.as_ref())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let client_frame = match (
+            options.titlebar.as_ref(),
+            globals.csd_compositor.as_ref(),
+            globals.csd_subcompositor.as_ref(),
+        ) {
+            (Some(_), Some(compositor), Some(subcompositor)) => {
+                match AdwaitaFrame::new(
+                    &BaseSurface(surface.clone()),
+                    &globals.csd_shm,
+                    compositor.clone(),
+                    subcompositor.clone(),
+                    globals.qh.clone(),
+                    match appearance {
+                        WindowAppearance::Dark | WindowAppearance::VibrantDark => {
+                            FrameConfig::dark().use_system_button_layout(false)
+                        }
+                        _ => FrameConfig::light().use_system_button_layout(false),
+                    },
+                ) {
+                    Ok(mut frame) => {
+                        frame.set_hidden(true);
+                        frame.set_resizable(options.is_resizable);
+                        frame.set_title(title.clone());
+                        Some(frame)
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "wayland: failed to create independent client decorations: {error}"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
 
-        Ok(Self {
+        let mut state = Self {
             xdg_surface,
             acknowledged_first_configure: false,
             surface,
@@ -197,7 +264,14 @@ impl WaylandWindowState {
             client_inset: None,
             pending_frame_request: RequestFrameOptions::default(),
             frame_callback_pending: false,
-        })
+            client_frame,
+            text_system,
+            title,
+            requested_decorations: WindowDecorations::Client,
+            decoration_mode_configured: false,
+        };
+        state.refresh_client_frame_title();
+        Ok(state)
     }
 
     pub fn is_transparent(&self) -> bool {
@@ -228,6 +302,135 @@ impl WaylandWindowState {
             WindowDecorations::Client => self.client_inset.unwrap_or(px(0.0)),
         }
     }
+
+    fn client_frame_visible(&self) -> bool {
+        self.requested_decorations == WindowDecorations::Server
+            && self.decorations == WindowDecorations::Client
+            && (self.decoration.is_none() || self.decoration_mode_configured)
+    }
+
+    fn client_frame_window_state(&self) -> WindowState {
+        let mut state = WindowState::empty();
+        state.set(WindowState::ACTIVATED, self.active);
+        state.set(WindowState::FULLSCREEN, self.fullscreen);
+        state.set(WindowState::MAXIMIZED, self.maximized);
+        state.set(WindowState::TILED_LEFT, self.tiling.left);
+        state.set(WindowState::TILED_RIGHT, self.tiling.right);
+        state.set(WindowState::TILED_TOP, self.tiling.top);
+        state.set(WindowState::TILED_BOTTOM, self.tiling.bottom);
+        state
+    }
+
+    fn client_frame_capabilities(&self) -> WindowManagerCapabilities {
+        let mut capabilities = WindowManagerCapabilities::empty();
+        capabilities.set(
+            WindowManagerCapabilities::WINDOW_MENU,
+            self.window_controls.window_menu,
+        );
+        capabilities.set(
+            WindowManagerCapabilities::MAXIMIZE,
+            self.window_controls.maximize,
+        );
+        capabilities.set(
+            WindowManagerCapabilities::FULLSCREEN,
+            self.window_controls.fullscreen,
+        );
+        capabilities.set(
+            WindowManagerCapabilities::MINIMIZE,
+            self.window_controls.minimize,
+        );
+        capabilities
+    }
+
+    fn refresh_client_frame(&mut self) {
+        let visible = self.client_frame_visible();
+        let window_state = self.client_frame_window_state();
+        let capabilities = self.client_frame_capabilities();
+        let scale = f64::from(self.scale);
+        let width = NonZeroU32::new(self.bounds.size.width.0.ceil().max(1.0) as u32);
+        let height = NonZeroU32::new(self.bounds.size.height.0.ceil().max(1.0) as u32);
+        let Some(frame) = self.client_frame.as_mut() else {
+            return;
+        };
+
+        if frame.is_hidden() == visible {
+            frame.set_hidden(!visible);
+        }
+        if !visible {
+            return;
+        }
+
+        frame.update_state(window_state);
+        frame.update_wm_capabilities(capabilities);
+        frame.set_scaling_factor(scale);
+        if let (Some(width), Some(height)) = (width, height) {
+            frame.resize(width, height);
+        }
+        if frame.is_dirty() {
+            frame.draw();
+        }
+    }
+
+    fn refresh_client_frame_title(&mut self) {
+        let frame_scale = self.scale.clamp(0.1, 64.0).ceil();
+        let title_mask =
+            crate::rasterize_platform_title(self.text_system.as_ref(), &self.title, frame_scale);
+        let Some(frame) = self.client_frame.as_mut() else {
+            return;
+        };
+
+        match title_mask {
+            Ok(Some(mask)) => {
+                let Some(mask) = TitleMask::new(mask.width, mask.height, mask.alpha) else {
+                    log::warn!("wayland: GPUI produced an invalid client decoration title mask");
+                    frame.clear_title_mask();
+                    return;
+                };
+                if !frame.set_title_mask(mask) {
+                    log::warn!("wayland: failed to install the GPUI-rendered title mask");
+                    frame.clear_title_mask();
+                }
+            }
+            Ok(None) => frame.clear_title_mask(),
+            Err(error) => {
+                log::warn!("wayland: failed to rasterize window title through GPUI: {error:#}");
+                frame.clear_title_mask();
+            }
+        }
+    }
+
+    fn client_frame_geometry(&self) -> Option<(Point<i32>, Size<i32>)> {
+        let frame = self
+            .client_frame
+            .as_ref()
+            .filter(|frame| !frame.is_hidden())?;
+        let (x, y) = frame.location();
+        let width = self.bounds.size.width.0.ceil().max(1.0) as u32;
+        let height = self.bounds.size.height.0.ceil().max(1.0) as u32;
+        let (width, height) = frame.add_borders(width, height);
+        Some((point(x, y), size(width as i32, height as i32)))
+    }
+
+    fn subtract_client_frame_borders(&self, configured_size: Size<Pixels>) -> Size<Pixels> {
+        let Some(frame) = self
+            .client_frame
+            .as_ref()
+            .filter(|frame| !frame.is_hidden())
+        else {
+            return configured_size;
+        };
+        let Some(width) = NonZeroU32::new(configured_size.width.0.ceil().max(1.0) as u32) else {
+            return configured_size;
+        };
+        let Some(height) = NonZeroU32::new(configured_size.height.0.ceil().max(1.0) as u32) else {
+            return configured_size;
+        };
+        let (width, height) = frame.subtract_borders(width, height);
+        size(
+            px(width.map_or(1.0, |value| value.get() as f32)),
+            px(height.map_or(1.0, |value| value.get() as f32)),
+        )
+    }
 }
 
 pub(crate) struct WaylandWindow(pub WaylandWindowStatePtr);
@@ -245,6 +448,7 @@ impl Drop for WaylandWindow {
         let client = state.client.clone();
 
         state.renderer.destroy();
+        state.client_frame.take();
         if let Some(decoration) = &state.decoration {
             decoration.destroy();
         }
@@ -284,12 +488,15 @@ impl WaylandWindow {
         handle: AnyWindowHandle,
         globals: Globals,
         renderer_options: &RendererOptions,
+        text_system: Arc<dyn PlatformTextSystem>,
         client: WaylandClientStatePtr,
         params: WindowParams,
         appearance: WindowAppearance,
         parent: Option<XdgToplevel>,
     ) -> anyhow::Result<(Self, ObjectId)> {
-        let surface = globals.compositor.create_surface(&globals.qh, ());
+        let surface = globals
+            .compositor
+            .create_surface(&globals.qh, SurfaceData::default());
         let xdg_surface = globals
             .wm_base
             .get_xdg_surface(&surface, &globals.qh, surface.id());
@@ -332,6 +539,7 @@ impl WaylandWindow {
                 client,
                 globals,
                 renderer_options,
+                text_system,
                 params,
             )?)),
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
@@ -359,6 +567,110 @@ impl WaylandWindowStatePtr {
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.state, &other.state)
+    }
+
+    pub fn handle_client_frame_pointer_motion(
+        &self,
+        surface_id: &ObjectId,
+        x: f64,
+        y: f64,
+        timestamp: u32,
+    ) -> Option<CursorStyle> {
+        let mut state = self.state.borrow_mut();
+        let Some(frame) = state.client_frame.as_mut() else {
+            return None;
+        };
+        let cursor = frame.click_point_moved(
+            Duration::from_millis(u64::from(timestamp)),
+            surface_id,
+            x,
+            y,
+        );
+        if cursor.is_some() && frame.is_dirty() {
+            frame.draw();
+            state.surface.commit();
+        }
+        cursor.map(client_frame_cursor_style)
+    }
+
+    pub fn handle_client_frame_pointer_leave(&self) {
+        let mut state = self.state.borrow_mut();
+        if let Some(frame) = state.client_frame.as_mut() {
+            frame.click_point_left();
+            if frame.is_dirty() {
+                frame.draw();
+                state.surface.commit();
+            }
+        }
+    }
+
+    pub fn handle_client_frame_pointer_button(
+        &self,
+        timestamp: u32,
+        button: MouseButton,
+        pressed: bool,
+    ) {
+        let click = match button {
+            MouseButton::Left => FrameClick::Normal,
+            MouseButton::Right => FrameClick::Alternate,
+            _ => return,
+        };
+        let action = {
+            let mut state = self.state.borrow_mut();
+            let Some(frame) = state.client_frame.as_mut() else {
+                return;
+            };
+            let action =
+                frame.on_click(Duration::from_millis(u64::from(timestamp)), click, pressed);
+            if frame.is_dirty() {
+                frame.draw();
+                state.surface.commit();
+            }
+            action
+        };
+        if let Some(action) = action {
+            self.apply_client_frame_action(action);
+        }
+    }
+
+    fn apply_client_frame_action(&self, action: FrameAction) {
+        let state = self.state.borrow();
+        match action {
+            FrameAction::Minimize => state.toplevel.set_minimized(),
+            FrameAction::Maximize => state.toplevel.set_maximized(),
+            FrameAction::UnMaximize => state.toplevel.unset_maximized(),
+            FrameAction::Move => state.toplevel._move(
+                &state.globals.seat,
+                state.client.serial(SerialKind::MousePress),
+            ),
+            FrameAction::Resize(edge) => state.toplevel.resize(
+                &state.globals.seat,
+                state.client.serial(SerialKind::MousePress),
+                client_frame_resize_edge(edge),
+            ),
+            FrameAction::ShowMenu(x, y) => state.toplevel.show_window_menu(
+                &state.globals.seat,
+                state.client.serial(SerialKind::MousePress),
+                x,
+                y,
+            ),
+            FrameAction::Close => {
+                drop(state);
+                let mut callbacks = self.callbacks.borrow_mut();
+                let should_close = if let Some(mut callback) = callbacks.should_close.take() {
+                    let result = callback();
+                    callbacks.should_close = Some(callback);
+                    result
+                } else {
+                    true
+                };
+                drop(callbacks);
+                if should_close {
+                    self.close();
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn request_frame(&self, options: RequestFrameOptions) {
@@ -404,6 +716,8 @@ impl WaylandWindowStatePtr {
                 let mut state = self.state.borrow_mut();
                 if let Some(window_controls) = state.in_progress_window_controls.take() {
                     state.window_controls = window_controls;
+                    state.refresh_client_frame();
+                    state.surface.commit();
 
                     drop(state);
                     let mut callbacks = self.callbacks.borrow_mut();
@@ -420,6 +734,7 @@ impl WaylandWindowStatePtr {
                     state.fullscreen = configure.fullscreen;
                     state.maximized = configure.maximized;
                     state.tiling = configure.tiling;
+                    state.refresh_client_frame();
                     // Limit interactive resizes to once per vblank
                     if configure.resizing && state.resize_throttle {
                         return;
@@ -448,19 +763,23 @@ impl WaylandWindowStatePtr {
             let mut state = self.state.borrow_mut();
             state.xdg_surface.ack_configure(serial);
 
-            let window_geometry = inset_by_tiling(
-                state.bounds.map_origin(|_| px(0.0)),
-                state.inset(),
-                state.tiling,
-            )
-            .map(|v| v.0 as i32)
-            .map_size(|v| if v <= 0 { 1 } else { v });
+            state.refresh_client_frame();
+            let window_geometry = state.client_frame_geometry().unwrap_or_else(|| {
+                let bounds = inset_by_tiling(
+                    state.bounds.map_origin(|_| px(0.0)),
+                    state.inset(),
+                    state.tiling,
+                )
+                .map(|value| value.0 as i32)
+                .map_size(|value| if value <= 0 { 1 } else { value });
+                (bounds.origin, bounds.size)
+            });
 
             state.xdg_surface.set_window_geometry(
-                window_geometry.origin.x,
-                window_geometry.origin.y,
-                window_geometry.size.width,
-                window_geometry.size.height,
+                window_geometry.0.x,
+                window_geometry.0.y,
+                window_geometry.1.width,
+                window_geometry.1.height,
             );
 
             let request_frame_callback = !state.acknowledged_first_configure;
@@ -474,29 +793,33 @@ impl WaylandWindowStatePtr {
 
     pub fn handle_toplevel_decoration_event(&self, event: zxdg_toplevel_decoration_v1::Event) {
         if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
-            match mode {
+            let decorations = match mode {
                 WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ServerSide) => {
-                    self.state.borrow_mut().decorations = WindowDecorations::Server;
-                    if let Some(mut appearance_changed) =
-                        self.callbacks.borrow_mut().appearance_changed.as_mut()
-                    {
-                        appearance_changed();
-                    }
+                    Some(WindowDecorations::Server)
                 }
                 WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ClientSide) => {
-                    self.state.borrow_mut().decorations = WindowDecorations::Client;
-                    // Update background to be transparent
-                    if let Some(mut appearance_changed) =
-                        self.callbacks.borrow_mut().appearance_changed.as_mut()
-                    {
-                        appearance_changed();
-                    }
+                    Some(WindowDecorations::Client)
                 }
                 WEnum::Value(_) => {
                     log::warn!("Unknown decoration mode");
+                    None
                 }
                 WEnum::Unknown(v) => {
                     log::warn!("Unknown decoration mode: {}", v);
+                    None
+                }
+            };
+            if let Some(decorations) = decorations {
+                let mut state = self.state.borrow_mut();
+                state.decorations = decorations;
+                state.decoration_mode_configured = true;
+                state.refresh_client_frame();
+                state.surface.commit();
+                drop(state);
+                if let Some(appearance_changed) =
+                    self.callbacks.borrow_mut().appearance_changed.as_mut()
+                {
+                    appearance_changed();
                 }
             }
         }
@@ -560,6 +883,9 @@ impl WaylandWindowStatePtr {
                 }
 
                 let mut state = self.state.borrow_mut();
+                if !fullscreen {
+                    size = size.map(|size| state.subtract_client_frame_borders(size));
+                }
                 state.in_progress_configure = Some(InProgressConfigure {
                     size,
                     fullscreen,
@@ -716,9 +1042,12 @@ impl WaylandWindowStatePtr {
             }
             if let Some(scale) = scale {
                 state.scale = scale;
+                state.refresh_client_frame_title();
             }
             let device_bounds = state.bounds.to_device_pixels(state.scale);
             state.renderer.update_drawable_size(device_bounds.size);
+            state.refresh_client_frame();
+            state.surface.commit();
             (state.bounds.size, state.scale)
         };
 
@@ -769,7 +1098,11 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn set_focused(&self, is_focused: bool) {
-        self.state.borrow_mut().active = is_focused;
+        let mut state = self.state.borrow_mut();
+        state.active = is_focused;
+        state.refresh_client_frame();
+        state.surface.commit();
+        drop(state);
         if let Some(ref mut fun) = self.callbacks.borrow_mut().active_status_change {
             fun(is_focused);
         }
@@ -782,7 +1115,19 @@ impl WaylandWindowStatePtr {
     }
 
     pub fn set_appearance(&mut self, appearance: WindowAppearance) {
-        self.state.borrow_mut().appearance = appearance;
+        let mut state = self.state.borrow_mut();
+        state.appearance = appearance;
+        if let Some(frame) = state.client_frame.as_mut() {
+            frame.set_config(match appearance {
+                WindowAppearance::Dark | WindowAppearance::VibrantDark => {
+                    FrameConfig::dark().use_system_button_layout(false)
+                }
+                _ => FrameConfig::light().use_system_button_layout(false),
+            });
+        }
+        state.refresh_client_frame();
+        state.surface.commit();
+        drop(state);
 
         let mut callbacks = self.callbacks.borrow_mut();
         if let Some(ref mut fun) = callbacks.appearance_changed {
@@ -792,6 +1137,38 @@ impl WaylandWindowStatePtr {
 
     pub fn primary_output_scale(&self) -> i32 {
         self.state.borrow_mut().primary_output_scale()
+    }
+}
+
+fn client_frame_resize_edge(edge: CsdResizeEdge) -> xdg_toplevel::ResizeEdge {
+    match edge {
+        CsdResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
+        CsdResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+        CsdResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
+        CsdResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
+        CsdResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+        CsdResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
+        CsdResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+        CsdResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+        _ => xdg_toplevel::ResizeEdge::None,
+    }
+}
+
+fn client_frame_cursor_style(cursor: CursorIcon) -> CursorStyle {
+    match cursor {
+        CursorIcon::EResize => CursorStyle::ResizeRight,
+        CursorIcon::WResize => CursorStyle::ResizeLeft,
+        CursorIcon::EwResize => CursorStyle::ResizeLeftRight,
+        CursorIcon::NResize => CursorStyle::ResizeUp,
+        CursorIcon::SResize => CursorStyle::ResizeDown,
+        CursorIcon::NsResize => CursorStyle::ResizeUpDown,
+        CursorIcon::NeResize | CursorIcon::SwResize | CursorIcon::NeswResize => {
+            CursorStyle::ResizeUpRightDownLeft
+        }
+        CursorIcon::NwResize | CursorIcon::SeResize | CursorIcon::NwseResize => {
+            CursorStyle::ResizeUpLeftDownRight
+        }
+        _ => CursorStyle::Arrow,
     }
 }
 
@@ -971,7 +1348,16 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn set_title(&mut self, title: &str) {
-        self.borrow().toplevel.set_title(title.to_string());
+        let mut state = self.borrow_mut();
+        state.toplevel.set_title(title.to_string());
+        state.title.clear();
+        state.title.push_str(title);
+        if let Some(frame) = state.client_frame.as_mut() {
+            frame.set_title(title.to_string());
+        }
+        state.refresh_client_frame_title();
+        state.refresh_client_frame();
+        state.surface.commit();
     }
 
     fn set_app_id(&mut self, app_id: &str) {
@@ -1130,12 +1516,24 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn request_decorations(&self, decorations: WindowDecorations) {
-        let state = self.borrow();
+        let mut state = self.borrow_mut();
+        state.requested_decorations = decorations;
         if let Some(decoration) = state.decoration.as_ref() {
             decoration.set_mode(decorations.to_xdg());
-        } else if decorations == WindowDecorations::Server {
+        } else {
+            state.decorations = WindowDecorations::Client;
+            state.decoration_mode_configured = true;
+            if decorations == WindowDecorations::Server {
+                log::info!(
+                    "wayland: server-side decorations unavailable; using independent client decorations"
+                );
+            }
+        }
+        state.refresh_client_frame();
+        state.surface.commit();
+        if decorations == WindowDecorations::Server && state.client_frame.is_none() {
             log::info!(
-                "wayland: server-side decorations unavailable; keeping client-side decorations"
+                "wayland: independent client decorations unavailable; window remains undecorated"
             );
         }
     }
@@ -1279,4 +1677,25 @@ fn inset_by_tiling(mut bounds: Bounds<Pixels>, inset: Pixels, tiling: Tiling) ->
     }
 
     bounds
+}
+
+#[cfg(test)]
+mod client_frame_tests {
+    use super::*;
+
+    #[test]
+    fn maps_client_frame_resize_cursors() {
+        assert_eq!(
+            client_frame_cursor_style(CursorIcon::NResize),
+            CursorStyle::ResizeUp
+        );
+        assert_eq!(
+            client_frame_cursor_style(CursorIcon::SeResize),
+            CursorStyle::ResizeUpLeftDownRight
+        );
+        assert_eq!(
+            client_frame_cursor_style(CursorIcon::SwResize),
+            CursorStyle::ResizeUpRightDownLeft
+        );
+    }
 }

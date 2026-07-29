@@ -171,9 +171,9 @@ pub struct WindowOptions {
     /// Whether to use client- or server-side decorations on Linux.
     ///
     /// A compositor may reject server-side decorations. In that case GPUI
-    /// renders a titlebar fallback when [`Self::titlebar`] is configured.
-    /// Applications that select [`WindowDecorations::Client`] remain
-    /// responsible for drawing their own window chrome.
+    /// renders a titlebar outside the application's content coordinate space
+    /// when [`Self::titlebar`] is configured. Applications that select
+    /// [`WindowDecorations::Client`] remain responsible for their own chrome.
     pub window_decorations: Option<WindowDecorations>,
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.

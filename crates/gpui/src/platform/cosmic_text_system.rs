@@ -291,6 +291,26 @@ impl CosmicTextSystemState {
 
         self.font_system.db_mut().load_system_fonts();
         self.system_fonts_loaded = true;
+
+        #[cfg(target_os = "linux")]
+        {
+            let resolved_family: SharedString =
+                resolved_platform_font_name(&self.font_system).into();
+            self.font_system
+                .db_mut()
+                .set_sans_serif_family(resolved_family.to_string());
+            self.platform_font_family = resolved_family;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        if !font_family_exists(&self.font_system, self.platform_font_family.as_ref()) {
+            let resolved_family: SharedString =
+                resolved_platform_font_name(&self.font_system).into();
+            self.font_system
+                .db_mut()
+                .set_sans_serif_family(resolved_family.to_string());
+            self.platform_font_family = resolved_family;
+        }
         self.font_ids_by_family_cache.clear();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
@@ -316,17 +336,29 @@ impl CosmicTextSystemState {
     }
 
     fn set_application_font_family(&mut self, family: SharedString) {
-        self.platform_font_family = family.clone();
+        let requested_family = family;
+        let resolved_family: SharedString = if requested_family.as_ref() == ".SystemUIFont" {
+            self.ensure_system_fonts_loaded();
+            resolved_platform_font_name(&self.font_system).into()
+        } else {
+            requested_family.clone()
+        };
+        self.platform_font_family = resolved_family.clone();
+        #[cfg(not(target_os = "linux"))]
         self.font_system
             .db_mut()
-            .set_sans_serif_family(family.to_string());
+            .set_sans_serif_family(resolved_family.to_string());
         self.font_ids_by_family_cache.clear();
         self.swash_cache = SwashCache::new();
         self.cjk_frame_bounds_cache.clear();
         self.system_coverage_fallback_face = None;
         self.system_coverage_fallback_computed = false;
         self.coverage_best_fallback_logged = false;
-        log::info!("gpui_text_font: application_font_family=\"{}\"", family);
+        log::info!(
+            "gpui_text_font: application_font_family=\"{}\" resolved_family=\"{}\"",
+            requested_family,
+            resolved_family
+        );
     }
 
     fn automatic_system_fallback_chain(
@@ -538,6 +570,7 @@ impl CosmicTextSystemState {
         automatic_fallbacks: bool,
         source_selection: FontSourceSelection,
     ) -> Result<SmallVec<[FontId; 4]>> {
+        let requested_name = name;
         let automatic_system_fallback = automatic_fallbacks
             && fallbacks.is_none_or(|fallbacks| fallbacks.fallback_list().is_empty());
         let user_fallback_chain: Arc<[(FontId, SharedString)]> = match fallbacks {
@@ -603,7 +636,7 @@ impl CosmicTextSystemState {
         if families.is_empty() && !self.system_fonts_loaded {
             self.ensure_system_fonts_loaded();
             return self.load_family(
-                &name,
+                requested_name,
                 features,
                 fallbacks,
                 automatic_fallbacks,
@@ -1657,7 +1690,7 @@ fn ensure_rgba_len(actual_len: usize, pixel_count: usize, description: &str) -> 
 }
 
 #[cfg(target_os = "windows")]
-fn platform_system_font_name_impl() -> String {
+fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
     let mut info = LOGFONTW::default();
     let result = unsafe {
         SystemParametersInfoW(
@@ -1680,17 +1713,170 @@ fn platform_system_font_name_impl() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn platform_system_font_name_impl() -> String {
+fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
     ".AppleSystemUIFont".to_owned()
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn platform_system_font_name_impl() -> String {
+#[cfg(target_os = "linux")]
+fn platform_system_font_name_impl(font_system: &FontSystem) -> String {
+    if let Some(family) = linux_desktop_font_family(font_system) {
+        return family;
+    }
+
+    font_system
+        .db()
+        .family_name(&Family::SansSerif)
+        .trim()
+        .to_owned()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_desktop_font_family(font_system: &FontSystem) -> Option<String> {
+    if font_system.db().is_empty() {
+        return None;
+    }
+
+    let description = linux_desktop_font_description()?;
+    installed_family_from_font_description(font_system, &description)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_desktop_font_description() -> Option<String> {
+    let desktops = [
+        std::env::var_os("XDG_CURRENT_DESKTOP"),
+        std::env::var_os("XDG_SESSION_DESKTOP"),
+        std::env::var_os("DESKTOP_SESSION"),
+    ]
+    .into_iter()
+    .flatten()
+    .flat_map(|desktop| {
+        desktop
+            .to_string_lossy()
+            .split(':')
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+    })
+    .collect::<Vec<_>>();
+
+    for desktop in desktops {
+        let description = match desktop.as_str() {
+            "gnome" | "ubuntu" | "unity" | "budgie" => {
+                query_gsettings_font("org.gnome.desktop.interface", "font-name")
+            }
+            "cinnamon" | "x-cinnamon" => {
+                query_gsettings_font("org.cinnamon.desktop.interface", "font-name")
+            }
+            "mate" => query_gsettings_font("org.mate.interface", "font-name"),
+            "kde" | "plasma" => query_kde_font(),
+            "xfce" => {
+                query_command_font("xfconf-query", &["-c", "xsettings", "-p", "/Gtk/FontName"])
+            }
+            "pantheon" => query_gsettings_font("io.elementary.desktop.interface", "font-name"),
+            "deepin" | "dde" => query_gsettings_font("com.deepin.dde.appearance", "font"),
+            "ukui" => query_gsettings_font("org.ukui.style", "system-font"),
+            _ => None,
+        };
+        if let Some(description) = description {
+            return Some(description);
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn query_gsettings_font(schema: &str, key: &str) -> Option<String> {
+    query_command_font("gsettings", &["get", schema, key])
+}
+
+#[cfg(target_os = "linux")]
+fn query_kde_font() -> Option<String> {
+    query_command_font(
+        "kreadconfig6",
+        &[
+            "--file",
+            "kdeglobals",
+            "--group",
+            "General",
+            "--key",
+            "font",
+        ],
+    )
+    .or_else(|| {
+        query_command_font(
+            "kreadconfig5",
+            &[
+                "--file",
+                "kdeglobals",
+                "--group",
+                "General",
+                "--key",
+                "font",
+            ],
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn query_command_font(command: &str, arguments: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(command)
+        .args(arguments)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let output = String::from_utf8(output.stdout).ok()?;
+    let output = output.trim();
+    (!output.is_empty()).then(|| output.to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn installed_family_from_font_description(
+    font_system: &FontSystem,
+    description: &str,
+) -> Option<String> {
+    matching_family_from_font_description(
+        description,
+        font_system
+            .db()
+            .faces()
+            .filter_map(|face| face.families.first().map(|family| family.0.as_str())),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn matching_family_from_font_description<'a>(
+    description: &str,
+    families: impl Iterator<Item = &'a str>,
+) -> Option<String> {
+    let description = description
+        .trim()
+        .trim_matches(|character| character == '\'' || character == '"');
+    let description_lowercase = description.to_lowercase();
+
+    families
+        .filter(|family| {
+            let family_lowercase = family.to_lowercase();
+            description_lowercase == family_lowercase
+                || description_lowercase
+                    .strip_prefix(&family_lowercase)
+                    .is_some_and(|suffix| {
+                        suffix.starts_with(char::is_whitespace) || suffix.starts_with(',')
+                    })
+        })
+        .max_by_key(|family| family.len())
+        .map(str::to_owned)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn platform_system_font_name_impl(_font_system: &FontSystem) -> String {
     "IBM Plex Sans".to_owned()
 }
 
 fn resolved_platform_font_name(font_system: &FontSystem) -> String {
-    let preferred = platform_system_font_name_impl();
+    let preferred = platform_system_font_name_impl(font_system);
     if font_family_exists(font_system, &preferred) {
         return preferred;
     }
@@ -1779,6 +1965,63 @@ fn platform_font_fallbacks() -> &'static [&'static str] {
         "DejaVu Sans",
         "Arial",
     ]
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    #[test]
+    fn platform_font_prefers_configured_sans_serif_family() {
+        let mut database = cosmic_text::fontdb::Database::new();
+        database.set_sans_serif_family("User Preferred Sans");
+        let font_system = FontSystem::new_with_locale_and_db("en-US".to_owned(), database);
+
+        assert_eq!(
+            platform_system_font_name_impl(&font_system),
+            "User Preferred Sans"
+        );
+        assert_eq!(
+            resolved_platform_font_name(&font_system),
+            "User Preferred Sans"
+        );
+    }
+
+    #[test]
+    fn desktop_font_description_prefers_longest_installed_family() {
+        assert_eq!(
+            matching_family_from_font_description(
+                "'Maple Mono NF CN Medium 11'",
+                ["Maple Mono", "Maple Mono NF CN", "Noto Sans"].into_iter(),
+            ),
+            Some("Maple Mono NF CN".to_owned())
+        );
+    }
+
+    #[test]
+    fn active_desktop_font_precedes_fontconfig_default() {
+        let text_system = CosmicTextSystem::new();
+        let mut state = text_system.0.write();
+        state.ensure_system_fonts_loaded();
+        let Some(expected_family) = linux_desktop_font_family(&state.font_system) else {
+            return;
+        };
+
+        assert_eq!(state.platform_font_family.as_ref(), expected_family);
+    }
+
+    #[test]
+    fn custom_font_does_not_replace_system_default_mapping() {
+        let text_system = CosmicTextSystem::new();
+        let mut state = text_system.0.write();
+        state.ensure_system_fonts_loaded();
+        let expected_system_family = resolved_platform_font_name(&state.font_system);
+
+        state.set_application_font_family("Application Custom Font".into());
+        state.set_application_font_family(".SystemUIFont".into());
+
+        assert_eq!(state.platform_font_family.as_ref(), expected_system_family);
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]

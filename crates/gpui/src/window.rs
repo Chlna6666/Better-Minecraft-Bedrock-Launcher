@@ -137,6 +137,7 @@ use state::{
 pub(crate) use state::{DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame};
 pub(crate) use tab_stop::*;
 pub use titlebar::TitlebarGestureState;
+pub(crate) use titlebar::rasterize_platform_title;
 use titlebar::{
     glyph_device_origin, resize_edge_cursor_style, resize_edge_hit_test,
     svg_paint_bounds_for_requested_bounds, svg_raster_size_for_paint_bounds,

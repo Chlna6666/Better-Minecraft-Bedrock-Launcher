@@ -149,14 +149,6 @@ pub(crate) struct DispatchEventResult {
     pub default_prevented: bool,
 }
 
-#[cfg(target_os = "linux")]
-#[derive(Clone, Debug)]
-pub(super) struct ServerTitlebarFallback {
-    pub(super) title: SharedString,
-    pub(super) is_minimizable: bool,
-    pub(super) is_maximizable: bool,
-}
-
 /// Bounds accumulation state for one view being painted.
 ///
 /// `scanned_until` is the scene index up to which this view's paint operations have already
@@ -173,8 +165,6 @@ pub struct Window {
     pub(crate) invalidator: WindowInvalidator,
     pub(crate) removed: bool,
     pub(crate) platform_window: Box<dyn PlatformWindow>,
-    #[cfg(target_os = "linux")]
-    pub(super) server_titlebar_fallback: Option<ServerTitlebarFallback>,
     pub(super) display_id: Option<DisplayId>,
     pub(super) sprite_atlas: Arc<dyn PlatformAtlas>,
     pub(super) text_system: Arc<WindowTextSystem>,

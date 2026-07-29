@@ -1,4 +1,177 @@
 use super::*;
+use crate::{FontRun, FontWeight, GlyphRasterization, PlatformTextSystem, RenderGlyphParams, font};
+
+const PLATFORM_TITLE_FONT_SIZE: Pixels = px(14.0);
+const PLATFORM_TITLE_MASK_PADDING: i32 = 1;
+
+pub(crate) struct PlatformTitleMask {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) alpha: Vec<u8>,
+}
+
+struct RasterizedTitleGlyph {
+    origin: Point<i32>,
+    size: Size<DevicePixels>,
+    alpha: Vec<u8>,
+}
+
+pub(crate) fn rasterize_platform_title(
+    text_system: &dyn PlatformTextSystem,
+    title: &str,
+    scale_factor: f32,
+) -> Result<Option<PlatformTitleMask>> {
+    if title.is_empty() || !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return Ok(None);
+    }
+
+    let mut title_font = font(".SystemUIFont");
+    title_font.weight = FontWeight::NORMAL;
+    let normal_font_id = text_system.font_id(&title_font)?;
+    title_font.weight = FontWeight::SEMIBOLD;
+    let font_id = match text_system.font_id(&title_font) {
+        Ok(font_id) => font_id,
+        Err(error) => {
+            log::debug!("platform title font has no semibold face; using normal weight: {error:#}");
+            normal_font_id
+        }
+    };
+    let layout = text_system.layout_line(
+        title,
+        PLATFORM_TITLE_FONT_SIZE,
+        &[FontRun {
+            len: title.len(),
+            font_id,
+        }],
+    );
+    let baseline = px((layout.ascent.0 * scale_factor).round() / scale_factor);
+    let mut glyph_origin = point(px(0.0), px(0.0));
+    let mut previous_glyph_position = Point::default();
+    let mut rasterized_glyphs = Vec::new();
+    let mut minimum = point(i32::MAX, i32::MAX);
+    let mut maximum = point(i32::MIN, i32::MIN);
+
+    for run in &layout.runs {
+        for glyph in &run.glyphs {
+            glyph_origin.x += glyph.position.x - previous_glyph_position.x;
+            previous_glyph_position = glyph.position;
+            let paint_origin = glyph_origin + glyph.render_offset + point(px(0.0), baseline);
+            let (_, subpixel_variant) =
+                glyph_device_origin(paint_origin, Point::default(), scale_factor);
+            let params = RenderGlyphParams {
+                font_id: run.font_id,
+                glyph_id: glyph.id,
+                font_size: glyph.font_size,
+                subpixel_variant,
+                scale_factor,
+                is_emoji: glyph.is_emoji,
+                is_cjk: glyph.is_cjk,
+            };
+            let raster_bounds = text_system.glyph_raster_bounds(&params)?;
+            if raster_bounds.size.width.0 <= 0 || raster_bounds.size.height.0 <= 0 {
+                continue;
+            }
+            let rasterization = text_system.rasterize_glyph(&params, raster_bounds)?;
+            let (size, alpha) = match rasterization {
+                GlyphRasterization::Bitmap { size, bytes } => (size, bytes),
+                GlyphRasterization::ColorLayers { fallback, .. } => (fallback.size, fallback.bytes),
+            };
+            if size.width.0 <= 0 || size.height.0 <= 0 {
+                continue;
+            }
+
+            let (device_origin, _) =
+                glyph_device_origin(paint_origin, raster_bounds.origin, scale_factor);
+            let origin = point(device_origin.x.0 as i32, device_origin.y.0 as i32);
+            minimum.x = minimum.x.min(origin.x);
+            minimum.y = minimum.y.min(origin.y);
+            maximum.x = maximum.x.max(origin.x.saturating_add(size.width.0));
+            maximum.y = maximum.y.max(origin.y.saturating_add(size.height.0));
+            rasterized_glyphs.push(RasterizedTitleGlyph {
+                origin,
+                size,
+                alpha,
+            });
+        }
+    }
+
+    if rasterized_glyphs.is_empty() {
+        return Ok(None);
+    }
+
+    let width = maximum
+        .x
+        .saturating_sub(minimum.x)
+        .saturating_add(PLATFORM_TITLE_MASK_PADDING * 2);
+    let height = maximum
+        .y
+        .saturating_sub(minimum.y)
+        .saturating_add(PLATFORM_TITLE_MASK_PADDING * 2);
+    let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
+        return Ok(None);
+    };
+    let Some(pixel_count) = usize::try_from(width).ok().and_then(|width| {
+        usize::try_from(height)
+            .ok()
+            .and_then(|height| width.checked_mul(height))
+    }) else {
+        return Ok(None);
+    };
+    let mut title_alpha = vec![0; pixel_count];
+
+    for glyph in rasterized_glyphs {
+        let glyph_width = usize::try_from(glyph.size.width.0).unwrap_or_default();
+        let glyph_height = usize::try_from(glyph.size.height.0).unwrap_or_default();
+        if glyph_width == 0
+            || glyph_height == 0
+            || glyph.alpha.len() != glyph_width.saturating_mul(glyph_height)
+        {
+            continue;
+        }
+        let destination_x = glyph
+            .origin
+            .x
+            .saturating_sub(minimum.x)
+            .saturating_add(PLATFORM_TITLE_MASK_PADDING);
+        let destination_y = glyph
+            .origin
+            .y
+            .saturating_sub(minimum.y)
+            .saturating_add(PLATFORM_TITLE_MASK_PADDING);
+        let (Ok(destination_x), Ok(destination_y)) = (
+            usize::try_from(destination_x),
+            usize::try_from(destination_y),
+        ) else {
+            continue;
+        };
+        let output_width = width as usize;
+        let output_height = height as usize;
+
+        for row in 0..glyph_height {
+            let output_y = destination_y.saturating_add(row);
+            if output_y >= output_height {
+                break;
+            }
+            for column in 0..glyph_width {
+                let output_x = destination_x.saturating_add(column);
+                if output_x >= output_width {
+                    break;
+                }
+                let source = glyph.alpha[row * glyph_width + column];
+                let destination = &mut title_alpha[output_y * output_width + output_x];
+                let remaining = u16::from(*destination) * u16::from(255 - source) / 255;
+                *destination =
+                    u8::try_from(u16::from(source).saturating_add(remaining)).unwrap_or(u8::MAX);
+            }
+        }
+    }
+
+    Ok(Some(PlatformTitleMask {
+        width,
+        height,
+        alpha: title_alpha,
+    }))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GlyphSubpixelBin {
@@ -368,5 +541,18 @@ mod titlebar_gesture_tests {
             svg_raster_size_for_paint_bounds(paint_bounds),
             size(DevicePixels(32), DevicePixels(44))
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[test]
+    fn rasterizes_native_title_with_gpui_text_system() {
+        let text_system = crate::CosmicTextSystem::new();
+        text_system.set_application_font_family(".SystemUIFont".into());
+        let title = rasterize_platform_title(&text_system, "地图预览 - 我的世界", 1.0)
+            .expect("GPUI title rasterization should succeed")
+            .expect("non-empty title should produce a mask");
+
+        assert!(title.width > title.height);
+        assert!(title.alpha.iter().any(|alpha| *alpha != 0));
     }
 }

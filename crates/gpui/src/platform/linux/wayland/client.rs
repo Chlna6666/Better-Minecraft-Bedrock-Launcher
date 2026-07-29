@@ -4,6 +4,7 @@ use std::{
     os::fd::{AsRawFd, BorrowedFd},
     path::PathBuf,
     rc::{Rc, Weak},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -18,6 +19,12 @@ use collections::HashMap;
 use filedescriptor::Pipe;
 use http_client::Url;
 use smallvec::SmallVec;
+use smithay_client_toolkit::{
+    compositor::{CompositorState, SurfaceData},
+    globals::GlobalData,
+    shm::Shm,
+    subcompositor::{SubcompositorState, SubsurfaceData},
+};
 use util::ResultExt;
 use wayland_backend::client::ObjectId;
 use wayland_backend::protocol::WEnum;
@@ -29,6 +36,7 @@ use wayland_client::protocol::wl_data_offer::WlDataOffer;
 use wayland_client::protocol::wl_pointer::AxisSource;
 use wayland_client::protocol::{
     wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source, wl_output, wl_region,
+    wl_subcompositor, wl_subsurface,
 };
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
@@ -113,12 +121,15 @@ pub struct Globals {
     pub qh: QueueHandle<WaylandClientStatePtr>,
     pub activation: Option<xdg_activation_v1::XdgActivationV1>,
     pub compositor: wl_compositor::WlCompositor,
+    pub csd_compositor: Option<Arc<CompositorState>>,
+    pub csd_subcompositor: Option<Arc<SubcompositorState>>,
     pub cursor_shape_manager: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
     pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
     pub primary_selection_manager:
         Option<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1>,
     pub wm_base: xdg_wm_base::XdgWmBase,
     pub shm: wl_shm::WlShm,
+    pub csd_shm: Arc<Shm>,
     pub seat: wl_seat::WlSeat,
     pub viewporter: Option<wp_viewporter::WpViewporter>,
     pub fractional_scale_manager:
@@ -136,6 +147,13 @@ impl Globals {
         qh: QueueHandle<WaylandClientStatePtr>,
         seat: wl_seat::WlSeat,
     ) -> Self {
+        let csd_compositor = CompositorState::bind(&globals, &qh).ok().map(Arc::new);
+        let csd_subcompositor = csd_compositor.as_ref().and_then(|compositor| {
+            SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh)
+                .ok()
+                .map(Arc::new)
+        });
+        let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
         Globals {
             activation: globals.bind(&qh, 1..=1, ()).ok(),
             compositor: globals
@@ -146,6 +164,8 @@ impl Globals {
                     (),
                 )
                 .unwrap(),
+            csd_compositor,
+            csd_subcompositor,
             cursor_shape_manager: globals.bind(&qh, 1..=1, ()).ok(),
             data_device_manager: globals
                 .bind(
@@ -155,7 +175,8 @@ impl Globals {
                 )
                 .ok(),
             primary_selection_manager: globals.bind(&qh, 1..=1, ()).ok(),
-            shm: globals.bind(&qh, 1..=1, ()).unwrap(),
+            csd_shm: Arc::new(Shm::from(shm.clone())),
+            shm,
             seat,
             wm_base: globals.bind(&qh, 2..=5, ()).unwrap(),
             viewporter: globals.bind(&qh, 1..=1, ()).ok(),
@@ -235,6 +256,8 @@ pub(crate) struct WaylandClientState {
     enter_token: Option<()>,
     button_pressed: Option<MouseButton>,
     mouse_focused_window: Option<WaylandWindowStatePtr>,
+    client_frame_focused_window: Option<WaylandWindowStatePtr>,
+    client_frame_focused_surface: Option<ObjectId>,
     keyboard_focused_window: Option<WaylandWindowStatePtr>,
     loop_handle: LoopHandle<'static, WaylandClientStatePtr>,
     cursor_style: Option<CursorStyle>,
@@ -612,6 +635,8 @@ impl WaylandClient {
             horizontal_modifier: -1.0,
             button_pressed: None,
             mouse_focused_window: None,
+            client_frame_focused_window: None,
+            client_frame_focused_surface: None,
             keyboard_focused_window: None,
             loop_handle: handle.clone(),
             enter_token: None,
@@ -703,11 +728,13 @@ impl LinuxClient for WaylandClient {
         let mut state = self.0.borrow_mut();
 
         let parent = state.keyboard_focused_window.as_ref().map(|w| w.toplevel());
+        let text_system = state.common.text_system.clone();
 
         let (window, surface_id) = WaylandWindow::new(
             handle,
             state.globals.clone(),
             &state.renderer_options,
+            text_system,
             WaylandClientStatePtr(Rc::downgrade(&self.0)),
             params,
             state.common.appearance,
@@ -999,6 +1026,67 @@ impl Dispatch<wl_surface::WlSurface, ()> for WaylandClientStatePtr {
         let mut client = this.client();
         let mut state = client.borrow_mut();
 
+        let Some(window) = window_for_surface(&mut state, &surface.id()) else {
+            return;
+        };
+        #[allow(clippy::mutable_key_type)]
+        let outputs = state.outputs.clone();
+        drop(state);
+
+        window.handle_surface_event(event, outputs);
+    }
+}
+
+impl Dispatch<wl_compositor::WlCompositor, GlobalData> for WaylandClientStatePtr {
+    fn event(
+        _: &mut Self,
+        _: &wl_compositor::WlCompositor,
+        _: <wl_compositor::WlCompositor as Proxy>::Event,
+        _: &GlobalData,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        unreachable!("wl_compositor has no events")
+    }
+}
+
+impl Dispatch<wl_subcompositor::WlSubcompositor, GlobalData> for WaylandClientStatePtr {
+    fn event(
+        _: &mut Self,
+        _: &wl_subcompositor::WlSubcompositor,
+        _: <wl_subcompositor::WlSubcompositor as Proxy>::Event,
+        _: &GlobalData,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        unreachable!("wl_subcompositor has no events")
+    }
+}
+
+impl Dispatch<wl_subsurface::WlSubsurface, SubsurfaceData> for WaylandClientStatePtr {
+    fn event(
+        _: &mut Self,
+        _: &wl_subsurface::WlSubsurface,
+        _: <wl_subsurface::WlSubsurface as Proxy>::Event,
+        _: &SubsurfaceData,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        unreachable!("wl_subsurface has no events")
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, SurfaceData> for WaylandClientStatePtr {
+    fn event(
+        this: &mut Self,
+        surface: &wl_surface::WlSurface,
+        event: <wl_surface::WlSurface as Proxy>::Event,
+        _: &SurfaceData,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let client = this.client();
+        let mut state = client.borrow_mut();
         let Some(window) = window_for_surface(&mut state, &surface.id()) else {
             return;
         };
@@ -1516,6 +1604,23 @@ fn linux_button_to_gpui(button: u32) -> Option<MouseButton> {
     })
 }
 
+fn set_client_frame_cursor(
+    state: &mut WaylandClientState,
+    wl_pointer: &wl_pointer::WlPointer,
+    serial: u32,
+    style: CursorStyle,
+    window: &WaylandWindowStatePtr,
+) {
+    if let Some(cursor_shape_device) = &state.cursor_shape_device {
+        cursor_shape_device.set_shape(serial, style.to_shape());
+    } else {
+        let scale = window.primary_output_scale();
+        state
+            .cursor
+            .set_icon(wl_pointer, serial, style.to_icon_names(), scale);
+    }
+}
+
 impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
     fn event(
         this: &mut Self,
@@ -1564,10 +1669,37 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                     }
                     drop(state);
                     window.set_hovered(true);
+                } else {
+                    let surface_id = surface.id();
+                    let focused = state.windows.values().find_map(|window| {
+                        window
+                            .handle_client_frame_pointer_motion(
+                                &surface_id,
+                                surface_x,
+                                surface_y,
+                                0,
+                            )
+                            .map(|style| (window.clone(), style))
+                    });
+                    if let Some((window, style)) = focused {
+                        state.client_frame_focused_window = Some(window.clone());
+                        state.client_frame_focused_surface = Some(surface_id);
+                        state.mouse_location = None;
+                        set_client_frame_cursor(&mut state, wl_pointer, serial, style, &window);
+                        drop(state);
+                        window.set_hovered(true);
+                    }
                 }
             }
             wl_pointer::Event::Leave { .. } => {
-                if let Some(focused_window) = state.mouse_focused_window.clone() {
+                if let Some(focused_window) = state.client_frame_focused_window.take() {
+                    state.client_frame_focused_surface = None;
+                    state.mouse_location = None;
+                    state.button_pressed = None;
+                    drop(state);
+                    focused_window.handle_client_frame_pointer_leave();
+                    focused_window.set_hovered(false);
+                } else if let Some(focused_window) = state.mouse_focused_window.clone() {
                     let input = PlatformInput::MouseExited(MouseExitEvent {
                         position: state.mouse_location.unwrap(),
                         pressed_button: state.button_pressed,
@@ -1583,10 +1715,29 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                 }
             }
             wl_pointer::Event::Motion {
+                time,
                 surface_x,
                 surface_y,
                 ..
             } => {
+                if let (Some(window), Some(surface_id)) = (
+                    state.client_frame_focused_window.clone(),
+                    state.client_frame_focused_surface.clone(),
+                ) {
+                    drop(state);
+                    let cursor = window.handle_client_frame_pointer_motion(
+                        &surface_id,
+                        surface_x,
+                        surface_y,
+                        time,
+                    );
+                    if let Some(style) = cursor {
+                        let mut state = client.borrow_mut();
+                        let serial = state.serial_tracker.get(SerialKind::MouseEnter);
+                        set_client_frame_cursor(&mut state, wl_pointer, serial, style, &window);
+                    }
+                    return;
+                }
                 if state.mouse_focused_window.is_none() {
                     return;
                 }
@@ -1611,6 +1762,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
             }
             wl_pointer::Event::Button {
                 serial,
+                time,
                 button,
                 state: WEnum::Value(button_state),
                 ..
@@ -1618,6 +1770,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                 state.serial_tracker.update(SerialKind::MousePress, serial);
                 let button = linux_button_to_gpui(button);
                 let Some(button) = button else { return };
+                if let Some(window) = state.client_frame_focused_window.clone() {
+                    let pressed = button_state == wl_pointer::ButtonState::Pressed;
+                    drop(state);
+                    window.handle_client_frame_pointer_button(time, button, pressed);
+                    return;
+                }
                 if state.mouse_focused_window.is_none() {
                     return;
                 }
