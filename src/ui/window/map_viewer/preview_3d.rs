@@ -4042,7 +4042,7 @@ fn preview_3d_bounds_intersect_clip_space(
                 outside_right &= clip[0] > clip[3];
                 outside_bottom &= clip[1] < -clip[3];
                 outside_top &= clip[1] > clip[3];
-                outside_near &= clip[2] < -clip[3];
+                outside_near &= clip[2] < 0.0;
                 outside_far &= clip[2] > clip[3];
                 behind_camera &= clip[3] <= 0.0;
             }
@@ -4585,8 +4585,8 @@ fn mat4_perspective(aspect: f32, vertical_fov: f32, near: f32, far: f32) -> [[f3
     [
         [focal_length / aspect.max(0.1), 0.0, 0.0, 0.0],
         [0.0, focal_length, 0.0, 0.0],
-        [0.0, 0.0, (far + near) / depth, -1.0],
-        [0.0, 0.0, (2.0 * far * near) / depth, 0.0],
+        [0.0, 0.0, far / depth, -1.0],
+        [0.0, 0.0, far * near / depth, 0.0],
     ]
 }
 
@@ -5164,6 +5164,18 @@ mod tests {
         assert!(!PREVIEW_3D_SHADER_SOURCE.contains("outside_view"));
         assert!(!PREVIEW_3D_SHADER_SOURCE.contains("vec4<f32>(2.0, 2.0, 1.0, 1.0)"));
         assert!(preview_3d_gpu_mesh_shader().is_ok());
+    }
+
+    #[test]
+    fn map_viewer_preview_3d_projection_uses_wgsl_zero_to_one_depth() {
+        let near = 0.1;
+        let far = 100.0;
+        let projection = mat4_perspective(1.0, 1.0, near, far);
+        let near_clip = mat4_mul_vec4(projection, [0.0, 0.0, -near, 1.0]);
+        let far_clip = mat4_mul_vec4(projection, [0.0, 0.0, -far, 1.0]);
+
+        assert!(near_clip[2].abs() < 0.0001);
+        assert!((far_clip[2] - far_clip[3]).abs() < 0.0001);
     }
 
     #[test]

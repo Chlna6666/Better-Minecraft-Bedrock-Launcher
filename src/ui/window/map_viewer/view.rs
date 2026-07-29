@@ -240,10 +240,6 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
     let options = map_viewer_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
-        window.on_window_should_close(cx, |window, _cx| {
-            window.remove_window();
-            true
-        });
         window.activate_window();
         let view = cx.new(|cx| MapViewerWindowView::new(init, window, cx));
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))

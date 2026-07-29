@@ -229,7 +229,14 @@ mod tests {
     fn dock_sizes_keep_center_usable() {
         assert_eq!(clamp_right_panel_width(900.0, 1000.0), 450.0);
         assert_eq!(clamp_right_panel_width(100.0, 1000.0), 300.0);
-        assert_eq!(clamp_bottom_panel_height(800.0, 900.0), 566.0);
+        assert_eq!(
+            clamp_bottom_panel_height(800.0, 900.0),
+            900.0
+                - IDE_TOP_BAR_HEIGHT
+                - IDE_STATUS_BAR_HEIGHT
+                - IDE_SPLITTER_WIDTH
+                - MIN_CENTER_HEIGHT
+        );
         assert_eq!(clamp_bottom_panel_height(80.0, 900.0), 170.0);
     }
 

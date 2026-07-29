@@ -92,22 +92,22 @@ pub fn prefixes_dir() -> PathBuf {
 
 pub fn create_initial_directories() {
     let root = bmcbl_dir();
-    let dirs = vec![
+    let mut dirs = vec![
         root.clone(),
         config_dir(),
         cache_dir(),
         logs_dir(),
         downloads_dir(),
         bmcbl_subdir("plugins"),
-        bmcbl_subdir("music"),
         bmcbl_subdir("versions"),
         cache_subdir("data"),
         cache_subdir("api"),
     ];
+    #[cfg(target_os = "windows")]
+    dirs.push(bmcbl_subdir("music"));
 
     #[cfg(target_os = "linux")]
     let dirs = {
-        let mut dirs = dirs;
         dirs.extend([state_dir(), runners_dir(), prefixes_dir()]);
         dirs
     };

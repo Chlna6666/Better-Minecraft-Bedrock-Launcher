@@ -34,6 +34,14 @@ pub const MAX_LOG_TOTAL_SIZE_MB: u32 = 8_192;
 pub const MIN_LOG_COMPRESSION_LEVEL: i32 = 1;
 pub const MAX_LOG_COMPRESSION_LEVEL: i32 = 9;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MusicPlaybackMode {
+    Shuffle,
+    #[default]
+    Repeat,
+}
+
 pub fn get_config_file_path() -> std::path::PathBuf {
     super::storage::get_config_file_path()
 }
@@ -273,7 +281,7 @@ pub struct MusicConfig {
     #[serde(default)]
     pub muted: bool,
     #[serde(default)]
-    pub playback_mode: crate::music::MusicPlaybackMode,
+    pub playback_mode: MusicPlaybackMode,
     #[serde(default)]
     pub last_track_path: String,
 }
@@ -304,7 +312,7 @@ impl Default for MusicConfig {
             auto_play_on_startup: true,
             volume: default_music_volume(),
             muted: false,
-            playback_mode: crate::music::MusicPlaybackMode::Repeat,
+            playback_mode: MusicPlaybackMode::Repeat,
             last_track_path: String::new(),
         }
     }

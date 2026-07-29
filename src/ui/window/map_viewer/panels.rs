@@ -108,8 +108,10 @@ impl MapViewerWindowView {
     pub(super) fn render_workspace(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         div()
             .flex_1()
+            .min_w(px(0.0))
             .min_h(px(0.0))
             .flex()
+            .overflow_hidden()
             .bg(colors.surface)
             .child(self.tool_stripe_view.clone())
             .child(splitter_line(SplitPaneAxis::Horizontal, colors.border))
@@ -120,7 +122,7 @@ impl MapViewerWindowView {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(MIN_CENTER_WIDTH))
+                    .min_w(px(0.0))
                     .min_h(px(0.0))
                     .h_full()
                     .flex()

@@ -1,15 +1,7 @@
-use serde::{Deserialize, Serialize};
+pub use crate::config::config::MusicPlaybackMode;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MusicPlaybackMode {
-    Shuffle,
-    #[default]
-    Repeat,
-}
 
 #[derive(Clone, Debug, Default)]
 pub struct MusicPlaybackSnapshot {

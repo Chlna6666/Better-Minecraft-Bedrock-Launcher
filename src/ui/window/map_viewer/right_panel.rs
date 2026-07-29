@@ -78,6 +78,7 @@ impl MapViewerWindowView {
                         div()
                             .flex_1()
                             .min_w(px(0.0))
+                            .truncate()
                             .text_size(px(12.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_primary)

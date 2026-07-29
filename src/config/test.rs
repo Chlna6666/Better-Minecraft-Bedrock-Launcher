@@ -1,8 +1,8 @@
+use super::config::MusicPlaybackMode;
 use super::config::{
     clamp_music_volume, merge_json_values, normalize_gpu_adapter_name, normalize_renderer_backend,
     normalize_theme_mode,
 };
-use crate::music::MusicPlaybackMode;
 use serde_json::json;
 
 fn clear_config_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
