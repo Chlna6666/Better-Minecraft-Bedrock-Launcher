@@ -36,8 +36,6 @@ maintainer = "Chlna6666"
 
 [features]
 default = [
-    "wayland",
-    "x11",
     "windows-manifest",
     "nova-gfx-dx12",
     "build-shader-validation",
@@ -68,8 +66,6 @@ test-support = [
     "rand",
     "util/test-support",
     "http_client/test-support",
-    "wayland",
-    "x11",
 ]
 wayland = [
     "winit/wayland",

@@ -29,7 +29,7 @@ toml = "1.0.3"
 [dependencies]
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
-gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx", "nova-gfx-dx12", "nova-gfx-vulkan", "wayland", "x11"] }
+gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx", "nova-gfx-dx12", "nova-gfx-vulkan"] }
 gpui_tokio = { path = "crates/gpui_tokio" }
 gpui-router = { version = "0.3.0", default-features = false, features = [] }
 gpui_hooks = { path = "crates/gpui-hooks" }
@@ -101,6 +101,9 @@ nethernet = { path = "crates/nethernet" }
 raknet-tokio = { path = "crates/raknet/raknet-tokio" }
 rfd = "0.17.2"
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui = { path = "crates/gpui", default-features = false, features = ["wayland", "x11"] }
+
 [features]
 preview-3d-dx12 = []
 gpui-windows-vulkan = ["gpui/nova-gfx-vulkan"]
@@ -133,7 +136,7 @@ members = [
     "crates/nova-gfx/examples/public-api-smoke",
     "crates/nova-gfx/examples/gpui-minimal-window-smoke",
 ]
-exclude = ["crates/easytier", "crates/raknet"]
+exclude = ["crates/easytier", "crates/raknet", "vendor/sctk-adwaita"]
 
 [target.'cfg(windows)'.dependencies]
 bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }
