@@ -1533,6 +1533,29 @@ impl PluginRegistry {
         }
     }
 
+    fn event_requires_clipboard_snapshot(&self, event: &HostEvent) -> bool {
+        match &event.kind {
+            HostEventKind::Action { .. } => event.plugin_id.as_deref().is_some_and(|plugin_id| {
+                self.plugins.get(plugin_id).is_some_and(|plugin| {
+                    plugin.enabled
+                        && plugin
+                            .manifest
+                            .has_capability(&PluginCapability::ClipboardRead)
+                })
+            }),
+            HostEventKind::Global { .. } | HostEventKind::RouteChanged { .. } => {
+                self.event_targets(event).iter().any(|plugin_id| {
+                    self.plugins.get(plugin_id).is_some_and(|plugin| {
+                        plugin.enabled
+                            && plugin
+                                .manifest
+                                .has_capability(&PluginCapability::ClipboardRead)
+                    })
+                })
+            }
+        }
+    }
+
     fn plugin_runtime(
         &self,
         plugin_id: &str,
@@ -1881,6 +1904,13 @@ fn current_theme_snapshot(cx: &App) -> abi::ThemeSnapshot {
 
 fn clipboard_text_snapshot(cx: &mut App) -> Option<String> {
     cx.read_from_clipboard().and_then(|item| item.text())
+}
+
+fn clipboard_text_snapshot_for_event(cx: &mut App, event: &HostEvent) -> Option<Option<String>> {
+    let required = cx
+        .global::<PluginRegistry>()
+        .event_requires_clipboard_snapshot(event);
+    required.then(|| clipboard_text_snapshot(cx))
 }
 
 fn theme_snapshot_from_colors(
@@ -3427,10 +3457,8 @@ fn spawn_initial_reload(cx: &mut App) {
 
 pub fn reload_all(cx: &mut App) {
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
         if let Err(error) = registry.reload_all() {
             let error_message = crate::plugins::manifest::format_error_chain(&error);
             error!(error = %error_message, "plugin reload failed");
@@ -3518,10 +3546,8 @@ pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<V
     }
 
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
         registry.render_page(plugin_id, page_id)
     })
 }
@@ -3545,10 +3571,8 @@ pub fn render_injections(
     }
 
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
         registry.render_injections(slot, page)
     })
 }
@@ -3666,10 +3690,8 @@ pub fn save_plugin_config(cx: &mut App, plugin_id: String, content: String) -> R
 
 pub fn set_plugin_enabled(cx: &mut App, plugin_id: String, enabled: bool) -> Result<()> {
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
         registry.set_plugin_enabled(&plugin_id, enabled)
     })?;
     cx.refresh_windows();
@@ -3684,10 +3706,8 @@ pub fn uninstall_plugin(cx: &mut App, plugin_id: String) -> Result<()> {
 
 pub fn reload_plugin(cx: &mut App, plugin_id: String) -> Result<()> {
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
         registry.reload_plugin(&plugin_id)
     })?;
     cx.refresh_windows();
@@ -3748,10 +3768,8 @@ pub fn import_plugin_package(cx: &mut App, source_path: impl AsRef<Path>) -> Res
     }
 
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
     cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
         let result = registry.reload_all();
         if result.is_ok() {
             registry.set_theme_snapshot(theme_snapshot);
@@ -3768,16 +3786,19 @@ pub fn dispatch_plugin_action(
     action_id: String,
     value: Option<String>,
 ) {
+    let event = HostEvent {
+        plugin_id: Some(plugin_id),
+        page_id,
+        kind: HostEventKind::Action { action_id, value },
+    };
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
+    let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
     let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
-        registry.handle_event(HostEvent {
-            plugin_id: Some(plugin_id),
-            page_id,
-            kind: HostEventKind::Action { action_id, value },
-        })
+        if let Some(clipboard_text) = clipboard_text {
+            registry.set_clipboard_snapshot(clipboard_text);
+        }
+        registry.handle_event(event)
     });
     apply_host_effects(cx, effects);
 }
@@ -3810,31 +3831,37 @@ pub fn open_plugin_link(cx: &mut App, plugin_id: &str, url: &str) -> Result<()> 
 }
 
 pub(crate) fn dispatch_global_event(cx: &mut App, name: String, payload: String) {
+    let event = HostEvent {
+        plugin_id: None,
+        page_id: None,
+        kind: HostEventKind::Global { name, payload },
+    };
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
+    let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
     let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
-        registry.handle_event(HostEvent {
-            plugin_id: None,
-            page_id: None,
-            kind: HostEventKind::Global { name, payload },
-        })
+        if let Some(clipboard_text) = clipboard_text {
+            registry.set_clipboard_snapshot(clipboard_text);
+        }
+        registry.handle_event(event)
     });
     apply_host_effects(cx, effects);
 }
 
 pub(crate) fn dispatch_route_changed(cx: &mut App, path: String) {
+    let event = HostEvent {
+        plugin_id: None,
+        page_id: None,
+        kind: HostEventKind::RouteChanged { path },
+    };
     let theme_snapshot = current_theme_snapshot(cx);
-    let clipboard_text = clipboard_text_snapshot(cx);
+    let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
     let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
         registry.set_theme_snapshot(theme_snapshot);
-        registry.set_clipboard_snapshot(clipboard_text);
-        registry.handle_event(HostEvent {
-            plugin_id: None,
-            page_id: None,
-            kind: HostEventKind::RouteChanged { path },
-        })
+        if let Some(clipboard_text) = clipboard_text {
+            registry.set_clipboard_snapshot(clipboard_text);
+        }
+        registry.handle_event(event)
     });
     apply_host_effects(cx, effects);
 }
@@ -4126,6 +4153,98 @@ max_resource_bytes = 16
             report.total_estimated_bytes,
             report.module_cache_estimated_bytes
         );
+    }
+
+    #[test]
+    fn route_event_without_plugins_does_not_require_clipboard_snapshot() {
+        let root = unique_temp_dir("bmcbl-plugin-route-clipboard");
+        let registry = PluginRegistry::new(
+            root.join("plugins"),
+            root.join("cache"),
+            root.join("packages"),
+        );
+        let event = HostEvent {
+            plugin_id: None,
+            page_id: None,
+            kind: HostEventKind::RouteChanged {
+                path: "/settings".to_string(),
+            },
+        };
+
+        assert!(!registry.event_requires_clipboard_snapshot(&event));
+    }
+
+    #[test]
+    fn route_event_requires_clipboard_only_for_capable_plugin() {
+        let root = unique_temp_dir("bmcbl-plugin-route-clipboard-capability");
+        let mut registry = PluginRegistry::new(
+            root.join("plugins"),
+            root.join("cache"),
+            root.join("packages"),
+        );
+        let plugin_root = root.join("route-listener");
+        let manifest = PluginManifest::parse(
+            &plugin_root,
+            &format!(
+                r#"
+schema_version = 2
+id = "route-listener"
+name = "Route Listener"
+version = "0.1.0"
+api_version = "{}"
+entry = "plugin.wasm"
+capabilities = ["event.global"]
+"#,
+                crate::plugins::manifest::CURRENT_API_VERSION
+            ),
+        )
+        .expect("manifest should parse");
+        registry
+            .reload_manifests(vec![manifest])
+            .expect("manifest should load");
+        registry
+            .plugins
+            .get_mut("route-listener")
+            .expect("route listener should exist")
+            .subscriptions
+            .insert("route-changed".to_string());
+        let event = HostEvent {
+            plugin_id: None,
+            page_id: None,
+            kind: HostEventKind::RouteChanged {
+                path: "/settings".to_string(),
+            },
+        };
+
+        assert!(!registry.event_requires_clipboard_snapshot(&event));
+
+        let clipboard_manifest = PluginManifest::parse(
+            &plugin_root,
+            &format!(
+                r#"
+schema_version = 2
+id = "route-listener"
+name = "Route Listener"
+version = "0.1.0"
+api_version = "{}"
+entry = "plugin.wasm"
+capabilities = ["event.global", "clipboard.read"]
+"#,
+                crate::plugins::manifest::CURRENT_API_VERSION
+            ),
+        )
+        .expect("clipboard manifest should parse");
+        registry
+            .reload_manifests(vec![clipboard_manifest])
+            .expect("clipboard manifest should load");
+        registry
+            .plugins
+            .get_mut("route-listener")
+            .expect("clipboard route listener should exist")
+            .subscriptions
+            .insert("route-changed".to_string());
+
+        assert!(registry.event_requires_clipboard_snapshot(&event));
     }
 
     #[test]

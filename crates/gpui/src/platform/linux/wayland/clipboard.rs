@@ -1,19 +1,17 @@
 use std::{
     fs::File,
-    io::{ErrorKind, Write},
+    io::{self, ErrorKind, Read, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
+    time::{Duration, Instant},
 };
 
 use calloop::{LoopHandle, PostAction};
-use filedescriptor::Pipe;
+use filedescriptor::{FileDescriptor, Pipe};
 use strum::IntoEnumIterator;
 use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
-use crate::{
-    ClipboardEntry, ClipboardItem, Image, ImageFormat, WaylandClientStatePtr, hash,
-    platform::linux::platform::read_fd,
-};
+use crate::{ClipboardEntry, ClipboardItem, Image, ImageFormat, WaylandClientStatePtr, hash};
 
 /// Text mime types that we'll offer to other programs.
 pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
@@ -22,6 +20,51 @@ pub(crate) const FILE_LIST_MIME_TYPE: &str = "text/uri-list";
 
 /// Text mime types that we'll accept from other programs.
 pub(crate) const ALLOWED_TEXT_MIME_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "UTF8_STRING"];
+const CLIPBOARD_READ_TIMEOUT: Duration = Duration::from_millis(500);
+
+fn read_clipboard_fd(mut fd: FileDescriptor) -> io::Result<Vec<u8>> {
+    fd.set_non_blocking(true).map_err(io::Error::other)?;
+    let mut file = fd.as_file().map_err(io::Error::other)?;
+    let deadline = Instant::now() + CLIPBOARD_READ_TIMEOUT;
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8 * 1024];
+
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => return Ok(bytes),
+            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return Err(io::Error::new(
+                        ErrorKind::TimedOut,
+                        "Wayland clipboard owner did not provide data in time",
+                    ));
+                };
+                let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+                let mut descriptor = libc::pollfd {
+                    fd: file.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+                if result == 0 {
+                    return Err(io::Error::new(
+                        ErrorKind::TimedOut,
+                        "Wayland clipboard owner did not provide data in time",
+                    ));
+                }
+                if result < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 pub(crate) struct Clipboard {
     connection: Connection,
@@ -88,7 +131,7 @@ impl<T: ReceiveData> DataOffer<T> {
 
         connection.flush().unwrap();
 
-        match unsafe { read_fd(fd) } {
+        match read_clipboard_fd(fd) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
                 log::error!("error reading clipboard pipe: {err:?}");
@@ -258,5 +301,36 @@ impl Clipboard {
                 },
             )
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_pipe_read_returns_available_data() {
+        let pipe = Pipe::new().expect("pipe should be created");
+        let mut writer = pipe.write;
+        writer
+            .write_all(b"clipboard text")
+            .expect("clipboard data should be written");
+        drop(writer);
+
+        let bytes = read_clipboard_fd(pipe.read).expect("clipboard data should be read");
+
+        assert_eq!(bytes, b"clipboard text");
+    }
+
+    #[test]
+    fn clipboard_pipe_read_times_out_when_owner_stalls() {
+        let pipe = Pipe::new().expect("pipe should be created");
+        let _writer = pipe.write;
+        let started = Instant::now();
+
+        let error = read_clipboard_fd(pipe.read).expect_err("stalled clipboard should time out");
+
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
