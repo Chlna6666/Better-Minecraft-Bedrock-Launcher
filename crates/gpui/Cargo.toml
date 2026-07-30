@@ -434,15 +434,6 @@ version = "1.0.6"
 version = "1.6"
 features = ["union"]
 
-[dependencies.sctk-adwaita]
-version = "0.10.1"
-path = "../../vendor/sctk-adwaita"
-optional = true
-
-[dependencies.smithay-client-toolkit]
-version = "0.19.2"
-optional = true
-
 [dependencies.smol]
 version = "2.0"
 
@@ -589,6 +580,15 @@ features = [
     "native_crypto",
 ]
 default-features = false
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.sctk-adwaita]
+version = "0.10.1"
+path = "../../vendor/sctk-adwaita"
+optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.smithay-client-toolkit]
+version = "0.19.2"
+optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.open]
 version = "5.2.0"
