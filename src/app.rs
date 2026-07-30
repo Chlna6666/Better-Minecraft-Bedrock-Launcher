@@ -259,7 +259,6 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
 
 fn start_domain_event_bridges(cx: &mut App) {
     crate::ui::views::download::start_task_event_bridge(cx);
-    #[cfg(target_os = "linux")]
     crate::ui::state::bedrock_auth::start_event_bridge(cx);
     cx.spawn_stream(
         crate::core::version::catalog_events::local_version_changes(),
@@ -338,7 +337,6 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::diagnostics::DiagnosticsState>();
     #[cfg(target_os = "windows")]
     cx.default_global::<crate::ui::state::music::MusicState>();
-    #[cfg(target_os = "linux")]
     cx.default_global::<crate::ui::state::bedrock_auth::BedrockAuthState>();
     cx.default_global::<crate::ui::main_window::AppChromeState>();
     cx.default_global::<crate::ui::components::toast::ToastState>();

@@ -1,4 +1,3 @@
-#[cfg(target_os = "linux")]
 pub(crate) mod bedrock_auth;
 pub mod curseforge;
 pub mod easytier;

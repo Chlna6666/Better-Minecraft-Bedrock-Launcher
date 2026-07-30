@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::animation::request_animation_frame_if_active;
+use crate::ui::state::bedrock_auth::BedrockAuthState;
 use crate::ui::state::music::{MusicDragTarget, MusicState};
 use crate::ui::state::navigation::NavState;
 use tokio::sync::{Semaphore, mpsc};
@@ -210,6 +211,7 @@ impl AppChromeView {
                 cx.notify();
             }
         }));
+        subscriptions.push(cx.observe_global::<BedrockAuthState>(|_, cx| cx.notify()));
         subscriptions.push(
             cx.observe_global::<crate::ui::main_window::chrome::AppChromeState>(|this, cx| {
                 let signature = build_chrome_render_signature(cx);
@@ -601,21 +603,12 @@ impl AppChromeView {
     ) -> bool {
         let music_available = cx.global::<MusicState>().snapshot.available;
         let update_available = cx.global::<UpdateState>().available.is_some();
-        let (
-            music_inline_factor,
-            music_inline_target_expanded,
-            labels_layout_factor,
-            labels_opacity_factor,
-            labels_target_visible,
-        ) = {
+        let (music_inline_target_expanded, labels_target_visible) = {
             let topbar: &crate::ui::main_window::chrome::AppChromeState =
                 cx.global::<crate::ui::main_window::chrome::AppChromeState>();
             let nav: &NavState = cx.global::<NavState>();
             (
-                topbar.music_inline_factor(now),
                 topbar.music_inline_target_expanded(),
-                nav.labels_layout_factor(now),
-                nav.labels_opacity_factor(now),
                 nav.labels_target_visible,
             )
         };
@@ -634,31 +627,7 @@ impl AppChromeView {
         self.last_music_available = music_available;
         self.last_update_available = update_available;
 
-        let width_wants_labels = Self::compute_width_wants_labels(
-            window_width_px,
-            music_available,
-            music_inline_factor,
-            update_available,
-            labels_target_visible,
-        );
-        let can_expand_music_inline_without_overflow =
-            Self::can_expand_music_inline_without_overflow(
-                window_width_px,
-                music_available,
-                update_available,
-            );
-        let nav_ready_for_music_inline = width_wants_labels
-            && labels_target_visible
-            && labels_layout_factor >= 0.88
-            && labels_opacity_factor >= 0.82;
-        let music_should_expand = if !nav_ready_for_music_inline {
-            false
-        } else if music_inline_target_expanded {
-            window_width_px >= 1200.0 && can_expand_music_inline_without_overflow
-        } else {
-            window_width_px >= 1220.0 && can_expand_music_inline_without_overflow
-        };
-        let show_labels_target = width_wants_labels;
+        let show_labels_target = window_width_px >= 1180.0;
 
         let mut layout_target_changed = false;
         if labels_target_visible != show_labels_target {
@@ -667,7 +636,7 @@ impl AppChromeView {
                 nav.set_labels_target_immediate(show_labels_target);
             });
         }
-        let music_inline_target = width_wants_labels && music_should_expand;
+        let music_inline_target = music_available && window_width_px >= 760.0;
         if music_inline_target_expanded != music_inline_target {
             layout_target_changed = true;
             cx.update_global(
@@ -696,6 +665,7 @@ impl AppChromeView {
         // DebugState 的帧统计应在 debug 面板自己的 render 中处理
 
         let window_width = window.bounds().size.width;
+        let window_height = window.bounds().size.height;
 
         let (
             music_snapshot,
@@ -726,6 +696,7 @@ impl AppChromeView {
             .global::<crate::ui::views::settings::state::SettingsPageState>()
             .glass_effect_enabled;
         let plugin_navigation_pages = self.plugin_navigation_pages.clone();
+        let auth = cx.global::<BedrockAuthState>();
 
         let (
             visual_active_index,
@@ -758,6 +729,7 @@ impl AppChromeView {
             theme_animating,
             theme_accent,
             window_width,
+            window_height,
             music_snapshot,
             music_expanded_factor,
             music_progress_ratio,
@@ -766,6 +738,9 @@ impl AppChromeView {
             music_popup_animating,
             music_inline_factor,
             music_inline_animating,
+            auth_snapshot: auth.snapshot.clone(),
+            auth_dialog_open: auth.dialog_open,
+            auth_pending_delete_account_id: auth.pending_delete_account_id.clone(),
             update_available,
             visual_active_index,
             pill_left_steps,
@@ -778,88 +753,8 @@ impl AppChromeView {
         }
     }
 
-    fn compute_width_wants_labels(
-        window_width_px: f32,
-        music_available: bool,
-        music_inline_factor: f32,
-        update_available: bool,
-        labels_target_visible: bool,
-    ) -> bool {
-        let inset_x_px = (window_width_px * 0.03).clamp(16.0, 28.0);
-        let nav_pad_x_px = if window_width_px <= 1000.0 {
-            16.0
-        } else {
-            24.0
-        };
-        let inner_w_px = (window_width_px - inset_x_px * 2.0 - nav_pad_x_px * 2.0).max(320.0);
-        let music_w_px = crate::ui::main_window::music_player::mini_capsule_width_for_factor(
-            music_available,
-            music_inline_factor,
-        ) / px(1.0);
-        let right_controls_w_px: f32 = 40.0 * 3.0
-            + (1.0 + 8.0 * 2.0)
-            + 8.0 * 4.0
-            + if music_available {
-                12.0 + music_w_px
-            } else {
-                0.0
-            };
-        let nav_side_safety_px = 50.0;
-        let left_content_w_px: f32 = if update_available { 168.0 } else { 124.0 };
-        let left_slot_w_px = (left_content_w_px + nav_side_safety_px).max(180.0);
-        let right_slot_w_px = (right_controls_w_px + nav_side_safety_px).max(180.0);
-        let expanded_item_w_px = 16.0 * 2.0 + 18.0 + 8.0 + 33.0;
-        let expanded_capsule_w_px = 6.0 * 2.0 + 3.0 * 5.0 + 6.0 * expanded_item_w_px;
-        let required_inner_w_px = left_slot_w_px + right_slot_w_px + expanded_capsule_w_px;
-        let hysteresis_px = if labels_target_visible { -10.0 } else { 20.0 };
-        window_width_px >= 1200.0 && inner_w_px >= required_inner_w_px + hysteresis_px
-    }
-
-    fn can_expand_music_inline_without_overflow(
-        window_width_px: f32,
-        music_available: bool,
-        update_available: bool,
-    ) -> bool {
-        let inset_x_px = (window_width_px * 0.03).clamp(16.0, 28.0);
-        let nav_pad_x_px = if window_width_px <= 1000.0 {
-            16.0
-        } else {
-            24.0
-        };
-        let inner_w_px = (window_width_px - inset_x_px * 2.0 - nav_pad_x_px * 2.0).max(320.0);
-        let music_w_px = crate::ui::main_window::music_player::mini_capsule_width_for_factor(
-            music_available,
-            1.0,
-        ) / px(1.0);
-        let right_controls_w_px: f32 = 40.0 * 3.0
-            + (1.0 + 8.0 * 2.0)
-            + 8.0 * 4.0
-            + if music_available {
-                12.0 + music_w_px
-            } else {
-                0.0
-            };
-        let nav_side_safety_px = 50.0;
-        let left_content_w_px: f32 = if update_available { 168.0 } else { 124.0 };
-        let left_slot_w_px = (left_content_w_px + nav_side_safety_px).max(180.0);
-        let right_slot_w_px = (right_controls_w_px + nav_side_safety_px).max(180.0);
-        let expanded_item_w_px = 16.0 * 2.0 + 18.0 + 8.0 + 33.0;
-        let expanded_capsule_w_px = 6.0 * 2.0 + 3.0 * 5.0 + 6.0 * expanded_item_w_px;
-        let required_inner_w_px = left_slot_w_px + right_slot_w_px + expanded_capsule_w_px;
-        inner_w_px >= required_inner_w_px + 8.0
-    }
-
     fn width_bucket(width_px: f32) -> i32 {
         (width_px / 12.0).round() as i32
-    }
-
-    fn version_label() -> SharedString {
-        static VERSION_LABEL: std::sync::OnceLock<SharedString> = std::sync::OnceLock::new();
-        VERSION_LABEL
-            .get_or_init(|| {
-                SharedString::from(format!("v{}", crate::utils::app_info::get_version()))
-            })
-            .clone()
     }
 
     fn render_with_state(
@@ -867,30 +762,7 @@ impl AppChromeView {
         show_modal: bool,
         route: crate::ui::navigation::RouteTarget,
     ) -> AnyElement {
-        crate::ui::main_window::chrome::render_app_chrome(
-            Self::version_label(),
-            topbar_state.visual_active_index,
-            topbar_state.pill_left_steps,
-            topbar_state.pill_right_steps,
-            topbar_state.labels_layout_factor,
-            topbar_state.labels_opacity_factor,
-            topbar_state.music_snapshot,
-            topbar_state.music_expanded_factor,
-            topbar_state.music_progress_ratio,
-            topbar_state.music_volume_ratio,
-            topbar_state.music_drag_target,
-            topbar_state.music_inline_factor,
-            route,
-            topbar_state.window_width,
-            topbar_state.theme_k,
-            topbar_state.theme_target_dark,
-            topbar_state.update_available,
-            show_modal,
-            topbar_state.theme_accent,
-            topbar_state.glass_effect_enabled,
-            topbar_state.plugin_navigation_pages,
-        )
-        .into_any_element()
+        crate::ui::main_window::chrome::render_app_chrome(topbar_state, route, show_modal)
     }
 }
 

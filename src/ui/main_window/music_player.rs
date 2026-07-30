@@ -41,12 +41,39 @@ const VOLUME_HIT_HEIGHT: f32 = 18.0;
 const SLIDER_THUMB_SIZE: f32 = 14.0;
 const MINI_CAPSULE_COLLAPSED_WIDTH: f32 = 36.0;
 const MINI_CAPSULE_EXPANDED_WIDTH: f32 = 220.0;
+const MINI_CAPSULE_HEIGHT: f32 = 36.0;
 const MINI_CAPSULE_EXPANDED_GAP: f32 = 8.0;
 const MINI_CAPSULE_SIDE_PAD: f32 = 10.0;
 const MINI_CAPSULE_COMPACT_PAD: f32 = 4.0;
 const MINI_COVER_SIZE: f32 = 20.0;
 const MINI_PLAY_BUTTON_SIZE: f32 = 24.0;
 const MINI_BODY_SAFE_RIGHT_INSET: f32 = 4.0;
+const FLOATING_INSET: f32 = 18.0;
+const FLOATING_POPUP_GAP: f32 = 10.0;
+
+pub(super) struct MusicPlayerPlacement {
+    pub(super) inline_left: Pixels,
+    pub(super) inline_bottom: Pixels,
+    pub(super) popup_top: Pixels,
+    pub(super) popup_right: Pixels,
+}
+
+pub(super) fn bottom_left_placement(window_size: Size<Pixels>) -> MusicPlayerPlacement {
+    let inset = px(FLOATING_INSET);
+    let popup_top = (window_size.height
+        - inset
+        - px(MINI_CAPSULE_HEIGHT)
+        - px(FLOATING_POPUP_GAP + POPUP_HEIGHT))
+    .max(px(70.0));
+    let popup_right = (window_size.width - inset - px(POPUP_WIDTH)).max(inset);
+
+    MusicPlayerPlacement {
+        inline_left: inset,
+        inline_bottom: inset,
+        popup_top,
+        popup_right,
+    }
+}
 
 fn marquee_text(
     text: SharedString,
@@ -121,17 +148,6 @@ fn inline_cover(content: AnyElement) -> impl IntoElement {
                 .rounded_full()
                 .child(content),
         )
-}
-
-pub fn mini_capsule_width(window_width: Pixels, available: bool) -> Pixels {
-    if !available {
-        return px(0.0);
-    }
-    if window_width / px(1.0) >= 1210.0 {
-        px(MINI_CAPSULE_EXPANDED_WIDTH)
-    } else {
-        px(MINI_CAPSULE_COLLAPSED_WIDTH)
-    }
 }
 
 pub fn mini_capsule_width_for_factor(available: bool, factor: f32) -> Pixels {
@@ -337,7 +353,7 @@ pub fn render_music_player(
 
     let inline = div()
         .w(inline_width)
-        .h(px(36.0))
+        .h(px(MINI_CAPSULE_HEIGHT))
         .rounded(if compact { px(18.0) } else { px(20.0) })
         .px(px(mini_side_pad))
         .py(px(4.0))
@@ -895,7 +911,7 @@ pub fn render_music_player(
             div()
                 .id("music-popup-backdrop")
                 .absolute()
-                .top(popup_top - px(10.0))
+                .top(px(60.0))
                 .left(px(0.0))
                 .right(px(0.0))
                 .bottom(px(0.0))

@@ -47,6 +47,7 @@ impl AppChromeView {
             theme_animating: theme.is_animating(now),
             theme_accent: theme.accent,
             window_width: window.bounds().size.width,
+            window_height: window.bounds().size.height,
             auth_snapshot: auth.snapshot.clone(),
             auth_dialog_open: auth.dialog_open,
             auth_pending_delete_account_id: auth.pending_delete_account_id.clone(),

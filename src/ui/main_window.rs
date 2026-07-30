@@ -25,10 +25,6 @@ use tracing::{debug, info, trace, warn};
 
 mod background;
 mod background_support;
-#[cfg(target_os = "windows")]
-mod chrome;
-#[cfg(target_os = "linux")]
-#[path = "main_window/chrome_linux.rs"]
 mod chrome;
 #[cfg(target_os = "windows")]
 mod chrome_view;
@@ -158,6 +154,7 @@ struct TopbarRenderState {
     theme_animating: bool,
     theme_accent: Option<Hsla>,
     window_width: Pixels,
+    window_height: Pixels,
     #[cfg(target_os = "windows")]
     music_snapshot: crate::ui::state::music::MusicSnapshot,
     #[cfg(target_os = "windows")]
@@ -174,11 +171,8 @@ struct TopbarRenderState {
     music_inline_factor: f32,
     #[cfg(target_os = "windows")]
     music_inline_animating: bool,
-    #[cfg(target_os = "linux")]
     auth_snapshot: crate::core::bedrock_auth::AuthSnapshot,
-    #[cfg(target_os = "linux")]
     auth_dialog_open: bool,
-    #[cfg(target_os = "linux")]
     auth_pending_delete_account_id: Option<String>,
     update_available: bool,
     visual_active_index: usize,

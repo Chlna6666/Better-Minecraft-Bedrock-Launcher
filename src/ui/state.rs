@@ -1,5 +1,4 @@
 pub mod agreement;
-#[cfg(target_os = "linux")]
 pub(crate) mod bedrock_auth;
 pub mod debug;
 pub mod diagnostics;

@@ -100,6 +100,9 @@ nethernet = { path = "crates/nethernet" }
 # 零拷贝可靠层，兼容 go-raknet 主机（cookie 回显、负数 GUID）。
 raknet-tokio = { path = "crates/raknet/raknet-tokio" }
 rfd = "0.17.2"
+base64 = "0.22.1"
+p256 = { version = "0.13.2", features = ["ecdsa"] }
+secrecy = "0.10.3"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui = { path = "crates/gpui", default-features = false, features = ["wayland", "x11"] }
@@ -140,6 +143,7 @@ exclude = ["crates/easytier", "crates/raknet", "vendor/sctk-adwaita"]
 
 [target.'cfg(windows)'.dependencies]
 bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 lofty = "0.23.2"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "mp4", "wav", "flac", "vorbis"] }
 socket2 = "0.6.3"
@@ -154,10 +158,7 @@ winres = "0.1"
 bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-base64 = "0.22.1"
 keyring = { version = "3.6.3", default-features = false, features = ["async-io", "crypto-rust", "linux-native-async-persistent"] }
-p256 = { version = "0.13.2", features = ["ecdsa"] }
-secrecy = "0.10.3"
 tempfile = "3.23.0"
 
 [dev-dependencies]

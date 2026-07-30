@@ -1,16 +1,19 @@
 mod msa;
 mod secret_store;
+#[cfg(target_os = "linux")]
 mod wine_bridge;
 mod xbox;
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
+#[cfg(target_os = "linux")]
 pub(crate) use wine_bridge::PreparedLaunchAuth;
 
 static AUTH_STATE: Lazy<(watch::Sender<AuthSnapshot>, watch::Receiver<AuthSnapshot>)> =
@@ -236,6 +239,7 @@ pub(crate) fn remove_account(account_id: String) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) async fn prepare_launch(
     prefix_path: &Path,
 ) -> Result<Option<PreparedLaunchAuth>, String> {
@@ -345,8 +349,11 @@ async fn restore_session(generation: u64) -> Result<AuthSnapshot, AuthError> {
         let _guard = ACCOUNT_LOCK
             .lock()
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
-        wine_bridge::clear_stale_temporary_credentials()?;
-        wine_bridge::clear_all_prefix_credentials()?;
+        #[cfg(target_os = "linux")]
+        {
+            wine_bridge::clear_stale_temporary_credentials()?;
+            wine_bridge::clear_all_prefix_credentials()?;
+        }
         if let Some((catalog, profile, refresh_token)) = secret_store::load_active_account()? {
             return Ok(StoredLoginCandidate {
                 catalog,
@@ -434,6 +441,7 @@ async fn finish_authentication(
             return Ok(None);
         }
         if clear_prefix_credentials {
+            #[cfg(target_os = "linux")]
             wine_bridge::clear_all_prefix_credentials()?;
         }
         let catalog = secret_store::store_account(&profile_for_storage, &token.refresh_token)?;
@@ -496,6 +504,7 @@ async fn remove_account_flow(
             .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
         let (catalog, was_active) = secret_store::remove_account(&account_id)?;
         if was_active {
+            #[cfg(target_os = "linux")]
             wine_bridge::clear_all_prefix_credentials()?;
         }
         let next_account = if was_active {

@@ -286,9 +286,12 @@ async fn load_or_create_device_identity() -> Result<DeviceIdentity, AuthError> {
         let auth_dir = crate::utils::file_ops::state_subdir("bedrock-auth");
         std::fs::create_dir_all(&auth_dir)
             .map_err(|error| format!("创建 Xbox 设备状态目录失败：{error}"))?;
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&auth_dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("限制 Xbox 设备状态目录权限失败：{error}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&auth_dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("限制 Xbox 设备状态目录权限失败：{error}"))?;
+        }
         let device_id_path = auth_dir.join("device-id");
         let id = match std::fs::read_to_string(&device_id_path) {
             Ok(value) if valid_device_id(value.trim()) => value.trim().to_string(),
@@ -297,8 +300,17 @@ async fn load_or_create_device_identity() -> Result<DeviceIdentity, AuthError> {
                 let temporary = auth_dir.join(".device-id.tmp");
                 std::fs::write(&temporary, format!("{value}\n"))
                     .map_err(|error| format!("写入 Xbox 设备 ID 失败：{error}"))?;
-                std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
-                    .map_err(|error| format!("限制 Xbox 设备 ID 权限失败：{error}"))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+                        .map_err(|error| format!("限制 Xbox 设备 ID 权限失败：{error}"))?;
+                }
+                #[cfg(windows)]
+                if device_id_path.exists() {
+                    std::fs::remove_file(&device_id_path)
+                        .map_err(|error| format!("替换无效 Xbox 设备 ID 失败：{error}"))?;
+                }
                 std::fs::rename(&temporary, &device_id_path)
                     .map_err(|error| format!("保存 Xbox 设备 ID 失败：{error}"))?;
                 value
