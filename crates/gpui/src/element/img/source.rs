@@ -82,7 +82,9 @@ impl From<SharedUri> for ImageSource {
 
 impl<'a> From<&'a str> for ImageSource {
     fn from(s: &'a str) -> Self {
-        if is_uri(s) {
+        if Path::new(s).is_absolute() {
+            Self::Resource(PathBuf::from(s).into())
+        } else if is_uri(s) {
             Self::Resource(Resource::Uri(s.to_string().into()))
         } else {
             Self::Resource(Resource::Embedded(s.to_string().into()))
@@ -92,7 +94,9 @@ impl<'a> From<&'a str> for ImageSource {
 
 impl From<String> for ImageSource {
     fn from(s: String) -> Self {
-        if is_uri(&s) {
+        if Path::new(&s).is_absolute() {
+            Self::Resource(PathBuf::from(s).into())
+        } else if is_uri(&s) {
             Self::Resource(Resource::Uri(s.into()))
         } else {
             Self::Resource(Resource::Embedded(s.into()))
