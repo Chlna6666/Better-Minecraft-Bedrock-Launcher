@@ -10,6 +10,12 @@ not copied into this file.
 
 ### Highlights
 
+- Added cache-first Xbox profile images for saved multi-account sessions on both
+  Windows and Linux. BMCBL renders each account's local cached avatar first,
+  falls back to the Lucide user icon when no cache exists, and refreshes the
+  network image in the background without blocking login, account switching,
+  or GPUI rendering.
+
 - Rewrote the bundled NetherNet transport (`crates/bedrock-nethernet`) as a
   layered, zero-copy implementation with its wire format verified byte-for-byte
   against go-nethernet, including its own test vectors. Fixed two hard 64 KiB
