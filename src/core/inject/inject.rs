@@ -120,9 +120,6 @@ impl Drop for SensitivePayload {
 static XUSER_PAYLOADS: OnceLock<Mutex<HashMap<String, SensitivePayload>>> = OnceLock::new();
 static XUSER_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Registers a short-lived payload inside the launcher process. The returned
-/// opaque value preserves the existing task API shape but is never copied into
-/// the Minecraft environment block.
 pub fn register_xuser_launch_payload(payload: Vec<u8>) -> String {
     if payload.is_empty() || payload.len() > MAX_XUSER_PAYLOAD_SIZE {
         return String::new();
@@ -139,10 +136,24 @@ pub fn register_xuser_launch_payload(payload: Vec<u8>) -> String {
     let registry = XUSER_PAYLOADS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut registry) = registry.lock() {
         registry.insert(handle.clone(), SensitivePayload(payload));
-        handle
     } else {
-        String::new()
+        return String::new();
     }
+
+    // UWP launches never consume this registry entry. Expire every unused
+    // handle so credentials cannot remain in the launcher process indefinitely.
+    let cleanup_handle = handle.clone();
+    let _ = thread::Builder::new()
+        .name("bmcbl-xuser-expiry".to_string())
+        .spawn(move || {
+            thread::sleep(Duration::from_secs(90));
+            if let Some(registry) = XUSER_PAYLOADS.get()
+                && let Ok(mut registry) = registry.lock()
+            {
+                registry.remove(&cleanup_handle);
+            }
+        });
+    handle
 }
 
 fn take_registered_xuser_payload(handle: &str) -> Option<Vec<u8>> {
@@ -228,9 +239,6 @@ pub async fn launch_win32_with_injection(
                 .chain(Some(0))
                 .collect();
 
-            // Credentials and activation flags are intentionally absent from
-            // the child environment. The process inherits the normal launcher
-            // environment only through CreateProcessW's null environment block.
             CreateProcessW(
                 None,
                 Some(PWSTR(wide_command.as_ptr() as *mut _)),
@@ -250,17 +258,23 @@ pub async fn launch_win32_with_injection(
             let pid = process_info.dwProcessId;
             log(&format!("进程已挂起启动 PID: {pid}"));
 
-            if let Some(payload) = xuser_payload {
-                if let Err(error) = start_xuser_pipe_server(pid, payload, callback.clone()) {
-                    let _ = TerminateProcess(process, 1);
-                    let _ = CloseHandle(process);
-                    let _ = CloseHandle(main_thread);
-                    return Err(error);
+            let pending_xuser = if let Some(payload) = xuser_payload {
+                match PendingXUserPipe::create(pid, payload, callback.clone()) {
+                    Ok(pipe) => {
+                        log("已创建仅限目标进程的一次性 XUser 会话通道");
+                        Some(pipe)
+                    }
+                    Err(error) => {
+                        let _ = TerminateProcess(process, 1);
+                        let _ = CloseHandle(process);
+                        let _ = CloseHandle(main_thread);
+                        return Err(error);
+                    }
                 }
-                log("已创建仅限目标进程的一次性 XUser 会话通道");
             } else {
                 log("未提供 XUser 会话；不会创建登录通道或触发 QueryApiImpl Hook");
-            }
+                None
+            };
 
             if !dll_paths.is_empty() {
                 let kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
@@ -336,6 +350,16 @@ pub async fn launch_win32_with_injection(
             }
 
             ResumeThread(main_thread);
+
+            if let Some(pending_xuser) = pending_xuser
+                && let Err(error) = pending_xuser.serve()
+            {
+                let _ = TerminateProcess(process, 1);
+                let _ = CloseHandle(process);
+                let _ = CloseHandle(main_thread);
+                return Err(error);
+            }
+
             let _ = CloseHandle(process);
             let _ = CloseHandle(main_thread);
             Ok(pid)
@@ -345,138 +369,143 @@ pub async fn launch_win32_with_injection(
     .map_err(anyhow::Error::msg)?
 }
 
-fn start_xuser_pipe_server(
-    target_pid: u32,
-    payload: Vec<u8>,
-    callback: Option<InjectProgressCb>,
-) -> Result<()> {
-    let pipe_name = wide(&format!(r"\\.\pipe\BMCBL.XUser.{target_pid}"));
-    let sddl = wide("D:P(A;;GA;;;SY)(A;;GA;;;OW)");
-    let mut descriptor = ptr::null_mut();
-    let converted = unsafe {
-        convert_sddl(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            ptr::null_mut(),
-        )
-    };
-    if converted == 0 || descriptor.is_null() {
-        return Err(anyhow!("创建 XUser 管道安全描述符失败"));
-    }
-
-    let mut security_attributes = SecurityAttributes {
-        length: mem::size_of::<SecurityAttributes>() as u32,
-        security_descriptor: descriptor,
-        inherit_handle: 0,
-    };
-    let pipe = unsafe {
-        create_named_pipe_w(
-            pipe_name.as_ptr(),
-            PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1,
-            (PIPE_HEADER_SIZE + payload.len()) as u32,
-            0,
-            0,
-            &mut security_attributes,
-        )
-    };
-    unsafe {
-        local_free(descriptor);
-    }
-    if pipe.is_null() || pipe as isize == -1 {
-        return Err(anyhow!("创建 XUser 一次性命名管道失败"));
-    }
-
-    let sensitive = SensitivePayload(payload);
-    let spawn_result = thread::Builder::new()
-        .name("bmcbl-xuser-transfer".to_string())
-        .spawn(move || serve_xuser_payload(pipe, target_pid, sensitive, callback));
-    if let Err(error) = spawn_result {
-        unsafe {
-            close_handle_raw(pipe);
-        }
-        return Err(anyhow!("创建 XUser 安全传输线程失败: {error}"));
-    }
-    Ok(())
-}
-
-fn serve_xuser_payload(
+struct PendingXUserPipe {
     pipe: *mut c_void,
     target_pid: u32,
     payload: SensitivePayload,
     callback: Option<InjectProgressCb>,
-) {
-    let log = |message: &str| {
-        if let Some(callback) = &callback {
-            callback(message.to_string());
+}
+
+impl PendingXUserPipe {
+    fn create(
+        target_pid: u32,
+        payload: Vec<u8>,
+        callback: Option<InjectProgressCb>,
+    ) -> Result<Self> {
+        let pipe_name = wide(&format!(r"\\.\pipe\BMCBL.XUser.{target_pid}"));
+        let sddl = wide("D:P(A;;GA;;;SY)(A;;GA;;;OW)");
+        let mut descriptor = ptr::null_mut();
+        let converted = unsafe {
+            convert_sddl(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                ptr::null_mut(),
+            )
+        };
+        if converted == 0 || descriptor.is_null() {
+            return Err(anyhow!("创建 XUser 管道安全描述符失败"));
         }
-    };
-    let started = Instant::now();
-    let connected = loop {
-        if unsafe { connect_named_pipe(pipe, ptr::null_mut()) } != 0 {
-            break true;
+
+        let mut security_attributes = SecurityAttributes {
+            length: mem::size_of::<SecurityAttributes>() as u32,
+            security_descriptor: descriptor,
+            inherit_handle: 0,
+        };
+        let pipe = unsafe {
+            create_named_pipe_w(
+                pipe_name.as_ptr(),
+                PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                (PIPE_HEADER_SIZE + payload.len()) as u32,
+                0,
+                0,
+                &mut security_attributes,
+            )
+        };
+        unsafe {
+            local_free(descriptor);
         }
-        let error = unsafe { get_last_error_raw() };
-        if error == ERROR_PIPE_CONNECTED {
-            break true;
+        if pipe.is_null() || pipe as isize == -1 {
+            return Err(anyhow!("创建 XUser 一次性命名管道失败"));
         }
-        if !matches!(error, ERROR_PIPE_LISTENING | ERROR_NO_DATA)
-            || started.elapsed() >= Duration::from_secs(15)
+
+        Ok(Self {
+            pipe,
+            target_pid,
+            payload: SensitivePayload(payload),
+            callback,
+        })
+    }
+
+    fn serve(self) -> Result<()> {
+        let log = |message: &str| {
+            if let Some(callback) = &self.callback {
+                callback(message.to_string());
+            }
+        };
+        let started = Instant::now();
+        let connected = loop {
+            if unsafe { connect_named_pipe(self.pipe, ptr::null_mut()) } != 0 {
+                break true;
+            }
+            let error = unsafe { get_last_error_raw() };
+            if error == ERROR_PIPE_CONNECTED {
+                break true;
+            }
+            if !matches!(error, ERROR_PIPE_LISTENING | ERROR_NO_DATA)
+                || started.elapsed() >= Duration::from_secs(15)
+            {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+
+        if !connected {
+            unsafe {
+                close_handle_raw(self.pipe);
+            }
+            return Err(anyhow!(
+                "BLoader 未在超时时间内连接 XUser 会话通道"
+            ));
+        }
+
+        let mut client_pid = 0u32;
+        if unsafe { get_named_pipe_client_process_id(self.pipe, &mut client_pid) } == 0
+            || client_pid != self.target_pid
         {
-            break false;
+            unsafe {
+                disconnect_named_pipe(self.pipe);
+                close_handle_raw(self.pipe);
+            }
+            return Err(anyhow!("XUser 会话通道连接者不是目标 Minecraft 进程"));
         }
-        thread::sleep(Duration::from_millis(5));
-    };
 
-    if !connected {
-        log("XUser 会话通道等待超时；BLoader 将保持官方登录实现");
+        let issued_at = now_epoch();
+        let expires_at = issued_at.saturating_add(60);
+        let launcher_pid = unsafe { get_current_process_id_raw() };
+        let digest: [u8; 32] = Sha256::digest(&self.payload.0).into();
+        let mut header = [0u8; PIPE_HEADER_SIZE];
+        header[0..8].copy_from_slice(PIPE_MAGIC);
+        header[8..12].copy_from_slice(&PIPE_VERSION.to_le_bytes());
+        header[12..16].copy_from_slice(&self.target_pid.to_le_bytes());
+        header[16..20].copy_from_slice(&launcher_pid.to_le_bytes());
+        header[24..32].copy_from_slice(&issued_at.to_le_bytes());
+        header[32..40].copy_from_slice(&expires_at.to_le_bytes());
+        header[40..44].copy_from_slice(&(self.payload.0.len() as u32).to_le_bytes());
+        header[48..80].copy_from_slice(&digest);
+
+        write_exact(self.pipe, &header)?;
+        write_exact(self.pipe, &self.payload.0)?;
         unsafe {
-            close_handle_raw(pipe);
-        }
-        return;
-    }
-
-    let mut client_pid = 0u32;
-    if unsafe { get_named_pipe_client_process_id(pipe, &mut client_pid) } == 0
-        || client_pid != target_pid
-    {
-        log("XUser 会话通道拒绝了非目标进程连接");
-        unsafe {
-            disconnect_named_pipe(pipe);
-            close_handle_raw(pipe);
-        }
-        return;
-    }
-
-    let issued_at = now_epoch();
-    let expires_at = issued_at.saturating_add(60);
-    let launcher_pid = unsafe { get_current_process_id_raw() };
-    let digest: [u8; 32] = Sha256::digest(&payload.0).into();
-    let mut header = [0u8; PIPE_HEADER_SIZE];
-    header[0..8].copy_from_slice(PIPE_MAGIC);
-    header[8..12].copy_from_slice(&PIPE_VERSION.to_le_bytes());
-    header[12..16].copy_from_slice(&target_pid.to_le_bytes());
-    header[16..20].copy_from_slice(&launcher_pid.to_le_bytes());
-    header[24..32].copy_from_slice(&issued_at.to_le_bytes());
-    header[32..40].copy_from_slice(&expires_at.to_le_bytes());
-    header[40..44].copy_from_slice(&(payload.0.len() as u32).to_le_bytes());
-    header[48..80].copy_from_slice(&digest);
-
-    let transferred = write_exact(pipe, &header).and_then(|()| write_exact(pipe, &payload.0));
-    if transferred.is_ok() {
-        unsafe {
-            flush_file_buffers(pipe);
+            flush_file_buffers(self.pipe);
+            disconnect_named_pipe(self.pipe);
+            close_handle_raw(self.pipe);
         }
         log("XUser 会话已由目标 BLoader 接收");
-    } else {
-        log("XUser 会话传输失败；BLoader 将保持官方登录实现");
+        Ok(())
     }
+}
 
-    unsafe {
-        disconnect_named_pipe(pipe);
-        close_handle_raw(pipe);
+impl Drop for PendingXUserPipe {
+    fn drop(&mut self) {
+        if !self.pipe.is_null() && self.pipe as isize != -1 {
+            unsafe {
+                close_handle_raw(self.pipe);
+            }
+            self.pipe = ptr::null_mut();
+        }
     }
 }
 
