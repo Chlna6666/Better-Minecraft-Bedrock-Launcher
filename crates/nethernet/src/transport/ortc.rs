@@ -12,15 +12,15 @@ use webrtc::dtls_transport::RTCDtlsTransport;
 use webrtc::dtls_transport::dtls_fingerprint::RTCDtlsFingerprint;
 use webrtc::dtls_transport::dtls_parameters::DTLSParameters;
 use webrtc::dtls_transport::dtls_role::DTLSRole;
-use webrtc::ice::candidate::Candidate;
 use webrtc::ice::candidate::candidate_base::unmarshal_candidate;
-use webrtc::ice_transport::RTCIceTransport;
+use webrtc::ice::candidate::{Candidate, CandidatePairState};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::ice_transport::ice_gatherer::{RTCIceGatherOptions, RTCIceGatherer};
 use webrtc::ice_transport::ice_parameters::RTCIceParameters;
 use webrtc::ice_transport::ice_protocol::RTCIceProtocol;
 use webrtc::ice_transport::ice_role::RTCIceRole;
+use webrtc::ice_transport::{RTCIceDiagnostics, RTCIceTransport};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::sctp_transport::RTCSctpTransport;
 use webrtc::sctp_transport::sctp_transport_capabilities::SCTPTransportCapabilities;
@@ -47,6 +47,46 @@ pub(crate) struct CandidateSummary {
     pub(crate) ipv6: usize,
     pub(crate) mdns: usize,
     pub(crate) other_address: usize,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct IceDiagnostics {
+    pub(crate) candidate_pairs: usize,
+    pub(crate) waiting_pairs: usize,
+    pub(crate) in_progress_pairs: usize,
+    pub(crate) succeeded_pairs: usize,
+    pub(crate) failed_pairs: usize,
+    pub(crate) requests_received: u64,
+    pub(crate) requests_sent: u64,
+    pub(crate) responses_received: u64,
+    pub(crate) responses_sent: u64,
+}
+
+impl IceDiagnostics {
+    fn from_ice(diagnostics: RTCIceDiagnostics) -> Self {
+        let mut summary = Self {
+            candidate_pairs: diagnostics.candidate_pair_states.len(),
+            requests_received: diagnostics.requests_received,
+            requests_sent: diagnostics.requests_sent,
+            responses_received: diagnostics.responses_received,
+            responses_sent: diagnostics.responses_sent,
+            ..Self::default()
+        };
+        for state in diagnostics.candidate_pair_states {
+            summary.record_pair_state(state);
+        }
+        summary
+    }
+
+    fn record_pair_state(&mut self, state: CandidatePairState) {
+        match state {
+            CandidatePairState::Waiting => self.waiting_pairs += 1,
+            CandidatePairState::InProgress => self.in_progress_pairs += 1,
+            CandidatePairState::Succeeded => self.succeeded_pairs += 1,
+            CandidatePairState::Failed => self.failed_pairs += 1,
+            CandidatePairState::Unspecified => {}
+        }
+    }
 }
 
 pub(crate) fn summarize_candidates(candidates: &[RTCIceCandidate]) -> CandidateSummary {
@@ -115,6 +155,10 @@ impl OrtcStack {
     pub(crate) async fn add_remote_candidate(&self, candidate: RTCIceCandidate) -> Result<()> {
         self.ice.add_remote_candidate(Some(candidate)).await?;
         Ok(())
+    }
+
+    pub(crate) async fn ice_diagnostics(&self) -> IceDiagnostics {
+        IceDiagnostics::from_ice(self.ice.get_diagnostics().await)
     }
 
     pub(crate) async fn start(&self, remote: &RemoteDescription) -> Result<()> {
@@ -274,11 +318,23 @@ pub(crate) fn build_answer(
         .map_err(|error| NethernetError::protocol(format!("创建 SDP 会话编号失败：{error}")))?
         .as_nanos();
     let mut answer = format!(
-        "v=0\r\no=- {session_id} 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n\
-m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n\
+        "v=0\r\no=- {session_id} 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n"
+    );
+    for fingerprint in &dtls.fingerprints {
+        write!(
+            answer,
+            "a=fingerprint:{} {}\r\n",
+            fingerprint.algorithm, fingerprint.value
+        )
+        .map_err(|error| NethernetError::protocol(format!("创建 SDP fingerprint 失败：{error}")))?;
+    }
+    write!(
+        answer,
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n\
 a=ice-ufrag:{}\r\na=ice-pwd:{}\r\na=ice-options:trickle\r\n",
         ice.username_fragment, ice.password
-    );
+    )
+    .map_err(|error| NethernetError::protocol(format!("创建 SDP ICE 属性失败：{error}")))?;
     for (index, candidate) in candidates.iter().enumerate() {
         let candidate = candidate.to_json()?;
         answer.push_str("a=");
@@ -288,14 +344,6 @@ a=ice-ufrag:{}\r\na=ice-pwd:{}\r\na=ice-options:trickle\r\n",
             index,
         ));
         answer.push_str("\r\n");
-    }
-    for fingerprint in &dtls.fingerprints {
-        write!(
-            answer,
-            "a=fingerprint:{} {}\r\n",
-            fingerprint.algorithm, fingerprint.value
-        )
-        .map_err(|error| NethernetError::protocol(format!("创建 SDP fingerprint 失败：{error}")))?;
     }
     write!(
         answer,
@@ -348,6 +396,28 @@ a=candidate:1 1 udp 2130706431 127.0.0.1 50000 typ host\r\n";
         assert!(answer.contains("a=sctp-port:5000\r\n"));
         assert!(answer.contains("a=max-message-size:262144\r\n"));
         assert!(answer.contains("a=fingerprint:"));
+        let fingerprint = answer.find("a=fingerprint:").expect("fingerprint");
+        let media = answer.find("m=application").expect("application media");
+        assert!(fingerprint < media, "fingerprint 必须是会话级属性");
         stack.close().await.expect("ORTC 栈应关闭");
+    }
+
+    #[test]
+    fn ice_diagnostics_aggregate_pair_states_and_check_counts() {
+        let diagnostics = IceDiagnostics::from_ice(RTCIceDiagnostics {
+            candidate_pair_states: vec![CandidatePairState::InProgress, CandidatePairState::Failed],
+            requests_received: 9,
+            requests_sent: 14,
+            responses_received: 17,
+            responses_sent: 22,
+        });
+
+        assert_eq!(diagnostics.candidate_pairs, 2);
+        assert_eq!(diagnostics.in_progress_pairs, 1);
+        assert_eq!(diagnostics.failed_pairs, 1);
+        assert_eq!(diagnostics.requests_received, 9);
+        assert_eq!(diagnostics.requests_sent, 14);
+        assert_eq!(diagnostics.responses_received, 17);
+        assert_eq!(diagnostics.responses_sent, 22);
     }
 }

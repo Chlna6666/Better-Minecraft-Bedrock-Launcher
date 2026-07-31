@@ -1,14 +1,15 @@
 //! ICE 候选交换模式与信令投递。
 
 use crate::error::{NethernetError, Result};
-use crate::protocol::Signal;
+use crate::protocol::{Signal, SignalType};
 use crate::signaling::LanSignaling;
 use crate::transport::negotiate::format_candidate;
+use crate::transport::ortc::{OrtcStack, parse_ice_candidate};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::ice_transport::ice_gatherer::RTCIceGatherer;
 
 const LOCAL_CANDIDATE_CAPACITY: usize = 64;
@@ -84,6 +85,16 @@ impl NegotiationConfig {
 pub(crate) enum LocalCandidateEvent {
     Candidate { index: usize, data: String },
     Complete { count: usize },
+}
+
+pub(crate) struct RemoteCandidateReceiver {
+    pub(crate) stack: Arc<OrtcStack>,
+    pub(crate) signals: mpsc::Receiver<Signal>,
+    pub(crate) cancel: CancellationToken,
+    pub(crate) connection_id: u64,
+    pub(crate) remote_network_id: u64,
+    pub(crate) remote_candidate_count: Arc<AtomicUsize>,
+    pub(crate) remote_candidate_ready: CancellationToken,
 }
 
 pub(crate) fn install_ortc_candidate_queue(
@@ -200,6 +211,73 @@ pub(crate) fn spawn_local_candidate_sender(
             }
         }
     });
+}
+
+pub(crate) fn spawn_remote_candidate_receiver(receiver: RemoteCandidateReceiver) {
+    tokio::spawn(async move {
+        let RemoteCandidateReceiver {
+            stack,
+            mut signals,
+            cancel,
+            connection_id,
+            remote_network_id,
+            remote_candidate_count,
+            remote_candidate_ready,
+        } = receiver;
+        loop {
+            let signal = tokio::select! {
+                () = cancel.cancelled() => break,
+                signal = signals.recv() => signal,
+            };
+            let Some(signal) = signal else { break };
+            match signal.kind {
+                SignalType::Candidate => {
+                    let result = match parse_ice_candidate(&signal.data) {
+                        Ok(candidate) => stack.add_remote_candidate(candidate).await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result {
+                        tracing::warn!(
+                            connection_id,
+                            remote_network_id,
+                            "添加 NetherNet 远端 ICE 候选失败：{error}"
+                        );
+                    } else {
+                        remote_candidate_count.fetch_add(1, Ordering::Relaxed);
+                        remote_candidate_ready.cancel();
+                        tracing::info!(
+                            connection_id,
+                            remote_network_id,
+                            "NetherNet 远端 ICE 候选已添加"
+                        );
+                    }
+                }
+                SignalType::Error => break,
+                _ => {}
+            }
+        }
+    });
+}
+
+pub(crate) async fn gather_local_candidates(stack: &OrtcStack) -> Result<Vec<RTCIceCandidate>> {
+    let (candidate_tx, mut candidate_rx) = mpsc::channel(LOCAL_CANDIDATE_CAPACITY);
+    stack
+        .gatherer
+        .on_local_candidate(Box::new(move |candidate| {
+            let candidate_tx = candidate_tx.clone();
+            Box::pin(async move {
+                if candidate_tx.send(candidate).await.is_err() {
+                    tracing::debug!("NetherNet 非 trickle 候选接收端已关闭");
+                }
+            })
+        }));
+    stack.gatherer.gather().await?;
+    let mut candidates = Vec::new();
+    while let Some(candidate) = candidate_rx.recv().await {
+        let Some(candidate) = candidate else { break };
+        candidates.push(candidate);
+    }
+    Ok(candidates)
 }
 
 fn encode_candidate(

@@ -150,8 +150,8 @@ o=- 1 2 IN IP4 127.0.0.1\r\n\
 s=-\r\n\
 t=0 0\r\n\
 a=group:BUNDLE 0\r\n\
-m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
 a=fingerprint:sha-256 00:11:22:33:44:55\r\n\
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
 a=sctp-port:5000\r\n";
 
     #[test]
@@ -162,6 +162,10 @@ a=sctp-port:5000\r\n";
             .expect("identity should attach");
         let media_position = answer.find("m=application").expect("media section");
         let identity_position = answer.find("a=identity:").expect("identity attribute");
+        let fingerprint_position = answer
+            .find("a=fingerprint:")
+            .expect("fingerprint attribute");
+        assert!(fingerprint_position < identity_position);
         assert!(identity_position < media_position);
 
         let encoded = answer[identity_position + "a=identity:".len()..media_position].trim();

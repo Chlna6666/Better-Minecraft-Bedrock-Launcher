@@ -7,12 +7,14 @@ use crate::protocol::{Signal, SignalType};
 use crate::session::NethernetSession;
 use crate::signaling::LanSignaling;
 use crate::transport::candidate::{
-    IceExchangeMode, NegotiationConfig, install_ortc_candidate_queue, spawn_local_candidate_sender,
+    IceExchangeMode, NegotiationConfig, RemoteCandidateReceiver, gather_local_candidates,
+    install_ortc_candidate_queue, spawn_local_candidate_sender, spawn_remote_candidate_receiver,
+};
+use crate::transport::diagnostics::{
+    log_candidate_summary, log_negotiation_timeout, log_offer_summary,
 };
 use crate::transport::negotiate::summarize_sdp;
-use crate::transport::ortc::{
-    OrtcStack, build_answer, parse_ice_candidate, parse_offer, summarize_candidates,
-};
+use crate::transport::ortc::{OrtcStack, build_answer, parse_offer};
 use crate::transport::stream::recv_signal;
 use crate::{RELIABLE_CHANNEL, UNRELIABLE_CHANNEL};
 use std::collections::HashMap;
@@ -22,7 +24,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 
 /// 待 accept 的会话队列容量。
 const INCOMING_CAPACITY: usize = 32;
@@ -353,15 +354,15 @@ async fn negotiate_answer(
         stack.gatherer.gather().await?;
     }
 
-    spawn_remote_candidate_receiver(
-        Arc::clone(stack),
+    spawn_remote_candidate_receiver(RemoteCandidateReceiver {
+        stack: Arc::clone(stack),
         signals,
-        session.cancellation_token(),
-        offer.connection_id,
-        offer.network_id,
-        Arc::clone(&remote_candidate_count),
-        remote_candidate_ready.clone(),
-    );
+        cancel: session.cancellation_token(),
+        connection_id: offer.connection_id,
+        remote_network_id: offer.network_id,
+        remote_candidate_count: Arc::clone(&remote_candidate_count),
+        remote_candidate_ready: remote_candidate_ready.clone(),
+    });
 
     let negotiation = tokio::time::timeout(NEGOTIATION_TIMEOUT, async {
         // GravityCone starts the controlled transport only after the first
@@ -396,152 +397,6 @@ async fn negotiate_answer(
         "NetherNet ICE 与数据通道已就绪"
     );
     Ok(())
-}
-
-fn log_offer_summary(offer: &Signal) {
-    let summary = summarize_sdp(&offer.data);
-    tracing::info!(
-        connection_id = offer.connection_id,
-        remote_network_id = offer.network_id,
-        setup_role = summary.setup_role,
-        inline_candidates = summary.inline_candidates,
-        has_identity = summary.has_identity,
-        max_message_size = ?summary.max_message_size,
-        "NetherNet Offer 摘要"
-    );
-}
-
-fn spawn_remote_candidate_receiver(
-    stack: Arc<OrtcStack>,
-    mut signals: mpsc::Receiver<Signal>,
-    cancel: CancellationToken,
-    connection_id: u64,
-    remote_network_id: u64,
-    remote_candidate_count: Arc<AtomicUsize>,
-    remote_candidate_ready: CancellationToken,
-) {
-    tokio::spawn(async move {
-        loop {
-            let signal = tokio::select! {
-                () = cancel.cancelled() => break,
-                signal = signals.recv() => signal,
-            };
-            let Some(signal) = signal else { break };
-            match signal.kind {
-                SignalType::Candidate => {
-                    let result = match parse_ice_candidate(&signal.data) {
-                        Ok(candidate) => stack.add_remote_candidate(candidate).await,
-                        Err(error) => Err(error),
-                    };
-                    if let Err(error) = result {
-                        tracing::warn!(
-                            connection_id,
-                            remote_network_id,
-                            "添加 NetherNet 远端 ICE 候选失败：{error}"
-                        );
-                    } else {
-                        remote_candidate_count.fetch_add(1, Ordering::Relaxed);
-                        remote_candidate_ready.cancel();
-                        tracing::info!(
-                            connection_id,
-                            remote_network_id,
-                            "NetherNet 远端 ICE 候选已添加"
-                        );
-                    }
-                }
-                SignalType::Error => break,
-                _ => {}
-            }
-        }
-    });
-}
-
-async fn log_negotiation_timeout(
-    stack: &OrtcStack,
-    session: &NethernetSession,
-    connection_id: u64,
-    remote_network_id: u64,
-    remote_candidate_count: usize,
-) {
-    let local_candidates = match stack.gatherer.get_local_candidates().await {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            tracing::warn!(
-                connection_id,
-                remote_network_id,
-                "读取 NetherNet 本地 ICE 候选失败：{error}"
-            );
-            Vec::new()
-        }
-    };
-    let local_candidate_count = local_candidates.len();
-    log_candidate_summary(
-        "NetherNet 本地 ICE 候选摘要",
-        connection_id,
-        remote_network_id,
-        &local_candidates,
-    );
-    let selected_pair = stack.ice.get_selected_candidate_pair().await.is_some();
-    tracing::warn!(
-        connection_id,
-        remote_network_id,
-        ice_state = ?stack.ice.state(),
-        dtls_state = ?stack.dtls.state(),
-        sctp_state = ?stack.sctp.state(),
-        open_channels = session.open_channel_count(),
-        expected_channels = 2,
-        local_candidates = local_candidate_count,
-        remote_candidates = remote_candidate_count,
-        selected_pair,
-        "NetherNet 协商超时状态"
-    );
-}
-
-fn log_candidate_summary(
-    scope: &'static str,
-    connection_id: u64,
-    remote_network_id: u64,
-    candidates: &[RTCIceCandidate],
-) {
-    let summary = summarize_candidates(candidates);
-    tracing::info!(
-        connection_id,
-        remote_network_id,
-        total = candidates.len(),
-        host = summary.host,
-        server_reflexive = summary.server_reflexive,
-        peer_reflexive = summary.peer_reflexive,
-        relay = summary.relay,
-        udp = summary.udp,
-        tcp = summary.tcp,
-        ipv4 = summary.ipv4,
-        ipv6 = summary.ipv6,
-        mdns = summary.mdns,
-        other_address = summary.other_address,
-        scope,
-        "NetherNet ICE 候选摘要"
-    );
-}
-
-async fn gather_local_candidates(stack: &OrtcStack) -> Result<Vec<RTCIceCandidate>> {
-    let (candidate_tx, mut candidate_rx) = mpsc::channel(64);
-    stack
-        .gatherer
-        .on_local_candidate(Box::new(move |candidate| {
-            let candidate_tx = candidate_tx.clone();
-            Box::pin(async move {
-                if candidate_tx.send(candidate).await.is_err() {
-                    tracing::debug!("NetherNet 非 trickle 候选接收端已关闭");
-                }
-            })
-        }));
-    stack.gatherer.gather().await?;
-    let mut candidates = Vec::new();
-    while let Some(candidate) = candidate_rx.recv().await {
-        let Some(candidate) = candidate else { break };
-        candidates.push(candidate);
-    }
-    Ok(candidates)
 }
 
 /// 挂接对端主动创建的数据通道。就绪判定由会话自身完成
