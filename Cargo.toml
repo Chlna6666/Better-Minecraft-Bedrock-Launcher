@@ -64,6 +64,7 @@ num_cpus = "1.16.0"
 regex = "1.12.2"
 rustc-hash = "2.1.1"
 anyhow = "1.0.100"
+tempfile = "3.23.0"
 url = "2.5.4"
 unicode-segmentation = "1.12.0"
 ttf-parser = "0.25.1"
@@ -159,7 +160,6 @@ bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["async-io", "crypto-rust", "linux-native-async-persistent"] }
-tempfile = "3.23.0"
 
 [dev-dependencies]
 bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main" }

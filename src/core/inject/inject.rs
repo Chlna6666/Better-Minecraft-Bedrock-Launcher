@@ -58,6 +58,7 @@ pub async fn launch_win32_with_injection(
     exe_path: &str,
     args: Option<&str>,
     dll_paths: Vec<String>,
+    env_vars: Option<Vec<(String, String)>>,
     enable_console: bool,
     on_progress: Option<InjectProgressCb>,
 ) -> Result<u32> {
@@ -98,6 +99,33 @@ pub async fn launch_win32_with_injection(
                 .chain(Some(0))
                 .collect();
 
+            let mut env_ptr: Option<*const std::ffi::c_void> = None;
+            let mut env_block_vec: Vec<u16> = Vec::new();
+
+            if let Some(mut custom_vars) = env_vars {
+                creation_flags |= windows::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
+
+                let mut env_map: std::collections::HashMap<String, String> =
+                    std::env::vars().collect();
+                for (k, v) in custom_vars.drain(..) {
+                    env_map.insert(k, v);
+                }
+
+                let mut env_entries: Vec<String> = env_map
+                    .into_iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect();
+                env_entries.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+
+                for entry in env_entries {
+                    env_block_vec.extend(OsStr::new(&entry).encode_wide());
+                    env_block_vec.push(0);
+                }
+                env_block_vec.push(0);
+
+                env_ptr = Some(env_block_vec.as_ptr() as *const std::ffi::c_void);
+            }
+
             CreateProcessW(
                 None,
                 Option::from(PWSTR(wide_cmd.as_ptr() as *mut _)),
@@ -105,7 +133,7 @@ pub async fn launch_win32_with_injection(
                 None,
                 false, // [关键] 设为 false，彻底切断与启动器终端的继承关系，保证窗口独立
                 creation_flags,
-                None,
+                env_ptr,
                 None,
                 &si,
                 &mut pi,

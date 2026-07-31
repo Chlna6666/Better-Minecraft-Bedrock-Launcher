@@ -2,6 +2,8 @@ mod msa;
 mod secret_store;
 #[cfg(target_os = "linux")]
 mod wine_bridge;
+#[cfg(target_os = "windows")]
+mod gdk_bridge;
 mod xbox;
 
 use once_cell::sync::Lazy;
@@ -16,9 +18,14 @@ use tokio_stream::wrappers::WatchStream;
 #[cfg(target_os = "linux")]
 pub(crate) use wine_bridge::PreparedLaunchAuth;
 
+#[cfg(target_os = "windows")]
+pub(crate) use gdk_bridge::PreparedLaunchAuth;
+
 static AUTH_STATE: Lazy<(watch::Sender<AuthSnapshot>, watch::Receiver<AuthSnapshot>)> =
     Lazy::new(|| watch::channel(AuthSnapshot::signed_out()));
 static ACCOUNT_LOCK: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
+static PREAUTH_CACHE: Lazy<std::sync::Mutex<Option<(String, Vec<u8>, std::time::Instant)>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
 static FLOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static FLOW_RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -256,6 +263,39 @@ pub(crate) async fn prepare_launch(
     let Some((_catalog, expected_profile, refresh_token)) = active_account else {
         return Ok(None);
     };
+
+    let cached_device_json = {
+        let cache = PREAUTH_CACHE.lock().unwrap();
+        cache.as_ref().and_then(|(cached_xuid, cached_json, timestamp)| {
+            if cached_xuid == &expected_profile.xuid && timestamp.elapsed().as_secs() < 7200 {
+                Some(cached_json.clone())
+            } else {
+                None
+            }
+        })
+    };
+
+    if let Some(device_json) = cached_device_json {
+        let profile_for_storage = expected_profile.clone();
+        let prefix_path = prefix_path.to_path_buf();
+        
+        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+            let _guard = ACCOUNT_LOCK
+                .lock()
+                .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
+            if !current_generation(generation) {
+                return Err("Microsoft 登录状态已在启动期间发生变化".to_string());
+            }
+            let prepared = wine_bridge::prepare(&prefix_path, &refresh_token, &device_json)?;
+            Ok(prepared)
+        })
+        .await
+        .map_err(|error| AuthError::Runtime(error).user_message())?
+        .map_err(|error| AuthError::Storage(error).user_message())?;
+        
+        return Ok(Some(prepared));
+    }
+
     let client = msa::client().map_err(|error| error.user_message())?;
     let token = msa::refresh(&client, &refresh_token)
         .await
@@ -281,6 +321,98 @@ pub(crate) async fn prepare_launch(
         }
         let catalog = secret_store::store_account(&profile_for_storage, &token.refresh_token)?;
         let prepared = wine_bridge::prepare(&prefix_path, &token.refresh_token, &device_json)?;
+        Ok((catalog, prepared))
+    })
+    .await
+    .map_err(|error| AuthError::Runtime(error).user_message())?
+    .map_err(|error| AuthError::Storage(error).user_message())?;
+    publish(AuthSnapshot::from_catalog(
+        AuthPhase::SignedIn,
+        &prepared.0,
+        Some(profile),
+    ));
+    Ok(Some(prepared.1))
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth>, String> {
+    let generation = FLOW_GENERATION.load(Ordering::Acquire);
+    let active_account = crate::tasks::runtime::run_io_blocking(|| {
+        let _guard = ACCOUNT_LOCK
+            .lock()
+            .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
+        secret_store::load_active_account()
+    })
+    .await
+    .map_err(|error| AuthError::Runtime(error).user_message())?
+    .map_err(|error| AuthError::Storage(error).user_message())?;
+    let Some((_catalog, expected_profile, refresh_token)) = active_account else {
+        return Ok(None);
+    };
+
+    let cached_device_json = {
+        let cache = PREAUTH_CACHE.lock().unwrap();
+        cache.as_ref().and_then(|(cached_xuid, cached_json, timestamp)| {
+            if cached_xuid == &expected_profile.xuid && timestamp.elapsed().as_secs() < 7200 {
+                Some(cached_json.clone())
+            } else {
+                None
+            }
+        })
+    };
+
+    if let Some(device_json) = cached_device_json {
+        let profile_for_storage = expected_profile.clone();
+        
+        let prepared = crate::tasks::runtime::run_io_blocking(move || {
+            let _guard = ACCOUNT_LOCK
+                .lock()
+                .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
+            if !current_generation(generation) {
+                return Err("Microsoft 登录状态已在启动期间发生变化".to_string());
+            }
+            let prepared = gdk_bridge::prepare(
+                &profile_for_storage.xuid,
+                &profile_for_storage.gamertag,
+                &device_json,
+            )?;
+            Ok(prepared)
+        })
+        .await
+        .map_err(|error| AuthError::Runtime(error).user_message())?
+        .map_err(|error| AuthError::Storage(error).user_message())?;
+        
+        return Ok(Some(prepared));
+    }
+
+    let client = msa::client().map_err(|error| error.user_message())?;
+    let token = msa::refresh(&client, &refresh_token)
+        .await
+        .map_err(|error| error.user_message())?;
+    let preauth = xbox::authenticate(&client, &token.access_token)
+        .await
+        .map_err(|error| error.user_message())?;
+    let profile = preauth.profile.clone();
+    if profile.xuid != expected_profile.xuid {
+        return Err("Microsoft 刷新凭证返回了不匹配的 Xbox 账号".to_string());
+    }
+    let device_json = preauth
+        .winegdk_json()
+        .map_err(|error| error.user_message())?;
+    let profile_for_storage = profile.clone();
+    let prepared = crate::tasks::runtime::run_io_blocking(move || {
+        let _guard = ACCOUNT_LOCK
+            .lock()
+            .map_err(|_| "Microsoft 登录凭证锁已损坏".to_string())?;
+        if !current_generation(generation) {
+            return Err("Microsoft 登录状态已在启动期间发生变化".to_string());
+        }
+        let catalog = secret_store::store_account(&profile_for_storage, &token.refresh_token)?;
+        let prepared = gdk_bridge::prepare(
+            &profile_for_storage.xuid,
+            &profile_for_storage.gamertag,
+            &device_json,
+        )?;
         Ok((catalog, prepared))
     })
     .await
@@ -431,7 +563,14 @@ async fn finish_authentication(
             "Microsoft 刷新凭证返回了不匹配的 Xbox 账号".to_string(),
         ));
     }
+    if let Ok(device_json) = preauth.winegdk_json() {
+        if let Ok(mut cache) = PREAUTH_CACHE.lock() {
+            *cache = Some((preauth.profile.xuid.clone(), device_json, std::time::Instant::now()));
+        }
+    }
+
     let profile = preauth.profile;
+
     let profile_for_storage = profile.clone();
     let catalog = crate::tasks::runtime::run_io_blocking(move || {
         let _guard = ACCOUNT_LOCK

@@ -638,6 +638,28 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         return Ok(None);
     }
 
+    let mut env_vars = None;
+    let launch_auth = crate::core::bedrock_auth::prepare_launch_windows().await?;
+    if let Some(auth) = &launch_auth {
+        append_task_log(
+            task_id,
+            format!("已注入 Xbox 登录会话：{}", auth.gamertag),
+        );
+        info!(
+            task_id = %task_id,
+            gamertag = %auth.gamertag,
+            "检测到有效的 Xbox 会话，已将身份凭证注入环境变量"
+        );
+        let vars = auth.get_env_vars();
+        for (k, v) in &vars {
+            debug!(task_id = %task_id, "注入环境变量: {} = {}", k, if k.contains("PREAUTH") || k.contains("NONCE") { "***" } else { v });
+        }
+        env_vars = Some(vars);
+    } else {
+        append_task_log(task_id, "未检测到 Xbox 登录凭证，将以未登录状态启动");
+        info!(task_id = %task_id, "未检测到 Xbox 登录凭证，将以未登录状态启动");
+    }
+
     if !is_win32 && game_cfg.uwp_minimize_fix {
         if let Ok(Some((_, _, package_name))) = get_package_info(&identity_to_aumid(&identity_name))
         {
@@ -660,6 +682,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             exe_path,
             final_launch_args.as_deref(),
             Vec::new(),
+            env_vars,
             false,
             Some(log_callback.clone()),
         )
@@ -668,6 +691,15 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         if !version_config.disable_mod_loading {
             handle_delayed_injection(pid, delayed_mods, log_callback, false);
         }
+        
+        if let Some(auth) = launch_auth {
+            // Keep the auth temp files alive for 60 seconds to ensure the game has enough time to read them
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                drop(auth);
+            });
+        }
+        
         info!(task_id = %task_id, pid, "Win32 版本启动成功");
         pid
     } else {
