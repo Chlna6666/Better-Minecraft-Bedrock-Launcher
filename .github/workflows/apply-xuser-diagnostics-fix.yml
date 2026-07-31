@@ -1,0 +1,74 @@
+name: Apply XUser diagnostics fix
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/apply-xuser-diagnostics-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Patch transport and Hook status messages
+        shell: python
+        run: |
+          from pathlib import Path
+
+          task = Path("src/core/minecraft/launcher/task.rs")
+          text = task.read_text(encoding="utf-8")
+          old = '''        if let Some(gamertag) = launch_gamertag.as_deref() {
+              append_task_log(
+                  task_id,
+                  format!("BLoader 已通过一次性安全管道接收 Xbox 会话：{gamertag}"),
+              );
+              info!(
+                  task_id = %task_id,
+                  pid,
+                  gamertag,
+                  "BLoader 已通过一次性安全管道接收 Xbox 会话，QueryApiImpl 按需接管已启用"
+              );
+          }
+          '''
+          new = '''        if let Some(gamertag) = launch_gamertag.as_deref() {
+              append_task_log(
+                  task_id,
+                  format!(
+                      "Xbox 安全会话载荷已传输至目标进程：{gamertag}；请以 BLoader xuser-bridge 日志确认系统 Runtime 与 QueryApiImpl Hook 状态"
+                  ),
+              );
+              info!(
+                  task_id = %task_id,
+                  pid,
+                  gamertag,
+                  "Xbox 安全会话载荷已通过一次性管道传输；BMCBL 不推断 Hook 成功，最终状态以 BLoader xuser-bridge 日志为准"
+              );
+          }
+          '''
+          if old not in text:
+              raise SystemExit("task.rs target block not found")
+          task.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          inject = Path("src/core/inject/inject.rs")
+          text = inject.read_text(encoding="utf-8")
+          old = '        log("XUser 会话已由目标 BLoader 接收");'
+          new = '        log("XUser 会话载荷已传输至目标进程；等待 BLoader 验证会话、加载系统 Runtime 并报告 QueryApiImpl Hook 状态");'
+          if old not in text:
+              raise SystemExit("inject.rs target message not found")
+          inject.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+      - name: Commit source changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/core/minecraft/launcher/task.rs src/core/inject/inject.rs
+          git commit -m "fix(xuser): 区分管道传输与 BLoader Hook 状态"
+          git push origin HEAD:master
