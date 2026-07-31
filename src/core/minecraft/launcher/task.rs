@@ -638,26 +638,45 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         return Ok(None);
     }
 
-    let mut env_vars = None;
-    let launch_auth = crate::core::bedrock_auth::prepare_launch_windows().await?;
-    if let Some(auth) = &launch_auth {
-        append_task_log(
-            task_id,
-            format!("已注入 Xbox 登录会话：{}", auth.gamertag),
-        );
-        info!(
-            task_id = %task_id,
-            gamertag = %auth.gamertag,
-            "检测到有效的 Xbox 会话，已将身份凭证注入环境变量"
-        );
-        let vars = auth.get_env_vars();
-        for (k, v) in &vars {
-            debug!(task_id = %task_id, "注入环境变量: {} = {}", k, if k.contains("PREAUTH") || k.contains("NONCE") { "***" } else { v });
-        }
-        env_vars = Some(vars);
+    let mut secure_launch_metadata = None;
+    let launch_auth = if is_win32 {
+        crate::core::bedrock_auth::prepare_launch_windows().await?
     } else {
-        append_task_log(task_id, "未检测到 Xbox 登录凭证，将以未登录状态启动");
-        info!(task_id = %task_id, "未检测到 Xbox 登录凭证，将以未登录状态启动");
+        None
+    };
+    let launch_gamertag = launch_auth.as_ref().map(|auth| auth.gamertag.clone());
+
+    if is_win32 {
+        if let Some(auth) = &launch_auth {
+            append_task_log(
+                task_id,
+                format!("已准备 BLoader XUser 安全会话：{}", auth.gamertag),
+            );
+            info!(
+                task_id = %task_id,
+                gamertag = %auth.gamertag,
+                "检测到有效的 Xbox 会话，将通过 BMCBL 一次性安全管道传递给 BLoader"
+            );
+            let metadata = auth.take_secure_launch_metadata();
+            if metadata.is_empty() {
+                return Err("无法登记 BLoader XUser 一次性安全会话".to_string());
+            }
+            debug!(
+                task_id = %task_id,
+                gamertag = %auth.gamertag,
+                "Xbox 会话已登记到 BMCBL 进程内存；将在获取 Minecraft PID 后创建一次性安全管道"
+            );
+            secure_launch_metadata = Some(metadata);
+        } else {
+            append_task_log(
+                task_id,
+                "未检测到有效 Xbox 会话；不会创建 BLoader XUser 安全管道，游戏将使用微软官方登录",
+            );
+            info!(
+                task_id = %task_id,
+                "未检测到有效 Xbox 会话；BLoader 不会接管 QueryApiImpl，游戏将使用微软官方 XUser 登录"
+            );
+        }
     }
 
     if !is_win32 && game_cfg.uwp_minimize_fix {
@@ -682,24 +701,30 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             exe_path,
             final_launch_args.as_deref(),
             Vec::new(),
-            env_vars,
+            secure_launch_metadata,
             false,
             Some(log_callback.clone()),
         )
         .await
         .map_err(|error| format!("启动失败: {error:?}"))?;
+
+        if let Some(gamertag) = launch_gamertag.as_deref() {
+            append_task_log(
+                task_id,
+                format!("BLoader 已通过一次性安全管道接收 Xbox 会话：{gamertag}"),
+            );
+            info!(
+                task_id = %task_id,
+                pid,
+                gamertag,
+                "BLoader 已通过一次性安全管道接收 Xbox 会话，QueryApiImpl 按需接管已启用"
+            );
+        }
+
         if !version_config.disable_mod_loading {
             handle_delayed_injection(pid, delayed_mods, log_callback, false);
         }
-        
-        if let Some(auth) = launch_auth {
-            // Keep the auth temp files alive for 60 seconds to ensure the game has enough time to read them
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                drop(auth);
-            });
-        }
-        
+
         info!(task_id = %task_id, pid, "Win32 版本启动成功");
         pid
     } else {
