@@ -1,13 +1,16 @@
 #![cfg(target_os = "windows")]
-use anyhow::{Context, Result, anyhow};
-use std::ffi::OsStr;
+use anyhow::{Result, anyhow};
+use sha2::{Digest, Sha256};
+use std::ffi::{OsStr, c_void};
 use std::mem;
-#[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::process::Command;
+use std::ptr;
 use std::sync::Arc;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Diagnostics::Debug::{
     CONTEXT, CONTEXT_FLAGS, GetThreadContext, SetThreadContext, WriteProcessMemory,
 };
@@ -16,40 +19,108 @@ use windows::Win32::System::Memory::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAllocEx, VirtualFreeEx,
 };
 use windows::Win32::System::Threading::{
-    CREATE_NEW_CONSOLE, // [核心] 确保引入此标志
-    CREATE_SUSPENDED,
-    CreateProcessW,
-    CreateRemoteThread,
-    INFINITE,
-    PROCESS_INFORMATION,
-    ResumeThread,
-    STARTUPINFOW,
-    WaitForSingleObject,
+    CREATE_NEW_CONSOLE, CREATE_SUSPENDED, CreateProcessW, CreateRemoteThread, INFINITE,
+    PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 use windows::core::{PCSTR, PWSTR};
 
 pub type InjectProgressCb = Arc<dyn Fn(String) + Send + Sync>;
 
-// 在你的启动器代码中修改
-pub fn grant_all_application_packages_access(path: &Path) -> anyhow::Result<()> {
-    // S-1-15-2-1: All Application Packages (所有应用程序包)
-    // S-1-5-32-545: Users (普通用户组)
+const PIPE_MAGIC: &[u8; 8] = b"BMCBLXU1";
+const PIPE_VERSION: u32 = 1;
+const PIPE_HEADER_SIZE: usize = 80;
+const MAX_XUSER_PAYLOAD_SIZE: usize = 256 * 1024;
+const PIPE_ACCESS_OUTBOUND: u32 = 0x0000_0002;
+const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x0008_0000;
+const PIPE_TYPE_BYTE: u32 = 0;
+const PIPE_READMODE_BYTE: u32 = 0;
+const PIPE_NOWAIT: u32 = 0x0000_0001;
+const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x0000_0008;
+const ERROR_NO_DATA: u32 = 232;
+const ERROR_PIPE_CONNECTED: u32 = 535;
+const ERROR_PIPE_LISTENING: u32 = 536;
+const SDDL_REVISION_1: u32 = 1;
 
+#[repr(C)]
+struct SecurityAttributes {
+    length: u32,
+    security_descriptor: *mut c_void,
+    inherit_handle: i32,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "CreateNamedPipeW"]
+    fn create_named_pipe_w(
+        name: *const u16,
+        open_mode: u32,
+        pipe_mode: u32,
+        max_instances: u32,
+        output_buffer_size: u32,
+        input_buffer_size: u32,
+        default_timeout: u32,
+        security_attributes: *mut SecurityAttributes,
+    ) -> *mut c_void;
+    #[link_name = "ConnectNamedPipe"]
+    fn connect_named_pipe(pipe: *mut c_void, overlapped: *mut c_void) -> i32;
+    #[link_name = "DisconnectNamedPipe"]
+    fn disconnect_named_pipe(pipe: *mut c_void) -> i32;
+    #[link_name = "GetNamedPipeClientProcessId"]
+    fn get_named_pipe_client_process_id(pipe: *mut c_void, process_id: *mut u32) -> i32;
+    #[link_name = "WriteFile"]
+    fn write_file(
+        file: *mut c_void,
+        buffer: *const c_void,
+        bytes_to_write: u32,
+        bytes_written: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
+    #[link_name = "FlushFileBuffers"]
+    fn flush_file_buffers(file: *mut c_void) -> i32;
+    #[link_name = "CloseHandle"]
+    fn close_handle_raw(handle: *mut c_void) -> i32;
+    #[link_name = "GetLastError"]
+    fn get_last_error_raw() -> u32;
+    #[link_name = "GetCurrentProcessId"]
+    fn get_current_process_id_raw() -> u32;
+    #[link_name = "LocalFree"]
+    fn local_free(memory: *mut c_void) -> *mut c_void;
+}
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    #[link_name = "ConvertStringSecurityDescriptorToSecurityDescriptorW"]
+    fn convert_sddl(
+        descriptor: *const u16,
+        revision: u32,
+        security_descriptor: *mut *mut c_void,
+        descriptor_size: *mut u32,
+    ) -> i32;
+}
+
+struct SensitivePayload(Vec<u8>);
+
+impl Drop for SensitivePayload {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+pub fn grant_all_application_packages_access(path: &Path) -> anyhow::Result<()> {
     let output = Command::new("icacls")
         .arg(path)
         .arg("/grant")
-        .arg("*S-1-15-2-1:(OI)(CI)M") // [安全修复] 降级为 Modify (M)，游戏只需读写，不需要完全控制
+        .arg("*S-1-15-2-1:(OI)(CI)M")
         .arg("/grant")
-        .arg("*S-1-5-32-545:(OI)(CI)F") // [Bug修复] 给予用户组 Full (F) 权限，确保用户可以手动删除文件
-        .arg("/T") // 递归应用到子文件
-        .arg("/Q") // 静默模式
+        .arg("*S-1-5-32-545:(OI)(CI)F")
+        .arg("/T")
+        .arg("/Q")
         .output()
-        .map_err(|e| anyhow::Error::msg(format!("Failed to execute icacls: {}", e)))?;
+        .map_err(|error| anyhow::Error::msg(format!("Failed to execute icacls: {error}")))?;
 
     if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        // 记录警告但不中断流程
-        eprintln!("Warning: icacls warning for {:?}: {}", path, err);
+        let error = String::from_utf8_lossy(&output.stderr);
+        eprintln!("Warning: icacls warning for {:?}: {}", path, error);
     }
     Ok(())
 }
@@ -58,168 +129,155 @@ pub async fn launch_win32_with_injection(
     exe_path: &str,
     args: Option<&str>,
     dll_paths: Vec<String>,
-    env_vars: Option<Vec<(String, String)>>,
+    xuser_payload: Option<Vec<u8>>,
     enable_console: bool,
     on_progress: Option<InjectProgressCb>,
 ) -> Result<u32> {
     let exe_path_owned = exe_path.to_string();
-    let args_owned = args.map(|s| s.to_string());
-    let cb = on_progress.clone();
+    let args_owned = args.map(ToOwned::to_owned);
+    let callback = on_progress.clone();
 
     crate::tasks::runtime::run_io_blocking(move || -> Result<u32> {
         unsafe {
-            let log = |msg: &str| {
-                if let Some(c) = &cb {
-                    c(msg.to_string());
+            let log = |message: &str| {
+                if let Some(callback) = &callback {
+                    callback(message.to_string());
                 }
             };
 
-            let mut si = STARTUPINFOW::default();
-            si.cb = mem::size_of::<STARTUPINFOW>() as u32;
-            let mut pi = PROCESS_INFORMATION::default();
+            if xuser_payload
+                .as_ref()
+                .is_some_and(|payload| payload.is_empty() || payload.len() > MAX_XUSER_PAYLOAD_SIZE)
+            {
+                return Err(anyhow!("Win32 XUser 预认证载荷无效"));
+            }
 
-            // [核心修正]
-            // 1. 基础标志：挂起进程 (为了注入)
+            let mut startup_info = STARTUPINFOW::default();
+            startup_info.cb = mem::size_of::<STARTUPINFOW>() as u32;
+            let mut process_info = PROCESS_INFORMATION::default();
             let mut creation_flags = CREATE_SUSPENDED;
-
-            // 2. 控制台标志：如果启用，则强制请求新窗口
-            // 只要加上这个标志，Windows 就会负责弹出默认的终端应用 (Terminal 或 CMD)
             if enable_console {
                 creation_flags |= CREATE_NEW_CONSOLE;
                 log("启动标志: CREATE_NEW_CONSOLE (请求独立终端窗口)");
             }
 
-            let mut cmd_line_str = format!("\"{}\"", exe_path_owned);
-            if let Some(a) = &args_owned {
-                cmd_line_str.push_str(" ");
-                cmd_line_str.push_str(a);
+            let mut command_line = format!("\"{}\"", exe_path_owned);
+            if let Some(arguments) = &args_owned {
+                command_line.push(' ');
+                command_line.push_str(arguments);
             }
-            let wide_cmd: Vec<u16> = OsStr::new(&cmd_line_str)
+            let wide_command: Vec<u16> = OsStr::new(&command_line)
                 .encode_wide()
                 .chain(Some(0))
                 .collect();
 
-            let mut env_ptr: Option<*const std::ffi::c_void> = None;
-            let mut env_block_vec: Vec<u16> = Vec::new();
-
-            if let Some(mut custom_vars) = env_vars {
-                creation_flags |= windows::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
-
-                let mut env_map: std::collections::HashMap<String, String> =
-                    std::env::vars().collect();
-                for (k, v) in custom_vars.drain(..) {
-                    env_map.insert(k, v);
-                }
-
-                let mut env_entries: Vec<String> = env_map
-                    .into_iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect();
-                env_entries.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-
-                for entry in env_entries {
-                    env_block_vec.extend(OsStr::new(&entry).encode_wide());
-                    env_block_vec.push(0);
-                }
-                env_block_vec.push(0);
-
-                env_ptr = Some(env_block_vec.as_ptr() as *const std::ffi::c_void);
-            }
-
             CreateProcessW(
                 None,
-                Option::from(PWSTR(wide_cmd.as_ptr() as *mut _)),
+                Some(PWSTR(wide_command.as_ptr() as *mut _)),
                 None,
                 None,
-                false, // [关键] 设为 false，彻底切断与启动器终端的继承关系，保证窗口独立
+                false,
                 creation_flags,
-                env_ptr,
                 None,
-                &si,
-                &mut pi,
+                None,
+                &startup_info,
+                &mut process_info,
             )
-            .map_err(|e| anyhow!("CreateProcessW failed: {:?}", e))?;
+            .map_err(|error| anyhow!("CreateProcessW failed: {error:?}"))?;
 
-            let h_proc = pi.hProcess;
-            let h_thread = pi.hThread;
-            let pid = pi.dwProcessId;
-            log(&format!("进程已挂起启动 PID: {}", pid));
+            let process = process_info.hProcess;
+            let main_thread = process_info.hThread;
+            let pid = process_info.dwProcessId;
+            log(&format!("进程已挂起启动 PID: {pid}"));
+
+            if let Some(payload) = xuser_payload {
+                if let Err(error) = start_xuser_pipe_server(pid, payload, callback.clone()) {
+                    let _ = TerminateProcess(process, 1);
+                    let _ = CloseHandle(process);
+                    let _ = CloseHandle(main_thread);
+                    return Err(error);
+                }
+                log("已创建仅限目标进程的一次性 XUser 会话通道");
+            } else {
+                log("未提供 XUser 会话；不会创建登录通道或触发 QueryApiImpl Hook");
+            }
 
             if !dll_paths.is_empty() {
-                let h_kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
-                let load_lib_addr = GetProcAddress(h_kernel, PCSTR(b"LoadLibraryW\0".as_ptr()))
+                let kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
+                let load_library = GetProcAddress(kernel, PCSTR(b"LoadLibraryW\0".as_ptr()))
                     .ok_or_else(|| anyhow!("LoadLibraryW not found"))?
                     as u64;
 
-                // [说明] 移除了 AllocConsole 的注入逻辑
-                // 因为我们已经使用了 CREATE_NEW_CONSOLE，系统会在进程启动时自动分配控制台
-
-                let mut path_addrs = Vec::new();
+                let mut path_addresses = Vec::new();
                 for path in &dll_paths {
-                    let wpath: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
-                    let len = wpath.len() * 2;
-                    let mem = VirtualAllocEx(
-                        h_proc,
+                    let wide_path: Vec<u16> =
+                        OsStr::new(path).encode_wide().chain(Some(0)).collect();
+                    let length = wide_path.len() * 2;
+                    let remote = VirtualAllocEx(
+                        process,
                         None,
-                        len,
+                        length,
                         MEM_COMMIT | MEM_RESERVE,
                         PAGE_EXECUTE_READWRITE,
                     );
-                    if !mem.is_null() {
-                        WriteProcessMemory(h_proc, mem, wpath.as_ptr() as _, len, None)?;
-                        path_addrs.push(mem as u64);
-                        log(&format!("注入准备: {}", path));
+                    if !remote.is_null() {
+                        WriteProcessMemory(process, remote, wide_path.as_ptr().cast(), length, None)?;
+                        path_addresses.push(remote as u64);
+                        log(&format!("注入准备: {path}"));
                     }
                 }
 
-                let mut ctx: CONTEXT = mem::zeroed();
-                ctx.ContextFlags = CONTEXT_FLAGS(0x100001);
-                GetThreadContext(h_thread, &mut ctx)?;
+                let mut context: CONTEXT = mem::zeroed();
+                context.ContextFlags = CONTEXT_FLAGS(0x100001);
+                GetThreadContext(main_thread, &mut context)?;
 
                 let mut shellcode = Vec::new();
                 shellcode.extend_from_slice(&[
                     0x48, 0x83, 0xEC, 0x28, 0x50, 0x53, 0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x41,
                     0x52, 0x41, 0x53,
                 ]);
-
-                for path_addr in path_addrs {
+                for address in path_addresses {
                     shellcode.extend_from_slice(&[0x48, 0xB9]);
-                    shellcode.extend_from_slice(&path_addr.to_le_bytes());
+                    shellcode.extend_from_slice(&address.to_le_bytes());
                     shellcode.extend_from_slice(&[0x48, 0xB8]);
-                    shellcode.extend_from_slice(&load_lib_addr.to_le_bytes());
+                    shellcode.extend_from_slice(&load_library.to_le_bytes());
                     shellcode.extend_from_slice(&[0xFF, 0xD0]);
                 }
-
                 shellcode.extend_from_slice(&[
                     0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5A, 0x59, 0x5B, 0x58, 0x48,
                     0x83, 0xC4, 0x28,
                 ]);
                 shellcode.extend_from_slice(&[0x48, 0xB8]);
-                shellcode.extend_from_slice(&ctx.Rip.to_le_bytes());
+                shellcode.extend_from_slice(&context.Rip.to_le_bytes());
                 shellcode.extend_from_slice(&[0xFF, 0xE0]);
 
-                let shellcode_mem = VirtualAllocEx(
-                    h_proc,
+                let shellcode_memory = VirtualAllocEx(
+                    process,
                     None,
                     shellcode.len(),
                     MEM_COMMIT | MEM_RESERVE,
                     PAGE_EXECUTE_READWRITE,
                 );
+                if shellcode_memory.is_null() {
+                    let _ = TerminateProcess(process, 1);
+                    let _ = CloseHandle(process);
+                    let _ = CloseHandle(main_thread);
+                    return Err(anyhow!("VirtualAllocEx failed for startup shellcode"));
+                }
                 WriteProcessMemory(
-                    h_proc,
-                    shellcode_mem,
-                    shellcode.as_ptr() as _,
+                    process,
+                    shellcode_memory,
+                    shellcode.as_ptr().cast(),
                     shellcode.len(),
                     None,
                 )?;
-
-                ctx.Rip = shellcode_mem as u64;
-                SetThreadContext(h_thread, &ctx)?;
+                context.Rip = shellcode_memory as u64;
+                SetThreadContext(main_thread, &context)?;
             }
 
-            ResumeThread(h_thread);
-            let _ = CloseHandle(h_proc);
-            let _ = CloseHandle(h_thread);
+            ResumeThread(main_thread);
+            let _ = CloseHandle(process);
+            let _ = CloseHandle(main_thread);
             Ok(pid)
         }
     })
@@ -227,7 +285,174 @@ pub async fn launch_win32_with_injection(
     .map_err(anyhow::Error::msg)?
 }
 
-// inject_existing_process 代码保持原样，因为它是针对已存在进程的
+fn start_xuser_pipe_server(
+    target_pid: u32,
+    payload: Vec<u8>,
+    callback: Option<InjectProgressCb>,
+) -> Result<()> {
+    let pipe_name = wide(&format!(r"\\.\pipe\BMCBL.XUser.{target_pid}"));
+    let sddl = wide("D:P(A;;GA;;;SY)(A;;GA;;;OW)");
+    let mut descriptor = ptr::null_mut();
+    let converted = unsafe {
+        convert_sddl(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    };
+    if converted == 0 || descriptor.is_null() {
+        return Err(anyhow!("创建 XUser 管道安全描述符失败"));
+    }
+
+    let mut security_attributes = SecurityAttributes {
+        length: mem::size_of::<SecurityAttributes>() as u32,
+        security_descriptor: descriptor,
+        inherit_handle: 0,
+    };
+    let pipe = unsafe {
+        create_named_pipe_w(
+            pipe_name.as_ptr(),
+            PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            (PIPE_HEADER_SIZE + payload.len()) as u32,
+            0,
+            0,
+            &mut security_attributes,
+        )
+    };
+    unsafe {
+        local_free(descriptor);
+    }
+    if pipe.is_null() || pipe as isize == -1 {
+        return Err(anyhow!("创建 XUser 一次性命名管道失败"));
+    }
+
+    let sensitive = SensitivePayload(payload);
+    let spawn_result = thread::Builder::new()
+        .name("bmcbl-xuser-transfer".to_string())
+        .spawn(move || serve_xuser_payload(pipe, target_pid, sensitive, callback));
+    if let Err(error) = spawn_result {
+        unsafe {
+            close_handle_raw(pipe);
+        }
+        return Err(anyhow!("创建 XUser 安全传输线程失败: {error}"));
+    }
+    Ok(())
+}
+
+fn serve_xuser_payload(
+    pipe: *mut c_void,
+    target_pid: u32,
+    payload: SensitivePayload,
+    callback: Option<InjectProgressCb>,
+) {
+    let log = |message: &str| {
+        if let Some(callback) = &callback {
+            callback(message.to_string());
+        }
+    };
+    let started = Instant::now();
+    let connected = loop {
+        if unsafe { connect_named_pipe(pipe, ptr::null_mut()) } != 0 {
+            break true;
+        }
+        let error = unsafe { get_last_error_raw() };
+        if error == ERROR_PIPE_CONNECTED {
+            break true;
+        }
+        if !matches!(error, ERROR_PIPE_LISTENING | ERROR_NO_DATA)
+            || started.elapsed() >= Duration::from_secs(15)
+        {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+
+    if !connected {
+        log("XUser 会话通道等待超时；BLoader 将保持官方登录实现");
+        unsafe {
+            close_handle_raw(pipe);
+        }
+        return;
+    }
+
+    let mut client_pid = 0u32;
+    if unsafe { get_named_pipe_client_process_id(pipe, &mut client_pid) } == 0
+        || client_pid != target_pid
+    {
+        log("XUser 会话通道拒绝了非目标进程连接");
+        unsafe {
+            disconnect_named_pipe(pipe);
+            close_handle_raw(pipe);
+        }
+        return;
+    }
+
+    let issued_at = now_epoch();
+    let expires_at = issued_at.saturating_add(60);
+    let launcher_pid = unsafe { get_current_process_id_raw() };
+    let digest: [u8; 32] = Sha256::digest(&payload.0).into();
+    let mut header = [0u8; PIPE_HEADER_SIZE];
+    header[0..8].copy_from_slice(PIPE_MAGIC);
+    header[8..12].copy_from_slice(&PIPE_VERSION.to_le_bytes());
+    header[12..16].copy_from_slice(&target_pid.to_le_bytes());
+    header[16..20].copy_from_slice(&launcher_pid.to_le_bytes());
+    header[24..32].copy_from_slice(&issued_at.to_le_bytes());
+    header[32..40].copy_from_slice(&expires_at.to_le_bytes());
+    header[40..44].copy_from_slice(&(payload.0.len() as u32).to_le_bytes());
+    header[48..80].copy_from_slice(&digest);
+
+    let transferred = write_exact(pipe, &header).and_then(|()| write_exact(pipe, &payload.0));
+    if transferred.is_ok() {
+        unsafe {
+            flush_file_buffers(pipe);
+        }
+        log("XUser 会话已由目标 BLoader 接收");
+    } else {
+        log("XUser 会话传输失败；BLoader 将保持官方登录实现");
+    }
+
+    unsafe {
+        disconnect_named_pipe(pipe);
+        close_handle_raw(pipe);
+    }
+}
+
+fn write_exact(handle: *mut c_void, bytes: &[u8]) -> Result<()> {
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let mut written = 0u32;
+        let chunk = (bytes.len() - offset).min(u32::MAX as usize) as u32;
+        let ok = unsafe {
+            write_file(
+                handle,
+                bytes[offset..].as_ptr().cast(),
+                chunk,
+                &mut written,
+                ptr::null_mut(),
+            )
+        };
+        if ok == 0 || written == 0 {
+            return Err(anyhow!("命名管道提前关闭"));
+        }
+        offset += written as usize;
+    }
+    Ok(())
+}
+
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain(Some(0)).collect()
+}
+
 pub async fn inject_existing_process(
     pid: u32,
     dll_path: String,
@@ -235,108 +460,107 @@ pub async fn inject_existing_process(
     skip_acl: bool,
     enable_console: bool,
 ) -> Result<()> {
-    let cb = on_progress.clone();
+    let callback = on_progress.clone();
 
     crate::tasks::runtime::run_io_blocking(move || -> Result<()> {
         unsafe {
-            let log = |msg: &str| {
-                if let Some(c) = &cb {
-                    c(msg.to_string());
+            let log = |message: &str| {
+                if let Some(callback) = &callback {
+                    callback(message.to_string());
                 }
             };
 
             if !skip_acl {
-                let path_obj = Path::new(&dll_path);
-                let _ = grant_all_application_packages_access(path_obj);
+                let path = Path::new(&dll_path);
+                let _ = grant_all_application_packages_access(path);
             }
 
-            let h_proc = windows::Win32::System::Threading::OpenProcess(
+            let process = windows::Win32::System::Threading::OpenProcess(
                 windows::Win32::System::Threading::PROCESS_ALL_ACCESS,
                 false,
                 pid,
             )
-            .map_err(|e| anyhow!("OpenProcess failed: {:?}", e))?;
+            .map_err(|error| anyhow!("OpenProcess failed: {error:?}"))?;
 
-            // 对现有进程，只能尝试 RemoteThread 调用 AllocConsole/FreeConsole
             if enable_console {
-                let h_kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
+                let kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
 
-                if let Some(free_console_addr) =
-                    GetProcAddress(h_kernel, PCSTR(b"FreeConsole\0".as_ptr()))
+                if let Some(free_console) =
+                    GetProcAddress(kernel, PCSTR(b"FreeConsole\0".as_ptr()))
                 {
-                    let h_free = CreateRemoteThread(
-                        h_proc,
+                    if let Ok(remote_thread) = CreateRemoteThread(
+                        process,
                         None,
                         0,
-                        Some(mem::transmute(free_console_addr)),
+                        Some(mem::transmute(free_console)),
                         None,
                         0,
                         None,
-                    );
-                    if let Ok(h) = h_free {
-                        WaitForSingleObject(h, 1000);
-                        let _ = CloseHandle(h);
+                    ) {
+                        WaitForSingleObject(remote_thread, 1000);
+                        let _ = CloseHandle(remote_thread);
                     }
                 }
 
-                if let Some(alloc_console_addr) =
-                    GetProcAddress(h_kernel, PCSTR(b"AllocConsole\0".as_ptr()))
+                if let Some(alloc_console) =
+                    GetProcAddress(kernel, PCSTR(b"AllocConsole\0".as_ptr()))
                 {
-                    let h_console_thread = CreateRemoteThread(
-                        h_proc,
+                    if let Ok(remote_thread) = CreateRemoteThread(
+                        process,
                         None,
                         0,
-                        Some(mem::transmute(alloc_console_addr)),
+                        Some(mem::transmute(alloc_console)),
                         None,
                         0,
                         None,
-                    );
-
-                    if let Ok(h) = h_console_thread {
-                        WaitForSingleObject(h, INFINITE);
-                        let _ = CloseHandle(h);
+                    ) {
+                        WaitForSingleObject(remote_thread, INFINITE);
+                        let _ = CloseHandle(remote_thread);
                     }
                 }
             }
 
-            let wide_path: Vec<u16> = OsStr::new(&dll_path).encode_wide().chain(Some(0)).collect();
-            let len = wide_path.len() * 2;
-            let remote_mem = VirtualAllocEx(
-                h_proc,
+            let wide_path: Vec<u16> =
+                OsStr::new(&dll_path).encode_wide().chain(Some(0)).collect();
+            let length = wide_path.len() * 2;
+            let remote_memory = VirtualAllocEx(
+                process,
                 None,
-                len,
+                length,
                 MEM_COMMIT | MEM_RESERVE,
                 PAGE_EXECUTE_READWRITE,
             );
-
-            if remote_mem.is_null() {
-                let _ = CloseHandle(h_proc);
+            if remote_memory.is_null() {
+                let _ = CloseHandle(process);
                 return Err(anyhow!("VirtualAllocEx failed"));
             }
-            WriteProcessMemory(h_proc, remote_mem, wide_path.as_ptr() as _, len, None)?;
+            WriteProcessMemory(
+                process,
+                remote_memory,
+                wide_path.as_ptr().cast(),
+                length,
+                None,
+            )?;
 
-            let h_kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
-            let load_lib = GetProcAddress(h_kernel, PCSTR(b"LoadLibraryW\0".as_ptr()))
+            let kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
+            let load_library = GetProcAddress(kernel, PCSTR(b"LoadLibraryW\0".as_ptr()))
                 .ok_or_else(|| anyhow!("LoadLibraryW not found"))?;
-
-            let h_thread = CreateRemoteThread(
-                h_proc,
+            let remote_thread = CreateRemoteThread(
+                process,
                 None,
                 0,
-                Some(mem::transmute(load_lib)),
-                Some(remote_mem),
+                Some(mem::transmute(load_library)),
+                Some(remote_memory),
                 0,
                 None,
             )
-            .map_err(|e| anyhow!("CreateRemoteThread failed: {:?}", e))?;
+            .map_err(|error| anyhow!("CreateRemoteThread failed: {error:?}"))?;
 
-            WaitForSingleObject(h_thread, INFINITE);
-
-            let _ = VirtualFreeEx(h_proc, remote_mem, 0, MEM_RELEASE);
-            let _ = CloseHandle(h_thread);
-            let _ = CloseHandle(h_proc);
-
-            log(&format!("注入完成: {}", dll_path));
+            WaitForSingleObject(remote_thread, INFINITE);
+            let _ = VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            let _ = CloseHandle(remote_thread);
+            let _ = CloseHandle(process);
+            log(&format!("注入完成: {dll_path}"));
             Ok(())
         }
     })
