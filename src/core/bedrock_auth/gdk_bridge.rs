@@ -1,6 +1,9 @@
 use std::sync::Mutex;
 
 const MAX_LAUNCH_PREAUTH_SIZE: usize = 256 * 1024;
+// Process-local metadata key used only between BMCBL modules. This key and its
+// opaque value are consumed before CreateProcessW and are never added to the
+// Minecraft child-process environment.
 const INTERNAL_SESSION_KEY: &str = "BMCBL_XGAMERUNTIME_PREAUTH";
 
 pub(crate) struct PreparedLaunchAuth {
@@ -9,10 +12,11 @@ pub(crate) struct PreparedLaunchAuth {
 }
 
 impl PreparedLaunchAuth {
-    /// Preserves the existing launcher call shape without exposing credentials
-    /// to the child process environment. The returned value is only an opaque,
-    /// one-use handle into BMCBL's own process-local registry.
-    pub(crate) fn get_env_vars(&self) -> Vec<(String, String)> {
+    /// Moves the credential payload into BMCBL's process-local one-use
+    /// registry and returns only an opaque handle for the launcher module.
+    /// Neither the handle nor the credential payload is passed through the
+    /// Minecraft environment, command line, registry, or a temporary file.
+    pub(crate) fn take_secure_launch_metadata(&self) -> Vec<(String, String)> {
         let payload = self
             .payload
             .lock()
