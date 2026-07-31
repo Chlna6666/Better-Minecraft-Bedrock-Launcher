@@ -166,6 +166,8 @@ bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.g
 
 [patch.crates-io]
 dtls = { path = "vendor/dtls" }
+webrtc = { path = "vendor/webrtc" }
+webrtc-ice = { path = "vendor/webrtc-ice" }
 gpui = { path = "crates/gpui" }
 gpu-allocator = { path = "vendor/gpu-allocator" }
 gpui-router = { path = "vendor/gpui-router" }
