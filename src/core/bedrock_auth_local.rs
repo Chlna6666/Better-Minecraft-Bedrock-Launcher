@@ -26,6 +26,7 @@ const SELECTION_SYSTEM: u8 = 2;
 
 static EVENT_BRIDGE_STARTED: AtomicBool = AtomicBool::new(false);
 static LOCAL_PROBE_STARTED: AtomicBool = AtomicBool::new(false);
+static PRELOAD_STARTED: AtomicBool = AtomicBool::new(false);
 static SELECTION: AtomicU8 = AtomicU8::new(SELECTION_AUTO);
 static AUTH_STATE: Lazy<(watch::Sender<AuthSnapshot>, watch::Receiver<AuthSnapshot>)> =
     Lazy::new(|| watch::channel(managed::AuthSnapshot::signed_out()));
@@ -91,12 +92,28 @@ pub(crate) fn event_stream() -> WatchStream<AuthSnapshot> {
     WatchStream::new(AUTH_STATE.1.clone())
 }
 
-pub(crate) fn initialize() {
+/// Schedules all Xbox account startup work and returns immediately.
+///
+/// Managed account restoration and the Windows system-local account probe are
+/// independent tasks. Both are submitted during startup, before GPUI begins,
+/// while every blocking Gaming Runtime, keyring, image and filesystem operation
+/// remains on the IO/blocking runtime.
+pub(crate) fn preload_at_app_startup() {
+    if PRELOAD_STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
     load_selection_mode();
     start_managed_event_bridge();
-    managed::initialize();
+
+    // Submit the independent Windows probe first so Runtime initialization can
+    // overlap keyring access and managed-token restoration.
     #[cfg(target_os = "windows")]
     start_local_user_probe();
+
+    // This function only schedules managed restoration; it does not block the
+    // startup thread while refreshing Microsoft/Xbox credentials.
+    managed::initialize();
 }
 
 pub(crate) fn start_login() -> Result<(), String> {
@@ -263,9 +280,6 @@ fn publish_with_local_account(mut snapshot: AuthSnapshot) {
         if select_system {
             snapshot.profile = Some(local.profile.clone());
             snapshot.active_account_id = Some(SYSTEM_LOCAL_ACCOUNT_ID.to_string());
-            // This phase means "an account choice is active" in the launcher UI.
-            // `local.signed_in` is conveyed by the local row text; game launch still
-            // uses the official Runtime and may present Microsoft's own login UI.
             snapshot.phase = AuthPhase::SignedIn;
             snapshot.user_code = None;
             snapshot.verification_url = None;
