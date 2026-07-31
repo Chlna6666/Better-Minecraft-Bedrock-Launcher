@@ -1,0 +1,120 @@
+name: Sync BLoader 0.2.7
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/sync-bloader-0.2.7.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BLOADER_VERSION: 0.2.7
+      RELEASE_BASE: https://github.com/Chlna6666/BLoader/releases/download/v0.2.7
+      ARCHIVE_NAME: BLoader-0.2.7-windows-x64.zip
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Download verified BLoader release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bloader-release /tmp/bloader-unpack
+          cd /tmp/bloader-release
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --location --silent --show-error \
+              "$RELEASE_BASE/$ARCHIVE_NAME" \
+              --output "$ARCHIVE_NAME" && \
+               curl --fail --location --silent --show-error \
+              "$RELEASE_BASE/$ARCHIVE_NAME.sha256" \
+              --output "$ARCHIVE_NAME.sha256"; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "BLoader v$BLOADER_VERSION release assets are unavailable" >&2
+              exit 1
+            fi
+            rm -f "$ARCHIVE_NAME" "$ARCHIVE_NAME.sha256"
+            sleep 10
+          done
+
+          sha256sum --check "$ARCHIVE_NAME.sha256"
+          unzip -q "$ARCHIVE_NAME" -d /tmp/bloader-unpack
+          cd /tmp/bloader-unpack
+          sha256sum --check BLoader.dll.sha256
+
+          test -s BLoader.dll
+          mkdir -p "$GITHUB_WORKSPACE/assets/bin"
+          cp BLoader.dll "$GITHUB_WORKSPACE/assets/bin/BLoader.dll"
+          printf '%s\n' \
+            "version=$BLOADER_VERSION" \
+            "sha256=$(sha256sum BLoader.dll | awk '{print $1}')" \
+            "source=https://github.com/Chlna6666/BLoader/releases/tag/v$BLOADER_VERSION" \
+            > "$GITHUB_WORKSPACE/assets/bin/BLoader.version"
+
+      - name: Update user switching documentation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          readme = Path("README.md")
+          text = readme.read_text(encoding="utf-8")
+          begin = "<!-- BLOADER_XUSER_BEGIN -->"
+          end = "<!-- BLOADER_XUSER_END -->"
+          section = f'''{begin}
+
+## Win32 GDK Xbox 用户切换
+
+BMCBL 已内置 **BLoader 0.2.7**，支持 Win32 GDK 版本的 Xbox 用户切换：
+
+```text
+BMCBL 一次性安全管道
+  → BLoader 内置 Rust XUser / XAsync
+  → 仅接管系统 xgameruntime.dll!QueryApiImpl
+  → 生成 Token + Xbox PoP Signature
+  → 其他 XGameRuntime 接口继续使用微软官方实现
+```
+
+- 仅在检测到有效的 BMCBL Xbox 会话时启用自定义 XUser；
+- 没有登录会话时不加载 Hook，保持微软官方登录流程；
+- 登录材料不通过环境变量、命令行、注册表或普通临时文件传递；
+- BLoader 日志会显示经过清理的 Xbox Gamertag、系统 Runtime 路径和 Hook 状态，不输出 Token、XUID、私钥或 Signature；
+- 当前账号切换只支持 **Win32 GDK**，不用于 UWP/AppContainer 版本。
+
+内置 DLL 校验信息见 `assets/bin/BLoader.version`。
+
+{end}'''
+
+          if begin in text and end in text:
+              start = text.index(begin)
+              finish = text.index(end, start) + len(end)
+              text = text[:start] + section + text[finish:]
+          else:
+              text = text.rstrip() + "\n\n" + section + "\n"
+          readme.write_text(text, encoding="utf-8")
+
+      - name: Commit BLoader 0.2.7 resource
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/sync-bloader-0.2.7.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/bin/BLoader.dll assets/bin/BLoader.version README.md \
+            .github/workflows/sync-bloader-0.2.7.yml
+          if git diff --cached --quiet; then
+            echo "BLoader 0.2.7 is already synchronized."
+            exit 0
+          fi
+          git commit -m "feat(xuser): 更新 BLoader 0.2.7 并启用用户切换"
+          git push origin HEAD:master
