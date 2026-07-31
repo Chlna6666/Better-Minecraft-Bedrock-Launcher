@@ -8,6 +8,7 @@ pub(crate) use managed::PreparedLaunchAuth;
 pub(crate) use managed::PreparedLaunchAuth;
 
 use once_cell::sync::Lazy;
+#[cfg(target_os = "windows")]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -68,10 +69,7 @@ impl LocalAccountState {
     }
 
     #[cfg(target_os = "windows")]
-    fn signed_in(
-        gamertag: String,
-        avatar_path: Option<PathBuf>,
-    ) -> Self {
+    fn signed_in(gamertag: String, avatar_path: Option<PathBuf>) -> Self {
         Self {
             profile: XboxProfile {
                 xuid: SYSTEM_LOCAL_ACCOUNT_ID.to_string(),
@@ -255,13 +253,14 @@ fn local_account_snapshot() -> LocalAccountState {
 fn publish_with_local_account(mut snapshot: AuthSnapshot) {
     #[cfg(target_os = "windows")]
     {
+        let select_system = system_account_is_selected(&snapshot);
         let local = local_account_snapshot();
         snapshot
             .accounts
             .retain(|profile| !is_system_local_account(&profile.xuid));
         snapshot.accounts.insert(0, local.profile.clone());
 
-        if system_account_is_selected(&snapshot) {
+        if select_system {
             snapshot.profile = Some(local.profile.clone());
             snapshot.active_account_id = Some(SYSTEM_LOCAL_ACCOUNT_ID.to_string());
             // This phase means "an account choice is active" in the launcher UI.
@@ -280,7 +279,13 @@ fn system_account_is_selected(snapshot: &AuthSnapshot) -> bool {
     match SELECTION.load(Ordering::Acquire) {
         SELECTION_SYSTEM => true,
         SELECTION_MANAGED => false,
-        _ => snapshot.profile.is_none() && snapshot.accounts.is_empty(),
+        _ => {
+            snapshot.profile.is_none()
+                && snapshot
+                    .accounts
+                    .iter()
+                    .all(|profile| is_system_local_account(&profile.xuid))
+        }
     }
 }
 
@@ -399,5 +404,13 @@ mod tests {
     fn local_account_id_is_reserved() {
         assert!(is_system_local_account(SYSTEM_LOCAL_ACCOUNT_ID));
         assert!(!is_system_local_account("123456789"));
+    }
+
+    #[test]
+    fn automatic_selection_ignores_the_synthetic_local_row() {
+        SELECTION.store(SELECTION_AUTO, Ordering::Release);
+        let mut snapshot = managed::AuthSnapshot::signed_out();
+        snapshot.accounts.push(LocalAccountState::signed_out("test").profile);
+        assert!(system_account_is_selected(&snapshot));
     }
 }
