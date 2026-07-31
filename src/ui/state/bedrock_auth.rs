@@ -44,8 +44,6 @@ impl BedrockAuthState {
 
 fn apply_profile_avatar_path(profile: &mut crate::core::bedrock_auth::XboxProfile) {
     if crate::core::bedrock_auth::is_system_local_account(&profile.xuid) {
-        // The system account already carries an absolute path produced from the
-        // same cache/xbox/avatars directory. It has no network avatar URL.
         return;
     }
     profile.avatar_url = crate::core::xbox_avatar_cache::cached_avatar_path(profile)
@@ -62,18 +60,12 @@ fn apply_cached_avatar_paths(snapshot: &mut AuthSnapshot) {
 }
 
 pub(crate) fn start_event_bridge(cx: &mut App) {
-    // Install subscribers before starting either preload. Watch channels retain
-    // their newest value, but this ordering also guarantees the first completed
-    // background result can repaint the account UI immediately.
     cx.spawn_stream(
         crate::core::xbox_avatar_cache::event_stream(),
         |_, cx| {
             cx.update_global(|state: &mut BedrockAuthState, _cx| {
                 apply_cached_avatar_paths(&mut state.snapshot);
             });
-            // Content-addressed file names give every changed avatar a new GPUI
-            // resource key, so a repaint safely replaces the fallback or stale
-            // cached image without invalidating unrelated image assets.
             cx.refresh_windows();
         },
     )
@@ -82,9 +74,6 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
     cx.spawn_stream(
         crate::core::bedrock_auth::event_stream(),
         |mut snapshot, cx| {
-            // Preserve service URLs only long enough to schedule background
-            // refreshes. The system-local row has an absolute cache path and is
-            // ignored by refresh_profiles because it is not an HTTPS URL.
             let mut profiles = snapshot.accounts.clone();
             if let Some(active_profile) = snapshot.profile.clone()
                 && !profiles
@@ -115,9 +104,6 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
     )
     .detach();
 
-    // `start_event_bridge` is called from app startup before the main window is
-    // opened. The preload function only schedules work: credential restoration,
-    // Gaming Runtime initialization, XUserAddAsync and gamer-picture decoding all
-    // run on Tokio/IO blocking workers and never delay the GPUI first frame.
-    crate::core::bedrock_auth::preload_at_app_startup();
+    // Startup schedules both independent account preloads before GPUI starts.
+    // The UI layer only subscribes to the retained watch-channel results.
 }
