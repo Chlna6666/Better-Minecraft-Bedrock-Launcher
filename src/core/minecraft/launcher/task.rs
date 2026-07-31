@@ -711,13 +711,15 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         if let Some(gamertag) = launch_gamertag.as_deref() {
             append_task_log(
                 task_id,
-                format!("BLoader 已通过一次性安全管道接收 Xbox 会话：{gamertag}"),
+                format!(
+                "Xbox 安全会话载荷已传输至目标进程：{gamertag}；请以 BLoader xuser-bridge 日志确认系统 Runtime 与 QueryApiImpl Hook 状态"
+            ),
             );
             info!(
                 task_id = %task_id,
                 pid,
                 gamertag,
-                "BLoader 已通过一次性安全管道接收 Xbox 会话，QueryApiImpl 按需接管已启用"
+                "Xbox 安全会话载荷已通过一次性管道传输；BMCBL 不推断 Hook 成功，最终状态以 BLoader xuser-bridge 日志为准"
             );
         }
 

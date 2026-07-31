@@ -493,7 +493,7 @@ impl PendingXUserPipe {
             disconnect_named_pipe(self.pipe);
             close_handle_raw(self.pipe);
         }
-        log("XUser 会话已由目标 BLoader 接收");
+        log("XUser 会话载荷已传输至目标进程；等待 BLoader 验证会话、加载系统 Runtime 并报告 QueryApiImpl Hook 状态");
         Ok(())
     }
 }
