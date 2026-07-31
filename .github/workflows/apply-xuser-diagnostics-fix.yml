@@ -72,3 +72,5 @@ jobs:
           git add src/core/minecraft/launcher/task.rs src/core/inject/inject.rs
           git commit -m "fix(xuser): 区分管道传输与 BLoader Hook 状态"
           git push origin HEAD:master
+
+# Triggered after the workflow became available on the default branch.
