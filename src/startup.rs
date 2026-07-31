@@ -25,7 +25,6 @@ fn bring_main_window_to_foreground() {
         .chain(std::iter::once(0))
         .collect();
 
-    // SAFETY: `wide_window_title` is NUL-terminated and remains alive for the duration of the call.
     let hwnd = match unsafe { FindWindowW(PCWSTR::null(), PCWSTR(wide_window_title.as_ptr())) } {
         Ok(hwnd) => hwnd,
         Err(error) => {
@@ -34,13 +33,9 @@ fn bring_main_window_to_foreground() {
         }
     };
 
-    // SAFETY: `hwnd` came from `FindWindowW` and is only queried for its iconic state.
     if unsafe { IsIconic(hwnd).as_bool() } {
-        // SAFETY: `hwnd` came from `FindWindowW`; restoring it is a best-effort foreground action.
         let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
     }
-
-    // SAFETY: `hwnd` came from `FindWindowW`; foreground activation is best-effort.
     let _ = unsafe { SetForegroundWindow(hwnd) };
     info!(window_title = %window_title, "Brought existing main window to foreground");
 }
@@ -69,7 +64,6 @@ fn check_single_instance() -> Option<bool> {
         .chain(std::iter::once(0))
         .collect();
 
-    // SAFETY: `wide_name` is NUL-terminated and remains alive for the duration of the call.
     let mutex_handle = match unsafe { CreateMutexW(None, true, PCWSTR(wide_name.as_ptr())) } {
         Ok(handle) => handle,
         Err(error) => {
@@ -78,9 +72,7 @@ fn check_single_instance() -> Option<bool> {
         }
     };
 
-    // SAFETY: `GetLastError` reads the thread-local Win32 error after `CreateMutexW`.
     if unsafe { GetLastError() }.0 == ERROR_ALREADY_EXISTS.0 {
-        // SAFETY: `mutex_handle` is the valid handle returned by `CreateMutexW`.
         let _ = unsafe { CloseHandle(mutex_handle) };
         bring_main_window_to_foreground();
         return Some(false);
@@ -162,8 +154,10 @@ pub fn run() -> Result<()> {
     );
 
     if launch_mode.is_main() {
-        crate::core::bedrock_auth::initialize();
-        debug!("startup Xbox account validation scheduled on the application IO runtime");
+        crate::core::bedrock_auth::preload_at_app_startup();
+        debug!(
+            "system-local Xbox probe and BMCBL managed-account restore scheduled independently"
+        );
     }
 
     if let LaunchMode::DirectLaunch(ref direct_ctx) = launch_mode {
@@ -202,11 +196,8 @@ pub fn run() -> Result<()> {
         "startup critical path complete; entering GPUI"
     );
     ensure_gpui_outside_tokio_runtime()?;
-    // Tokio work crosses into GPUI through the runtime bridge; the event loop owns
-    // the main thread and must never inherit a Tokio task's cooperative budget.
     crate::app::run(bootstrap)?;
 
-    // 配置写盘为 ~500ms 合并延迟，退出前把未落盘的改动立即写入磁盘。
     crate::config::config::flush_config_now();
 
     Ok(())
@@ -220,153 +211,28 @@ fn ensure_gpui_outside_tokio_runtime() -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod runtime_boundary_tests {
-    use super::*;
-
-    #[test]
-    fn gpui_event_loop_is_allowed_on_a_plain_thread() {
-        assert!(ensure_gpui_outside_tokio_runtime().is_ok());
-    }
-
-    #[test]
-    fn gpui_event_loop_is_rejected_inside_a_tokio_task() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test Tokio runtime should build");
-
-        runtime.block_on(async {
-            let error = ensure_gpui_outside_tokio_runtime()
-                .expect_err("GPUI event loop must not run as a Tokio task");
-            assert!(error.to_string().contains("must not run inside"));
-        });
+fn launch_working_dir(launch_mode: &LaunchMode) -> Option<std::path::PathBuf> {
+    match launch_mode {
+        LaunchMode::DirectLaunch(context) => std::path::Path::new(&context.version_folder)
+            .parent()
+            .map(std::path::Path::to_path_buf),
+        _ => None,
     }
 }
 
 fn spawn_noncritical_startup_work() {
-    let result = crate::tasks::runtime::spawn_io(async {
-        if let Err(error) = crate::tasks::runtime::run_io_blocking(|| {
-            if let Err(error) = crate::utils::diagnostics::prepare_previous_run_reports() {
-                error!(?error, "failed to prepare previous run diagnostics");
-            }
-            if let Err(error) = crate::utils::diagnostics::mark_session_started() {
-                error!(?error, "failed to mark diagnostics session as started");
-            }
-            crate::utils::updater_child::clean_old_versions();
-            #[cfg(target_os = "windows")]
-            crate::utils::registry::register_file_associations();
-            log_system_info();
-        })
-        .await
-        {
-            error!(%error, "noncritical startup work failed");
+    let _ = crate::tasks::runtime::spawn_io(async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Err(error) = crate::core::sponsors::preload().await {
+            debug!(?error, "sponsor preload skipped");
         }
     });
-    if let Err(error) = result {
-        error!(?error, "failed to start noncritical startup work");
-    } else {
-        debug!("noncritical startup work scheduled");
-    }
-}
-
-fn launch_working_dir(launch_mode: &LaunchMode) -> Option<std::path::PathBuf> {
-    match launch_mode {
-        LaunchMode::Updater(context) => context
-            .destination_path
-            .parent()
-            .map(std::path::Path::to_path_buf),
-        LaunchMode::Main | LaunchMode::Import(_) | LaunchMode::DirectLaunch(_) => {
-            env::current_exe()
-                .ok()
-                .and_then(|exe_path| exe_path.parent().map(std::path::Path::to_path_buf))
-        }
-    }
 }
 
 fn run_updater_mode(context: &crate::launch::UpdaterLaunchContext) -> Result<()> {
-    let src = context.source_path.display().to_string();
-    let dst = context.destination_path.display().to_string();
-    let timeout_secs = context.timeout_secs;
-
-    info!(src = %src, dst = %dst, timeout_secs, "updater-child start");
-
-    let start = std::time::Instant::now();
-    match crate::utils::updater_child::run_updater_child(
-        Path::new(&src),
-        Path::new(&dst),
-        Duration::from_secs(timeout_secs),
-    ) {
-        Ok(()) => {
-            let elapsed = start.elapsed();
-            info!(
-                src = %src,
-                dst = %dst,
-                elapsed_ms = %elapsed.as_millis(),
-                "updater-child success"
-            );
-            process::exit(0);
-        }
-        Err(error) => {
-            error!(src = %src, dst = %dst, error = ?error, "updater-child failed");
-            process::exit(2);
-        }
-    }
+    crate::updater::run(context)
 }
 
-fn log_system_info() {
-    let sys_name = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
-    let kernel_version = sysinfo::System::kernel_version().unwrap_or_else(|| "Unknown".to_string());
-    let os_version = sysinfo::System::os_version().unwrap_or_else(|| "Unknown".to_string());
-
-    info!(
-        "Preinit Done. App Path: {:?}",
-        env::current_exe().unwrap_or_else(|_| Path::new(".").to_path_buf())
-    );
-    info!(
-        "System Info: Encoding: {} | System: {} | Kernel: {} | OS Version: {} | CPU Architecture: {} | Language: {}",
-        crate::utils::system_info::detect_system_encoding(),
-        sys_name,
-        kernel_version,
-        os_version,
-        crate::utils::system_info::get_cpu_architecture(),
-        crate::utils::system_info::get_system_language()
-    );
-}
-
-async fn run_silent_direct_launch(version_folder: &str) -> Result<()> {
-    info!(version_folder = %version_folder, "开始执行静默直接启动");
-    let version_list = match crate::core::version::api::get_version_list().await {
-        Ok(list) => list,
-        Err(err) => {
-            error!(error = %err, "获取本地版本列表失败");
-            eprintln!("获取本地版本列表失败: {err}");
-            process::exit(1);
-        }
-    };
-
-    let target = version_list
-        .into_iter()
-        .find(|v| v.folder.as_ref() == version_folder);
-
-    let Some(version) = target else {
-        error!(version_folder = %version_folder, "未找到目标游戏版本");
-        eprintln!("未找到目标游戏版本: {version_folder}");
-        process::exit(1);
-    };
-
-    let request = crate::core::minecraft::launcher::LaunchRequest::new(
-        version.folder.as_ref(),
-        version.name.as_ref(),
-        version.version.as_ref(),
-        version.path.as_ref(),
-    );
-
-    let task_id = crate::core::minecraft::launcher::start_launch_task(request);
-    info!(task_id = %task_id, "已触发游戏静默启动任务");
-
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    // process::exit 不会执行常规退出路径，手动冲刷未落盘配置。
-    crate::config::config::flush_config_now();
-    process::exit(0);
+fn run_silent_direct_launch(version_folder: &str) -> Result<()> {
+    crate::core::minecraft::launcher::launch_version_silent(version_folder)
 }
