@@ -26,47 +26,28 @@ jobs:
 
           task = Path("src/core/minecraft/launcher/task.rs")
           text = task.read_text(encoding="utf-8")
-          old = '''        if let Some(gamertag) = launch_gamertag.as_deref() {
-              append_task_log(
-                  task_id,
-                  format!("BLoader 已通过一次性安全管道接收 Xbox 会话：{gamertag}"),
-              );
-              info!(
-                  task_id = %task_id,
-                  pid,
-                  gamertag,
-                  "BLoader 已通过一次性安全管道接收 Xbox 会话，QueryApiImpl 按需接管已启用"
-              );
+          replacements = {
+              'format!("BLoader 已通过一次性安全管道接收 Xbox 会话：{gamertag}"),': '''format!(
+                          "Xbox 安全会话载荷已传输至目标进程：{gamertag}；请以 BLoader xuser-bridge 日志确认系统 Runtime 与 QueryApiImpl Hook 状态"
+                      ),''',
+              '"BLoader 已通过一次性安全管道接收 Xbox 会话，QueryApiImpl 按需接管已启用"': '"Xbox 安全会话载荷已通过一次性管道传输；BMCBL 不推断 Hook 成功，最终状态以 BLoader xuser-bridge 日志为准"',
           }
-          '''
-          new = '''        if let Some(gamertag) = launch_gamertag.as_deref() {
-              append_task_log(
-                  task_id,
-                  format!(
-                      "Xbox 安全会话载荷已传输至目标进程：{gamertag}；请以 BLoader xuser-bridge 日志确认系统 Runtime 与 QueryApiImpl Hook 状态"
-                  ),
-              );
-              info!(
-                  task_id = %task_id,
-                  pid,
-                  gamertag,
-                  "Xbox 安全会话载荷已通过一次性管道传输；BMCBL 不推断 Hook 成功，最终状态以 BLoader xuser-bridge 日志为准"
-              );
-          }
-          '''
-          if old in text:
-              task.write_text(text.replace(old, new, 1), encoding="utf-8")
-          elif new not in text:
-              raise SystemExit("task.rs target block not found")
+          for old, new in replacements.items():
+              if old in text:
+                  text = text.replace(old, new, 1)
+              elif new not in text:
+                  raise SystemExit(f"task.rs target text not found: {old}")
+          task.write_text(text, encoding="utf-8")
 
           inject = Path("src/core/inject/inject.rs")
           text = inject.read_text(encoding="utf-8")
-          old = '        log("XUser 会话已由目标 BLoader 接收");'
-          new = '        log("XUser 会话载荷已传输至目标进程；等待 BLoader 验证会话、加载系统 Runtime 并报告 QueryApiImpl Hook 状态");'
+          old = 'log("XUser 会话已由目标 BLoader 接收");'
+          new = 'log("XUser 会话载荷已传输至目标进程；等待 BLoader 验证会话、加载系统 Runtime 并报告 QueryApiImpl Hook 状态");'
           if old in text:
-              inject.write_text(text.replace(old, new, 1), encoding="utf-8")
+              text = text.replace(old, new, 1)
           elif new not in text:
               raise SystemExit("inject.rs target message not found")
+          inject.write_text(text, encoding="utf-8")
 
       - name: Commit source changes when needed
         shell: bash
