@@ -5,6 +5,8 @@ on:
     branches: [master]
     paths:
       - .github/workflows/sync-bloader-0.2.7.yml
+  pull_request:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -118,5 +120,3 @@ BMCBL 一次性安全管道
           fi
           git commit -m "feat(xuser): 更新 BLoader 0.2.7 并启用用户切换"
           git push origin HEAD:master
-
-# Trigger after workflow registration on the default branch.
