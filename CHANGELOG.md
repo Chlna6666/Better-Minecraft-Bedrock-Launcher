@@ -10,11 +10,20 @@ not copied into this file.
 
 ### Highlights
 
+- Added a Windows system-local Xbox account entry alongside BMCBL-managed
+  multi-account sessions. BMCBL now probes the official system Gaming Runtime
+  directly, without starting Minecraft or loading BLoader, to read the silent
+  default user's sign-in state, XUID, Gamertag, and gamer picture. The local
+  entry remains visible as `not signed in` when no default user is available;
+  selecting it skips BMCBL preauthentication and the BLoader secure pipe so the
+  game keeps the Microsoft official XUser login flow.
+
 - Added cache-first Xbox profile images for saved multi-account sessions on both
   Windows and Linux. BMCBL renders each account's local cached avatar first,
   falls back to the Lucide user icon when no cache exists, and refreshes the
   network image in the background without blocking login, account switching,
-  or GPUI rendering.
+  or GPUI rendering. Windows system-local gamer pictures share the same
+  `cache/xbox/avatars` storage and content-addressed PNG format.
 
 - Rewrote the bundled NetherNet transport (`crates/bedrock-nethernet`) as a
   layered, zero-copy implementation with its wire format verified byte-for-byte
