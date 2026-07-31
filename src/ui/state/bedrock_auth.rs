@@ -62,6 +62,9 @@ fn apply_cached_avatar_paths(snapshot: &mut AuthSnapshot) {
 }
 
 pub(crate) fn start_event_bridge(cx: &mut App) {
+    // Install subscribers before starting either preload. Watch channels retain
+    // their newest value, but this ordering also guarantees the first completed
+    // background result can repaint the account UI immediately.
     cx.spawn_stream(
         crate::core::xbox_avatar_cache::event_stream(),
         |_, cx| {
@@ -111,5 +114,10 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
         },
     )
     .detach();
-    crate::core::bedrock_auth::initialize();
+
+    // `start_event_bridge` is called from app startup before the main window is
+    // opened. The preload function only schedules work: credential restoration,
+    // Gaming Runtime initialization, XUserAddAsync and gamer-picture decoding all
+    // run on Tokio/IO blocking workers and never delay the GPUI first frame.
+    crate::core::bedrock_auth::preload_at_app_startup();
 }
