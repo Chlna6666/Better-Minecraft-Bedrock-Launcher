@@ -5,6 +5,8 @@ on:
     branches: [master]
     paths:
       - .github/workflows/apply-xuser-diagnostics-fix.yml
+  pull_request:
+    branches: [master]
 
 permissions:
   contents: write
@@ -52,25 +54,29 @@ jobs:
               );
           }
           '''
-          if old not in text:
+          if old in text:
+              task.write_text(text.replace(old, new, 1), encoding="utf-8")
+          elif new not in text:
               raise SystemExit("task.rs target block not found")
-          task.write_text(text.replace(old, new, 1), encoding="utf-8")
 
           inject = Path("src/core/inject/inject.rs")
           text = inject.read_text(encoding="utf-8")
           old = '        log("XUser 会话已由目标 BLoader 接收");'
           new = '        log("XUser 会话载荷已传输至目标进程；等待 BLoader 验证会话、加载系统 Runtime 并报告 QueryApiImpl Hook 状态");'
-          if old not in text:
+          if old in text:
+              inject.write_text(text.replace(old, new, 1), encoding="utf-8")
+          elif new not in text:
               raise SystemExit("inject.rs target message not found")
-          inject.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-      - name: Commit source changes
+      - name: Commit source changes when needed
         shell: bash
         run: |
+          if git diff --quiet -- src/core/minecraft/launcher/task.rs src/core/inject/inject.rs; then
+            echo "Source messages are already up to date."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/core/minecraft/launcher/task.rs src/core/inject/inject.rs
           git commit -m "fix(xuser): 区分管道传输与 BLoader Hook 状态"
           git push origin HEAD:master
-
-# Triggered after the workflow became available on the default branch.
