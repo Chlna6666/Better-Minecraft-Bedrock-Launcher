@@ -1,0 +1,6 @@
+version=0.2.7
+sha256=de046e7ef2518856dbd04ca8786b2234c593aa2c51a8a76913270afff8257344
+size=1344000
+source=https://github.com/Chlna6666/BLoader/releases/tag/v0.2.7
+features=xuser-bridge,secure-pipe,query-api-impl-hook,pop-signature,user-switching
+scope=win32-gdk-only
