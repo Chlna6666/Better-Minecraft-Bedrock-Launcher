@@ -1,13 +1,17 @@
 #![cfg(target_os = "windows")]
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::ffi::{OsStr, c_void};
 use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::process::Command;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::CloseHandle;
@@ -26,6 +30,7 @@ use windows::core::{PCSTR, PWSTR};
 
 pub type InjectProgressCb = Arc<dyn Fn(String) + Send + Sync>;
 
+const INTERNAL_SESSION_KEY: &str = "BMCBL_XGAMERUNTIME_PREAUTH";
 const PIPE_MAGIC: &[u8; 8] = b"BMCBLXU1";
 const PIPE_VERSION: u32 = 1;
 const PIPE_HEADER_SIZE: usize = 80;
@@ -100,10 +105,56 @@ unsafe extern "system" {
 
 struct SensitivePayload(Vec<u8>);
 
+impl SensitivePayload {
+    fn into_inner(mut self) -> Vec<u8> {
+        mem::take(&mut self.0)
+    }
+}
+
 impl Drop for SensitivePayload {
     fn drop(&mut self) {
         self.0.fill(0);
     }
+}
+
+static XUSER_PAYLOADS: OnceLock<Mutex<HashMap<String, SensitivePayload>>> = OnceLock::new();
+static XUSER_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Registers a short-lived payload inside the launcher process. The returned
+/// opaque value preserves the existing task API shape but is never copied into
+/// the Minecraft environment block.
+pub fn register_xuser_launch_payload(payload: Vec<u8>) -> String {
+    if payload.is_empty() || payload.len() > MAX_XUSER_PAYLOAD_SIZE {
+        return String::new();
+    }
+    let counter = XUSER_HANDLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let launcher_pid = unsafe { get_current_process_id_raw() };
+    let handle = hex::encode(Sha256::digest(
+        format!("{launcher_pid}:{counter}:{now}").as_bytes(),
+    ));
+    let registry = XUSER_PAYLOADS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut registry) = registry.lock() {
+        registry.insert(handle.clone(), SensitivePayload(payload));
+        handle
+    } else {
+        String::new()
+    }
+}
+
+fn take_registered_xuser_payload(handle: &str) -> Option<Vec<u8>> {
+    if handle.is_empty() {
+        return None;
+    }
+    XUSER_PAYLOADS
+        .get()?
+        .lock()
+        .ok()?
+        .remove(handle)
+        .map(SensitivePayload::into_inner)
 }
 
 pub fn grant_all_application_packages_access(path: &Path) -> anyhow::Result<()> {
@@ -129,13 +180,19 @@ pub async fn launch_win32_with_injection(
     exe_path: &str,
     args: Option<&str>,
     dll_paths: Vec<String>,
-    xuser_payload: Option<Vec<u8>>,
+    launch_metadata: Option<Vec<(String, String)>>,
     enable_console: bool,
     on_progress: Option<InjectProgressCb>,
 ) -> Result<u32> {
     let exe_path_owned = exe_path.to_string();
     let args_owned = args.map(ToOwned::to_owned);
     let callback = on_progress.clone();
+    let xuser_payload = launch_metadata.and_then(|metadata| {
+        metadata
+            .into_iter()
+            .find(|(key, _)| key == INTERNAL_SESSION_KEY)
+            .and_then(|(_, handle)| take_registered_xuser_payload(&handle))
+    });
 
     crate::tasks::runtime::run_io_blocking(move || -> Result<u32> {
         unsafe {
@@ -171,6 +228,9 @@ pub async fn launch_win32_with_injection(
                 .chain(Some(0))
                 .collect();
 
+            // Credentials and activation flags are intentionally absent from
+            // the child environment. The process inherits the normal launcher
+            // environment only through CreateProcessW's null environment block.
             CreateProcessW(
                 None,
                 Some(PWSTR(wide_command.as_ptr() as *mut _)),
