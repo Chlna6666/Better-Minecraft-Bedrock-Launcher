@@ -30,6 +30,10 @@ impl BedrockAuthState {
     }
 
     pub(crate) fn request_account_deletion(&mut self, account_id: String) {
+        if crate::core::bedrock_auth::is_system_local_account(&account_id) {
+            self.pending_delete_account_id = None;
+            return;
+        }
         self.pending_delete_account_id = Some(account_id);
     }
 
@@ -38,14 +42,22 @@ impl BedrockAuthState {
     }
 }
 
+fn apply_profile_avatar_path(profile: &mut crate::core::bedrock_auth::XboxProfile) {
+    if crate::core::bedrock_auth::is_system_local_account(&profile.xuid) {
+        // The system account already carries an absolute path produced from the
+        // same cache/xbox/avatars directory. It has no network avatar URL.
+        return;
+    }
+    profile.avatar_url = crate::core::xbox_avatar_cache::cached_avatar_path(profile)
+        .map(|path| path.to_string_lossy().into_owned());
+}
+
 fn apply_cached_avatar_paths(snapshot: &mut AuthSnapshot) {
     if let Some(profile) = snapshot.profile.as_mut() {
-        profile.avatar_url = crate::core::xbox_avatar_cache::cached_avatar_path(profile)
-            .map(|path| path.to_string_lossy().into_owned());
+        apply_profile_avatar_path(profile);
     }
     for profile in &mut snapshot.accounts {
-        profile.avatar_url = crate::core::xbox_avatar_cache::cached_avatar_path(profile)
-            .map(|path| path.to_string_lossy().into_owned());
+        apply_profile_avatar_path(profile);
     }
 }
 
@@ -67,8 +79,9 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
     cx.spawn_stream(
         crate::core::bedrock_auth::event_stream(),
         |mut snapshot, cx| {
-            // Preserve the service URLs only long enough to schedule network
-            // refreshes. The UI snapshot below receives local cache paths only.
+            // Preserve service URLs only long enough to schedule background
+            // refreshes. The system-local row has an absolute cache path and is
+            // ignored by refresh_profiles because it is not an HTTPS URL.
             let mut profiles = snapshot.accounts.clone();
             if let Some(active_profile) = snapshot.profile.clone()
                 && !profiles
