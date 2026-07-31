@@ -1,22 +1,39 @@
+use std::sync::Mutex;
+
 const MAX_LAUNCH_PREAUTH_SIZE: usize = 256 * 1024;
+const INTERNAL_SESSION_KEY: &str = "BMCBL_XGAMERUNTIME_PREAUTH";
 
 pub(crate) struct PreparedLaunchAuth {
-    payload: Vec<u8>,
+    payload: Mutex<Option<Vec<u8>>>,
     pub(crate) gamertag: String,
 }
 
 impl PreparedLaunchAuth {
-    /// Transfers the short-lived pre-authentication document to the Win32
-    /// launcher path. The caller must hand it only to BLoader's process-scoped
-    /// named-pipe server and must never log or persist the bytes.
-    pub(crate) fn into_payload(mut self) -> Vec<u8> {
-        std::mem::take(&mut self.payload)
+    /// Preserves the existing launcher call shape without exposing credentials
+    /// to the child process environment. The returned value is only an opaque,
+    /// one-use handle into BMCBL's own process-local registry.
+    pub(crate) fn get_env_vars(&self) -> Vec<(String, String)> {
+        let payload = self
+            .payload
+            .lock()
+            .ok()
+            .and_then(|mut payload| payload.take())
+            .unwrap_or_default();
+        if payload.is_empty() {
+            return Vec::new();
+        }
+        let handle = crate::core::inject::inject::register_xuser_launch_payload(payload);
+        vec![(INTERNAL_SESSION_KEY.to_string(), handle)]
     }
 }
 
 impl Drop for PreparedLaunchAuth {
     fn drop(&mut self) {
-        self.payload.fill(0);
+        if let Ok(payload) = self.payload.get_mut()
+            && let Some(payload) = payload.as_mut()
+        {
+            payload.fill(0);
+        }
     }
 }
 
@@ -33,7 +50,7 @@ pub(super) fn prepare(
     }
 
     Ok(PreparedLaunchAuth {
-        payload: device_json.to_vec(),
+        payload: Mutex::new(Some(device_json.to_vec())),
         gamertag: gamertag.to_string(),
     })
 }
