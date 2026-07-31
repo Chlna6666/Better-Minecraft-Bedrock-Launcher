@@ -11,3 +11,4 @@ pub mod online;
 pub mod sponsors;
 pub mod ui_prefs;
 pub mod version;
+pub(crate) mod xbox_avatar_cache;
