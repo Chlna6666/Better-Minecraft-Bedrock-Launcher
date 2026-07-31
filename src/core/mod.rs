@@ -1,3 +1,4 @@
+#[path = "bedrock_auth_local.rs"]
 pub(crate) mod bedrock_auth;
 pub mod curseforge;
 pub mod easytier;
@@ -9,6 +10,8 @@ pub mod minecraft;
 #[path = "online/online.rs"]
 pub mod online;
 pub mod sponsors;
+#[cfg(target_os = "windows")]
+pub(crate) mod system_xbox_user;
 pub mod ui_prefs;
 pub mod version;
 pub(crate) mod xbox_avatar_cache;
