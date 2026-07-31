@@ -1,67 +1,39 @@
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
-use tempfile::TempDir;
+const MAX_LAUNCH_PREAUTH_SIZE: usize = 256 * 1024;
 
 pub(crate) struct PreparedLaunchAuth {
-    temporary_directory: TempDir,
-    profile_id: String,
+    payload: Vec<u8>,
     pub(crate) gamertag: String,
-    nonce: String,
 }
 
 impl PreparedLaunchAuth {
-    pub(crate) fn get_env_vars(&self) -> Vec<(String, String)> {
-        let device_path = self.temporary_directory.path().join("device.json");
-        vec![
-            ("BMCBL_XGAMERUNTIME_PROFILE".to_string(), self.profile_id.clone()),
-            (
-                "BMCBL_XGAMERUNTIME_PREAUTH".to_string(),
-                device_path.to_string_lossy().to_string(),
-            ),
-            ("BMCBL_XGAMERUNTIME_NONCE".to_string(), self.nonce.clone()),
-            ("BMCBL_XGAMERUNTIME_ENABLE_XUSER".to_string(), "1".to_string()),
-        ]
+    /// Transfers the short-lived pre-authentication document to the Win32
+    /// launcher path. The caller must hand it only to BLoader's process-scoped
+    /// named-pipe server and must never log or persist the bytes.
+    pub(crate) fn into_payload(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.payload)
+    }
+}
+
+impl Drop for PreparedLaunchAuth {
+    fn drop(&mut self) {
+        self.payload.fill(0);
     }
 }
 
 pub(super) fn prepare(
-    profile_id: &str,
+    _profile_id: &str,
     gamertag: &str,
     device_json: &[u8],
 ) -> Result<PreparedLaunchAuth, String> {
-    let temporary_directory = secure_temporary_directory()?;
-    let device_path = temporary_directory.path().join("device.json");
-    write_private_file(&device_path, device_json)?;
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string();
-
-    let _ = crate::core::inject::inject::grant_all_application_packages_access(temporary_directory.path());
+    if device_json.is_empty() {
+        return Err("GDK 预认证数据为空".to_string());
+    }
+    if device_json.len() > MAX_LAUNCH_PREAUTH_SIZE {
+        return Err("GDK 预认证数据超过安全传输上限".to_string());
+    }
 
     Ok(PreparedLaunchAuth {
-        temporary_directory,
-        profile_id: profile_id.to_string(),
+        payload: device_json.to_vec(),
         gamertag: gamertag.to_string(),
-        nonce,
     })
-}
-
-fn secure_temporary_directory() -> Result<TempDir, String> {
-    tempfile::Builder::new()
-        .prefix("bmcbl-auth-")
-        .tempdir()
-        .map_err(|error| format!("创建登录凭证临时目录失败：{error}"))
-}
-
-fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
-    let mut file = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| format!("创建 GDK 预认证文件失败：{error}"))?;
-    file.write_all(contents)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| format!("写入 GDK 预认证文件失败：{error}"))
 }
