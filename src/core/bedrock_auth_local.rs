@@ -1,4 +1,4 @@
-#[path = "bedrock_auth.rs"]
+#[path = "bedrock_auth/managed/mod.rs"]
 mod managed;
 
 pub(crate) use managed::{AuthPhase, AuthSnapshot, XboxProfile};
@@ -13,6 +13,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 use tokio::sync::watch;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::WatchStream;
@@ -92,31 +93,35 @@ pub(crate) fn event_stream() -> WatchStream<AuthSnapshot> {
     WatchStream::new(AUTH_STATE.1.clone())
 }
 
-/// Schedules all Xbox account startup work and returns immediately.
-///
-/// Managed account restoration and the Windows system-local account probe are
-/// independent tasks. Both are submitted during startup, before GPUI begins,
-/// while every blocking Gaming Runtime, keyring, image and filesystem operation
-/// remains on the IO/blocking runtime.
+/// 只调度后台任务并立即返回，不在启动线程执行任何凭证、Gaming Runtime 或图片操作。
 pub(crate) fn preload_at_app_startup() {
     if PRELOAD_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
 
+    let started = Instant::now();
     load_selection_mode();
     start_managed_event_bridge();
 
-    // Submit the independent Windows probe first so Runtime initialization can
-    // overlap keyring access and managed-token restoration.
+    // 任务 A：Windows 系统本地 Xbox 用户。独立 Tokio 任务与 blocking worker。
     #[cfg(target_os = "windows")]
     start_local_user_probe();
 
-    // This function only schedules managed restoration; it does not block the
-    // startup thread while refreshing Microsoft/Xbox credentials.
+    // 任务 B：BMCBL 托管多账号恢复。内部自行调度异步网络与阻塞凭证读取。
     managed::initialize();
+
+    tracing::debug!(
+        elapsed_us = started.elapsed().as_micros(),
+        "Xbox 本地用户与托管多账号并行预加载任务已调度"
+    );
+}
+
+pub(crate) fn initialize() {
+    preload_at_app_startup();
 }
 
 pub(crate) fn start_login() -> Result<(), String> {
+    preload_at_app_startup();
     select_managed_account();
     managed::start_login()
 }
@@ -126,6 +131,7 @@ pub(crate) fn cancel_login() {
 }
 
 pub(crate) fn switch_account(account_id: String) -> Result<(), String> {
+    preload_at_app_startup();
     if is_system_local_account(&account_id) {
         SELECTION.store(SELECTION_SYSTEM, Ordering::Release);
         persist_selection_mode(true);
@@ -151,11 +157,13 @@ pub(crate) fn remove_account(account_id: String) -> Result<(), String> {
 pub(crate) async fn prepare_launch(
     prefix_path: &Path,
 ) -> Result<Option<PreparedLaunchAuth>, String> {
+    preload_at_app_startup();
     managed::prepare_launch(prefix_path).await
 }
 
 #[cfg(target_os = "windows")]
 pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth>, String> {
+    preload_at_app_startup();
     let latest = latest_managed_snapshot();
     if system_account_is_selected(&latest) {
         let local = local_account_snapshot();
@@ -198,6 +206,7 @@ fn start_local_user_probe() {
         return;
     }
     let result = crate::tasks::runtime::spawn_io(async move {
+        let started = Instant::now();
         let probe = crate::tasks::runtime::run_io_blocking(|| {
             let probe = crate::core::system_xbox_user::probe_default_user();
             match probe {
@@ -233,10 +242,11 @@ fn start_local_user_probe() {
             Err(error) => LocalAccountState::signed_out(format!("本地用户后台任务失败：{error}")),
         };
         tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
             xbox_gamertag = %local.profile.gamertag,
             system_signed_in = local.signed_in,
             detail = %local.detail,
-            "Windows 系统本地 Xbox 用户探测完成"
+            "Windows 系统本地 Xbox 用户异步探测完成"
         );
         if let Ok(mut current) = LOCAL_ACCOUNT.lock() {
             *current = local;
