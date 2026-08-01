@@ -1,6 +1,8 @@
 # BLoader 0.2.7 XUser Bridge
 
-BMCBL 的 Win32 GDK 启动链路支持通过 BLoader 0.2.7 切换 Xbox 用户。
+BMCBL 的 Windows 主机 Win32 GDK 启动链路支持通过 BLoader 0.2.7 切换 Xbox
+用户。Linux 不使用该桥；Linux 登录由 RoundMCDev GDK-Proton/WineGDK 完成，
+BLoader 在 Linux 启动链路中只负责加载原生 Mod。
 
 ```text
 BMCBL
@@ -16,7 +18,7 @@ BMCBL
 
 只有同时满足以下条件时才启用自定义 XUser：
 
-- 启动目标是 Win32 GDK Minecraft；
+- 主机系统是 Windows，启动目标是 Win32 GDK Minecraft；
 - BMCBL 当前存在有效 Xbox 登录会话；
 - 当前 Minecraft PID 对应的一次性管道验证成功；
 - BLoader 成功从 `System32` 定位微软官方 `xgameruntime.dll`；
@@ -28,7 +30,8 @@ BMCBL
 
 BMCBL 选择不同 Xbox 会话后，每次启动都会为新的 Minecraft PID 创建独立的一次性管道。BLoader 只消费本次启动对应的会话，因此不会复用上一次游戏进程的账号状态。
 
-当前只支持 Win32 GDK。UWP/AppContainer 版本不使用该链路。
+当前只支持 Windows 主机上的 Win32 GDK。Linux 和 UWP/AppContainer 版本不使用
+该链路。
 
 ## 安全边界
 

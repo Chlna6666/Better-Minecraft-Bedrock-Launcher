@@ -40,7 +40,7 @@ pub(super) fn prepare(
     refresh_token: &SecretString,
     device_json: &[u8],
 ) -> Result<PreparedLaunchAuth, String> {
-    let registry_path = prefix_path.join("pfx/system.reg");
+    let registry_path = wine_system_registry_path(prefix_path);
     if !registry_path.is_file() {
         return Err(format!(
             "Wine/Proton 前缀缺少系统注册表：{}",
@@ -75,7 +75,7 @@ pub(super) fn clear_all_prefix_credentials() -> Result<(), String> {
     for entry in entries {
         match entry {
             Ok(entry) => {
-                let registry_path = entry.path().join("pfx/system.reg");
+                let registry_path = wine_system_registry_path(&entry.path());
                 if registry_path.is_file()
                     && let Err(error) = remove_refresh_token_from_registry(&registry_path)
                 {
@@ -176,6 +176,15 @@ fn remove_refresh_token_from_registry(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     update_registry(path, |contents| update_registry_section(contents, None))
+}
+
+fn wine_system_registry_path(prefix_path: &Path) -> PathBuf {
+    let direct_registry = prefix_path.join("system.reg");
+    if direct_registry.is_file() {
+        direct_registry
+    } else {
+        prefix_path.join("pfx/system.reg")
+    }
 }
 
 fn update_registry(path: &Path, update: impl FnOnce(&str) -> String) -> Result<(), String> {
@@ -298,7 +307,7 @@ fn wine_z_path(path: &Path) -> Result<OsString, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_registry_string, update_registry_section};
+    use super::{escape_registry_string, update_registry_section, wine_system_registry_path};
 
     #[test]
     fn registry_value_is_replaced_and_removed() {
@@ -324,6 +333,30 @@ mod tests {
         assert_eq!(
             escape_registry_string("a\\b\"c").expect("valid registry value"),
             "a\\\\b\\\"c"
+        );
+    }
+
+    #[test]
+    fn direct_wine_prefix_registry_is_preferred_over_compatibility_layout() {
+        let prefix = tempfile::tempdir().expect("temporary prefix should be created");
+        std::fs::write(prefix.path().join("system.reg"), b"registry")
+            .expect("direct registry should be written");
+
+        assert_eq!(
+            wine_system_registry_path(prefix.path()),
+            prefix.path().join("system.reg")
+        );
+    }
+
+    #[test]
+    fn compatibility_prefix_registry_is_used_when_direct_registry_is_missing() {
+        let prefix = tempfile::tempdir().expect("temporary prefix should be created");
+        std::fs::create_dir_all(prefix.path().join("pfx"))
+            .expect("compatibility prefix should be created");
+
+        assert_eq!(
+            wine_system_registry_path(prefix.path()),
+            prefix.path().join("pfx/system.reg")
         );
     }
 }
