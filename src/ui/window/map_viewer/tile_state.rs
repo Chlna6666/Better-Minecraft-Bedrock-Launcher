@@ -1,6 +1,5 @@
 use super::model::*;
 use super::prelude::*;
-use super::tile_render::*;
 use super::viewport::*;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -18,6 +17,7 @@ pub(super) struct ViewerTile {
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) estimated_bytes: usize,
+    pub(super) layout: RenderLayout,
 }
 
 #[derive(Clone)]
@@ -322,7 +322,6 @@ impl TileEntry {
     }
 
     pub(super) fn mark_failed(&mut self, message: SharedString) -> Option<Arc<RenderImage>> {
-        let dropped_image = tile_entry_take_render_image(self);
         self.state = TileLoadState::Failed;
         self.source_status = TileSourceStatus::Invalid;
         self.priority = TilePriority::Prefetch;
@@ -331,7 +330,7 @@ impl TileEntry {
         let retry_ms = 750_u64.saturating_mul(1_u64 << shift).min(15_000);
         self.retry_after = Some(Instant::now() + Duration::from_millis(retry_ms));
         self.last_error = Some(message);
-        dropped_image
+        None
     }
 }
 
@@ -398,6 +397,42 @@ impl RegionManager {
                     entry.last_access = last_access;
                     self.entries.insert(*coord, entry);
                 }
+            }
+        }
+    }
+
+    pub(super) fn ensure_tiles_for_layout(
+        &mut self,
+        coords: &[(i32, i32)],
+        priority: TilePriority,
+        layout: RenderLayout,
+    ) {
+        self.ensure_tiles(coords, priority);
+        for coord in coords {
+            let layout_changed = self
+                .entries
+                .get(coord)
+                .and_then(|entry| entry.image.as_ref())
+                .is_some_and(|tile| tile.layout != layout);
+            if !layout_changed {
+                continue;
+            }
+            let sequence = self.next_sequence;
+            self.next_sequence = self.next_sequence.saturating_add(1);
+            let Some(entry) = self.entries.get_mut(coord) else {
+                continue;
+            };
+            if matches!(entry.state, TileLoadState::Loaded | TileLoadState::Invalid) {
+                self.state_counts
+                    .transition(entry.state, TileLoadState::Queued);
+                entry.state = TileLoadState::Queued;
+            }
+            entry.source_status = TileSourceStatus::Miss;
+            entry.priority = entry.priority.min(priority);
+            if entry.state == TileLoadState::Queued {
+                entry.sequence = sequence;
+                entry.retry_after = None;
+                entry.last_error = None;
             }
         }
     }
@@ -1025,21 +1060,26 @@ impl RegionManager {
     ) -> Option<Arc<RenderImage>> {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let (previous_bytes, dropped_image) = if let Some(entry) = self.entries.get_mut(&coord) {
-            let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
-            let previous_state = entry.state;
-            let dropped_image = entry.mark_failed(message);
-            self.state_counts
-                .transition(previous_state, TileLoadState::Failed);
-            (previous_bytes, dropped_image)
-        } else {
-            let mut entry = TileEntry::queued(TilePriority::Prefetch, sequence);
-            let dropped_image = entry.mark_failed(message);
-            self.state_counts.increment(entry.state);
-            self.entries.insert(coord, entry);
-            (0, dropped_image)
-        };
-        self.loaded_estimated_bytes = self.loaded_estimated_bytes.saturating_sub(previous_bytes);
+        let (previous_bytes, retained_bytes, dropped_image) =
+            if let Some(entry) = self.entries.get_mut(&coord) {
+                let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+                let previous_state = entry.state;
+                let dropped_image = entry.mark_failed(message);
+                let retained_bytes = tile_entry_loaded_estimated_bytes(entry);
+                self.state_counts
+                    .transition(previous_state, TileLoadState::Failed);
+                (previous_bytes, retained_bytes, dropped_image)
+            } else {
+                let mut entry = TileEntry::queued(TilePriority::Prefetch, sequence);
+                let dropped_image = entry.mark_failed(message);
+                self.state_counts.increment(entry.state);
+                self.entries.insert(coord, entry);
+                (0, 0, dropped_image)
+            };
+        self.loaded_estimated_bytes = self
+            .loaded_estimated_bytes
+            .saturating_sub(previous_bytes)
+            .saturating_add(retained_bytes);
         dropped_image
     }
 

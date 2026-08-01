@@ -8,11 +8,11 @@ use super::selection::{
     existing_selection_target,
 };
 use super::state::MIN_CENTER_HEIGHT;
-use super::tile_state::{PaintTile, RegionManager, TileLoadState};
+use super::tile_state::{MapRenderRange, PaintTile, RegionManager, TileLoadState};
 use super::viewport::{
     TileBounds, paint_tile_bounds_for_viewport, region_render_range_for_viewport, ruler_blocks,
-    screen_x_for_block, screen_y_for_block, tile_coords_for_paint_order, tile_paint_rect,
-    tile_paint_sort_key, viewport_screen_for_block,
+    screen_x_for_block, screen_y_for_block, tile_bounds_count, tile_coords_for_paint_order,
+    tile_paint_rect, tile_paint_sort_key, viewport_screen_for_block,
 };
 use crate::ui::theme::colors::ThemeColors;
 use bedrock_render::RenderLayout;
@@ -166,6 +166,53 @@ fn paint_map_images<'a>(
     }
 }
 
+fn paint_unloaded_tile_placeholders(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    render_range: Option<MapRenderRange>,
+    paint_tiles: &[PaintTile],
+    colors: ThemeColors,
+) {
+    let Some(render_range) = render_range else {
+        return;
+    };
+    let tile_bounds = render_range.tile_bounds();
+    if tile_bounds_count(tile_bounds) > 1024 {
+        return;
+    }
+    let loaded_color = Hsla {
+        a: 0.18,
+        ..colors.surface
+    };
+    let empty_color = Hsla {
+        a: 0.10,
+        ..colors.surface
+    };
+    for coord in tile_coords_for_paint_order(tile_bounds) {
+        if paint_tiles
+            .binary_search_by_key(&tile_paint_sort_key(coord), |tile| {
+                tile_paint_sort_key(tile.coord)
+            })
+            .is_ok()
+        {
+            continue;
+        }
+        let Some(rect) = tile_paint_rect(viewport, layout, render_range, coord.0, coord.1)
+            .and_then(|rect| rect.to_bounds(bounds))
+        else {
+            continue;
+        };
+        let color = if (coord.0.saturating_add(coord.1) & 1) == 0 {
+            loaded_color
+        } else {
+            empty_color
+        };
+        window.paint_quad(fill(rect, color));
+    }
+}
+
 pub(super) struct MapCanvasView {
     tile_layer: Entity<MapTileLayerView>,
     overlay_layer: Entity<MapOverlayLayerView>,
@@ -303,6 +350,7 @@ impl Render for MapCanvasView {
         div()
             .relative()
             .flex_1()
+            .min_w(px(0.0))
             .min_h(px(MIN_CENTER_HEIGHT))
             .overflow_hidden()
             .bg(colors.surface)
@@ -1091,6 +1139,15 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
             canvas(
                 move |_bounds, _window, _cx| paint_tiles.clone(),
                 move |bounds, paint_tiles, window, _cx| {
+                    paint_unloaded_tile_placeholders(
+                        window,
+                        bounds,
+                        viewport,
+                        layout,
+                        render_range,
+                        paint_tiles.as_ref(),
+                        colors,
+                    );
                     let screen_requests = screen_images
                         .iter()
                         .filter_map(|image| {

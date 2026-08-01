@@ -107,11 +107,17 @@ pub(super) fn tile_cache_memory_limit(cpu_budget: RenderCpuBudget) -> usize {
     cpu_budget.thread_count().saturating_mul(64).clamp(64, 512)
 }
 
-pub(super) fn ui_tile_memory_budget_bytes(viewport: MapViewport) -> usize {
+pub(super) fn ui_tile_memory_budget_bytes(
+    viewport: MapViewport,
+    texture_layout: RenderLayout,
+) -> usize {
     let visible_tiles = tile_count_for_viewport(viewport, RETAIN_RADIUS).unwrap_or(16);
+    let texture_tile_size = texture_layout
+        .tile_size()
+        .map_or(DEFAULT_TILE_SIZE as usize, |size| size as usize);
     let visible_budget = visible_tiles
-        .saturating_mul(DEFAULT_TILE_SIZE as usize)
-        .saturating_mul(DEFAULT_TILE_SIZE as usize)
+        .saturating_mul(texture_tile_size)
+        .saturating_mul(texture_tile_size)
         .saturating_mul(4);
     let available_budget = usize::try_from(available_system_memory_bytes() / 32)
         .unwrap_or(MIN_UI_TILE_MEMORY_BUDGET_BYTES);
@@ -119,6 +125,7 @@ pub(super) fn ui_tile_memory_budget_bytes(viewport: MapViewport) -> usize {
     visible_budget
         .max(available_budget)
         .max(MIN_UI_TILE_MEMORY_BUDGET_BYTES)
+        .min(MAX_UI_TILE_MEMORY_BUDGET_BYTES.max(visible_budget))
 }
 
 pub(super) fn tile_count_for_viewport(viewport: MapViewport, radius: i32) -> Option<usize> {

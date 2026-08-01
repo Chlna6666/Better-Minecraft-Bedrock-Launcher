@@ -138,6 +138,26 @@ pub(super) fn load_tile_manifest_probe(
     })
 }
 
+pub(super) fn merge_tile_manifest_probe_results(
+    requested_tiles: Vec<(i32, i32)>,
+    results: Vec<Result<TileManifestProbeResult, String>>,
+) -> Result<TileManifestProbeResult, String> {
+    let mut tile_chunk_index = TileChunkIndex::new();
+    let mut bounds = None;
+    for result in results {
+        let result = result?;
+        tile_chunk_index.extend(result.tile_chunk_index);
+        bounds = merge_chunk_bounds(bounds, result.bounds);
+    }
+    Ok(TileManifestProbeResult {
+        requested_tiles: requested_tiles.clone(),
+        tile_chunk_index: complete_cached_tile_chunk_index(&requested_tiles, tile_chunk_index),
+        bounds,
+        center_block_x: None,
+        center_block_z: None,
+    })
+}
+
 pub(super) fn shared_tile_chunk_index(
     dimension: Dimension,
     layout: RenderLayout,

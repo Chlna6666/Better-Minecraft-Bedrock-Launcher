@@ -30,6 +30,7 @@ pub(super) const DEFAULT_CPU_PERCENT: u8 = 60;
 pub(super) const RENDER_PIPELINE_DEPTH: usize = 32;
 pub(super) const RENDER_REGION_CACHE_ENTRIES: usize = 32;
 pub(super) const MIN_UI_TILE_MEMORY_BUDGET_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_UI_TILE_MEMORY_BUDGET_BYTES: usize = 96 * 1024 * 1024;
 pub(super) const MIN_RENDER_MEMORY_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) const MAX_RENDER_MEMORY_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const MIN_RENDER_STAGING_POOL_BYTES: usize = 8 * 1024 * 1024;
@@ -40,7 +41,7 @@ pub(super) const RENDER_UI_BATCH_TILES: usize = 24;
 pub(super) const MAX_CONCURRENT_RENDER_BATCHES: usize = 2;
 pub(super) const RENDER_STREAM_GROUP_TILES: usize = 4;
 pub(super) const TILE_MANIFEST_PROBE_BATCH_TILES: usize = 16;
-pub(super) const TILE_MANIFEST_PROBE_MAX_WORKERS: usize = 2;
+pub(super) const TILE_MANIFEST_PROBE_MAX_WORKERS: usize = 4;
 pub(super) const MIN_VIEWPORT_SCALE: f32 = 0.03125;
 pub(super) const MAX_VIEWPORT_SCALE: f32 = 8.0;
 pub(super) const TILE_SEAM_BLEED_PX: f32 = 0.0;
@@ -1629,6 +1630,7 @@ pub struct MapViewerWindowView {
     pub(super) custom_dimension_id: i32,
     pub(super) y_layer: i32,
     pub(super) active_layout: RenderLayout,
+    pub(super) render_texture_layout: RenderLayout,
     pub(super) viewport: MapViewport,
     pub(super) window_width: f32,
     pub(super) window_height: f32,
@@ -1706,7 +1708,6 @@ pub struct MapViewerWindowView {
     pub(super) last_viewport_interaction: Option<Instant>,
     pub(super) last_viewport_tile_sync: Option<Instant>,
     pub(super) last_drag_canvas_snapshot_sync: Option<Instant>,
-    pub(super) last_interaction_visible_bounds: Option<TileBounds>,
     pub(super) pending_interaction_ready_tiles: Vec<(i32, i32)>,
     pub(super) last_interaction_ready_flush: Option<Instant>,
     pub(super) last_visible_tile_log: Option<Instant>,

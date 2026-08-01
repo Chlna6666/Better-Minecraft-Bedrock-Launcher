@@ -111,7 +111,7 @@ impl MapViewerWindowView {
     pub(super) fn zoom_at(&mut self, position: Point<Pixels>, factor: f32, cx: &mut Context<Self>) {
         self.mark_viewport_interaction();
         self.viewport.zoom_at(position, factor);
-        self.cancel_viewport_render_for_interaction();
+        self.mark_viewport_render_dirty();
         self.invalidate_professional_overlay_for_viewport_change();
         self.context_menu = None;
         self.ensure_visible_tiles_throttled(cx);
@@ -637,7 +637,7 @@ impl MapViewerWindowView {
         if !drag.moved && dx.hypot(dy) > MAP_CLICK_DRAG_THRESHOLD_PX {
             drag.moved = true;
             self.drag = Some(drag);
-            self.cancel_viewport_render_for_interaction();
+            self.mark_viewport_render_dirty();
             self.invalidate_professional_overlay_for_viewport_change();
             overlay_invalidated = true;
         }
@@ -1087,7 +1087,7 @@ impl MapViewerWindowView {
         self.mark_viewport_interaction();
         self.viewport
             .center_on_block(block_x, block_z, self.active_layout);
-        self.cancel_viewport_render_for_interaction();
+        self.mark_viewport_render_dirty();
         self.invalidate_professional_overlay_for_viewport_change();
         self.context_menu = None;
         self.ensure_visible_tiles(cx);

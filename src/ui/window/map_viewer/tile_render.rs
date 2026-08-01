@@ -358,6 +358,7 @@ pub(super) fn render_tile_batch_stream(
                                         width,
                                         height,
                                         estimated_bytes,
+                                        layout: planned.layout,
                                     },
                                     source,
                                     chunk_positions: planned.chunk_positions.clone(),
@@ -912,6 +913,7 @@ pub(super) fn render_chunk_patches_blocking(
             width,
             height,
             estimated_bytes,
+            layout,
         },
         refreshed_chunks: chunks,
         diagnostics,
@@ -1164,18 +1166,44 @@ pub(super) fn web_relief_render_layout() -> RenderLayout {
     }
 }
 
+pub(super) fn tile_texture_render_layout(
+    world_layout: RenderLayout,
+    viewport_scale: f32,
+) -> RenderLayout {
+    let (blocks_per_pixel, pixels_per_block) = if viewport_scale <= 0.125 {
+        (2, 1)
+    } else if viewport_scale <= 0.25 {
+        (1, 1)
+    } else if viewport_scale <= 0.5 {
+        (1, 2)
+    } else {
+        (UI_BLOCKS_PER_PIXEL, UI_PIXELS_PER_BLOCK)
+    };
+    RenderLayout {
+        chunks_per_tile: world_layout.chunks_per_tile,
+        blocks_per_pixel,
+        pixels_per_block,
+    }
+}
+
 pub(super) fn validate_ui_render_layout(layout: RenderLayout) -> Result<(), String> {
-    let expected_size = DEFAULT_TILE_SIZE as u32;
     let actual_size = layout
         .tile_size()
         .ok_or_else(|| "UI 地图瓦片布局尺寸无效".to_string())?;
+    let valid_blocks_per_pixel = matches!(layout.blocks_per_pixel, 1 | 2);
+    let valid_pixels_per_block = matches!(layout.pixels_per_block, 1 | 2 | 4);
+    let expected_size = CHUNKS_PER_TILE
+        .saturating_mul(16)
+        .saturating_mul(layout.pixels_per_block)
+        .checked_div(layout.blocks_per_pixel)
+        .unwrap_or(0);
     if layout.chunks_per_tile != CHUNKS_PER_TILE
-        || layout.blocks_per_pixel != UI_BLOCKS_PER_PIXEL
-        || layout.pixels_per_block != UI_PIXELS_PER_BLOCK
+        || !valid_blocks_per_pixel
+        || !valid_pixels_per_block
         || actual_size != expected_size
     {
         return Err(format!(
-            "UI 地图只支持 8x8/512px/4ppb tile，当前 chunks_per_tile={} blocks_per_pixel={} pixels_per_block={} tile_size={actual_size}",
+            "UI 地图只支持 8x8/64|128|256|512px LOD tile，当前 chunks_per_tile={} blocks_per_pixel={} pixels_per_block={} tile_size={actual_size}",
             layout.chunks_per_tile, layout.blocks_per_pixel, layout.pixels_per_block
         ));
     }
@@ -1419,6 +1447,25 @@ pub(super) fn tile_chunk_region(
         max_chunk_x,
         max_chunk_z,
     ))
+}
+
+pub(super) fn optimistic_tile_chunk_positions(
+    dimension: Dimension,
+    coord: (i32, i32),
+    layout: RenderLayout,
+) -> Result<TileChunkPositions, String> {
+    let region = tile_chunk_region(dimension, coord.0, coord.1, layout)?;
+    let mut positions = Vec::with_capacity(
+        usize::try_from(layout.chunks_per_tile)
+            .unwrap_or(0)
+            .saturating_pow(2),
+    );
+    for z in region.min_chunk_z..=region.max_chunk_z {
+        for x in region.min_chunk_x..=region.max_chunk_x {
+            positions.push(ChunkPos { x, z, dimension });
+        }
+    }
+    Ok(TileChunkPositions::from(positions))
 }
 
 pub(super) fn tile_bounds_contains(bounds: TileBounds, coord: (i32, i32)) -> bool {

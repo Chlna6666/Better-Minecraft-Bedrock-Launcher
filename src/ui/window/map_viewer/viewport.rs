@@ -218,10 +218,10 @@ impl TilePaintRect {
     pub(super) fn to_bounds(self, bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
         let bounds_left = bounds.left() / px(1.0);
         let bounds_top = bounds.top() / px(1.0);
-        let left = (bounds_left + self.left).floor();
-        let top = (bounds_top + self.top).floor();
-        let right = (bounds_left + self.right).ceil();
-        let bottom = (bounds_top + self.bottom).ceil();
+        let left = bounds_left + self.left;
+        let top = bounds_top + self.top;
+        let right = bounds_left + self.right;
+        let bottom = bounds_top + self.bottom;
         let clip_left = bounds.left() / px(1.0);
         let clip_top = bounds.top() / px(1.0);
         let clip_right = bounds.right() / px(1.0);
@@ -377,10 +377,10 @@ pub(super) fn tile_paint_rect(
         return None;
     }
     Some(TilePaintRect {
-        left: left.floor(),
-        top: top.floor(),
-        right: right.ceil(),
-        bottom: bottom.ceil(),
+        left,
+        top,
+        right,
+        bottom,
     })
 }
 
