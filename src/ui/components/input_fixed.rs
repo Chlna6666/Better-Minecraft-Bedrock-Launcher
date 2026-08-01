@@ -4,9 +4,11 @@ mod legacy;
 pub use legacy::{InputEvent, InputSize, InputState, init};
 
 use gpui::{
-    App, Entity, EntityInputHandler, Focusable, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, Styled, Window, div,
+    App, Entity, Focusable, InteractiveElement, IntoElement, ParentElement, RenderOnce, Styled,
+    Window, div,
 };
+#[cfg(target_os = "windows")]
+use gpui::EntityInputHandler;
 
 /// BMCBL 输入框包装层。
 ///
@@ -68,12 +70,11 @@ impl Styled for Input {
 impl RenderOnce for Input {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus_handle = self.state.read(cx).focus_handle(cx);
-        let state = self.state.clone();
-
         let mut root = div().track_focus(&focus_handle);
 
         #[cfg(target_os = "windows")]
         {
+            let state = self.state.clone();
             root = root.on_key_down(move |event, window, cx| {
                 let modifiers = event.keystroke.modifiers;
 
