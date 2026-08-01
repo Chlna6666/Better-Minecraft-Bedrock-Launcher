@@ -7,6 +7,7 @@ pub mod dialog;
 pub mod dropdown;
 pub mod html_renderer;
 pub mod icon;
+#[path = "input_fixed.rs"]
 pub mod input;
 pub mod markdown_renderer;
 pub mod minecraft_text;
