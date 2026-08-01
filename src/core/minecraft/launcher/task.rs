@@ -1,4 +1,5 @@
 #![cfg(target_os = "windows")]
+use super::bloader;
 use crate::config::config::read_config;
 use crate::core::inject::inject::{
     grant_all_application_packages_access, inject_existing_process, launch_win32_with_injection,
@@ -19,7 +20,6 @@ use crate::tasks::task_manager::{
     register_task_abort_handle, set_task_labels, set_task_message, set_total, task_control,
     update_progress,
 };
-use pelite::pe64::{Pe, PeFile};
 use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::fs;
@@ -34,7 +34,6 @@ use windows::core::HSTRING;
 
 use crate::utils::file_ops;
 
-const INJECTOR_BYTES: &[u8] = include_bytes!("../../../../assets/bin/BLoader.dll");
 const LAUNCH_TOTAL_STEPS: u64 = 5;
 const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
 const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 5] = [
@@ -47,24 +46,6 @@ const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 5] = [
 
 fn register_launcher_task_stage_labels() {
     crate::tasks::task_manager::register_task_stage_labels(LAUNCHER_TASK_STAGE_LABELS);
-}
-
-#[repr(C)]
-#[allow(non_snake_case)]
-struct VS_FIXEDFILEINFO_WIN32 {
-    pub dwSignature: u32,
-    pub dwStrucVersion: u32,
-    pub dwFileVersionMS: u32,
-    pub dwFileVersionLS: u32,
-    pub dwProductVersionMS: u32,
-    pub dwProductVersionLS: u32,
-    pub dwFileFlagsMask: u32,
-    pub dwFileFlags: u32,
-    pub dwFileOS: u32,
-    pub dwFileType: u32,
-    pub dwFileSubtype: u32,
-    pub dwFileDateMS: u32,
-    pub dwFileDateLS: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -385,29 +366,8 @@ fn is_win32_version(version: &str) -> bool {
     compare_versions(version, "1.21.12000.21") != Ordering::Less
 }
 
-fn get_embedded_dll_version(bytes: &[u8]) -> Option<Vec<u64>> {
-    let file = PeFile::from_bytes(bytes).ok()?;
-    let resources = file.resources().ok()?;
-    let version_info = resources.version_info().ok()?;
-    let fixed = version_info.fixed()?;
-    // SAFETY: `fixed()` returns a valid VS_FIXEDFILEINFO-compatible blob owned by pelite.
-    let info = unsafe { &*(fixed as *const _ as *const VS_FIXEDFILEINFO_WIN32) };
-    Some(vec![
-        ((info.dwFileVersionMS >> 16) & 0xFFFF) as u64,
-        (info.dwFileVersionMS & 0xFFFF) as u64,
-        ((info.dwFileVersionLS >> 16) & 0xFFFF) as u64,
-        (info.dwFileVersionLS & 0xFFFF) as u64,
-    ])
-}
-
 pub fn embedded_dll_version_string() -> Option<String> {
-    get_embedded_dll_version(INJECTOR_BYTES).map(|parts| {
-        parts
-            .iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join(".")
-    })
+    Some(bloader::embedded_version_string().to_string())
 }
 
 async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u32>, String> {
@@ -438,7 +398,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     );
 
     append_log(task_id, format!("版本目录: {package_folder}"));
-    let injector_version = embedded_dll_version_string().unwrap_or_else(|| "unknown".to_string());
+    let injector_version = bloader::embedded_version_string();
     append_log(task_id, format!("预加载器版本: {injector_version}"));
 
     let (identity_name, identity_version) = get_manifest_identity(package_folder)
@@ -534,12 +494,14 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         if injector_target_path.exists() {
             remove_readonly(&injector_target_path);
             if let Ok(disk_bytes) = fs::read(&injector_target_path) {
-                need_update = disk_bytes != INJECTOR_BYTES;
+                need_update = bloader::version_string(&disk_bytes).as_deref()
+                    != Some(bloader::embedded_version_string());
             }
         }
 
         if need_update {
-            ensure_file_in_dir(exe_dir, injector_name, INJECTOR_BYTES)?;
+            let injector_bytes = bloader::bytes()?;
+            ensure_file_in_dir(exe_dir, injector_name, injector_bytes)?;
         }
 
         let file_redirections =

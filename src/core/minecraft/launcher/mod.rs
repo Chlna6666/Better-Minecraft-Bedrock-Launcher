@@ -1,3 +1,4 @@
+mod bloader;
 #[cfg(target_os = "windows")]
 pub mod preflight;
 #[cfg(target_os = "windows")]

@@ -4,12 +4,32 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use pelite::pe64::{Pe, PeFile};
+
 type LocaleTable = Vec<(String, String)>;
 
 const CIK_MIN_BYTES: usize = 0x30;
 const RELEASE_CIK_GUID_BYTES_LE_HEX: &str = "91e7b9bd7cc93437e1a8bc602552df06";
 const PREVIEW_CIK_GUID_BYTES_LE_HEX: &str = "3fd6491ff58b8d1fed7edbd89477dad9";
 const UTF8_REPLACEMENT_BYTES: &[u8] = &[0xef, 0xbf, 0xbd];
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct VsFixedFileInfoWin32 {
+    dwSignature: u32,
+    dwStrucVersion: u32,
+    dwFileVersionMS: u32,
+    dwFileVersionLS: u32,
+    dwProductVersionMS: u32,
+    dwProductVersionLS: u32,
+    dwFileFlagsMask: u32,
+    dwFileFlags: u32,
+    dwFileOS: u32,
+    dwFileType: u32,
+    dwFileSubtype: u32,
+    dwFileDateMS: u32,
+    dwFileDateLS: u32,
+}
 
 fn resolve_build_version() -> String {
     let version = env::var("BMCBL_BUILD_VERSION")
@@ -231,6 +251,57 @@ fn generate_asset_bundles_rs() {
         "load_icon_asset",
         "list_icon_assets",
     );
+}
+
+fn generate_embedded_bloader() {
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let source_path = manifest_dir.join("assets").join("bin").join("BLoader.dll");
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let compressed_path = out_dir.join("BLoader.dll.zst");
+
+    println!("cargo:rerun-if-changed={}", source_path.display());
+    let source = fs::read(&source_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", source_path.display()));
+    let file = PeFile::from_bytes(&source)
+        .unwrap_or_else(|error| panic!("failed to parse {} as PE: {error}", source_path.display()));
+    let resources = file.resources().unwrap_or_else(|error| {
+        panic!(
+            "failed to read resources from {}: {error}",
+            source_path.display()
+        )
+    });
+    let version_info = resources.version_info().unwrap_or_else(|error| {
+        panic!(
+            "failed to read version info from {}: {error}",
+            source_path.display()
+        )
+    });
+    let fixed = version_info
+        .fixed()
+        .unwrap_or_else(|| panic!("missing fixed version info in {}", source_path.display()));
+    // SAFETY: pelite returns a valid VS_FIXEDFILEINFO-compatible resource blob.
+    let info = unsafe { &*(fixed as *const _ as *const VsFixedFileInfoWin32) };
+    let version = [
+        ((info.dwFileVersionMS >> 16) & 0xFFFF) as u64,
+        (info.dwFileVersionMS & 0xFFFF) as u64,
+        ((info.dwFileVersionLS >> 16) & 0xFFFF) as u64,
+        (info.dwFileVersionLS & 0xFFFF) as u64,
+    ];
+    let version_string = version
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(".");
+    println!("cargo:rustc-env=BMCBL_BLOADER_VERSION={version_string}");
+
+    let compressed = zstd::stream::encode_all(source.as_slice(), 19)
+        .unwrap_or_else(|error| panic!("failed to compress {}: {error}", source_path.display()));
+    fs::write(&compressed_path, compressed).unwrap_or_else(|error| {
+        panic!(
+            "failed to write embedded BLoader payload {}: {error}",
+            compressed_path.display()
+        )
+    });
 }
 
 fn escape_rust_string(text: &str) -> String {
@@ -834,6 +905,7 @@ fn main() {
     compile_windows_resources();
 
     generate_asset_bundles_rs();
+    generate_embedded_bloader();
     generate_i18n_tables_rs();
     generate_dependency_metadata_rs();
 

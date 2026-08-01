@@ -1,3 +1,4 @@
+use super::bloader;
 use crate::core::linux_runtime::{RunnerKind, resolve_runner, validate_proton_game_runtime};
 use crate::tasks::task_manager::{
     append_task_log, create_task_with_details, finish_task, register_task_abort_handle,
@@ -31,8 +32,6 @@ const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 4] = [
     ("launching", "启动游戏"),
     ("running_game", "游戏运行中"),
 ];
-
-const INJECTOR_BYTES: &[u8] = include_bytes!("../../../../assets/bin/BLoader.dll");
 
 #[derive(Clone, Debug)]
 pub struct LaunchRequest {
@@ -386,12 +385,13 @@ async fn inject_bloader(exe_path: &Path, task_id: &str) -> Result<(), String> {
         let disk_bytes = tokio::fs::read(&injector_path)
             .await
             .map_err(|error| format!("读取现有 BLoader.dll 失败：{error}"))?;
-        disk_bytes != INJECTOR_BYTES
+        bloader::version_string(&disk_bytes).as_deref() != Some(bloader::embedded_version_string())
     } else {
         true
     };
     if need_update {
-        tokio::fs::write(&injector_path, INJECTOR_BYTES)
+        let injector_bytes = bloader::bytes()?;
+        tokio::fs::write(&injector_path, injector_bytes)
             .await
             .map_err(|error| format!("写入 BLoader.dll 失败：{error}"))?;
         append_task_log(

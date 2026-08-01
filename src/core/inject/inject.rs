@@ -295,7 +295,13 @@ pub async fn launch_win32_with_injection(
                         PAGE_EXECUTE_READWRITE,
                     );
                     if !remote.is_null() {
-                        WriteProcessMemory(process, remote, wide_path.as_ptr().cast(), length, None)?;
+                        WriteProcessMemory(
+                            process,
+                            remote,
+                            wide_path.as_ptr().cast(),
+                            length,
+                            None,
+                        )?;
                         path_addresses.push(remote as u64);
                         log(&format!("注入准备: {path}"));
                     }
@@ -456,9 +462,7 @@ impl PendingXUserPipe {
             unsafe {
                 close_handle_raw(self.pipe);
             }
-            return Err(anyhow!(
-                "BLoader 未在超时时间内连接 XUser 会话通道"
-            ));
+            return Err(anyhow!("BLoader 未在超时时间内连接 XUser 会话通道"));
         }
 
         let mut client_pid = 0u32;
@@ -493,7 +497,9 @@ impl PendingXUserPipe {
             disconnect_named_pipe(self.pipe);
             close_handle_raw(self.pipe);
         }
-        log("XUser 会话载荷已传输至目标进程；等待 BLoader 验证会话、加载系统 Runtime 并报告 QueryApiImpl Hook 状态");
+        log(
+            "XUser 会话载荷已传输至目标进程；等待 BLoader 验证会话、加载系统 Runtime 并报告 QueryApiImpl Hook 状态",
+        );
         Ok(())
     }
 }
@@ -574,8 +580,7 @@ pub async fn inject_existing_process(
             if enable_console {
                 let kernel = GetModuleHandleW(windows::core::w!("kernel32.dll"))?;
 
-                if let Some(free_console) =
-                    GetProcAddress(kernel, PCSTR(b"FreeConsole\0".as_ptr()))
+                if let Some(free_console) = GetProcAddress(kernel, PCSTR(b"FreeConsole\0".as_ptr()))
                 {
                     if let Ok(remote_thread) = CreateRemoteThread(
                         process,
@@ -609,8 +614,7 @@ pub async fn inject_existing_process(
                 }
             }
 
-            let wide_path: Vec<u16> =
-                OsStr::new(&dll_path).encode_wide().chain(Some(0)).collect();
+            let wide_path: Vec<u16> = OsStr::new(&dll_path).encode_wide().chain(Some(0)).collect();
             let length = wide_path.len() * 2;
             let remote_memory = VirtualAllocEx(
                 process,
