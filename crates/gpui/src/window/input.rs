@@ -50,7 +50,7 @@ impl Window {
     }
 
     /// Register a key event listener on the window for the next frame. The type of event
-    /// is determined by the first parameter of the given listener. When the next frame is rendered
+    /// is determined by the first parameter of the listener. When the next frame is rendered
     /// the listener will be cleared.
     ///
     /// This is a fairly low-level method, so prefer using event handlers on elements unless you have
@@ -132,7 +132,7 @@ impl Window {
                             handles: Arc::downgrade(&cx.focus_handles),
                         },
                     };
-                    listener(event, window, cx)
+                    listener(window, cx)
                 }
                 true
             }));
@@ -301,6 +301,20 @@ impl Window {
             self.dispatch_mouse_event(any_mouse_event, cx);
         } else if let Some(any_key_event) = event.keyboard_event() {
             self.dispatch_key_event(any_key_event, cx);
+        }
+
+        // The winit-based Windows backend reports committed text through KeyEvent::text,
+        // which is stored in Keystroke::key_char. Key actions must run first so shortcuts can
+        // consume the event; otherwise, forward the committed text to the focused input handler.
+        #[cfg(target_os = "windows")]
+        if cx.propagate_event
+            && let PlatformInput::KeyDown(key_down) = &event
+            && let Some(input) = key_down.keystroke.key_char.as_deref()
+            && let Some(mut input_handler) = self.platform_window.take_input_handler()
+        {
+            input_handler.dispatch_input(input, self, cx);
+            self.platform_window.set_input_handler(input_handler);
+            cx.propagate_event = false;
         }
 
         let event_elapsed = event_started_at.elapsed();
