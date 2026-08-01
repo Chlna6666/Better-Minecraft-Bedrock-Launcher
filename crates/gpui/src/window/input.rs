@@ -356,10 +356,7 @@ impl Window {
         let client_resize_edge = if matches!(self.window_decorations(), Decorations::Client { .. })
         {
             self.client_inset
-                .and_then(|inset| resize_edge_hit_test(self, mouse_position(), inset))
-                .map(resize_edge_cursor_style)
-                .or_else(|| self.rendered_frame.cursor_style(self))
-                .unwrap_or(CursorStyle::Arrow)
+                .and_then(|inset| resize_edge_hit_test(self, mouse_position, inset))
         } else {
             None
         };
