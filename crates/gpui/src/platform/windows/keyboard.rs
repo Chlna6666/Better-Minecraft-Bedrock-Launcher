@@ -277,6 +277,93 @@ pub(crate) fn generate_key_char(
     }
 }
 
+pub(crate) fn key_from_physical_key(
+    physical_key: &winit::keyboard::PhysicalKey,
+    modifiers: Modifiers,
+) -> Option<(String, Option<String>)> {
+    use winit::keyboard::{KeyCode, PhysicalKey};
+
+    let PhysicalKey::Code(key_code) = physical_key else {
+        return None;
+    };
+    let (virtual_key, key) = match key_code {
+        KeyCode::KeyA => (0x41, "a"),
+        KeyCode::KeyB => (0x42, "b"),
+        KeyCode::KeyC => (0x43, "c"),
+        KeyCode::KeyD => (0x44, "d"),
+        KeyCode::KeyE => (0x45, "e"),
+        KeyCode::KeyF => (0x46, "f"),
+        KeyCode::KeyG => (0x47, "g"),
+        KeyCode::KeyH => (0x48, "h"),
+        KeyCode::KeyI => (0x49, "i"),
+        KeyCode::KeyJ => (0x4A, "j"),
+        KeyCode::KeyK => (0x4B, "k"),
+        KeyCode::KeyL => (0x4C, "l"),
+        KeyCode::KeyM => (0x4D, "m"),
+        KeyCode::KeyN => (0x4E, "n"),
+        KeyCode::KeyO => (0x4F, "o"),
+        KeyCode::KeyP => (0x50, "p"),
+        KeyCode::KeyQ => (0x51, "q"),
+        KeyCode::KeyR => (0x52, "r"),
+        KeyCode::KeyS => (0x53, "s"),
+        KeyCode::KeyT => (0x54, "t"),
+        KeyCode::KeyU => (0x55, "u"),
+        KeyCode::KeyV => (0x56, "v"),
+        KeyCode::KeyW => (0x57, "w"),
+        KeyCode::KeyX => (0x58, "x"),
+        KeyCode::KeyY => (0x59, "y"),
+        KeyCode::KeyZ => (0x5A, "z"),
+        KeyCode::Digit0 => (0x30, "0"),
+        KeyCode::Digit1 => (0x31, "1"),
+        KeyCode::Digit2 => (0x32, "2"),
+        KeyCode::Digit3 => (0x33, "3"),
+        KeyCode::Digit4 => (0x34, "4"),
+        KeyCode::Digit5 => (0x35, "5"),
+        KeyCode::Digit6 => (0x36, "6"),
+        KeyCode::Digit7 => (0x37, "7"),
+        KeyCode::Digit8 => (0x38, "8"),
+        KeyCode::Digit9 => (0x39, "9"),
+        KeyCode::Space => (0x20, "space"),
+        KeyCode::Minus => (0xBD, "-"),
+        KeyCode::Equal => (0xBB, "="),
+        KeyCode::BracketLeft => (0xDB, "["),
+        KeyCode::BracketRight => (0xDD, "]"),
+        KeyCode::Backslash => (0xDC, "\\"),
+        KeyCode::Semicolon => (0xBA, ";"),
+        KeyCode::Quote => (0xDE, "'"),
+        KeyCode::Backquote => (0xC0, "`"),
+        KeyCode::Comma => (0xBC, ","),
+        KeyCode::Period => (0xBE, "."),
+        KeyCode::Slash => (0xBF, "/"),
+        KeyCode::Numpad0 => (0x60, "num0"),
+        KeyCode::Numpad1 => (0x61, "num1"),
+        KeyCode::Numpad2 => (0x62, "num2"),
+        KeyCode::Numpad3 => (0x63, "num3"),
+        KeyCode::Numpad4 => (0x64, "num4"),
+        KeyCode::Numpad5 => (0x65, "num5"),
+        KeyCode::Numpad6 => (0x66, "num6"),
+        KeyCode::Numpad7 => (0x67, "num7"),
+        KeyCode::Numpad8 => (0x68, "num8"),
+        KeyCode::Numpad9 => (0x69, "num9"),
+        KeyCode::NumpadAdd => (0x6B, "add"),
+        KeyCode::NumpadSubtract => (0x6D, "subtract"),
+        KeyCode::NumpadMultiply => (0x6A, "multiply"),
+        KeyCode::NumpadDivide => (0x6F, "divide"),
+        KeyCode::NumpadDecimal => (0x6E, "decimal"),
+        _ => return None,
+    };
+
+    let scan_code = unsafe { MapVirtualKeyW(virtual_key as u32, MAPVK_VK_TO_VSC) };
+    let key_char = generate_key_char(
+        VIRTUAL_KEY(virtual_key),
+        scan_code,
+        modifiers.control,
+        modifiers.shift,
+        modifiers.alt,
+    );
+    Some((key.to_string(), key_char))
+}
+
 fn vkey_from_key_with_us_layout(key: &str) -> Option<(u16, bool)> {
     match key {
         // ` => VK_OEM_3

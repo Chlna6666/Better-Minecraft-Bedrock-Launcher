@@ -304,11 +304,12 @@ impl Window {
         }
 
         // The winit-based Windows backend reports committed text through KeyEvent::text,
-        // which is stored in Keystroke::key_char. Key actions must run first so shortcuts can
-        // consume the event; otherwise, forward the committed text to the focused input handler.
+        // which is stored in Keystroke::key_char. Key actions still run first, but text input
+        // must not depend on event propagation: unrelated key listeners may stop propagation
+        // after the focused input has been selected.
         #[cfg(target_os = "windows")]
-        if cx.propagate_event
-            && let PlatformInput::KeyDown(key_down) = &event
+        if let PlatformInput::KeyDown(key_down) = &event
+            && is_text_input_keystroke(&key_down.keystroke)
             && let Some(input) = key_down.keystroke.key_char.as_deref()
             && let Some(mut input_handler) = self.platform_window.take_input_handler()
         {
@@ -455,5 +456,40 @@ impl Window {
                 self.refresh();
             }
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_text_input_keystroke(keystroke: &Keystroke) -> bool {
+    let modifiers = keystroke.modifiers;
+    !modifiers.platform
+        && !modifiers.function
+        && (!modifiers.control || modifiers.alt)
+        && (!modifiers.alt || modifiers.control)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    fn keystroke(modifiers: Modifiers) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: "a".to_string(),
+            key_char: Some("a".to_string()),
+        }
+    }
+
+    #[test]
+    fn text_input_allows_plain_and_altgr_keys_but_not_shortcuts() {
+        assert!(is_text_input_keystroke(&keystroke(Modifiers::default())));
+        assert!(is_text_input_keystroke(&keystroke(Modifiers {
+            control: true,
+            alt: true,
+            ..Modifiers::default()
+        })));
+        assert!(!is_text_input_keystroke(&keystroke(Modifiers::control())));
+        assert!(!is_text_input_keystroke(&keystroke(Modifiers::alt())));
+        assert!(!is_text_input_keystroke(&keystroke(Modifiers::windows())));
     }
 }

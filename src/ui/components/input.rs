@@ -25,8 +25,16 @@ actions!(
         SelectLeft,
         SelectRight,
         SelectAll,
+        SelectHome,
+        SelectEnd,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
         Home,
         End,
+        BackspaceWord,
+        DeleteWord,
         Paste,
         Cut,
         Copy,
@@ -42,8 +50,16 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("right", Right, Some("Input")),
         KeyBinding::new("shift-left", SelectLeft, Some("Input")),
         KeyBinding::new("shift-right", SelectRight, Some("Input")),
+        KeyBinding::new("shift-home", SelectHome, Some("Input")),
+        KeyBinding::new("shift-end", SelectEnd, Some("Input")),
+        KeyBinding::new("ctrl-left", WordLeft, Some("Input")),
+        KeyBinding::new("ctrl-right", WordRight, Some("Input")),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("Input")),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("Input")),
         KeyBinding::new("home", Home, Some("Input")),
         KeyBinding::new("end", End, Some("Input")),
+        KeyBinding::new("ctrl-backspace", BackspaceWord, Some("Input")),
+        KeyBinding::new("ctrl-delete", DeleteWord, Some("Input")),
         KeyBinding::new("enter", Enter, Some("Input")),
         KeyBinding::new("ctrl-a", SelectAll, Some("Input")),
         KeyBinding::new("ctrl-v", Paste, Some("Input")),
@@ -245,10 +261,15 @@ impl InputState {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let marked_text_changed = self.marked_range.take().is_some();
         self.update_selection_state(offset..offset, false, cx);
+        if marked_text_changed {
+            cx.notify();
+        }
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let marked_text_changed = self.marked_range.take().is_some();
         let mut selected_range = self.selected_range.clone();
         let mut selection_reversed = self.selection_reversed;
         if selection_reversed {
@@ -261,6 +282,9 @@ impl InputState {
             selected_range = selected_range.end..selected_range.start;
         }
         self.update_selection_state(selected_range, selection_reversed, cx);
+        if marked_text_changed {
+            cx.notify();
+        }
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -281,46 +305,27 @@ impl InputState {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.value
-            .as_ref()
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(index, _)| (index < offset).then_some(index))
-            .unwrap_or(0)
+        previous_grapheme_boundary(&self.value, offset)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.value
-            .as_ref()
-            .grapheme_indices(true)
-            .find_map(|(index, _)| (index > offset).then_some(index))
-            .unwrap_or(self.value.len())
+        next_grapheme_boundary(&self.value, offset)
+    }
+
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        previous_word_boundary(&self.value, offset)
+    }
+
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        next_word_boundary(&self.value, offset)
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for character in self.value.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += character.len_utf16();
-            utf8_offset += character.len_utf8();
-        }
-        utf8_offset
+        offset_from_utf16(&self.value, offset)
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-        for character in self.value.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += character.len_utf8();
-            utf16_offset += character.len_utf16();
-        }
-        utf16_offset
+        offset_to_utf16(&self.value, offset)
     }
 
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
@@ -455,11 +460,42 @@ impl InputState {
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
     }
 
+    fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+    }
+
+    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.value.len(), cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        let offset = if self.selected_range.is_empty() {
+            self.previous_word_boundary(self.cursor_offset())
+        } else {
+            self.selected_range.start
+        };
+        self.move_to(offset, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        let offset = if self.selected_range.is_empty() {
+            self.next_word_boundary(self.cursor_offset())
+        } else {
+            self.selected_range.end
+        };
+        self.move_to(offset, cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        self.selected_range = 0..self.value.len();
-        self.selection_reversed = false;
-        self.reset_cursor_blink();
-        cx.notify();
+        self.update_selection_state(0..self.value.len(), false, cx);
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
@@ -480,6 +516,20 @@ impl InputState {
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.select_to(self.next_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn backspace_word(&mut self, _: &BackspaceWord, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_word(&mut self, _: &DeleteWord, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -596,6 +646,13 @@ impl EntityInputHandler for InputState {
             .map(|value| self.range_from_utf16(value))
             .or(self.marked_range.clone())
             .unwrap_or_else(|| self.selected_range.clone());
+        let range = range.start.min(self.value.len())
+            ..range
+                .end
+                .min(self.value.len())
+                .max(range.start.min(self.value.len()));
+        let normalized_text = normalize_single_line_text(new_text);
+        let new_text = normalized_text.as_deref().unwrap_or(new_text);
 
         let end = range.start + new_text.len();
         let next_value = self.build_replaced_value(&range, new_text);
@@ -637,6 +694,13 @@ impl EntityInputHandler for InputState {
             .map(|value| self.range_from_utf16(value))
             .or(self.marked_range.clone())
             .unwrap_or_else(|| self.selected_range.clone());
+        let range = range.start.min(self.value.len())
+            ..range
+                .end
+                .min(self.value.len())
+                .max(range.start.min(self.value.len()));
+        let normalized_text = normalize_single_line_text(new_text);
+        let new_text = normalized_text.as_deref().unwrap_or(new_text);
 
         let next_value = self.build_replaced_value(&range, new_text);
         let next_marked_range =
@@ -703,6 +767,111 @@ impl Focusable for InputState {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
+}
+
+fn previous_grapheme_boundary(value: &str, offset: usize) -> usize {
+    value
+        .grapheme_indices(true)
+        .rev()
+        .find_map(|(index, _)| (index < offset).then_some(index))
+        .unwrap_or(0)
+}
+
+fn next_grapheme_boundary(value: &str, offset: usize) -> usize {
+    value
+        .grapheme_indices(true)
+        .find_map(|(index, _)| (index > offset).then_some(index))
+        .unwrap_or(value.len())
+}
+
+fn is_word_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+fn is_word_separator(segment: &str) -> bool {
+    segment
+        .chars()
+        .all(|character| character.is_whitespace() || !is_word_character(character))
+}
+
+fn previous_word_boundary(value: &str, offset: usize) -> usize {
+    let mut boundary = offset.min(value.len());
+    while boundary > 0 {
+        let previous = previous_grapheme_boundary(value, boundary);
+        if is_word_separator(&value[previous..boundary]) {
+            boundary = previous;
+        } else {
+            break;
+        }
+    }
+    while boundary > 0 {
+        let previous = previous_grapheme_boundary(value, boundary);
+        if value[previous..boundary].chars().all(is_word_character) {
+            boundary = previous;
+        } else {
+            break;
+        }
+    }
+    boundary
+}
+
+fn next_word_boundary(value: &str, offset: usize) -> usize {
+    let mut boundary = offset.min(value.len());
+    while boundary < value.len() {
+        let next = next_grapheme_boundary(value, boundary);
+        if is_word_separator(&value[boundary..next]) {
+            boundary = next;
+        } else {
+            break;
+        }
+    }
+    while boundary < value.len() {
+        let next = next_grapheme_boundary(value, boundary);
+        if value[boundary..next].chars().all(is_word_character) {
+            boundary = next;
+        } else {
+            break;
+        }
+    }
+    boundary
+}
+
+fn offset_from_utf16(value: &str, offset: usize) -> usize {
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+    for character in value.chars() {
+        if utf16_count >= offset {
+            break;
+        }
+        utf16_count += character.len_utf16();
+        utf8_offset += character.len_utf8();
+    }
+    utf8_offset
+}
+
+fn offset_to_utf16(value: &str, offset: usize) -> usize {
+    let mut utf16_offset = 0;
+    for (utf8_offset, character) in value.char_indices() {
+        if utf8_offset >= offset {
+            break;
+        }
+        utf16_offset += character.len_utf16();
+    }
+    utf16_offset
+}
+
+fn normalize_single_line_text(text: &str) -> Option<String> {
+    text.chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+        .then(|| {
+            text.chars()
+                .map(|character| {
+                    matches!(character, '\r' | '\n')
+                        .then_some(' ')
+                        .unwrap_or(character)
+                })
+                .collect()
+        })
 }
 
 struct TextElement {
@@ -972,8 +1141,16 @@ impl Render for InputState {
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::backspace_word))
+            .on_action(cx.listener(Self::delete_word))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
@@ -1226,5 +1403,46 @@ impl RenderOnce for Input {
         }
 
         input
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grapheme_navigation_keeps_emoji_cluster_together() {
+        let value = "a👍🏽b";
+        let emoji_end = "a👍🏽".len();
+
+        assert_eq!(previous_grapheme_boundary(value, value.len()), emoji_end);
+        assert_eq!(next_grapheme_boundary(value, 1), emoji_end);
+    }
+
+    #[test]
+    fn word_navigation_skips_separators() {
+        let value = "hello, world";
+
+        assert_eq!(previous_word_boundary(value, value.len()), 7);
+        assert_eq!(next_word_boundary(value, 0), 5);
+        assert_eq!(next_word_boundary(value, 6), 12);
+    }
+
+    #[test]
+    fn utf16_offsets_handle_non_bmp_characters() {
+        let value = "A😀中";
+
+        assert_eq!(offset_to_utf16(value, 5), 3);
+        assert_eq!(offset_from_utf16(value, 3), 5);
+        assert_eq!(offset_to_utf16(value, value.len()), 4);
+    }
+
+    #[test]
+    fn single_line_normalization_replaces_line_breaks() {
+        assert_eq!(
+            normalize_single_line_text("one\r\ntwo").as_deref(),
+            Some("one  two")
+        );
+        assert!(normalize_single_line_text("one two").is_none());
     }
 }

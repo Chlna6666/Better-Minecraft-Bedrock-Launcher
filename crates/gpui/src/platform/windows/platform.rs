@@ -1369,6 +1369,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 event:
                     winit::event::KeyEvent {
                         logical_key,
+                        physical_key,
                         state,
                         text,
                         repeat,
@@ -1377,7 +1378,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 ..
             } => {
                 if let Some(keystroke) =
-                    keystroke_from_winit(&logical_key, self.current_modifiers, &text)
+                    keystroke_from_winit(&logical_key, &physical_key, self.current_modifiers, &text)
                 {
                     let mut state_ref = window.0.state.borrow_mut();
                     let input_callback = state_ref.callbacks.input.take();

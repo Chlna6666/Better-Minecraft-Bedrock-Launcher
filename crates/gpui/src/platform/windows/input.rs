@@ -26,6 +26,7 @@ pub(crate) fn modifiers_from_winit(modifiers: winit::keyboard::ModifiersState) -
 
 pub(crate) fn keystroke_from_winit(
     logical_key: &winit::keyboard::Key,
+    physical_key: &winit::keyboard::PhysicalKey,
     modifiers: Modifiers,
     text: &Option<winit::keyboard::SmolStr>,
 ) -> Option<Keystroke> {
@@ -84,24 +85,35 @@ pub(crate) fn keystroke_from_winit(
         }
         WinitKey::Character(ch) => {
             let key = ch.to_lowercase();
-            let key_char = text.as_ref().map(|value| value.to_string()).or_else(|| {
-                if !modifiers.control
-                    && !modifiers.platform
-                    && !modifiers.function
-                    && !modifiers.alt
-                {
-                    if modifiers.shift {
-                        Some(ch.to_uppercase())
+            let key_char = text
+                .as_ref()
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .or_else(|| {
+                    if !modifiers.control
+                        && !modifiers.platform
+                        && !modifiers.function
+                        && !modifiers.alt
+                    {
+                        if modifiers.shift {
+                            Some(ch.to_uppercase())
+                        } else {
+                            Some(ch.to_string())
+                        }
                     } else {
-                        Some(ch.to_string())
+                        None
                     }
-                } else {
-                    None
-                }
-            });
+                });
             (key, key_char)
         }
-        WinitKey::Unidentified(_) | WinitKey::Dead(_) => return None,
+        WinitKey::Unidentified(_) | WinitKey::Dead(_) => {
+            let (key, key_char) = super::keyboard::key_from_physical_key(physical_key, modifiers)?;
+            return Some(Keystroke {
+                modifiers,
+                key,
+                key_char,
+            });
+        }
     };
 
     Some(Keystroke {
