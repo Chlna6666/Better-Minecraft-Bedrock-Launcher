@@ -163,9 +163,7 @@ pub fn run() -> Result<()> {
 
     if launch_mode.is_main() {
         crate::core::bedrock_auth::preload_at_app_startup();
-        debug!(
-            "system-local Xbox probe and BMCBL managed-account restore scheduled independently"
-        );
+        debug!("system-local Xbox probe and BMCBL managed-account restore scheduled independently");
     }
 
     if let LaunchMode::DirectLaunch(ref direct_ctx) = launch_mode {

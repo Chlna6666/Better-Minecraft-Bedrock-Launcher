@@ -4,8 +4,8 @@ use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
+use winreg::enums::HKEY_CURRENT_USER;
 
 const MAX_PROFILE_BYTES: u64 = 1024 * 1024;
 const MAX_GAMERTAG_CHARS: usize = 64;
@@ -86,7 +86,10 @@ fn xbox_profile_candidates() -> Vec<PathBuf> {
         "Microsoft.XboxApp_8wekyb3d8bbwe",
         "Microsoft.GamingApp_8wekyb3d8bbwe",
     ] {
-        let local_state = local_app_data.join("Packages").join(package).join("LocalState");
+        let local_state = local_app_data
+            .join("Packages")
+            .join(package)
+            .join("LocalState");
         candidates.push(local_state.join("XboxLiveGamer.xml"));
         candidates.push(local_state.join("ModelManager").join("XboxLiveGamer.xml"));
         append_case_insensitive_matches(&local_state, 3, &mut candidates);
@@ -161,11 +164,8 @@ fn decode_profile_text(bytes: &[u8]) -> Result<String, String> {
 }
 
 fn extract_user_from_json(value: &Value) -> Option<SystemXboxUser> {
-    let xuid = find_json_field(
-        value,
-        &["XboxUserId", "XboxUserID", "Xuid", "XUID", "xuid"],
-    )
-    .and_then(parse_xuid_value)?;
+    let xuid = find_json_field(value, &["XboxUserId", "XboxUserID", "Xuid", "XUID", "xuid"])
+        .and_then(parse_xuid_value)?;
     let gamertag = find_json_field(
         value,
         &[
@@ -242,7 +242,12 @@ fn read_registry_profile() -> Result<Option<SystemXboxUser>, String> {
             .filter(|value| *value != 0);
         let gamertag = read_registry_string(
             &key,
-            &["Gamertag", "GamerTag", "DisplayName", "UniqueModernGamertag"],
+            &[
+                "Gamertag",
+                "GamerTag",
+                "DisplayName",
+                "UniqueModernGamertag",
+            ],
         )
         .and_then(|value| sanitize_gamertag(&value));
 

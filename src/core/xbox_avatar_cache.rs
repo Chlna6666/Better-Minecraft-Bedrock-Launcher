@@ -4,8 +4,8 @@ use sha2::{Digest as _, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
@@ -167,8 +167,8 @@ fn write_cache_entry(xuid: &str, source: &[u8]) -> Result<PathBuf, String> {
         ));
     }
 
-    let decoded = image::load_from_memory(source)
-        .map_err(|error| format!("解码 Xbox 头像失败：{error}"))?;
+    let decoded =
+        image::load_from_memory(source).map_err(|error| format!("解码 Xbox 头像失败：{error}"))?;
     let normalized = decoded.thumbnail(CACHED_AVATAR_EDGE, CACHED_AVATAR_EDGE);
     let mut png = Vec::new();
     normalized
@@ -199,7 +199,9 @@ fn write_cache_entry(xuid: &str, source: &[u8]) -> Result<PathBuf, String> {
     write_pointer(xuid, &file_name, &cache_dir)?;
     let changed = CACHE_INDEX
         .lock()
-        .map(|mut index| index.insert(xuid.to_string(), final_path.clone()) != Some(final_path.clone()))
+        .map(|mut index| {
+            index.insert(xuid.to_string(), final_path.clone()) != Some(final_path.clone())
+        })
         .unwrap_or(true);
     if changed {
         emit_cache_event();

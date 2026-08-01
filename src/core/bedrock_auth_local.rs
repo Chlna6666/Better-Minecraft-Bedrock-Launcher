@@ -1,18 +1,18 @@
 #[path = "bedrock_auth/managed/mod.rs"]
 mod managed;
 
-pub(crate) use managed::{AuthPhase, AuthSnapshot, XboxProfile};
 #[cfg(target_os = "linux")]
 pub(crate) use managed::PreparedLaunchAuth;
 #[cfg(target_os = "windows")]
 pub(crate) use managed::PreparedLaunchAuth;
+pub(crate) use managed::{AuthPhase, AuthSnapshot, XboxProfile};
 
 use once_cell::sync::Lazy;
 #[cfg(target_os = "windows")]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Instant;
 use tokio::sync::watch;
 use tokio_stream::StreamExt as _;
@@ -434,7 +434,9 @@ mod tests {
     fn automatic_selection_ignores_the_synthetic_local_row() {
         SELECTION.store(SELECTION_AUTO, Ordering::Release);
         let mut snapshot = managed::AuthSnapshot::signed_out();
-        snapshot.accounts.push(LocalAccountState::signed_out("test").profile);
+        snapshot
+            .accounts
+            .push(LocalAccountState::signed_out("test").profile);
         assert!(system_account_is_selected(&snapshot));
     }
 }

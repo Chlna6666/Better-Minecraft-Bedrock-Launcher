@@ -60,15 +60,12 @@ fn apply_cached_avatar_paths(snapshot: &mut AuthSnapshot) {
 }
 
 pub(crate) fn start_event_bridge(cx: &mut App) {
-    cx.spawn_stream(
-        crate::core::xbox_avatar_cache::event_stream(),
-        |_, cx| {
-            cx.update_global(|state: &mut BedrockAuthState, _cx| {
-                apply_cached_avatar_paths(&mut state.snapshot);
-            });
-            cx.refresh_windows();
-        },
-    )
+    cx.spawn_stream(crate::core::xbox_avatar_cache::event_stream(), |_, cx| {
+        cx.update_global(|state: &mut BedrockAuthState, _cx| {
+            apply_cached_avatar_paths(&mut state.snapshot);
+        });
+        cx.refresh_windows();
+    })
     .detach();
 
     cx.spawn_stream(

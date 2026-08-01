@@ -1,9 +1,9 @@
+#[cfg(target_os = "windows")]
+mod gdk_bridge;
 mod msa;
 mod secret_store;
 #[cfg(target_os = "linux")]
 mod wine_bridge;
-#[cfg(target_os = "windows")]
-mod gdk_bridge;
 mod xbox;
 
 use once_cell::sync::Lazy;
@@ -266,19 +266,21 @@ pub(crate) async fn prepare_launch(
 
     let cached_device_json = {
         let cache = PREAUTH_CACHE.lock().unwrap();
-        cache.as_ref().and_then(|(cached_xuid, cached_json, timestamp)| {
-            if cached_xuid == &expected_profile.xuid && timestamp.elapsed().as_secs() < 7200 {
-                Some(cached_json.clone())
-            } else {
-                None
-            }
-        })
+        cache
+            .as_ref()
+            .and_then(|(cached_xuid, cached_json, timestamp)| {
+                if cached_xuid == &expected_profile.xuid && timestamp.elapsed().as_secs() < 7200 {
+                    Some(cached_json.clone())
+                } else {
+                    None
+                }
+            })
     };
 
     if let Some(device_json) = cached_device_json {
         let profile_for_storage = expected_profile.clone();
         let prefix_path = prefix_path.to_path_buf();
-        
+
         let prepared = crate::tasks::runtime::run_io_blocking(move || {
             let _guard = ACCOUNT_LOCK
                 .lock()
@@ -292,7 +294,7 @@ pub(crate) async fn prepare_launch(
         .await
         .map_err(|error| AuthError::Runtime(error).user_message())?
         .map_err(|error| AuthError::Storage(error).user_message())?;
-        
+
         return Ok(Some(prepared));
     }
 
@@ -352,18 +354,20 @@ pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth
 
     let cached_device_json = {
         let cache = PREAUTH_CACHE.lock().unwrap();
-        cache.as_ref().and_then(|(cached_xuid, cached_json, timestamp)| {
-            if cached_xuid == &expected_profile.xuid && timestamp.elapsed().as_secs() < 7200 {
-                Some(cached_json.clone())
-            } else {
-                None
-            }
-        })
+        cache
+            .as_ref()
+            .and_then(|(cached_xuid, cached_json, timestamp)| {
+                if cached_xuid == &expected_profile.xuid && timestamp.elapsed().as_secs() < 7200 {
+                    Some(cached_json.clone())
+                } else {
+                    None
+                }
+            })
     };
 
     if let Some(device_json) = cached_device_json {
         let profile_for_storage = expected_profile.clone();
-        
+
         let prepared = crate::tasks::runtime::run_io_blocking(move || {
             let _guard = ACCOUNT_LOCK
                 .lock()
@@ -381,7 +385,7 @@ pub(crate) async fn prepare_launch_windows() -> Result<Option<PreparedLaunchAuth
         .await
         .map_err(|error| AuthError::Runtime(error).user_message())?
         .map_err(|error| AuthError::Storage(error).user_message())?;
-        
+
         return Ok(Some(prepared));
     }
 
@@ -565,7 +569,11 @@ async fn finish_authentication(
     }
     if let Ok(device_json) = preauth.winegdk_json() {
         if let Ok(mut cache) = PREAUTH_CACHE.lock() {
-            *cache = Some((preauth.profile.xuid.clone(), device_json, std::time::Instant::now()));
+            *cache = Some((
+                preauth.profile.xuid.clone(),
+                device_json,
+                std::time::Instant::now(),
+            ));
         }
     }
 
