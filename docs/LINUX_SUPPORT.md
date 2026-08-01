@@ -108,11 +108,11 @@ $XDG_STATE_HOME/bmcbl/diagnostics/
 
 | 环节 | BedrockBoot.Linux | BedrockOnLinux | BMCBL |
 | --- | --- | --- | --- |
-| runner 入口 | `<runner>/proton run <exe>` | `umu-run`，通过 `PROTONPATH` 选择 Proton | `<runner>/proton run <exe>` |
-| compatdata | `STEAM_COMPAT_DATA_PATH` | `WINEPREFIX` 由 UMU 映射 | 每实例 `STEAM_COMPAT_DATA_PATH` |
-| Steam runtime | 设置 Steam client 路径，由 Proton wrapper 运行 | UMU + Steam Linux Runtime，GDK 联网的首选链路 | 当前使用 Proton wrapper；runner profile 可继续接入 UMU |
-| prefix 初始化 | wrapper 隐式创建 | `umu-run wineboot` | `proton run C:\windows\system32\cmd.exe /c exit 0` 显式触发 wrapper 初始化 |
-| GameInput | 未单独处理 | 离线解包 MSI/CAB 并写入 prefix | 初始化后用 `proton runinprefix msiexec` 安装，并校验 DLL、服务程序和注册表 |
+| runner 入口 | `<runner>/proton run <exe>` | `umu-run`，通过 `PROTONPATH` 选择 Proton | RoundMCDev 使用 `umu-run`；其他来源使用 `<runner>/proton run <exe>` |
+| compatdata | `STEAM_COMPAT_DATA_PATH` | `WINEPREFIX` 由 UMU 映射 | 每个游戏版本使用独立 compatdata，Wine prefix 固定为其 `pfx/` 子目录 |
+| Steam runtime | 设置 Steam client 路径，由 Proton wrapper 运行 | UMU + Steam Linux Runtime，GDK 联网的首选链路 | RoundMCDev 使用 UMU + GDK-Proton |
+| prefix 初始化 | wrapper 隐式创建 | `umu-run wineboot` | RoundMCDev 通过 GDK-Proton `wineboot -u` 初始化版本独立 Wine prefix |
+| GameInput | 未单独处理 | 离线解包 MSI/CAB 并写入 prefix | 使用 GDK-Proton Wine 安装，并校验 DLL、服务程序和注册表 |
 | 图形与 TLS | runner 自带 DXVK/VKD3D | `force_raw_va_cbv`，并为 Azure/GDK 禁用 Wine TLS 1.3 | runner 自带 DXVK/VKD3D，设置 `force_raw_va_cbv` 和进程级 GnuTLS profile |
 | 诊断 | 收集子进程输出 | UMU/Proton/Wine 日志 | 任务日志、近期 stderr/stdout、独立 Proton 日志目录和退出码 |
 
@@ -122,8 +122,30 @@ compatdata 初始化。游戏与首次初始化必须使用 `run`。GameInput �
 `GameInputRedistService.exe` 和注册表状态。
 
 Proton-GDK 安装页默认推荐 `RoundMCDev/ProtonGDK-Release`，用于需要游戏登录
-的场景。`Weather-OS/GDK-Proton` 与 `LukasPAH/GDK-Proton-Custom` 仍可选择，
-但界面只标注“无法登录”，不使用新旧版本描述。
+的场景。RoundMCDev 使用固定的 `Release10-32` 配套资源包，包含
+`GDK-Proton-xuser.tar.gz`、`Proton-Launch-umu.tar.gz`、
+`GameRunningFixKit.tar.gz` 和 `GamePatch.zip`，分别安装到 Proton、UMU、
+`gameFix` 和 `GamePatch` 目录；不能只把其中一个 tar.gz 当作完整运行器。
+启动游戏前会把 `gameFix` 的文件覆盖复制到当前游戏目录，并把
+`GamePatch/gdk/mcpatcher_core.dll` 写入当前版本游戏目录的
+`mods/roundmcdev-game-patch/`，同时生成 BLoader 清单并使用
+`type: "native"`；BLoader 原生加载器会自动加载它。UMU 只负责最终启动，不能
+替代 BLoader 的原生 Mod 加载步骤。清单要求加载失败时报告错误，但成功时不显示
+阻塞游戏启动的验证弹窗。
+
+BLoader 0.2.11 在 Wine 下关闭调试控制台时会把自身日志再次当作进程 stdout
+捕获，形成递归日志并导致游戏进程高负载。BMCBL 在用户关闭控制台时只阻断该
+版本有缺陷的进程 stdout 附加捕获，保留 BLoader 的常规文件日志且不会创建调试
+控制台；用户主动开启控制台时保持 BLoader 原行为。升级到不受影响的 BLoader
+版本后会自动移除兼容标记。
+
+Linux 登录不使用 BLoader XUser Bridge。BLoader 在这条链路中只负责原生 Mod
+加载；账号会话按 BedrockBoot/RoundMCDev WineGDK 方式准备：先完成版本独立
+Wine prefix、WineGDK 注册表前置项和 GameInput，再把 `RefreshToken` 写入该
+prefix 的 `Software\Wine\WineGDK`，并只向最终游戏进程设置
+`WINEGDK_PREAUTH_DEVICE`。凭证准备必须是启动前最后一个 prefix 写操作。
+`Weather-OS/GDK-Proton` 与 `LukasPAH/GDK-Proton-Custom` 仍可选择，但界面只
+标注“无法登录”，不使用新旧版本描述。
 
 新安装的运行器目录使用 `<source>-<release>` 命名，并在目录内写入
 `.bmcbl-proton-gdk.json` 安装记录。设置页据此分别显示来源、Release 名称、

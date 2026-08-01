@@ -6,6 +6,8 @@ use crate::tasks::task_manager::{
 };
 use crate::utils::file_ops;
 use std::env;
+use std::fs::File;
+use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -32,6 +34,43 @@ const PROTON_GDK_INSTALL_STAGE_LABELS: [(&str, &str); 3] = [
 
 const PROTON_GDK_METADATA_FILE: &str = ".bmcbl-proton-gdk.json";
 const PROTON_GDK_METADATA_SCHEMA_VERSION: u32 = 1;
+const ROUNDMCDEV_RELEASE_TAG: &str = "Release10-32";
+const ROUNDMCDEV_RELEASE_NAME: &str = "GDK-Proton10-32-Kits.01";
+
+#[derive(Clone, Copy, Debug)]
+struct RoundMcDevAsset {
+    name: &'static str,
+    url: &'static str,
+    expected_size: u64,
+    extraction_directory: &'static str,
+}
+
+const ROUNDMCDEV_ASSETS: [RoundMcDevAsset; 4] = [
+    RoundMcDevAsset {
+        name: "GameRunningFixKit.tar.gz",
+        url: "https://github.com/RoundMCDev/ProtonGDK-Release/releases/download/Release10-32/GameRunningFixKit.tar.gz",
+        expected_size: 11_643_764,
+        extraction_directory: ".",
+    },
+    RoundMcDevAsset {
+        name: "GDK-Proton-xuser.tar.gz",
+        url: "https://github.com/RoundMCDev/ProtonGDK-Release/releases/download/Release10-32/GDK-Proton-xuser.tar.gz",
+        expected_size: 862_210_941,
+        extraction_directory: "proton",
+    },
+    RoundMcDevAsset {
+        name: "Proton-Launch-umu.tar.gz",
+        url: "https://github.com/RoundMCDev/ProtonGDK-Release/releases/download/Release10-32/Proton-Launch-umu.tar.gz",
+        expected_size: 289_719_588,
+        extraction_directory: ".",
+    },
+    RoundMcDevAsset {
+        name: "GamePatch.zip",
+        url: "https://github.com/RoundMCDev/ProtonGDK-Release/releases/download/Release10-32/GamePatch.zip",
+        expected_size: 2_459_214,
+        extraction_directory: "GamePatch",
+    },
+];
 
 #[derive(Debug, serde::Deserialize)]
 struct GithubRelease {
@@ -55,6 +94,8 @@ struct ProtonGdkRunnerMetadata {
     release_tag: String,
     release_name: String,
     asset_name: String,
+    #[serde(default)]
+    asset_names: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,6 +179,7 @@ pub(crate) struct InstalledProtonGdkRunner {
     display_name: String,
     source: Option<ProtonGdkSource>,
     release_tag: Option<String>,
+    asset_names: Vec<String>,
     identity: ProtonGdkIdentity,
 }
 
@@ -152,6 +194,10 @@ impl InstalledProtonGdkRunner {
 
     pub(crate) fn release_tag(&self) -> Option<&str> {
         self.release_tag.as_deref()
+    }
+
+    pub(crate) fn bundle_asset_count(&self) -> usize {
+        self.asset_names.len()
     }
 
     pub(crate) fn source_label(&self) -> &'static str {
@@ -176,6 +222,7 @@ impl InstalledProtonGdkRunner {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RunnerKind {
     Proton,
+    Umu,
     Wine,
 }
 
@@ -183,6 +230,7 @@ impl RunnerKind {
     pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::Proton => "Proton",
+            Self::Umu => "UMU/Proton-GDK",
             Self::Wine => "Wine",
         }
     }
@@ -293,10 +341,10 @@ pub(crate) fn check_linux_runtime() -> LinuxRuntimeCheck {
 }
 
 pub(crate) fn validate_proton_game_runtime(runner: &Runner) -> Result<(), String> {
-    if runner.kind != RunnerKind::Proton {
+    if runner.kind == RunnerKind::Wine {
         return Ok(());
     }
-    let Some(proton_root) = runner.executable.parent() else {
+    let Some(proton_root) = runner_runtime_root(runner) else {
         return Ok(());
     };
     if proton_root.join("files/bin/wine").is_file() && !Path::new("/lib/ld-linux.so.2").is_file() {
@@ -310,28 +358,68 @@ pub(crate) fn validate_proton_game_runtime(runner: &Runner) -> Result<(), String
 
 pub(crate) fn resolve_proton_runner() -> Result<Runner, String> {
     let runner = resolve_runner()?;
-    if runner.kind == RunnerKind::Proton {
+    if runner.kind != RunnerKind::Wine {
         Ok(runner)
     } else {
-        Err("已检测到 Wine，但 Minecraft UWP/GDK 版本需要 Proton".to_string())
+        Err("已检测到 Wine，但 Minecraft UWP/GDK 版本需要 Proton/UMU".to_string())
     }
+}
+
+pub(crate) fn roundmcdev_bundle_root(runner: &Runner) -> Option<PathBuf> {
+    find_bundle_root_for_path(&runner.executable)
+}
+
+pub(crate) fn runner_runtime_root(runner: &Runner) -> Option<PathBuf> {
+    match runner.kind {
+        RunnerKind::Umu => {
+            let bundle_root = roundmcdev_bundle_root(runner)?;
+            find_gdk_proton_root(&bundle_root.join("proton"))
+        }
+        RunnerKind::Proton => proton_gdk_runner_root(&runner.executable),
+        RunnerKind::Wine => runner.executable.parent().map(Path::to_path_buf),
+    }
+}
+
+fn find_bundle_root_for_path(path: &Path) -> Option<PathBuf> {
+    let mut current = path.parent()?.to_path_buf();
+    for _ in 0..6 {
+        if current.join("gameFix").is_dir()
+            && current.join("GamePatch/gdk/mcpatcher_core.dll").is_file()
+        {
+            return Some(current);
+        }
+        current = current.parent()?.to_path_buf();
+    }
+    None
 }
 
 pub(crate) fn start_proton_gdk_install_latest(source: ProtonGdkSource) -> String {
     register_task_stage_labels(PROTON_GDK_INSTALL_STAGE_LABELS);
+    let release_label = match source {
+        ProtonGdkSource::RoundMcDev => ROUNDMCDEV_RELEASE_TAG,
+        ProtonGdkSource::WeatherOs | ProtonGdkSource::LukasPah => "latest",
+    };
     let task_id = create_task_with_details(
         None,
         "安装 Proton-GDK",
-        Some(format!("{} · latest", source.repository())),
+        Some(format!("{} · {release_label}", source.repository())),
         "resolving_proton_gdk",
         None,
         false,
     );
-    append_task_log(
-        &task_id,
-        format!("正在获取 {} 最新版本", source.repository()),
-    );
-    set_task_message(&task_id, Some("正在获取可安装版本".to_string()));
+    if source == ProtonGdkSource::RoundMcDev {
+        append_task_log(
+            &task_id,
+            format!("使用 RoundMCDev 固定资源包：{ROUNDMCDEV_RELEASE_TAG}（支持登录）"),
+        );
+        set_task_message(&task_id, Some("准备 RoundMCDev 登录运行环境".to_string()));
+    } else {
+        append_task_log(
+            &task_id,
+            format!("正在获取 {} 最新版本", source.repository()),
+        );
+        set_task_message(&task_id, Some("正在获取可安装版本".to_string()));
+    }
 
     let worker_task_id = task_id.clone();
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
@@ -364,6 +452,10 @@ async fn install_latest_proton_gdk(
         .user_agent("BMCBL-Proton-GDK")
         .build()
         .map_err(|error| format!("创建 GitHub 客户端失败：{error}"))?;
+    if source == ProtonGdkSource::RoundMcDev {
+        return install_roundmcdev_bundle(&client, task_id).await;
+    }
+
     let release = client
         .get(source.latest_release_api())
         .send()
@@ -397,6 +489,7 @@ async fn install_latest_proton_gdk(
         release_tag: release.tag_name.clone(),
         release_name,
         asset_name: asset.name.clone(),
+        asset_names: vec![asset.name.clone()],
     };
     if install_path.exists() {
         if let Some(proton) = find_proton_file(&install_path) {
@@ -420,7 +513,15 @@ async fn install_latest_proton_gdk(
         .await
         .map_err(|error| format!("创建 Proton-GDK 下载目录失败：{error}"))?;
     let archive_path = download_dir.join(&asset.name);
-    download_proton_gdk_asset(&client, asset, &archive_path, task_id).await?;
+    download_proton_gdk_asset(
+        &client,
+        &asset.name,
+        &asset.browser_download_url,
+        asset.size,
+        &archive_path,
+        task_id,
+    )
+    .await?;
 
     let staging_path = file_ops::runners_dir().join(format!(
         ".{version_name}.installing-{}",
@@ -489,6 +590,216 @@ async fn install_latest_proton_gdk(
     }
     finalize_proton_gdk_install(source, &install_path, &proton, &metadata).await?;
     Ok(install_path)
+}
+
+async fn install_roundmcdev_bundle(
+    client: &reqwest::Client,
+    task_id: &str,
+) -> Result<PathBuf, String> {
+    let source = ProtonGdkSource::RoundMcDev;
+    let version_name = proton_gdk_install_directory_name(source, ROUNDMCDEV_RELEASE_NAME);
+    let install_path = file_ops::runners_dir().join(&version_name);
+    let metadata = ProtonGdkRunnerMetadata {
+        schema_version: PROTON_GDK_METADATA_SCHEMA_VERSION,
+        source: source.config_value().to_string(),
+        repository: source.repository().to_string(),
+        release_tag: ROUNDMCDEV_RELEASE_TAG.to_string(),
+        release_name: ROUNDMCDEV_RELEASE_NAME.to_string(),
+        asset_name: "RoundMCDev ProtonGDK kit bundle".to_string(),
+        asset_names: ROUNDMCDEV_ASSETS
+            .iter()
+            .map(|asset| asset.name.to_string())
+            .collect(),
+    };
+
+    if install_path.exists() {
+        if roundmcdev_bundle_is_complete(&install_path) {
+            append_task_log(
+                task_id,
+                format!(
+                    "检测到完整的 RoundMCDev 运行环境：{}",
+                    install_path.display()
+                ),
+            );
+            finalize_roundmcdev_install(&install_path, &metadata, task_id).await?;
+            return Ok(install_path);
+        }
+        preserve_incomplete_proton_gdk_install(&install_path).await?;
+    }
+
+    let download_dir = file_ops::downloads_dir()
+        .join("proton-gdk")
+        .join(source.config_value())
+        .join(ROUNDMCDEV_RELEASE_TAG);
+    tokio::fs::create_dir_all(&download_dir)
+        .await
+        .map_err(|error| format!("创建 RoundMCDev 下载目录失败：{error}"))?;
+
+    let mut archive_paths = Vec::with_capacity(ROUNDMCDEV_ASSETS.len());
+    for asset in ROUNDMCDEV_ASSETS {
+        let archive_path = download_dir.join(asset.name);
+        download_proton_gdk_asset(
+            client,
+            asset.name,
+            asset.url,
+            asset.expected_size,
+            &archive_path,
+            task_id,
+        )
+        .await?;
+        archive_paths.push((asset, archive_path));
+    }
+
+    let staging_path = file_ops::runners_dir().join(format!(
+        ".{version_name}.installing-{}",
+        sanitize_instance_name(task_id)
+    ));
+    if staging_path.exists() {
+        tokio::fs::remove_dir_all(&staging_path)
+            .await
+            .map_err(|error| format!("清理 RoundMCDev 临时安装目录失败：{error}"))?;
+    }
+    tokio::fs::create_dir_all(&staging_path)
+        .await
+        .map_err(|error| format!("创建 RoundMCDev 临时安装目录失败：{error}"))?;
+
+    update_progress(task_id, 0, None, Some("extracting_proton_gdk"));
+    for (asset, archive_path) in archive_paths {
+        let extraction_directory = if asset.extraction_directory == "." {
+            staging_path.clone()
+        } else {
+            staging_path.join(asset.extraction_directory)
+        };
+        tokio::fs::create_dir_all(&extraction_directory)
+            .await
+            .map_err(|error| {
+                format!(
+                    "创建 {} 解压目录失败：{} ({error})",
+                    asset.name,
+                    extraction_directory.display()
+                )
+            })?;
+        append_task_log(
+            task_id,
+            format!("解压 {} 到 {}", asset.name, extraction_directory.display()),
+        );
+        extract_roundmcdev_asset(&archive_path, &extraction_directory, asset.name).await?;
+    }
+
+    if !roundmcdev_bundle_is_complete(&staging_path) {
+        tokio::fs::remove_dir_all(&staging_path)
+            .await
+            .map_err(|error| format!("清理不完整的 RoundMCDev 临时安装目录失败：{error}"))?;
+        return Err(
+            "RoundMCDev 资源包解压完成，但缺少 proton、umu、gameFix 或 GamePatch/gdk/mcpatcher_core.dll"
+                .to_string(),
+        );
+    }
+
+    promote_staged_roundmcdev_bundle(&staging_path, &install_path).await?;
+    finalize_roundmcdev_install(&install_path, &metadata, task_id).await?;
+    Ok(install_path)
+}
+
+async fn finalize_roundmcdev_install(
+    install_path: &Path,
+    metadata: &ProtonGdkRunnerMetadata,
+    task_id: &str,
+) -> Result<(), String> {
+    let umu_runner = find_named_file(&install_path.join("umu"), "umu-run")
+        .ok_or_else(|| "RoundMCDev 安装目录中没有找到 umu/umu-run".to_string())?;
+    let gdk_root = find_gdk_proton_root(&install_path.join("proton"))
+        .ok_or_else(|| "RoundMCDev 安装目录中没有找到 GDK-Proton 根目录".to_string())?;
+    let game_fix = install_path.join("gameFix");
+    if !game_fix.is_dir() {
+        return Err(format!(
+            "RoundMCDev 安装目录中没有找到 GameRunningFixKit：{}",
+            game_fix.display()
+        ));
+    }
+    let game_patch = install_path.join("GamePatch/gdk/mcpatcher_core.dll");
+    if !game_patch.is_file() {
+        return Err(format!(
+            "RoundMCDev 安装目录中没有找到 GamePatch：{}",
+            game_patch.display()
+        ));
+    }
+    let install_path_for_permissions = install_path.to_path_buf();
+    crate::tasks::runtime::run_io_blocking(move || {
+        make_roundmcdev_bundle_files_executable(&install_path_for_permissions)
+    })
+    .await
+    .map_err(|error| format!("设置 RoundMCDev 运行包权限任务失败：{error}"))??;
+    let executables = [
+        umu_runner.clone(),
+        gdk_root.join("proton"),
+        gdk_root.join("files/bin/wine"),
+        gdk_root.join("files/bin/wineboot"),
+        gdk_root.join("files/bin/wineserver"),
+    ];
+    for executable in executables {
+        if !executable.is_file() {
+            continue;
+        }
+        let mut permissions = tokio::fs::metadata(&executable)
+            .await
+            .map_err(|error| format!("读取 {} 权限失败：{error}", executable.display()))?
+            .permissions();
+        permissions.set_mode(permissions.mode() | 0o755);
+        tokio::fs::set_permissions(&executable, permissions)
+            .await
+            .map_err(|error| format!("设置 {} 可执行权限失败：{error}", executable.display()))?;
+    }
+    write_proton_gdk_metadata(install_path, metadata).await?;
+    append_task_log(
+        task_id,
+        format!(
+            "RoundMCDev 四组件安装完成：GameRunningFixKit={}；GDK-Proton={}；Proton-Launch-umu={}；GamePatch={}",
+            game_fix.display(),
+            gdk_root.display(),
+            umu_runner.display(),
+            game_patch.display()
+        ),
+    );
+    let selected_runner = umu_runner.to_string_lossy().into_owned();
+    crate::config::config::update_config(|config| {
+        config.launcher.proton_gdk_runner = selected_runner.clone();
+        config.launcher.proton_gdk_source = ProtonGdkSource::RoundMcDev.config_value().to_string();
+    })
+    .map_err(|error| format!("保存 Proton-GDK 默认版本失败：{error}"))?;
+    info!(
+        source = ProtonGdkSource::RoundMcDev.config_value(),
+        install_path = %install_path.display(),
+        game_fix = %game_fix.display(),
+        gdk_proton = %gdk_root.display(),
+        umu = %umu_runner.display(),
+        game_patch = %game_patch.display(),
+        "RoundMCDev UMU Proton-GDK installation finalized"
+    );
+    Ok(())
+}
+
+fn make_roundmcdev_bundle_files_executable(bundle_root: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(bundle_root)
+        .map_err(|error| format!("读取 RoundMCDev 运行包失败：{error}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("读取 RoundMCDev 运行包条目失败：{error}"))?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("读取 {} 权限失败：{error}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            make_roundmcdev_bundle_files_executable(&path)?;
+            continue;
+        }
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() | 0o755);
+        std::fs::set_permissions(&path, permissions)
+            .map_err(|error| format!("设置 {} 可执行权限失败：{error}", path.display()))?;
+    }
+    Ok(())
 }
 
 async fn promote_staged_proton_gdk(
@@ -579,20 +890,44 @@ async fn write_proton_gdk_metadata(
 
 async fn download_proton_gdk_asset(
     client: &reqwest::Client,
-    asset: &GithubReleaseAsset,
+    asset_name: &str,
+    asset_url: &str,
+    expected_size: u64,
     archive_path: &Path,
     task_id: &str,
 ) -> Result<(), String> {
-    update_progress(task_id, 0, Some(asset.size), Some("downloading_proton_gdk"));
-    set_task_message(task_id, Some(format!("正在下载 {}", asset.name)));
-    append_task_log(task_id, format!("下载：{}", asset.browser_download_url));
+    if expected_size > 0
+        && tokio::fs::metadata(archive_path)
+            .await
+            .is_ok_and(|metadata| metadata.len() == expected_size)
+    {
+        update_progress(
+            task_id,
+            expected_size,
+            Some(expected_size),
+            Some("downloading_proton_gdk"),
+        );
+        set_task_message(task_id, Some(format!("使用缓存 {}", asset_name)));
+        append_task_log(task_id, format!("使用缓存：{}", archive_path.display()));
+        append_task_log(task_id, format!("资源 {asset_name} 已准备完成"));
+        return Ok(());
+    }
+
+    update_progress(
+        task_id,
+        0,
+        (expected_size > 0).then_some(expected_size),
+        Some("downloading_proton_gdk"),
+    );
+    set_task_message(task_id, Some(format!("正在下载 {asset_name}")));
+    append_task_log(task_id, format!("下载：{asset_url}"));
 
     let manager = DownloaderManager::with_client(client.clone());
     let options = DownloadOptions::default();
     let result = manager
         .download_with_options(
             task_id,
-            asset.browser_download_url.clone(),
+            asset_url.to_string(),
             archive_path.to_path_buf(),
             &options,
         )
@@ -600,10 +935,175 @@ async fn download_proton_gdk_asset(
         .map_err(|error| format!("下载 Proton-GDK 失败：{error:?}"))?;
 
     match result {
-        CoreResult::Success(_path) => Ok(()),
+        CoreResult::Success(path) => {
+            if expected_size > 0 {
+                let actual_size = tokio::fs::metadata(&path)
+                    .await
+                    .map_err(|error| format!("读取 {asset_name} 下载文件大小失败：{error}"))?
+                    .len();
+                if actual_size != expected_size {
+                    return Err(format!(
+                        "{asset_name} 下载大小不匹配：期望 {expected_size} 字节，实际 {actual_size} 字节"
+                    ));
+                }
+            }
+            append_task_log(
+                task_id,
+                format!("资源 {asset_name} 下载完成：{}", path.display()),
+            );
+            Ok(())
+        }
         CoreResult::Cancelled => Err("下载已取消".to_string()),
         CoreResult::Error(error) => Err(format!("下载 Proton-GDK 失败：{error:?}")),
     }
+}
+
+async fn extract_roundmcdev_asset(
+    archive_path: &Path,
+    destination: &Path,
+    asset_name: &str,
+) -> Result<(), String> {
+    if asset_name.ends_with(".zip") {
+        let archive_path = archive_path.to_path_buf();
+        let destination = destination.to_path_buf();
+        crate::tasks::runtime::run_archive_blocking(move || {
+            extract_roundmcdev_zip_blocking(&archive_path, &destination)
+        })
+        .await
+        .map_err(|error| format!("解压 {asset_name} 的归档任务失败：{error}"))??;
+        return Ok(());
+    }
+
+    let output = tokio::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(archive_path)
+        .arg("-C")
+        .arg(destination)
+        .output()
+        .await
+        .map_err(|error| format!("无法启动 tar 解压 {asset_name}：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "解压 {asset_name} 失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn extract_roundmcdev_zip_blocking(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = File::open(archive_path)
+        .map_err(|error| format!("打开 {} 失败：{error}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("读取 {} 失败：{error}", archive_path.display()))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("读取 zip 条目 #{index} 失败：{error}"))?;
+        let entry_name = entry
+            .name()
+            .map_err(|error| format!("读取 zip 条目名称 #{index} 失败：{error}"))?
+            .into_owned();
+        let relative_path = Path::new(&entry_name);
+        if relative_path.is_absolute()
+            || relative_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err(format!("zip 条目包含不安全路径：{entry_name}"));
+        }
+
+        let output_path = destination.join(relative_path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output_path)
+                .map_err(|error| format!("创建目录 {} 失败：{error}", output_path.display()))?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("创建目录 {} 失败：{error}", parent.display()))?;
+        }
+        let mut output = File::create(&output_path)
+            .map_err(|error| format!("创建文件 {} 失败：{error}", output_path.display()))?;
+        io::copy(&mut entry, &mut output)
+            .map_err(|error| format!("写入文件 {} 失败：{error}", output_path.display()))?;
+        output
+            .flush()
+            .map_err(|error| format!("刷新文件 {} 失败：{error}", output_path.display()))?;
+
+        if let Some(mode) = entry.unix_mode() {
+            std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(mode & 0o7777))
+                .map_err(|error| format!("设置文件 {} 权限失败：{error}", output_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn roundmcdev_bundle_is_complete(bundle_root: &Path) -> bool {
+    find_gdk_proton_root(&bundle_root.join("proton")).is_some_and(|proton_root| {
+        proton_root.join("proton").is_file()
+            && find_named_file(&bundle_root.join("umu"), "umu-run").is_some()
+    }) && bundle_root.join("gameFix").is_dir()
+        && bundle_root
+            .join("GamePatch/gdk/mcpatcher_core.dll")
+            .is_file()
+}
+
+fn find_named_file(search_root: &Path, file_name: &str) -> Option<PathBuf> {
+    if search_root
+        .file_name()
+        .is_some_and(|name| name == file_name)
+        && search_root.is_file()
+    {
+        return Some(search_root.to_path_buf());
+    }
+
+    let entries = std::fs::read_dir(search_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    let mut matching_files = entries
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == file_name) && path.is_file())
+        .cloned()
+        .collect::<Vec<_>>();
+    matching_files.sort();
+    if let Some(file) = matching_files.into_iter().next() {
+        return Some(file);
+    }
+    let mut child_directories = entries
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    child_directories.sort();
+    child_directories
+        .into_iter()
+        .find_map(|directory| find_named_file(&directory, file_name))
+}
+
+async fn promote_staged_roundmcdev_bundle(
+    staging_path: &Path,
+    install_path: &Path,
+) -> Result<PathBuf, String> {
+    if install_path.exists() {
+        return Err(format!(
+            "RoundMCDev 安装目录已存在：{}",
+            install_path.display()
+        ));
+    }
+    tokio::fs::rename(staging_path, install_path)
+        .await
+        .map_err(|error| format!("完成 RoundMCDev 原子安装失败：{error}"))?;
+    find_named_file(&install_path.join("umu"), "umu-run")
+        .ok_or_else(|| "RoundMCDev 安装完成后没有找到 umu/umu-run".to_string())
 }
 
 fn sanitize_instance_name(name: &str) -> String {
@@ -672,7 +1172,9 @@ pub(crate) fn installed_proton_gdk_runners() -> Vec<InstalledProtonGdkRunner> {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let root = entry.path();
-            find_proton_file(&root).filter(|candidate| is_executable_file(candidate))
+            find_named_file(&root.join("umu"), "umu-run")
+                .or_else(|| find_proton_file(&root))
+                .filter(|candidate| is_executable_file(candidate))
         })
         .map(installed_proton_gdk_runner)
         .collect::<Vec<_>>();
@@ -680,8 +1182,109 @@ pub(crate) fn installed_proton_gdk_runners() -> Vec<InstalledProtonGdkRunner> {
     runners
 }
 
+pub(crate) fn remove_managed_proton_gdk_runner(
+    executable: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let runners_root = file_ops::runners_dir();
+    remove_managed_proton_gdk_runner_from_root(executable, &runners_root)
+}
+
+fn remove_managed_proton_gdk_runner_from_root(
+    executable: &Path,
+    runners_root: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let Some(managed_root) = runner_install_root_for_path(executable, &runners_root) else {
+        return Ok(None);
+    };
+    if !managed_root.is_dir() {
+        return Err(format!(
+            "Proton-GDK 安装目录不存在或不是目录：{}",
+            managed_root.display()
+        ));
+    }
+
+    std::fs::remove_dir_all(&managed_root)
+        .map_err(|error| format!("删除 Proton-GDK 安装目录失败：{error}"))?;
+
+    let root_name = managed_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "无法确定 Proton-GDK 安装目录名称".to_string())?;
+    let incomplete_prefix = format!("{root_name}.incomplete-");
+    let staging_prefix = format!(".{root_name}.installing-");
+    let entries = std::fs::read_dir(&runners_root)
+        .map_err(|error| format!("读取 Proton-GDK 安装目录失败：{error}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("读取 Proton-GDK 残留目录失败：{error}"))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(&incomplete_prefix)
+            && !name.to_string_lossy().starts_with(&staging_prefix)
+        {
+            continue;
+        }
+        let file_type = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("读取 Proton-GDK 残留目录类型失败：{error}"))?
+            .file_type();
+        if file_type.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(|error| {
+                format!(
+                    "删除 Proton-GDK 残留安装目录 {} 失败：{error}",
+                    path.display()
+                )
+            })?;
+        } else {
+            std::fs::remove_file(&path).map_err(|error| {
+                format!("删除 Proton-GDK 残留文件 {} 失败：{error}", path.display())
+            })?;
+        }
+    }
+
+    if managed_root.exists() {
+        return Err(format!(
+            "Proton-GDK 删除后目录仍然存在：{}",
+            managed_root.display()
+        ));
+    }
+    Ok(Some(managed_root))
+}
+
+fn runner_install_root_for_path(executable: &Path, runners_root: &Path) -> Option<PathBuf> {
+    let relative = executable.strip_prefix(runners_root).ok()?;
+    let root_name = relative.components().next().and_then(|component| {
+        if let std::path::Component::Normal(name) = component {
+            Some(name)
+        } else {
+            None
+        }
+    })?;
+    Some(runners_root.join(root_name))
+}
+
 pub(crate) fn installed_proton_gdk_runner(executable: PathBuf) -> InstalledProtonGdkRunner {
-    let runner_root = proton_gdk_runner_root(&executable);
+    let metadata_root = proton_gdk_runner_root(&executable)
+        .into_iter()
+        .chain(find_bundle_root_for_path(&executable))
+        .find_map(|root| read_proton_gdk_metadata(&root).map(|metadata| (root, metadata)));
+    if let Some((_, metadata)) = metadata_root
+        .filter(|(_, metadata)| metadata.schema_version == PROTON_GDK_METADATA_SCHEMA_VERSION)
+        .filter(|(_, metadata)| ProtonGdkSource::from_stored_value(&metadata.source).is_some())
+    {
+        let source = ProtonGdkSource::from_stored_value(&metadata.source);
+        if let Some(source) = source {
+            return InstalledProtonGdkRunner {
+                executable,
+                display_name: metadata.release_name,
+                source: Some(source),
+                release_tag: Some(metadata.release_tag),
+                asset_names: metadata.asset_names,
+                identity: ProtonGdkIdentity::Metadata,
+            };
+        }
+    }
+
+    let runner_root =
+        proton_gdk_runner_root(&executable).or_else(|| find_bundle_root_for_path(&executable));
     if let Some(metadata) = runner_root
         .as_deref()
         .and_then(read_proton_gdk_metadata)
@@ -693,6 +1296,7 @@ pub(crate) fn installed_proton_gdk_runner(executable: PathBuf) -> InstalledProto
             display_name: metadata.release_name,
             source: Some(source),
             release_tag: Some(metadata.release_tag),
+            asset_names: metadata.asset_names,
             identity: ProtonGdkIdentity::Metadata,
         };
     }
@@ -709,6 +1313,7 @@ pub(crate) fn installed_proton_gdk_runner(executable: PathBuf) -> InstalledProto
         display_name: directory_name,
         source,
         release_tag: None,
+        asset_names: Vec::new(),
         identity: if source.is_some() {
             ProtonGdkIdentity::DirectoryName
         } else {
@@ -726,7 +1331,30 @@ fn proton_gdk_runner_root(executable: &Path) -> Option<PathBuf> {
     }
 }
 
+fn is_gdk_proton_root(path: &Path) -> bool {
+    path.join("files/bin/wine").is_file() && path.join("compatibilitytool.vdf").is_file()
+}
+
+fn find_gdk_proton_root(search_root: &Path) -> Option<PathBuf> {
+    if is_gdk_proton_root(search_root) {
+        return Some(search_root.to_path_buf());
+    }
+    let mut child_directories = std::fs::read_dir(search_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    child_directories.sort();
+    child_directories
+        .into_iter()
+        .find_map(|directory| find_gdk_proton_root(&directory))
+}
+
 fn find_proton_file(search_root: &Path) -> Option<PathBuf> {
+    if !search_root.is_dir() {
+        return None;
+    }
     let direct_candidates = [
         search_root.join("proton"),
         search_root.join("bin").join("proton"),
@@ -745,14 +1373,9 @@ fn find_proton_file(search_root: &Path) -> Option<PathBuf> {
         .filter(|path| path.is_dir())
         .collect::<Vec<_>>();
     child_directories.sort();
-    child_directories.into_iter().find_map(|directory| {
-        [
-            directory.join("proton"),
-            directory.join("bin").join("proton"),
-        ]
+    child_directories
         .into_iter()
-        .find(|candidate| candidate.is_file())
-    })
+        .find_map(|directory| find_proton_file(&directory))
 }
 
 fn read_proton_gdk_metadata(runner_root: &Path) -> Option<ProtonGdkRunnerMetadata> {
@@ -1016,12 +1639,14 @@ fn runner_from_explicit_path(executable: PathBuf) -> Result<Runner, String> {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let kind = if file_name.contains("proton") {
+    let kind = if file_name.contains("umu") {
+        RunnerKind::Umu
+    } else if file_name.contains("proton") {
         RunnerKind::Proton
     } else if file_name.contains("wine") {
         RunnerKind::Wine
     } else {
-        return Err("BMCBL_PROTON_RUNNER 必须指向 proton 或 wine 可执行文件".to_string());
+        return Err("BMCBL_PROTON_RUNNER 必须指向 proton、umu-run 或 wine 可执行文件".to_string());
     };
     Ok(Runner {
         executable,
@@ -1072,9 +1697,15 @@ fn find_steam_proton(steam_root: &Path) -> Option<PathBuf> {
 fn find_managed_runner() -> Option<Runner> {
     let root = file_ops::runners_dir();
     let entries = std::fs::read_dir(&root).ok()?;
+    let mut umu_candidates = Vec::new();
     let mut proton_candidates = Vec::new();
     let mut wine_candidates = Vec::new();
     for runner_root in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        if let Some(umu) = find_named_file(&runner_root.join("umu"), "umu-run")
+            .filter(|candidate| is_executable_file(candidate))
+        {
+            umu_candidates.push(umu);
+        }
         let proton = if runner_root.join("proton").is_file() {
             runner_root.join("proton")
         } else {
@@ -1088,22 +1719,32 @@ fn find_managed_runner() -> Option<Runner> {
             wine_candidates.push(wine);
         }
     }
+    umu_candidates.sort();
     proton_candidates.sort();
     wine_candidates.sort();
 
-    proton_candidates
+    umu_candidates
         .pop()
         .map(|executable| Runner {
             executable,
-            kind: RunnerKind::Proton,
+            kind: RunnerKind::Umu,
             steam_root: steam_roots().into_iter().next(),
         })
         .or_else(|| {
-            wine_candidates.pop().map(|executable| Runner {
-                executable,
-                kind: RunnerKind::Wine,
-                steam_root: None,
-            })
+            proton_candidates
+                .pop()
+                .map(|executable| Runner {
+                    executable,
+                    kind: RunnerKind::Proton,
+                    steam_root: steam_roots().into_iter().next(),
+                })
+                .or_else(|| {
+                    wine_candidates.pop().map(|executable| Runner {
+                        executable,
+                        kind: RunnerKind::Wine,
+                        steam_root: None,
+                    })
+                })
         })
 }
 
@@ -1128,9 +1769,12 @@ fn is_executable_file(path: &Path) -> bool {
 mod tests {
     use super::{
         PROTON_GDK_METADATA_FILE, PROTON_GDK_METADATA_SCHEMA_VERSION, ProtonGdkIdentity,
-        ProtonGdkRunnerMetadata, ProtonGdkSource, find_proton_file,
+        ProtonGdkRunnerMetadata, ProtonGdkSource, ROUNDMCDEV_ASSETS, ROUNDMCDEV_RELEASE_NAME,
+        ROUNDMCDEV_RELEASE_TAG, find_gdk_proton_root, find_proton_file,
         infer_proton_gdk_source_from_directory, installed_proton_gdk_runner, parse_os_release,
         promote_staged_proton_gdk, proton_gdk_install_directory_name, proton_gdk_runner_root,
+        remove_managed_proton_gdk_runner_from_root, roundmcdev_bundle_is_complete,
+        runner_install_root_for_path,
     };
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1171,14 +1815,26 @@ mod tests {
     }
 
     #[test]
-    fn proton_gdk_round_mc_dev_source_uses_login_capable_release_repository() {
+    fn proton_gdk_round_mc_dev_source_uses_fixed_login_capable_bundle() {
         let source = ProtonGdkSource::RoundMcDev;
 
         assert_eq!(source.config_value(), "roundmcdev");
         assert_eq!(source.repository(), "RoundMCDev/ProtonGDK-Release");
+        assert_eq!(ROUNDMCDEV_RELEASE_TAG, "Release10-32");
+        assert_eq!(ROUNDMCDEV_RELEASE_NAME, "GDK-Proton10-32-Kits.01");
         assert_eq!(
-            source.latest_release_api(),
-            "https://api.github.com/repos/RoundMCDev/ProtonGDK-Release/releases/latest"
+            ROUNDMCDEV_ASSETS.map(|asset| asset.name),
+            [
+                "GameRunningFixKit.tar.gz",
+                "GDK-Proton-xuser.tar.gz",
+                "Proton-Launch-umu.tar.gz",
+                "GamePatch.zip",
+            ]
+        );
+        assert!(
+            ROUNDMCDEV_ASSETS
+                .iter()
+                .all(|asset| asset.url.contains("/releases/download/Release10-32/"))
         );
     }
 
@@ -1228,6 +1884,88 @@ mod tests {
         std::fs::remove_dir_all(&install_root).expect("test install directory should be removed");
     }
 
+    #[test]
+    fn managed_runner_root_is_resolved_from_umu_entry() {
+        let runners_root = PathBuf::from("/tmp/bmcbl/runners");
+        let executable = runners_root.join("roundmcdev-kit/umu/umu-run");
+
+        assert_eq!(
+            runner_install_root_for_path(&executable, &runners_root),
+            Some(runners_root.join("roundmcdev-kit"))
+        );
+    }
+
+    #[test]
+    fn managed_runner_removal_deletes_bundle_and_install_residue() {
+        let runners_root = unique_test_directory("proton-gdk-removal");
+        let managed_root = runners_root.join("roundmcdev-GDK-Proton10-32-Kits.01");
+        std::fs::create_dir_all(managed_root.join("umu"))
+            .expect("managed runner directory should be created");
+        std::fs::write(managed_root.join("umu/umu-run"), b"runner")
+            .expect("runner entry should be written");
+        std::fs::create_dir_all(
+            runners_root.join("roundmcdev-GDK-Proton10-32-Kits.01.incomplete-123"),
+        )
+        .expect("incomplete directory should be created");
+        std::fs::create_dir_all(
+            runners_root.join(".roundmcdev-GDK-Proton10-32-Kits.01.installing-123"),
+        )
+        .expect("staging directory should be created");
+
+        let removed = remove_managed_proton_gdk_runner_from_root(
+            &managed_root.join("umu/umu-run"),
+            &runners_root,
+        )
+        .expect("managed runner removal should succeed");
+
+        assert_eq!(removed, Some(managed_root.clone()));
+        assert!(!managed_root.exists());
+        assert!(
+            !runners_root
+                .join("roundmcdev-GDK-Proton10-32-Kits.01.incomplete-123")
+                .exists()
+        );
+        assert!(
+            !runners_root
+                .join(".roundmcdev-GDK-Proton10-32-Kits.01.installing-123")
+                .exists()
+        );
+        std::fs::remove_dir_all(&runners_root).expect("test runner directory should be removed");
+    }
+
+    #[test]
+    fn roundmcdev_bundle_recognizes_bedrockboot_layout() {
+        let bundle_root = unique_test_directory("roundmcdev-bundle");
+        let proton_root = bundle_root.join("proton/GDK-Proton-xuser");
+        std::fs::create_dir_all(proton_root.join("files/bin"))
+            .expect("proton directory should be created");
+        std::fs::write(proton_root.join("files/bin/wine"), b"#!/bin/sh\n")
+            .expect("GDK wine executable should be written");
+        std::fs::write(proton_root.join("proton"), b"#!/bin/sh\n")
+            .expect("GDK proton wrapper should be written");
+        std::fs::write(proton_root.join("compatibilitytool.vdf"), b"Manifest\n")
+            .expect("GDK compatibility manifest should be written");
+        std::fs::create_dir_all(bundle_root.join("umu")).expect("umu directory should be created");
+        std::fs::write(bundle_root.join("umu/umu-run"), b"#!/bin/sh\n")
+            .expect("umu executable should be written");
+        std::fs::create_dir_all(bundle_root.join("gameFix"))
+            .expect("gameFix directory should be created");
+        std::fs::create_dir_all(bundle_root.join("GamePatch/gdk"))
+            .expect("GamePatch directory should be created");
+        std::fs::write(
+            bundle_root.join("GamePatch/gdk/mcpatcher_core.dll"),
+            b"patch",
+        )
+        .expect("GamePatch file should be written");
+
+        assert_eq!(
+            find_gdk_proton_root(&bundle_root.join("proton")),
+            Some(proton_root)
+        );
+        assert!(roundmcdev_bundle_is_complete(&bundle_root));
+        std::fs::remove_dir_all(&bundle_root).expect("bundle test directory should be removed");
+    }
+
     #[tokio::test]
     async fn staged_nested_release_is_promoted_to_single_install_directory() {
         let test_root = unique_test_directory("proton-gdk-promote");
@@ -1260,6 +1998,7 @@ mod tests {
             release_tag: "Release10-32".to_string(),
             release_name: "GDK-Proton10-32-Fix.01".to_string(),
             asset_name: "GDK-Proton10-32-Fix.01.tar.gz".to_string(),
+            asset_names: vec!["GDK-Proton10-32-Fix.01.tar.gz".to_string()],
         };
         let contents =
             serde_json::to_vec(&metadata).expect("test metadata should serialize successfully");
@@ -1286,6 +2025,7 @@ mod tests {
             release_tag: "test".to_string(),
             release_name: "Unknown Proton".to_string(),
             asset_name: "unknown.tar.gz".to_string(),
+            asset_names: vec!["unknown.tar.gz".to_string()],
         };
         let contents =
             serde_json::to_vec(&metadata).expect("test metadata should serialize successfully");

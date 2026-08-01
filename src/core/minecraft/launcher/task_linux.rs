@@ -1,5 +1,7 @@
 use super::bloader;
-use crate::core::linux_runtime::{RunnerKind, resolve_runner, validate_proton_game_runtime};
+use crate::core::linux_runtime::{
+    RunnerKind, resolve_runner, runner_runtime_root, validate_proton_game_runtime,
+};
 use crate::tasks::task_manager::{
     append_task_log, create_task_with_details, finish_task, register_task_abort_handle,
     register_task_stage_labels, set_total, update_progress,
@@ -7,6 +9,7 @@ use crate::tasks::task_manager::{
 use std::collections::VecDeque;
 use std::env;
 use std::ffi::OsString;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
@@ -24,6 +27,8 @@ const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_secs(8);
 const GAME_INPUT_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const GAME_INPUT_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
 const PROTON_PREFIX_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(120);
+const ROUNDMCDEV_PREFIX_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const ROUNDMCDEV_PREFIX_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RECENT_RUNNER_OUTPUT_LIMIT: usize = 32;
 const GDK_GNUTLS_PRIORITY: &[u8] = b"[priorities]\nSYSTEM = NORMAL:-VERS-TLS1.3:%COMPAT\n";
 const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 4] = [
@@ -62,7 +67,7 @@ impl LaunchRequest {
 }
 
 fn set_runner_ld_library_path(command: &mut Command, runner: &crate::core::linux_runtime::Runner) {
-    let Some(proton_root) = runner.executable.parent() else {
+    let Some(proton_root) = runner_runtime_root(runner) else {
         return;
     };
     let mut lib_paths = [
@@ -81,9 +86,25 @@ fn set_runner_ld_library_path(command: &mut Command, runner: &crate::core::linux
     }
 }
 
+fn proton_wine_prefix_path(compatibility_path: &Path) -> PathBuf {
+    compatibility_path.join("pfx")
+}
+
+fn runner_supports_winegdk_login(kind: RunnerKind) -> bool {
+    kind == RunnerKind::Umu
+}
+
 fn proton_steam_client_path(
     runner: &crate::core::linux_runtime::Runner,
 ) -> Result<PathBuf, String> {
+    if runner.kind == RunnerKind::Umu {
+        return env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".steam/steam"))
+            .ok_or_else(|| {
+                "无法确定 HOME，不能设置 RoundMCDev 的 STEAM_COMPAT_CLIENT_INSTALL_PATH".to_string()
+            });
+    }
     if let Some(steam_root) = runner.steam_root.as_ref() {
         return Ok(steam_root.clone());
     }
@@ -102,13 +123,21 @@ async fn configure_proton_command(
     prefix_path: &Path,
     task_id: &str,
 ) -> Result<(), String> {
-    if runner.executable.parent().is_none() {
-        return Err("无法确定 Proton-GDK 安装目录".to_string());
-    }
+    let proton_root =
+        runner_runtime_root(runner).ok_or_else(|| "无法确定 Proton-GDK 安装目录".to_string())?;
+    let bundle_root = (runner.kind == RunnerKind::Umu)
+        .then(|| crate::core::linux_runtime::roundmcdev_bundle_root(runner))
+        .flatten();
     let steam_client_path = proton_steam_client_path(runner)?;
     let proton_log_directory = crate::utils::file_ops::logs_dir().join("proton");
-    let gnutls_priority_file =
-        crate::utils::file_ops::config_dir().join("compat/gnutls-no-tls13.cfg");
+    let gnutls_priority_file = if runner.kind == RunnerKind::Umu {
+        bundle_root
+            .as_ref()
+            .ok_or_else(|| "无法确定 RoundMCDev UMU 资源包目录".to_string())?
+            .join("etc/gnutls-no-tls13.cfg")
+    } else {
+        crate::utils::file_ops::config_dir().join("compat/gnutls-no-tls13.cfg")
+    };
     tokio::fs::create_dir_all(&steam_client_path)
         .await
         .map_err(|error| {
@@ -140,15 +169,12 @@ async fn configure_proton_command(
     }
 
     command
-        .env("STEAM_COMPAT_DATA_PATH", prefix_path)
         .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_client_path)
         .env("UMU_ID", "bmcbl-minecraft-bedrock")
         .env("STORE", "none")
-        .env("PROTON_LOG", "1")
-        .env("PROTON_LOG_DIR", &proton_log_directory)
         .env("GNUTLS_SYSTEM_PRIORITY_FILE", &gnutls_priority_file)
         .env("GNUTLS_SYSTEM_PRIORITY_FAIL_ON_INVALID", "0")
-        .env("WINEDLLOVERRIDES", "dxgi,d3d11,d3d10core,d3d9=b")
+        .env("WINEDLLOVERRIDES", "dxgi,d3d11,d3d10core,d3d9,advapi32=b")
         .env("VKD3D_CONFIG", "force_raw_va_cbv")
         .env(
             "MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_SHOWUI",
@@ -162,6 +188,24 @@ async fn configure_proton_command(
             "MICROSOFT_WINDOWSAPPRUNTIME_DEPLOYMENT_INITIALIZE_ONERRORSHOWUI",
             "0",
         );
+    if runner.kind == RunnerKind::Umu {
+        let bundle_root =
+            bundle_root.ok_or_else(|| "无法确定 RoundMCDev UMU 资源包目录".to_string())?;
+        let wine_prefix = proton_wine_prefix_path(prefix_path);
+        command
+            .env("PROTONPATH", &proton_root)
+            .env("PROTON_VERB", "run")
+            .env("WINEPREFIX", wine_prefix)
+            .env("UMU_FOLDERS_PATH", bundle_root)
+            .env("UMU_RUNTIME_UPDATE", "0")
+            .env("GAMEID", "umu-default")
+            .env("WINEDEBUG", "-all");
+    } else {
+        command
+            .env("STEAM_COMPAT_DATA_PATH", prefix_path)
+            .env("PROTON_LOG", "1")
+            .env("PROTON_LOG_DIR", &proton_log_directory);
+    }
     set_runner_ld_library_path(command, runner);
     append_task_log(
         task_id,
@@ -231,6 +275,9 @@ async fn initialize_proton_prefix(
     prefix_path: &Path,
     task_id: &str,
 ) -> Result<(), String> {
+    if runner.kind == RunnerKind::Umu {
+        return initialize_roundmcdev_prefix(runner, prefix_path, task_id).await;
+    }
     backup_incompatible_proton_prefix(prefix_path, task_id).await?;
     let dosdevices = prefix_path.join("pfx/dosdevices");
     tokio::fs::create_dir_all(&dosdevices)
@@ -238,8 +285,10 @@ async fn initialize_proton_prefix(
         .map_err(|error| format!("创建 Proton dosdevices 目录失败：{error}"))?;
     let mut command = Command::new(&runner.executable);
     configure_proton_command(&mut command, runner, prefix_path, task_id).await?;
+    if runner.kind == RunnerKind::Proton {
+        command.arg("run");
+    }
     command
-        .arg("run")
         .arg(r"C:\windows\system32\cmd.exe")
         .arg("/c")
         .arg("exit")
@@ -249,7 +298,14 @@ async fn initialize_proton_prefix(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     debug!(task_id, command = ?command, "prepared Proton prefix initialization command");
-    append_task_log(task_id, "正在通过 Proton wrapper 初始化 Prefix");
+    append_task_log(
+        task_id,
+        if runner.kind == RunnerKind::Umu {
+            "正在通过 UMU/Proton-GDK 初始化 Prefix"
+        } else {
+            "正在通过 Proton wrapper 初始化 Prefix"
+        },
+    );
 
     let output = tokio::time::timeout(PROTON_PREFIX_INITIALIZATION_TIMEOUT, command.output())
         .await
@@ -277,6 +333,121 @@ async fn initialize_proton_prefix(
     Ok(())
 }
 
+async fn initialize_roundmcdev_prefix(
+    runner: &crate::core::linux_runtime::Runner,
+    compatibility_path: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    let wine_prefix = proton_wine_prefix_path(compatibility_path);
+    if roundmcdev_prefix_is_ready(&wine_prefix) {
+        append_task_log(
+            task_id,
+            format!("RoundMCDev Wine Prefix 已就绪：{}", wine_prefix.display()),
+        );
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(&wine_prefix)
+        .await
+        .map_err(|error| format!("创建 RoundMCDev Wine Prefix 失败：{error}"))?;
+    let proton_root = crate::core::linux_runtime::runner_runtime_root(runner)
+        .ok_or_else(|| "无法确定 RoundMCDev GDK-Proton 目录".to_string())?;
+    let proton = proton_root.join("proton");
+    if !proton.is_file() {
+        return Err(format!(
+            "RoundMCDev GDK-Proton 缺少 proton wrapper：{}",
+            proton.display()
+        ));
+    }
+
+    let steam_client_path = proton_steam_client_path(runner)?;
+    tokio::fs::create_dir_all(&steam_client_path)
+        .await
+        .map_err(|error| format!("创建 Proton Steam 兼容目录失败：{error}"))?;
+    let mut command = Command::new(&proton);
+    command
+        .arg("run")
+        .arg("wineboot")
+        .arg("-u")
+        .env("WINEPREFIX", &wine_prefix)
+        .env("STEAM_COMPAT_DATA_PATH", compatibility_path)
+        .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_client_path)
+        .env("WINEDEBUG", "-all")
+        .env("WINEDLLOVERRIDES", "dxgi,d3d11,d3d10core,d3d9,advapi32=b")
+        .env("SDL_VIDEODRIVER", "dummy");
+    set_runner_ld_library_path(&mut command, runner);
+    command
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    append_task_log(task_id, "正在通过 GDK-Proton wrapper 执行 wineboot -u");
+    let output = tokio::time::timeout(PROTON_PREFIX_INITIALIZATION_TIMEOUT, command.output())
+        .await
+        .map_err(|_| "RoundMCDev Wine Prefix 初始化超时".to_string())?
+        .map_err(|error| format!("无法启动 RoundMCDev wineboot：{error}"))?;
+    append_command_output(task_id, &output.stdout, false);
+    append_command_output(task_id, &output.stderr, true);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            String::new()
+        } else {
+            format!("：{stderr}")
+        };
+        return Err(format!(
+            "RoundMCDev Wine Prefix 初始化失败，退出代码 {}{detail}",
+            output.status.code().unwrap_or(-1),
+        ));
+    }
+    stop_lingering_proton_processes(runner, compatibility_path, task_id).await?;
+    if !wait_for_roundmcdev_prefix_ready(&wine_prefix).await {
+        return Err(format!(
+            "GDK-Proton wineboot 已退出，但等待 {} 秒后 Prefix 仍不完整：{}",
+            ROUNDMCDEV_PREFIX_READY_TIMEOUT.as_secs(),
+            wine_prefix.display()
+        ));
+    }
+    append_task_log(task_id, "RoundMCDev Wine Prefix 初始化完成");
+    Ok(())
+}
+
+fn roundmcdev_prefix_is_ready(wine_prefix: &Path) -> bool {
+    wine_registry_has_valid_header(&wine_prefix.join("system.reg"))
+        && wine_registry_has_valid_header(&wine_prefix.join("user.reg"))
+        && wine_prefix.join("drive_c/windows/system32").is_dir()
+}
+
+fn wine_registry_has_valid_header(path: &Path) -> bool {
+    let Ok(mut registry) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0_u8; 64];
+    let Ok(read) = registry.read(&mut header) else {
+        return false;
+    };
+    let header = &header[..read];
+    let first_non_null = header
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(header.len());
+    header
+        .get(first_non_null..)
+        .is_some_and(|header| header.starts_with(b"WINE REGISTRY Version "))
+}
+
+async fn wait_for_roundmcdev_prefix_ready(wine_prefix: &Path) -> bool {
+    let deadline = std::time::Instant::now() + ROUNDMCDEV_PREFIX_READY_TIMEOUT;
+    loop {
+        if roundmcdev_prefix_is_ready(wine_prefix) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(ROUNDMCDEV_PREFIX_READY_POLL_INTERVAL).await;
+    }
+}
+
 fn request_uses_preview_data(request: &LaunchRequest) -> bool {
     [
         request.folder_name.as_ref(),
@@ -291,7 +462,7 @@ fn request_uses_preview_data(request: &LaunchRequest) -> bool {
 }
 
 async fn ensure_gdk_data_directories(
-    prefix_path: &Path,
+    wine_prefix: &Path,
     request: &LaunchRequest,
     task_id: &str,
 ) -> Result<(), String> {
@@ -300,8 +471,8 @@ async fn ensure_gdk_data_directories(
     } else {
         "Minecraft Bedrock"
     };
-    let com_mojang = prefix_path
-        .join("pfx/drive_c/users/steamuser/AppData/Roaming")
+    let com_mojang = wine_prefix
+        .join("drive_c/users/steamuser/AppData/Roaming")
         .join(edition_folder)
         .join("Users/Shared/games/com.mojang");
     for directory in [
@@ -469,9 +640,16 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     append_task_log(task_id, format!("兼容环境目录：{}", prefix_path.display()));
 
     match runner.kind {
-        RunnerKind::Proton => {
+        RunnerKind::Proton | RunnerKind::Umu => {
             initialize_proton_prefix(&runner, &prefix_path, task_id).await?;
-            ensure_gdk_data_directories(&prefix_path, request, task_id).await?;
+            let wine_prefix = proton_wine_prefix_path(&prefix_path);
+            ensure_gdk_data_directories(&wine_prefix, request, task_id).await?;
+            if runner.kind == RunnerKind::Umu {
+                apply_roundmcdev_winegdk_prerequisites(&runner, &wine_prefix, task_id).await?;
+                install_roundmcdev_cryptbase(&runner, &wine_prefix, task_id).await?;
+                apply_roundmcdev_proton_patches(&runner, &package_path, &game_executable, task_id)
+                    .await?;
+            }
             install_proton_game_input(&runner, &prefix_path, &package_path, task_id).await?;
             stop_lingering_proton_processes(&runner, &prefix_path, task_id).await?;
         }
@@ -482,6 +660,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         }
     }
 
+    apply_roundmcdev_game_fixes(&runner, &game_executable, task_id).await?;
+
     update_progress(task_id, 1, Some(LAUNCH_TOTAL_STEPS), Some("launching"));
 
     if !request.auto_start {
@@ -489,15 +669,25 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         return Ok(None);
     }
 
-    let launch_auth = crate::core::bedrock_auth::prepare_launch(&prefix_path).await?;
-    append_task_log(
-        task_id,
-        if launch_auth.is_some() {
-            "已安全注入 Xbox 登录会话"
-        } else {
-            "未检测到 Xbox 登录凭证，将以未登录状态启动"
-        },
-    );
+    let launch_auth = if runner_supports_winegdk_login(runner.kind) {
+        let wine_prefix = proton_wine_prefix_path(&prefix_path);
+        let launch_auth = crate::core::bedrock_auth::prepare_launch(&wine_prefix).await?;
+        append_task_log(
+            task_id,
+            if launch_auth.is_some() {
+                "已准备 RoundMCDev WineGDK 登录会话"
+            } else {
+                "未检测到 WineGDK 登录凭证，将以未登录状态启动"
+            },
+        );
+        launch_auth
+    } else {
+        append_task_log(
+            task_id,
+            "当前运行器不提供 RoundMCDev WineGDK 登录，以游戏原生未登录状态启动",
+        );
+        None
+    };
 
     let mut command = match runner.kind {
         RunnerKind::Proton => {
@@ -514,6 +704,18 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             command
                 .arg("run")
                 .arg(&windows_game_executable)
+                .current_dir(game_executable.parent().unwrap_or(&package_path));
+            command
+        }
+        RunnerKind::Umu => {
+            let mut command = Command::new(&runner.executable);
+            configure_proton_command(&mut command, &runner, &prefix_path, task_id).await?;
+            append_task_log(
+                task_id,
+                format!("UMU GDK 游戏路径：{}", game_executable.display()),
+            );
+            command
+                .arg(&game_executable)
                 .current_dir(game_executable.parent().unwrap_or(&package_path));
             command
         }
@@ -623,15 +825,612 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     Ok(Some(process_id))
 }
 
+async fn apply_roundmcdev_winegdk_prerequisites(
+    runner: &crate::core::linux_runtime::Runner,
+    wine_prefix: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    let proton_root = crate::core::linux_runtime::runner_runtime_root(runner)
+        .ok_or_else(|| "无法确定 RoundMCDev GDK-Proton 目录".to_string())?;
+    let wine = proton_root.join("files/bin/wine");
+    if !wine.is_file() {
+        return Err(format!("RoundMCDev 缺少 wine：{}", wine.display()));
+    }
+    let registry_values = [
+        (
+            "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\OEM",
+            "ConsoleMode",
+            "REG_DWORD",
+            "8",
+        ),
+        (
+            "HKLM\\Software\\Microsoft\\WindowsRuntime\\ActivatableClassId\\Microsoft.Windows.Storage.Pickers.FileOpenPicker",
+            "DllPath",
+            "REG_SZ",
+            r"C:\windows\system32\windows.storage.dll",
+        ),
+        (
+            "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\WinHttp",
+            "DefaultSecureProtocols",
+            "REG_DWORD",
+            "2560",
+        ),
+        (
+            "HKLM\\Software\\Microsoft\\SchannelTLS\\Protocols\\TLS 1.3\\Client",
+            "DisabledByDefault",
+            "REG_DWORD",
+            "1",
+        ),
+        (
+            "HKCU\\Environment",
+            "MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_SHOWUI",
+            "REG_SZ",
+            "0",
+        ),
+        (
+            "HKCU\\Environment",
+            "MICROSOFT_WINDOWSAPPRUNTIME_BOOTSTRAP_INITIALIZE_FAILFAST",
+            "REG_SZ",
+            "0",
+        ),
+        (
+            "HKCU\\Environment",
+            "MICROSOFT_WINDOWSAPPRUNTIME_DEPLOYMENT_INITIALIZE_ONERRORSHOWUI",
+            "REG_SZ",
+            "0",
+        ),
+    ];
+    for (key, value_name, value_type, value) in registry_values {
+        let mut command = Command::new(&wine);
+        command
+            .args([
+                "reg", "add", key, "/v", value_name, "/t", value_type, "/d", value, "/f",
+            ])
+            .env("WINEPREFIX", wine_prefix)
+            .env("WINEDEBUG", "-all");
+        set_runner_ld_library_path(&mut command, runner);
+        let output = command
+            .output()
+            .await
+            .map_err(|error| format!("执行 RoundMCDev WineGDK 注册表配置失败：{error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "RoundMCDev WineGDK 注册表配置失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    append_task_log(task_id, "已应用 BedrockBoot WineGDK 注册表前置项");
+    Ok(())
+}
+
+async fn install_roundmcdev_cryptbase(
+    runner: &crate::core::linux_runtime::Runner,
+    wine_prefix: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    let Some(proton_root) = crate::core::linux_runtime::runner_runtime_root(runner) else {
+        return Err("无法确定 RoundMCDev GDK-Proton 目录".to_string());
+    };
+    let source = proton_root.join("files/lib/wine/x86_64-windows/cryptbase.dll");
+    let destination = wine_prefix.join("drive_c/windows/system32/cryptbase.dll");
+    let copied = crate::tasks::runtime::run_io_blocking(move || {
+        if !source.is_file() || destination.is_file() {
+            return Ok(false);
+        }
+        let parent = destination
+            .parent()
+            .ok_or_else(|| "cryptbase.dll 目标路径没有父目录".to_string())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 cryptbase.dll 目录失败：{error}"))?;
+        std::fs::copy(&source, &destination)
+            .map_err(|error| format!("复制 cryptbase.dll 失败：{error}"))?;
+        Ok::<bool, String>(true)
+    })
+    .await
+    .map_err(|error| format!("安装 cryptbase.dll 任务失败：{error}"))??;
+    if copied {
+        append_task_log(task_id, "已将 Proton-GDK cryptbase.dll 写入 Prefix");
+    }
+    Ok(())
+}
+
+async fn apply_roundmcdev_proton_patches(
+    runner: &crate::core::linux_runtime::Runner,
+    package_path: &Path,
+    game_executable: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    let proton_root = crate::core::linux_runtime::runner_runtime_root(runner)
+        .ok_or_else(|| "无法确定 RoundMCDev GDK-Proton 目录".to_string())?;
+    let proton_root_for_task = proton_root.clone();
+    let package_path = package_path.to_path_buf();
+    let game_executable = game_executable.to_path_buf();
+    let report = crate::tasks::runtime::run_io_blocking(move || {
+        let mut changes = Vec::new();
+        let wine_directory = proton_root_for_task.join("files/lib/wine/x86_64-windows");
+        if patch_roundmcdev_combase(&wine_directory.join("combase.dll"))? {
+            changes.push("combase.RoOriginateErrorW");
+        }
+        if patch_roundmcdev_ntdll(&wine_directory.join("ntdll.dll"))? {
+            changes.push("ntdll exception stubs");
+        }
+        let http_client = package_path.join("libHttpClient.GDK.dll");
+        if patch_roundmcdev_lhc_xcurl_gate(&http_client)? {
+            changes.push("libHttpClient XCurl gate");
+        }
+        if patch_roundmcdev_stack_reserve(&game_executable)? {
+            changes.push("game stack reserve");
+        }
+        Ok::<Vec<&'static str>, String>(changes)
+    })
+    .await
+    .map_err(|error| format!("执行 RoundMCDev patch 任务失败：{error}"))??;
+    if report.is_empty() {
+        append_task_log(task_id, "BedrockBoot patch 已存在或当前版本无需修改");
+    } else {
+        append_task_log(
+            task_id,
+            format!("已应用 BedrockBoot patch：{}", report.join("、")),
+        );
+    }
+    Ok(())
+}
+
+fn patch_roundmcdev_combase(path: &Path) -> Result<bool, String> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let mut data =
+        std::fs::read(path).map_err(|error| format!("读取 {} 失败：{error}", path.display()))?;
+    let Some(offset) = pe_export_file_offset(&data, "RoOriginateErrorW") else {
+        return Ok(false);
+    };
+    let patch = [0x31, 0xC0, 0xC3, 0x90];
+    if data.get(offset..offset + patch.len()) == Some(patch.as_slice()) {
+        return Ok(false);
+    }
+    let end = offset
+        .checked_add(patch.len())
+        .ok_or_else(|| "combase patch 偏移溢出".to_string())?;
+    if end > data.len() {
+        return Err("combase patch 偏移超出文件范围".to_string());
+    }
+    data[offset..end].copy_from_slice(&patch);
+    std::fs::write(path, data).map_err(|error| format!("写入 {} 失败：{error}", path.display()))?;
+    Ok(true)
+}
+
+fn patch_roundmcdev_ntdll(path: &Path) -> Result<bool, String> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let mut data =
+        std::fs::read(path).map_err(|error| format!("读取 {} 失败：{error}", path.display()))?;
+    let signature = [
+        0x55, 0x53, 0x48, 0x81, 0xEC, 0xC8, 0x00, 0x00, 0x00, 0x48, 0x8D, 0xAC, 0x24, 0xC0, 0x00,
+        0x00, 0x00,
+    ];
+    let new_stub = [0xB8, 0x02, 0x00, 0x00, 0xC0, 0xC3, 0x90, 0x90];
+    let mut changed = false;
+    let mut cursor = 0;
+    while let Some(offset) = find_bytes(&data, &signature, cursor) {
+        let call_offset = offset + signature.len();
+        let matches_funnel = data.get(call_offset..call_offset + 9).is_some_and(|bytes| {
+            bytes.starts_with(&[0x48, 0x89, 0xD9, 0xE8]) && bytes.get(7..9) == Some(&[0xEB, 0xF6])
+        });
+        if matches_funnel {
+            let end = offset + new_stub.len();
+            if end > data.len() {
+                return Err("ntdll patch 偏移超出文件范围".to_string());
+            }
+            if data[offset..end] != new_stub {
+                data[offset..end].copy_from_slice(&new_stub);
+                changed = true;
+            }
+        }
+        cursor = offset + signature.len();
+    }
+    if changed {
+        std::fs::write(path, data)
+            .map_err(|error| format!("写入 {} 失败：{error}", path.display()))?;
+    }
+    Ok(changed)
+}
+
+fn patch_roundmcdev_lhc_xcurl_gate(path: &Path) -> Result<bool, String> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let mut data =
+        std::fs::read(path).map_err(|error| format!("读取 {} 失败：{error}", path.display()))?;
+    let gate = [
+        0x83, 0xC0, 0xFE, 0xBA, 0x04, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x0D,
+    ];
+    let compare = [0x83, 0xF8, 0x06];
+    let Some(gate_offset) = find_bytes(&data, &gate, 0) else {
+        return Ok(false);
+    };
+    let Some(compare_offset) = find_bytes(&data, &compare, gate_offset + gate.len()) else {
+        return Ok(false);
+    };
+    let patch_offset = compare_offset + compare.len();
+    let end = patch_offset + 6;
+    if end > data.len() {
+        return Err("libHttpClient patch 偏移超出文件范围".to_string());
+    }
+    if data[patch_offset..end] == [0x90; 6] {
+        return Ok(false);
+    }
+    data[patch_offset..end].fill(0x90);
+    std::fs::write(path, data).map_err(|error| format!("写入 {} 失败：{error}", path.display()))?;
+    Ok(true)
+}
+
+fn patch_roundmcdev_stack_reserve(path: &Path) -> Result<bool, String> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let mut data =
+        std::fs::read(path).map_err(|error| format!("读取 {} 失败：{error}", path.display()))?;
+    let Some(nt_offset) = pe_nt_offset(&data) else {
+        return Ok(false);
+    };
+    let optional_offset = nt_offset + 4 + 20;
+    if read_u16(&data, optional_offset) != Some(0x20B) {
+        return Ok(false);
+    }
+    let field_offset = optional_offset + 72;
+    let Some(current) = read_u64(&data, field_offset) else {
+        return Ok(false);
+    };
+    const TARGET_STACK_RESERVE: u64 = 0x1000000;
+    if current >= TARGET_STACK_RESERVE {
+        return Ok(false);
+    }
+    let end = field_offset + 8;
+    if end > data.len() {
+        return Err("游戏 stack reserve 偏移超出文件范围".to_string());
+    }
+    data[field_offset..end].copy_from_slice(&TARGET_STACK_RESERVE.to_le_bytes());
+    std::fs::write(path, data).map_err(|error| format!("写入 {} 失败：{error}", path.display()))?;
+    Ok(true)
+}
+
+fn find_bytes(data: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() || start >= data.len() || needle.len() > data.len() {
+        return None;
+    }
+    data[start..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|offset| start + offset)
+}
+
+fn pe_nt_offset(data: &[u8]) -> Option<usize> {
+    let nt_offset = usize::try_from(read_u32(data, 0x3C)?).ok()?;
+    (read_u32(data, nt_offset) == Some(0x0000_4550)).then_some(nt_offset)
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    data.get(offset..offset + 2)
+        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    data.get(offset..offset + 4)
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    data.get(offset..offset + 8).map(|bytes| {
+        u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ])
+    })
+}
+
+fn pe_rva_to_file_offset(data: &[u8], rva: u32) -> Option<usize> {
+    let nt_offset = pe_nt_offset(data)?;
+    let section_count = usize::from(read_u16(data, nt_offset + 6)?);
+    let optional_size = usize::from(read_u16(data, nt_offset + 20)?);
+    let section_table = nt_offset.checked_add(24)?.checked_add(optional_size)?;
+    for index in 0..section_count {
+        let offset = section_table.checked_add(index.checked_mul(40)?)?;
+        let virtual_size = read_u32(data, offset + 8)?;
+        let virtual_address = read_u32(data, offset + 12)?;
+        let raw_size = read_u32(data, offset + 16)?;
+        let raw_pointer = read_u32(data, offset + 20)?;
+        let section_size = virtual_size.max(raw_size);
+        if rva >= virtual_address && rva - virtual_address < section_size {
+            let file_offset =
+                usize::try_from(raw_pointer.checked_add(rva - virtual_address)?).ok()?;
+            return (file_offset < data.len()).then_some(file_offset);
+        }
+    }
+    None
+}
+
+fn pe_export_file_offset(data: &[u8], export_name: &str) -> Option<usize> {
+    let nt_offset = pe_nt_offset(data)?;
+    let optional_offset = nt_offset + 24;
+    let export_rva = read_u32(data, optional_offset + 96)?;
+    let export_offset = pe_rva_to_file_offset(data, export_rva)?;
+    let name_count = usize::try_from(read_u32(data, export_offset + 24)?).ok()?;
+    let functions_rva = read_u32(data, export_offset + 28)?;
+    let names_rva = read_u32(data, export_offset + 32)?;
+    let ordinals_rva = read_u32(data, export_offset + 36)?;
+    let names_offset = pe_rva_to_file_offset(data, names_rva)?;
+    let ordinals_offset = pe_rva_to_file_offset(data, ordinals_rva)?;
+    let functions_offset = pe_rva_to_file_offset(data, functions_rva)?;
+    for index in 0..name_count {
+        let name_rva = read_u32(data, names_offset + index * 4)?;
+        let name_offset = pe_rva_to_file_offset(data, name_rva)?;
+        let end = data
+            .get(name_offset..)?
+            .iter()
+            .position(|byte| *byte == 0)
+            .map(|length| name_offset + length)?;
+        if data.get(name_offset..end)? != export_name.as_bytes() {
+            continue;
+        }
+        let ordinal = usize::from(read_u16(data, ordinals_offset + index * 2)?);
+        let function_rva = read_u32(data, functions_offset + ordinal * 4)?;
+        return pe_rva_to_file_offset(data, function_rva);
+    }
+    None
+}
+
+async fn apply_roundmcdev_game_fixes(
+    runner: &crate::core::linux_runtime::Runner,
+    game_executable: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    let Some(bundle_root) = crate::core::linux_runtime::roundmcdev_bundle_root(runner) else {
+        return Ok(());
+    };
+
+    let game_fix = bundle_root.join("gameFix");
+    let game_patch = bundle_root.join("GamePatch/gdk/mcpatcher_core.dll");
+    let game_directory = game_executable
+        .parent()
+        .ok_or_else(|| "游戏 EXE 没有有效的父目录".to_string())?
+        .to_path_buf();
+    let game_directory_for_log = game_directory.clone();
+    let bundle_root_for_log = bundle_root.clone();
+    let stdio_workaround_enabled = crate::tasks::runtime::run_io_blocking(move || {
+        copy_directory_contents(&game_fix, &game_directory)
+            .map_err(|error| format!("复制 RoundMCDev gameFix 失败：{error}"))?;
+        install_roundmcdev_bloader_mod(
+            &game_directory,
+            &game_patch,
+            ROUNDMCDEV_BLOADER_MOD_VERSION,
+        )?;
+        remove_legacy_roundmcdev_preload(&game_directory)?;
+        configure_bloader_linux_stdio_workaround(
+            &game_directory,
+            bloader::embedded_version_string(),
+        )
+    })
+    .await
+    .map_err(|error| format!("应用 RoundMCDev 游戏修复任务失败：{error}"))??;
+    if stdio_workaround_enabled {
+        append_task_log(
+            task_id,
+            "已启用 BLoader 0.2.11 Linux 无窗口日志递归兼容模式",
+        );
+    }
+    append_task_log(
+        task_id,
+        format!(
+            "已应用 RoundMCDev 游戏修复到 {}：{}",
+            game_directory_for_log.display(),
+            bundle_root_for_log.display()
+        ),
+    );
+    Ok(())
+}
+
+const ROUNDMCDEV_BLOADER_MOD_DIRECTORY: &str = "roundmcdev-game-patch";
+const ROUNDMCDEV_BLOADER_MOD_ENTRY: &str = "mcpatcher_core.dll";
+const ROUNDMCDEV_BLOADER_MOD_VERSION: &str = "Release10-32";
+const BLOADER_STDIO_RECURSION_VERSION_PREFIX: &str = "0.2.11";
+const BLOADER_LEGACY_STDIO_WORKAROUND_KEY: &str = "_bmcbl_linux_stdio_workaround";
+const BLOADER_LEGACY_ORIGINAL_DEBUG_CONSOLE_KEY: &str = "_bmcbl_original_enable_debug_console";
+const BLOADER_PROCESS_CAPTURE_DIRECTORY: &str = "logs/captured-stdio";
+const BLOADER_PROCESS_STDOUT_CAPTURE_NAME: &str = "process-stdout.raw.log";
+const BLOADER_PROCESS_CAPTURE_BLOCKER_MARKER: &str = ".bmcbl-disable-recursive-capture";
+
+fn install_roundmcdev_bloader_mod(
+    game_directory: &Path,
+    source_dll: &Path,
+    release_tag: &str,
+) -> Result<(), String> {
+    if !source_dll.is_file() {
+        return Err(format!(
+            "RoundMCDev GamePatch 不存在：{}",
+            source_dll.display()
+        ));
+    }
+    let mod_directory = game_directory
+        .join("mods")
+        .join(ROUNDMCDEV_BLOADER_MOD_DIRECTORY);
+    std::fs::create_dir_all(&mod_directory)
+        .map_err(|error| format!("创建 BLoader 原生 Mod 目录失败：{error}"))?;
+    let target_dll = mod_directory.join(ROUNDMCDEV_BLOADER_MOD_ENTRY);
+    std::fs::copy(source_dll, &target_dll)
+        .map_err(|error| format!("部署 BLoader GamePatch DLL 失败：{error}"))?;
+
+    let manifest = serde_json::json!({
+        "id": "roundmcdev.game-patch",
+        "name": "RoundMCDev GamePatch",
+        "entry": ROUNDMCDEV_BLOADER_MOD_ENTRY,
+        "type": "native",
+        "version": release_tag,
+        "author": "RoundMCDev",
+        "description": "Minecraft Bedrock GDK 网络兼容补丁",
+        "required": true,
+        "notify_success": false,
+    });
+    let manifest_contents = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("生成 BLoader GamePatch 清单失败：{error}"))?;
+    std::fs::write(mod_directory.join("manifest.json"), manifest_contents)
+        .map_err(|error| format!("写入 BLoader GamePatch 清单失败：{error}"))?;
+    Ok(())
+}
+
+fn remove_legacy_roundmcdev_preload(game_directory: &Path) -> Result<(), String> {
+    let legacy_path = game_directory.join("preload/mcpatcher_core.dll");
+    if !legacy_path.is_file() {
+        return Ok(());
+    }
+    std::fs::remove_file(&legacy_path)
+        .map_err(|error| format!("清理错误启动链路遗留的 preload GamePatch 失败：{error}"))
+}
+
+fn configure_bloader_linux_stdio_workaround(
+    game_directory: &Path,
+    bloader_version: &str,
+) -> Result<bool, String> {
+    let config_path = game_directory.join("config.json");
+    let debug_console_enabled = restore_legacy_bloader_stdio_workaround(&config_path)?;
+    let vulnerable = bloader_version.starts_with(BLOADER_STDIO_RECURSION_VERSION_PREFIX);
+    let capture_path = game_directory
+        .join(BLOADER_PROCESS_CAPTURE_DIRECTORY)
+        .join(BLOADER_PROCESS_STDOUT_CAPTURE_NAME);
+
+    if !vulnerable || debug_console_enabled {
+        remove_bloader_process_capture_blocker(&capture_path)?;
+        return Ok(false);
+    }
+
+    install_bloader_process_capture_blocker(&capture_path)?;
+    Ok(true)
+}
+
+fn restore_legacy_bloader_stdio_workaround(config_path: &Path) -> Result<bool, String> {
+    if !config_path.is_file() {
+        return Ok(false);
+    }
+    let contents =
+        std::fs::read(config_path).map_err(|error| format!("读取 BLoader 配置失败：{error}"))?;
+    let mut config = serde_json::from_slice::<serde_json::Value>(&contents)
+        .map_err(|error| format!("解析 BLoader 配置失败：{error}"))?;
+    let config = config
+        .as_object_mut()
+        .ok_or_else(|| "BLoader config.json 根节点不是对象".to_string())?;
+    let legacy_workaround = config.remove(BLOADER_LEGACY_STDIO_WORKAROUND_KEY);
+    let legacy_original_debug_console = config.remove(BLOADER_LEGACY_ORIGINAL_DEBUG_CONSOLE_KEY);
+    let legacy_config_changed =
+        legacy_workaround.is_some() || legacy_original_debug_console.is_some();
+    let legacy_workaround_enabled = legacy_workaround
+        .as_ref()
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if legacy_workaround_enabled {
+        let original = legacy_original_debug_console
+            .as_ref()
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        config.insert(
+            "enable_debug_console".to_string(),
+            serde_json::Value::Bool(original),
+        );
+    }
+    let debug_console_enabled = config
+        .get("enable_debug_console")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !legacy_config_changed {
+        return Ok(debug_console_enabled);
+    }
+
+    let contents = serde_json::to_vec_pretty(&config)
+        .map_err(|error| format!("生成 BLoader 配置失败：{error}"))?;
+    let config_directory = config_path
+        .parent()
+        .ok_or_else(|| "BLoader 配置没有有效的父目录".to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(config_directory)
+        .map_err(|error| format!("创建 BLoader 临时配置失败：{error}"))?;
+    use std::io::Write as _;
+    temporary
+        .write_all(&contents)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| format!("写入 BLoader 临时配置失败：{error}"))?;
+    temporary
+        .persist(config_path)
+        .map_err(|error| format!("保存 BLoader 配置失败：{}", error.error))?;
+    Ok(debug_console_enabled)
+}
+
+fn install_bloader_process_capture_blocker(capture_path: &Path) -> Result<(), String> {
+    let capture_directory = capture_path
+        .parent()
+        .ok_or_else(|| "BLoader stdout 捕获路径没有有效的父目录".to_string())?;
+    std::fs::create_dir_all(capture_directory)
+        .map_err(|error| format!("创建 BLoader stdout 捕获目录失败：{error}"))?;
+
+    match std::fs::symlink_metadata(capture_path) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => std::fs::remove_file(capture_path)
+            .map_err(|error| format!("清理 BLoader 递归 stdout 日志失败：{error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("检查 BLoader stdout 捕获路径失败：{error}")),
+    }
+    std::fs::create_dir_all(capture_path)
+        .map_err(|error| format!("创建 BLoader stdout 捕获阻断目录失败：{error}"))?;
+    std::fs::write(
+        capture_path.join(BLOADER_PROCESS_CAPTURE_BLOCKER_MARKER),
+        b"BMCBL blocks BLoader 0.2.11 recursive process stdout capture on Linux.\n",
+    )
+    .map_err(|error| format!("写入 BLoader stdout 捕获阻断标记失败：{error}"))
+}
+
+fn remove_bloader_process_capture_blocker(capture_path: &Path) -> Result<(), String> {
+    let marker_path = capture_path.join(BLOADER_PROCESS_CAPTURE_BLOCKER_MARKER);
+    if !marker_path.is_file() {
+        return Ok(());
+    }
+    std::fs::remove_file(&marker_path)
+        .map_err(|error| format!("移除 BLoader stdout 捕获阻断标记失败：{error}"))?;
+    std::fs::remove_dir(capture_path)
+        .map_err(|error| format!("移除 BLoader stdout 捕获阻断目录失败：{error}"))
+}
+
+fn copy_directory_contents(source: &Path, destination: &Path) -> Result<(), String> {
+    if !source.is_dir() {
+        return Err(format!("源目录不存在：{}", source.display()));
+    }
+    std::fs::create_dir_all(destination)
+        .map_err(|error| format!("创建目标目录 {} 失败：{error}", destination.display()))?;
+    for entry in std::fs::read_dir(source)
+        .map_err(|error| format!("读取源目录 {} 失败：{error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("读取修复文件条目失败：{error}"))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory_contents(&source_path, &destination_path)?;
+        } else {
+            std::fs::copy(&source_path, &destination_path).map_err(|error| {
+                format!(
+                    "复制 {} 到 {} 失败：{error}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 async fn stop_lingering_proton_processes(
     runner: &crate::core::linux_runtime::Runner,
     prefix_path: &Path,
     task_id: &str,
 ) -> Result<(), String> {
-    let proton_root = runner
-        .executable
-        .parent()
-        .ok_or_else(|| "无法确定 Proton-GDK 安装目录".to_string())?;
+    let proton_root =
+        runner_runtime_root(runner).ok_or_else(|| "无法确定 Proton-GDK 安装目录".to_string())?;
     let wineserver = [
         proton_root.join("files/bin/wineserver"),
         proton_root.join("files/bin-wow64/wineserver"),
@@ -651,7 +1450,7 @@ async fn stop_lingering_proton_processes(
     command
         .arg("-k")
         .arg("-w")
-        .env("WINEPREFIX", prefix_path.join("pfx"))
+        .env("WINEPREFIX", proton_wine_prefix_path(prefix_path))
         .stdin(Stdio::null());
     let output = tokio::time::timeout(Duration::from_secs(15), command.output())
         .await
@@ -808,7 +1607,8 @@ async fn install_proton_game_input(
     task_id: &str,
 ) -> Result<(), String> {
     let marker = prefix_path.join(".bmcbl-proton-gameinput-installed");
-    if proton_game_input_is_ready(prefix_path).await? {
+    let wine_prefix = proton_wine_prefix_path(prefix_path);
+    if proton_game_input_is_ready_at(&wine_prefix).await? {
         tokio::fs::write(&marker, b"installed\n")
             .await
             .map_err(|error| format!("写入 Proton-GDK GameInput 状态失败：{error}"))?;
@@ -853,11 +1653,28 @@ async fn install_proton_game_input(
             normalized_installer.display()
         ),
     );
-    let mut command = Command::new(&runner.executable);
-    configure_proton_command(&mut command, runner, prefix_path, task_id).await?;
+    let mut command = if runner.kind == RunnerKind::Umu {
+        let proton_root = runner_runtime_root(runner)
+            .ok_or_else(|| "无法确定 RoundMCDev Proton-GDK 目录".to_string())?;
+        let wine = proton_root.join("files/bin/wine");
+        if !wine.is_file() {
+            return Err(format!("Proton-GDK 中没有找到 wine：{}", wine.display()));
+        }
+        let mut command = Command::new(wine);
+        command
+            .env("WINEPREFIX", &wine_prefix)
+            .env("WINEDEBUG", "-all")
+            .env("WINEDLLOVERRIDES", "advapi32=n,b");
+        set_runner_ld_library_path(&mut command, runner);
+        command
+    } else {
+        let mut command = Command::new(&runner.executable);
+        configure_proton_command(&mut command, runner, prefix_path, task_id).await?;
+        command.arg("runinprefix");
+        command
+    };
     let windows_installer = wine_z_path(normalized_installer)?;
     command
-        .arg("runinprefix")
         .arg("msiexec")
         .arg("/i")
         .arg(&windows_installer)
@@ -954,10 +1771,10 @@ async fn install_proton_game_input(
     }
 
     append_task_log(task_id, "等待 Proton 写入 GameInput 文件与注册状态");
-    if !wait_for_proton_game_input_ready(prefix_path, GAME_INPUT_REGISTRATION_TIMEOUT).await? {
+    if !wait_for_proton_game_input_ready_at(&wine_prefix, GAME_INPUT_REGISTRATION_TIMEOUT).await? {
         return Err(format!(
             "GameInput 安装器已退出，但未检测到原生 GameInputRedist.dll、服务程序或注册表；Prefix：{}",
-            prefix_path.join("pfx").display()
+            wine_prefix.display()
         ));
     }
 
@@ -975,7 +1792,10 @@ async fn install_proton_game_input(
 }
 
 async fn proton_game_input_is_ready(prefix_path: &Path) -> Result<bool, String> {
-    let prefix = prefix_path.join("pfx");
+    proton_game_input_is_ready_at(&prefix_path.join("pfx")).await
+}
+
+async fn proton_game_input_is_ready_at(prefix: &Path) -> Result<bool, String> {
     let game_input_directory = prefix.join("drive_c/Program Files/Microsoft GameInput/x64");
     if !game_input_directory.join("GameInputRedist.dll").is_file()
         || !game_input_directory
@@ -1010,9 +1830,16 @@ async fn wait_for_proton_game_input_ready(
     prefix_path: &Path,
     timeout: Duration,
 ) -> Result<bool, String> {
+    wait_for_proton_game_input_ready_at(&prefix_path.join("pfx"), timeout).await
+}
+
+async fn wait_for_proton_game_input_ready_at(
+    prefix: &Path,
+    timeout: Duration,
+) -> Result<bool, String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if proton_game_input_is_ready(prefix_path).await? {
+        if proton_game_input_is_ready_at(prefix).await? {
             return Ok(true);
         }
         if tokio::time::Instant::now() >= deadline {

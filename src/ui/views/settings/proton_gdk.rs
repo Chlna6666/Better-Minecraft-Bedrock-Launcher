@@ -459,6 +459,7 @@ fn installed_runner_card(
         runner.login_capability()
     );
     let release_tag = runner.release_tag().map(str::to_string);
+    let asset_count = runner.bundle_asset_count();
     div()
         .id(SharedString::from(format!(
             "proton-gdk-runner-{}",
@@ -546,7 +547,12 @@ fn installed_runner_card(
                                 .text_color(colors.text_muted)
                                 .overflow_hidden()
                                 .child(executable.to_string_lossy().into_owned()),
-                        ),
+                        )
+                        .when(asset_count > 0, |this| {
+                            this.child(div().text_size(px(10.5)).text_color(colors.accent).child(
+                                format!("固定资源包已集成：{asset_count} 项（UMU 仅作为启动入口）"),
+                            ))
+                        }),
                 ),
         )
         .child(
@@ -680,40 +686,76 @@ fn empty_runner_card(colors: &ThemeColors) -> Div {
 }
 
 fn remove_runner(executable: &std::path::Path, selected: bool, cx: &mut App) {
-    let runners_root = crate::utils::file_ops::runners_dir();
-    let managed_root = executable
-        .strip_prefix(&runners_root)
+    let executable = executable.to_path_buf();
+    let configured_runner = crate::config::config::read_config()
         .ok()
-        .and_then(|relative| {
-            relative
-                .components()
-                .next()
-                .map(|version| runners_root.join(version.as_os_str()))
-        });
-    let is_managed = managed_root.is_some();
-    if let Some(managed_root) = managed_root
-        && let Err(error) = std::fs::remove_dir_all(&managed_root)
-    {
-        toast::error(cx, format!("删除 Proton-GDK 失败：{error}").into());
-        return;
-    }
-    if selected
-        && let Err(error) = crate::config::config::update_config(|config| {
-            config.launcher.proton_gdk_runner.clear();
+        .map(|config| std::path::PathBuf::from(config.launcher.proton_gdk_runner));
+    let removal_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+        crate::tasks::runtime::run_io_blocking(move || {
+            crate::core::linux_runtime::remove_managed_proton_gdk_runner(&executable)
         })
-    {
-        toast::error(cx, format!("清除默认版本失败：{error}").into());
-        return;
-    }
-    cx.update_global(|_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {});
-    toast::success(
-        cx,
-        if is_managed {
-            "Proton-GDK 版本已删除".into()
-        } else {
-            "本地 Proton-GDK 已取消注册".into()
-        },
-    );
+        .await
+        .map_err(anyhow::Error::msg)?
+        .map_err(anyhow::Error::msg)
+    });
+    cx.spawn(async move |cx| {
+        match removal_task.await {
+            Ok(Some(removed_root)) => {
+                let should_clear_config = selected
+                    || configured_runner
+                        .as_deref()
+                        .is_some_and(|configured| configured.starts_with(&removed_root));
+                if should_clear_config
+                    && let Err(error) = crate::config::config::update_config(|config| {
+                        config.launcher.proton_gdk_runner.clear();
+                    })
+                {
+                    toast::push_async(
+                        cx,
+                        toast::ToastKind::Error,
+                        format!("清除默认版本失败：{error}").into(),
+                    );
+                    return anyhow::Ok(());
+                }
+                cx.update_global(
+                    |_state: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {},
+                )?;
+                toast::push_async(
+                    cx,
+                    toast::ToastKind::Success,
+                    "Proton-GDK 版本及残留安装目录已完全删除".into(),
+                );
+            }
+            Ok(None) => {
+                if selected
+                    && let Err(error) = crate::config::config::update_config(|config| {
+                        config.launcher.proton_gdk_runner.clear();
+                    })
+                {
+                    toast::push_async(
+                        cx,
+                        toast::ToastKind::Error,
+                        format!("清除默认版本失败：{error}").into(),
+                    );
+                    return anyhow::Ok(());
+                }
+                toast::push_async(
+                    cx,
+                    toast::ToastKind::Success,
+                    "本地 Proton-GDK 已取消注册".into(),
+                );
+            }
+            Err(error) => {
+                toast::push_async(
+                    cx,
+                    toast::ToastKind::Error,
+                    format!("删除 Proton-GDK 失败：{error}").into(),
+                );
+            }
+        }
+        anyhow::Ok(())
+    })
+    .detach();
 }
 
 fn storage_footer(colors: &ThemeColors, runner_root: std::path::PathBuf) -> Div {
