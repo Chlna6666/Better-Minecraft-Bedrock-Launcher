@@ -3,6 +3,7 @@ use collections::HashMap;
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub(crate) enum SerialKind {
     DataDevice,
+    Input,
     InputMethod,
     MouseEnter,
     MousePress,
@@ -45,5 +46,21 @@ impl SerialTracker {
             .get(&kind)
             .map(|serial_data| serial_data.serial)
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SerialKind, SerialTracker};
+
+    #[test]
+    fn input_serial_tracks_the_latest_input_event() {
+        let mut tracker = SerialTracker::new();
+
+        tracker.update(SerialKind::Input, 17);
+        assert_eq!(tracker.get(SerialKind::Input), 17);
+
+        tracker.update(SerialKind::Input, 23);
+        assert_eq!(tracker.get(SerialKind::Input), 23);
     }
 }

@@ -843,7 +843,7 @@ impl LinuxClient for WaylandClient {
         };
         if state.mouse_focused_window.is_some() || state.keyboard_focused_window.is_some() {
             state.clipboard.set_primary(item);
-            let serial = state.serial_tracker.get(SerialKind::KeyPress);
+            let serial = state.serial_tracker.get(SerialKind::Input);
             let data_source = primary_selection_manager.create_source(&state.globals.qh, ());
             for mime_type in TEXT_MIME_TYPES {
                 data_source.offer(mime_type.to_string());
@@ -863,7 +863,7 @@ impl LinuxClient for WaylandClient {
         };
         if state.mouse_focused_window.is_some() || state.keyboard_focused_window.is_some() {
             state.clipboard.set(item);
-            let serial = state.serial_tracker.get(SerialKind::KeyPress);
+            let serial = state.serial_tracker.get(SerialKind::Input);
             let data_source = data_device_manager.create_data_source(&state.globals.qh, ());
             for mime_type in TEXT_MIME_TYPES {
                 data_source.offer(mime_type.to_string());
@@ -1387,6 +1387,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                 state: WEnum::Value(key_state),
                 ..
             } => {
+                state.serial_tracker.update(SerialKind::Input, serial);
                 state.serial_tracker.update(SerialKind::KeyPress, serial);
 
                 let focused_window = state.keyboard_focused_window.clone();
@@ -1767,6 +1768,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                 state: WEnum::Value(button_state),
                 ..
             } => {
+                state.serial_tracker.update(SerialKind::Input, serial);
                 state.serial_tracker.update(SerialKind::MousePress, serial);
                 let button = linux_button_to_gpui(button);
                 let Some(button) = button else { return };
