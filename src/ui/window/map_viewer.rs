@@ -7,7 +7,6 @@ mod history_panel;
 mod import_preview;
 mod interactions;
 mod layout;
-#[path = "map_viewer/lifecycle_fixed.rs"]
 mod lifecycle;
 pub(crate) mod map_history;
 mod mcstructure;
@@ -38,6 +37,7 @@ mod tile_manifest_legacy;
 mod tile_manifest;
 mod tile_plan;
 mod tile_render_legacy;
+#[path = "map_viewer/tile_render_stable.rs"]
 mod tile_render;
 mod tile_state;
 mod tool_stripe;
