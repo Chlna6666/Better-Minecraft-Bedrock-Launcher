@@ -142,7 +142,7 @@ async fn establish_room(request: RoomRequest, action: &'static str, cx: &mut Asy
 
     let options = EasyTierStartOptions {
         disable_p2p: Some(disable_p2p),
-        compression: Some("zstd".to_string()),
+        compression: Some("none".to_string()),
         ipv4: None,
     };
     let hostname = match intent.hostname(server_port, &player_name) {
