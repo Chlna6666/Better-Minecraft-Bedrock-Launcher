@@ -335,15 +335,13 @@ pub fn send_sentry_test_log(dsn: &str) -> Result<()> {
 }
 
 fn init_sentry_client(dsn: &str) -> Result<sentry::ClientInitGuard> {
-    let options = sentry::ClientOptions {
-        dsn: Some(dsn.parse().context("invalid sentry dsn")?),
-        release: sentry::release_name!(),
-        attach_stacktrace: true,
-        default_integrations: true,
-        enable_logs: true,
-        send_default_pii: false,
-        ..sentry::ClientOptions::default()
-    };
+    let mut options = sentry::ClientOptions::default();
+    options.dsn = Some(dsn.parse().context("invalid sentry dsn")?);
+    options.release = sentry::release_name!();
+    options.attach_stacktrace = true;
+    options.default_integrations = true;
+    options.enable_logs = true;
+    options.send_default_pii = false;
 
     Ok(sentry::init(options))
 }

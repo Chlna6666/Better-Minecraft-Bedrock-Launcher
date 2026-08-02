@@ -1,4 +1,5 @@
 use crate::utils::file_ops;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -12,18 +13,43 @@ pub struct DownloadUiPrefs {
     pub page_size: usize,
 }
 
-fn prefs_path() -> PathBuf {
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MapViewerWindowPrefs {
+    pub width: f32,
+    pub height: f32,
+}
+
+fn download_prefs_path() -> PathBuf {
     file_ops::cache_subdir("download_ui_prefs.json")
 }
 
 pub fn load_download_ui_prefs() -> Option<DownloadUiPrefs> {
-    let path = prefs_path();
+    load_json_prefs(download_prefs_path())
+}
+
+pub fn save_download_ui_prefs(prefs: &DownloadUiPrefs) -> io::Result<()> {
+    save_json_prefs(download_prefs_path(), prefs)
+}
+
+pub fn load_map_viewer_window_prefs() -> Option<MapViewerWindowPrefs> {
+    load_json_prefs(map_viewer_window_prefs_path())
+}
+
+pub fn save_map_viewer_window_prefs(prefs: &MapViewerWindowPrefs) -> io::Result<()> {
+    save_json_prefs(map_viewer_window_prefs_path(), prefs)
+}
+
+fn map_viewer_window_prefs_path() -> PathBuf {
+    file_ops::cache_subdir("map_viewer_window_prefs.json")
+}
+
+fn load_json_prefs<T: DeserializeOwned>(path: PathBuf) -> Option<T> {
     let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
-pub fn save_download_ui_prefs(prefs: &DownloadUiPrefs) -> io::Result<()> {
-    let path = prefs_path();
+fn save_json_prefs<T: Serialize>(path: PathBuf, prefs: &T) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
