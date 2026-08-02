@@ -1028,6 +1028,7 @@ pub(super) fn render_app_chrome(
                 .child(
                     img("icons/logo.png")
                         .size(px(34.))
+                        .rounded(px(0.))
                         .object_fit(ObjectFit::Contain),
                 )
                 .child(
