@@ -674,8 +674,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             append_task_log(
                 task_id,
                 format!(
-                "Xbox 安全会话载荷已传输至目标进程：{gamertag}；请以 BLoader xuser-bridge 日志确认系统 Runtime 与 QueryApiImpl Hook 状态"
-            ),
+                    "Xbox 安全会话载荷已传输至目标进程：{gamertag}；请以 BLoader xuser-bridge 日志确认系统 Runtime 与 QueryApiImpl Hook 状态"
+                ),
             );
             info!(
                 task_id = %task_id,
