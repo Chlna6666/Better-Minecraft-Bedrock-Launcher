@@ -98,7 +98,8 @@ notify = "8.2.0"
 bmcbl_plugin_api = { path = "crates/bmcbl-plugin-api" }
 
 # PaperConnect uses EasyTier as an embedded no-TUN transport with local port forwarding.
-easytier = { path = "crates/easytier", default-features = false, features = ["aes-gcm", "socks5", "websocket", "zstd"] }
+# The BMCBL adapter constrains EasyTier's independent runtime and deliberately exposes no zstd feature.
+easytier = { package = "easytier-bmcbl", path = "crates/easytier-bmcbl", default-features = false, features = ["aes-gcm", "socks5", "websocket"] }
 nethernet = { path = "crates/nethernet" }
 # 自研 RakNet 实现（crates/raknet）：go-raknet 风格连接模型 + tokio 驱动，
 # 零拷贝可靠层，兼容 go-raknet 主机（cookie 回显、负数 GUID）。
@@ -125,6 +126,7 @@ members = [
     "crates/gpui_tokio",
     "crates/bmcbl-plugin-api",
     "crates/bmcbl-plugin-macros",
+    "crates/easytier-bmcbl",
     "crates/nethernet",
     "crates/nova-gfx/gfx-core",
     "crates/nova-gfx/gfx-memory",
