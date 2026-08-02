@@ -35,7 +35,6 @@ mod tests;
 mod tile_cache;
 mod tile_manifest;
 mod tile_plan;
-mod tile_render_impl;
 mod tile_render;
 mod tile_state;
 mod tool_stripe;
