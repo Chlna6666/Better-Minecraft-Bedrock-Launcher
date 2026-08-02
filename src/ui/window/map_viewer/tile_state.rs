@@ -38,13 +38,16 @@ pub(super) struct ReadyTile {
     pub(super) chunk_positions: Option<TileChunkPositions>,
 }
 
-pub(super) type ActiveRenderTiles = BTreeSet<(i32, i32)>;
+pub(super) type ActiveRenderTiles = BTreeMap<(i32, i32), usize>;
 
 pub(super) fn track_active_render_tiles(
     active_tiles: &mut ActiveRenderTiles,
     requested_tiles: &[(i32, i32)],
 ) {
-    active_tiles.extend(requested_tiles.iter().copied());
+    for coord in requested_tiles {
+        let count = active_tiles.entry(*coord).or_insert(0);
+        *count = count.saturating_add(1);
+    }
 }
 
 pub(super) fn finish_active_render_tiles(
@@ -52,7 +55,13 @@ pub(super) fn finish_active_render_tiles(
     requested_tiles: &[(i32, i32)],
 ) {
     for coord in requested_tiles {
-        active_tiles.remove(coord);
+        let Some(count) = active_tiles.get_mut(coord) else {
+            continue;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            active_tiles.remove(coord);
+        }
     }
 }
 
@@ -60,7 +69,7 @@ pub(super) fn requeue_active_render_tiles_after_cancel(
     tile_manager: &mut RegionManager,
     active_tiles: &mut ActiveRenderTiles,
 ) {
-    let active_coords = active_tiles.iter().copied().collect::<Vec<_>>();
+    let active_coords = active_tiles.keys().copied().collect::<Vec<_>>();
     tile_manager.requeue_cancelled_loading(&active_coords);
     active_tiles.clear();
 }
@@ -90,6 +99,7 @@ pub(super) struct TileReadyBatcher {
     pub(super) pending: Vec<ReadyTile>,
     pub(super) last_flush: Instant,
     pub(super) quick_reveal: bool,
+    pub(super) center_tile: (i32, i32),
 }
 
 impl Default for TileReadyBatcher {
@@ -98,6 +108,7 @@ impl Default for TileReadyBatcher {
             pending: Vec::new(),
             last_flush: Instant::now(),
             quick_reveal: false,
+            center_tile: (0, 0),
         }
     }
 }
@@ -110,9 +121,10 @@ impl TileReadyBatcher {
         }
     }
 
-    pub(super) fn with_center(quick_reveal: bool, _center_tile: (i32, i32)) -> Self {
+    pub(super) fn with_center(quick_reveal: bool, center_tile: (i32, i32)) -> Self {
         Self {
             quick_reveal,
+            center_tile,
             ..Self::default()
         }
     }
@@ -151,6 +163,8 @@ impl TileReadyBatcher {
         if self.pending.is_empty() {
             return None;
         }
+        self.pending
+            .sort_unstable_by_key(|tile| tile_distance_sort_key(tile.coord, self.center_tile));
         let tiles = std::mem::take(&mut self.pending);
         self.last_flush = Instant::now();
         Some(tiles)
@@ -384,19 +398,6 @@ impl RegionManager {
                     self.entries.insert(*coord, entry);
                 }
             }
-        }
-    }
-
-    pub(super) fn reconcile_viewport_priorities(&mut self, visible_tiles: &BTreeSet<(i32, i32)>) {
-        for (coord, entry) in &mut self.entries {
-            if entry.priority == TilePriority::EditRefresh {
-                continue;
-            }
-            entry.priority = if visible_tiles.contains(coord) {
-                TilePriority::Visible
-            } else {
-                TilePriority::Prefetch
-            };
         }
     }
 
@@ -781,11 +782,7 @@ impl RegionManager {
             return Vec::new();
         }
         if tiles_are_sorted_center_first(visible_tiles, center) {
-            return self.queued_visible_coords_limited_ordered(
-                visible_tiles,
-                &ActiveRenderTiles::default(),
-                limit,
-            );
+            return self.queued_visible_coords_limited_ordered(visible_tiles, limit);
         }
         let now = Instant::now();
         let mut selected_priority = None;
@@ -830,7 +827,6 @@ impl RegionManager {
     pub(super) fn queued_visible_coords_limited_ordered(
         &self,
         visible_tiles: &[(i32, i32)],
-        processing_tiles: &ActiveRenderTiles,
         limit: usize,
     ) -> Vec<(i32, i32)> {
         if limit == 0 {
@@ -838,19 +834,16 @@ impl RegionManager {
         }
         let now = Instant::now();
         let mut coords = Vec::with_capacity(limit.min(visible_tiles.len()));
-        for select_edit_refresh in [true, false] {
+        for priority in [TilePriority::EditRefresh, TilePriority::Visible] {
             for include_failed in [false, true] {
                 for coord in visible_tiles {
                     if coords.len() >= limit {
                         return coords;
                     }
-                    if processing_tiles.contains(coord) {
-                        continue;
-                    }
                     let Some(entry) = self.entries.get(coord) else {
                         continue;
                     };
-                    if (entry.priority == TilePriority::EditRefresh) != select_edit_refresh
+                    if entry.priority != priority
                         || matches!(entry.state, TileLoadState::Failed) != include_failed
                         || !queued_entry_is_ready(entry, now)
                     {
@@ -861,36 +854,6 @@ impl RegionManager {
             }
         }
         coords
-    }
-
-    pub(super) fn has_queued_work_for_tiles(&self, tiles: &[(i32, i32)]) -> bool {
-        let now = Instant::now();
-        tiles.iter().any(|coord| {
-            self.entries
-                .get(coord)
-                .is_some_and(|entry| queued_entry_is_ready(entry, now))
-        })
-    }
-
-    pub(super) fn queued_prefetch_coords_limited_ordered(
-        &self,
-        prefetch_tiles: &[(i32, i32)],
-        limit: usize,
-    ) -> Vec<(i32, i32)> {
-        if limit == 0 {
-            return Vec::new();
-        }
-        let now = Instant::now();
-        prefetch_tiles
-            .iter()
-            .copied()
-            .filter(|coord| {
-                self.entries.get(coord).is_some_and(|entry| {
-                    entry.priority == TilePriority::Prefetch && queued_entry_is_ready(entry, now)
-                })
-            })
-            .take(limit)
-            .collect()
     }
 
     pub(super) fn mark_loading(&mut self, coords: &[(i32, i32)]) {

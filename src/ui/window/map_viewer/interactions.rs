@@ -111,7 +111,6 @@ impl MapViewerWindowView {
     pub(super) fn zoom_at(&mut self, position: Point<Pixels>, factor: f32, cx: &mut Context<Self>) {
         self.mark_viewport_interaction();
         self.viewport.zoom_at(position, factor);
-        self.prepare_viewport_images_for_zoom(cx);
         self.mark_viewport_render_dirty();
         self.invalidate_professional_overlay_for_viewport_change();
         self.context_menu = None;

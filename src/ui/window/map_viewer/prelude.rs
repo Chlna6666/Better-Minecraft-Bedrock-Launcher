@@ -8,7 +8,7 @@ pub(super) use super::actions::{
 pub(super) use super::canvas::{
     MapCanvasAction, MapCanvasSnapshot, MapCanvasView, ScreenPaintImage, TilePaintSnapshot,
     TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot,
-    screen_image_bounds, screen_image_viewports_transformable, selection_cursor_for_target,
+    screen_image_viewports_transformable, selection_cursor_for_target,
     take_map_tile_paint_resources_unavailable,
 };
 pub(super) use super::layout::{
