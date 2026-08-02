@@ -3,7 +3,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
-const CLIENT_ID: &str = "0000000048183522";
+const CLIENT_ID: &str = "00000000402b5328";
 const SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
 const DEVICE_CODE_ENDPOINT: &str = "https://login.live.com/oauth20_connect.srf";
 const TOKEN_ENDPOINT: &str = "https://login.live.com/oauth20_token.srf";

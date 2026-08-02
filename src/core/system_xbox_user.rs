@@ -1,5 +1,9 @@
 #![cfg(target_os = "windows")]
 
+#[cfg(target_os = "windows")]
+#[path = "system_xbox_user_wam.rs"]
+mod system_xbox_user_wam;
+
 use serde_json::Value;
 use std::env;
 use std::fs;
@@ -37,6 +41,7 @@ pub(crate) fn probe_default_user() -> SystemXboxUserProbe {
     for path in xbox_profile_candidates() {
         match read_profile_file(&path) {
             Ok(Some(user)) => {
+                let user = attach_gamer_picture(user);
                 tracing::info!(
                     source = %path.display(),
                     xbox_gamertag = %user.gamertag,
@@ -52,6 +57,7 @@ pub(crate) fn probe_default_user() -> SystemXboxUserProbe {
 
     match read_registry_profile() {
         Ok(Some(user)) => {
+            let user = attach_gamer_picture(user);
             tracing::info!(
                 source = "HKCU Xbox identity registry",
                 xbox_gamertag = %user.gamertag,
@@ -74,6 +80,31 @@ pub(crate) fn probe_default_user() -> SystemXboxUserProbe {
             ),
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn attach_gamer_picture(mut user: SystemXboxUser) -> SystemXboxUser {
+    match system_xbox_user_wam::gamer_picture_for_xuid(user.xuid) {
+        Ok(Some(picture)) => {
+            tracing::info!(
+                xuid = user.xuid,
+                bytes = picture.len(),
+                "已通过 Windows WAM/Xbox Profile API 获取并校验本地 Xbox 头像"
+            );
+            user.gamer_picture_png = Some(picture);
+        }
+        Ok(None) => tracing::warn!(
+            xuid = user.xuid,
+            "Windows WAM/Xbox 未返回匹配的本地 Xbox 头像"
+        ),
+        Err(error) => tracing::warn!(xuid = user.xuid, %error, "本地 Xbox 头像获取失败"),
+    }
+    user
+}
+
+#[cfg(not(target_os = "windows"))]
+fn attach_gamer_picture(user: SystemXboxUser) -> SystemXboxUser {
+    user
 }
 
 fn xbox_profile_candidates() -> Vec<PathBuf> {
