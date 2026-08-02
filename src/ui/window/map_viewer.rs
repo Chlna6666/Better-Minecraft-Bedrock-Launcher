@@ -33,6 +33,7 @@ mod status_bar;
 #[cfg(test)]
 mod tests;
 mod tile_cache;
+mod tile_manifest_legacy;
 mod tile_manifest;
 mod tile_plan;
 mod tile_render_legacy;
