@@ -2,6 +2,7 @@ pub(super) use super::tile_manifest_legacy::*;
 
 use super::model::*;
 use super::prelude::*;
+use super::tile_render::check_metadata_cancelled;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
