@@ -1,8 +1,10 @@
 pub(super) use super::tile_render_legacy::*;
 
 use super::model::{CHUNKS_PER_TILE, TileRenderEvent};
+use super::prelude::{RenderDiagnostics, RenderPipelineStats};
 use super::tile_render_legacy::{
-    TileBatchRequest, render_tile_batch_stream as render_tile_batch_stream_legacy,
+    TileBatchRequest, ViewportCompositeEvent, ViewportCompositeRequest,
+    render_tile_batch_stream as render_tile_batch_stream_legacy,
 };
 use bedrock_render::RenderLayout;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
@@ -74,4 +76,29 @@ pub(super) fn render_tile_batch_stream(
         .map_err(|_| "地图瓦片渲染线程崩溃".to_string())?;
     forward_result?;
     render_result
+}
+
+pub(super) fn render_viewport_composite_stream(
+    request: ViewportCompositeRequest,
+    event_sender: UnboundedSender<ViewportCompositeEvent>,
+) -> Result<(), String> {
+    let requested_tiles = request
+        .plans
+        .iter()
+        .map(|plan| plan.coord)
+        .collect::<Vec<_>>();
+    let stats = RenderPipelineStats {
+        planned_tiles: requested_tiles.len(),
+        ..RenderPipelineStats::default()
+    };
+    event_sender
+        .unbounded_send(ViewportCompositeEvent::Complete {
+            frame: None,
+            requested_tiles,
+            rendered_tiles: 0,
+            failed_tiles: 0,
+            diagnostics: RenderDiagnostics::default(),
+            stats,
+        })
+        .map_err(|_| "地图视口事件接收端已关闭".to_string())
 }
