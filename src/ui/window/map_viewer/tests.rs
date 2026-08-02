@@ -17,7 +17,7 @@ use super::tile_manifest::*;
 use super::tile_plan::*;
 use super::tile_render::*;
 use super::tile_state::*;
-use super::view::{MapLayerKind, map_render_layer_order};
+use super::view::{MapLayerKind, map_render_layer_order, map_viewer_window_size_for_display};
 use super::viewport::*;
 use super::*;
 
@@ -164,11 +164,11 @@ fn empty_viewport_composite_frame_is_transparent_rgba() {
 }
 
 #[::core::prelude::v1::test]
-fn viewport_composite_does_not_take_over_tile_scheduling() {
-    assert!(!VIEWPORT_COMPOSITE_ENABLED);
+fn viewport_composite_owns_the_foreground_map_layer() {
+    assert!(VIEWPORT_COMPOSITE_ENABLED);
     assert!(!viewport_composite_owns_viewport(false, false, false));
-    assert!(!viewport_composite_owns_viewport(false, true, false));
-    assert!(!viewport_composite_owns_viewport(false, false, true));
+    assert!(viewport_composite_owns_viewport(false, true, false));
+    assert!(viewport_composite_owns_viewport(false, false, true));
     assert!(!viewport_composite_owns_viewport(true, true, true));
 }
 
@@ -1973,18 +1973,15 @@ fn metadata_cancel_flag_is_taken_and_cancelled() {
 }
 
 #[::core::prelude::v1::test]
-fn active_render_tiles_keep_shared_tile_until_last_batch_finishes() {
+fn active_render_tiles_form_a_processing_set() {
     let mut active_tiles = ActiveRenderTiles::default();
 
     track_active_render_tiles(&mut active_tiles, &[(0, 0), (1, 0)]);
     track_active_render_tiles(&mut active_tiles, &[(1, 0), (2, 0)]);
-    finish_active_render_tiles(&mut active_tiles, &[(0, 0), (1, 0)]);
 
-    assert!(!active_tiles.contains_key(&(0, 0)));
-    assert_eq!(active_tiles.get(&(1, 0)), Some(&1));
-    assert_eq!(active_tiles.get(&(2, 0)), Some(&1));
+    assert_eq!(active_tiles, BTreeSet::from([(0, 0), (1, 0), (2, 0)]));
 
-    finish_active_render_tiles(&mut active_tiles, &[(1, 0), (2, 0)]);
+    finish_active_render_tiles(&mut active_tiles, &[(0, 0), (1, 0), (2, 0)]);
 
     assert!(active_tiles.is_empty());
 }
@@ -2128,7 +2125,7 @@ fn tile_ready_batcher_flushes_render_tiles_during_quick_reveal() {
 }
 
 #[::core::prelude::v1::test]
-fn tile_ready_batcher_flushes_tiles_in_center_ring_order() {
+fn tile_ready_batcher_flushes_tiles_in_completion_order() {
     let mut batcher = TileReadyBatcher::with_center(false, (0, 0));
     batcher.push(test_ready_tile((1, 1), TileReadySource::Render));
     batcher.push(test_ready_tile((0, -1), TileReadySource::Render));
@@ -2138,7 +2135,7 @@ fn tile_ready_batcher_flushes_tiles_in_center_ring_order() {
     let tiles = batcher.flush().expect("pending tiles should flush");
     assert_eq!(
         tiles.into_iter().map(|tile| tile.coord).collect::<Vec<_>>(),
-        vec![(0, 0), (0, -1), (1, 0), (1, 1)]
+        vec![(1, 1), (0, -1), (0, 0), (1, 0)]
     );
 }
 
@@ -2157,28 +2154,6 @@ fn tile_chunk_region_uses_eight_by_eight_tile_bounds() {
     assert_eq!(region.max_chunk_x, 15);
     assert_eq!(region.min_chunk_z, -8);
     assert_eq!(region.max_chunk_z, -1);
-}
-
-#[::core::prelude::v1::test]
-fn optimistic_tile_chunk_positions_cover_the_entire_tile() {
-    let layout = web_relief_render_layout();
-    let positions = optimistic_tile_chunk_positions(Dimension::Overworld, (1, -1), layout)
-        .expect("optimistic tile chunk positions");
-
-    assert_eq!(positions.len(), 64);
-    assert_eq!(
-        positions.first().map(|position| (position.x, position.z)),
-        Some((8, -8))
-    );
-    assert_eq!(
-        positions.last().map(|position| (position.x, position.z)),
-        Some((15, -1))
-    );
-    assert!(positions.iter().all(|position| {
-        position.dimension == Dimension::Overworld
-            && (8..=15).contains(&position.x)
-            && (-8..=-1).contains(&position.z)
-    }));
 }
 
 #[::core::prelude::v1::test]
@@ -2449,6 +2424,30 @@ fn shared_tile_chunk_index_normalizes_cached_positions() {
 }
 
 #[::core::prelude::v1::test]
+fn unknown_tile_candidates_are_clipped_to_known_chunk_bounds() {
+    let layout = web_relief_render_layout();
+    let bounds = ChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: 0,
+        min_chunk_z: 0,
+        max_chunk_x: 3,
+        max_chunk_z: 3,
+        chunk_count: 16,
+    };
+
+    let positions =
+        tile_chunk_positions_for_known_bounds(Dimension::Overworld, (0, 0), layout, Some(bounds))
+            .expect("known bounds should clip tile candidates");
+
+    assert_eq!(positions.len(), 16);
+    assert!(
+        positions
+            .iter()
+            .all(|position| (0..=3).contains(&position.x) && (0..=3).contains(&position.z))
+    );
+}
+
+#[::core::prelude::v1::test]
 fn empty_tile_index_remains_empty_for_negative_cache() {
     let layout = web_relief_render_layout();
     let indexed_positions = Vec::new();
@@ -2466,14 +2465,26 @@ fn empty_tile_index_remains_empty_for_negative_cache() {
 }
 
 #[::core::prelude::v1::test]
-fn missing_tile_index_uses_unculled_cpu_render_path() {
+fn missing_tile_index_expands_to_region_candidates_for_exact_reads() {
     let layout = web_relief_render_layout();
 
-    let render_positions =
-        ui_tile_chunk_positions_for_render(Dimension::Overworld, 1, -1, layout, None)
-            .expect("unknown tile index should render without pre-cull");
+    let render_positions = optimistic_tile_chunk_positions(Dimension::Overworld, (1, -1), layout)
+        .expect("unknown tile index should expand to region candidates");
 
-    assert!(render_positions.is_none());
+    assert_eq!(
+        render_positions.len(),
+        usize::try_from(layout.chunks_per_tile)
+            .expect("chunks per tile")
+            .saturating_pow(2)
+    );
+    assert_eq!(
+        render_positions.first(),
+        Some(&ChunkPos {
+            x: i32::try_from(layout.chunks_per_tile).expect("chunks per tile"),
+            z: -i32::try_from(layout.chunks_per_tile).expect("chunks per tile"),
+            dimension: Dimension::Overworld,
+        })
+    );
 }
 
 #[::core::prelude::v1::test]
@@ -2500,13 +2511,11 @@ fn pending_manifest_detection_is_limited_to_requested_tiles() {
 #[::core::prelude::v1::test]
 fn cancelled_probe_keeps_pending_manifest_tile_probeable() {
     let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::EditRefresh);
 
     assert!(manager.is_pending_manifest((0, 0)));
     assert!(manager.has_pending_manifest_for_tiles(&[(0, 0)]));
-    assert!(should_probe_manifest_tiles(
-        false, false, false, true, false, false
-    ));
+    assert!(should_probe_edit_refresh_manifest(false, true));
 }
 
 #[::core::prelude::v1::test]
@@ -2838,7 +2847,7 @@ fn interactive_tile_batch_defaults_are_conservative() {
     assert_eq!(FIRST_REVEAL_READY_BATCH_INTERVAL, Duration::from_millis(16));
     assert_eq!(QUICK_REVEAL_TILE_FRAME_INTERVAL, Duration::from_millis(8));
     assert_eq!(DRAG_VISIBLE_BATCH_LIMIT, 16);
-    assert_eq!(VISIBLE_TILE_FOREGROUND_WORK_LIMIT, 512);
+    assert_eq!(VISIBLE_TILE_FOREGROUND_WORK_LIMIT, usize::MAX);
     assert_eq!(INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT, 48);
     assert_eq!(VIEWPORT_WORK_REFRESH_INTERVAL, Duration::from_millis(16));
     assert_eq!(RENDER_STREAM_GROUP_TILES, 4);
@@ -2864,10 +2873,7 @@ fn interactive_tile_batch_defaults_are_conservative() {
 
 #[::core::prelude::v1::test]
 fn visible_tile_foreground_work_limit_reduces_work_during_interaction() {
-    assert_eq!(
-        visible_tile_foreground_work_limit(false),
-        VISIBLE_TILE_FOREGROUND_WORK_LIMIT
-    );
+    assert_eq!(visible_tile_foreground_work_limit(false), usize::MAX);
     assert_eq!(
         visible_tile_foreground_work_limit(true),
         INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT
@@ -2876,10 +2882,85 @@ fn visible_tile_foreground_work_limit_reduces_work_during_interaction() {
 }
 
 #[::core::prelude::v1::test]
-fn drag_manifest_probe_prioritizes_unknown_visible_tiles() {
-    assert!(drag_manifest_probe_needed(1, false));
-    assert!(!drag_manifest_probe_needed(0, false));
-    assert!(!drag_manifest_probe_needed(1, true));
+fn low_zoom_visible_work_detects_tiles_beyond_first_registration_slice() {
+    let former_limit = 512usize;
+    let visible_tiles = (0..=former_limit)
+        .map(|index| (i32::try_from(index).expect("test tile index"), 0))
+        .collect::<Vec<_>>();
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&visible_tiles[..former_limit], TilePriority::Visible);
+
+    assert!(has_unregistered_visible_tile_work(
+        &visible_tiles,
+        &TileChunkIndex::new(),
+        &manager,
+    ));
+
+    manager.ensure_tiles(&visible_tiles[former_limit..], TilePriority::Visible);
+
+    assert!(!has_unregistered_visible_tile_work(
+        &visible_tiles,
+        &TileChunkIndex::new(),
+        &manager,
+    ));
+}
+
+#[::core::prelude::v1::test]
+fn visible_queue_uses_camera_membership_and_skips_processing_before_batch_limit() {
+    let mut manager = RegionManager::default();
+    let visible_tiles = vec![(0, 0), (1, 0), (2, 0)];
+    manager.ensure_tiles(&visible_tiles, TilePriority::Prefetch);
+    let processing_tiles = BTreeSet::from([(0, 0), (1, 0)]);
+
+    assert_eq!(
+        manager.queued_visible_coords_limited_ordered(&visible_tiles, &processing_tiles, 2,),
+        vec![(2, 0)]
+    );
+    assert!(manager.has_queued_work_for_tiles(&visible_tiles));
+}
+
+#[::core::prelude::v1::test]
+fn viewport_priority_reconciliation_downgrades_tiles_left_behind() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0), (1, 0)], TilePriority::Visible);
+    let visible_tiles = BTreeSet::from([(1, 0)]);
+
+    manager.reconcile_viewport_priorities(&visible_tiles);
+
+    assert_eq!(
+        manager.entries.get(&(0, 0)).map(|entry| entry.priority),
+        Some(TilePriority::Prefetch)
+    );
+    assert_eq!(
+        manager.entries.get(&(1, 0)).map(|entry| entry.priority),
+        Some(TilePriority::Visible)
+    );
+}
+
+#[::core::prelude::v1::test]
+fn prefetch_queue_only_returns_current_camera_plan() {
+    let mut manager = RegionManager::default();
+    manager.ensure_tiles(&[(0, 0), (1, 0), (2, 0)], TilePriority::Prefetch);
+
+    let queued = manager.queued_prefetch_coords_limited_ordered(&[(2, 0), (1, 0)], 1);
+
+    assert_eq!(queued, vec![(2, 0)]);
+}
+
+#[::core::prelude::v1::test]
+fn map_viewer_window_size_uses_smaller_default_and_display_limit() {
+    let default_size = map_viewer_window_size_for_display(None, Some(size(px(1920.0), px(1080.0))));
+    assert_eq!(default_size, size(px(1120.0), px(720.0)));
+
+    let restored_size = map_viewer_window_size_for_display(
+        Some(crate::core::ui_prefs::MapViewerWindowPrefs {
+            width: 1800.0,
+            height: 1000.0,
+        }),
+        Some(size(px(1366.0), px(768.0))),
+    );
+    assert_eq!(restored_size.width / px(1.0), 1366.0 * 0.9);
+    assert_eq!(restored_size.height / px(1.0), 768.0 * 0.9);
 }
 
 #[::core::prelude::v1::test]
@@ -3292,35 +3373,10 @@ fn manifest_probe_skips_scanned_center_and_batches_remaining_visible_tiles() {
 }
 
 #[::core::prelude::v1::test]
-fn manifest_probe_prioritizes_visible_pending_even_with_render_work() {
-    assert!(should_probe_manifest_tiles(
-        false, false, false, true, false, true
-    ));
-    assert!(!should_probe_manifest_tiles(
-        false, false, false, false, true, true
-    ));
-    assert!(should_probe_manifest_tiles(
-        false, false, false, false, true, false
-    ));
-    assert!(should_probe_manifest_tiles(
-        false, false, true, false, false, true
-    ));
-    assert!(should_probe_manifest_tiles(
-        true, false, true, true, true, false
-    ));
-    assert!(!should_probe_manifest_tiles(
-        false, true, true, true, true, false
-    ));
-}
-
-#[::core::prelude::v1::test]
-fn manifest_probe_allows_first_screen_visible_work_during_metadata_load() {
-    assert!(should_probe_manifest_tiles(
-        true, false, false, true, false, false
-    ));
-    assert!(!should_probe_manifest_tiles(
-        true, false, false, false, true, false
-    ));
+fn manifest_probe_is_reserved_for_edit_refresh() {
+    assert!(should_probe_edit_refresh_manifest(false, true));
+    assert!(!should_probe_edit_refresh_manifest(true, true));
+    assert!(!should_probe_edit_refresh_manifest(false, false));
 }
 
 #[::core::prelude::v1::test]

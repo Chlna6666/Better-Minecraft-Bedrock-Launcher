@@ -8,7 +8,9 @@ use super::panels::*;
 use super::prelude::*;
 use super::region_package;
 use super::tile_cache::render_image_pixels;
-use super::tile_render::{open_map_render_session, render_tile_batch_stream, RenderTilePlan, TileBatchRequest};
+use super::tile_render::{
+    RenderTilePlan, TileBatchRequest, open_map_render_session, render_tile_batch_stream,
+};
 use super::tile_state::ReadyTile;
 use super::viewport::viewport_screen_for_block;
 use crate::ui::state::launcher::LauncherState;
@@ -109,6 +111,7 @@ impl MapViewerWindowView {
     pub(super) fn zoom_at(&mut self, position: Point<Pixels>, factor: f32, cx: &mut Context<Self>) {
         self.mark_viewport_interaction();
         self.viewport.zoom_at(position, factor);
+        self.prepare_viewport_images_for_zoom(cx);
         self.mark_viewport_render_dirty();
         self.invalidate_professional_overlay_for_viewport_change();
         self.context_menu = None;

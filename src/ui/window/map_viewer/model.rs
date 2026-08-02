@@ -54,7 +54,7 @@ pub(super) const FIRST_VISIBLE_BATCH_LIMIT: usize = 4;
 pub(super) const OVERVIEW_VISIBLE_TILE_THRESHOLD: usize = 256;
 pub(super) const OVERVIEW_VISIBLE_BATCH_LIMIT: usize = 24;
 pub(super) const OVERVIEW_FIRST_VISIBLE_BATCH_LIMIT: usize = 16;
-pub(super) const VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = 512;
+pub(super) const VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = usize::MAX;
 pub(super) const INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = 48;
 
 pub(super) type TileChunkPositions = Arc<[ChunkPos]>;
@@ -1719,6 +1719,7 @@ pub struct MapViewerWindowView {
     pub(super) viewport_plan_generation: u64,
     pub(super) viewport_composite_signature: Option<ViewportCompositeSignature>,
     pub(super) viewport_composite_request_id: Option<u64>,
+    pub(super) viewport_zoom_transition: bool,
     pub(super) last_ready_status_update: Option<Instant>,
     pub(super) status: SharedString,
     pub(super) diagnostics: RenderDiagnostics,
@@ -1758,4 +1759,5 @@ pub(super) struct ViewportCompositeSignature {
     pub(super) render_generation: u64,
     pub(super) visible: Vec<(i32, i32)>,
     pub(super) center: (i32, i32),
+    pub(super) chunk_bounds_key: Option<(i32, i32, i32, i32)>,
 }
