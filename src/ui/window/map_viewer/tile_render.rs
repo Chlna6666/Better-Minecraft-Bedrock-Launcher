@@ -567,43 +567,12 @@ pub(super) fn render_viewport_composite_stream(
                     match event {
                         TileStreamEventV2::Ready { planned, tile, .. } => {
                             let coord = (planned.job.coord.x, planned.job.coord.z);
-                            let rendered_tiles = {
-                                let mut compositor = compositor
-                                    .lock()
-                                    .map_err(|_| render_io_error("视口合成状态锁已损坏"))?;
-                                compositor
-                                    .blend_tile(coord, &tile)
-                                    .map_err(bedrock_render::BedrockRenderError::Validation)?;
-                                compositor.rendered_tiles()
-                            };
-                            let Some(rect) =
-                                tile_paint_rect(viewport, layout, render_range, coord.0, coord.1)
-                            else {
-                                return Ok(());
-                            };
-                            let (image, _pixel_format, _width, _height, estimated_bytes) =
-                                render_image_from_decoded_tile_parts(
-                                    tile.width,
-                                    tile.height,
-                                    tile.pixel_format,
-                                    tile.pixels.clone(),
-                                )
+                            let mut compositor = compositor
+                                .lock()
+                                .map_err(|_| render_io_error("视口合成状态锁已损坏"))?;
+                            compositor
+                                .blend_tile(coord, &tile)
                                 .map_err(bedrock_render::BedrockRenderError::Validation)?;
-                            send_viewport_composite_event_or_cancel(
-                                &event_sender,
-                                &stream_cancel,
-                                ViewportCompositeEvent::Tile {
-                                    tile: ViewportCompositeTile {
-                                        image,
-                                        source_viewport: viewport,
-                                        left: rect.left,
-                                        top: rect.top,
-                                        width: rect.width(),
-                                        height: rect.height(),
-                                        estimated_bytes,
-                                    },
-                                },
-                            )?;
                         }
                         TileStreamEventV2::Empty { .. } => {}
                         TileStreamEventV2::Failed { planned, error } => {
