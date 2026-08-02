@@ -1026,7 +1026,7 @@ pub(super) fn render_app_chrome(
                 .items_center()
                 .gap(px(9.))
                 .child(
-                    img("icons/logo.svg")
+                    img("icons/logo.png")
                         .size(px(34.))
                         .object_fit(ObjectFit::Contain),
                 )
