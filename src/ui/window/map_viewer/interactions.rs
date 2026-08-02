@@ -8,9 +8,7 @@ use super::panels::*;
 use super::prelude::*;
 use super::region_package;
 use super::tile_cache::render_image_pixels;
-use super::tile_render::{
-    RenderTilePlan, TileBatchRequest, open_map_render_session, render_tile_batch_stream,
-};
+use super::tile_render::{open_map_render_session, render_tile_batch_stream, RenderTilePlan, TileBatchRequest};
 use super::tile_state::ReadyTile;
 use super::viewport::viewport_screen_for_block;
 use crate::ui::state::launcher::LauncherState;
