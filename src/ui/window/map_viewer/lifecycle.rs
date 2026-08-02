@@ -17,9 +17,10 @@ const MAP_VIEWER_TASK_STAGE_LABELS: [(&str, &str); 7] = [
     ("map_write", "写入地图"),
     ("map_refresh", "刷新地图瓦片"),
 ];
-// Keep tile batches as the authoritative viewport renderer. Composite frames
-// remain available for future opt-in use, but must not block tile scheduling.
-pub(super) const VIEWPORT_COMPOSITE_ENABLED: bool = false;
+// The viewport image is the only map layer submitted to GPUI. Individual tile
+// results stay in the renderer/cache and are composed before the foreground
+// snapshot is replaced, so camera changes cannot expose a half-updated tile set.
+pub(super) const VIEWPORT_COMPOSITE_ENABLED: bool = true;
 
 pub(super) const fn viewport_composite_owns_viewport(
     viewport_dragging: bool,
@@ -40,11 +41,43 @@ pub(super) fn visible_tile_foreground_work_limit(is_interacting: bool) -> usize 
     .max(1)
 }
 
-pub(super) const fn drag_manifest_probe_needed(
-    pending_visible_tiles: usize,
-    manifest_probe_in_flight: bool,
+pub(super) fn visible_tile_needs_foreground_work(
+    tile_chunk_index: &TileChunkIndex,
+    tile_manager: &RegionManager,
+    coord: (i32, i32),
 ) -> bool {
-    pending_visible_tiles > 0 && !manifest_probe_in_flight
+    match tile_chunk_index.get(&coord) {
+        Some(positions) if positions.is_empty() => !tile_manager
+            .entries
+            .get(&coord)
+            .is_some_and(|entry| entry.state == TileLoadState::Invalid),
+        Some(_) => !tile_manager.entries.get(&coord).is_some_and(|entry| {
+            matches!(entry.state, TileLoadState::Queued | TileLoadState::Loading)
+                || (entry.state == TileLoadState::Loaded && entry.image.is_some())
+                || entry.state == TileLoadState::Invalid
+        }),
+        None => !tile_manager.entries.get(&coord).is_some_and(|entry| {
+            matches!(
+                entry.state,
+                TileLoadState::PendingManifest
+                    | TileLoadState::Queued
+                    | TileLoadState::Loading
+                    | TileLoadState::Loaded
+                    | TileLoadState::Invalid
+            )
+        }),
+    }
+}
+
+pub(super) fn has_unregistered_visible_tile_work(
+    visible_tiles: &[(i32, i32)],
+    tile_chunk_index: &TileChunkIndex,
+    tile_manager: &RegionManager,
+) -> bool {
+    visible_tiles
+        .iter()
+        .copied()
+        .any(|coord| visible_tile_needs_foreground_work(tile_chunk_index, tile_manager, coord))
 }
 
 pub(super) const fn should_defer_render_image_evictions(viewport_interacting: bool) -> bool {
@@ -127,6 +160,19 @@ impl MapViewerWindowView {
             self.viewport_composite_signature = None;
         }
         self.pending_viewport_refresh = true;
+    }
+
+    pub(super) fn prepare_viewport_images_for_zoom(&mut self, _cx: &mut Context<Self>) -> bool {
+        if !VIEWPORT_COMPOSITE_ENABLED {
+            return false;
+        }
+        self.viewport_zoom_transition = true;
+        // Invalidate the old request before the debounce window can deliver a
+        // stale tile. Its event is dropped instead of being painted at the new
+        // zoom level; the previous frame remains visible until replacement.
+        self.viewport_composite_signature = None;
+        self.pending_viewport_refresh = true;
+        true
     }
 
     pub(super) fn viewport_recently_interacted(&self) -> bool {
@@ -426,6 +472,7 @@ impl MapViewerWindowView {
             viewport_plan_generation: 0,
             viewport_composite_signature: None,
             viewport_composite_request_id: None,
+            viewport_zoom_transition: false,
             last_ready_status_update: None,
             status: SharedString::from("正在扫描地图瓦片..."),
             diagnostics: RenderDiagnostics::default(),
@@ -595,6 +642,12 @@ impl MapViewerWindowView {
         force_rebuild: bool,
         cx: &mut Context<Self>,
     ) {
+        if VIEWPORT_COMPOSITE_ENABLED {
+            if rebuild_paste_preview_images {
+                self.rebuild_paste_preview_images(cx);
+            }
+            return;
+        }
         let paint_bounds = self.current_canvas_paint_bounds();
         if !force_rebuild && self.canvas_tile_snapshot.paint_bounds == paint_bounds {
             return;
@@ -621,6 +674,7 @@ impl MapViewerWindowView {
 
     pub(super) fn clear_canvas_tile_snapshot(&mut self, cx: &mut Context<Self>) {
         self.canvas_tile_generation = self.canvas_tile_generation.saturating_add(1);
+        self.viewport_zoom_transition = false;
         self.replace_canvas_tile_snapshot(
             TilePaintSnapshot {
                 generation: self.canvas_tile_generation,
@@ -709,6 +763,14 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn refresh_canvas_tiles(&mut self, colors: ThemeColors, cx: &mut Context<Self>) {
+        if VIEWPORT_COMPOSITE_ENABLED {
+            self.rebuild_paste_preview_images(cx);
+            self.viewport_composite_signature = None;
+            self.pending_viewport_refresh = true;
+            self.sync_canvas_snapshot(colors, cx);
+            self.schedule_viewport_work_refresh(cx);
+            return;
+        }
         self.canvas_tile_generation = self.canvas_tile_generation.saturating_add(1);
         let snapshot = build_tile_paint_snapshot(
             &self.tile_manager,
@@ -847,6 +909,16 @@ impl MapViewerWindowView {
         colors: ThemeColors,
         cx: &mut Context<Self>,
     ) {
+        if VIEWPORT_COMPOSITE_ENABLED {
+            if changed_tiles.is_empty() {
+                return;
+            }
+            self.viewport_composite_signature = None;
+            self.pending_viewport_refresh = true;
+            self.sync_canvas_snapshot(colors, cx);
+            self.schedule_viewport_work_refresh(cx);
+            return;
+        }
         let paint_bounds = self.current_canvas_paint_bounds();
         let affects_visible = paint_bounds.is_none_or(|bounds| {
             changed_tiles
@@ -1010,6 +1082,8 @@ impl MapViewerWindowView {
         self.active_render_tiles.clear();
         self.active_render_center_tiles.clear();
         self.active_render_request_tiles.clear();
+        self.viewport_composite_request_id = None;
+        self.viewport_composite_signature = None;
         self.pending_viewport_refresh = false;
     }
 
@@ -1638,8 +1712,8 @@ impl MapViewerWindowView {
         let metadata_cancel_for_owner = metadata_cancel.clone();
         self.metadata_cancel = Some(metadata_cancel);
 
-        // This call records the viewport immediately. Unknown tiles wait for the short cache
-        // identity lookup below; a miss resumes the existing demand-driven manifest probe.
+        // Record camera demand before the cache lookup finishes. As soon as the render session
+        // is ready, unknown regions enter the same render queue as indexed regions.
         self.ensure_visible_tiles(cx);
 
         cx.spawn(async move |handle, cx| {
@@ -1785,7 +1859,7 @@ impl MapViewerWindowView {
         } else if !self.metadata_index_ready {
             self.status = SharedString::from("地图索引暂无区块 · 正在尝试渲染当前视口");
         }
-        if self.uses_viewport_composite() {
+        if VIEWPORT_COMPOSITE_ENABLED || self.uses_viewport_composite() {
             self.last_visible_tile_signature = None;
             self.pending_viewport_refresh = false;
             self.schedule_next_tile_batch(cx);
@@ -1851,14 +1925,20 @@ impl MapViewerWindowView {
             return;
         }
         self.last_visible_tile_signature = Some(visible_signature);
+        let visible_tile_set = tile_plan.visible.iter().copied().collect::<BTreeSet<_>>();
+        self.tile_manager
+            .reconcile_viewport_priorities(&visible_tile_set);
 
         let mut visible_renderable_tiles = Vec::new();
-        let mut visible_manifest_probe_tiles = Vec::new();
         let mut deferred_visible_work = false;
         let visible_work_limit = visible_tile_foreground_work_limit(tile_plan.is_interacting);
         let mut visible_work_count = 0usize;
         for coord in &tile_plan.visible {
-            let needs_work = self.visible_tile_needs_foreground_work(*coord);
+            let needs_work = visible_tile_needs_foreground_work(
+                &self.tile_chunk_index,
+                &self.tile_manager,
+                *coord,
+            );
             if needs_work && visible_work_count >= visible_work_limit {
                 deferred_visible_work = true;
                 break;
@@ -1888,11 +1968,6 @@ impl MapViewerWindowView {
                     }
                 }
                 None => {
-                    let manifest_already_scanned = self.manifest_scanned_tiles.contains(coord);
-                    if manifest_already_scanned {
-                        continue;
-                    }
-                    visible_manifest_probe_tiles.push(*coord);
                     if !needs_work {
                         continue;
                     }
@@ -1911,8 +1986,7 @@ impl MapViewerWindowView {
             self.render_texture_layout,
         );
         let mut prefetch_renderable_tiles = Vec::new();
-        let mut prefetch_pending_manifest_tiles = Vec::new();
-        if self.metadata_index_ready && tile_plan.prefetch_radius > 0 {
+        if tile_plan.prefetch_radius > 0 {
             for coord in &tile_plan.prefetch {
                 if tile_plan
                     .visible_bounds
@@ -1937,14 +2011,7 @@ impl MapViewerWindowView {
                         }
                     }
                     None => {
-                        let has_cached_image = self
-                            .tile_manager
-                            .entries
-                            .get(coord)
-                            .is_some_and(|entry| entry.image.is_some());
-                        if !has_cached_image {
-                            prefetch_pending_manifest_tiles.push(*coord);
-                        }
+                        prefetch_renderable_tiles.push(*coord);
                     }
                 }
             }
@@ -1953,12 +2020,6 @@ impl MapViewerWindowView {
                 TilePriority::Prefetch,
                 self.render_texture_layout,
             );
-            let prefetch_manifest_requires_refresh = self
-                .tile_manager
-                .ensure_pending_manifest(&prefetch_pending_manifest_tiles, TilePriority::Prefetch);
-            if prefetch_manifest_requires_refresh {
-                self.bypass_cache_active = true;
-            }
         }
         if deferred_visible_work {
             self.pending_viewport_refresh = true;
@@ -1969,38 +2030,15 @@ impl MapViewerWindowView {
             .pending_manifest_coords_with_priority(TilePriority::EditRefresh);
         let has_edit_refresh_manifest = !edit_refresh_tiles.is_empty();
         let should_probe_manifest = !tile_plan.is_interacting
-            && should_probe_manifest_tiles(
-                self.metadata_loading,
+            && should_probe_edit_refresh_manifest(
                 self.manifest_probe_in_flight,
                 has_edit_refresh_manifest,
-                !visible_manifest_probe_tiles.is_empty(),
-                !prefetch_pending_manifest_tiles.is_empty(),
-                self.tile_manager.has_visible_work(),
             );
         if should_probe_manifest {
-            let prefetch_probe_tiles = visible_manifest_probe_tiles
-                .iter()
-                .chain(prefetch_pending_manifest_tiles.iter())
-                .chain(edit_refresh_tiles.iter())
-                .copied()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            self.schedule_tile_manifest_probe(
-                &visible_manifest_probe_tiles,
-                &prefetch_probe_tiles,
-                tile_plan.center,
-                cx,
-            );
+            self.schedule_tile_manifest_probe(&[], &edit_refresh_tiles, tile_plan.center, cx);
         }
 
-        let deferred_visible_manifest_probe =
-            tile_plan.is_interacting && !visible_manifest_probe_tiles.is_empty();
-        if self.render_batch_active
-            && (self.tile_manager.has_visible_work() || !visible_manifest_probe_tiles.is_empty())
-        {
-            self.pending_viewport_refresh = true;
-        } else if deferred_visible_manifest_probe {
+        if self.render_batch_active && self.tile_manager.has_visible_work() {
             self.pending_viewport_refresh = true;
         } else if !deferred_visible_work {
             self.pending_viewport_refresh = false;
@@ -2048,31 +2086,6 @@ impl MapViewerWindowView {
             Ok::<(), anyhow::Error>(())
         })
         .detach();
-    }
-
-    fn visible_tile_needs_foreground_work(&self, coord: (i32, i32)) -> bool {
-        match self.tile_chunk_index.get(&coord) {
-            Some(positions) if positions.is_empty() => !self
-                .tile_manager
-                .entries
-                .get(&coord)
-                .is_some_and(|entry| entry.state == TileLoadState::Invalid),
-            Some(_) => !self.tile_manager.entries.get(&coord).is_some_and(|entry| {
-                matches!(entry.state, TileLoadState::Queued | TileLoadState::Loading)
-                    || (entry.state == TileLoadState::Loaded && entry.image.is_some())
-                    || entry.state == TileLoadState::Invalid
-            }),
-            None => !self.tile_manager.entries.get(&coord).is_some_and(|entry| {
-                matches!(
-                    entry.state,
-                    TileLoadState::PendingManifest
-                        | TileLoadState::Queued
-                        | TileLoadState::Loading
-                        | TileLoadState::Loaded
-                        | TileLoadState::Invalid
-                )
-            }),
-        }
     }
 
     pub(super) fn schedule_tile_manifest_probe(
@@ -2356,6 +2369,11 @@ impl MapViewerWindowView {
             }
             return;
         }
+        if VIEWPORT_COMPOSITE_ENABLED {
+            self.pending_viewport_refresh = true;
+            self.schedule_next_tile_batch(cx);
+            return;
+        }
 
         let center = self.viewport.center_tile(self.active_layout);
         let Some(visible_bounds) =
@@ -2368,8 +2386,10 @@ impl MapViewerWindowView {
             return;
         }
 
+        let visible_tile_set = visible_tiles.iter().copied().collect::<BTreeSet<_>>();
+        self.tile_manager
+            .reconcile_viewport_priorities(&visible_tile_set);
         let mut visible_renderable_tiles = Vec::new();
-        let mut visible_manifest_probe_tiles = Vec::new();
         for coord in &visible_tiles {
             match self.tile_chunk_index.get(coord) {
                 Some(positions) if positions.is_empty() => {
@@ -2388,10 +2408,7 @@ impl MapViewerWindowView {
                     }
                 }
                 None => {
-                    if !self.manifest_scanned_tiles.contains(coord) {
-                        visible_manifest_probe_tiles.push(*coord);
-                        visible_renderable_tiles.push(*coord);
-                    }
+                    visible_renderable_tiles.push(*coord);
                 }
             }
         }
@@ -2400,15 +2417,6 @@ impl MapViewerWindowView {
             TilePriority::Visible,
             self.render_texture_layout,
         );
-        if drag_manifest_probe_needed(
-            visible_manifest_probe_tiles.len(),
-            self.manifest_probe_in_flight,
-        ) {
-            self.schedule_tile_manifest_probe(&visible_manifest_probe_tiles, &[], center, cx);
-        }
-        if !visible_manifest_probe_tiles.is_empty() {
-            self.pending_viewport_refresh = true;
-        }
         if !self.has_render_batch_capacity() && self.tile_manager.has_visible_work() {
             let active_bounds = tile_bounds_from_coords(&visible_tiles).unwrap_or(visible_bounds);
             let cancelled_batches =
@@ -2422,7 +2430,12 @@ impl MapViewerWindowView {
 
     fn has_current_viewport_work_or_pending_manifest(&self) -> bool {
         let visible_tiles = self.tile_coords_for_viewport(0);
-        self.tile_manager.has_visible_work()
+        self.tile_manager.has_queued_work_for_tiles(&visible_tiles)
+            || has_unregistered_visible_tile_work(
+                &visible_tiles,
+                &self.tile_chunk_index,
+                &self.tile_manager,
+            )
             || self
                 .tile_manager
                 .has_pending_manifest_for_tiles(&visible_tiles)
@@ -2507,7 +2520,6 @@ impl MapViewerWindowView {
         build_viewport_tile_plan(ViewportTilePlanOptions {
             viewport: self.viewport,
             layout: self.active_layout,
-            metadata_index_ready: self.metadata_index_ready,
             is_interacting: self.viewport_interaction_active(),
             drag: self.drag,
         })
@@ -2566,9 +2578,25 @@ impl MapViewerWindowView {
             render_generation: self.render_generation,
             visible: visible_tiles.clone(),
             center: center_tile,
+            chunk_bounds_key: self.chunk_bounds.map(|bounds| {
+                (
+                    bounds.min_chunk_x,
+                    bounds.min_chunk_z,
+                    bounds.max_chunk_x,
+                    bounds.max_chunk_z,
+                )
+            }),
         };
-        if self.viewport_composite_signature.as_ref() == Some(&signature) {
+        if self.viewport_composite_signature.as_ref() == Some(&signature)
+            && (self.viewport_composite_request_id.is_some()
+                || !self.canvas_tile_snapshot.screen_images.is_empty())
+        {
             return;
+        }
+        if let Some(request_id) = self.viewport_composite_request_id.take() {
+            if let Some(cancel) = self.render_cancels.get(&request_id) {
+                cancel.cancel();
+            }
         }
         if !self.has_render_batch_capacity() {
             self.pending_viewport_refresh = true;
@@ -2580,7 +2608,16 @@ impl MapViewerWindowView {
         let dimension = self.dimension;
         let layout = self.active_layout;
         for coord in &visible_tiles {
-            let chunk_positions = self.tile_chunk_index.get(coord).map(Arc::clone);
+            let chunk_positions = match self.tile_chunk_index.get(coord) {
+                Some(positions) => Some(Arc::clone(positions)),
+                None => tile_chunk_positions_for_known_bounds(
+                    dimension,
+                    *coord,
+                    layout,
+                    self.chunk_bounds,
+                )
+                .ok(),
+            };
             if chunk_positions
                 .as_deref()
                 .is_some_and(|positions| positions.is_empty())
@@ -2709,18 +2746,22 @@ impl MapViewerWindowView {
                     if this.viewport_composite_request_id == Some(request_id)
                         && this.viewport_composite_signature.as_ref() != Some(&signature_for_event)
                     {
-                        if let ViewportCompositeEvent::Complete {
-                            frame,
-                            requested_tiles,
-                            ..
-                        } = event
-                        {
-                            if let Some(frame) = frame {
-                                Self::drop_render_image(Some(frame.image), cx);
+                        match event {
+                            ViewportCompositeEvent::Tile { tile } => {
+                                Self::drop_render_image(Some(tile.image), cx);
                             }
-                            this.finish_render_request(request_id, &requested_tiles);
-                            this.viewport_composite_request_id = None;
-                            this.schedule_viewport_work_refresh(cx);
+                            ViewportCompositeEvent::Complete {
+                                frame,
+                                requested_tiles,
+                                ..
+                            } => {
+                                if let Some(frame) = frame {
+                                    Self::drop_render_image(Some(frame.image), cx);
+                                }
+                                this.finish_render_request(request_id, &requested_tiles);
+                                this.viewport_composite_request_id = None;
+                                this.schedule_viewport_work_refresh(cx);
+                            }
                         }
                         return;
                     }
@@ -2731,15 +2772,27 @@ impl MapViewerWindowView {
                             "viewport_composite",
                         )
                     {
-                        if let ViewportCompositeEvent::Complete { frame, .. } = event
-                            && let Some(frame) = frame
-                        {
-                            Self::drop_render_image(Some(frame.image), cx);
+                        match event {
+                            ViewportCompositeEvent::Tile { tile } => {
+                                Self::drop_render_image(Some(tile.image), cx);
+                            }
+                            ViewportCompositeEvent::Complete { frame, .. } if frame.is_some() => {
+                                if let Some(frame) = frame {
+                                    Self::drop_render_image(Some(frame.image), cx);
+                                }
+                            }
+                            ViewportCompositeEvent::Complete { .. } => {}
                         }
                         return;
                     }
 
                     match event {
+                        ViewportCompositeEvent::Tile { tile } => {
+                            if this.append_viewport_composite_tile(tile, cx) {
+                                let colors = this.theme_colors(cx);
+                                this.sync_canvas_snapshot(colors, cx);
+                            }
+                        }
                         ViewportCompositeEvent::Complete {
                             frame,
                             requested_tiles,
@@ -2749,11 +2802,20 @@ impl MapViewerWindowView {
                             stats,
                         } => {
                             if failed_tiles == 0 {
-                                if let Some(frame) = frame
-                                    && this.set_viewport_composite_frame(frame, cx)
-                                {
-                                    let colors = this.theme_colors(cx);
-                                    this.sync_canvas_snapshot(colors, cx);
+                                if let Some(frame) = frame {
+                                    // An empty render result can happen while the camera is
+                                    // crossing an index boundary. Keep the last visible frame
+                                    // instead of replacing it with a blank image.
+                                    if rendered_tiles > 0
+                                        || this.canvas_tile_snapshot.screen_images.is_empty()
+                                    {
+                                        if this.set_viewport_composite_frame(frame, cx) {
+                                            let colors = this.theme_colors(cx);
+                                            this.sync_canvas_snapshot(colors, cx);
+                                        }
+                                    } else {
+                                        Self::drop_render_image(Some(frame.image), cx);
+                                    }
                                 }
                             } else if let Some(frame) = frame {
                                 Self::drop_render_image(Some(frame.image), cx);
@@ -2849,16 +2911,11 @@ impl MapViewerWindowView {
             self.schedule_viewport_work_refresh(cx);
             return false;
         }
+        self.viewport_zoom_transition = false;
         self.canvas_tile_generation = self.canvas_tile_generation.saturating_add(1);
-        let retained_tiles = self.canvas_tile_snapshot.tiles.clone();
-        let retained_debug_overlays = self.canvas_tile_snapshot.debug_overlays.clone();
-        let retained_tile_bytes = retained_tiles
-            .iter()
-            .map(|tile| tile.estimated_bytes)
-            .sum::<usize>();
         self.replace_canvas_tile_snapshot(
             TilePaintSnapshot {
-                tiles: retained_tiles,
+                tiles: Arc::new(Vec::new()),
                 screen_images: Arc::new(vec![ScreenPaintImage {
                     image: frame.image,
                     source_viewport: frame.source_viewport,
@@ -2868,9 +2925,66 @@ impl MapViewerWindowView {
                     height: frame.source_viewport.height,
                     estimated_bytes: frame.estimated_bytes,
                 }]),
-                debug_overlays: retained_debug_overlays,
+                debug_overlays: Arc::new(Vec::new()),
                 generation: self.canvas_tile_generation,
-                estimated_bytes: frame.estimated_bytes.saturating_add(retained_tile_bytes),
+                estimated_bytes: frame.estimated_bytes,
+                paint_bounds: self.current_canvas_paint_bounds(),
+            },
+            cx,
+        );
+        self.last_synced_canvas_snapshot_key = None;
+        self.last_synced_tile_layer_snapshot_key = None;
+        true
+    }
+
+    fn append_viewport_composite_tile(
+        &mut self,
+        tile: ViewportCompositeTile,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !screen_image_viewports_transformable(self.viewport, tile.source_viewport) {
+            Self::drop_render_image(Some(tile.image), cx);
+            return false;
+        }
+        let candidate = ScreenPaintImage {
+            image: tile.image,
+            source_viewport: tile.source_viewport,
+            left: tile.left,
+            top: tile.top,
+            width: tile.width,
+            height: tile.height,
+            estimated_bytes: tile.estimated_bytes,
+        };
+        let canvas_bounds = Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(px(self.viewport.width), px(self.viewport.height)),
+        );
+        let candidate_visible = screen_image_bounds(canvas_bounds, self.viewport, &candidate)
+            .is_some_and(|bounds| {
+                bounds.right() > canvas_bounds.left()
+                    && bounds.left() < canvas_bounds.right()
+                    && bounds.bottom() > canvas_bounds.top()
+                    && bounds.top() < canvas_bounds.bottom()
+            });
+        let mut screen_images = if self.viewport_zoom_transition && candidate_visible {
+            self.viewport_zoom_transition = false;
+            Vec::new()
+        } else {
+            self.canvas_tile_snapshot.screen_images.as_ref().clone()
+        };
+        screen_images.push(candidate);
+        self.canvas_tile_generation = self.canvas_tile_generation.saturating_add(1);
+        let estimated_bytes = screen_images
+            .iter()
+            .map(|image| image.estimated_bytes)
+            .sum::<usize>();
+        self.replace_canvas_tile_snapshot(
+            TilePaintSnapshot {
+                tiles: Arc::new(Vec::new()),
+                screen_images: Arc::new(screen_images),
+                debug_overlays: Arc::new(Vec::new()),
+                generation: self.canvas_tile_generation,
+                estimated_bytes,
                 paint_bounds: self.current_canvas_paint_bounds(),
             },
             cx,
@@ -2894,7 +3008,7 @@ impl MapViewerWindowView {
             }
             return;
         };
-        if self.uses_viewport_composite() {
+        if VIEWPORT_COMPOSITE_ENABLED || self.uses_viewport_composite() {
             if viewport_interacting {
                 self.pending_viewport_refresh = true;
                 self.schedule_viewport_idle_refresh(cx);
@@ -2952,29 +3066,35 @@ impl MapViewerWindowView {
             quick_reveal_initial_load,
         );
         let allow_prefetch = !viewport_dragging
-            && self.metadata_index_ready
             && map_viewer_prefetch_radius() > 0
             && !self.pending_viewport_refresh
-            && !self.tile_manager.has_visible_work()
-            && !self
-                .tile_manager
-                .has_pending_manifest_for_tiles(&visible_tiles);
+            && !visible_reveal_incomplete;
         let visible_bounds = tile_bounds_from_coords(&visible_tiles);
-        let prioritize_center = !allow_prefetch;
-        let visible_candidate_tiles = self
-            .tile_manager
-            .queued_visible_coords_limited_ordered(&visible_tiles, batch_size);
+        let visible_candidate_tiles = self.tile_manager.queued_visible_coords_limited_ordered(
+            &visible_tiles,
+            &self.active_render_tiles,
+            batch_size,
+        );
         let candidate_tiles = if viewport_dragging || !visible_candidate_tiles.is_empty() {
             visible_candidate_tiles
         } else {
-            let candidate_limit = batch_size.saturating_mul(4).max(batch_size).max(16);
-            self.tile_manager.queued_coords_limited(
-                center_tile,
-                visible_bounds,
-                allow_prefetch,
-                prioritize_center,
-                candidate_limit,
-            )
+            let edit_refresh_tiles = self
+                .tile_manager
+                .queued_coords_limited(center_tile, visible_bounds, true, true, batch_size)
+                .into_iter()
+                .filter(|coord| {
+                    self.tile_manager
+                        .entries
+                        .get(coord)
+                        .is_some_and(|entry| entry.priority == TilePriority::EditRefresh)
+                })
+                .collect::<Vec<_>>();
+            if edit_refresh_tiles.is_empty() && allow_prefetch {
+                self.tile_manager
+                    .queued_prefetch_coords_limited_ordered(&tile_plan.prefetch, batch_size)
+            } else {
+                edit_refresh_tiles
+            }
         };
         let mode = self.current_render_mode();
         let dimension = self.dimension;
@@ -2984,22 +3104,29 @@ impl MapViewerWindowView {
             if render_plans.len() >= batch_size {
                 break;
             }
-            if self.active_render_tiles.contains_key(&coord) {
+            if self.active_render_tiles.contains(&coord) {
                 continue;
             }
             let chunk_positions = match self.tile_chunk_index.get(&coord) {
                 Some(positions) => Some(Arc::clone(positions)),
-                None => match optimistic_tile_chunk_positions(dimension, coord, layout) {
-                    Ok(positions) => Some(positions),
-                    Err(error) => {
-                        Self::drop_render_image(
-                            self.tile_manager
-                                .mark_failed(coord, SharedString::from(error)),
-                            cx,
-                        );
-                        continue;
+                None => {
+                    match tile_chunk_positions_for_known_bounds(
+                        dimension,
+                        coord,
+                        layout,
+                        self.chunk_bounds,
+                    ) {
+                        Ok(positions) => Some(positions),
+                        Err(error) => {
+                            Self::drop_render_image(
+                                self.tile_manager
+                                    .mark_failed(coord, SharedString::from(error)),
+                                cx,
+                            );
+                            continue;
+                        }
                     }
-                },
+                }
             };
             if chunk_positions
                 .as_deref()
@@ -3122,7 +3249,9 @@ impl MapViewerWindowView {
         let request_id = self.request_id;
         let render_generation = self.render_generation;
         let requested_tile_count = requested_tiles.len();
-        self.pending_viewport_refresh = false;
+        // A low-zoom camera can expose more tiles than one foreground registration
+        // slice. Starting a physical batch must not consume that deferred camera work;
+        // completion will keep requesting slices until every visible tile is registered.
         self.last_queue_distance_squared =
             max_tile_distance_squared(&requested_tiles, center_tile).unwrap_or(0);
         let render_cancel = RenderCancelFlag::new();
@@ -3191,7 +3320,7 @@ impl MapViewerWindowView {
             ui_batch_regions = work_estimate.region_count,
             metadata_indexed_tiles,
             unindexed_tiles,
-            exact_manifest_chunks = true,
+            exact_manifest_chunks = unindexed_tiles == 0,
             center = ?center_tile,
             backend = ?render_backend,
             gpu_backend = ?render_gpu_backend,
@@ -3758,16 +3887,9 @@ pub(super) fn memory_snapshot_due(last_recorded: Option<Instant>, now: Instant) 
     })
 }
 
-pub(super) fn should_probe_manifest_tiles(
-    metadata_loading: bool,
+pub(super) const fn should_probe_edit_refresh_manifest(
     manifest_probe_in_flight: bool,
     has_edit_refresh_manifest: bool,
-    has_visible_pending_manifest: bool,
-    has_prefetch_pending_manifest: bool,
-    has_visible_work: bool,
 ) -> bool {
-    !manifest_probe_in_flight
-        && (has_edit_refresh_manifest
-            || has_visible_pending_manifest
-            || (!metadata_loading && !has_visible_work && has_prefetch_pending_manifest))
+    has_edit_refresh_manifest && !manifest_probe_in_flight
 }

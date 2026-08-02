@@ -211,7 +211,20 @@ pub(super) struct ViewportCompositeFrame {
     pub(super) rendered_tiles: usize,
 }
 
+pub(super) struct ViewportCompositeTile {
+    pub(super) image: Arc<RenderImage>,
+    pub(super) source_viewport: MapViewport,
+    pub(super) left: f32,
+    pub(super) top: f32,
+    pub(super) width: f32,
+    pub(super) height: f32,
+    pub(super) estimated_bytes: usize,
+}
+
 pub(super) enum ViewportCompositeEvent {
+    Tile {
+        tile: ViewportCompositeTile,
+    },
     Complete {
         frame: Option<ViewportCompositeFrame>,
         requested_tiles: Vec<(i32, i32)>,
@@ -554,14 +567,43 @@ pub(super) fn render_viewport_composite_stream(
                     match event {
                         TileStreamEventV2::Ready { planned, tile, .. } => {
                             let coord = (planned.job.coord.x, planned.job.coord.z);
-                            let frame = {
+                            let rendered_tiles = {
                                 let mut compositor = compositor
                                     .lock()
                                     .map_err(|_| render_io_error("视口合成状态锁已损坏"))?;
                                 compositor
                                     .blend_tile(coord, &tile)
                                     .map_err(bedrock_render::BedrockRenderError::Validation)?;
+                                compositor.rendered_tiles()
                             };
+                            let Some(rect) =
+                                tile_paint_rect(viewport, layout, render_range, coord.0, coord.1)
+                            else {
+                                return Ok(());
+                            };
+                            let (image, _pixel_format, _width, _height, estimated_bytes) =
+                                render_image_from_decoded_tile_parts(
+                                    tile.width,
+                                    tile.height,
+                                    tile.pixel_format,
+                                    tile.pixels.clone(),
+                                )
+                                .map_err(bedrock_render::BedrockRenderError::Validation)?;
+                            send_viewport_composite_event_or_cancel(
+                                &event_sender,
+                                &stream_cancel,
+                                ViewportCompositeEvent::Tile {
+                                    tile: ViewportCompositeTile {
+                                        image,
+                                        source_viewport: viewport,
+                                        left: rect.left,
+                                        top: rect.top,
+                                        width: rect.width(),
+                                        height: rect.height(),
+                                        estimated_bytes,
+                                    },
+                                },
+                            )?;
                         }
                         TileStreamEventV2::Empty { .. } => {}
                         TileStreamEventV2::Failed { planned, error } => {
@@ -1466,6 +1508,33 @@ pub(super) fn optimistic_tile_chunk_positions(
         }
     }
     Ok(TileChunkPositions::from(positions))
+}
+
+pub(super) fn tile_chunk_positions_for_known_bounds(
+    dimension: Dimension,
+    coord: (i32, i32),
+    layout: RenderLayout,
+    bounds: Option<ChunkBounds>,
+) -> Result<TileChunkPositions, String> {
+    let positions = optimistic_tile_chunk_positions(dimension, coord, layout)?;
+    let Some(bounds) = bounds else {
+        return Ok(positions);
+    };
+    if bounds.dimension != dimension {
+        return Ok(TileChunkPositions::from(Vec::new()));
+    }
+    Ok(TileChunkPositions::from(
+        positions
+            .iter()
+            .copied()
+            .filter(|position| {
+                position.x >= bounds.min_chunk_x
+                    && position.x <= bounds.max_chunk_x
+                    && position.z >= bounds.min_chunk_z
+                    && position.z <= bounds.max_chunk_z
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 pub(super) fn tile_bounds_contains(bounds: TileBounds, coord: (i32, i32)) -> bool {

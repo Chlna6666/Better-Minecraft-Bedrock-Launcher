@@ -6,7 +6,6 @@ use super::viewport::*;
 pub(super) struct ViewportTilePlanOptions {
     pub(super) viewport: MapViewport,
     pub(super) layout: RenderLayout,
-    pub(super) metadata_index_ready: bool,
     pub(super) is_interacting: bool,
     pub(super) drag: Option<DragState>,
 }
@@ -31,15 +30,14 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     } else {
         map_viewer_prefetch_radius()
     };
-    let mut prefetch = if options.metadata_index_ready && prefetch_radius > 0 {
+    let mut prefetch = if prefetch_radius > 0 {
         visible_bounds
             .map(|bounds| tile_coords_for_bounds(bounds, prefetch_radius, center, canvas_budget))
             .unwrap_or_default()
     } else {
         Vec::new()
     };
-    if options.metadata_index_ready
-        && prefetch_radius > 0
+    if prefetch_radius > 0
         && let (Some(visible_bounds), Some(drag)) = (visible_bounds, options.drag)
     {
         prefetch.extend(projected_drag_prefetch_tiles(

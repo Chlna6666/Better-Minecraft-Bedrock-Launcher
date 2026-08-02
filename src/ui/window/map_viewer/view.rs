@@ -5,6 +5,12 @@ use super::region_package;
 
 pub use super::model::MapViewerWindowInit;
 
+const MAP_VIEWER_DEFAULT_WINDOW_WIDTH: f32 = 1120.0;
+const MAP_VIEWER_DEFAULT_WINDOW_HEIGHT: f32 = 720.0;
+const MAP_VIEWER_MIN_WINDOW_WIDTH: f32 = 920.0;
+const MAP_VIEWER_MIN_WINDOW_HEIGHT: f32 = 620.0;
+const MAP_VIEWER_MAX_DISPLAY_RATIO: f32 = 0.9;
+
 impl Drop for MapViewerWindowView {
     fn drop(&mut self) {
         if let Some(completion) = self.pending_paste_task_completion.take() {
@@ -240,6 +246,18 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
     let options = map_viewer_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
+        window.on_window_should_close(cx, |window, _cx| {
+            let restored_bounds = window.window_bounds().bounds();
+            let prefs = crate::core::ui_prefs::MapViewerWindowPrefs {
+                width: restored_bounds.size.width / px(1.0),
+                height: restored_bounds.size.height / px(1.0),
+            };
+            if let Err(error) = crate::core::ui_prefs::save_map_viewer_window_prefs(&prefs) {
+                tracing::warn!(%error, "failed to save map viewer window size");
+            }
+            window.remove_window();
+            true
+        });
         window.activate_window();
         let view = cx.new(|cx| MapViewerWindowView::new(init, window, cx));
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))
@@ -251,8 +269,11 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
 
 fn map_viewer_window_options(cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
-    options.window_bounds = Some(WindowBounds::centered(size(px(1280.0), px(860.0)), cx));
-    options.window_min_size = Some(size(px(920.0), px(620.0)));
+    options.window_bounds = Some(WindowBounds::centered(map_viewer_window_size(cx), cx));
+    options.window_min_size = Some(size(
+        px(MAP_VIEWER_MIN_WINDOW_WIDTH),
+        px(MAP_VIEWER_MIN_WINDOW_HEIGHT),
+    ));
     options.is_resizable = true;
     options.is_minimizable = true;
     options.is_movable = true;
@@ -266,6 +287,42 @@ fn map_viewer_window_options(cx: &mut App) -> WindowOptions {
         options.window_background = WindowBackgroundAppearance::Opaque;
     }
     options
+}
+
+fn map_viewer_window_size(cx: &App) -> Size<Pixels> {
+    let saved = crate::core::ui_prefs::load_map_viewer_window_prefs();
+    let display_size = cx.primary_display().map(|display| display.bounds().size);
+    map_viewer_window_size_for_display(saved, display_size)
+}
+
+pub(super) fn map_viewer_window_size_for_display(
+    saved: Option<crate::core::ui_prefs::MapViewerWindowPrefs>,
+    display_size: Option<Size<Pixels>>,
+) -> Size<Pixels> {
+    let restored = saved.filter(|prefs| {
+        prefs.width.is_finite()
+            && prefs.height.is_finite()
+            && prefs.width >= MAP_VIEWER_MIN_WINDOW_WIDTH
+            && prefs.height >= MAP_VIEWER_MIN_WINDOW_HEIGHT
+    });
+    let requested_width = restored.map_or(MAP_VIEWER_DEFAULT_WINDOW_WIDTH, |prefs| prefs.width);
+    let requested_height = restored.map_or(MAP_VIEWER_DEFAULT_WINDOW_HEIGHT, |prefs| prefs.height);
+    let (maximum_width, maximum_height) =
+        display_size.map_or((f32::MAX, f32::MAX), |display_size| {
+            (
+                display_size.width / px(1.0) * MAP_VIEWER_MAX_DISPLAY_RATIO,
+                display_size.height / px(1.0) * MAP_VIEWER_MAX_DISPLAY_RATIO,
+            )
+        });
+
+    size(
+        px(requested_width
+            .min(maximum_width)
+            .max(MAP_VIEWER_MIN_WINDOW_WIDTH.min(maximum_width))),
+        px(requested_height
+            .min(maximum_height)
+            .max(MAP_VIEWER_MIN_WINDOW_HEIGHT.min(maximum_height))),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
