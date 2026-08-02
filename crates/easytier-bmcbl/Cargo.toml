@@ -1,0 +1,16 @@
+[package]
+name = "easytier-bmcbl"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = []
+aes-gcm = ["easytier-core/aes-gcm"]
+socks5 = ["easytier-core/socks5"]
+websocket = ["easytier-core/websocket"]
+
+[dependencies]
+anyhow = "1.0.100"
+easytier-core = { package = "easytier", path = "../easytier", default-features = false }
+uuid = { version = "1.19.0", features = ["v4"] }
