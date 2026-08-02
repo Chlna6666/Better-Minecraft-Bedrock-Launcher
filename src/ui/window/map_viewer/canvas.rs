@@ -1114,14 +1114,8 @@ fn paste_preview_screen_rect(
 }
 
 fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
+    let paint_tiles = snapshot.tiles.tiles.clone();
     let screen_images = snapshot.tiles.screen_images.clone();
-    // Once a viewport frame exists, it is authoritative. Do not let a late
-    // legacy tile callback paint over it with an older coordinate set.
-    let paint_tiles = if screen_images.is_empty() {
-        snapshot.tiles.tiles.clone()
-    } else {
-        Arc::new(Vec::new())
-    };
     let debug_overlays = if snapshot.dragging {
         Arc::new(Vec::new())
     } else {
@@ -1131,7 +1125,11 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
     let viewport = snapshot.viewport;
     let layout = snapshot.layout;
     let viewport_interacting = snapshot.dragging;
-    let overlays = snapshot.overlays;
+    let mut overlays = snapshot.overlays;
+    if snapshot.dragging {
+        overlays.dense_grid = false;
+        overlays.ruler = false;
+    }
     let render_range = region_render_range_for_viewport(viewport, layout);
 
     div()
