@@ -1,3 +1,4 @@
+use crate::ui::window::map_viewer::model::MapViewport;
 pub(super) use super::tile_render_legacy::*;
 
 use super::model::{CHUNKS_PER_TILE, MAX_VIEWPORT_COMPOSITE_DIMENSION};

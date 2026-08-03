@@ -45,7 +45,7 @@ impl MapViewerWindowView {
     }
 
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
-        let window_handle = cx.window_handle();
+        let window_handle = cx.windows();
         cx.spawn(async move |handle, cx| {
             let mut last_atlas_rebuild_generation = 0u64;
             loop {
@@ -120,11 +120,14 @@ impl MapViewerWindowView {
                     None
                 })?;
 
-                if let Some(generation) = atlas_rebuild_generation
-                    && window_handle
-                        .update(cx, |_, window, _| window.rebuild_map_image_atlas())
-                        .is_ok()
-                {
+                let atlas_rebuilt = atlas_rebuild_generation.is_some_and(|_| {
+                    window_handle.iter().any(|window_handle| {
+                        window_handle
+                            .update(cx, |_, window, _| window.rebuild_map_image_atlas())
+                            .is_ok()
+                    })
+                });
+                if let Some(generation) = atlas_rebuild_generation.filter(|_| atlas_rebuilt) {
                     last_atlas_rebuild_generation = generation;
                 }
             }
