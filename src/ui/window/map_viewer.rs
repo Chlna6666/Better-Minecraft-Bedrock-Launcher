@@ -5,6 +5,9 @@ mod canvas_legacy;
 #[path = "map_viewer/canvas_stable.rs"]
 mod canvas;
 mod editor;
+#[path = "map_viewer/helpers.rs"]
+mod helpers_legacy;
+#[path = "map_viewer/helpers_stable.rs"]
 mod helpers;
 mod history_panel;
 mod import_preview;
