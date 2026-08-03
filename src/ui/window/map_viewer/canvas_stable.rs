@@ -2,8 +2,10 @@ pub(super) use super::canvas_legacy::*;
 
 use gpui::{RenderImage, RenderImagePixelFormat, SharedString};
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::{
-    Arc,
+    Arc, Mutex, OnceLock, Weak,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -17,6 +19,17 @@ const MACRO_PAGE_TILES_PER_AXIS: i32 = 8;
 const MACRO_PAGE_MIN_SOURCE_TILES: usize = 48;
 const MACRO_PAGE_INITIAL_COMPACTION_LIMIT: usize = 16;
 const MACRO_PAGE_INCREMENTAL_COMPACTION_LIMIT: usize = 1;
+const MACRO_PAGE_CACHE_PRUNE_THRESHOLD: usize = 1_024;
+
+#[derive(Default)]
+struct MacroPageImageCache {
+    images: BTreeMap<u64, Weak<RenderImage>>,
+}
+
+fn macro_page_image_cache() -> &'static Mutex<MacroPageImageCache> {
+    static CACHE: OnceLock<Mutex<MacroPageImageCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(MacroPageImageCache::default()))
+}
 
 pub(super) fn take_map_tile_paint_resources_unavailable() -> bool {
     if !super::canvas_legacy::take_map_tile_paint_resources_unavailable() {
@@ -86,9 +99,10 @@ pub(super) fn build_tile_paint_snapshot(
 
     tiles.sort_unstable_by_key(|tile| super::viewport::tile_paint_sort_key(tile.coord));
     if macro_page_mode_enabled(viewport) {
-        compact_macro_pages(
+        let compaction = compact_macro_pages(
             &mut tiles,
             &mut screen_images,
+            tile_manager,
             viewport,
             layout,
             &std::collections::BTreeSet::new(),
@@ -99,6 +113,10 @@ pub(super) fn build_tile_paint_snapshot(
             viewport_scale = viewport.scale,
             macro_pages = screen_images.len(),
             individual_tiles = tiles.len(),
+            compacted_pages = compaction.compacted_pages,
+            reused_pages = compaction.reused_pages,
+            deferred_unsettled_pages = compaction.deferred_unsettled_pages,
+            deferred_sparse_pages = compaction.deferred_sparse_pages,
             "map_viewer macro_page_snapshot_built"
         );
     }
@@ -181,16 +199,18 @@ pub(super) fn patch_tile_paint_snapshot(
         );
     }
 
+    let mut compaction = MacroPageCompactionStats::default();
     if macro_page_mode_enabled(viewport) {
-        let compacted = compact_macro_pages(
+        compaction = compact_macro_pages(
             &mut tiles,
             &mut screen_images,
+            tile_manager,
             viewport,
             layout,
             &dissolved_page_keys,
             MACRO_PAGE_INCREMENTAL_COMPACTION_LIMIT,
         );
-        changed |= compacted > 0;
+        changed |= compaction.compacted_pages > 0;
     }
 
     if !changed {
@@ -214,6 +234,10 @@ pub(super) fn patch_tile_paint_snapshot(
         dissolved_pages = dissolved_page_keys.len(),
         macro_pages = screen_images.len(),
         individual_tiles = tiles.len(),
+        compacted_pages = compaction.compacted_pages,
+        reused_pages = compaction.reused_pages,
+        deferred_unsettled_pages = compaction.deferred_unsettled_pages,
+        deferred_sparse_pages = compaction.deferred_sparse_pages,
         viewport_scale = viewport.scale,
         "map_viewer macro_page_snapshot_patched"
     );
@@ -341,16 +365,26 @@ fn upsert_paint_tile(
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct MacroPageCompactionStats {
+    compacted_pages: usize,
+    reused_pages: usize,
+    deferred_unsettled_pages: usize,
+    deferred_sparse_pages: usize,
+}
+
 fn compact_macro_pages(
     tiles: &mut Vec<super::tile_state::PaintTile>,
     screen_images: &mut Vec<ScreenPaintImage>,
+    tile_manager: &super::tile_state::RegionManager,
     viewport: super::model::MapViewport,
     layout: bedrock_render::RenderLayout,
     excluded_page_keys: &std::collections::BTreeSet<(i32, i32)>,
     max_pages: usize,
-) -> usize {
+) -> MacroPageCompactionStats {
+    let mut stats = MacroPageCompactionStats::default();
     if max_pages == 0 || tiles.len() < MACRO_PAGE_MIN_SOURCE_TILES {
-        return 0;
+        return stats;
     }
 
     let mut groups: BTreeMap<(i32, i32), Vec<super::tile_state::PaintTile>> = BTreeMap::new();
@@ -366,20 +400,30 @@ fn compact_macro_pages(
 
     let mut compacted_keys = Vec::new();
     for (page_key, source_tiles) in groups {
-        if compacted_keys.len() >= max_pages
-            || source_tiles.len() < MACRO_PAGE_MIN_SOURCE_TILES
-        {
+        if compacted_keys.len() >= max_pages {
+            break;
+        }
+        if source_tiles.len() < MACRO_PAGE_MIN_SOURCE_TILES {
+            stats.deferred_sparse_pages = stats.deferred_sparse_pages.saturating_add(1);
             continue;
         }
-        let Some(page) = build_macro_page(page_key, &source_tiles, viewport, layout) else {
+        if !macro_page_is_settled(tile_manager, page_key) {
+            stats.deferred_unsettled_pages = stats.deferred_unsettled_pages.saturating_add(1);
+            continue;
+        }
+        let Some((page, reused)) = build_macro_page(page_key, &source_tiles, viewport, layout) else {
             continue;
         };
         screen_images.push(page);
         compacted_keys.push(page_key);
+        stats.compacted_pages = stats.compacted_pages.saturating_add(1);
+        if reused {
+            stats.reused_pages = stats.reused_pages.saturating_add(1);
+        }
     }
 
     if compacted_keys.is_empty() {
-        return 0;
+        return stats;
     }
     tiles.retain(|tile| !compacted_keys.contains(&macro_page_key(tile.coord)));
     screen_images.sort_by(|left, right| {
@@ -387,7 +431,90 @@ fn compact_macro_pages(
             .total_cmp(&right.top)
             .then_with(|| left.left.total_cmp(&right.left))
     });
-    compacted_keys.len()
+    stats
+}
+
+fn macro_page_is_settled(
+    tile_manager: &super::tile_state::RegionManager,
+    page_key: (i32, i32),
+) -> bool {
+    let min_x = page_key.0.saturating_mul(MACRO_PAGE_TILES_PER_AXIS);
+    let min_z = page_key.1.saturating_mul(MACRO_PAGE_TILES_PER_AXIS);
+    for local_z in 0..MACRO_PAGE_TILES_PER_AXIS {
+        for local_x in 0..MACRO_PAGE_TILES_PER_AXIS {
+            let coord = (
+                min_x.saturating_add(local_x),
+                min_z.saturating_add(local_z),
+            );
+            let Some(entry) = tile_manager.entries.get(&coord) else {
+                return false;
+            };
+            let settled = entry.state == super::tile_state::TileLoadState::Invalid
+                || (entry.state == super::tile_state::TileLoadState::Loaded
+                    && entry.image.is_some());
+            if !settled {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn macro_page_content_key(
+    page_key: (i32, i32),
+    source_tiles: &[super::tile_state::PaintTile],
+    page_width: u32,
+    page_height: u32,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    "bmcbl-map-macro-page-v2".hash(&mut hasher);
+    page_key.hash(&mut hasher);
+    page_width.hash(&mut hasher);
+    page_height.hash(&mut hasher);
+    let mut ordered = source_tiles.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by_key(|tile| tile.coord);
+    for tile in ordered {
+        tile.coord.hash(&mut hasher);
+        tile.image.id.hash(&mut hasher);
+        tile.width.hash(&mut hasher);
+        tile.height.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn cached_macro_page_image(
+    content_key: u64,
+    page_width: u32,
+    page_height: u32,
+    pixels: Vec<u8>,
+) -> Option<(Arc<RenderImage>, bool)> {
+    if let Some(image) = macro_page_image_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .images
+        .get(&content_key)
+        .and_then(Weak::upgrade)
+    {
+        return Some((image, true));
+    }
+
+    let image = Arc::new(
+        RenderImage::from_raw_pixels(
+            page_width,
+            page_height,
+            RenderImagePixelFormat::Rgba8,
+            pixels,
+        )
+        .ok()?,
+    );
+    let mut cache = macro_page_image_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.images.len() >= MACRO_PAGE_CACHE_PRUNE_THRESHOLD {
+        cache.images.retain(|_, image| image.strong_count() > 0);
+    }
+    cache.images.insert(content_key, Arc::downgrade(&image));
+    Some((image, false))
 }
 
 fn build_macro_page(
@@ -395,7 +522,7 @@ fn build_macro_page(
     source_tiles: &[super::tile_state::PaintTile],
     viewport: super::model::MapViewport,
     layout: bedrock_render::RenderLayout,
-) -> Option<ScreenPaintImage> {
+) -> Option<(ScreenPaintImage, bool)> {
     let first = source_tiles.first()?;
     if first.pixel_format != Some(bedrock_render::TilePixelFormat::Rgba8)
         || first.width == 0
@@ -461,13 +588,9 @@ fn build_macro_page(
         min_coord.1,
     )?;
     let estimated_bytes = pixels.len();
-    let image = RenderImage::from_raw_pixels(
-        page_width,
-        page_height,
-        RenderImagePixelFormat::Rgba8,
-        pixels,
-    )
-    .ok()?;
+    let content_key = macro_page_content_key(page_key, source_tiles, page_width, page_height);
+    let (image, reused) =
+        cached_macro_page_image(content_key, page_width, page_height, pixels)?;
 
     tracing::debug!(
         page = ?page_key,
@@ -475,18 +598,24 @@ fn build_macro_page(
         page_width,
         page_height,
         estimated_bytes,
+        content_key,
+        image_id = ?image.id,
+        reused,
         "map_viewer macro_page_compacted"
     );
 
-    Some(ScreenPaintImage {
-        image: Arc::new(image),
-        source_viewport: viewport,
-        left: tile_rect.left,
-        top: tile_rect.top,
-        width: tile_rect.width() * MACRO_PAGE_TILES_PER_AXIS as f32,
-        height: tile_rect.height() * MACRO_PAGE_TILES_PER_AXIS as f32,
-        estimated_bytes,
-    })
+    Some((
+        ScreenPaintImage {
+            image,
+            source_viewport: viewport,
+            left: tile_rect.left,
+            top: tile_rect.top,
+            width: tile_rect.width() * MACRO_PAGE_TILES_PER_AXIS as f32,
+            height: tile_rect.height() * MACRO_PAGE_TILES_PER_AXIS as f32,
+            estimated_bytes,
+        },
+        reused,
+    ))
 }
 
 fn patch_tile(
