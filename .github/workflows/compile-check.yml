@@ -71,7 +71,7 @@ jobs:
 
       - name: Check all BMCBL targets
         shell: pwsh
-        run: cargo check --all-targets --locked
+        run: cargo check --all-targets
 
   linux-check:
     name: Linux cargo check
@@ -113,4 +113,4 @@ jobs:
             linux-cargo-check-
 
       - name: Check all BMCBL targets
-        run: cargo check --all-targets --locked
+        run: cargo check --all-targets

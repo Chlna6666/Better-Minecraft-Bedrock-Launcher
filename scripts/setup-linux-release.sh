@@ -16,3 +16,15 @@ flatpak remote-add --user --if-not-exists flathub \
   https://flathub.org/repo/flathub.flatpakrepo
 flatpak install --user --noninteractive -y flathub \
   org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+
+# package-linux.sh exports the bundle from the stable branch. flatpak-builder
+# defaults to master unless a branch is supplied, so inject it consistently.
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/flatpak-builder" <<'WRAPPER'
+#!/usr/bin/env bash
+exec /usr/bin/flatpak-builder --default-branch=stable "$@"
+WRAPPER
+chmod 0755 "$HOME/.local/bin/flatpak-builder"
+if [[ -n "${GITHUB_PATH:-}" ]]; then
+  echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+fi
