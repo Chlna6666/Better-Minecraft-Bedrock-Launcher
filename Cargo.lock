@@ -1047,7 +1047,7 @@ dependencies = [
  "cidr",
  "clap",
  "csscolorparser",
- "easytier",
+ "easytier-bmcbl",
  "ego-tree",
  "futures",
  "futures-util",
@@ -2889,7 +2889,15 @@ dependencies = [
  "winreg 0.52.0",
  "x25519-dalek",
  "zerocopy 0.7.35",
- "zstd",
+]
+
+[[package]]
+name = "easytier-bmcbl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "easytier",
+ "uuid",
 ]
 
 [[package]]
