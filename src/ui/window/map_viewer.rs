@@ -51,6 +51,9 @@ mod tile_render;
 mod tile_state;
 mod tool_stripe;
 mod top_bar;
+#[path = "map_viewer/view.rs"]
+mod view_legacy;
+#[path = "map_viewer/view_stable.rs"]
 mod view;
 mod viewport;
 
