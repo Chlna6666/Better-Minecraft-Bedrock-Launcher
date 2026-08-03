@@ -1,5 +1,8 @@
 mod actions;
 mod bottom_panel;
+#[path = "map_viewer/canvas.rs"]
+mod canvas_legacy;
+#[path = "map_viewer/canvas_stable.rs"]
 mod canvas;
 mod editor;
 mod helpers;
@@ -35,6 +38,9 @@ mod tests;
 mod tile_cache;
 mod tile_manifest_legacy;
 mod tile_manifest;
+#[path = "map_viewer/tile_plan.rs"]
+mod tile_plan_legacy;
+#[path = "map_viewer/tile_plan_stable.rs"]
 mod tile_plan;
 mod tile_render_legacy;
 #[path = "map_viewer/tile_render_stable.rs"]
