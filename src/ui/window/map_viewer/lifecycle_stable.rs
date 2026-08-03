@@ -39,6 +39,43 @@ fn select_manifest_probe_tiles(
     selected
 }
 
+// Keep the frontend paint snapshot on coarse tile pages instead of rebuilding it for every
+// fractional wheel step. The snapshot still contains original 128x128 RenderImage tiles; this
+// only stabilizes which retained Arc handles are submitted to GPUI. A small guard margin keeps
+// the previous and next zoom views overlapping while the final visible plan catches up.
+const CANVAS_PAINT_PAGE_TILES: i32 = 32;
+const CANVAS_PAINT_GUARD_TILES: i32 = 8;
+
+fn paint_tile_bounds_for_viewport(
+    viewport: super::model::MapViewport,
+    layout: bedrock_render::RenderLayout,
+    radius: i32,
+) -> Option<super::viewport::TileBounds> {
+    let bounds = super::viewport::paint_tile_bounds_for_viewport(
+        viewport,
+        layout,
+        radius.saturating_add(CANVAS_PAINT_GUARD_TILES),
+    )?;
+    let align_min = |value: i32| {
+        value
+            .div_euclid(CANVAS_PAINT_PAGE_TILES)
+            .saturating_mul(CANVAS_PAINT_PAGE_TILES)
+    };
+    let align_max = |value: i32| {
+        value
+            .div_euclid(CANVAS_PAINT_PAGE_TILES)
+            .saturating_add(1)
+            .saturating_mul(CANVAS_PAINT_PAGE_TILES)
+            .saturating_sub(1)
+    };
+    Some(super::viewport::TileBounds {
+        min_x: align_min(bounds.min_x),
+        min_z: align_min(bounds.min_z),
+        max_x: align_max(bounds.max_x),
+        max_z: align_max(bounds.max_z),
+    })
+}
+
 fn screen_image_bounds(
     _bounds: gpui::Bounds<gpui::Pixels>,
     _viewport: super::model::MapViewport,
