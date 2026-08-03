@@ -1,6 +1,8 @@
 pub(super) use super::tile_render_stable::*;
 
 use super::prelude::*;
+use super::tile_render_legacy as legacy;
+use super::tile_render_stable as stable;
 use bedrock_render::RenderLayout;
 
 pub(super) const fn tile_texture_render_layout(
@@ -12,6 +14,53 @@ pub(super) const fn tile_texture_render_layout(
         blocks_per_pixel: 1,
         pixels_per_block: 1,
     }
+}
+
+pub(super) fn render_viewport_composite_stream(
+    request: ViewportCompositeRequest,
+    event_sender: UnboundedSender<ViewportCompositeEvent>,
+) -> Result<(), String> {
+    let render_cancel = request.render_cancel.clone();
+    let (buffered_sender, mut buffered_receiver) = unbounded();
+    let render_result = stable::render_viewport_composite_stream(request, buffered_sender);
+
+    // The stable compositor emits short-lived dirty-region images while it is building the
+    // final viewport. Publishing those images to GPUI makes every preview a separate GPU image.
+    // The lifecycle then replaces the snapshot and drops images that are still referenced by
+    // the next snapshot, which invalidates the retained frame and exposes transparent regions.
+    // Keep previews on the CPU side and publish exactly one complete viewport image instead.
+    let mut complete_event = None;
+    let mut discarded_preview_frames = 0usize;
+    loop {
+        match buffered_receiver.try_next() {
+            Ok(Some(ViewportCompositeEvent::Tile { .. })) => {
+                discarded_preview_frames = discarded_preview_frames.saturating_add(1);
+            }
+            Ok(Some(event @ ViewportCompositeEvent::Complete { .. })) => {
+                complete_event = Some(event);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                return Err(format!("视口合成事件缓冲读取失败: {error}"));
+            }
+        }
+    }
+
+    render_result?;
+    let complete_event = complete_event.ok_or_else(|| "视口合成缺少完成事件".to_string())?;
+    if discarded_preview_frames > 0 {
+        tracing::debug!(
+            discarded_preview_frames,
+            "map_viewer viewport_composite_preview_frames_coalesced"
+        );
+    }
+    legacy::send_viewport_composite_event_or_cancel(
+        &event_sender,
+        &render_cancel,
+        complete_event,
+    )
+    .map_err(|error| format!("视口合成完成事件发送失败: {error}"))?;
+    Ok(())
 }
 
 pub(super) fn render_chunk_patches_blocking(
