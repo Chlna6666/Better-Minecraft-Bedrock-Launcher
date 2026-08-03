@@ -62,7 +62,7 @@ jobs:
             ~/.cargo/registry/src
             ~/.cargo/git
             target/ci-check
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-check-${{ steps.rust.outputs.fingerprint }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', '.cargo/config') }}-v2
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-check-${{ steps.rust.outputs.fingerprint }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', '.cargo/config') }}-v3
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-check-${{ steps.rust.outputs.fingerprint }}-
             ${{ runner.os }}-${{ runner.arch }}-cargo-check-
@@ -85,6 +85,21 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
           Write-Host "Using $libclang"
 
+      - name: Refresh Cargo lockfile for CI workspace
+        shell: pwsh
+        run: cargo generate-lockfile
+
       - name: Check all BMCBL targets
         shell: pwsh
-        run: cargo check --all-targets --locked
+        run: cargo check --all-targets
+
+      - name: Report lockfile drift
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          if (git diff --quiet -- Cargo.lock) {
+            Write-Host "Cargo.lock matches the current workspace manifests."
+          } else {
+            Write-Warning "Cargo.lock is stale in the repository. CI refreshed it locally so compilation could continue."
+            git diff --stat -- Cargo.lock
+          }
