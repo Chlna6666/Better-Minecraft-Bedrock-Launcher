@@ -10,11 +10,14 @@ pub(super) use super::upload_queue::AtlasUploadStats;
 use super::upload_queue::PendingAtlasUpload;
 
 pub(super) const NOVA_DEFAULT_ATLAS_SIZE: u32 = 2048;
+pub(super) const NOVA_LARGE_IMAGE_ATLAS_SIZE: u32 = 4096;
 pub(super) const NOVA_MAX_ATLAS_SIZE: u32 = 16_384;
 pub(super) const NOVA_ATLAS_SIZE: u32 = NOVA_DEFAULT_ATLAS_SIZE;
 pub(super) const NOVA_ATLAS_BYTES_PER_PIXEL: usize = 4;
 pub(super) const NOVA_ATLAS_TILE_PADDING: u32 = 1;
 pub(super) const NOVA_ATLAS_KIND_COUNT: usize = 4;
+const NOVA_MIN_IMAGE_ATLAS_BYTES: usize = 512 * 1024 * 1024;
+const NOVA_MIN_IMAGE_ATLAS_TEXTURES: usize = 64;
 pub(super) const NOVA_ATLAS_TEXTURE_KINDS: [AtlasTextureKind; NOVA_ATLAS_KIND_COUNT] = [
     AtlasTextureKind::Monochrome,
     AtlasTextureKind::Bgra,
@@ -62,8 +65,8 @@ impl Default for NovaAtlasState {
             disabled_kinds: FxHashSet::default(),
             upload_bytes: Vec::new(),
             pending_uploads: Vec::new(),
-            max_atlas_bytes: 256 * 1024 * 1024,
-            max_atlas_textures: 32,
+            max_atlas_bytes: NOVA_MIN_IMAGE_ATLAS_BYTES,
+            max_atlas_textures: NOVA_MIN_IMAGE_ATLAS_TEXTURES,
             texture_set_generation: 0,
         }
     }
@@ -173,8 +176,15 @@ impl NovaAtlas {
 impl PlatformAtlas for NovaAtlas {
     fn configure_image_budget(&self, max_bytes: usize, max_textures: usize) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        state.max_atlas_bytes = max_bytes.max(NOVA_ATLAS_BYTES_PER_PIXEL);
-        state.max_atlas_textures = max_textures.max(NOVA_ATLAS_KIND_COUNT);
+        state.max_atlas_bytes = max_bytes.max(NOVA_MIN_IMAGE_ATLAS_BYTES);
+        state.max_atlas_textures = max_textures.max(NOVA_MIN_IMAGE_ATLAS_TEXTURES);
+        log::info!(
+            "nova atlas image budget configured: bytes={} textures={} texture_size={}x{}",
+            state.max_atlas_bytes,
+            state.max_atlas_textures,
+            NOVA_DEFAULT_ATLAS_SIZE,
+            NOVA_LARGE_IMAGE_ATLAS_SIZE
+        );
     }
 
     fn ensure_tile_with<'a>(
@@ -213,12 +223,11 @@ impl PlatformAtlas for NovaAtlas {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         let Some(tile) = state.allocate_and_upload(key, size, &bytes) else {
             let texture_kind = key.texture_kind();
-            let fallback = state.fallback_tile(texture_kind);
             if state.full_kinds_logged.insert(texture_kind) {
                 log::warn!(
                     concat!(
-                        "nova atlas allocation failed; atlas is full, using fallback tile: ",
-                        "kind={:?} size={}x{}"
+                        "nova atlas allocation deferred; atlas is full and no fallback image ",
+                        "will be reported as resident: kind={:?} size={}x{}"
                     ),
                     texture_kind,
                     size.width.0.max(1),
@@ -226,7 +235,7 @@ impl PlatformAtlas for NovaAtlas {
                 );
             }
             self.publish_state_flags(&state);
-            return Ok(fallback);
+            return Ok(None);
         };
         state.tiles.insert(key.clone(), tile);
         self.publish_state_flags(&state);
@@ -261,19 +270,34 @@ impl PlatformAtlas for NovaAtlas {
                 return Ok(Some(tile));
             }
         }
-        if let Some(tile) = state.tiles.remove(key) {
+
+        let previous = state.tiles.get(key).copied();
+        let allocated = state.allocate_and_upload(key, size, bytes.as_ref());
+        let Some(allocated) = allocated else {
+            let texture_kind = key.texture_kind();
+            if state.full_kinds_logged.insert(texture_kind) {
+                log::warn!(
+                    concat!(
+                        "nova atlas refresh deferred; atlas is full and no fallback image ",
+                        "will be reported as resident: kind={:?} size={}x{}"
+                    ),
+                    texture_kind,
+                    size.width.0.max(1),
+                    size.height.0.max(1)
+                );
+            }
+            self.publish_state_flags(&state);
+            return Ok(previous);
+        };
+
+        if let Some(previous) = state.tiles.insert(key.clone(), allocated) {
             state.pending_removals.push(PendingAtlasRemoval {
                 key: key.clone(),
-                tile,
+                tile: previous,
             });
         }
-        let allocated = state.allocate_and_upload(key, size, bytes.as_ref());
-        if let Some(tile) = allocated {
-            state.tiles.insert(key.clone(), tile);
-        }
-        let result = allocated.or_else(|| state.fallback_tile(key.texture_kind()));
         self.publish_state_flags(&state);
-        Ok(result)
+        Ok(Some(allocated))
     }
 
     fn ensure_glyph_with(
@@ -374,6 +398,18 @@ impl PlatformAtlas for NovaAtlas {
             }
         }
     }
+}
+
+fn preferred_atlas_axis_size(content_axis: i32) -> Option<u32> {
+    let padded = u32::try_from(content_axis.max(1))
+        .ok()?
+        .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2));
+    let floor = if padded > NOVA_DEFAULT_ATLAS_SIZE / 2 {
+        NOVA_LARGE_IMAGE_ATLAS_SIZE
+    } else {
+        NOVA_DEFAULT_ATLAS_SIZE
+    };
+    Some(padded.max(floor).min(NOVA_MAX_ATLAS_SIZE))
 }
 
 impl NovaAtlasState {
@@ -499,16 +535,8 @@ impl NovaAtlasState {
         if texture_count >= self.max_atlas_textures {
             return None;
         }
-        let width = u32::try_from(content_size.width.0.max(1))
-            .ok()?
-            .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2))
-            .max(NOVA_DEFAULT_ATLAS_SIZE)
-            .min(NOVA_MAX_ATLAS_SIZE);
-        let height = u32::try_from(content_size.height.0.max(1))
-            .ok()?
-            .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2))
-            .max(NOVA_DEFAULT_ATLAS_SIZE)
-            .min(NOVA_MAX_ATLAS_SIZE);
+        let width = preferred_atlas_axis_size(content_size.width.0)?;
+        let height = preferred_atlas_axis_size(content_size.height.0)?;
         let texture_bytes = usize::try_from(width)
             .ok()?
             .checked_mul(usize::try_from(height).ok()?)
@@ -547,16 +575,8 @@ impl NovaAtlasState {
         min_size: Size<DevicePixels>,
         list: &mut NovaAtlasTextureList,
     ) -> Option<&mut NovaAtlasTexture> {
-        let width = u32::try_from(min_size.width.0.max(1)).ok()?;
-        let height = u32::try_from(min_size.height.0.max(1)).ok()?;
-        let width = width
-            .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2))
-            .max(NOVA_DEFAULT_ATLAS_SIZE)
-            .min(NOVA_MAX_ATLAS_SIZE);
-        let height = height
-            .saturating_add(NOVA_ATLAS_TILE_PADDING.saturating_mul(2))
-            .max(NOVA_DEFAULT_ATLAS_SIZE)
-            .min(NOVA_MAX_ATLAS_SIZE);
+        let width = preferred_atlas_axis_size(min_size.width.0)?;
+        let height = preferred_atlas_axis_size(min_size.height.0)?;
         let size = Size {
             width: DevicePixels(i32::try_from(width).ok()?),
             height: DevicePixels(i32::try_from(height).ok()?),
@@ -767,5 +787,30 @@ mod tests {
                 .allocate_and_upload_kind(AtlasTextureKind::Rgba, size, &[1, 2, 3, 4])
                 .is_none()
         );
+    }
+
+    #[test]
+    fn full_image_atlas_returns_none_instead_of_fallback() {
+        let atlas = NovaAtlas::new();
+        atlas.clear_pending_uploads_for_test();
+        atlas
+            .state
+            .lock()
+            .expect("nova atlas lock poisoned")
+            .disable_allocator_for_test(AtlasTextureKind::Rgba);
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(9),
+            frame_slot: 0,
+            pixel_format: RenderImagePixelFormat::Rgba8,
+        });
+        let tile = atlas
+            .ensure_tile_with(&key, &mut || {
+                Ok(Some((
+                    size(DevicePixels(1), DevicePixels(1)),
+                    Cow::Borrowed(&[1, 2, 3, 4]),
+                )))
+            })
+            .expect("allocation failure should not become an error");
+        assert!(tile.is_none());
     }
 }
