@@ -1,4 +1,4 @@
-pub use super::view_legacy::*;
+pub(super) use super::view_legacy::*;
 
 use super::model::{MapViewerWindowInit, MapViewerWindowView};
 use super::prelude::*;
