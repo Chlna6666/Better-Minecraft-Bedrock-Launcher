@@ -2,10 +2,7 @@ pub(super) use super::tile_plan_legacy::*;
 
 use super::model::{DRAG_RETAIN_RADIUS, DragState, MapViewport, RETAIN_RADIUS};
 use super::tile_render::map_viewer_prefetch_radius;
-use super::viewport::{
-    canvas_tile_image_budget, tile_coords_for_bounds, tile_coords_for_visible_bounds,
-    visible_tile_bounds_for_viewport,
-};
+use super::viewport::{canvas_tile_image_budget, visible_tile_bounds_for_viewport};
 use bedrock_render::RenderLayout;
 
 pub(super) struct ViewportTilePlanOptions {
@@ -19,7 +16,7 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     let center = options.viewport.center_tile(options.layout);
     let visible_bounds = visible_tile_bounds_for_viewport(options.viewport, options.layout, center);
     let visible = visible_bounds
-        .map(|bounds| tile_coords_for_visible_bounds(bounds, center))
+        .map(|bounds| super::tile_plan_legacy::tile_coords_for_visible_bounds(bounds, center))
         .unwrap_or_default();
 
     let actively_dragging = options.drag.is_some();
@@ -45,7 +42,14 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     };
     let prefetch = if prefetch_radius > 0 {
         visible_bounds
-            .map(|bounds| tile_coords_for_bounds(bounds, prefetch_radius, center, canvas_budget))
+            .map(|bounds| {
+                super::tile_plan_legacy::tile_coords_for_bounds(
+                    bounds,
+                    prefetch_radius,
+                    center,
+                    canvas_budget,
+                )
+            })
             .unwrap_or_default()
     } else {
         Vec::new()
