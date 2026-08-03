@@ -17,7 +17,7 @@ pub(super) const NOVA_ATLAS_BYTES_PER_PIXEL: usize = 4;
 pub(super) const NOVA_ATLAS_TILE_PADDING: u32 = 1;
 pub(super) const NOVA_ATLAS_KIND_COUNT: usize = 4;
 const NOVA_MIN_IMAGE_ATLAS_BYTES: usize = 512 * 1024 * 1024;
-const NOVA_MIN_IMAGE_ATLAS_TEXTURES: usize = 64;
+const NOVA_MIN_IMAGE_ATLAS_TEXTURES: usize = 128;
 pub(super) const NOVA_ATLAS_TEXTURE_KINDS: [AtlasTextureKind; NOVA_ATLAS_KIND_COUNT] = [
     AtlasTextureKind::Monochrome,
     AtlasTextureKind::Bgra,
