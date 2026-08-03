@@ -59,7 +59,7 @@ impl MapViewerWindowView {
     }
 
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
-        let window_handle = cx.window_handle();
+        let window_handle = cx.windows();
         cx.spawn(async move |handle, cx| {
             // GPUI deliberately uploads only a small number of previously unseen images per
             // paint. A normal refresh can replay the absolute layer cache without running the
@@ -226,15 +226,27 @@ impl MapViewerWindowView {
                     force_frontend_repaint
                 })?;
 
-                if force_frontend_repaint
-                    && let Err(error) = window_handle.update(cx, |_, window, _| {
-                        window.refresh_map_image_uploads();
-                    })
-                {
-                    tracing::debug!(
-                        %error,
-                        "map_viewer frontend_tile_upload_window_refresh_failed"
-                    );
+                if force_frontend_repaint {
+                    let mut refresh_error = None;
+                    let refreshed = window_handle.iter().any(|window_handle| {
+                        match window_handle.update(cx, |_, window, _| {
+                            window.refresh_map_image_uploads();
+                        }) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                refresh_error = Some(error);
+                                false
+                            }
+                        }
+                    });
+                    if !refreshed {
+                        if let Some(error) = refresh_error {
+                            tracing::debug!(
+                                %error,
+                                "map_viewer frontend_tile_upload_window_refresh_failed"
+                            );
+                        }
+                    }
                 }
             }
             Ok::<(), anyhow::Error>(())
