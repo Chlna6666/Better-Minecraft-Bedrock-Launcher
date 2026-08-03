@@ -84,6 +84,7 @@ mod inspector;
 mod key_dispatch;
 mod layout;
 mod lifecycle;
+mod map_atlas;
 mod observers;
 mod open;
 mod options;
