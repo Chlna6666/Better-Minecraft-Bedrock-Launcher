@@ -11,6 +11,8 @@ const MAP_VIEWER_MIN_WINDOW_WIDTH: f32 = 920.0;
 const MAP_VIEWER_MIN_WINDOW_HEIGHT: f32 = 620.0;
 const MAP_VIEWER_MAX_DISPLAY_RATIO: f32 = 0.9;
 const VIEWPORT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(80);
+const FRONTEND_TILE_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+const FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT: usize = 8;
 
 impl MapViewerWindowView {
     fn prepare_visible_manifest_probe(
@@ -45,8 +47,21 @@ impl MapViewerWindowView {
 
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {
+            // GPUI deliberately uploads only a small number of previously unseen images per
+            // paint. The tile layer is an absolute cached subtree, so an animation-frame request
+            // can replay the cached scene without running the canvas paint closure again. Track
+            // each CPU snapshot generation and explicitly republish the tile layer until every
+            // image in that snapshot has had at least one upload opportunity.
+            let mut last_frontend_generation = u64::MAX;
+            let mut frontend_repaint_passes_remaining = 0usize;
+
             loop {
-                Timer::after(VIEWPORT_WATCHDOG_INTERVAL).await;
+                let interval = if frontend_repaint_passes_remaining > 0 {
+                    FRONTEND_TILE_REPAINT_INTERVAL
+                } else {
+                    VIEWPORT_WATCHDOG_INTERVAL
+                };
+                Timer::after(interval).await;
                 let Some(view) = handle.upgrade() else {
                     break;
                 };
@@ -57,6 +72,25 @@ impl MapViewerWindowView {
                     let visible_tiles = this.tile_coords_for_viewport(0);
                     if visible_tiles.is_empty() {
                         return;
+                    }
+
+                    let frontend_generation = this.canvas_tile_snapshot.generation;
+                    if frontend_generation != last_frontend_generation {
+                        last_frontend_generation = frontend_generation;
+                        let image_count = this
+                            .canvas_tile_snapshot
+                            .tiles
+                            .len()
+                            .saturating_add(this.canvas_tile_snapshot.screen_images.len());
+                        frontend_repaint_passes_remaining = image_count
+                            .saturating_add(FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT - 1)
+                            / FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT;
+                        tracing::debug!(
+                            frontend_generation,
+                            image_count,
+                            repaint_passes = frontend_repaint_passes_remaining,
+                            "map_viewer frontend_tile_upload_latch_armed"
+                        );
                     }
 
                     this.prepare_visible_manifest_probe(&visible_tiles, cx);
@@ -94,14 +128,34 @@ impl MapViewerWindowView {
                             )
                         })
                     };
-                    if !incomplete && orphaned_loading.is_empty() {
+                    let frontend_repaint_pending = frontend_repaint_passes_remaining > 0;
+                    if !incomplete && orphaned_loading.is_empty() && !frontend_repaint_pending {
                         return;
                     }
 
-                    this.pending_viewport_refresh = true;
-                    this.ensure_visible_tiles(cx);
-                    if this.pending_viewport_refresh {
-                        this.schedule_viewport_work_refresh(cx);
+                    if frontend_repaint_pending {
+                        // Bypass the semantic snapshot-key guard. The CPU snapshot is unchanged,
+                        // but GPUI still has deferred image uploads that require another actual
+                        // canvas paint instead of a cached scene replay.
+                        this.last_synced_tile_layer_snapshot_key = None;
+                        let colors = this.theme_colors(cx);
+                        this.sync_tile_layer_snapshot(colors, cx);
+                        frontend_repaint_passes_remaining =
+                            frontend_repaint_passes_remaining.saturating_sub(1);
+                        if frontend_repaint_passes_remaining == 0 {
+                            tracing::debug!(
+                                frontend_generation,
+                                "map_viewer frontend_tile_upload_latch_drained"
+                            );
+                        }
+                    }
+
+                    if incomplete || !orphaned_loading.is_empty() {
+                        this.pending_viewport_refresh = true;
+                        this.ensure_visible_tiles(cx);
+                        if this.pending_viewport_refresh {
+                            this.schedule_viewport_work_refresh(cx);
+                        }
                     }
                     cx.notify();
                 })?;
