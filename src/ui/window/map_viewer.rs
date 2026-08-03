@@ -48,6 +48,8 @@ mod tile_plan_legacy;
 mod tile_plan;
 mod tile_render_legacy;
 #[path = "map_viewer/tile_render_stable.rs"]
+mod tile_render_stable;
+#[path = "map_viewer/tile_render_current.rs"]
 mod tile_render;
 mod tile_state;
 mod tool_stripe;
