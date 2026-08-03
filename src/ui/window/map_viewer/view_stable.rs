@@ -64,34 +64,43 @@ impl MapViewerWindowView {
 
                     this.prepare_visible_manifest_probe(&visible_tiles, cx);
 
-                    let orphaned_loading = visible_tiles
-                        .iter()
-                        .copied()
-                        .filter(|coord| {
-                            this.tile_manager.entries.get(coord).is_some_and(|entry| {
-                                entry.state == TileLoadState::Loading
-                                    && !this.active_render_tiles.contains(coord)
+                    let composite_frontend_active = this.viewport_composite_request_id.is_some()
+                        || !this.canvas_tile_snapshot.screen_images.is_empty();
+                    let orphaned_loading = if composite_frontend_active {
+                        Vec::new()
+                    } else {
+                        visible_tiles
+                            .iter()
+                            .copied()
+                            .filter(|coord| {
+                                this.tile_manager.entries.get(coord).is_some_and(|entry| {
+                                    entry.state == TileLoadState::Loading
+                                        && !this.active_render_tiles.contains(coord)
+                                })
                             })
-                        })
-                        .collect::<Vec<_>>();
+                            .collect::<Vec<_>>()
+                    };
                     if !orphaned_loading.is_empty() {
                         this.tile_manager
                             .requeue_cancelled_loading(&orphaned_loading);
                     }
 
-                    let incomplete = visible_tiles.iter().any(|coord| {
-                        !matches!(
-                            this.tile_manager.entries.get(coord).map(|entry| entry.state),
-                            Some(TileLoadState::Loaded | TileLoadState::Invalid)
-                        )
-                    });
-                    if !incomplete
-                        && orphaned_loading.is_empty()
-                        && !this.pending_viewport_refresh
-                    {
+                    let incomplete = if composite_frontend_active {
+                        this.viewport_composite_request_id.is_some()
+                            || this.pending_viewport_refresh
+                            || this.canvas_tile_snapshot.screen_images.len() != 1
+                    } else {
+                        visible_tiles.iter().any(|coord| {
+                            !matches!(
+                                this.tile_manager.entries.get(coord).map(|entry| entry.state),
+                                Some(TileLoadState::Loaded | TileLoadState::Invalid)
+                            )
+                        })
+                    };
+                    if !incomplete && orphaned_loading.is_empty() {
                         let stable_generation = this.canvas_tile_generation;
-                        let compositor_idle = this.viewport_composite_request_id.is_none()
-                            && !this.viewport_interaction_active()
+                        let compositor_idle = !this.viewport_interaction_active()
+                            && this.viewport_composite_request_id.is_none()
                             && this.canvas_tile_snapshot.screen_images.len() == 1;
                         if compositor_idle
                             && stable_generation.saturating_sub(last_atlas_rebuild_generation)
