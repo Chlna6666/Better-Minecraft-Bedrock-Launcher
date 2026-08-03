@@ -3,15 +3,16 @@ pub(super) use super::helpers_legacy::*;
 use super::model::{MapViewport, RenderCpuBudget, RETAIN_RADIUS};
 use bedrock_render::RenderLayout;
 
-const MIN_REGION_CACHE_ENTRIES: usize = 1024;
-const MAX_REGION_CACHE_ENTRIES: usize = 4096;
-const MIN_REGION_CACHE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_REGION_CACHE_BYTES: usize = 256 * 1024 * 1024;
+const MIN_REGION_CACHE_ENTRIES: usize = 131_072;
+const MAX_REGION_CACHE_ENTRIES: usize = 262_144;
+const MIN_REGION_CACHE_BYTES: usize = 96 * 1024 * 1024;
+const MAX_REGION_CACHE_BYTES: usize = 384 * 1024 * 1024;
+const TARGET_RESIDENT_TILE_IMAGES: usize = 4_096;
 
 pub(super) fn tile_cache_memory_limit(cpu_budget: RenderCpuBudget) -> usize {
     cpu_budget
         .thread_count()
-        .saturating_mul(256)
+        .saturating_mul(16_384)
         .clamp(MIN_REGION_CACHE_ENTRIES, MAX_REGION_CACHE_ENTRIES)
 }
 
@@ -26,16 +27,17 @@ pub(super) fn ui_tile_memory_budget_bytes(
     let tile_bytes = tile_size
         .saturating_mul(tile_size)
         .saturating_mul(4);
-    let visible_tiles = visible_tile_count(viewport, tile_size, RETAIN_RADIUS);
-    let visible_budget = visible_tiles
-        .saturating_mul(tile_bytes)
-        .saturating_mul(4);
-    let available_budget = usize::try_from(super::helpers_legacy::available_system_memory_bytes() / 16)
-        .unwrap_or(MIN_REGION_CACHE_BYTES);
+    let visible_tiles = visible_tile_count(viewport, tile_size, RETAIN_RADIUS)
+        .min(TARGET_RESIDENT_TILE_IMAGES);
+    let visible_budget = visible_tiles.saturating_mul(tile_bytes);
+    let available_budget = usize::try_from(
+        super::helpers_legacy::available_system_memory_bytes() / 24,
+    )
+    .unwrap_or(MIN_REGION_CACHE_BYTES);
 
     visible_budget
         .max(available_budget)
-        .clamp(MIN_REGION_CACHE_BYTES, MAX_REGION_CACHE_BYTES.max(visible_budget))
+        .clamp(MIN_REGION_CACHE_BYTES, MAX_REGION_CACHE_BYTES)
 }
 
 fn visible_tile_count(viewport: MapViewport, tile_size: usize, radius: i32) -> usize {
