@@ -1,0 +1,90 @@
+name: Compile Check
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compile-check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "1"
+  CARGO_NET_RETRY: "8"
+  CARGO_TARGET_DIR: target/ci-check
+
+jobs:
+  windows-check:
+    name: Windows cargo check
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Validate GPUI workspace layout
+        shell: pwsh
+        run: ./scripts/check_gpui_layout.ps1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve Rust cache fingerprint
+        id: rust
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (rustc --version --verbose | Out-String).Trim()
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($version)
+          $hash = [System.Security.Cryptography.SHA256]::HashData($bytes)
+          $fingerprint = [System.Convert]::ToHexString($hash).ToLowerInvariant().Substring(0, 16)
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "fingerprint=$fingerprint"
+          Write-Host $version
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git
+            target/ci-check
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-check-${{ steps.rust.outputs.fingerprint }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', '.cargo/config') }}-v2
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-check-${{ steps.rust.outputs.fingerprint }}-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-check-
+
+      - name: Configure LLVM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          $libclang = @(
+            (Join-Path $llvmBin "libclang.dll"),
+            (Join-Path $llvmBin "clang.dll")
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $libclang) {
+            throw "libclang.dll or clang.dll was not found under $llvmBin"
+          }
+
+          Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
+          Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
+          Write-Host "Using $libclang"
+
+      - name: Check all BMCBL targets
+        shell: pwsh
+        run: cargo check --all-targets --locked
