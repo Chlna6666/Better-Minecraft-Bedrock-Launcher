@@ -3,11 +3,10 @@ pub(super) use super::tile_plan_legacy::*;
 use super::model::{DRAG_RETAIN_RADIUS, DragState, MapViewport, RETAIN_RADIUS};
 use super::tile_render::map_viewer_prefetch_radius;
 use super::viewport::{
-    RetainedTileFilter, TileBounds, canvas_tile_image_budget, retained_tile_filter_for_visible_bounds,
-    tile_coords_for_bounds, tile_coords_for_visible_bounds, visible_tile_bounds_for_viewport,
+    canvas_tile_image_budget, tile_coords_for_bounds, tile_coords_for_visible_bounds,
+    visible_tile_bounds_for_viewport,
 };
 use bedrock_render::RenderLayout;
-use std::collections::BTreeSet;
 
 pub(super) struct ViewportTilePlanOptions {
     pub(super) viewport: MapViewport,
@@ -31,7 +30,12 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     };
     let canvas_budget = canvas_tile_image_budget(options.viewport, options.layout);
     let retain_filter = visible_bounds.map(|bounds| {
-        retained_tile_filter_for_visible_bounds(bounds, center, retain_radius, canvas_budget)
+        super::tile_plan_legacy::retained_tile_filter_for_visible_bounds(
+            bounds,
+            center,
+            retain_radius,
+            canvas_budget,
+        )
     });
 
     let prefetch_radius = if actively_dragging {
@@ -39,28 +43,13 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     } else {
         map_viewer_prefetch_radius()
     };
-    let mut prefetch = if prefetch_radius > 0 {
+    let prefetch = if prefetch_radius > 0 {
         visible_bounds
             .map(|bounds| tile_coords_for_bounds(bounds, prefetch_radius, center, canvas_budget))
             .unwrap_or_default()
     } else {
         Vec::new()
     };
-
-    if prefetch_radius > 0
-        && let (Some(visible_bounds), Some(drag)) = (visible_bounds, options.drag)
-    {
-        prefetch.extend(projected_drag_prefetch_tiles(
-            options.viewport,
-            options.layout,
-            visible_bounds,
-            center,
-            prefetch_radius,
-            drag,
-        ));
-        let mut seen = BTreeSet::new();
-        prefetch.retain(|coord| seen.insert(*coord));
-    }
 
     ViewportTilePlan {
         visible,
@@ -71,33 +60,4 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
         is_interacting: actively_dragging,
         prefetch_radius,
     }
-}
-
-fn projected_drag_prefetch_tiles(
-    viewport: MapViewport,
-    layout: RenderLayout,
-    visible_bounds: TileBounds,
-    center: (i32, i32),
-    prefetch_radius: i32,
-    drag: DragState,
-) -> Vec<(i32, i32)> {
-    let drag_bias = drag.last_movement_x.abs().max(drag.last_movement_y.abs());
-    if drag_bias <= 0.0 {
-        return Vec::new();
-    }
-    let mut projected_viewport = viewport;
-    let projected_shift = drag_bias.max(32.0);
-    projected_viewport.offset_x += drag.last_movement_x.signum() * projected_shift;
-    projected_viewport.offset_y += drag.last_movement_y.signum() * projected_shift;
-    visible_tile_bounds_for_viewport(projected_viewport, layout, center)
-        .map(|projected_bounds| {
-            let expanded = projected_bounds.expand(prefetch_radius);
-            super::tile_plan_legacy::tile_coords_for_bounds(
-                visible_bounds,
-                prefetch_radius,
-                center,
-                super::viewport::tile_bounds_count(expanded).max(1),
-            )
-        })
-        .unwrap_or_default()
 }
