@@ -17,10 +17,10 @@ const MAP_VIEWER_TASK_STAGE_LABELS: [(&str, &str); 7] = [
     ("map_write", "写入地图"),
     ("map_refresh", "刷新地图瓦片"),
 ];
-// The viewport image is the only map layer submitted to GPUI. Individual tile
-// results stay in the renderer/cache and are composed before the foreground
-// snapshot is replaced, so camera changes cannot expose a half-updated tile set.
-pub(super) const VIEWPORT_COMPOSITE_ENABLED: bool = true;
+// Submit original world-tile images directly to GPUI. The retained tile layer already
+// publishes ready batches incrementally and budgets new GPU uploads per frame, while keeping
+// the one-block-per-pixel source images reusable across zoom levels without viewport resampling.
+pub(super) const VIEWPORT_COMPOSITE_ENABLED: bool = false;
 
 pub(super) const fn viewport_composite_owns_viewport(
     viewport_dragging: bool,
