@@ -1,6 +1,8 @@
 pub(super) use super::tile_plan_legacy::*;
 
-use super::model::{DRAG_RETAIN_RADIUS, DragState, MapViewport, RETAIN_RADIUS};
+use super::model::{
+    DRAG_RETAIN_RADIUS, DragState, MapViewport, RETAIN_RADIUS, ViewportTilePlan,
+};
 use super::tile_render::map_viewer_prefetch_radius;
 use super::viewport::{canvas_tile_image_budget, visible_tile_bounds_for_viewport};
 use bedrock_render::RenderLayout;
