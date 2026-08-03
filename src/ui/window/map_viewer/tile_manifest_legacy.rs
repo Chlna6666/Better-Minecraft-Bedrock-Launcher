@@ -142,13 +142,20 @@ pub(super) fn merge_tile_manifest_probe_results(
     requested_tiles: Vec<(i32, i32)>,
     results: Vec<Result<TileManifestProbeResult, String>>,
 ) -> Result<TileManifestProbeResult, String> {
+    let mut scanned_tiles = requested_tiles.into_iter().collect::<BTreeSet<_>>();
     let mut tile_chunk_index = TileChunkIndex::new();
     let mut bounds = None;
     for result in results {
         let result = result?;
+        // bedrock-render may widen one requested coordinate to a complete internal scan area.
+        // Preserve that actual coverage instead of replacing it with the small outer request;
+        // otherwise neighbouring coordinates are probed repeatedly and remain PendingManifest.
+        scanned_tiles.extend(result.requested_tiles.iter().copied());
+        scanned_tiles.extend(result.tile_chunk_index.keys().copied());
         tile_chunk_index.extend(result.tile_chunk_index);
         bounds = merge_chunk_bounds(bounds, result.bounds);
     }
+    let requested_tiles = scanned_tiles.into_iter().collect::<Vec<_>>();
     Ok(TileManifestProbeResult {
         requested_tiles: requested_tiles.clone(),
         tile_chunk_index: complete_cached_tile_chunk_index(&requested_tiles, tile_chunk_index),
@@ -170,4 +177,29 @@ pub(super) fn shared_tile_chunk_index(
                 .map(|positions| (coord, TileChunkPositions::from(positions)))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_probe_results_preserves_backend_scan_coverage() {
+        let result = merge_tile_manifest_probe_results(
+            vec![(0, 0)],
+            vec![Ok(TileManifestProbeResult {
+                requested_tiles: vec![(0, 0), (1, 0), (1, 1)],
+                tile_chunk_index: TileChunkIndex::new(),
+                bounds: None,
+                center_block_x: None,
+                center_block_z: None,
+            })],
+        )
+        .expect("probe result should merge");
+
+        assert_eq!(result.requested_tiles, vec![(0, 0), (1, 0), (1, 1)]);
+        assert!(result.tile_chunk_index.contains_key(&(0, 0)));
+        assert!(result.tile_chunk_index.contains_key(&(1, 0)));
+        assert!(result.tile_chunk_index.contains_key(&(1, 1)));
+    }
 }
