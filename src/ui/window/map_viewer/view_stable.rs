@@ -3,6 +3,7 @@ pub(super) use super::view_legacy::*;
 use super::model::{MapViewerWindowInit, MapViewerWindowView};
 use super::prelude::*;
 use super::tile_state::{TileLoadState, TilePriority};
+use super::viewport::TileBounds;
 use std::time::Duration;
 
 const MAP_VIEWER_DEFAULT_WINDOW_WIDTH: f32 = 1120.0;
@@ -11,8 +12,20 @@ const MAP_VIEWER_MIN_WINDOW_WIDTH: f32 = 920.0;
 const MAP_VIEWER_MIN_WINDOW_HEIGHT: f32 = 620.0;
 const MAP_VIEWER_MAX_DISPLAY_RATIO: f32 = 0.9;
 const VIEWPORT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(80);
-const FRONTEND_TILE_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+const FRONTEND_TILE_REPAINT_INTERVAL: Duration = Duration::from_millis(8);
 const FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT: usize = 8;
+const FRONTEND_REPAINT_SAFETY_PASSES: usize = 2;
+const FRONTEND_REPAINT_PROGRESS_LOG_INTERVAL: usize = 32;
+
+fn frontend_repaint_passes(image_count: usize) -> usize {
+    if image_count == 0 {
+        return 0;
+    }
+    image_count
+        .saturating_add(FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT - 1)
+        / FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT
+        + FRONTEND_REPAINT_SAFETY_PASSES
+}
 
 impl MapViewerWindowView {
     fn prepare_visible_manifest_probe(
@@ -46,14 +59,18 @@ impl MapViewerWindowView {
     }
 
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
+        let window_handle = cx.window_handle();
         cx.spawn(async move |handle, cx| {
             // GPUI deliberately uploads only a small number of previously unseen images per
-            // paint. The tile layer is an absolute cached subtree, so an animation-frame request
-            // can replay the cached scene without running the canvas paint closure again. Track
-            // each CPU snapshot generation and explicitly republish the tile layer until every
-            // image in that snapshot has had at least one upload opportunity.
+            // paint. A normal refresh can replay the absolute layer cache without running the
+            // canvas paint closure, so deferred images would never get another upload attempt.
+            // Keep a small upload latch and pair every pass with a non-destructive window cache
+            // invalidation. Resident atlas entries and RenderImage handles remain intact.
             let mut last_frontend_generation = u64::MAX;
+            let mut last_frontend_image_count = 0usize;
+            let mut last_frontend_paint_bounds: Option<TileBounds> = None;
             let mut frontend_repaint_passes_remaining = 0usize;
+            let mut frontend_repaint_passes_total = 0usize;
 
             loop {
                 let interval = if frontend_repaint_passes_remaining > 0 {
@@ -65,30 +82,54 @@ impl MapViewerWindowView {
                 let Some(view) = handle.upgrade() else {
                     break;
                 };
-                view.update(cx, |this, cx| {
+                let force_frontend_repaint = view.update(cx, |this, cx| {
                     if this.render_session.is_none() || this.session_loading {
-                        return;
+                        return false;
                     }
                     let visible_tiles = this.tile_coords_for_viewport(0);
                     if visible_tiles.is_empty() {
-                        return;
+                        return false;
                     }
 
                     let frontend_generation = this.canvas_tile_snapshot.generation;
                     if frontend_generation != last_frontend_generation {
-                        last_frontend_generation = frontend_generation;
                         let image_count = this
                             .canvas_tile_snapshot
                             .tiles
                             .len()
                             .saturating_add(this.canvas_tile_snapshot.screen_images.len());
-                        frontend_repaint_passes_remaining = image_count
-                            .saturating_add(FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT - 1)
-                            / FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT;
+                        let paint_bounds = this.canvas_tile_snapshot.paint_bounds;
+                        let full_snapshot_change = paint_bounds != last_frontend_paint_bounds
+                            || image_count < last_frontend_image_count
+                            || last_frontend_generation == u64::MAX;
+                        let added_or_replaced_images = if full_snapshot_change {
+                            image_count
+                        } else {
+                            image_count
+                                .saturating_sub(last_frontend_image_count)
+                                .max(1)
+                        };
+                        let added_passes = frontend_repaint_passes(added_or_replaced_images);
+                        let maximum_passes = frontend_repaint_passes(image_count);
+                        if full_snapshot_change {
+                            frontend_repaint_passes_remaining = maximum_passes;
+                        } else {
+                            frontend_repaint_passes_remaining = frontend_repaint_passes_remaining
+                                .saturating_add(added_passes)
+                                .min(maximum_passes);
+                        }
+                        frontend_repaint_passes_total = frontend_repaint_passes_remaining;
+                        last_frontend_generation = frontend_generation;
+                        last_frontend_image_count = image_count;
+                        last_frontend_paint_bounds = paint_bounds;
                         tracing::debug!(
                             frontend_generation,
                             image_count,
+                            added_or_replaced_images,
+                            full_snapshot_change,
                             repaint_passes = frontend_repaint_passes_remaining,
+                            viewport_scale = this.viewport.scale,
+                            ?paint_bounds,
                             "map_viewer frontend_tile_upload_latch_armed"
                         );
                     }
@@ -130,21 +171,45 @@ impl MapViewerWindowView {
                     };
                     let frontend_repaint_pending = frontend_repaint_passes_remaining > 0;
                     if !incomplete && orphaned_loading.is_empty() && !frontend_repaint_pending {
-                        return;
+                        return false;
                     }
 
+                    let mut force_frontend_repaint = false;
                     if frontend_repaint_pending {
-                        // Bypass the semantic snapshot-key guard. The CPU snapshot is unchanged,
-                        // but GPUI still has deferred image uploads that require another actual
-                        // canvas paint instead of a cached scene replay.
+                        // Bypass the semantic snapshot-key guard and force the window's retained
+                        // view cache to refresh after this update. Merely requesting an animation
+                        // frame is insufficient because GPUI can replay the previous scene.
                         this.last_synced_tile_layer_snapshot_key = None;
                         let colors = this.theme_colors(cx);
                         this.sync_tile_layer_snapshot(colors, cx);
+                        force_frontend_repaint = true;
+
+                        let repaint_pass = frontend_repaint_passes_total
+                            .saturating_sub(frontend_repaint_passes_remaining)
+                            .saturating_add(1);
                         frontend_repaint_passes_remaining =
                             frontend_repaint_passes_remaining.saturating_sub(1);
+                        if repaint_pass == 1
+                            || frontend_repaint_passes_remaining <= 1
+                            || repaint_pass % FRONTEND_REPAINT_PROGRESS_LOG_INTERVAL == 0
+                        {
+                            tracing::debug!(
+                                frontend_generation,
+                                repaint_pass,
+                                repaint_passes_total = frontend_repaint_passes_total,
+                                repaint_passes_remaining = frontend_repaint_passes_remaining,
+                                image_count = last_frontend_image_count,
+                                viewport_scale = this.viewport.scale,
+                                paint_bounds = ?this.canvas_tile_snapshot.paint_bounds,
+                                "map_viewer frontend_tile_upload_repaint"
+                            );
+                        }
                         if frontend_repaint_passes_remaining == 0 {
                             tracing::debug!(
                                 frontend_generation,
+                                image_count = last_frontend_image_count,
+                                viewport_scale = this.viewport.scale,
+                                paint_bounds = ?this.canvas_tile_snapshot.paint_bounds,
                                 "map_viewer frontend_tile_upload_latch_drained"
                             );
                         }
@@ -158,7 +223,19 @@ impl MapViewerWindowView {
                         }
                     }
                     cx.notify();
+                    force_frontend_repaint
                 })?;
+
+                if force_frontend_repaint
+                    && let Err(error) = window_handle.update(cx, |_, window, _| {
+                        window.refresh_map_image_uploads();
+                    })
+                {
+                    tracing::debug!(
+                        %error,
+                        "map_viewer frontend_tile_upload_window_refresh_failed"
+                    );
+                }
             }
             Ok::<(), anyhow::Error>(())
         })
