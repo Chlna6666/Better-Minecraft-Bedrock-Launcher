@@ -2,7 +2,7 @@ pub(super) use super::view_legacy::*;
 
 use super::model::{MapViewerWindowInit, MapViewerWindowView};
 use super::prelude::*;
-use super::tile_state::TileLoadState;
+use super::tile_state::{TileLoadState, TilePriority};
 use std::time::Duration;
 
 const MAP_VIEWER_DEFAULT_WINDOW_WIDTH: f32 = 1120.0;
@@ -13,6 +13,36 @@ const MAP_VIEWER_MAX_DISPLAY_RATIO: f32 = 0.9;
 const VIEWPORT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(80);
 
 impl MapViewerWindowView {
+    fn prepare_visible_manifest_probe(
+        &mut self,
+        visible_tiles: &[(i32, i32)],
+        cx: &mut Context<Self>,
+    ) {
+        if self.viewport_interaction_active() || self.manifest_probe_in_flight {
+            return;
+        }
+
+        let unresolved_tiles = visible_tiles
+            .iter()
+            .copied()
+            .filter(|coord| {
+                !self.tile_chunk_index.contains_key(coord)
+                    && !self.tile_manager.entries.get(coord).is_some_and(|entry| {
+                        entry.state == TileLoadState::Invalid
+                    })
+            })
+            .collect::<Vec<_>>();
+        if unresolved_tiles.is_empty() {
+            return;
+        }
+
+        self.tile_manager
+            .ensure_pending_manifest(&unresolved_tiles, TilePriority::Visible);
+        self.pending_viewport_refresh = true;
+        let center_tile = self.viewport.center_tile(self.active_layout);
+        self.schedule_tile_manifest_probe(visible_tiles, &[], center_tile, cx);
+    }
+
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {
             loop {
@@ -28,6 +58,8 @@ impl MapViewerWindowView {
                     if visible_tiles.is_empty() {
                         return;
                     }
+
+                    this.prepare_visible_manifest_probe(&visible_tiles, cx);
 
                     let orphaned_loading = visible_tiles
                         .iter()
