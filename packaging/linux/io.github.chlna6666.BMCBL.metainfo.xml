@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.chlna6666.BMCBL</id>
+  <name>BMCBL</name>
+  <summary>Minecraft Bedrock Edition launcher and version manager</summary>
+  <developer_name>Chlna6666</developer_name>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <description>
+    <p>
+      Better Minecraft Bedrock Launcher manages Minecraft Bedrock Edition
+      versions, downloads, accounts, add-ons and Linux Proton/Wine launchers.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.chlna6666.BMCBL.desktop</launchable>
+  <url type="homepage">https://www.bmcbl.com/</url>
+  <url type="bugtracker">https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher/issues</url>
+  <url type="vcs-browser">https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher</url>
+  <provides>
+    <binary>BMCBL</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+</component>

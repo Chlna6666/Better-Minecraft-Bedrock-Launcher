@@ -41,17 +41,20 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Resolve Rust cache fingerprint
-        id: rust
+      - name: Configure LLVM
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = (rustc --version --verbose | Out-String).Trim()
-          $bytes = [System.Text.Encoding]::UTF8.GetBytes($version)
-          $hash = [System.Security.Cryptography.SHA256]::HashData($bytes)
-          $fingerprint = [System.Convert]::ToHexString($hash).ToLowerInvariant().Substring(0, 16)
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "fingerprint=$fingerprint"
-          Write-Host $version
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          $libclang = @(
+            (Join-Path $llvmBin "libclang.dll"),
+            (Join-Path $llvmBin "clang.dll")
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $libclang) {
+            throw "libclang.dll or clang.dll was not found under $llvmBin"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
+          Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
 
       - name: Restore Cargo cache
         uses: actions/cache@v5
@@ -62,40 +65,52 @@ jobs:
             ~/.cargo/registry/src
             ~/.cargo/git
             target/ci-check
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-check-${{ steps.rust.outputs.fingerprint }}-${{ hashFiles('Cargo.toml', '**/Cargo.toml', '.cargo/config.toml', '.cargo/config') }}-v4
+          key: windows-cargo-check-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v5
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-check-${{ steps.rust.outputs.fingerprint }}-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-check-
-
-      - name: Configure LLVM
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
-          $libclang = @(
-            (Join-Path $llvmBin "libclang.dll"),
-            (Join-Path $llvmBin "clang.dll")
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-          if (-not $libclang) {
-            throw "libclang.dll or clang.dll was not found under $llvmBin"
-          }
-
-          Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
-          Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
-          Write-Host "Using $libclang"
+            windows-cargo-check-
 
       - name: Check all BMCBL targets
         shell: pwsh
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
 
-      - name: Report lockfile drift
-        if: ${{ always() }}
-        shell: pwsh
+  linux-check:
+    name: Linux cargo check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Install Linux build dependencies
         run: |
-          if (git diff --quiet -- Cargo.lock) {
-            Write-Host "Cargo.lock matches the current workspace manifests."
-          } else {
-            Write-Warning "Cargo.lock is stale in the repository. CI refreshed it locally while compiling."
-            git diff --stat -- Cargo.lock
-          }
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake libclang-dev llvm-dev ninja-build pkg-config \
+            libasound2-dev libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev \
+            libfreetype6-dev libgl1-mesa-dev libpipewire-0.3-dev libssl-dev \
+            libudev-dev libvulkan-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
+            libxcursor-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxrandr-dev nasm yasm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git
+            target/ci-check
+          key: linux-cargo-check-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v5
+          restore-keys: |
+            linux-cargo-check-
+
+      - name: Check all BMCBL targets
+        run: cargo check --all-targets --locked

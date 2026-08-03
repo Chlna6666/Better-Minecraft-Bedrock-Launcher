@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=BMCBL
+GenericName=Minecraft Bedrock Launcher
+Comment=Manage and launch Minecraft Bedrock Edition versions
+Exec=BMCBL %U
+Icon=io.github.chlna6666.BMCBL
+Terminal=false
+Categories=Game;Utility;
+Keywords=Minecraft;Bedrock;Launcher;
+StartupNotify=true
+StartupWMClass=BMCBL

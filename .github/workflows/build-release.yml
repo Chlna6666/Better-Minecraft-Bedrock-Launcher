@@ -1,0 +1,202 @@
+name: Build Release Artifacts
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref or commit to build
+        required: true
+        type: string
+      tag:
+        description: GitHub release tag
+        required: true
+        type: string
+      build_version:
+        description: Version embedded into BMCBL
+        required: true
+        type: string
+      channel:
+        description: stable or nightly
+        required: true
+        type: string
+      prerelease:
+        description: Publish as a prerelease
+        required: true
+        type: boolean
+      release_title:
+        description: GitHub release title
+        required: true
+        type: string
+      cleanup_old_nightlies:
+        description: Remove previous nightly releases and tags
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "8"
+
+jobs:
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Validate GPUI workspace layout
+        shell: pwsh
+        run: ./scripts/check_gpui_layout.ps1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare Windows native toolchain
+        shell: pwsh
+        run: ./scripts/setup-windows-release.ps1
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git
+            target
+          key: windows-x86_64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v3
+          restore-keys: windows-x86_64-release-
+
+      - name: Build BMCBL
+        shell: pwsh
+        env:
+          BMCBL_BUILD_VERSION: ${{ inputs.build_version }}
+          BMCBL_BUILD_CHANNEL: ${{ inputs.channel }}
+          GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
+          GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
+        run: cargo build --release --bin BMCBL --locked
+
+      - name: Prepare Windows artifact
+        shell: pwsh
+        run: |
+          $source = "target\release\BMCBL.exe"
+          if (-not (Test-Path $source)) { throw "Missing executable: $source" }
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          $asset = "dist\windows\BMCBL-windows-x86_64-${{ inputs.tag }}.exe"
+          Copy-Item $source $asset -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $asset).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $asset -Leaf)" | Set-Content -Encoding ascii "$asset.sha256"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-${{ inputs.tag }}
+          path: dist/windows/*
+          if-no-files-found: error
+          retention-days: 30
+
+  linux:
+    name: Linux x86_64 packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Install Linux build and packaging dependencies
+        run: ./scripts/setup-linux-release.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git
+            target
+          key: linux-x86_64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v3
+          restore-keys: linux-x86_64-release-
+
+      - name: Build BMCBL
+        env:
+          BMCBL_BUILD_VERSION: ${{ inputs.build_version }}
+          BMCBL_BUILD_CHANNEL: ${{ inputs.channel }}
+          GDK_RELEASE_KEY: ${{ secrets.GDK_RELEASE_KEY }}
+          GDK_PREVIEW_KEY: ${{ secrets.GDK_PREVIEW_KEY }}
+        run: cargo build --release --bin BMCBL --locked
+
+      - name: Validate Linux binary
+        run: |
+          file target/release/BMCBL
+          ldd target/release/BMCBL
+
+      - name: Build DEB, RPM, AppImage and Flatpak packages
+        run: |
+          ./scripts/package-linux.sh \
+            --version "${{ inputs.build_version }}" \
+            --channel "${{ inputs.channel }}" \
+            --binary target/release/BMCBL \
+            --output-dir dist/linux
+
+      - name: Validate package metadata
+        run: |
+          desktop-file-validate packaging/linux/io.github.chlna6666.BMCBL.desktop
+          appstreamcli validate --no-net packaging/linux/io.github.chlna6666.BMCBL.metainfo.xml
+          dpkg-deb --info dist/linux/*.deb
+          rpm -qip dist/linux/*.rpm
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ inputs.tag }}
+          path: dist/linux/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub release
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*-${{ inputs.tag }}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REF: ${{ inputs.ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+          CLEANUP_OLD_NIGHTLIES: ${{ inputs.cleanup_old_nightlies }}
+        run: ./scripts/publish-release.sh release-assets
