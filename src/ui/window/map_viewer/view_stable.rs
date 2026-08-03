@@ -11,6 +11,7 @@ const MAP_VIEWER_MIN_WINDOW_WIDTH: f32 = 920.0;
 const MAP_VIEWER_MIN_WINDOW_HEIGHT: f32 = 620.0;
 const MAP_VIEWER_MAX_DISPLAY_RATIO: f32 = 0.9;
 const VIEWPORT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(80);
+const MAP_ATLAS_REBUILD_GENERATIONS: u64 = 24;
 
 impl MapViewerWindowView {
     fn prepare_visible_manifest_probe(
@@ -44,19 +45,21 @@ impl MapViewerWindowView {
     }
 
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
+        let window_handle = cx.window_handle();
         cx.spawn(async move |handle, cx| {
+            let mut last_atlas_rebuild_generation = 0u64;
             loop {
                 Timer::after(VIEWPORT_WATCHDOG_INTERVAL).await;
                 let Some(view) = handle.upgrade() else {
                     break;
                 };
-                view.update(cx, |this, cx| {
+                let atlas_rebuild_generation = view.update(cx, |this, cx| {
                     if this.render_session.is_none() || this.session_loading {
-                        return;
+                        return None;
                     }
                     let visible_tiles = this.tile_coords_for_viewport(0);
                     if visible_tiles.is_empty() {
-                        return;
+                        return None;
                     }
 
                     this.prepare_visible_manifest_probe(&visible_tiles, cx);
@@ -86,7 +89,17 @@ impl MapViewerWindowView {
                         && orphaned_loading.is_empty()
                         && !this.pending_viewport_refresh
                     {
-                        return;
+                        let stable_generation = this.canvas_tile_generation;
+                        let compositor_idle = this.viewport_composite_request_id.is_none()
+                            && !this.viewport_interaction_active()
+                            && this.canvas_tile_snapshot.screen_images.len() == 1;
+                        if compositor_idle
+                            && stable_generation.saturating_sub(last_atlas_rebuild_generation)
+                                >= MAP_ATLAS_REBUILD_GENERATIONS
+                        {
+                            return Some(stable_generation);
+                        }
+                        return None;
                     }
 
                     this.pending_viewport_refresh = true;
@@ -95,7 +108,16 @@ impl MapViewerWindowView {
                         this.schedule_viewport_work_refresh(cx);
                     }
                     cx.notify();
+                    None
                 })?;
+
+                if let Some(generation) = atlas_rebuild_generation
+                    && window_handle
+                        .update(cx, |_, window, _| window.rebuild_map_image_atlas())
+                        .is_ok()
+                {
+                    last_atlas_rebuild_generation = generation;
+                }
             }
             Ok::<(), anyhow::Error>(())
         })
