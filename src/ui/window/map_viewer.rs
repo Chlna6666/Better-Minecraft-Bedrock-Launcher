@@ -13,6 +13,7 @@ mod history_panel;
 mod import_preview;
 mod interactions;
 mod layout;
+#[path = "map_viewer/lifecycle_stable.rs"]
 mod lifecycle;
 pub(crate) mod map_history;
 mod mcstructure;
