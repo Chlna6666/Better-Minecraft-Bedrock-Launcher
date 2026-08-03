@@ -36,10 +36,17 @@ pub(super) fn build_tile_paint_snapshot(
 ) -> TilePaintSnapshot {
     let paint_bounds =
         super::viewport::paint_tile_bounds_for_viewport(viewport, layout, paint_radius);
-    let mut tiles = Vec::with_capacity(tile_manager.loaded_count());
+    let paint_capacity = paint_bounds
+        .map(super::viewport::tile_bounds_count)
+        .unwrap_or(0)
+        .min(tile_manager.loaded_count());
+    let mut tiles = Vec::with_capacity(paint_capacity);
     let mut debug_overlays = Vec::new();
 
     for (&coord, entry) in &tile_manager.entries {
+        if !paint_bounds.is_some_and(|bounds| bounds.contains(coord)) {
+            continue;
+        }
         if let Some(tile) = entry.image.as_ref() {
             tiles.push(super::tile_state::PaintTile {
                 coord,
@@ -97,20 +104,32 @@ pub(super) fn patch_tile_paint_snapshot(
 ) -> TilePaintSnapshotPatch {
     let paint_bounds =
         super::viewport::paint_tile_bounds_for_viewport(viewport, layout, paint_radius);
-    if changed_tiles.is_empty() && current.paint_bounds == paint_bounds {
+    if current.paint_bounds != paint_bounds {
+        // A zoom or camera move changes the drawable world range. Rebuild from the
+        // retained tile cache so the new snapshot contains every already-loaded tile
+        // inside the new range and no off-screen GPU image references from the old range.
+        return TilePaintSnapshotPatch::Rebuild;
+    }
+    if changed_tiles.is_empty() {
         return TilePaintSnapshotPatch::Unchanged;
     }
 
     let mut tiles = current.tiles.as_ref().clone();
     let mut debug_overlays = current.debug_overlays.as_ref().clone();
-    let mut changed = current.paint_bounds != paint_bounds;
+    let mut changed = false;
     let mut coords = changed_tiles.to_vec();
     coords.sort_unstable();
     coords.dedup();
 
     for coord in coords {
-        changed |= patch_tile(&mut tiles, tile_manager, coord);
-        changed |= patch_overlay(&mut debug_overlays, tile_manager, coord, diagnostics_open);
+        changed |= patch_tile(&mut tiles, tile_manager, paint_bounds, coord);
+        changed |= patch_overlay(
+            &mut debug_overlays,
+            tile_manager,
+            paint_bounds,
+            coord,
+            diagnostics_open,
+        );
     }
 
     if !changed {
@@ -142,15 +161,16 @@ pub(super) fn patch_tile_paint_snapshot(
 fn patch_tile(
     tiles: &mut Vec<super::tile_state::PaintTile>,
     tile_manager: &super::tile_state::RegionManager,
+    paint_bounds: Option<super::viewport::TileBounds>,
     coord: (i32, i32),
 ) -> bool {
     let key = super::viewport::tile_paint_sort_key(coord);
     let existing = tiles.binary_search_by_key(&key, |tile| {
         super::viewport::tile_paint_sort_key(tile.coord)
     });
-    let replacement = tile_manager
-        .entries
-        .get(&coord)
+    let replacement = paint_bounds
+        .filter(|bounds| bounds.contains(coord))
+        .and_then(|_| tile_manager.entries.get(&coord))
         .and_then(|entry| entry.image.as_ref())
         .map(|tile| super::tile_state::PaintTile {
             coord,
@@ -190,6 +210,7 @@ fn patch_tile(
 fn patch_overlay(
     overlays: &mut Vec<TileDebugOverlay>,
     tile_manager: &super::tile_state::RegionManager,
+    paint_bounds: Option<super::viewport::TileBounds>,
     coord: (i32, i32),
     diagnostics_open: bool,
 ) -> bool {
@@ -197,25 +218,28 @@ fn patch_overlay(
     let existing = overlays.binary_search_by_key(&key, |overlay| {
         super::viewport::tile_paint_sort_key(overlay.coord)
     });
-    let replacement = tile_manager.entries.get(&coord).and_then(|entry| {
-        if !diagnostics_open
-            || !matches!(
-                entry.state,
-                super::tile_state::TileLoadState::Failed
-                    | super::tile_state::TileLoadState::Invalid
-            )
-        {
-            return None;
-        }
-        Some(TileDebugOverlay {
-            coord,
-            label: if entry.state == super::tile_state::TileLoadState::Invalid {
-                SharedString::from("空")
-            } else {
-                SharedString::from("失败")
-            },
-        })
-    });
+    let replacement = paint_bounds
+        .filter(|bounds| bounds.contains(coord))
+        .and_then(|_| tile_manager.entries.get(&coord))
+        .and_then(|entry| {
+            if !diagnostics_open
+                || !matches!(
+                    entry.state,
+                    super::tile_state::TileLoadState::Failed
+                        | super::tile_state::TileLoadState::Invalid
+                )
+            {
+                return None;
+            }
+            Some(TileDebugOverlay {
+                coord,
+                label: if entry.state == super::tile_state::TileLoadState::Invalid {
+                    SharedString::from("空")
+                } else {
+                    SharedString::from("失败")
+                },
+            })
+        });
 
     match (existing, replacement) {
         (Ok(index), Some(replacement)) => {
