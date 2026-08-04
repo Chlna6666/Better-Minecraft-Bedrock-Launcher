@@ -60,6 +60,9 @@ mod top_bar;
 mod view_legacy;
 #[path = "map_viewer/view_stable.rs"]
 mod view;
+#[path = "map_viewer/viewport.rs"]
+mod viewport_base;
+#[path = "map_viewer/viewport_stable.rs"]
 mod viewport;
 
 pub use actions::init;
