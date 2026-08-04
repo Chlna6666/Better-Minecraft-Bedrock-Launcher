@@ -1,3 +1,4 @@
+use crate::ui::window::map_viewer::lifecycle::VIEWPORT_COMPOSITE_ENABLED;
 pub(super) use super::view_legacy::*;
 
 use super::model::{MapViewerWindowInit, MapViewerWindowView};
