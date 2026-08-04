@@ -7,14 +7,14 @@ const GENERATED_ICON_PREFIX: &str = "images/map/entity/";
 /// Decodes the entity sprites embedded by `build.rs` into GPUI-ready RGBA data.
 ///
 /// Entity overlays intentionally have no instance-specific disk cache. The
-/// generated WebP files are application assets, so the resource pack version
+/// generated PNG files are application assets, so the resource pack version
 /// cannot leave stale avatar files behind and the first map view uses one
 /// deterministic catalog for every world.
 pub(crate) fn load_generated_entity_avatars_rgba() -> Vec<(String, u32, u32, Vec<u8>)> {
     let mut avatars = Vec::new();
     for path in crate::assets::asset_source::list_image_assets()
         .into_iter()
-        .filter(|path| path.starts_with(GENERATED_ICON_PREFIX) && path.ends_with(".webp"))
+        .filter(|path| path.starts_with(GENERATED_ICON_PREFIX) && path.ends_with(".png"))
     {
         let Some(bytes) = crate::assets::asset_source::load_image_asset(path.as_ref())
             .ok()
@@ -36,7 +36,7 @@ pub(crate) fn load_generated_entity_avatars_rgba() -> Vec<(String, u32, u32, Vec
         };
         let Some(identifier) = path
             .strip_prefix(GENERATED_ICON_PREFIX)
-            .and_then(|name| name.strip_suffix(".webp"))
+            .and_then(|name| name.strip_suffix(".png"))
         else {
             continue;
         };
