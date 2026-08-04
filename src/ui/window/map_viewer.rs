@@ -3,6 +3,8 @@ mod bottom_panel;
 #[path = "map_viewer/canvas.rs"]
 mod canvas_legacy;
 #[path = "map_viewer/canvas_stable.rs"]
+mod canvas_base;
+#[path = "map_viewer/canvas_frontend_stable.rs"]
 mod canvas;
 mod editor;
 #[path = "map_viewer/helpers.rs"]
