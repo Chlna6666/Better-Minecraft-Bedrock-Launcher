@@ -55,9 +55,11 @@ SIDE_PROFILE_ENTITIES = {
     "cod",
     "dolphin",
     "glow_squid",
+    "nautilus",
     "salmon",
     "squid",
     "tropicalfish",
+    "zombie_nautilus",
 }
 
 FRONT_BODY_ENTITIES = {
@@ -81,7 +83,9 @@ SIDE_HEAD_DIRECTIONS = {
 }
 
 FRONT_PROFILE_ENTITIES = {
+    "breeze",
     "breeze_wind_charge_projectile",
+    "creaking",
     "ender_crystal",
     "endermite",
     "evocation_fang",
@@ -96,6 +100,7 @@ FRONT_PROFILE_ENTITIES = {
 
 HEAD_NECK_PROFILE_ENTITIES = {
     "camel",
+    "camel_husk",
     "donkey",
     "horse",
     "llama",
@@ -110,6 +115,7 @@ HEAD_NECK_PROFILE_ENTITIES = {
 # stretching a horse or camel neck into a full-body icon.
 HEAD_NECK_TARGET_SIZES = {
     "camel": (13, 16),
+    "camel_husk": (13, 16),
     "donkey": (12, 16),
     "horse": (14, 13),
     "llama": (16, 16),
@@ -139,6 +145,7 @@ PORTRAIT_GEOMETRY_OVERRIDES = {
 PORTRAIT_DIRECTIONS = {
     "bat": "east",
     "camel": "east",
+    "camel_husk": "east",
     "fox": "east",
     "horse": "east",
     "pig": "east",
