@@ -27,6 +27,25 @@ fn frontend_repaint_passes(image_count: usize) -> usize {
         + FRONTEND_REPAINT_SAFETY_PASSES
 }
 
+fn frontend_snapshot_image_ids(snapshot: &TilePaintSnapshot) -> BTreeSet<ImageId> {
+    snapshot
+        .screen_images
+        .iter()
+        .map(|image| image.image.id)
+        .chain(snapshot.tiles.iter().map(|tile| tile.image.id))
+        .collect()
+}
+
+fn visible_tile_frontend_ready(
+    tile_manager: &super::tile_state::RegionManager,
+    coord: (i32, i32),
+) -> bool {
+    tile_manager.entries.get(&coord).is_some_and(|entry| {
+        entry.state == TileLoadState::Invalid
+            || (entry.state == TileLoadState::Loaded && entry.image.is_some())
+    })
+}
+
 impl MapViewerWindowView {
     fn prepare_visible_manifest_probe(
         &mut self,
@@ -62,12 +81,11 @@ impl MapViewerWindowView {
         let window_handle = cx.windows();
         cx.spawn(async move |handle, cx| {
             // GPUI deliberately uploads only a small number of previously unseen images per
-            // paint. A normal refresh can replay the absolute layer cache without running the
-            // canvas paint closure, so deferred images would never get another upload attempt.
-            // Keep a small upload latch and pair every pass with a non-destructive window cache
-            // invalidation. Resident atlas entries and RenderImage handles remain intact.
+            // paint. Track the exact image-id set instead of treating every canvas generation
+            // or camera transform as a new upload. Macro pages retain their ImageId across wheel
+            // zooms, so a viewport-only update must not restart a full upload sequence.
             let mut last_frontend_generation = u64::MAX;
-            let mut last_frontend_image_count = 0usize;
+            let mut last_frontend_image_ids = BTreeSet::new();
             let mut last_frontend_paint_bounds: Option<TileBounds> = None;
             let mut frontend_repaint_passes_remaining = 0usize;
             let mut frontend_repaint_passes_total = 0usize;
@@ -93,52 +111,57 @@ impl MapViewerWindowView {
 
                     let frontend_generation = this.canvas_tile_snapshot.generation;
                     if frontend_generation != last_frontend_generation {
-                        let image_count = this
-                            .canvas_tile_snapshot
-                            .tiles
-                            .len()
-                            .saturating_add(this.canvas_tile_snapshot.screen_images.len());
+                        let current_image_ids =
+                            frontend_snapshot_image_ids(&this.canvas_tile_snapshot);
+                        let image_count = current_image_ids.len();
+                        let added_or_replaced_images = current_image_ids
+                            .difference(&last_frontend_image_ids)
+                            .count();
+                        let removed_images = last_frontend_image_ids
+                            .difference(&current_image_ids)
+                            .count();
                         let paint_bounds = this.canvas_tile_snapshot.paint_bounds;
-                        let full_snapshot_change = paint_bounds != last_frontend_paint_bounds
-                            || image_count < last_frontend_image_count
-                            || last_frontend_generation == u64::MAX;
-                        let added_or_replaced_images = if full_snapshot_change {
-                            image_count
-                        } else {
-                            image_count
-                                .saturating_sub(last_frontend_image_count)
-                                .max(1)
-                        };
-                        let added_passes = frontend_repaint_passes(added_or_replaced_images);
-                        let maximum_passes = frontend_repaint_passes(image_count);
-                        if full_snapshot_change {
-                            frontend_repaint_passes_remaining = maximum_passes;
-                        } else {
+                        let viewport_bounds_changed = paint_bounds != last_frontend_paint_bounds;
+
+                        if added_or_replaced_images > 0 {
+                            let added_passes =
+                                frontend_repaint_passes(added_or_replaced_images);
+                            let maximum_passes = frontend_repaint_passes(image_count);
                             frontend_repaint_passes_remaining = frontend_repaint_passes_remaining
                                 .saturating_add(added_passes)
                                 .min(maximum_passes);
+                            frontend_repaint_passes_total =
+                                frontend_repaint_passes_remaining;
                         }
-                        frontend_repaint_passes_total = frontend_repaint_passes_remaining;
+
                         last_frontend_generation = frontend_generation;
-                        last_frontend_image_count = image_count;
+                        last_frontend_image_ids = current_image_ids;
                         last_frontend_paint_bounds = paint_bounds;
                         tracing::debug!(
                             frontend_generation,
                             image_count,
                             added_or_replaced_images,
-                            full_snapshot_change,
+                            removed_images,
+                            viewport_bounds_changed,
+                            macro_pages = this.canvas_tile_snapshot.screen_images.len(),
+                            individual_tiles = this.canvas_tile_snapshot.tiles.len(),
                             repaint_passes = frontend_repaint_passes_remaining,
                             viewport_scale = this.viewport.scale,
                             ?paint_bounds,
-                            "map_viewer frontend_tile_upload_latch_armed"
+                            "map_viewer frontend_tile_upload_latch_updated"
                         );
                     }
 
                     this.prepare_visible_manifest_probe(&visible_tiles, cx);
 
-                    let composite_frontend_active = this.viewport_composite_request_id.is_some()
-                        || !this.canvas_tile_snapshot.screen_images.is_empty();
-                    let orphaned_loading = if composite_frontend_active {
+                    // screen_images is also used by low-zoom macro pages. It must not activate
+                    // the legacy single-frame viewport-composite state machine, whose
+                    // `screen_images.len() != 1` condition otherwise keeps the viewport marked
+                    // incomplete forever and rebuilds the tile snapshot every watchdog tick.
+                    let viewport_composite_active = VIEWPORT_COMPOSITE_ENABLED
+                        && (this.viewport_composite_request_id.is_some()
+                            || !this.canvas_tile_snapshot.screen_images.is_empty());
+                    let orphaned_loading = if viewport_composite_active {
                         Vec::new()
                     } else {
                         visible_tiles
@@ -157,16 +180,13 @@ impl MapViewerWindowView {
                             .requeue_cancelled_loading(&orphaned_loading);
                     }
 
-                    let incomplete = if composite_frontend_active {
+                    let incomplete = if viewport_composite_active {
                         this.viewport_composite_request_id.is_some()
                             || this.pending_viewport_refresh
                             || this.canvas_tile_snapshot.screen_images.len() != 1
                     } else {
-                        visible_tiles.iter().any(|coord| {
-                            !matches!(
-                                this.tile_manager.entries.get(coord).map(|entry| entry.state),
-                                Some(TileLoadState::Loaded | TileLoadState::Invalid)
-                            )
+                        visible_tiles.iter().copied().any(|coord| {
+                            !visible_tile_frontend_ready(&this.tile_manager, coord)
                         })
                     };
                     let frontend_repaint_pending = frontend_repaint_passes_remaining > 0;
@@ -198,7 +218,7 @@ impl MapViewerWindowView {
                                 repaint_pass,
                                 repaint_passes_total = frontend_repaint_passes_total,
                                 repaint_passes_remaining = frontend_repaint_passes_remaining,
-                                image_count = last_frontend_image_count,
+                                image_count = last_frontend_image_ids.len(),
                                 viewport_scale = this.viewport.scale,
                                 paint_bounds = ?this.canvas_tile_snapshot.paint_bounds,
                                 "map_viewer frontend_tile_upload_repaint"
@@ -207,7 +227,7 @@ impl MapViewerWindowView {
                         if frontend_repaint_passes_remaining == 0 {
                             tracing::debug!(
                                 frontend_generation,
-                                image_count = last_frontend_image_count,
+                                image_count = last_frontend_image_ids.len(),
                                 viewport_scale = this.viewport.scale,
                                 paint_bounds = ?this.canvas_tile_snapshot.paint_bounds,
                                 "map_viewer frontend_tile_upload_latch_drained"
