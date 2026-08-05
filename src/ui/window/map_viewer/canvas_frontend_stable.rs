@@ -1,24 +1,47 @@
 // Keep the existing stable macro-page implementation as the source of truth, then add a
-// frontend transition layer around it. A newly built macro page first paints underneath its
-// original 128x128 source tiles. After the same pending macro-page set survives one complete
-// snapshot cycle, ownership is promoted to those macro pages and the overlapping source tiles
-// are removed together. This prevents the two representations from alternating indefinitely.
+// frontend transition layer around it. A macro page is painted underneath its original 128x128
+// source tiles for a real-time warm-up interval. Only after the same ImageId and camera bounds
+// remain stable for that interval may the page take ownership and remove its source tiles.
+// This prevents one ReadyBatch or one wheel event from promoting a page after only a few
+// milliseconds, before GPUI has had enough frames to make the 1024x1024 image resident.
 pub(super) use super::canvas_base::*;
 
 use gpui::ImageId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const MACRO_PAGE_RESIDENCY_WARMUP: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MacroPageViewportKey {
+    scale_bits: u32,
+    paint_bounds: Option<(i32, i32, i32, i32)>,
+}
 
 #[derive(Default)]
 struct MacroPageTransitionState {
     promoted: BTreeSet<ImageId>,
-    last_pending_signature: BTreeSet<ImageId>,
+    warming_since: BTreeMap<ImageId, Instant>,
+    viewport_key: Option<MacroPageViewportKey>,
 }
 
 static MACRO_PAGE_TRANSITION_STATE: OnceLock<Mutex<MacroPageTransitionState>> = OnceLock::new();
 
 fn macro_page_transition_state() -> &'static Mutex<MacroPageTransitionState> {
     MACRO_PAGE_TRANSITION_STATE.get_or_init(|| Mutex::new(MacroPageTransitionState::default()))
+}
+
+fn macro_page_viewport_key(
+    snapshot: &TilePaintSnapshot,
+    viewport: super::model::MapViewport,
+) -> MacroPageViewportKey {
+    MacroPageViewportKey {
+        scale_bits: viewport.scale.to_bits(),
+        paint_bounds: snapshot
+            .paint_bounds
+            .map(|bounds| (bounds.min_x, bounds.max_x, bounds.min_z, bounds.max_z)),
+    }
 }
 
 fn macro_page_covers_coord(
@@ -50,31 +73,50 @@ fn macro_page_covers_coord(
 }
 
 fn classify_macro_page_transition(
-    screen_images: &[ScreenPaintImage],
-) -> (BTreeSet<ImageId>, BTreeSet<ImageId>, usize) {
-    let current_ids = screen_images
+    snapshot: &TilePaintSnapshot,
+    viewport: super::model::MapViewport,
+) -> (BTreeSet<ImageId>, BTreeSet<ImageId>, usize, bool, u128) {
+    let current_ids = snapshot
+        .screen_images
         .iter()
         .map(|page| page.image.id)
         .collect::<BTreeSet<_>>();
+    let viewport_key = macro_page_viewport_key(snapshot, viewport);
+    let now = Instant::now();
     let mut state = macro_page_transition_state()
         .lock()
         .expect("macro page transition lock poisoned");
 
-    // Pages that left the current snapshot cannot own source tiles in this snapshot. Forgetting
-    // them also makes a later re-entry warm up safely again after GPUI may have evicted the image.
-    state.promoted.retain(|id| current_ids.contains(id));
-    let pending = current_ids
-        .difference(&state.promoted)
-        .copied()
-        .collect::<BTreeSet<_>>();
+    let viewport_changed = state.viewport_key != Some(viewport_key);
+    if viewport_changed {
+        // A wheel step changes page geometry even when the macro ImageId is reused. Return every
+        // page to warm-up so the already visible source tiles remain authoritative throughout
+        // the camera transition instead of disappearing halfway through the zoom sequence.
+        state.promoted.clear();
+        state.warming_since.clear();
+        state.viewport_key = Some(viewport_key);
+    }
 
-    let mut promoted_now = 0usize;
-    if !pending.is_empty() && pending == state.last_pending_signature {
-        promoted_now = pending.len();
-        state.promoted.extend(pending.iter().copied());
-        state.last_pending_signature.clear();
-    } else {
-        state.last_pending_signature = pending;
+    state.promoted.retain(|id| current_ids.contains(id));
+    state.warming_since.retain(|id, _| current_ids.contains(id));
+    for id in &current_ids {
+        if !state.promoted.contains(id) {
+            state.warming_since.entry(*id).or_insert(now);
+        }
+    }
+
+    let ready_to_promote = state
+        .warming_since
+        .iter()
+        .filter_map(|(id, started_at)| {
+            (now.saturating_duration_since(*started_at) >= MACRO_PAGE_RESIDENCY_WARMUP)
+                .then_some(*id)
+        })
+        .collect::<Vec<_>>();
+    let promoted_now = ready_to_promote.len();
+    for id in ready_to_promote {
+        state.warming_since.remove(&id);
+        state.promoted.insert(id);
     }
 
     let promoted = current_ids
@@ -85,7 +127,20 @@ fn classify_macro_page_transition(
         .difference(&promoted)
         .copied()
         .collect::<BTreeSet<_>>();
-    (promoted, warming, promoted_now)
+    let minimum_warmup_ms = warming
+        .iter()
+        .filter_map(|id| state.warming_since.get(id))
+        .map(|started_at| now.saturating_duration_since(*started_at).as_millis())
+        .min()
+        .unwrap_or(0);
+
+    (
+        promoted,
+        warming,
+        promoted_now,
+        viewport_changed,
+        minimum_warmup_ms,
+    )
 }
 
 fn apply_macro_page_transition(
@@ -97,13 +152,19 @@ fn apply_macro_page_transition(
     if snapshot.screen_images.is_empty() {
         if let Ok(mut state) = macro_page_transition_state().lock() {
             state.promoted.clear();
-            state.last_pending_signature.clear();
+            state.warming_since.clear();
+            state.viewport_key = None;
         }
         return snapshot;
     }
 
-    let (promoted_ids, warming_ids, promoted_now) =
-        classify_macro_page_transition(snapshot.screen_images.as_ref());
+    let (
+        promoted_ids,
+        warming_ids,
+        promoted_now,
+        viewport_changed,
+        minimum_warmup_ms,
+    ) = classify_macro_page_transition(&snapshot, viewport);
     let promoted_pages = snapshot
         .screen_images
         .iter()
@@ -129,9 +190,9 @@ fn apply_macro_page_transition(
     let source_tiles_removed = snapshot.tiles.len().saturating_sub(tiles.len());
     let original_tile_count = tiles.len();
 
-    // Only pages still in their warm-up phase keep original tiles above the macro image. Once a
-    // page group is promoted, it stays macro-owned until that ImageId leaves the snapshot or a
-    // tile/chunk update dissolves the page in canvas_base.
+    // Warming pages always retain the original tile images above the macro page. GPUI therefore
+    // has at least 500 ms and many real paint opportunities to upload the macro page while the
+    // user continues to see the previous stable representation.
     for (&coord, entry) in &tile_manager.entries {
         if !snapshot
             .paint_bounds
@@ -181,6 +242,9 @@ fn apply_macro_page_transition(
         promoted_pages = promoted_ids.len(),
         warming_pages = warming_ids.len(),
         promoted_now,
+        viewport_changed,
+        minimum_warmup_ms,
+        required_warmup_ms = MACRO_PAGE_RESIDENCY_WARMUP.as_millis(),
         fallback_tiles,
         source_tiles_removed,
         submitted_tiles = tiles.len(),
