@@ -31,6 +31,10 @@ ICON_SIZE_OVERRIDES = {
 ICON_CROP_CONTENT_BOTTOM = {
     "camel": 24,
     "camel_husk": 24,
+    "horse": 12,
+    "donkey": 12,
+    "mule": 12,
+    "zombie_horse": 16,
 }
 
 ICON_OFFSET_X = {
@@ -44,7 +48,7 @@ def entity_head_assets(resource_packs: list[Path], output: Path) -> dict[str, st
     entity_defs: dict[str, tuple[Path, dict, dict]] = {}
 
     def version_score(path: Path) -> int:
-        match = re.search(r"_v(\d+)$", path.stem)
+        match = re.search(r"_v(\d+)", path.stem)
         return int(match.group(1)) if match else 0
 
     for resource_pack in resource_packs:
@@ -163,8 +167,6 @@ def generate(resource_packs: list[Path], output: Path) -> dict[str, str]:
     # shared model instead of item sprites.
     model_fallbacks = {
         "egg": ("geometry.item_sprite", "textures/items/egg"),
-        "furnace_minecart": ("geometry.minecart.v1.8", "textures/entity/minecart"),
-        "spawner_minecart": ("geometry.minecart.v1.8", "textures/entity/minecart"),
         "snowball": ("geometry.item_sprite", "textures/items/snowball"),
         "trident": ("geometry.trident", "textures/entity/trident"),
         "xp_orb": ("geometry.experience_orb", "textures/entity/experience_orb"),

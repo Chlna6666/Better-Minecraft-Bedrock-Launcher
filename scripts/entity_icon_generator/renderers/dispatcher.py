@@ -42,23 +42,6 @@ MODEL_RENDER_3D = {
     "snowball": ("north", None, None, 0.5, None, None, False),
     "thrown_trident": ("north", None, None, 0.5, None, None, False),
     "trident": ("north", None, None, 0.5, None, None, False),
-    "armadillo": (
-        "east",
-        {
-            "head",
-            "right_ear",
-            "left_ear",
-            "body",
-            "tail",
-            "right_front_leg",
-            "left_front_leg",
-        },
-        {"head"},
-        0.6,
-        None,
-        None,
-        False,
-    ),
     "elder_guardian": (
         "north",
         {
@@ -247,24 +230,8 @@ def render_horse_family_head_3d(
     if result is None:
         return None
     width, height = result.size
-    crop_height = max(1, round(height * 0.85))
+    crop_height = max(1, round(height * 0.7))
     return result.crop((0, 0, width, crop_height))
-
-
-MINECART_MODEL_ENTITIES = {
-    "minecart",
-    "chest_minecart",
-    "hopper_minecart",
-    "furnace_minecart",
-    "spawner_minecart",
-    "command_block_minecart",
-    "tnt_minecart",
-}
-
-
-def render_minecart_side(texture, geometry) -> Image.Image | None:
-    """Side 3D portrait for minecarts using the entity model, not item art."""
-    return render_model_3d(texture, geometry, view="east")
 
 
 def dispatch_render_portrait(
@@ -340,10 +307,6 @@ def dispatch_render_portrait(
         colored = ImageOps.colorize(gray, black=(0, 0, 0), white=(220, 40, 40))
         colored.putalpha(sprite.getchannel("A"))
         return colored
-
-    # Minecarts render from their entity model in side view.
-    if identifier in MINECART_MODEL_ENTITIES:
-        return render_minecart_side(texture, geometry)
 
     # Assembled 3D model projection for models with bone rotations/hierarchy.
     if identifier in MODEL_RENDER_3D:

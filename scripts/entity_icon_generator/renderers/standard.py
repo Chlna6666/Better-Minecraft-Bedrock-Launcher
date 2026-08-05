@@ -88,6 +88,15 @@ def render_villager_front(texture: Image.Image, geometry: dict) -> Image.Image |
 
 def render_side_profile(texture: Image.Image, geometry: dict) -> Image.Image | None:
     texture = texture.convert("RGBA")
+    description = geometry.get("description") or {}
+    declared_width = int(
+        description.get("texture_width") or geometry.get("texturewidth") or 0
+    )
+    declared_height = int(
+        description.get("texture_height") or geometry.get("textureheight") or 0
+    )
+    uv_scale_x = texture.width / declared_width if declared_width else 1.0
+    uv_scale_y = texture.height / declared_height if declared_height else 1.0
     faces: list[tuple[int, int, int, int, int, Image.Image]] = []
     for bone in geometry.get("bones", []):
         for cube in bone.get("cubes", []):
@@ -98,6 +107,10 @@ def render_side_profile(texture: Image.Image, geometry: dict) -> Image.Image | N
                 if candidate is None:
                     continue
                 left, top, width, height = candidate
+                left = round(left * uv_scale_x)
+                top = round(top * uv_scale_y)
+                width = round(width * uv_scale_x)
+                height = round(height * uv_scale_y)
                 if (
                     width <= 0
                     or height <= 0
@@ -206,8 +219,21 @@ def render_head_neck_profile(
     target_size = HEAD_NECK_TARGET_SIZES.get(identifier)
     if profile is not None and target_size is not None:
         # Keep the full head and only a short neck stub so the portrait is not
-        # dominated by the long neck, and scale proportionally without warping.
-        crop_height = max(1, round(profile.height * 0.7))
+        # dominated by the long neck. The head rows are the wide part of the
+        # profile; anything below that is neck and gets mostly removed.
+        alpha = profile.getchannel("A")
+        width, height = profile.size
+        row_widths = [
+            sum(1 for x in range(width) if alpha.getpixel((x, y)) > 0)
+            for y in range(height)
+        ]
+        max_width = max(row_widths) if row_widths else 0
+        head_bottom = -1
+        for y, row_width in enumerate(row_widths):
+            if row_width >= max(2, round(max_width * 0.6)):
+                head_bottom = y
+        crop_height = min(height, head_bottom + 4) if head_bottom >= 0 else height
+        crop_height = max(1, crop_height)
         profile = profile.crop((0, 0, profile.width, crop_height))
         scale = min(target_size[0] / profile.width, target_size[1] / profile.height)
         if scale < 1:
@@ -218,6 +244,14 @@ def render_head_neck_profile(
                 ),
                 Image.Resampling.NEAREST,
             )
+        # The horse eye is a single pure-white highlight pixel in the texture;
+        # tone it down so it reads as a dark eye instead of a white dot.
+        pixels = profile.load()
+        for y in range(profile.height):
+            for x in range(profile.width):
+                r, g, b, a = pixels[x, y]
+                if a > 0 and r >= 200 and g >= 200 and b >= 200:
+                    pixels[x, y] = (round(r * 0.55), round(g * 0.55), round(b * 0.55), a)
     return profile
 
 

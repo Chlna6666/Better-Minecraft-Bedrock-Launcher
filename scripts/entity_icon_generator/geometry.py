@@ -19,9 +19,18 @@ DEFAULT_RESOURCE_PACKS_ROOT = (
 DEFAULT_OUTPUT = PROJECT_ROOT / "assets" / "images" / "map" / "entity"
 
 SPECIAL_ITEMS = {
-    "boat": "boat",
-    "chest_boat": "boat",
+    "bamboo_chest_raft": "bamboo_chest_raft",
+    "bamboo_raft": "bamboo_raft",
+    "boat": "boat_oak",
+    "chest_minecart": "minecart_chest",
+    "chest_boat": "oak_chest_boat",
+    "command_block_minecart": "minecart_command_block",
     "ender_crystal": "end_crystal",
+    "furnace_minecart": "minecart_furnace",
+    "hopper_minecart": "minecart_hopper",
+    "minecart": "minecart_normal",
+    "spawner_minecart": "minecart_normal",
+    "tnt_minecart": "minecart_tnt",
 }
 
 # Category 3: Side Profile Face + Body entities
