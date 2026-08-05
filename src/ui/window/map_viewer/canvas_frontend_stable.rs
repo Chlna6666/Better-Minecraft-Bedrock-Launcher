@@ -1,9 +1,16 @@
-// Keep the existing stable macro-page implementation as the source of truth, then add a
-// frontend transition layer around it. A macro page is painted underneath its original 128x128
-// source tiles for a real-time warm-up interval. Only after the same ImageId and camera bounds
-// remain stable for that interval may the page take ownership and remove its source tiles.
-// This prevents one ReadyBatch or one wheel event from promoting a page after only a few
-// milliseconds, before GPUI has had enough frames to make the 1024x1024 image resident.
+// Keep canvas_base as the macro-page builder, but make the frontend transition atomic.
+//
+// A macro page and its original 128x128 tiles must never be visible in the same frame. The map
+// image painter uploads screen images before tile images and applies a per-frame new-image
+// budget. Showing both representations therefore exposes the macro image through whichever
+// source tiles were deferred in that frame, producing the spreading rectangular flicker seen at
+// low zoom.
+//
+// New macro pages are now prewarmed offscreen while their source tiles remain the only visible
+// representation. Once the page has survived the warm-up interval, the same already-uploaded
+// ImageId is moved to its real bounds and the covered source tiles are removed in one snapshot.
+// Camera changes do not demote already-promoted pages: screen_image_bounds can transform the same
+// immutable page across wheel zoom without rebuilding or alternating representations.
 pub(super) use super::canvas_base::*;
 
 use gpui::ImageId;
@@ -11,7 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const MACRO_PAGE_RESIDENCY_WARMUP: Duration = Duration::from_millis(500);
+const MACRO_PAGE_PREWARM: Duration = Duration::from_millis(750);
+const OFFSCREEN_PREWARM_ORIGIN: f32 = -1_000_000_000.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MacroPageViewportKey {
@@ -23,6 +31,7 @@ struct MacroPageViewportKey {
 struct MacroPageTransitionState {
     promoted: BTreeSet<ImageId>,
     warming_since: BTreeMap<ImageId, Instant>,
+    original_pages: BTreeMap<ImageId, ScreenPaintImage>,
     viewport_key: Option<MacroPageViewportKey>,
 }
 
@@ -72,7 +81,39 @@ fn macro_page_covers_coord(
         && rect.bottom <= page.top + page.height + EPSILON
 }
 
-fn classify_macro_page_transition(
+fn offscreen_preload_page(page: &ScreenPaintImage) -> ScreenPaintImage {
+    let mut page = page.clone();
+    page.left = OFFSCREEN_PREWARM_ORIGIN;
+    page.top = OFFSCREEN_PREWARM_ORIGIN;
+    page
+}
+
+fn restore_base_snapshot(snapshot: &TilePaintSnapshot) -> TilePaintSnapshot {
+    let state = macro_page_transition_state()
+        .lock()
+        .expect("macro page transition lock poisoned");
+    let screen_images = snapshot
+        .screen_images
+        .iter()
+        .map(|page| {
+            state
+                .original_pages
+                .get(&page.image.id)
+                .cloned()
+                .unwrap_or_else(|| page.clone())
+        })
+        .collect::<Vec<_>>();
+    TilePaintSnapshot {
+        tiles: snapshot.tiles.clone(),
+        screen_images: Arc::new(screen_images),
+        debug_overlays: snapshot.debug_overlays.clone(),
+        generation: snapshot.generation,
+        estimated_bytes: snapshot.estimated_bytes,
+        paint_bounds: snapshot.paint_bounds,
+    }
+}
+
+fn classify_macro_pages(
     snapshot: &TilePaintSnapshot,
     viewport: super::model::MapViewport,
 ) -> (BTreeSet<ImageId>, BTreeSet<ImageId>, usize, bool, u128) {
@@ -87,18 +128,19 @@ fn classify_macro_page_transition(
         .lock()
         .expect("macro page transition lock poisoned");
 
-    let viewport_changed = state.viewport_key != Some(viewport_key);
-    if viewport_changed {
-        // A wheel step changes page geometry even when the macro ImageId is reused. Return every
-        // page to warm-up so the already visible source tiles remain authoritative throughout
-        // the camera transition instead of disappearing halfway through the zoom sequence.
-        state.promoted.clear();
-        state.warming_since.clear();
-        state.viewport_key = Some(viewport_key);
+    for page in snapshot.screen_images.iter() {
+        state.original_pages.insert(page.image.id, page.clone());
     }
-
     state.promoted.retain(|id| current_ids.contains(id));
     state.warming_since.retain(|id, _| current_ids.contains(id));
+    state.original_pages.retain(|id, _| current_ids.contains(id));
+
+    let viewport_changed = state.viewport_key != Some(viewport_key);
+    state.viewport_key = Some(viewport_key);
+
+    // A camera transform changes only where an immutable macro page is painted. It must not
+    // demote a page that was already visible; doing so is exactly the macro/source alternation
+    // that caused wheel-zoom flicker. Only a new ImageId enters prewarm.
     for id in &current_ids {
         if !state.promoted.contains(id) {
             state.warming_since.entry(*id).or_insert(now);
@@ -109,8 +151,7 @@ fn classify_macro_page_transition(
         .warming_since
         .iter()
         .filter_map(|(id, started_at)| {
-            (now.saturating_duration_since(*started_at) >= MACRO_PAGE_RESIDENCY_WARMUP)
-                .then_some(*id)
+            (now.saturating_duration_since(*started_at) >= MACRO_PAGE_PREWARM).then_some(*id)
         })
         .collect::<Vec<_>>();
     let promoted_now = ready_to_promote.len();
@@ -143,7 +184,7 @@ fn classify_macro_page_transition(
     )
 }
 
-fn apply_macro_page_transition(
+fn apply_atomic_macro_page_transition(
     snapshot: TilePaintSnapshot,
     tile_manager: &super::tile_state::RegionManager,
     viewport: super::model::MapViewport,
@@ -153,6 +194,7 @@ fn apply_macro_page_transition(
         if let Ok(mut state) = macro_page_transition_state().lock() {
             state.promoted.clear();
             state.warming_since.clear();
+            state.original_pages.clear();
             state.viewport_key = None;
         }
         return snapshot;
@@ -164,7 +206,7 @@ fn apply_macro_page_transition(
         promoted_now,
         viewport_changed,
         minimum_warmup_ms,
-    ) = classify_macro_page_transition(&snapshot, viewport);
+    ) = classify_macro_pages(&snapshot, viewport);
     let promoted_pages = snapshot
         .screen_images
         .iter()
@@ -176,6 +218,9 @@ fn apply_macro_page_transition(
         .filter(|page| warming_ids.contains(&page.image.id))
         .collect::<Vec<_>>();
 
+    // Promoted pages own their area, so overlapping source tiles are removed. Warming pages keep
+    // all source tiles and are moved offscreen: the GPU still resolves their ImageIds, but users
+    // can see only the source representation until the atomic promotion snapshot.
     let mut tiles = snapshot
         .tiles
         .iter()
@@ -190,9 +235,6 @@ fn apply_macro_page_transition(
     let source_tiles_removed = snapshot.tiles.len().saturating_sub(tiles.len());
     let original_tile_count = tiles.len();
 
-    // Warming pages always retain the original tile images above the macro page. GPUI therefore
-    // has at least 500 ms and many real paint opportunities to upload the macro page while the
-    // user continues to see the previous stable representation.
     for (&coord, entry) in &tile_manager.entries {
         if !snapshot
             .paint_bounds
@@ -223,13 +265,24 @@ fn apply_macro_page_transition(
     let fallback_tiles = tiles.len().saturating_sub(original_tile_count);
     let mut tiles = tiles.into_values().collect::<Vec<_>>();
     tiles.sort_unstable_by_key(|tile| super::viewport::tile_paint_sort_key(tile.coord));
+
+    let screen_images = snapshot
+        .screen_images
+        .iter()
+        .map(|page| {
+            if warming_ids.contains(&page.image.id) {
+                offscreen_preload_page(page)
+            } else {
+                page.clone()
+            }
+        })
+        .collect::<Vec<_>>();
     let estimated_bytes = tiles
         .iter()
         .map(|tile| tile.estimated_bytes)
         .sum::<usize>()
         .saturating_add(
-            snapshot
-                .screen_images
+            screen_images
                 .iter()
                 .map(|image| image.estimated_bytes)
                 .sum::<usize>(),
@@ -238,22 +291,23 @@ fn apply_macro_page_transition(
     tracing::debug!(
         generation = snapshot.generation,
         viewport_scale = viewport.scale,
-        macro_pages = snapshot.screen_images.len(),
-        promoted_pages = promoted_ids.len(),
-        warming_pages = warming_ids.len(),
+        macro_pages = screen_images.len(),
+        visible_macro_pages = promoted_ids.len(),
+        offscreen_preload_pages = warming_ids.len(),
         promoted_now,
         viewport_changed,
         minimum_warmup_ms,
-        required_warmup_ms = MACRO_PAGE_RESIDENCY_WARMUP.as_millis(),
+        required_warmup_ms = MACRO_PAGE_PREWARM.as_millis(),
         fallback_tiles,
         source_tiles_removed,
         submitted_tiles = tiles.len(),
-        "map_viewer macro_page_transition_applied"
+        visible_dual_representation_pages = 0,
+        "map_viewer macro_page_atomic_transition_applied"
     );
 
     TilePaintSnapshot {
         tiles: Arc::new(tiles),
-        screen_images: snapshot.screen_images,
+        screen_images: Arc::new(screen_images),
         debug_overlays: snapshot.debug_overlays,
         generation: snapshot.generation,
         estimated_bytes,
@@ -277,7 +331,7 @@ pub(super) fn build_tile_paint_snapshot(
         paint_radius,
         generation,
     );
-    apply_macro_page_transition(snapshot, tile_manager, viewport, layout)
+    apply_atomic_macro_page_transition(snapshot, tile_manager, viewport, layout)
 }
 
 pub(super) fn patch_tile_paint_snapshot(
@@ -290,8 +344,9 @@ pub(super) fn patch_tile_paint_snapshot(
     changed_tiles: &[(i32, i32)],
     generation: u64,
 ) -> TilePaintSnapshotPatch {
+    let current = restore_base_snapshot(current);
     match super::canvas_base::patch_tile_paint_snapshot(
-        current,
+        &current,
         tile_manager,
         viewport,
         layout,
@@ -301,7 +356,7 @@ pub(super) fn patch_tile_paint_snapshot(
         generation,
     ) {
         TilePaintSnapshotPatch::Patched(snapshot) => TilePaintSnapshotPatch::Patched(
-            apply_macro_page_transition(snapshot, tile_manager, viewport, layout),
+            apply_atomic_macro_page_transition(snapshot, tile_manager, viewport, layout),
         ),
         TilePaintSnapshotPatch::Unchanged => TilePaintSnapshotPatch::Unchanged,
         TilePaintSnapshotPatch::Rebuild => TilePaintSnapshotPatch::Rebuild,
