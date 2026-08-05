@@ -1,0 +1,1 @@
+"""Entity icon renderers module."""
