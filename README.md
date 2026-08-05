@@ -82,6 +82,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 - 写入模式默认需要显式开启，避免误改世界数据。
 
 更多渲染管线细节见 [docs/MAP_RENDERER.md](docs/MAP_RENDERER.md)。
+地图实体图标生成与脚本渲染管线见 [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)。
 
 ### 联机
 

@@ -102,6 +102,8 @@ The map window is a major GPUI feature, not just a simple world preview.
 - Write mode must be explicitly enabled before world mutation.
 
 See [docs/MAP_RENDERER.md](docs/MAP_RENDERER.md) for map rendering details.
+Entity icon generation and the script rendering pipeline are documented in
+[docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md).
 
 ### Online Play
 

@@ -45,8 +45,8 @@ icons, hooks, graphics backends, and plugins.
 | `src/main.rs` | Binary entrypoint for `BMCBL.exe`. |
 | `src/lib.rs` | Application library root and module assembly. |
 | `assets/` | Build-time input assets. |
-| `docs/` | Architecture, GPUI, feature, and maintenance documentation. |
-| `scripts/` | Build, validation, profiling, and maintenance scripts. |
+| `docs/` | Architecture, GPUI, feature, maintenance, and current project planning documentation. |
+| `scripts/` | Build, validation, profiling, and maintenance scripts; the map entity icon generator lives under `scripts/entity_icon_generator/`. |
 | `vendor/` | Vendored framework and patched third-party crates. |
 
 ## Application Crate

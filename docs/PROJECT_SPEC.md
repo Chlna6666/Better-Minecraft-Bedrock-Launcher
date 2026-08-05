@@ -31,6 +31,8 @@ logic implemented as ordinary Rust modules rather than WebView commands.
 - GPUI structure and rendering pipeline: [`GPUI_VENDOR_RENDERING.md`](GPUI_VENDOR_RENDERING.md)
 - UI module placement rules: [`../src/ui/README.md`](../src/ui/README.md)
 - Map renderer design: [`MAP_RENDERER.md`](MAP_RENDERER.md)
+- Current project plan and entity icon pipeline:
+  [`PROJECT_PLAN.md`](PROJECT_PLAN.md)
 
 ## Workspace Layout
 

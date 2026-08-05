@@ -22,6 +22,8 @@ separate from BMCBL product behavior.
 - `docs/GPUI_VENDOR_RENDERING.md`: GPUI structure and rendering pipeline.
 - `src/ui/README.md`: UI placement rules and current UI tree.
 - `docs/PROJECT_SPEC.md`: product-level project specification.
+- `docs/PROJECT_PLAN.md`: current project plan, entity icon asset format, and
+  script rendering pipeline.
 
 ### Layout
 
@@ -136,6 +138,7 @@ GPUI 框架改动与 BMCBL 产品行为分离。
 - `docs/GPUI_VENDOR_RENDERING.md`：GPUI 结构与渲染管线。
 - `src/ui/README.md`：UI 放置规则与当前 UI 目录。
 - `docs/PROJECT_SPEC.md`：项目规格。
+- `docs/PROJECT_PLAN.md`：当前项目规划、实体图标格式与脚本渲染管线。
 
 ### 布局
 
