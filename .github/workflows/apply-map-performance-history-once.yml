@@ -1,11 +1,12 @@
 name: Apply map performance and history visualization once
 
 on:
-  pull_request:
-    branches:
-      - master
-    paths:
-      - "tools/run-map-performance-history.once"
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
 
 permissions:
   contents: write
@@ -17,6 +18,7 @@ concurrency:
 
 jobs:
   apply:
+    if: github.event.pull_request.base.ref == 'master' && github.event.pull_request.head.ref == 'trigger/map-performance-history'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
