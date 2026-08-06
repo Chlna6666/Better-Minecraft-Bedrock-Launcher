@@ -54,9 +54,35 @@ pub(super) fn write_custom_mesh_3d_vertex(bytes: &mut Vec<u8>, vertex: crate::Gp
     for value in vertex.position {
         write_f32_vec(bytes, value);
     }
-    for value in vertex.color {
-        write_f32_vec(bytes, value);
+    write_u32_vec(bytes, pack_custom_mesh_3d_color(vertex.color));
+}
+
+fn pack_custom_mesh_3d_color(color: [f32; 4]) -> u32 {
+    let red = pack_unorm8(color[0]);
+    let green = pack_unorm8(color[1]);
+    let blue = pack_unorm8(color[2]);
+
+    // Skin preview historically stores three edge-mask bits in floor(alpha / 2), while map
+    // meshes use a conventional alpha in 0..=1. Preserve both representations in one byte:
+    // high three bits are the edge mask and low five bits are the normalized alpha.
+    let encoded_alpha = if color[3].is_finite() {
+        color[3].max(0.0)
+    } else {
+        0.0
+    };
+    let edge_mask = (encoded_alpha * 0.5).floor().clamp(0.0, 7.0) as u32;
+    let normalized_alpha = (encoded_alpha - edge_mask as f32 * 2.0).clamp(0.0, 1.0);
+    let alpha5 = (normalized_alpha * 31.0).round() as u32;
+    let alpha_and_flags = (edge_mask << 5) | alpha5;
+
+    red | (green << 8) | (blue << 16) | (alpha_and_flags << 24)
+}
+
+fn pack_unorm8(value: f32) -> u32 {
+    if !value.is_finite() {
+        return 0;
     }
+    (value.clamp(0.0, 1.0) * 255.0).round() as u32
 }
 
 pub(super) fn write_custom_mesh_3d_index(bytes: &mut Vec<u8>, index: u32) {
