@@ -1,0 +1,71 @@
+[package]
+name = "bedrock-world"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+description = "Async Minecraft Bedrock world, level.dat, NBT, player and chunk library"
+repository = "https://github.com/BE-Community-Dev/bedrock-world"
+homepage = "https://github.com/BE-Community-Dev/bedrock-world"
+documentation = "https://docs.rs/bedrock-world"
+readme = "README.md"
+keywords = ["minecraft", "bedrock", "world", "nbt", "mcbe"]
+categories = ["parser-implementations", "filesystem"]
+include = [
+    "Cargo.toml",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "docs/**/*.md",
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "tests/fixtures/README.md",
+    "benches/**/*.rs",
+]
+
+[lib]
+name = "bedrock_world"
+path = "src/bedrock_world.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["async", "backend-bedrock-leveldb"]
+async = ["dep:tokio", "bedrock-leveldb?/async"]
+backend-bedrock-leveldb = ["dep:bedrock-leveldb", "bedrock-leveldb/zlib", "bedrock-leveldb/snappy"]
+leveldb-mmap = ["backend-bedrock-leveldb", "bedrock-leveldb/mmap"]
+
+[dependencies]
+bedrock-leveldb = { path = "../bedrock-leveldb", default-features = false, optional = true }
+bytes = "1.10.1"
+indexmap = { version = "2.12.1", features = ["serde"] }
+log = "0.4"
+rayon = "1.11.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
+walkdir = "2.5.0"
+xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "world_parse"
+harness = false
+
+[[bench]]
+name = "large_fixture"
+harness = false
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

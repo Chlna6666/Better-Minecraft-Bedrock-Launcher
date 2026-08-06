@@ -1,0 +1,6 @@
+/target/
+/criterion/
+/Cargo.lock
+/tests/fixtures/sample-bedrock-world/
+*.pdb
+*.profraw

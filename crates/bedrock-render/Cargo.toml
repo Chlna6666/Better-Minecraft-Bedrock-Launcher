@@ -1,0 +1,86 @@
+[package]
+name = "bedrock-render"
+version = "0.3.4"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Tile renderer for Minecraft Bedrock worlds"
+repository = "https://github.com/BE-Community-Dev/bedrock-render"
+homepage = "https://github.com/BE-Community-Dev/bedrock-render"
+documentation = "https://docs.rs/bedrock-render"
+readme = "README.md"
+keywords = ["minecraft", "bedrock", "render", "map", "mcbe"]
+categories = ["rendering", "game-development", "multimedia::images"]
+include = [
+    "Cargo.toml",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "build.rs",
+    "benches/**/*.rs",
+    "data/colors/*.json",
+    "docs/**/*.md",
+    "docs/images/*.png",
+    "examples/**/*.rs",
+    "examples/web_map_assets/*",
+    "src/**/*.rs",
+    "tests/**/*.rs",
+]
+
+[lib]
+name = "bedrock_render"
+path = "src/bedrock_render.rs"
+
+[features]
+default = ["async", "webp"]
+async = ["dep:tokio", "bedrock-leveldb/async", "bedrock-world/async"]
+gpu-core = []
+gpu-dx11 = ["gpu-core", "dep:windows"]
+gpu-vulkan = ["gpu-core", "dep:pollster", "dep:wgpu", "wgpu/std", "wgpu/wgsl", "wgpu/vulkan"]
+gpu-dx12 = ["gpu-core", "dep:pollster", "dep:wgpu", "wgpu/std", "wgpu/wgsl", "wgpu/dx12"]
+gpu = ["gpu-dx11", "gpu-vulkan", "gpu-dx12"]
+webp = ["image/webp"]
+png = ["image/png"]
+
+[dependencies]
+bedrock-leveldb = { path = "../bedrock-leveldb", default-features = false, features = ["zlib", "snappy"] }
+bedrock-world = { path = "../bedrock-world", default-features = false, features = ["backend-bedrock-leveldb"] }
+crossbeam-channel = "0.5.15"
+image = { version = "0.25.6", default-features = false }
+indexmap = "2.12.1"
+log = "0.4"
+pollster = { version = "0.4.0", optional = true }
+rayon = "1.11.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+sysinfo = "0.38.0"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
+wgpu = { version = "29.0.3", default-features = false, optional = true }
+windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = "0.13.3"
+
+[build-dependencies]
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+[dev-dependencies]
+criterion = "0.5"
+json5 = "1.3.1"
+
+[[bench]]
+name = "render"
+harness = false
+
+[[bench]]
+name = "cache"
+harness = false
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -1,0 +1,66 @@
+[package]
+name = "bedrock-leveldb"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+description = "Pure Rust LevelDB-style storage backend for Minecraft Bedrock worlds"
+repository = "https://github.com/BE-Community-Dev/bedrock-leveldb"
+homepage = "https://github.com/BE-Community-Dev/bedrock-leveldb"
+documentation = "https://docs.rs/bedrock-leveldb"
+readme = "README.md"
+keywords = ["minecraft", "bedrock", "leveldb", "mcbe", "world"]
+categories = ["database-implementations", "filesystem"]
+include = [
+    "Cargo.toml",
+    "README.md",
+    "README.zh-CN.md",
+    "docs/**/*.md",
+    "CHANGELOG.md",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "benches/**/*.rs",
+]
+
+[lib]
+name = "bedrock_leveldb"
+path = "src/bedrock_leveldb.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["zlib", "snappy", "async"]
+async = ["dep:tokio"]
+zlib = ["dep:flate2"]
+snappy = ["dep:snap"]
+mmap = ["dep:memmap2"]
+repair-tools = []
+bench = []
+
+[dependencies]
+bytes = "1.10.1"
+flate2 = { version = "1.1.5", default-features = false, features = ["rust_backend"], optional = true }
+log = "0.4"
+memmap2 = { version = "0.9.9", optional = true }
+rayon = "1.11.0"
+snap = { version = "1.1.1", optional = true }
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.10"
+
+[[bench]]
+name = "db"
+harness = false
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

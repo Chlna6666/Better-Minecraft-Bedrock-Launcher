@@ -1,0 +1,351 @@
+{
+  "schema_version": 1,
+  "description": "Auditable aliases used by palette_tool when the vanilla resource pack does not expose a block id directly in blocks.json.",
+  "exact": {
+    "minecraft:acacia_leaves": "textures/blocks/leaves_acacia_opaque",
+    "minecraft:acacia_log": "textures/blocks/log_acacia_top",
+    "minecraft:acacia_planks": "wood_acacia",
+    "minecraft:acacia_sapling": "textures/blocks/sapling_acacia",
+    "minecraft:acacia_wood": "textures/blocks/log_acacia",
+    "minecraft:allium": "textures/blocks/flower_allium",
+    "minecraft:azure_bluet": "textures/blocks/flower_houstonia",
+    "minecraft:birch_leaves": "textures/blocks/leaves_birch_opaque",
+    "minecraft:birch_log": "textures/blocks/log_birch_top",
+    "minecraft:birch_planks": "wood_birch",
+    "minecraft:birch_sapling": "textures/blocks/sapling_birch",
+    "minecraft:birch_wood": "textures/blocks/log_birch",
+    "minecraft:blue_orchid": "textures/blocks/flower_blue_orchid",
+    "minecraft:chiseled_quartz_block": "textures/blocks/quartz_block_chiseled_top",
+    "minecraft:chiseled_red_sandstone": "textures/blocks/red_sandstone_carved",
+    "minecraft:chiseled_sandstone": "textures/blocks/sandstone_carved",
+    "minecraft:chiseled_stone_bricks": "textures/blocks/stonebrick_carved",
+    "minecraft:cherry_planks": "cherry_planks",
+    "minecraft:concrete_powder": "textures/blocks/concrete_powder_white",
+    "minecraft:cornflower": "textures/blocks/flower_cornflower",
+    "minecraft:cracked_stone_bricks": "textures/blocks/stonebrick_cracked",
+    "minecraft:crimson_planks": "crimson_planks",
+    "minecraft:cut_red_sandstone": "textures/blocks/red_sandstone_top",
+    "minecraft:cut_sandstone": "textures/blocks/sandstone_top",
+    "minecraft:dandelion": "textures/blocks/flower_dandelion",
+    "minecraft:dark_oak_leaves": "textures/blocks/leaves_big_oak_opaque",
+    "minecraft:dark_oak_log": "textures/blocks/log_big_oak_top",
+    "minecraft:dark_oak_planks": "wood_big_oak",
+    "minecraft:dark_oak_sapling": "textures/blocks/sapling_roofed_oak",
+    "minecraft:dark_oak_wood": "textures/blocks/log_big_oak",
+    "minecraft:fern": "textures/blocks/fern",
+    "minecraft:grass_block": "grass_top",
+    "minecraft:infested_chiseled_stone_bricks": "textures/blocks/stonebrick_carved",
+    "minecraft:infested_cracked_stone_bricks": "textures/blocks/stonebrick_cracked",
+    "minecraft:infested_mossy_stone_bricks": "textures/blocks/stonebrick_mossy",
+    "minecraft:infested_stone_bricks": "textures/blocks/stonebrick",
+    "minecraft:jungle_leaves": "textures/blocks/leaves_jungle_opaque",
+    "minecraft:jungle_log": "textures/blocks/log_jungle_top",
+    "minecraft:jungle_planks": "wood_jungle",
+    "minecraft:jungle_sapling": "textures/blocks/sapling_jungle",
+    "minecraft:jungle_wood": "textures/blocks/log_jungle",
+    "minecraft:leaves": "textures/blocks/leaves_oak_opaque",
+    "minecraft:leaves2": "textures/blocks/leaves_acacia_opaque",
+    "minecraft:mangrove_planks": "mangrove_planks",
+    "minecraft:mossy_stone_bricks": "textures/blocks/stonebrick_mossy",
+    "minecraft:mushroom_stem": "textures/blocks/mushroom_block_skin_stem",
+    "minecraft:oak_leaves": "textures/blocks/leaves_oak_opaque",
+    "minecraft:oak_log": "textures/blocks/log_oak_top",
+    "minecraft:oak_planks": "wood_oak",
+    "minecraft:oak_sapling": "textures/blocks/sapling_oak",
+    "minecraft:oak_wood": "textures/blocks/log_oak",
+    "minecraft:orange_tulip": "textures/blocks/flower_tulip_orange",
+    "minecraft:oxeye_daisy": "textures/blocks/flower_oxeye_daisy",
+    "minecraft:pale_oak_planks": "pale_oak_planks",
+    "minecraft:pink_tulip": "textures/blocks/flower_tulip_pink",
+    "minecraft:purpur_double_slab": "textures/blocks/purpur_block",
+    "minecraft:purpur_slab": "textures/blocks/purpur_block",
+    "minecraft:quartz_pillar": "textures/blocks/quartz_block_lines_top",
+    "minecraft:red_tulip": "textures/blocks/flower_tulip_red",
+    "minecraft:rose_bush": "textures/blocks/double_plant_rose_top",
+    "minecraft:short_grass": "tallgrass",
+    "minecraft:smooth_quartz": "textures/blocks/quartz_block_top",
+    "minecraft:spruce_leaves": "textures/blocks/leaves_spruce_opaque",
+    "minecraft:spruce_log": "textures/blocks/log_spruce_top",
+    "minecraft:spruce_planks": "wood_spruce",
+    "minecraft:spruce_sapling": "textures/blocks/sapling_spruce",
+    "minecraft:spruce_wood": "textures/blocks/log_spruce",
+    "minecraft:stone_bricks": "textures/blocks/stonebrick",
+    "minecraft:stripped_acacia_wood": "textures/blocks/stripped_acacia_log",
+    "minecraft:stripped_birch_wood": "textures/blocks/stripped_birch_log",
+    "minecraft:stripped_dark_oak_wood": "textures/blocks/stripped_dark_oak_log",
+    "minecraft:stripped_jungle_wood": "textures/blocks/stripped_jungle_log",
+    "minecraft:stripped_oak_wood": "textures/blocks/stripped_oak_log",
+    "minecraft:stripped_spruce_wood": "textures/blocks/stripped_spruce_log",
+    "minecraft:sunflower": "textures/blocks/double_plant_sunflower_top",
+    "minecraft:tall_grass": "textures/blocks/double_plant_grass_top",
+    "minecraft:terracotta": "hardened_clay",
+    "minecraft:vine": "textures/blocks/vine_carried",
+    "minecraft:warped_planks": "warped_planks",
+    "minecraft:white_tulip": "textures/blocks/flower_tulip_white"
+  },
+  "family_aliases": [
+    {
+      "id": "dyed-concrete",
+      "suffixes": [
+        "_concrete"
+      ],
+      "target_candidates": [
+        "concrete_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "concrete_silver"
+      }
+    },
+    {
+      "id": "dyed-concrete-powder",
+      "suffixes": [
+        "_concrete_powder"
+      ],
+      "target_candidates": [
+        "concrete_powder_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "concrete_powder_silver"
+      }
+    },
+    {
+      "id": "dyed-wool",
+      "suffixes": [
+        "_wool"
+      ],
+      "target_candidates": [
+        "wool_colored_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "wool_colored_silver"
+      }
+    },
+    {
+      "id": "dyed-carpet",
+      "suffixes": [
+        "_carpet"
+      ],
+      "target_candidates": [
+        "wool_colored_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "wool_colored_silver"
+      }
+    },
+    {
+      "id": "dyed-stained-glass",
+      "suffixes": [
+        "_stained_glass"
+      ],
+      "target_candidates": [
+        "glass_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "glass_silver"
+      }
+    },
+    {
+      "id": "dyed-stained-glass-pane",
+      "suffixes": [
+        "_stained_glass_pane"
+      ],
+      "target_candidates": [
+        "glass_pane_top_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "glass_pane_top_silver"
+      }
+    },
+    {
+      "id": "dyed-terracotta",
+      "suffixes": [
+        "_terracotta"
+      ],
+      "target_candidates": [
+        "hardened_clay_stained_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "hardened_clay_stained_silver"
+      }
+    },
+    {
+      "id": "dyed-shulker-box",
+      "suffixes": [
+        "_shulker_box"
+      ],
+      "target_candidates": [
+        "shulker_top_{short_without_suffix}"
+      ],
+      "materials": {
+        "light_gray": "shulker_top_silver"
+      }
+    },
+    {
+      "id": "dead-coral-blocks",
+      "contains": "dead",
+      "suffixes": [
+        "_coral_block"
+      ],
+      "materials": {
+        "brain": "textures/blocks/coral_pink_dead",
+        "bubble": "textures/blocks/coral_purple_dead",
+        "fire": "textures/blocks/coral_red_dead",
+        "horn": "textures/blocks/coral_yellow_dead",
+        "tube": "textures/blocks/coral_blue_dead"
+      }
+    },
+    {
+      "id": "live-coral-blocks",
+      "suffixes": [
+        "_coral_block"
+      ],
+      "materials": {
+        "brain": "textures/blocks/coral_pink",
+        "bubble": "textures/blocks/coral_purple",
+        "fire": "textures/blocks/coral_red",
+        "horn": "textures/blocks/coral_yellow",
+        "tube": "textures/blocks/coral_blue"
+      }
+    },
+    {
+      "id": "dead-coral-plants",
+      "contains": "dead",
+      "suffixes": [
+        "_coral"
+      ],
+      "materials": {
+        "brain": "textures/blocks/coral_plant_pink_dead",
+        "bubble": "textures/blocks/coral_plant_purple_dead",
+        "fire": "textures/blocks/coral_plant_red_dead",
+        "horn": "textures/blocks/coral_plant_yellow_dead",
+        "tube": "textures/blocks/coral_plant_blue_dead"
+      }
+    },
+    {
+      "id": "live-coral-plants",
+      "suffixes": [
+        "_coral"
+      ],
+      "materials": {
+        "brain": "textures/blocks/coral_plant_pink",
+        "bubble": "textures/blocks/coral_plant_purple",
+        "fire": "textures/blocks/coral_plant_red",
+        "horn": "textures/blocks/coral_plant_yellow",
+        "tube": "textures/blocks/coral_plant_blue"
+      }
+    },
+    {
+      "id": "dead-coral-fans",
+      "contains": "dead",
+      "suffixes": [
+        "_coral_fan",
+        "_coral_wall_fan"
+      ],
+      "materials": {
+        "brain": "textures/blocks/coral_fan_pink_dead",
+        "bubble": "textures/blocks/coral_fan_purple_dead",
+        "fire": "textures/blocks/coral_fan_red_dead",
+        "horn": "textures/blocks/coral_fan_yellow_dead",
+        "tube": "textures/blocks/coral_fan_blue_dead"
+      }
+    },
+    {
+      "id": "live-coral-fans",
+      "suffixes": [
+        "_coral_fan",
+        "_coral_wall_fan"
+      ],
+      "materials": {
+        "brain": "textures/blocks/coral_fan_pink",
+        "bubble": "textures/blocks/coral_fan_purple",
+        "fire": "textures/blocks/coral_fan_red",
+        "horn": "textures/blocks/coral_fan_yellow",
+        "tube": "textures/blocks/coral_fan_blue"
+      }
+    },
+    {
+      "id": "wood-components",
+      "suffixes": [
+        "_button",
+        "_door",
+        "_double_slab",
+        "_fence",
+        "_fence_gate",
+        "_hanging_sign",
+        "_pressure_plate",
+        "_shelf",
+        "_slab",
+        "_stairs",
+        "_standing_sign",
+        "_trapdoor",
+        "_wall_sign"
+      ],
+      "materials": {
+        "pale_oak": "pale_oak_planks",
+        "dark_oak": "wood_big_oak",
+        "darkoak": "wood_big_oak",
+        "spruce": "wood_spruce",
+        "birch": "wood_birch",
+        "jungle": "wood_jungle",
+        "acacia": "wood_acacia",
+        "mangrove": "mangrove_planks",
+        "cherry": "cherry_planks",
+        "crimson": "crimson_planks",
+        "warped": "warped_planks",
+        "oak": "wood_oak"
+      }
+    },
+    {
+      "id": "stone-components",
+      "suffixes": [
+        "_button",
+        "_double_slab",
+        "_pressure_plate",
+        "_slab",
+        "_stairs",
+        "_wall"
+      ],
+      "strip_suffix": true,
+      "materials": {
+        "mossy_stone_brick": "mossy_stone_brick",
+        "stone_brick": "stonebrick",
+        "purpur": "purpur_block",
+        "red_sandstone": "red_sandstone_top",
+        "prismarine_brick": "prismarine_bricks",
+        "dark_prismarine": "prismarine_dark",
+        "prismarine": "prismarine_rough",
+        "blackstone": "blackstone",
+        "deepslate": "deepslate",
+        "granite": "granite",
+        "diorite": "diorite",
+        "andesite": "andesite",
+        "cobblestone": "cobblestone",
+        "cobble": "cobblestone",
+        "brick": "brick",
+        "quartz": "quartz_block_top",
+        "sandstone": "sandstone_top",
+        "stone": "stone"
+      }
+    },
+    {
+      "id": "copper-components",
+      "contains": "copper",
+      "suffixes": [
+        "_block",
+        "_bulb",
+        "_door",
+        "_grate",
+        "_slab",
+        "_stairs",
+        "_trapdoor"
+      ],
+      "strip_suffix": true,
+      "target_candidates": [
+        "{short_without_suffix}",
+        "{short}",
+        "cut_copper",
+        "copper_block"
+      ]
+    }
+  ]
+}

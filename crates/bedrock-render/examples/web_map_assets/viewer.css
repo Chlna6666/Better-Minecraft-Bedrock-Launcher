@@ -1,0 +1,276 @@
+html,
+body,
+#app {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #101214;
+  color: #e8edf2;
+  font-family: system-ui, "Segoe UI", sans-serif;
+}
+
+#toolbar {
+  position: fixed;
+  left: 12px;
+  top: 12px;
+  z-index: 20;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: rgba(16, 18, 20, .86);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 8px;
+  padding: 8px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .25);
+}
+
+select,
+button {
+  background: #1f252b;
+  color: #e8edf2;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 6px;
+  padding: 6px 9px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2b333c;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  background: #0b0d10;
+}
+
+#map.dragging {
+  cursor: grabbing;
+}
+
+#gridCanvas {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+#layer,
+#markerLayer,
+#pluginLayer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+#layer {
+  z-index: 1;
+}
+
+#pluginLayer {
+  z-index: 2;
+  pointer-events: none;
+}
+
+#markerLayer {
+  z-index: 3;
+  pointer-events: none;
+}
+
+.tile {
+  position: absolute;
+  width: var(--tile-size);
+  height: var(--tile-size);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  opacity: 1;
+  transition: opacity .16s ease, filter .16s ease;
+}
+
+.tile.loading {
+  opacity: .72;
+  filter: blur(3px);
+}
+
+.tile.failed {
+  opacity: .24;
+}
+
+.marker,
+.plugin-point {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .55);
+  transform: translate(-50%, -50%);
+}
+
+.marker {
+  background: #e93535;
+}
+
+.plugin-point {
+  background: var(--plugin-color, #48d597);
+}
+
+.marker::after,
+.plugin-point::after {
+  content: attr(data-label);
+  position: absolute;
+  left: 16px;
+  top: -3px;
+  white-space: nowrap;
+  background: rgba(16, 18, 20, .82);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 6px;
+  padding: 2px 6px;
+  color: #f4f7fb;
+  font-size: 12px;
+}
+
+.plugin-area {
+  position: absolute;
+  border: 2px solid var(--plugin-color, #ffd166);
+  background: color-mix(in srgb, var(--plugin-color, #ffd166) 18%, transparent);
+  box-shadow: inset 0 0 24px rgba(0, 0, 0, .18);
+}
+
+#status,
+#coordHud,
+#pluginPanel {
+  position: fixed;
+  z-index: 20;
+  background: rgba(16, 18, 20, .86);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 8px;
+  padding: 7px 9px;
+  color: #b9c3cf;
+  font-size: 12px;
+  backdrop-filter: blur(8px);
+}
+
+#status {
+  left: 12px;
+  bottom: 12px;
+}
+
+#coordHud {
+  right: 12px;
+  bottom: 12px;
+  min-width: 190px;
+  text-align: right;
+}
+
+#pluginPanel {
+  right: 12px;
+  top: 12px;
+  display: none;
+  max-width: min(360px, calc(100vw - 24px));
+  max-height: 45vh;
+  overflow: auto;
+}
+
+#pluginPanel.open {
+  display: block;
+}
+
+.plugin-card {
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, .12);
+}
+
+.plugin-card:first-child {
+  border-top: 0;
+}
+
+.plugin-title {
+  color: #f4f7fb;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.chat-line {
+  margin: 3px 0;
+}
+
+.chat-player {
+  color: #77c9ff;
+  font-weight: 700;
+}
+
+#contextMenu {
+  position: fixed;
+  z-index: 30;
+  display: none;
+  min-width: 230px;
+  background: #f7f4e8;
+  color: #202020;
+  border: 1px solid #8f8b78;
+  border-radius: 3px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .42);
+  padding: 6px 0;
+  font-size: 14px;
+}
+
+#contextMenu.open {
+  display: block;
+}
+
+.menu-title {
+  padding: 7px 12px;
+  color: #303030;
+  border-bottom: 1px solid #d6d1bd;
+}
+
+.menu-primary {
+  margin: 6px 8px;
+  padding: 7px 8px;
+  background: #343434;
+  color: #fff;
+  font-weight: 700;
+}
+
+.menu-button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #202020;
+  text-align: left;
+  padding: 7px 14px;
+}
+
+.menu-button:hover {
+  background: #e7dfc8;
+}
+
+.menu-separator {
+  height: 1px;
+  background: #d6d1bd;
+  margin: 5px 0;
+}
+
+.menu-toggle.active {
+  font-weight: 700;
+}
+
+.menu-toggle.active::before {
+  content: "✓ ";
+}
+
+.menu-toggle::before {
+  content: "　";
+}
