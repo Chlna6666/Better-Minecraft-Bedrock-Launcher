@@ -128,6 +128,22 @@ struct HistoryStorageStats {
     reused_object_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MapHistoryChunkVisualKind {
+    Added,
+    Removed,
+    Modified,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MapHistoryChunkVisual {
+    pub(super) pos: ChunkPos,
+    pub(super) kind: MapHistoryChunkVisualKind,
+    pub(super) added_records: usize,
+    pub(super) removed_records: usize,
+    pub(super) modified_records: usize,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct MapHistoryState {
     pub(super) entries: Arc<Vec<MapHistoryEntry>>,
@@ -135,6 +151,10 @@ pub(super) struct MapHistoryState {
     pub(super) loading: bool,
     pub(super) applying: bool,
     pub(super) error: Option<SharedString>,
+    pub(super) visualization: Arc<Vec<MapHistoryChunkVisual>>,
+    pub(super) visualization_loading: bool,
+    pub(super) visualization_enabled: bool,
+    pub(super) visualization_error: Option<SharedString>,
 }
 
 impl Default for MapHistoryState {
@@ -145,6 +165,10 @@ impl Default for MapHistoryState {
             loading: false,
             applying: false,
             error: None,
+            visualization: Arc::new(Vec::new()),
+            visualization_loading: false,
+            visualization_enabled: true,
+            visualization_error: None,
         }
     }
 }
@@ -443,6 +467,63 @@ pub(super) fn list_history(world_path: &Path) -> Result<Vec<MapHistoryEntry>, St
     }
     entries.sort_by(|left, right| right.timestamp_secs.cmp(&left.timestamp_secs));
     Ok(entries)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct HistoryChunkDeltaStats {
+    added: usize,
+    removed: usize,
+    modified: usize,
+}
+
+pub(super) fn load_history_visualization(
+    world_path: &Path,
+    id: &str,
+) -> Result<Vec<MapHistoryChunkVisual>, String> {
+    let history_dir = history_dir_for_world(world_path);
+    let entry_path = history_dir.join(id).join(HISTORY_ENTRY_FILE);
+    let entry_raw = fs::read_to_string(&entry_path)
+        .map_err(|error| format!("读取历史索引失败 {}: {error}", entry_path.display()))?;
+    let entry = serde_json::from_str::<MapHistoryEntry>(&entry_raw)
+        .map_err(|error| format!("解析历史索引失败 {}: {error}", entry_path.display()))?;
+    let change = read_history_change(&history_dir, id)?;
+    let mut chunks = BTreeMap::<ChunkPos, HistoryChunkDeltaStats>::new();
+    for chunk in entry.chunks {
+        chunks.entry(chunk).or_default();
+    }
+    for delta in change.raw_records {
+        let Ok(chunk_key) = ChunkKey::decode(&delta.key) else {
+            continue;
+        };
+        let stats = chunks.entry(chunk_key.pos).or_default();
+        match (delta.before.as_ref(), delta.after.as_ref()) {
+            (None, Some(_)) => stats.added = stats.added.saturating_add(1),
+            (Some(_), None) => stats.removed = stats.removed.saturating_add(1),
+            (Some(before), Some(after)) if before != after => {
+                stats.modified = stats.modified.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    Ok(chunks
+        .into_iter()
+        .map(|(pos, stats)| {
+            let kind = if stats.added > 0 && stats.removed == 0 && stats.modified == 0 {
+                MapHistoryChunkVisualKind::Added
+            } else if stats.removed > 0 && stats.added == 0 && stats.modified == 0 {
+                MapHistoryChunkVisualKind::Removed
+            } else {
+                MapHistoryChunkVisualKind::Modified
+            };
+            MapHistoryChunkVisual {
+                pos,
+                kind,
+                added_records: stats.added,
+                removed_records: stats.removed,
+                modified_records: stats.modified,
+            }
+        })
+        .collect())
 }
 
 pub(super) fn apply_undo_with_progress(

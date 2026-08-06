@@ -2,6 +2,7 @@ pub(super) use super::preview_3d_source::{
     Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
     Preview3dModelRotation, Preview3dMovementInput, Preview3dSelectionSignature, Preview3dSource,
     Preview3dStatus, preview_3d_bounds_depth, preview_3d_bounds_width, preview_3d_draw_parameters,
+    preview_3d_local_draw_parameters, preview_3d_world_draw_parameters,
 };
 
 use bedrock_block_model::BlockModelRepository;
@@ -11,7 +12,7 @@ use gpui::{
     GpuMesh3d, GpuMesh3dDrawRanges, GpuMesh3dId, GpuMesh3dRange, GpuMesh3dShader, GpuMesh3dVertex,
     WgslShaderSource,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -306,9 +307,22 @@ struct RegionFace {
     pass: Preview3dRegionPass,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RegionFaceFingerprint {
+    hash: u64,
+    face_count: usize,
+    build_lods: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CachedRegionMesh {
+    fingerprint: RegionFaceFingerprint,
+    chunk: Preview3dChunkMesh,
+}
+
 #[derive(Default)]
 struct RegionMeshReuseCache {
-    chunks: BTreeMap<(Preview3dRegionKey, Preview3dRegionPass), Preview3dChunkMesh>,
+    chunks: FxHashMap<(Preview3dRegionKey, Preview3dRegionPass), CachedRegionMesh>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -453,7 +467,7 @@ fn convert_source_mesh(
         .chunk_meshes
         .first()
         .map_or(1.0, |chunk| chunk.gpu_mesh.fit_scale);
-    let mut groups = BTreeMap::<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>::new();
+    let mut groups = FxHashMap::<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>::default();
     let mut extracted_faces = 0usize;
     for chunk in &source_mesh.chunk_meshes {
         extract_legacy_faces(chunk, &mut groups, &mut extracted_faces);
@@ -463,19 +477,28 @@ fn convert_source_mesh(
     let mut reused_regions = 0usize;
     let mut lod1_faces = 0usize;
     let mut lod2_faces = 0usize;
-    let mut current_keys = BTreeSet::new();
+    let mut current_keys = FxHashSet::default();
+    let build_lods = source_mesh.processed_chunk_count >= source_mesh.chunk_count;
     for ((region_key, pass), faces) in groups {
-        current_keys.insert((region_key, pass));
-        let built = build_region_chunk(region_key, pass, &faces, global_center, fit_scale);
-        let chunk = if cache
+        let cache_key = (region_key, pass);
+        current_keys.insert(cache_key);
+        let fingerprint = region_faces_fingerprint(&faces, build_lods);
+        let chunk = if let Some(cached) = cache
             .chunks
-            .get(&(region_key, pass))
-            .is_some_and(|cached| region_chunk_matches(cached, &built))
+            .get(&cache_key)
+            .filter(|cached| cached.fingerprint == fingerprint)
         {
             reused_regions = reused_regions.saturating_add(1);
-            cache.chunks[&(region_key, pass)].clone()
+            cached.chunk.clone()
         } else {
-            built
+            build_region_chunk(
+                region_key,
+                pass,
+                &faces,
+                global_center,
+                fit_scale,
+                build_lods,
+            )
         };
         lod1_faces = lod1_faces.saturating_add(
             chunk
@@ -489,7 +512,13 @@ fn convert_source_mesh(
                 .as_ref()
                 .map_or(0, |mesh| mesh.indices.len() / 6),
         );
-        cache.chunks.insert((region_key, pass), chunk.clone());
+        cache.chunks.insert(
+            cache_key,
+            CachedRegionMesh {
+                fingerprint,
+                chunk: chunk.clone(),
+            },
+        );
         chunks.push(chunk);
     }
     cache.chunks.retain(|key, _| current_keys.contains(key));
@@ -551,30 +580,50 @@ fn convert_source_mesh(
     }
 }
 
-fn region_chunk_matches(left: &Preview3dChunkMesh, right: &Preview3dChunkMesh) -> bool {
-    left.gpu_mesh.id == right.gpu_mesh.id
-        && left.gpu_mesh.generation == right.gpu_mesh.generation
-        && left
-            .lod1_mesh
-            .as_ref()
-            .map(|mesh| (mesh.id, mesh.generation))
-            == right
-                .lod1_mesh
-                .as_ref()
-                .map(|mesh| (mesh.id, mesh.generation))
-        && left
-            .lod2_mesh
-            .as_ref()
-            .map(|mesh| (mesh.id, mesh.generation))
-            == right
-                .lod2_mesh
-                .as_ref()
-                .map(|mesh| (mesh.id, mesh.generation))
+fn region_faces_fingerprint(
+    faces: &[RegionFace],
+    build_lods: bool,
+) -> RegionFaceFingerprint {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut push = |value: u32| {
+        hash ^= u64::from(value);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    push(u32::from(build_lods));
+    for face in faces {
+        push(face.pass as u32);
+        for corner in face.corners {
+            for value in corner.map(canonical_f32_bits) {
+                push(value);
+            }
+        }
+        for value in face.color.map(canonical_f32_bits) {
+            push(value);
+        }
+        for byte in face.material.as_bytes() {
+            push(u32::from(*byte));
+        }
+        match face.uv {
+            Some(uv) => {
+                push(1);
+                for coordinate in uv {
+                    push(canonical_f32_bits(coordinate[0]));
+                    push(canonical_f32_bits(coordinate[1]));
+                }
+            }
+            None => push(0),
+        }
+    }
+    RegionFaceFingerprint {
+        hash,
+        face_count: faces.len(),
+        build_lods,
+    }
 }
 
 fn extract_legacy_faces(
     chunk: &super::preview_3d_source::Preview3dChunkMesh,
-    groups: &mut BTreeMap<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>,
+    groups: &mut FxHashMap<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>,
     extracted_faces: &mut usize,
 ) {
     let mesh = chunk.gpu_mesh.as_ref();
@@ -800,26 +849,34 @@ fn build_region_chunk(
     faces: &[RegionFace],
     global_center: [f32; 3],
     fit_scale: f32,
+    build_lods: bool,
 ) -> Preview3dChunkMesh {
     let origin = key.origin();
     let (gpu_mesh, material_table, face_metadata, bounds) =
         build_region_gpu_mesh(key, pass, 0, faces, origin, global_center, fit_scale);
-    let lod1_faces = faces
-        .iter()
-        .filter(|face| lod1_keeps_face(face))
-        .cloned()
-        .collect::<Vec<_>>();
-    let lod2_faces = faces
-        .iter()
-        .filter(|face| lod2_keeps_face(face, key))
-        .cloned()
-        .collect::<Vec<_>>();
-    let lod1_mesh = (!lod1_faces.is_empty() && lod1_faces.len() < faces.len()).then(|| {
-        build_region_gpu_mesh(key, pass, 1, &lod1_faces, origin, global_center, fit_scale).0
-    });
-    let lod2_mesh = (!lod2_faces.is_empty()
-        && lod2_faces.len() < lod1_faces.len().max(faces.len()))
-    .then(|| build_region_gpu_mesh(key, pass, 2, &lod2_faces, origin, global_center, fit_scale).0);
+    let (lod1_mesh, lod2_mesh) = if build_lods {
+        let lod1_faces = faces
+            .iter()
+            .filter(|face| lod1_keeps_face(face))
+            .cloned()
+            .collect::<Vec<_>>();
+        let lod2_faces = faces
+            .iter()
+            .filter(|face| lod2_keeps_face(face, key))
+            .cloned()
+            .collect::<Vec<_>>();
+        let lod1_mesh = (!lod1_faces.is_empty() && lod1_faces.len() < faces.len()).then(|| {
+            build_region_gpu_mesh(key, pass, 1, &lod1_faces, origin, global_center, fit_scale).0
+        });
+        let lod2_mesh = (!lod2_faces.is_empty()
+            && lod2_faces.len() < lod1_faces.len().max(faces.len()))
+        .then(|| {
+            build_region_gpu_mesh(key, pass, 2, &lod2_faces, origin, global_center, fit_scale).0
+        });
+        (lod1_mesh, lod2_mesh)
+    } else {
+        (None, None)
+    };
     Preview3dChunkMesh {
         gpu_mesh,
         lod1_mesh,

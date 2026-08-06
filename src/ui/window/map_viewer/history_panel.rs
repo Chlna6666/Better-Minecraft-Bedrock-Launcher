@@ -32,6 +32,7 @@ impl MapViewerWindowView {
                             this.history.selected_entry_id =
                                 this.history.entries.first().map(|entry| entry.id.clone());
                         }
+                        this.load_selected_history_visualization(cx);
                     }
                     Err(error) => {
                         this.history.error = Some(SharedString::from(error));
@@ -46,6 +47,72 @@ impl MapViewerWindowView {
 
     pub(super) fn select_history_entry(&mut self, id: String, cx: &mut Context<Self>) {
         self.history.selected_entry_id = Some(id);
+        self.load_selected_history_visualization(cx);
+        cx.notify();
+    }
+
+    fn load_selected_history_visualization(&mut self, cx: &mut Context<Self>) {
+        if !self.history.visualization_enabled {
+            self.professional.overlay_generation =
+                self.professional.overlay_generation.saturating_add(1);
+            self.last_synced_canvas_snapshot_key = None;
+            return;
+        }
+        let Some(entry_id) = self.history.selected_entry_id.clone() else {
+            self.history.visualization = Arc::new(Vec::new());
+            self.history.visualization_loading = false;
+            self.history.visualization_error = None;
+            self.professional.overlay_generation =
+                self.professional.overlay_generation.saturating_add(1);
+            self.last_synced_canvas_snapshot_key = None;
+            return;
+        };
+        self.history.visualization_loading = true;
+        self.history.visualization_error = None;
+        let world_path = self.world_path.clone();
+        let task_entry_id = entry_id.clone();
+        cx.spawn(async move |handle, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    load_history_visualization(&world_path, &task_entry_id)
+                })
+                .await;
+            let Some(view) = handle.upgrade() else {
+                return Ok(());
+            };
+            view.update(cx, move |this, cx| {
+                if this.history.selected_entry_id.as_deref() != Some(entry_id.as_str()) {
+                    return;
+                }
+                this.history.visualization_loading = false;
+                match result {
+                    Ok(visualization) => {
+                        this.history.visualization = Arc::new(visualization);
+                        this.history.visualization_error = None;
+                    }
+                    Err(error) => {
+                        this.history.visualization = Arc::new(Vec::new());
+                        this.history.visualization_error = Some(SharedString::from(error));
+                    }
+                }
+                this.professional.overlay_generation =
+                    this.professional.overlay_generation.saturating_add(1);
+                this.last_synced_canvas_snapshot_key = None;
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn toggle_history_visualization(&mut self, cx: &mut Context<Self>) {
+        self.history.visualization_enabled = !self.history.visualization_enabled;
+        self.professional.overlay_generation =
+            self.professional.overlay_generation.saturating_add(1);
+        self.last_synced_canvas_snapshot_key = None;
+        if self.history.visualization_enabled {
+            self.load_selected_history_visualization(cx);
+        }
         cx.notify();
     }
 
@@ -169,6 +236,11 @@ impl MapViewerWindowView {
                     Ok(()) => {
                         this.history.entries = Arc::new(Vec::new());
                         this.history.selected_entry_id = None;
+                        this.history.visualization = Arc::new(Vec::new());
+                        this.history.visualization_error = None;
+                        this.professional.overlay_generation =
+                            this.professional.overlay_generation.saturating_add(1);
+                        this.last_synced_canvas_snapshot_key = None;
                         toast::success(cx, SharedString::from("历史已清理"));
                     }
                     Err(error) => {
@@ -257,6 +329,7 @@ impl MapViewerWindowView {
                     .text_size(px(12.0))
                     .line_height(px(19.0))
                     .text_color(colors.text_secondary)
+                    .child(history_visualization_legend(colors, &self.history))
                     .child(history_detail_text(selected, self.history.error.as_ref())),
             )
     }
@@ -282,6 +355,7 @@ impl MapViewerWindowView {
         let can_clear = !self.history.entries.is_empty();
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(8.0))
             .child(history_toolbar_action(
@@ -327,6 +401,19 @@ impl MapViewerWindowView {
                 cx,
                 |this, cx| {
                     this.create_map_backup(cx);
+                },
+            ))
+            .child(history_toolbar_action(
+                colors,
+                if self.history.visualization_enabled {
+                    "隐藏差异"
+                } else {
+                    "地图差异"
+                },
+                selected.is_some(),
+                cx,
+                |this, cx| {
+                    this.toggle_history_visualization(cx);
                 },
             ))
             .child(history_toolbar_action(
@@ -394,6 +481,13 @@ impl MapViewerWindowView {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
+                            .child(
+                                div()
+                                    .w(px(8.0))
+                                    .h(px(8.0))
+                                    .rounded_full()
+                                    .bg(history_entry_timeline_color(entry)),
+                            )
                             .child(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)
@@ -603,6 +697,89 @@ fn history_toolbar_button(
             a: if enabled { 0.20 } else { 0.12 },
             ..colors.border
         })
+}
+
+fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Hsla {
+    if entry.status == MapHistoryEntryStatus::Failed {
+        return rgb(0xef4444);
+    }
+    if entry.status == MapHistoryEntryStatus::Undone {
+        return rgb(0x94a3b8);
+    }
+    match entry.kind {
+        MapHistoryEntryKind::ChunkDelete | MapHistoryEntryKind::RecordDelete => rgb(0xef4444),
+        MapHistoryEntryKind::ChunkPaste | MapHistoryEntryKind::RecordSave => rgb(0x3b82f6),
+        _ => rgb(0x8b5cf6),
+    }
+}
+
+fn history_visualization_legend(colors: &ThemeColors, history: &MapHistoryState) -> Div {
+    let added = history
+        .visualization
+        .iter()
+        .filter(|item| item.kind == MapHistoryChunkVisualKind::Added)
+        .count();
+    let removed = history
+        .visualization
+        .iter()
+        .filter(|item| item.kind == MapHistoryChunkVisualKind::Removed)
+        .count();
+    let modified = history
+        .visualization
+        .iter()
+        .filter(|item| item.kind == MapHistoryChunkVisualKind::Modified)
+        .count();
+    div()
+        .mb(px(10.0))
+        .p(px(9.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.18,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.32,
+            ..colors.surface
+        })
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(10.0))
+        .child(history_legend_item("新增", added, rgb(0x3b82f6), colors))
+        .child(history_legend_item("删除", removed, rgb(0xef4444), colors))
+        .child(history_legend_item("修改", modified, rgb(0x8b5cf6), colors))
+        .when(history.visualization_loading, |this| {
+            this.child(
+                div()
+                    .text_color(colors.text_muted)
+                    .child("正在解析差异..."),
+            )
+        })
+        .when(!history.visualization_enabled, |this| {
+            this.child(div().text_color(colors.text_muted).child("地图差异已隐藏"))
+        })
+        .when_some(history.visualization_error.clone(), |this, error| {
+            this.child(div().text_color(colors.danger).child(error))
+        })
+}
+
+fn history_legend_item(
+    label: &'static str,
+    count: usize,
+    color: Hsla,
+    colors: &ThemeColors,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .child(div().w(px(10.0)).h(px(10.0)).rounded(px(2.0)).bg(Hsla { a: 0.55, ..color }))
+        .child(
+            div()
+                .text_color(colors.text_secondary)
+                .child(format!("{label} {count}")),
+        )
 }
 
 fn history_detail_text(

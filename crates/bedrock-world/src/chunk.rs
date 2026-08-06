@@ -1072,6 +1072,10 @@ pub enum SubChunkDecodeMode {
     CountsOnly,
     /// Retain packed palette indices for exact surface-column sampling.
     SurfaceColumns,
+    /// Retain packed palette words while allowing full 3D random access.
+    ///
+    /// This avoids allocating a 4096-entry `u16` array for every palette storage.
+    PackedIndices,
     #[default]
     /// Decode and retain full block index arrays.
     FullIndices,
@@ -1795,8 +1799,11 @@ fn parse_palette_storages(
             offset += consumed;
             states.push(block_state_from_nbt(tag));
         }
-        let mut counts =
-            (mode != SubChunkDecodeMode::SurfaceColumns).then(|| vec![0_u16; palette_len]);
+        let mut counts = matches!(
+            mode,
+            SubChunkDecodeMode::CountsOnly | SubChunkDecodeMode::FullIndices
+        )
+        .then(|| vec![0_u16; palette_len]);
         let (indices, packed_indices) = match mode {
             SubChunkDecodeMode::FullIndices => {
                 let indices = unpack_palette_indices(words_bytes, bits_per_block, palette_len)?;
@@ -1823,7 +1830,7 @@ fn parse_palette_storages(
                 )?;
                 (None, None)
             }
-            SubChunkDecodeMode::SurfaceColumns => (
+            SubChunkDecodeMode::SurfaceColumns | SubChunkDecodeMode::PackedIndices => (
                 None,
                 Some(PackedPaletteIndices {
                     bytes: Bytes::copy_from_slice(words_bytes),

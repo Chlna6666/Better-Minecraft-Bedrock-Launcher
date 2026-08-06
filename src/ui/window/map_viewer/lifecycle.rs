@@ -1026,6 +1026,8 @@ impl MapViewerWindowView {
             paste_preview_images: self.paste_preview_images.clone(),
             paste_preview_images_generation: self.paste_preview_images_generation,
             highlighted_window: self.professional.highlighted_window.clone(),
+            history_visualization: self.history.visualization.clone(),
+            history_visualization_enabled: self.history.visualization_enabled,
             markers: Arc::new(
                 self.markers
                     .get(&self.dimension)

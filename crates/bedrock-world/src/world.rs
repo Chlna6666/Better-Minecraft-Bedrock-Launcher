@@ -4699,7 +4699,19 @@ fn render_chunk_from_raw(
 
     let mut subchunks = BTreeMap::new();
     let subchunk_started = Instant::now();
-    let subchunk_decode = options.data_request.preferred_decode_mode();
+    let preferred_decode = options.data_request.preferred_decode_mode();
+    let subchunk_decode = match (preferred_decode, options.subchunk_decode) {
+        (SubChunkDecodeMode::FullIndices, SubChunkDecodeMode::PackedIndices) => {
+            SubChunkDecodeMode::PackedIndices
+        }
+        (SubChunkDecodeMode::CountsOnly, SubChunkDecodeMode::CountsOnly) => {
+            SubChunkDecodeMode::CountsOnly
+        }
+        (SubChunkDecodeMode::SurfaceColumns, SubChunkDecodeMode::SurfaceColumns) => {
+            SubChunkDecodeMode::SurfaceColumns
+        }
+        _ => preferred_decode,
+    };
     for (y, value) in raw.subchunks {
         check_render_load_cancelled(options)?;
         subchunks.insert(y, parse_subchunk_with_mode(y, value, subchunk_decode)?);

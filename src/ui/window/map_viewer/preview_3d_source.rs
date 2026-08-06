@@ -787,13 +787,15 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
         let next_completed_chunks = completed_chunks.saturating_add(batch_size).min(chunk_total);
         let chunks = world
             .query_chunk_data_many_blocking(
-                positions[completed_chunks..next_completed_chunks].to_vec(),
+                positions[completed_chunks..next_completed_chunks]
+                    .iter()
+                    .copied(),
                 options.clone(),
             )
             .map_err(|error| error.to_string())?;
         let processed_chunks = chunks
-            .par_iter()
-            .map(|chunk| preview_3d_collect_chunk_blocks_result(chunk))
+            .into_par_iter()
+            .map(|chunk| preview_3d_collect_chunk_blocks_result(&chunk))
             .collect::<Result<Vec<_>, _>>()?;
         for processed_chunk in processed_chunks {
             builder.push_processed_chunk(processed_chunk);
@@ -831,13 +833,13 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
     for chunk_positions in positions.chunks(preview_3d_incremental_mesh_batch_size(chunk_total)) {
         check_preview_3d_cancelled(cancel.as_ref())?;
         let chunks = world
-            .query_chunk_data_many_blocking(chunk_positions.to_vec(), options.clone())
+            .query_chunk_data_many_blocking(chunk_positions.iter().copied(), options.clone())
             .map_err(|error| error.to_string())?;
         let processed_chunks = chunks
-            .par_iter()
+            .into_par_iter()
             .map(|chunk| {
                 preview_3d_collect_chunk_blocks_result_with_block_models(
-                    chunk,
+                    &chunk,
                     block_models.as_deref(),
                 )
             })
@@ -951,11 +953,13 @@ fn preview_3d_render_chunk_load_options(
     cancel: Option<CancelFlag>,
 ) -> ChunkLoadOptions {
     ChunkLoadOptions {
+        // 3D meshing only needs palette random access and biome storages. Avoid the
+        // separate 256-column surface scan and retain packed palette words instead of
+        // expanding 4096 `u16` indices for every storage.
         data_request: ChunkDataRequest::new()
-            .surface_columns(ExactSurfaceSubchunkPolicy::Full)
             .full_3d_indices()
             .biome(BiomeDataRequirement::All),
-        subchunk_decode: SubChunkDecodeMode::FullIndices,
+        subchunk_decode: SubChunkDecodeMode::PackedIndices,
         threading: preview_3d_world_threading(total_chunks),
         pipeline: WorldPipelineOptions {
             queue_depth: preview_3d_queue_depth(total_chunks),
@@ -1055,7 +1059,9 @@ fn preview_3d_subchunk_decode_workers(total_chunks: usize) -> usize {
 fn preview_3d_incremental_batch_size(completed_chunks: usize, total_chunks: usize) -> usize {
     let remaining_chunks = total_chunks.saturating_sub(completed_chunks);
     if completed_chunks == 0 {
-        return remaining_chunks.min(1);
+        // A four-chunk first publication still appears immediately, but avoids rebuilding
+        // the complete mesh/region graph after only one mostly isolated chunk.
+        return remaining_chunks.min(4);
     }
     let remaining_updates = PREVIEW_3D_INCREMENTAL_TARGET_UPDATES
         .saturating_sub(1)
@@ -1070,7 +1076,9 @@ fn preview_3d_incremental_mesh_batch_size(total_chunks: usize) -> usize {
 }
 
 fn preview_3d_should_emit_incremental_mesh(completed_chunks: usize, total_chunks: usize) -> bool {
-    completed_chunks > 0 && completed_chunks <= total_chunks
+    // The final result is returned by the loader and converted once by the caller.
+    // Publishing it here would rebuild the full source mesh and spatial regions twice.
+    completed_chunks > 0 && completed_chunks < total_chunks
 }
 
 fn emit_preview_3d_mesh_update(
@@ -4480,6 +4488,37 @@ pub(super) fn preview_3d_draw_parameters(
             mesh.fit_scale,
             camera,
             model_rotation,
+        ),
+    }
+}
+
+pub(super) fn preview_3d_world_draw_parameters(
+    aspect: f32,
+    center: [f32; 3],
+    fit_scale: f32,
+    camera: Preview3dCamera,
+    model_rotation: Preview3dModelRotation,
+) -> GpuMesh3dDrawParameters {
+    GpuMesh3dDrawParameters {
+        view_projection_model: preview_3d_view_proj_model(
+            aspect,
+            center,
+            fit_scale,
+            camera,
+            model_rotation,
+        ),
+    }
+}
+
+pub(super) fn preview_3d_local_draw_parameters(
+    world_parameters: &GpuMesh3dDrawParameters,
+    world_origin: [i32; 3],
+) -> GpuMesh3dDrawParameters {
+    let local_to_world = mat4_translation(world_origin.map(|value| value as f32));
+    GpuMesh3dDrawParameters {
+        view_projection_model: mat4_mul(
+            world_parameters.view_projection_model,
+            local_to_world,
         ),
     }
 }

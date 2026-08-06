@@ -2,6 +2,7 @@ use super::model::{
     MapViewport, Marker, OverlayOptions, PastePreview, PastePreviewImage,
     ProfessionalOverlayPaintCache, SlimeOverlayRunCache,
 };
+use super::map_history::{MapHistoryChunkVisual, MapHistoryChunkVisualKind};
 use super::paint::{draw_map_canvas, draw_professional_overlay_canvas};
 use super::selection::{
     ChunkSelection, ExistingSelectionTarget, SelectionResizeHandle, SelectionScreenBounds,
@@ -86,6 +87,8 @@ pub(super) struct MapCanvasSnapshot {
     pub(super) paste_preview_images: Arc<Vec<PastePreviewImage>>,
     pub(super) paste_preview_images_generation: u64,
     pub(super) highlighted_window: Option<SlimeChunkWindow>,
+    pub(super) history_visualization: Arc<Vec<MapHistoryChunkVisual>>,
+    pub(super) history_visualization_enabled: bool,
     pub(super) markers: Arc<Vec<Marker>>,
     pub(super) markers_generation: u64,
     pub(super) hover_label: SharedString,
@@ -470,6 +473,9 @@ struct OverlayLayerSnapshot {
     paste_preview_images: Arc<Vec<PastePreviewImage>>,
     paste_preview_images_generation: u64,
     highlighted_window: Option<SlimeChunkWindow>,
+    history_visualization: Arc<Vec<MapHistoryChunkVisual>>,
+    history_visualization_enabled: bool,
+    history_visualization_ptr: usize,
     overlay_paint_ptr: Option<usize>,
     slime_runs_ptr: Option<usize>,
     colors: ThemeColors,
@@ -489,6 +495,9 @@ impl OverlayLayerSnapshot {
             paste_preview_images: snapshot.paste_preview_images.clone(),
             paste_preview_images_generation: snapshot.paste_preview_images_generation,
             highlighted_window: snapshot.highlighted_window.clone(),
+            history_visualization: snapshot.history_visualization.clone(),
+            history_visualization_enabled: snapshot.history_visualization_enabled,
+            history_visualization_ptr: Arc::as_ptr(&snapshot.history_visualization) as usize,
             overlay_paint_ptr: arc_option_ptr(&snapshot.overlay_paint),
             slime_runs_ptr: arc_option_ptr(&snapshot.slime_runs),
             colors: snapshot.colors,
@@ -504,6 +513,8 @@ impl OverlayLayerSnapshot {
             && self.paste_preview == other.paste_preview
             && self.paste_preview_images_generation == other.paste_preview_images_generation
             && self.highlighted_window == other.highlighted_window
+            && self.history_visualization_enabled == other.history_visualization_enabled
+            && self.history_visualization_ptr == other.history_visualization_ptr
             && self.overlay_paint_ptr == other.overlay_paint_ptr
             && self.slime_runs_ptr == other.slime_runs_ptr
             && self.colors == other.colors
@@ -1290,6 +1301,8 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     let paste_preview = snapshot.paste_preview.clone();
     let paste_preview_images = snapshot.paste_preview_images.clone();
     let highlighted_window = snapshot.highlighted_window.clone();
+    let history_visualization = snapshot.history_visualization.clone();
+    let history_visualization_enabled = snapshot.history_visualization_enabled;
     let colors = snapshot.colors;
     div().absolute().inset_0().child(
         canvas(
@@ -1310,10 +1323,130 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                     colors,
                     window,
                 );
+                if history_visualization_enabled {
+                    draw_history_visualization_overlay(
+                        bounds,
+                        viewport,
+                        layout,
+                        dimension,
+                        &history_visualization,
+                        window,
+                    );
+                }
             },
         )
         .size_full(),
     )
+}
+
+fn draw_history_visualization_overlay(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    dimension: Dimension,
+    visualization: &[MapHistoryChunkVisual],
+    window: &mut Window,
+) {
+    let canvas_left = bounds.left() / px(1.0);
+    let canvas_top = bounds.top() / px(1.0);
+    let canvas_right = bounds.right() / px(1.0);
+    let canvas_bottom = bounds.bottom() / px(1.0);
+    for item in visualization
+        .iter()
+        .filter(|item| item.pos.dimension == dimension)
+        .take(8192)
+    {
+        let left = screen_x_for_block(
+            bounds,
+            viewport,
+            layout,
+            item.pos.x.saturating_mul(16),
+        );
+        let top = screen_y_for_block(
+            bounds,
+            viewport,
+            layout,
+            item.pos.z.saturating_mul(16),
+        );
+        let right = screen_x_for_block(
+            bounds,
+            viewport,
+            layout,
+            item.pos.x.saturating_add(1).saturating_mul(16),
+        );
+        let bottom = screen_y_for_block(
+            bounds,
+            viewport,
+            layout,
+            item.pos.z.saturating_add(1).saturating_mul(16),
+        );
+        if right <= left
+            || bottom <= top
+            || right < canvas_left
+            || bottom < canvas_top
+            || left > canvas_right
+            || top > canvas_bottom
+        {
+            continue;
+        }
+        let rect = Bounds::new(
+            point(px(left), px(top)),
+            size(px(right - left), px(bottom - top)),
+        );
+        match item.kind {
+            MapHistoryChunkVisualKind::Added => {
+                paint_history_chunk_rect(rect, rgb(0x3b82f6), window);
+            }
+            MapHistoryChunkVisualKind::Removed => {
+                paint_history_chunk_rect(rect, rgb(0xef4444), window);
+            }
+            MapHistoryChunkVisualKind::Modified => {
+                let half = rect.size.width * 0.5;
+                paint_history_chunk_rect(
+                    Bounds::new(rect.origin, size(half, rect.size.height)),
+                    rgb(0x3b82f6),
+                    window,
+                );
+                paint_history_chunk_rect(
+                    Bounds::new(
+                        point(rect.origin.x + half, rect.origin.y),
+                        size(rect.size.width - half, rect.size.height),
+                    ),
+                    rgb(0xef4444),
+                    window,
+                );
+            }
+        }
+    }
+}
+
+fn paint_history_chunk_rect(rect: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+    let fill_color = Hsla { a: 0.28, ..color };
+    let border_color = Hsla { a: 0.78, ..color };
+    window.paint_quad(fill(rect, fill_color));
+    let thickness = px(1.0);
+    window.paint_quad(fill(
+        Bounds::new(rect.origin, size(rect.size.width, thickness)),
+        border_color,
+    ));
+    window.paint_quad(fill(
+        Bounds::new(
+            point(rect.origin.x, rect.bottom() - thickness),
+            size(rect.size.width, thickness),
+        ),
+        border_color,
+    ));
+    window.paint_quad(fill(
+        Bounds::new(rect.origin, size(thickness, rect.size.height)),
+        border_color,
+    ));
+    window.paint_quad(fill(
+        Bounds::new(
+            point(rect.right() - thickness, rect.origin.y),
+            size(thickness, rect.size.height),
+        ),
+        border_color,
+    ));
 }
 
 fn render_markers(snapshot: &MarkerLayerSnapshot) -> Div {
