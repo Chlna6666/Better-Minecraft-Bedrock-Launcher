@@ -33,7 +33,7 @@ jobs:
         id: cleanup
         shell: bash
         run: |
-          if [[ -f scripts/remove_map_view_canvas_compat.py ]]; then
+          if [[ -f scripts/fix_map_view_canvas_merge.py ]]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
@@ -52,7 +52,7 @@ jobs:
             libxkbcommon-dev \
             pkg-config
 
-      - name: Remove compatibility modules and compile BMCBL
+      - name: Fix canonical canvas and compile BMCBL
         if: steps.cleanup.outputs.needed == 'true'
         shell: bash
         run: |
@@ -60,17 +60,17 @@ jobs:
           validation=/tmp/map-compatibility-cleanup.txt
           : > "$validation"
 
-          echo '=== merge view and canvas into canonical modules ===' >> "$validation"
-          python3 scripts/remove_map_view_canvas_compat.py >> "$validation" 2>&1
+          echo '=== remove obsolete canvas patch helpers ===' >> "$validation"
+          python3 scripts/fix_map_view_canvas_merge.py >> "$validation" 2>&1
           status=$?
 
           if [[ "$status" -eq 0 ]]; then
-            echo '=== legacy symbol guard ===' >> "$validation"
+            echo '=== compatibility symbol guard ===' >> "$validation"
             if grep -RIn -E \
-              'canvas_stable|canvas_legacy|view_stable|view_legacy' \
+              'canvas_stable|canvas_legacy|view_stable|view_legacy|PaintTilePatchChange|fn patch_paint_tile|fn patch_debug_overlay' \
               src/ui/window/map_viewer src/ui/window/map_viewer.rs \
               >> "$validation" 2>&1; then
-              echo 'view/canvas compatibility symbol remains' >> "$validation"
+              echo 'view/canvas compatibility implementation remains' >> "$validation"
               status=1
             fi
           fi
@@ -92,16 +92,19 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
           if [[ "$status" -eq 0 ]]; then
-            rm -f scripts/remove_map_view_canvas_compat.py
+            rm -f \
+              scripts/fix_map_view_canvas_merge.py \
+              scripts/remove_map_view_canvas_compat.py \
+              scripts/trigger_map_view_canvas_cleanup.txt
             git add -A src scripts Cargo.lock
             if ! git diff --cached --quiet; then
-              git commit -m 'refactor(map): 删除 view 与 canvas 兼容层'
+              git commit -m 'refactor(map): 完成 view 与 canvas 兼容层删除'
               git push origin HEAD:work/local-bedrock-crates
             fi
           else
             git add -A src scripts Cargo.lock
             if ! git diff --cached --quiet; then
-              git commit -m 'wip(map): 保留 view 与 canvas 清理后的编译错误'
+              git commit -m 'wip(map): 保留 canvas 合并修复后的编译错误'
               git push origin HEAD:work/local-bedrock-crates
             fi
           fi
