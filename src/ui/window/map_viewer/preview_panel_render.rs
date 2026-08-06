@@ -286,20 +286,17 @@ impl MapViewerWindowView {
                                 let height = f32::from(bounds.size.height);
                                 let aspect = if height <= 0.0 { 1.0 } else { width / height };
                                 for chunk_mesh in &mesh.chunk_meshes {
+                                    let gpu_mesh = chunk_mesh.selected_gpu_mesh(camera);
                                     let parameters = preview_3d_draw_parameters(
                                         aspect,
-                                        &chunk_mesh.gpu_mesh,
+                                        gpu_mesh.as_ref(),
                                         camera,
                                         model_rotation,
                                     );
                                     if !preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters) {
                                         continue;
                                     }
-                                    window.paint_gpu_mesh_3d(
-                                        bounds,
-                                        chunk_mesh.gpu_mesh.clone(),
-                                        parameters,
-                                    );
+                                    window.paint_gpu_mesh_3d(bounds, gpu_mesh, parameters);
                                 }
                             },
                         )
