@@ -1,16 +1,14 @@
 name: Apply map performance and history visualization once
 
 on:
-  pull_request_target:
+  workflow_run:
+    workflows:
+      - "Backdrop blur validation"
     types:
-      - opened
-      - synchronize
-      - reopened
-      - edited
+      - completed
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: apply-map-performance-history-once
@@ -18,7 +16,7 @@ concurrency:
 
 jobs:
   apply:
-    if: github.event.pull_request.base.ref == 'master' && github.event.pull_request.head.ref == 'trigger/map-performance-history'
+    if: github.event.workflow_run.id == 29821301759
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,12 +52,4 @@ jobs:
           git commit -m "perf: optimize 3D preview and visualize edit history"
           git push origin HEAD:master
           git push origin --delete tmp-preview-3d-perf-apply || true
-
-      - name: Close trigger pull request and delete branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh pr close "$PR_URL" --comment "One-time map performance and history visualization patch applied directly to master." --delete-branch
+          git push origin --delete trigger/map-performance-history || true
