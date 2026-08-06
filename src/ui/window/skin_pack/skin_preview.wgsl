@@ -16,10 +16,7 @@ struct SkinPreviewVertex {
     position_x: f32,
     position_y: f32,
     position_z: f32,
-    color_r: f32,
-    color_g: f32,
-    color_b: f32,
-    color_a: f32,
+    color_rgba8: u32,
 };
 
 struct SkinPreviewVarying {
@@ -33,6 +30,19 @@ struct SkinPreviewVarying {
 @group(0) @binding(0) var<uniform> globals: GlobalParams;
 @group(0) @binding(20) var<storage, read> skin_preview_draw_parameters: array<SkinPreviewDrawParameters>;
 @group(0) @binding(21) var<storage, read> skin_preview_vertices: array<SkinPreviewVertex>;
+
+fn decode_skin_preview_color(encoded: u32) -> vec4<f32> {
+    let red = f32(encoded & 0xffu) / 255.0;
+    let green = f32((encoded >> 8u) & 0xffu) / 255.0;
+    let blue = f32((encoded >> 16u) & 0xffu) / 255.0;
+    let alpha_and_flags = (encoded >> 24u) & 0xffu;
+    let alpha = f32(alpha_and_flags & 0x1fu) / 31.0;
+    return vec4<f32>(red, green, blue, alpha);
+}
+
+fn decode_skin_preview_edge_mask(encoded: u32) -> u32 {
+    return ((encoded >> 24u) & 0xffu) >> 5u;
+}
 
 @vertex
 fn vs_skin_preview(
@@ -72,9 +82,7 @@ fn vs_skin_preview(
     let viewport_size = max(globals.viewport_size, vec2<f32>(1.0));
     let device_position = pixel_position / viewport_size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
 
-    let encoded_alpha = vertex.color_a;
-    let edge_mask = u32(floor(encoded_alpha * 0.5));
-    let vertex_alpha = encoded_alpha - f32(edge_mask) * 2.0;
+    let decoded_color = decode_skin_preview_color(vertex.color_rgba8);
     let triangle_vertex = vertex_index % 3u;
     var barycentric = vec3<f32>(0.0, 0.0, 1.0);
     if (triangle_vertex == 0u) {
@@ -86,12 +94,12 @@ fn vs_skin_preview(
     var out: SkinPreviewVarying;
     let depth = clamp(0.5 - ndc.z * 0.5 + depth_bias, 0.0, 1.0);
     out.position = vec4<f32>(device_position, depth, 1.0);
-    out.color = vec4<f32>(vertex.color_r, vertex.color_g, vertex.color_b, vertex_alpha * opacity);
+    out.color = vec4<f32>(decoded_color.rgb, decoded_color.a * opacity);
     let top_left = pixel_position - square_origin;
     let bottom_right = square_origin + draw_size - pixel_position;
     out.clip_distances = vec4<f32>(top_left.x, bottom_right.x, top_left.y, bottom_right.y);
     out.barycentric = barycentric;
-    out.edge_mask = edge_mask;
+    out.edge_mask = decode_skin_preview_edge_mask(vertex.color_rgba8);
     return out;
 }
 
