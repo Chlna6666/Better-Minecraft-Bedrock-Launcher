@@ -35,18 +35,8 @@ pub(super) fn materialize_occupancy_chunks(
         .map(|positions| Arc::<[ChunkPos]>::from(positions))
 }
 
-pub(super) fn occupancy_center_block(index: &TileOccupancyIndex) -> Option<(i32, i32)> {
-    let bounds = index.bounds()?;
-    let center_chunk_x = bounds
-        .min_chunk_x
-        .saturating_add(bounds.max_chunk_x)
-        .div_euclid(2);
-    let center_chunk_z = bounds
-        .min_chunk_z
-        .saturating_add(bounds.max_chunk_z)
-        .div_euclid(2);
-    Some((
-        center_chunk_x.saturating_mul(16).saturating_add(8),
-        center_chunk_z.saturating_mul(16).saturating_add(8),
-    ))
+/// Occupancy 索引只负责判断区块是否存在，不应改变用户视口中心。
+/// 地图首次打开由 level.dat 的 SpawnX/SpawnZ 决定中心；读取失败时保留默认 (0, 0)。
+pub(super) const fn occupancy_center_block(_index: &TileOccupancyIndex) -> Option<(i32, i32)> {
+    None
 }
