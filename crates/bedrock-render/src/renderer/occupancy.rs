@@ -4,13 +4,9 @@
 //! and chunk positions are stored in contiguous vectors so large worlds do not
 //! require one heap allocation per tile.
 
-use super::pipeline::{
-    LevelDbRenderSource, RenderChunkSource, RenderLayout, RenderTaskControl,
-};
+use super::pipeline::{LevelDbRenderSource, RenderChunkSource, RenderLayout, RenderTaskControl};
 use crate::error::{BedrockRenderError, Result};
-use bedrock_world::{
-    ChunkBounds, ChunkPos, Dimension, WorldScanOptions, WorldThreadingOptions,
-};
+use bedrock_world::{ChunkBounds, ChunkPos, Dimension, WorldScanOptions, WorldThreadingOptions};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -293,12 +289,7 @@ fn wait_for_control(control: &RenderTaskControl) -> Result<()> {
     }
 }
 
-fn tile_entry(
-    tile_x: i32,
-    tile_z: i32,
-    start: usize,
-    end: usize,
-) -> Result<TileOccupancyEntry> {
+fn tile_entry(tile_x: i32, tile_z: i32, start: usize, end: usize) -> Result<TileOccupancyEntry> {
     Ok(TileOccupancyEntry {
         tile_x,
         tile_z,
@@ -443,7 +434,10 @@ fn encode_index(validation: u64, index: &TileOccupancyIndex) -> Vec<u8> {
             put_i32(&mut bytes, bounds.min_chunk_z);
             put_i32(&mut bytes, bounds.max_chunk_x);
             put_i32(&mut bytes, bounds.max_chunk_z);
-            put_u64(&mut bytes, u64::try_from(bounds.chunk_count).unwrap_or(u64::MAX));
+            put_u64(
+                &mut bytes,
+                u64::try_from(bounds.chunk_count).unwrap_or(u64::MAX),
+            );
         }
         None => {
             bytes.push(0);
@@ -451,8 +445,14 @@ fn encode_index(validation: u64, index: &TileOccupancyIndex) -> Vec<u8> {
             bytes.extend_from_slice(&[0; 24]);
         }
     }
-    put_u64(&mut bytes, u64::try_from(index.entries.len()).unwrap_or(u64::MAX));
-    put_u64(&mut bytes, u64::try_from(index.chunks.len()).unwrap_or(u64::MAX));
+    put_u64(
+        &mut bytes,
+        u64::try_from(index.entries.len()).unwrap_or(u64::MAX),
+    );
+    put_u64(
+        &mut bytes,
+        u64::try_from(index.chunks.len()).unwrap_or(u64::MAX),
+    );
     for entry in &index.entries {
         put_i32(&mut bytes, entry.tile_x);
         put_i32(&mut bytes, entry.tile_z);
@@ -524,9 +524,10 @@ fn decode_index(
             chunk_len: cursor.u32()?,
         });
     }
-    if !entries.windows(2).all(|window| {
-        (window[0].tile_x, window[0].tile_z) < (window[1].tile_x, window[1].tile_z)
-    }) {
+    if !entries
+        .windows(2)
+        .all(|window| (window[0].tile_x, window[0].tile_z) < (window[1].tile_x, window[1].tile_z))
+    {
         return Err(BedrockRenderError::Validation(
             "tile occupancy entries are not strictly sorted".to_string(),
         ));
@@ -601,10 +602,9 @@ impl<'a> Cursor<'a> {
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or_else(|| BedrockRenderError::Validation("occupancy offset overflow".to_string()))?;
+        let end = self.offset.checked_add(len).ok_or_else(|| {
+            BedrockRenderError::Validation("occupancy offset overflow".to_string())
+        })?;
         let slice = self.bytes.get(self.offset..end).ok_or_else(|| {
             BedrockRenderError::Validation("truncated tile occupancy cache".to_string())
         })?;
@@ -617,21 +617,21 @@ impl<'a> Cursor<'a> {
     }
 
     fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(|_| {
-            BedrockRenderError::Validation("invalid occupancy u32".to_string())
-        })?))
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(
+            |_| BedrockRenderError::Validation("invalid occupancy u32".to_string()),
+        )?))
     }
 
     fn i32(&mut self) -> Result<i32> {
-        Ok(i32::from_le_bytes(self.take(4)?.try_into().map_err(|_| {
-            BedrockRenderError::Validation("invalid occupancy i32".to_string())
-        })?))
+        Ok(i32::from_le_bytes(self.take(4)?.try_into().map_err(
+            |_| BedrockRenderError::Validation("invalid occupancy i32".to_string()),
+        )?))
     }
 
     fn u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(|_| {
-            BedrockRenderError::Validation("invalid occupancy u64".to_string())
-        })?))
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(
+            |_| BedrockRenderError::Validation("invalid occupancy u64".to_string()),
+        )?))
     }
 }
 
@@ -664,7 +664,10 @@ mod tests {
         )
         .expect("index");
         assert_eq!(index.tile_count(), 2);
-        assert_eq!(index.chunk_positions(-1, -1).map(<[ChunkPos]>::len), Some(2));
+        assert_eq!(
+            index.chunk_positions(-1, -1).map(<[ChunkPos]>::len),
+            Some(2)
+        );
         assert_eq!(index.chunk_positions(0, 0).map(<[ChunkPos]>::len), Some(1));
     }
 

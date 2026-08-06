@@ -159,7 +159,7 @@ impl TileReadyBatcher {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TileLoadState {
-    PendingManifest,
+    Empty,
     Queued,
     Loading,
     Loaded,
@@ -169,7 +169,7 @@ pub(super) enum TileLoadState {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct TileLoadStateCounts {
-    pub(super) pending_manifest: usize,
+    pub(super) empty: usize,
     pub(super) queued: usize,
     pub(super) loading: usize,
     pub(super) loaded: usize,
@@ -180,8 +180,8 @@ pub(super) struct TileLoadStateCounts {
 impl TileLoadStateCounts {
     fn increment(&mut self, state: TileLoadState) {
         match state {
-            TileLoadState::PendingManifest => {
-                self.pending_manifest = self.pending_manifest.saturating_add(1);
+            TileLoadState::Empty => {
+                self.empty = self.empty.saturating_add(1);
             }
             TileLoadState::Queued => {
                 self.queued = self.queued.saturating_add(1);
@@ -203,8 +203,8 @@ impl TileLoadStateCounts {
 
     fn decrement(&mut self, state: TileLoadState) {
         match state {
-            TileLoadState::PendingManifest => {
-                self.pending_manifest = self.pending_manifest.saturating_sub(1);
+            TileLoadState::Empty => {
+                self.empty = self.empty.saturating_sub(1);
             }
             TileLoadState::Queued => {
                 self.queued = self.queued.saturating_sub(1);
@@ -233,9 +233,7 @@ impl TileLoadStateCounts {
     }
 
     fn subtract(&mut self, removed: TileLoadStateCounts) {
-        self.pending_manifest = self
-            .pending_manifest
-            .saturating_sub(removed.pending_manifest);
+        self.empty = self.empty.saturating_sub(removed.empty);
         self.queued = self.queued.saturating_sub(removed.queued);
         self.loading = self.loading.saturating_sub(removed.loading);
         self.loaded = self.loaded.saturating_sub(removed.loaded);
@@ -279,20 +277,6 @@ pub(super) struct TileEntry {
 }
 
 impl TileEntry {
-    pub(super) fn pending_manifest(priority: TilePriority, sequence: u64) -> Self {
-        Self {
-            state: TileLoadState::PendingManifest,
-            source_status: TileSourceStatus::Miss,
-            image: None,
-            priority,
-            sequence,
-            last_access: sequence,
-            attempts: 0,
-            retry_after: None,
-            last_error: None,
-        }
-    }
-
     pub(super) fn queued(priority: TilePriority, sequence: u64) -> Self {
         Self {
             state: TileLoadState::Queued,
@@ -421,7 +405,10 @@ impl RegionManager {
             let Some(entry) = self.entries.get_mut(coord) else {
                 continue;
             };
-            if matches!(entry.state, TileLoadState::Loaded | TileLoadState::Invalid) {
+            if matches!(
+                entry.state,
+                TileLoadState::Loaded | TileLoadState::Empty | TileLoadState::Invalid
+            ) {
                 self.state_counts
                     .transition(entry.state, TileLoadState::Queued);
                 entry.state = TileLoadState::Queued;
@@ -478,49 +465,6 @@ impl RegionManager {
             .cloned()
     }
 
-    pub(super) fn ensure_pending_manifest(
-        &mut self,
-        coords: &[(i32, i32)],
-        priority: TilePriority,
-    ) -> bool {
-        let mut needs_cache_bypass = false;
-        for coord in coords {
-            let sequence = self.next_sequence;
-            self.next_sequence = self.next_sequence.saturating_add(1);
-            let last_access = self.allocate_access_stamp();
-            match self.entries.get_mut(coord) {
-                Some(entry) => {
-                    entry.last_access = last_access;
-                    if priority < entry.priority {
-                        entry.priority = priority;
-                        entry.sequence = sequence;
-                    }
-                    if matches!(entry.state, TileLoadState::Queued | TileLoadState::Failed) {
-                        self.state_counts
-                            .transition(entry.state, TileLoadState::PendingManifest);
-                        entry.state = TileLoadState::PendingManifest;
-                        entry.retry_after = None;
-                    } else if entry.state == TileLoadState::Loaded && entry.image.is_none() {
-                        self.state_counts
-                            .transition(entry.state, TileLoadState::PendingManifest);
-                        entry.state = TileLoadState::PendingManifest;
-                        entry.source_status = TileSourceStatus::Miss;
-                        entry.retry_after = None;
-                        entry.last_error = None;
-                        needs_cache_bypass = true;
-                    }
-                }
-                None => {
-                    self.state_counts.increment(TileLoadState::PendingManifest);
-                    let mut entry = TileEntry::pending_manifest(priority, sequence);
-                    entry.last_access = last_access;
-                    self.entries.insert(*coord, entry);
-                }
-            }
-        }
-        needs_cache_bypass
-    }
-
     pub(super) fn remove_tile(&mut self, coord: (i32, i32)) -> Option<Arc<RenderImage>> {
         if let Some(mut entry) = self.entries.remove(&coord) {
             self.state_counts.decrement(entry.state);
@@ -574,7 +518,7 @@ impl RegionManager {
         }
 
         // Keep active render ownership until its completion event has updated the state
-        // machine. Pending manifest entries are cheap and can be probed again after eviction.
+        // machine. Resolved empty entries are cheap and can be probed again after eviction.
         let mut candidates = self
             .entries
             .iter()
@@ -919,33 +863,6 @@ impl RegionManager {
         }
     }
 
-    pub(super) fn mark_manifest_ready(&mut self, coord: (i32, i32), priority: TilePriority) {
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        match self.entries.get_mut(&coord) {
-            Some(entry) => {
-                if priority < entry.priority {
-                    entry.priority = priority;
-                }
-                if matches!(
-                    entry.state,
-                    TileLoadState::PendingManifest | TileLoadState::Failed
-                ) {
-                    self.state_counts
-                        .transition(entry.state, TileLoadState::Queued);
-                    entry.state = TileLoadState::Queued;
-                    entry.retry_after = None;
-                    entry.last_error = None;
-                }
-            }
-            None => {
-                self.state_counts.increment(TileLoadState::Queued);
-                self.entries
-                    .insert(coord, TileEntry::queued(priority, sequence));
-            }
-        }
-    }
-
     pub(super) fn has_visible_work(&self) -> bool {
         let now = Instant::now();
         self.entries.values().any(|entry| {
@@ -956,36 +873,6 @@ impl RegionManager {
                             .retry_after
                             .is_none_or(|retry_after| retry_after <= now)))
         })
-    }
-
-    pub(super) fn has_pending_manifest_for_tiles(&self, coords: &[(i32, i32)]) -> bool {
-        coords.iter().any(|coord| {
-            self.entries
-                .get(coord)
-                .is_some_and(|entry| matches!(entry.state, TileLoadState::PendingManifest))
-        })
-    }
-
-    pub(super) fn is_pending_manifest(&self, coord: (i32, i32)) -> bool {
-        self.entries
-            .get(&coord)
-            .is_some_and(|entry| matches!(entry.state, TileLoadState::PendingManifest))
-    }
-
-    pub(super) fn pending_manifest_coords_with_priority(
-        &self,
-        priority: TilePriority,
-    ) -> Vec<(i32, i32)> {
-        let mut coords = self
-            .entries
-            .iter()
-            .filter_map(|(coord, entry)| {
-                (entry.state == TileLoadState::PendingManifest && entry.priority == priority)
-                    .then_some((*coord, entry.sequence))
-            })
-            .collect::<Vec<_>>();
-        coords.sort_by_key(|(_, sequence)| *sequence);
-        coords.into_iter().map(|(coord, _)| coord).collect()
     }
 
     pub(super) fn mark_loaded(
@@ -1047,7 +934,7 @@ impl RegionManager {
         let Some(entry) = self.entries.get_mut(&coord) else {
             return (false, None);
         };
-        if matches!(entry.state, TileLoadState::Invalid)
+        if matches!(entry.state, TileLoadState::Empty | TileLoadState::Invalid)
             || entry.source_status == TileSourceStatus::Fresh
         {
             return (false, None);
@@ -1120,6 +1007,37 @@ impl RegionManager {
         dropped_image
     }
 
+    pub(super) fn mark_empty(&mut self, coord: (i32, i32)) -> Option<Arc<RenderImage>> {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        let (previous_bytes, dropped_image) = if let Some(entry) = self.entries.get_mut(&coord) {
+            let previous_bytes = tile_entry_loaded_estimated_bytes(entry);
+            let dropped_image = tile_entry_take_render_image(entry);
+            self.state_counts
+                .transition(entry.state, TileLoadState::Empty);
+            entry.state = TileLoadState::Empty;
+            entry.source_status = TileSourceStatus::Fresh;
+            entry.priority = TilePriority::Prefetch;
+            entry.attempts = 0;
+            entry.retry_after = None;
+            entry.last_error = None;
+            (previous_bytes, dropped_image)
+        } else {
+            let mut entry = TileEntry::queued(TilePriority::Prefetch, sequence);
+            entry.state = TileLoadState::Empty;
+            entry.source_status = TileSourceStatus::Fresh;
+            self.state_counts.increment(entry.state);
+            self.entries.insert(coord, entry);
+            (0, None)
+        };
+        self.loaded_estimated_bytes = self.loaded_estimated_bytes.saturating_sub(previous_bytes);
+        dropped_image
+    }
+
+    pub(super) fn empty_count(&self) -> usize {
+        self.state_counts.empty
+    }
+
     pub(super) fn mark_invalid(
         &mut self,
         coord: (i32, i32),
@@ -1163,10 +1081,6 @@ impl RegionManager {
         self.state_counts
             .queued
             .saturating_add(self.state_counts.failed)
-    }
-
-    pub(super) fn pending_manifest_count(&self) -> usize {
-        self.state_counts.pending_manifest
     }
 
     pub(super) fn loading_count(&self) -> usize {

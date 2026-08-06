@@ -97,12 +97,6 @@ pub(super) fn render_cpu_chunk_batch_size(worker_count: usize) -> usize {
     worker_count.saturating_mul(4).clamp(4, 32)
 }
 
-pub(super) fn manifest_probe_worker_count(cpu_budget: RenderCpuBudget) -> usize {
-    cpu_budget
-        .thread_count()
-        .clamp(1, TILE_MANIFEST_PROBE_MAX_WORKERS)
-}
-
 pub(super) fn tile_cache_memory_limit(cpu_budget: RenderCpuBudget) -> usize {
     cpu_budget.thread_count().saturating_mul(64).clamp(64, 512)
 }

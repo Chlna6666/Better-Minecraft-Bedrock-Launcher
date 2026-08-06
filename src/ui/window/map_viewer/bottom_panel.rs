@@ -131,7 +131,7 @@ impl MapViewerWindowView {
             .get(&tile)
             .map_or([].as_slice(), |positions| positions.as_ref());
         self.db_tree.nodes = Arc::new(chunk_tree_nodes_for_tile(self.dimension, tile, chunks));
-        self.db_tree.loading = self.metadata_loading || self.manifest_probe_in_flight;
+        self.db_tree.loading = self.metadata_loading;
         self.db_tree.selection = Default::default();
         self.db_tree.error = None;
     }

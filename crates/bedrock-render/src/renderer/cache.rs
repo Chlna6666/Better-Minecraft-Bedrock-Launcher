@@ -5,9 +5,9 @@ use super::pipeline::{
     RenderMode,
 };
 use crate::error::{BedrockRenderError, Result};
-use bedrock_world::{ChunkBounds, ChunkPos, Dimension};
+use bedrock_world::{ChunkPos, Dimension};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -17,11 +17,9 @@ use std::sync::{
 };
 use xxhash_rust::xxh3::xxh3_128;
 
-const TILE_MANIFEST_CACHE_VERSION: u32 = 1;
-const TILE_MANIFEST_CACHE_MAGIC: &[u8; 8] = b"BRTIDX01";
+const RENDER_CACHE_VALIDATION_VERSION: u32 = 1;
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
-static TILE_MANIFEST_CACHE_WRITE_ID: AtomicUsize = AtomicUsize::new(0);
 const TILE_AUTHORITY_CACHE_VERSION: u32 = 2;
 const TILE_AUTHORITY_HEADER_MAGIC: &[u8; 8] = b"BRTCHD01";
 const TILE_AUTHORITY_CHUNKS_MAGIC: &[u8; 8] = b"BRTCHK01";
@@ -48,32 +46,6 @@ pub const TILE_AUTHORITY_FLAG_EMPTY: u32 = 1;
 pub const TILE_AUTHORITY_FLAG_NON_EMPTY: u32 = 1 << 1;
 const TILE_AUTHORITY_KNOWN_FLAGS: u32 = TILE_AUTHORITY_FLAG_EMPTY | TILE_AUTHORITY_FLAG_NON_EMPTY;
 static TILE_AUTHORITY_CACHE_WRITE_ID: AtomicUsize = AtomicUsize::new(0);
-
-/// Compact identity for a manifest probe cache entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TileManifestCacheKey {
-    pub world_id: String,
-    pub world_signature: String,
-    pub renderer_signature: String,
-    pub mode_slug: String,
-    pub renderer_version: u32,
-    pub palette_version: u32,
-    pub dimension: Dimension,
-    pub chunks_per_tile: u32,
-    pub blocks_per_pixel: u32,
-    pub pixels_per_block: u32,
-}
-
-/// Snapshot persisted in the compact manifest sidecar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TileManifestCacheSnapshot {
-    pub requested_tiles: Vec<(i32, i32)>,
-    pub tile_chunk_index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
-    pub bounds: Option<ChunkBounds>,
-    pub center_block_x: Option<i32>,
-    pub center_block_z: Option<i32>,
-}
-
 /// World cache identity computed from one filesystem metadata snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldCacheIdentity {
@@ -82,123 +54,6 @@ pub struct WorldCacheIdentity {
     /// Content signature used to reject cache entries after the world changes.
     pub world_signature: String,
 }
-
-impl TileManifestCacheKey {
-    #[must_use]
-    pub fn new(
-        world_path: &Path,
-        backend: RenderBackend,
-        gpu_backend: RenderGpuBackend,
-        mode: RenderMode,
-        dimension: Dimension,
-        layout: RenderLayout,
-    ) -> Self {
-        let identity = world_cache_identity(world_path);
-        Self {
-            world_id: identity.world_id,
-            world_signature: identity.world_signature,
-            renderer_signature: render_preset_cache_signature(world_path, backend, gpu_backend),
-            mode_slug: render_mode_cache_slug(mode),
-            renderer_version: RENDERER_CACHE_VERSION,
-            palette_version: DEFAULT_PALETTE_VERSION,
-            dimension,
-            chunks_per_tile: layout.chunks_per_tile,
-            blocks_per_pixel: layout.blocks_per_pixel,
-            pixels_per_block: layout.pixels_per_block,
-        }
-    }
-
-    #[must_use]
-    pub fn validation_value(&self) -> u64 {
-        let mut hash = FNV1A64_OFFSET;
-        fnv1a_write_u32(&mut hash, TILE_MANIFEST_CACHE_VERSION);
-        fnv1a_write_str(&mut hash, &self.world_id);
-        fnv1a_write_str(&mut hash, &self.world_signature);
-        fnv1a_write_str(&mut hash, &self.renderer_signature);
-        fnv1a_write_str(&mut hash, &self.mode_slug);
-        fnv1a_write_u32(&mut hash, self.renderer_version);
-        fnv1a_write_u32(&mut hash, self.palette_version);
-        fnv1a_write_i32(&mut hash, self.dimension.id());
-        fnv1a_write_u32(&mut hash, self.chunks_per_tile);
-        fnv1a_write_u32(&mut hash, self.blocks_per_pixel);
-        fnv1a_write_u32(&mut hash, self.pixels_per_block);
-        if hash == 0 { FNV1A64_OFFSET } else { hash }
-    }
-
-    #[must_use]
-    pub fn path_for_root(&self, root: &Path) -> PathBuf {
-        root.join("map-manifest-index")
-            .join(&self.world_id)
-            .join(&self.renderer_signature)
-            .join(format!("dimension-{}", self.dimension.id()))
-            .join(&self.mode_slug)
-            .join(format!(
-                "r{}-p{}-v{:016x}",
-                self.renderer_version,
-                self.palette_version,
-                self.validation_value()
-            ))
-            .join(format!(
-                "{}c-{}bpp-{}ppb.bridx",
-                self.chunks_per_tile, self.blocks_per_pixel, self.pixels_per_block
-            ))
-    }
-}
-
-/// Persistent manifest probe cache stored as a compact binary sidecar.
-#[derive(Debug, Clone)]
-pub struct TileManifestCache {
-    root: PathBuf,
-}
-
-impl TileManifestCache {
-    #[must_use]
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
-    }
-
-    #[must_use]
-    pub fn path_for_key(&self, key: &TileManifestCacheKey) -> PathBuf {
-        key.path_for_root(&self.root)
-    }
-
-    pub fn load(&self, key: &TileManifestCacheKey) -> Result<Option<TileManifestCacheSnapshot>> {
-        let path = self.path_for_key(key);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(BedrockRenderError::io(
-                    format!("failed to read manifest index {}", path.display()),
-                    error,
-                ));
-            }
-        };
-        match decode_tile_manifest_cache(&bytes, key) {
-            Ok(decoded) => Ok(Some(decoded)),
-            Err(error) => {
-                let _ = fs::remove_file(&path);
-                Err(error)
-            }
-        }
-    }
-
-    pub fn store(
-        &self,
-        key: &TileManifestCacheKey,
-        result: &TileManifestCacheSnapshot,
-    ) -> Result<()> {
-        let path = self.path_for_key(key);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                BedrockRenderError::io("failed to create manifest index directory", error)
-            })?;
-        }
-        let encoded = encode_tile_manifest_cache(key, result)?;
-        write_atomic_bytes(&path, &encoded)
-    }
-}
-
 /// Stable identity for the authoritative final-tile cache of one map/render configuration.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TileAuthorityCacheKey {
@@ -890,7 +745,7 @@ pub fn render_preset_cache_signature(
     fnv1a_write_u32(&mut hash, DEFAULT_PALETTE_VERSION);
     fnv1a_write_str(&mut hash, render_backend_cache_slug(backend));
     fnv1a_write_str(&mut hash, render_gpu_backend_cache_slug(gpu_backend));
-    fnv1a_write_u32(&mut hash, TILE_MANIFEST_CACHE_VERSION);
+    fnv1a_write_u32(&mut hash, RENDER_CACHE_VALIDATION_VERSION);
     format!("{hash:016x}")
 }
 
@@ -912,27 +767,6 @@ pub fn render_preset_cache_validation_seed(
         backend,
         gpu_backend,
     ))
-}
-
-#[must_use]
-pub fn tile_manifest_cache_path(
-    root: &Path,
-    world_path: &Path,
-    render_backend: RenderBackend,
-    render_gpu_backend: RenderGpuBackend,
-    mode: RenderMode,
-    dimension: Dimension,
-    layout: RenderLayout,
-) -> PathBuf {
-    let key = TileManifestCacheKey::new(
-        world_path,
-        render_backend,
-        render_gpu_backend,
-        mode,
-        dimension,
-        layout,
-    );
-    key.path_for_root(root)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1315,7 +1149,7 @@ fn decode_tile_authority_header(
     bytes: &[u8],
     key: &TileAuthorityCacheKey,
 ) -> Result<TileAuthorityHeader> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     reader.expect_magic(TILE_AUTHORITY_HEADER_MAGIC)?;
     let version = reader.u32()?;
     if version != TILE_AUTHORITY_CACHE_VERSION {
@@ -1359,7 +1193,7 @@ fn encode_authority_file_header(
 }
 
 fn decode_authority_file_header(
-    reader: &mut TileManifestCacheReader<'_>,
+    reader: &mut CacheBinaryReader<'_>,
     magic: &[u8],
     key: &TileAuthorityCacheKey,
     expected_generation: u64,
@@ -1413,7 +1247,7 @@ fn decode_tile_authority_chunks(
     key: &TileAuthorityCacheKey,
     generation: u64,
 ) -> Result<Vec<TileAuthorityChunkState>> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     let count =
         decode_authority_file_header(&mut reader, TILE_AUTHORITY_CHUNKS_MAGIC, key, generation)?;
     let mut entries = Vec::with_capacity(count);
@@ -1440,9 +1274,7 @@ fn push_tile_authority_entry(bytes: &mut Vec<u8>, entry: TileAuthorityEntry) {
     push_u32(bytes, entry.flags);
 }
 
-fn read_tile_authority_entry(
-    reader: &mut TileManifestCacheReader<'_>,
-) -> Result<TileAuthorityEntry> {
+fn read_tile_authority_entry(reader: &mut CacheBinaryReader<'_>) -> Result<TileAuthorityEntry> {
     let entry = TileAuthorityEntry {
         tile_x: reader.i32()?,
         tile_z: reader.i32()?,
@@ -1480,7 +1312,7 @@ fn push_tile_authority_dependencies(
 }
 
 fn read_tile_authority_dependencies(
-    reader: &mut TileManifestCacheReader<'_>,
+    reader: &mut CacheBinaryReader<'_>,
 ) -> Result<Vec<TileAuthorityDependency>> {
     let count = usize::try_from(reader.u32()?).map_err(|_| {
         BedrockRenderError::Validation("tile authority dependency count overflow".to_string())
@@ -1517,7 +1349,7 @@ fn push_tile_authority_chunk_states(
 }
 
 fn read_tile_authority_chunk_states(
-    reader: &mut TileManifestCacheReader<'_>,
+    reader: &mut CacheBinaryReader<'_>,
 ) -> Result<Vec<TileAuthorityChunkState>> {
     let count = usize::try_from(reader.u32()?).map_err(|_| {
         BedrockRenderError::Validation("tile authority chunk state count overflow".to_string())
@@ -1554,7 +1386,7 @@ fn push_tile_authority_chunk_refs(
 }
 
 fn read_tile_authority_chunk_refs(
-    reader: &mut TileManifestCacheReader<'_>,
+    reader: &mut CacheBinaryReader<'_>,
 ) -> Result<Vec<TileAuthorityChunkTileRef>> {
     let count = usize::try_from(reader.u32()?).map_err(|_| {
         BedrockRenderError::Validation("tile authority chunk reference count overflow".to_string())
@@ -1604,7 +1436,7 @@ fn decode_tile_authority_tiles(
     key: &TileAuthorityCacheKey,
     generation: u64,
 ) -> Result<Vec<TileAuthorityEntry>> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     let count =
         decode_authority_file_header(&mut reader, TILE_AUTHORITY_TILES_MAGIC, key, generation)?;
     let mut entries = Vec::with_capacity(count);
@@ -1655,7 +1487,7 @@ fn decode_tile_authority_dependencies(
     key: &TileAuthorityCacheKey,
     generation: u64,
 ) -> Result<Vec<TileAuthorityDependency>> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     let count =
         decode_authority_file_header(&mut reader, TILE_AUTHORITY_DEPS_MAGIC, key, generation)?;
     let mut entries = Vec::with_capacity(count);
@@ -1697,7 +1529,7 @@ fn decode_tile_authority_chunk_refs(
     key: &TileAuthorityCacheKey,
     generation: u64,
 ) -> Result<Vec<TileAuthorityChunkTileRef>> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     let count =
         decode_authority_file_header(&mut reader, TILE_AUTHORITY_REFS_MAGIC, key, generation)?;
     let mut entries = Vec::with_capacity(count);
@@ -1737,7 +1569,7 @@ fn decode_tile_authority_free_extents(
     key: &TileAuthorityCacheKey,
     generation: u64,
 ) -> Result<Vec<TileAuthorityFreeExtent>> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     let count = decode_authority_file_header(
         &mut reader,
         TILE_AUTHORITY_FREE_EXTENTS_MAGIC,
@@ -1763,7 +1595,7 @@ fn decode_tile_authority_free_extents(
 }
 
 fn decode_tile_authority_blob_header(bytes: &[u8]) -> Result<TileAuthorityBlobHeader> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     reader.expect_magic(TILE_AUTHORITY_BLOB_MAGIC)?;
     let version = reader.u32()?;
     if version != TILE_AUTHORITY_CACHE_VERSION {
@@ -1858,7 +1690,7 @@ fn replay_tile_authority_wal(
         if bytes.len().saturating_sub(offset) < WAL_HEADER_LEN {
             break;
         }
-        let mut reader = TileManifestCacheReader::new(&bytes[offset..]);
+        let mut reader = CacheBinaryReader::new(&bytes[offset..]);
         reader.expect_magic(TILE_AUTHORITY_WAL_MAGIC)?;
         if reader.u32()? != TILE_AUTHORITY_CACHE_VERSION {
             return Err(BedrockRenderError::Validation(
@@ -1925,7 +1757,7 @@ fn encode_tile_authority_wal_deltas(deltas: &[TileAuthorityDelta]) -> Result<Vec
 }
 
 fn decode_tile_authority_wal_deltas(bytes: &[u8]) -> Result<Vec<TileAuthorityDelta>> {
-    let mut reader = TileManifestCacheReader::new(bytes);
+    let mut reader = CacheBinaryReader::new(bytes);
     let count = usize::try_from(reader.u32()?).map_err(|_| {
         BedrockRenderError::Validation("tile authority WAL delta count overflow".to_string())
     })?;
@@ -2206,7 +2038,7 @@ fn cleanup_temp_authority_cache(path: &Path) {
     }
 }
 
-fn ensure_authority_reader_finished(reader: &TileManifestCacheReader<'_>) -> Result<()> {
+fn ensure_authority_reader_finished(reader: &CacheBinaryReader<'_>) -> Result<()> {
     if reader.finished() {
         Ok(())
     } else {
@@ -2222,218 +2054,11 @@ fn push_chunk_pos(bytes: &mut Vec<u8>, position: ChunkPos) {
     push_i32(bytes, position.dimension.id());
 }
 
-fn read_chunk_pos(reader: &mut TileManifestCacheReader<'_>) -> Result<ChunkPos> {
+fn read_chunk_pos(reader: &mut CacheBinaryReader<'_>) -> Result<ChunkPos> {
     Ok(ChunkPos {
         x: reader.i32()?,
         z: reader.i32()?,
         dimension: Dimension::from_id(reader.i32()?),
-    })
-}
-
-fn encode_tile_manifest_cache(
-    key: &TileManifestCacheKey,
-    result: &TileManifestCacheSnapshot,
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(
-        128 + result
-            .tile_chunk_index
-            .values()
-            .map(|positions| 16 + positions.len().saturating_mul(12))
-            .sum::<usize>(),
-    );
-    bytes.extend_from_slice(TILE_MANIFEST_CACHE_MAGIC);
-    push_u32(&mut bytes, TILE_MANIFEST_CACHE_VERSION);
-    push_u64(&mut bytes, key.validation_value());
-    push_i32(&mut bytes, key.dimension.id());
-    push_u32(&mut bytes, key.chunks_per_tile);
-    push_u32(&mut bytes, key.blocks_per_pixel);
-    push_u32(&mut bytes, key.pixels_per_block);
-    push_u32(
-        &mut bytes,
-        u32::try_from(result.requested_tiles.len()).map_err(|_| {
-            BedrockRenderError::Validation(
-                "tile manifest requested tile count overflow".to_string(),
-            )
-        })?,
-    );
-    for (tile_x, tile_z) in &result.requested_tiles {
-        push_i32(&mut bytes, *tile_x);
-        push_i32(&mut bytes, *tile_z);
-    }
-    push_u32(
-        &mut bytes,
-        u32::try_from(result.tile_chunk_index.len()).map_err(|_| {
-            BedrockRenderError::Validation("tile manifest entry count overflow".to_string())
-        })?,
-    );
-    let center_flags = u8::from(result.center_block_x.is_some())
-        | (u8::from(result.center_block_z.is_some()) << 1);
-    push_u8(&mut bytes, center_flags);
-    if let Some(center_block_x) = result.center_block_x {
-        push_i32(&mut bytes, center_block_x);
-    }
-    if let Some(center_block_z) = result.center_block_z {
-        push_i32(&mut bytes, center_block_z);
-    }
-    for (&(tile_x, tile_z), positions) in &result.tile_chunk_index {
-        push_i32(&mut bytes, tile_x);
-        push_i32(&mut bytes, tile_z);
-        push_u32(
-            &mut bytes,
-            u32::try_from(positions.len()).map_err(|_| {
-                BedrockRenderError::Validation("tile manifest chunk count overflow".to_string())
-            })?,
-        );
-        for position in positions {
-            push_i32(&mut bytes, position.x);
-            push_i32(&mut bytes, position.z);
-            push_i32(&mut bytes, position.dimension.id());
-        }
-    }
-    match result.bounds {
-        Some(bounds) => {
-            push_u8(&mut bytes, 1);
-            push_i32(&mut bytes, bounds.dimension.id());
-            push_i32(&mut bytes, bounds.min_chunk_x);
-            push_i32(&mut bytes, bounds.min_chunk_z);
-            push_i32(&mut bytes, bounds.max_chunk_x);
-            push_i32(&mut bytes, bounds.max_chunk_z);
-            push_u64(
-                &mut bytes,
-                u64::try_from(bounds.chunk_count).map_err(|_| {
-                    BedrockRenderError::Validation(
-                        "tile manifest bounds count overflow".to_string(),
-                    )
-                })?,
-            );
-        }
-        None => push_u8(&mut bytes, 0),
-    }
-    Ok(bytes)
-}
-
-#[allow(clippy::too_many_lines)]
-fn decode_tile_manifest_cache(
-    bytes: &[u8],
-    key: &TileManifestCacheKey,
-) -> Result<TileManifestCacheSnapshot> {
-    let mut reader = TileManifestCacheReader::new(bytes);
-    reader.expect_magic(TILE_MANIFEST_CACHE_MAGIC)?;
-    let version = reader.u32()?;
-    if version != TILE_MANIFEST_CACHE_VERSION {
-        return Err(BedrockRenderError::Validation(format!(
-            "unsupported tile manifest cache version {version}"
-        )));
-    }
-    let validation_value = reader.u64()?;
-    if validation_value != key.validation_value() {
-        return Err(BedrockRenderError::Validation(
-            "tile manifest cache validation mismatch".to_string(),
-        ));
-    }
-    let dimension = reader.i32()?;
-    if dimension != key.dimension.id() {
-        return Err(BedrockRenderError::Validation(
-            "tile manifest cache dimension mismatch".to_string(),
-        ));
-    }
-    let chunks_per_tile = reader.u32()?;
-    let blocks_per_pixel = reader.u32()?;
-    let pixels_per_block = reader.u32()?;
-    if chunks_per_tile != key.chunks_per_tile
-        || blocks_per_pixel != key.blocks_per_pixel
-        || pixels_per_block != key.pixels_per_block
-    {
-        return Err(BedrockRenderError::Validation(
-            "tile manifest cache layout mismatch".to_string(),
-        ));
-    }
-    let requested_tile_count = usize::try_from(reader.u32()?).map_err(|_| {
-        BedrockRenderError::Validation("tile manifest requested tile count overflow".to_string())
-    })?;
-    let mut requested_tiles = Vec::with_capacity(requested_tile_count);
-    for _ in 0..requested_tile_count {
-        requested_tiles.push((reader.i32()?, reader.i32()?));
-    }
-    let entry_count = usize::try_from(reader.u32()?).map_err(|_| {
-        BedrockRenderError::Validation("tile manifest entry count overflow".to_string())
-    })?;
-    let center_flags = reader.u8()?;
-    if center_flags & !0b11 != 0 {
-        return Err(BedrockRenderError::Validation(
-            "invalid tile manifest center flags".to_string(),
-        ));
-    }
-    let center_block_x = if center_flags & 0b01 != 0 {
-        Some(reader.i32()?)
-    } else {
-        None
-    };
-    let center_block_z = if center_flags & 0b10 != 0 {
-        Some(reader.i32()?)
-    } else {
-        None
-    };
-    let mut tile_chunk_index = BTreeMap::<(i32, i32), Vec<ChunkPos>>::new();
-    for _ in 0..entry_count {
-        let tile_x = reader.i32()?;
-        let tile_z = reader.i32()?;
-        let chunk_count = usize::try_from(reader.u32()?).map_err(|_| {
-            BedrockRenderError::Validation("tile manifest chunk count overflow".to_string())
-        })?;
-        let mut positions = Vec::with_capacity(chunk_count);
-        for _ in 0..chunk_count {
-            let x = reader.i32()?;
-            let z = reader.i32()?;
-            let dimension = Dimension::from_id(reader.i32()?);
-            positions.push(ChunkPos { x, z, dimension });
-        }
-        positions.sort();
-        positions.dedup();
-        tile_chunk_index.insert((tile_x, tile_z), positions);
-    }
-    let bounds = match reader.u8()? {
-        0 => None,
-        1 => {
-            let dimension = Dimension::from_id(reader.i32()?);
-            let min_chunk_x = reader.i32()?;
-            let min_chunk_z = reader.i32()?;
-            let max_chunk_x = reader.i32()?;
-            let max_chunk_z = reader.i32()?;
-            let chunk_count = usize::try_from(reader.u64()?).map_err(|_| {
-                BedrockRenderError::Validation("tile manifest bounds count overflow".to_string())
-            })?;
-            Some(ChunkBounds {
-                dimension,
-                min_chunk_x,
-                min_chunk_z,
-                max_chunk_x,
-                max_chunk_z,
-                chunk_count,
-            })
-        }
-        tag => {
-            return Err(BedrockRenderError::Validation(format!(
-                "invalid tile manifest bounds tag {tag}"
-            )));
-        }
-    };
-    if !reader.finished() {
-        return Err(BedrockRenderError::Validation(
-            "tile manifest cache has trailing bytes".to_string(),
-        ));
-    }
-    let requested_tiles = if requested_tiles.is_empty() {
-        tile_chunk_index.keys().copied().collect()
-    } else {
-        requested_tiles
-    };
-    Ok(TileManifestCacheSnapshot {
-        requested_tiles,
-        tile_chunk_index,
-        bounds,
-        center_block_x,
-        center_block_z,
     })
 }
 
@@ -2501,59 +2126,6 @@ fn hash_leveldb_current_state_pair(
         );
     }
 }
-
-fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    let temp_path = tile_manifest_temp_path(path);
-    fs::write(&temp_path, bytes).map_err(|error| {
-        BedrockRenderError::io("failed to write temporary manifest index", error)
-    })?;
-    match fs::rename(&temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(rename_error) if path.exists() => {
-            fs::remove_file(path).map_err(|remove_error| {
-                cleanup_temp_manifest_cache(&temp_path);
-                BedrockRenderError::io(
-                    format!("failed to replace manifest index after rename error: {rename_error}"),
-                    remove_error,
-                )
-            })?;
-            fs::rename(&temp_path, path).map_err(|error| {
-                cleanup_temp_manifest_cache(&temp_path);
-                BedrockRenderError::io("failed to replace manifest index", error)
-            })
-        }
-        Err(error) => {
-            cleanup_temp_manifest_cache(&temp_path);
-            Err(BedrockRenderError::io(
-                "failed to move temporary manifest index into place",
-                error,
-            ))
-        }
-    }
-}
-
-fn tile_manifest_temp_path(path: &Path) -> PathBuf {
-    let write_id = TILE_MANIFEST_CACHE_WRITE_ID.fetch_add(1, Ordering::Relaxed);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("manifest-index");
-    path.with_file_name(format!(
-        "{file_name}.{}.{}.tmp",
-        std::process::id(),
-        write_id
-    ))
-}
-
-fn cleanup_temp_manifest_cache(path: &Path) {
-    if let Err(error) = fs::remove_file(path) {
-        log::warn!(
-            "failed to remove temporary manifest index file {}: {error}",
-            path.display()
-        );
-    }
-}
-
 fn fnv1a_write_str(hash: &mut u64, value: &str) {
     fnv1a_write_bytes(hash, value.as_bytes());
 }
@@ -2576,11 +2148,6 @@ fn fnv1a_write_bytes(hash: &mut u64, bytes: &[u8]) {
         *hash = hash.wrapping_mul(FNV1A64_PRIME);
     }
 }
-
-fn push_u8(bytes: &mut Vec<u8>, value: u8) {
-    bytes.push(value);
-}
-
 fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
@@ -2597,12 +2164,12 @@ fn push_i32(bytes: &mut Vec<u8>, value: i32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-struct TileManifestCacheReader<'a> {
+struct CacheBinaryReader<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
-impl<'a> TileManifestCacheReader<'a> {
+impl<'a> CacheBinaryReader<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
@@ -2628,11 +2195,6 @@ impl<'a> TileManifestCacheReader<'a> {
         self.offset = end;
         Ok(slice)
     }
-
-    fn u8(&mut self) -> Result<u8> {
-        Ok(self.bytes(1)?[0])
-    }
-
     fn u32(&mut self) -> Result<u32> {
         let bytes = self.bytes(4)?;
         Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -2690,18 +2252,6 @@ mod tests {
             pixels_per_block: 4,
         }
     }
-
-    fn test_key(world_path: &Path) -> TileManifestCacheKey {
-        TileManifestCacheKey::new(
-            world_path,
-            RenderBackend::Cpu,
-            RenderGpuBackend::Auto,
-            RenderMode::SurfaceBlocks,
-            Dimension::Overworld,
-            test_layout(),
-        )
-    }
-
     fn test_authority_key(world_path: &Path) -> TileAuthorityCacheKey {
         TileAuthorityCacheKey::new(
             world_path,
@@ -2712,41 +2262,6 @@ mod tests {
             test_layout(),
         )
     }
-
-    fn test_snapshot() -> TileManifestCacheSnapshot {
-        let mut tile_chunk_index = BTreeMap::new();
-        tile_chunk_index.insert(
-            (0, 0),
-            vec![ChunkPos {
-                x: 0,
-                z: 0,
-                dimension: Dimension::Overworld,
-            }],
-        );
-        tile_chunk_index.insert(
-            (1, -1),
-            vec![ChunkPos {
-                x: 8,
-                z: -1,
-                dimension: Dimension::Overworld,
-            }],
-        );
-        TileManifestCacheSnapshot {
-            requested_tiles: vec![(0, 0), (1, -1)],
-            tile_chunk_index,
-            bounds: Some(ChunkBounds {
-                dimension: Dimension::Overworld,
-                min_chunk_x: 0,
-                min_chunk_z: -1,
-                max_chunk_x: 8,
-                max_chunk_z: 0,
-                chunk_count: 2,
-            }),
-            center_block_x: Some(64),
-            center_block_z: Some(-64),
-        }
-    }
-
     #[test]
     fn world_cache_identity_matches_compatibility_accessors_and_tracks_db_state() {
         let world_path = test_world("world-cache-identity");
@@ -2765,113 +2280,6 @@ mod tests {
         assert_ne!(updated.world_signature, initial.world_signature);
         fs::remove_dir_all(world_path).expect("remove test world");
     }
-
-    #[test]
-    fn tile_manifest_cache_round_trips_snapshot() {
-        let world_path = test_world("br-cache-round-trip-world");
-        let cache_root = unique_test_dir("br-cache-round-trip-cache");
-        let key = test_key(&world_path);
-        let snapshot = test_snapshot();
-        let cache = TileManifestCache::new(&cache_root);
-
-        cache.store(&key, &snapshot).expect("store snapshot");
-        let loaded = cache
-            .load(&key)
-            .expect("load snapshot")
-            .expect("snapshot present");
-
-        assert_eq!(loaded, snapshot);
-        let _ = fs::remove_dir_all(world_path);
-        let _ = fs::remove_dir_all(cache_root);
-    }
-
-    #[test]
-    fn tile_manifest_cache_validation_value_is_stable() {
-        let world_path = test_world("br-cache-validation-world");
-        let first = test_key(&world_path);
-        let second = test_key(&world_path);
-
-        assert_eq!(first.validation_value(), second.validation_value());
-        assert_ne!(first.validation_value(), 0);
-        assert_eq!(
-            first.path_for_root(Path::new("cache-root")),
-            second.path_for_root(Path::new("cache-root"))
-        );
-        let _ = fs::remove_dir_all(world_path);
-    }
-
-    #[test]
-    fn tile_manifest_cache_rejects_version_mismatch() {
-        let world_path = test_world("br-cache-version-world");
-        let cache_root = unique_test_dir("br-cache-version-cache");
-        let key = test_key(&world_path);
-        let cache = TileManifestCache::new(&cache_root);
-        let path = cache.path_for_key(&key);
-        let mut encoded =
-            encode_tile_manifest_cache(&key, &test_snapshot()).expect("encode snapshot");
-        encoded[8..12].copy_from_slice(&(TILE_MANIFEST_CACHE_VERSION + 1).to_le_bytes());
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create cache parent");
-        }
-        fs::write(&path, encoded).expect("write mismatched version");
-
-        assert!(cache.load(&key).is_err());
-        assert!(!path.exists());
-        let _ = fs::remove_dir_all(world_path);
-        let _ = fs::remove_dir_all(cache_root);
-    }
-
-    #[test]
-    fn tile_manifest_cache_rejects_corrupt_index() {
-        let world_path = test_world("br-cache-corrupt-world");
-        let cache_root = unique_test_dir("br-cache-corrupt-cache");
-        let key = test_key(&world_path);
-        let cache = TileManifestCache::new(&cache_root);
-        let path = cache.path_for_key(&key);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create cache parent");
-        }
-        fs::write(&path, b"not-a-cache").expect("write corrupt cache");
-
-        assert!(cache.load(&key).is_err());
-        assert!(!path.exists());
-        let _ = fs::remove_dir_all(world_path);
-        let _ = fs::remove_dir_all(cache_root);
-    }
-
-    #[test]
-    fn tile_manifest_cache_round_trips_empty_negative_tiles() {
-        let world_path = test_world("br-cache-empty-world");
-        let cache_root = unique_test_dir("br-cache-empty-cache");
-        let key = test_key(&world_path);
-        let cache = TileManifestCache::new(&cache_root);
-        let mut tile_chunk_index = BTreeMap::new();
-        tile_chunk_index.insert((0, 0), Vec::new());
-        let snapshot = TileManifestCacheSnapshot {
-            requested_tiles: vec![(0, 0)],
-            tile_chunk_index,
-            bounds: None,
-            center_block_x: None,
-            center_block_z: None,
-        };
-
-        cache.store(&key, &snapshot).expect("store empty snapshot");
-        let loaded = cache
-            .load(&key)
-            .expect("load empty snapshot")
-            .expect("snapshot present");
-
-        assert_eq!(loaded, snapshot);
-        assert!(
-            loaded
-                .tile_chunk_index
-                .get(&(0, 0))
-                .is_some_and(Vec::is_empty)
-        );
-        let _ = fs::remove_dir_all(world_path);
-        let _ = fs::remove_dir_all(cache_root);
-    }
-
     fn authority_commit(tile_x: i32, tile_z: i32, payload: Vec<u8>) -> TileAuthorityCommit {
         let position = ChunkPos {
             x: tile_x * 8,

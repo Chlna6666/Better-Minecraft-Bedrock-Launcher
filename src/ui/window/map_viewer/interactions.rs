@@ -403,7 +403,6 @@ impl MapViewerWindowView {
     ) {
         self.mark_viewport_interaction();
         self.begin_exclusive_pointer_interaction();
-        self.cancel_manifest_probe_for_interaction();
         self.ui_state.dock_drag = Some(DockDragState {
             drag: DockDrag::RightPanel,
             start_x: position.x / px(1.0),
@@ -420,7 +419,6 @@ impl MapViewerWindowView {
     ) {
         self.mark_viewport_interaction();
         self.begin_exclusive_pointer_interaction();
-        self.cancel_manifest_probe_for_interaction();
         self.ui_state.dock_drag = Some(DockDragState {
             drag: DockDrag::BottomPanel,
             start_x: position.x / px(1.0),
@@ -593,14 +591,12 @@ impl MapViewerWindowView {
         if let Some(drag) = self.existing_selection_drag(position, SelectionPointerButton::Left) {
             self.mark_viewport_interaction();
             self.begin_exclusive_pointer_interaction();
-            self.cancel_manifest_probe_for_interaction();
             self.right_selection_drag = Some(drag);
             cx.notify();
             return;
         }
         self.mark_viewport_interaction();
         self.begin_exclusive_pointer_interaction();
-        self.cancel_manifest_probe_for_interaction();
         self.drag = Some(DragState {
             start: position,
             offset_x: self.viewport.offset_x,
@@ -783,7 +779,6 @@ impl MapViewerWindowView {
             .existing_selection_drag(local_position, SelectionPointerButton::Right)
             .unwrap_or_else(|| RightSelectionDrag::new(local_position, chunk));
         self.begin_exclusive_pointer_interaction();
-        self.cancel_manifest_probe_for_interaction();
         self.right_selection_drag = Some(drag);
         tracing::debug!(
             target: "bmcbl::ui::window::map_viewer::view",

@@ -40,8 +40,6 @@ pub(super) const RENDER_UI_BATCH_TILES: usize = 24;
 // Keep cache probing and cold-tile rendering in separate bounded batches.
 pub(super) const MAX_CONCURRENT_RENDER_BATCHES: usize = 2;
 pub(super) const RENDER_STREAM_GROUP_TILES: usize = 4;
-pub(super) const TILE_MANIFEST_PROBE_BATCH_TILES: usize = 16;
-pub(super) const TILE_MANIFEST_PROBE_MAX_WORKERS: usize = 4;
 pub(super) const MIN_VIEWPORT_SCALE: f32 = 0.03125;
 pub(super) const MAX_VIEWPORT_SCALE: f32 = 8.0;
 pub(super) const TILE_SEAM_BLEED_PX: f32 = 0.0;
@@ -1065,15 +1063,6 @@ impl std::fmt::Debug for CopiedChunkPreviewImage {
             .finish_non_exhaustive()
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ManifestProbeDiagnostics {
-    pub(super) last_edit_serial: u64,
-    pub(super) last_edit_label: SharedString,
-    pub(super) probe_starts_since_last_edit: u64,
-    pub(super) recent_events: Vec<SharedString>,
-}
-
 impl Default for ManifestProbeDiagnostics {
     fn default() -> Self {
         Self {
@@ -1084,36 +1073,6 @@ impl Default for ManifestProbeDiagnostics {
         }
     }
 }
-
-impl ManifestProbeDiagnostics {
-    pub(super) fn record_edit(&mut self, label: impl Into<String>) {
-        self.last_edit_serial = self.last_edit_serial.saturating_add(1);
-        self.last_edit_label = SharedString::from(label.into());
-        self.probe_starts_since_last_edit = 0;
-        self.push_event(format!(
-            "edit #{} {}",
-            self.last_edit_serial, self.last_edit_label
-        ));
-    }
-
-    pub(super) fn record_probe_start(&mut self, tile_count: usize, center_tile: (i32, i32)) {
-        self.probe_starts_since_last_edit = self.probe_starts_since_last_edit.saturating_add(1);
-        self.push_event(format!(
-            "probe_start tiles={tile_count} center={},{}",
-            center_tile.0, center_tile.1
-        ));
-    }
-
-    fn push_event(&mut self, event: impl Into<String>) {
-        self.recent_events.push(SharedString::from(event.into()));
-        const MAX_EVENTS: usize = 8;
-        if self.recent_events.len() > MAX_EVENTS {
-            let overflow = self.recent_events.len().saturating_sub(MAX_EVENTS);
-            self.recent_events.drain(0..overflow);
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub(super) struct ProfessionalQueryState {
     pub(super) overlay_bounds: Option<SlimeChunkBounds>,
@@ -1555,15 +1514,6 @@ impl FrameStats {
         }
     }
 }
-
-pub(super) struct TileManifestProbeResult {
-    pub(super) requested_tiles: Vec<(i32, i32)>,
-    pub(super) tile_chunk_index: TileChunkIndex,
-    pub(super) bounds: Option<ChunkBounds>,
-    pub(super) center_block_x: Option<i32>,
-    pub(super) center_block_z: Option<i32>,
-}
-
 pub(super) enum TileRenderEvent {
     ReadyBatch {
         tiles: Vec<ReadyTile>,
@@ -1662,6 +1612,7 @@ pub struct MapViewerWindowView {
     pub(super) tile_reveal_state: TileRevealState,
     pub(super) available_tiles: BTreeSet<(i32, i32)>,
     pub(super) tile_chunk_index: TileChunkIndex,
+    pub(super) tile_occupancy_index: Option<Arc<TileOccupancyIndex>>,
     pub(super) chunk_bounds: Option<ChunkBounds>,
     pub(super) tile_manager: RegionManager,
     pub(super) canvas_tile_snapshot: Arc<TilePaintSnapshot>,
@@ -1683,9 +1634,6 @@ pub struct MapViewerWindowView {
     pub(super) bypass_cache_active: bool,
     pub(super) metadata_loading: bool,
     pub(super) metadata_index_ready: bool,
-    pub(super) manifest_probe_in_flight: bool,
-    pub(super) manifest_probe_diagnostics: ManifestProbeDiagnostics,
-    pub(super) manifest_scanned_tiles: BTreeSet<(i32, i32)>,
     pub(super) session_loading: bool,
     pub(super) render_batch_active: bool,
     pub(super) request_id: u64,
@@ -1693,12 +1641,10 @@ pub struct MapViewerWindowView {
     pub(super) session_generation: u64,
     pub(super) render_generation: u64,
     pub(super) metadata_cancel: Option<RenderTaskControl>,
-    pub(super) manifest_probe_cancel: Option<RenderTaskControl>,
     pub(super) render_cancels: BTreeMap<u64, RenderCancelFlag>,
     pub(super) active_render_tiles: ActiveRenderTiles,
     pub(super) active_render_center_tiles: BTreeMap<u64, (i32, i32)>,
     pub(super) active_render_request_tiles: BTreeMap<u64, Vec<(i32, i32)>>,
-    pub(super) manifest_probe_request_id: Option<u64>,
     pub(super) pending_viewport_refresh: bool,
     pub(super) viewport_work_refresh_scheduled: bool,
     pub(super) viewport_idle_generation: u64,

@@ -1,5 +1,5 @@
-use crate::ui::window::map_viewer::model::MapViewport;
 pub(super) use super::tile_render_legacy::*;
+use crate::ui::window::map_viewer::model::MapViewport;
 
 use super::model::{CHUNKS_PER_TILE, MAX_VIEWPORT_COMPOSITE_DIMENSION};
 use super::prelude::*;
@@ -385,8 +385,8 @@ impl ProgressiveViewportCompositor {
             },
         });
 
-        let should_publish = self.preview_frames == 0
-            || self.dirty_tiles >= PROGRESSIVE_PREVIEW_TILE_GROUP;
+        let should_publish =
+            self.preview_frames == 0 || self.dirty_tiles >= PROGRESSIVE_PREVIEW_TILE_GROUP;
         if should_publish && self.preview_frames < MAX_PROGRESSIVE_PREVIEW_FRAMES {
             return self.snapshot_dirty_region().map(Some);
         }
@@ -414,10 +414,8 @@ impl ProgressiveViewportCompositor {
             .ok()
             .and_then(|value| value.checked_mul(4))
             .ok_or_else(|| "视口合成预览 X 偏移溢出".to_string())?;
-        let top = usize::try_from(dirty.top)
-            .map_err(|_| "视口合成预览 Y 偏移无效".to_string())?;
-        let rows = usize::try_from(height)
-            .map_err(|_| "视口合成预览高度无效".to_string())?;
+        let top = usize::try_from(dirty.top).map_err(|_| "视口合成预览 Y 偏移无效".to_string())?;
+        let rows = usize::try_from(height).map_err(|_| "视口合成预览高度无效".to_string())?;
         for row in 0..rows {
             let source_start = top
                 .checked_add(row)
@@ -444,13 +442,9 @@ impl ProgressiveViewportCompositor {
         }
 
         let estimated_bytes = pixels.len();
-        let image = RenderImage::from_raw_pixels(
-            width,
-            height,
-            RenderImagePixelFormat::Rgba8,
-            pixels,
-        )
-        .map_err(|error| format!("视口合成预览图创建失败: {error}"))?;
+        let image =
+            RenderImage::from_raw_pixels(width, height, RenderImagePixelFormat::Rgba8, pixels)
+                .map_err(|error| format!("视口合成预览图创建失败: {error}"))?;
         self.dirty_tiles = 0;
         self.preview_frames = self.preview_frames.saturating_add(1);
         let inverse_scale = 1.0 / self.output_scale.max(0.001);

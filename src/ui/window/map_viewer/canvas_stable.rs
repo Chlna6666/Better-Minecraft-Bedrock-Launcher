@@ -81,10 +81,7 @@ pub(super) fn build_tile_paint_snapshot(
     tiles.sort_unstable_by_key(|tile| super::viewport::tile_paint_sort_key(tile.coord));
     debug_overlays
         .sort_unstable_by_key(|overlay| super::viewport::tile_paint_sort_key(overlay.coord));
-    let estimated_bytes = tiles
-        .iter()
-        .map(|tile| tile.estimated_bytes)
-        .sum::<usize>();
+    let estimated_bytes = tiles.iter().map(|tile| tile.estimated_bytes).sum::<usize>();
 
     tracing::debug!(
         generation,
@@ -163,10 +160,7 @@ pub(super) fn patch_tile_paint_snapshot(
         return TilePaintSnapshotPatch::Unchanged;
     }
 
-    let estimated_bytes = tiles
-        .iter()
-        .map(|tile| tile.estimated_bytes)
-        .sum::<usize>();
+    let estimated_bytes = tiles.iter().map(|tile| tile.estimated_bytes).sum::<usize>();
 
     tracing::debug!(
         generation,

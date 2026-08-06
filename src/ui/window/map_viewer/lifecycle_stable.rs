@@ -10,34 +10,10 @@ const INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = usize::MAX;
 // One BMCBL seed can make bedrock-render return a much wider internal scan area. Submit one
 // seed at a time and mark the complete returned coverage before selecting the next seed. This
 // removes overlapping probe jobs without changing bedrock-render's physical tile/cache unit.
-const TILE_MANIFEST_PROBE_BATCH_TILES: usize = 1;
 
 // Preserve the compact 4x4 scheduling order produced by tile_plan_stable. The legacy probe
 // helper re-sorts coordinates into long square-ring segments, which makes low-zoom progress
 // appear as separated horizontal and vertical stripes.
-fn select_manifest_probe_tiles(
-    visible_tiles: &[(i32, i32)],
-    prefetch_tiles: &[(i32, i32)],
-    _center: (i32, i32),
-    scanned_tiles: &std::collections::BTreeSet<(i32, i32)>,
-) -> Vec<(i32, i32)> {
-    let mut selected = Vec::with_capacity(TILE_MANIFEST_PROBE_BATCH_TILES);
-    let mut seen = std::collections::BTreeSet::new();
-    for coord in visible_tiles
-        .iter()
-        .chain(prefetch_tiles.iter())
-        .copied()
-    {
-        if selected.len() >= TILE_MANIFEST_PROBE_BATCH_TILES {
-            break;
-        }
-        if scanned_tiles.contains(&coord) || !seen.insert(coord) {
-            continue;
-        }
-        selected.push(coord);
-    }
-    selected
-}
 
 // The lifecycle and canvas builder must use byte-for-byte identical paint bounds. The previous
 // stable wrapper expanded and aligned this value to 32-tile pages, while canvas_stable stored the

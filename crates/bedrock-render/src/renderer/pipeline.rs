@@ -1985,16 +1985,6 @@ impl RenderTaskControl {
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
     }
-
-    fn wait_if_paused(&self) -> Result<()> {
-        while self.is_paused() {
-            if self.is_cancelled() {
-                return Err(BedrockRenderError::Cancelled);
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        Ok(())
-    }
 }
 
 /// Direct LevelDB-backed render source for map tile metadata and sessions.
@@ -8988,75 +8978,6 @@ fn render_chunk_region_contains(region: ChunkRegion, pos: ChunkPos) -> bool {
         && pos.z >= region.min_chunk_z
         && pos.z <= region.max_chunk_z
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TileBounds {
-    min_x: i32,
-    min_z: i32,
-    max_x: i32,
-    max_z: i32,
-}
-
-fn tile_bounds_from_coords(coords: &[(i32, i32)]) -> Option<TileBounds> {
-    let &(first_x, first_z) = coords.first()?;
-    let mut bounds = TileBounds {
-        min_x: first_x,
-        min_z: first_z,
-        max_x: first_x,
-        max_z: first_z,
-    };
-    for &(x, z) in coords.iter().skip(1) {
-        bounds.min_x = bounds.min_x.min(x);
-        bounds.min_z = bounds.min_z.min(z);
-        bounds.max_x = bounds.max_x.max(x);
-        bounds.max_z = bounds.max_z.max(z);
-    }
-    Some(bounds)
-}
-
-fn tile_coords_from_bounds(bounds: TileBounds) -> Vec<(i32, i32)> {
-    let x_count = i64::from(bounds.max_x) - i64::from(bounds.min_x) + 1;
-    let z_count = i64::from(bounds.max_z) - i64::from(bounds.min_z) + 1;
-    let capacity = usize::try_from(x_count.saturating_mul(z_count)).unwrap_or(0);
-    let mut coords = Vec::with_capacity(capacity);
-    for x in bounds.min_x..=bounds.max_x {
-        for z in bounds.min_z..=bounds.max_z {
-            coords.push((x, z));
-        }
-    }
-    coords
-}
-
-fn chunk_bounds_from_positions(
-    dimension: Dimension,
-    positions: &[ChunkPos],
-) -> Option<ChunkBounds> {
-    let first = positions.first()?;
-    let mut bounds = ChunkBounds {
-        dimension,
-        min_chunk_x: first.x,
-        min_chunk_z: first.z,
-        max_chunk_x: first.x,
-        max_chunk_z: first.z,
-        chunk_count: 0,
-    };
-    for position in positions {
-        bounds.min_chunk_x = bounds.min_chunk_x.min(position.x);
-        bounds.min_chunk_z = bounds.min_chunk_z.min(position.z);
-        bounds.max_chunk_x = bounds.max_chunk_x.max(position.x);
-        bounds.max_chunk_z = bounds.max_chunk_z.max(position.z);
-        bounds.chunk_count = bounds.chunk_count.saturating_add(1);
-    }
-    Some(bounds)
-}
-
-fn check_render_control_cancelled(control: &RenderTaskControl) -> Result<()> {
-    if control.is_cancelled() {
-        return Err(BedrockRenderError::Cancelled);
-    }
-    Ok(())
-}
-
 fn render_chunk_priority_for_region(
     options: &RenderOptions,
     region: ChunkRegion,

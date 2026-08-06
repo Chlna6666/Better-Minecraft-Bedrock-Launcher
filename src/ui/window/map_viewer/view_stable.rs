@@ -1,5 +1,5 @@
-use crate::ui::window::map_viewer::lifecycle::VIEWPORT_COMPOSITE_ENABLED;
 pub(super) use super::view_legacy::*;
+use crate::ui::window::map_viewer::lifecycle::VIEWPORT_COMPOSITE_ENABLED;
 
 use super::model::{MapViewerWindowInit, MapViewerWindowView};
 use super::prelude::*;
@@ -22,8 +22,7 @@ fn frontend_repaint_passes(image_count: usize) -> usize {
     if image_count == 0 {
         return 0;
     }
-    image_count
-        .saturating_add(FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT - 1)
+    image_count.saturating_add(FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT - 1)
         / FRONTEND_NEW_IMAGE_BUDGET_PER_REPAINT
         + FRONTEND_REPAINT_SAFETY_PASSES
 }
@@ -48,36 +47,6 @@ fn visible_tile_frontend_ready(
 }
 
 impl MapViewerWindowView {
-    fn prepare_visible_manifest_probe(
-        &mut self,
-        visible_tiles: &[(i32, i32)],
-        cx: &mut Context<Self>,
-    ) {
-        if self.viewport_interaction_active() || self.manifest_probe_in_flight {
-            return;
-        }
-
-        let unresolved_tiles = visible_tiles
-            .iter()
-            .copied()
-            .filter(|coord| {
-                !self.tile_chunk_index.contains_key(coord)
-                    && !self.tile_manager.entries.get(coord).is_some_and(|entry| {
-                        entry.state == TileLoadState::Invalid
-                    })
-            })
-            .collect::<Vec<_>>();
-        if unresolved_tiles.is_empty() {
-            return;
-        }
-
-        self.tile_manager
-            .ensure_pending_manifest(&unresolved_tiles, TilePriority::Visible);
-        self.pending_viewport_refresh = true;
-        let center_tile = self.viewport.center_tile(self.active_layout);
-        self.schedule_tile_manifest_probe(visible_tiles, &[], center_tile, cx);
-    }
-
     fn spawn_viewport_watchdog(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {
             // Track only genuinely new ImageIds. A ReadyBatch usually adds at most a handful of
@@ -199,8 +168,6 @@ impl MapViewerWindowView {
                         return;
                     }
 
-                    this.prepare_visible_manifest_probe(&visible_tiles, cx);
-
                     // screen_images is also used by low-zoom macro pages. It must not activate
                     // the legacy single-frame viewport-composite state machine, whose
                     // `screen_images.len() != 1` condition otherwise keeps the viewport marked
@@ -232,9 +199,10 @@ impl MapViewerWindowView {
                             || this.pending_viewport_refresh
                             || this.canvas_tile_snapshot.screen_images.len() != 1
                     } else {
-                        visible_tiles.iter().copied().any(|coord| {
-                            !visible_tile_frontend_ready(&this.tile_manager, coord)
-                        })
+                        visible_tiles
+                            .iter()
+                            .copied()
+                            .any(|coord| !visible_tile_frontend_ready(&this.tile_manager, coord))
                     };
                     if !incomplete && orphaned_loading.is_empty() {
                         return;
@@ -282,7 +250,10 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
 
 fn stable_map_viewer_window_options(cx: &mut App) -> WindowOptions {
     let mut options = WindowOptions::default();
-    options.window_bounds = Some(WindowBounds::centered(stable_map_viewer_window_size(cx), cx));
+    options.window_bounds = Some(WindowBounds::centered(
+        stable_map_viewer_window_size(cx),
+        cx,
+    ));
     options.window_min_size = Some(size(
         px(MAP_VIEWER_MIN_WINDOW_WIDTH),
         px(MAP_VIEWER_MIN_WINDOW_HEIGHT),

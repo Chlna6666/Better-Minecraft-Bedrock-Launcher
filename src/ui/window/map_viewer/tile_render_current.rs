@@ -54,12 +54,8 @@ pub(super) fn render_viewport_composite_stream(
             "map_viewer viewport_composite_preview_frames_coalesced"
         );
     }
-    legacy::send_viewport_composite_event_or_cancel(
-        &event_sender,
-        &render_cancel,
-        complete_event,
-    )
-    .map_err(|error| format!("视口合成完成事件发送失败: {error}"))?;
+    legacy::send_viewport_composite_event_or_cancel(&event_sender, &render_cancel, complete_event)
+        .map_err(|error| format!("视口合成完成事件发送失败: {error}"))?;
     Ok(())
 }
 
@@ -108,9 +104,7 @@ pub(super) fn render_chunk_patches_blocking(
         chunks_per_region: 1,
     };
     render_options.gpu.pipeline_level = RenderGpuPipelineLevel::ComposeOnly;
-    render_options.gpu.batch_pixels = usize::try_from(patch_size)
-        .unwrap_or(16)
-        .saturating_pow(2);
+    render_options.gpu.batch_pixels = usize::try_from(patch_size).unwrap_or(16).saturating_pow(2);
 
     let mut stats = RenderPipelineStats {
         planned_tiles: chunks.len(),
@@ -133,9 +127,7 @@ pub(super) fn render_chunk_patches_blocking(
         render_session
             .renderer()
             .render_tile_with_options_blocking(job, &render_options)
-            .map_err(|error| {
-                format!("局部 chunk {},{} 渲染失败: {error}", chunk.x, chunk.z)
-            })?;
+            .map_err(|error| format!("局部 chunk {},{} 渲染失败: {error}", chunk.x, chunk.z))?;
         stats.cpu_tiles = stats.cpu_tiles.saturating_add(1);
     }
 

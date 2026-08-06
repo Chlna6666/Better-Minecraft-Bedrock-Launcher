@@ -1,8 +1,6 @@
 pub(super) use super::tile_plan_legacy::*;
 
-use super::model::{
-    DRAG_RETAIN_RADIUS, DragState, MapViewport, RETAIN_RADIUS, ViewportTilePlan,
-};
+use super::model::{DRAG_RETAIN_RADIUS, DragState, MapViewport, RETAIN_RADIUS, ViewportTilePlan};
 use super::tile_render::map_viewer_prefetch_radius;
 use super::viewport::{
     TileBounds, canvas_tile_image_budget, tile_bounds_count, tile_distance_sort_key,
@@ -76,10 +74,7 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     }
 }
 
-fn center_first_visible_tile_coords(
-    bounds: TileBounds,
-    center: (i32, i32),
-) -> Vec<(i32, i32)> {
+fn center_first_visible_tile_coords(bounds: TileBounds, center: (i32, i32)) -> Vec<(i32, i32)> {
     if bounds.min_x > bounds.max_x || bounds.min_z > bounds.max_z {
         return Vec::new();
     }
@@ -121,8 +116,7 @@ mod tests {
             coords.len()
         );
         assert!(coords.windows(2).all(|window| {
-            tile_distance_sort_key(window[0], center)
-                <= tile_distance_sort_key(window[1], center)
+            tile_distance_sort_key(window[0], center) <= tile_distance_sort_key(window[1], center)
         }));
     }
 
@@ -139,8 +133,7 @@ mod tests {
 
         assert_eq!(coords.len(), 9);
         assert!(coords.windows(2).all(|window| {
-            tile_distance_sort_key(window[0], center)
-                <= tile_distance_sort_key(window[1], center)
+            tile_distance_sort_key(window[0], center) <= tile_distance_sort_key(window[1], center)
         }));
     }
 }

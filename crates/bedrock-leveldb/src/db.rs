@@ -2,8 +2,8 @@ use crate::batch::{WriteBatch, WriteOp};
 use crate::error::{ErrorKind, LevelDbError, Result};
 use crate::manifest::Manifest;
 use crate::options::{
-    CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
-    ReadStrategy, ScanMode, ScanOutcome, VisitorControl, WriteOptions,
+    CachePolicy, ChecksumMode, CompressionPolicy, OpenOptions, ReadOptions, ReadStrategy, ScanMode,
+    ScanOutcome, VisitorControl, WriteOptions,
 };
 use crate::table;
 use crate::wal;
