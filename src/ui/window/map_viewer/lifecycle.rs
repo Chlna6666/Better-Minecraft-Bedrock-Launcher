@@ -67,12 +67,11 @@ pub(super) fn visible_tile_needs_foreground_work(
     coord: (i32, i32),
 ) -> bool {
     match tile_chunk_index.get(&coord) {
-        Some(positions) if positions.is_empty() => !tile_manager
-            .entries
-            .get(&coord)
-            .is_some_and(|entry| {
+        Some(positions) if positions.is_empty() => {
+            !tile_manager.entries.get(&coord).is_some_and(|entry| {
                 matches!(entry.state, TileLoadState::Empty | TileLoadState::Invalid)
-            }),
+            })
+        }
         Some(_) => !tile_manager.entries.get(&coord).is_some_and(|entry| {
             matches!(entry.state, TileLoadState::Queued | TileLoadState::Loading)
                 || (entry.state == TileLoadState::Loaded && entry.image.is_some())
@@ -1233,8 +1232,7 @@ impl MapViewerWindowView {
         self.metadata_loading = false;
     }
 
-
-pub(super) fn show_map_error(&mut self, message: impl Into<SharedString>, cx: &mut App) {
+    pub(super) fn show_map_error(&mut self, message: impl Into<SharedString>, cx: &mut App) {
         let message = message.into();
         self.status = message.clone();
         if self
@@ -1444,7 +1442,7 @@ pub(super) fn show_map_error(&mut self, message: impl Into<SharedString>, cx: &m
         self.refresh_metadata(cx);
     }
 
-pub(super) fn schedule_chunk_patch_refresh(
+    pub(super) fn schedule_chunk_patch_refresh(
         &mut self,
         requests: Vec<ChunkPatchRefreshPlan>,
         tile_priority: TilePriority,
@@ -1740,7 +1738,7 @@ pub(super) fn schedule_chunk_patch_refresh(
         .detach();
     }
 
-fn refresh_metadata_consumers_if_ready(&mut self, cx: &mut Context<Self>) {
+    fn refresh_metadata_consumers_if_ready(&mut self, cx: &mut Context<Self>) {
         if self.render_session.is_none() || self.metadata_loading {
             return;
         }
@@ -1893,8 +1891,7 @@ fn refresh_metadata_consumers_if_ready(&mut self, cx: &mut Context<Self>) {
                         .is_some_and(|bounds| tile_bounds_contains(bounds, *coord))
                 })
                 .collect::<Vec<_>>();
-            let prefetch_renderable_tiles =
-                self.resolve_occupancy_tiles(&prefetch_candidates, cx);
+            let prefetch_renderable_tiles = self.resolve_occupancy_tiles(&prefetch_candidates, cx);
             self.tile_manager.ensure_tiles_for_layout(
                 &prefetch_renderable_tiles,
                 TilePriority::Prefetch,
@@ -1979,8 +1976,7 @@ fn refresh_metadata_consumers_if_ready(&mut self, cx: &mut Context<Self>) {
         .detach();
     }
 
-
-pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) {
         if self.right_selection_drag.is_some() {
             self.pending_viewport_refresh = true;
             return;

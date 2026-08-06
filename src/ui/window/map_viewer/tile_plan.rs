@@ -27,12 +27,7 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     };
     let canvas_budget = canvas_tile_image_budget(options.viewport, options.layout);
     let retain_filter = visible_bounds.map(|bounds| {
-        retained_tile_filter_for_visible_bounds(
-            bounds,
-            center,
-            retain_radius,
-            canvas_budget,
-        )
+        retained_tile_filter_for_visible_bounds(bounds, center, retain_radius, canvas_budget)
     });
 
     let prefetch_radius = if actively_dragging {
@@ -42,14 +37,7 @@ pub(super) fn build_viewport_tile_plan(options: ViewportTilePlanOptions) -> View
     };
     let prefetch = if prefetch_radius > 0 {
         visible_bounds
-            .map(|bounds| {
-                tile_coords_for_bounds(
-                    bounds,
-                    prefetch_radius,
-                    center,
-                    canvas_budget,
-                )
-            })
+            .map(|bounds| tile_coords_for_bounds(bounds, prefetch_radius, center, canvas_budget))
             .unwrap_or_default()
     } else {
         Vec::new()
