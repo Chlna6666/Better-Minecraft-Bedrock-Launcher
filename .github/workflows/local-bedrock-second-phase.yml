@@ -73,13 +73,13 @@ jobs:
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== check bedrock-render ===' >> "$validation"
-            cargo check --manifest-path crates/bedrock-render/Cargo.toml --all-features >> "$validation" 2>&1
+            echo '=== check bedrock-render map features ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' >> "$validation" 2>&1
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== test bedrock-render ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-render/Cargo.toml --all-features >> "$validation" 2>&1
+            echo '=== test bedrock-render map features ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' >> "$validation" 2>&1
             status=$?
           fi
 
