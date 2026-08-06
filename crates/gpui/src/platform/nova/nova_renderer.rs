@@ -4,6 +4,7 @@ mod custom_mesh_pipeline;
 mod draw_steps;
 mod init;
 mod mesh_cache;
+mod mesh_cache_release;
 mod present;
 mod submission;
 mod surface_lifecycle;
@@ -99,8 +100,6 @@ pub(crate) struct NovaRenderer {
     mono_sprite_resource_set_layout: ResourceSetLayoutId,
     poly_sprite_resource_set_layout: ResourceSetLayoutId,
     gpu_atlas_textures: FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
-    /// Atlas texture-set generation observed by the last successful GPU texture sync; when the
-    /// atlas reports the same generation, the per-frame sync is skipped entirely.
     synced_atlas_texture_generation: Option<u64>,
     underline_resource_set: ResourceSetId,
     backdrop_blur_pass_resource_set_layout: ResourceSetLayoutId,
@@ -108,8 +107,6 @@ pub(crate) struct NovaRenderer {
     custom_mesh_3d_pipeline_layout: PipelineLayoutId,
     custom_mesh_3d_resource_set: ResourceSetId,
     custom_mesh_3d_resource_set_layout: ResourceSetLayoutId,
-    /// False while the shared mesh buffers are still the startup placeholders;
-    /// the first frame that carries meshes promotes them to full capacity.
     custom_mesh_3d_buffers_ready: bool,
     custom_mesh_3d_mesh_cache: FxHashMap<GpuMesh3dId, NovaMeshCacheEntry>,
     custom_mesh_3d_vertex_cursor: usize,
@@ -359,6 +356,9 @@ impl NovaRenderer {
         self.present_copy_sprite_upload_cache
             .trim_retained_capacity(level);
         self.trim_custom_mesh_3d_cache(level);
+        if let Err(error) = self.demote_custom_mesh_3d_buffers_if_idle(level) {
+            log::debug!("failed to demote idle nova 3D mesh buffers: {error}");
+        }
 
         if matches!(
             level,
@@ -519,8 +519,6 @@ impl NovaRenderer {
     }
 
     fn sync_atlas_textures_for_current_backend(&mut self) -> Result<()> {
-        // Read the generation before syncing so any concurrent change after this point is
-        // observed as a mismatch (and therefore a re-sync) on the next frame.
         let texture_set_generation = self.atlas.texture_set_generation();
         if self.synced_atlas_texture_generation == Some(texture_set_generation) {
             return Ok(());
