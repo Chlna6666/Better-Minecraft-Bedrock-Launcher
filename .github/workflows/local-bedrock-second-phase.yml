@@ -27,17 +27,17 @@ jobs:
           output=scripts/second_phase_inspection.txt
           {
             echo '=== manifest/probe references ==='
-            rg -n -C 3 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest' src/ui/window/map_viewer src/ui/window/map_viewer.rs || true
+            grep -RIn -C 3 -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest' src/ui/window/map_viewer src/ui/window/map_viewer.rs || true
             echo '=== leveldb cache references ==='
-            rg -n -C 4 'NativeBlockCache|cache_size|index_capacity|open_table_file|invalidate_paths|VecDeque|TableId' crates/bedrock-leveldb/src || true
+            grep -RIn -C 4 -E 'NativeBlockCache|cache_size|index_capacity|open_table_file|invalidate_paths|VecDeque|TableId' crates/bedrock-leveldb/src || true
             echo '=== WAL overlay references ==='
-            rg -n -C 5 'approximate_overlay_size|apply_batch|load_existing_or_initialize' crates/bedrock-leveldb/src/db.rs || true
+            grep -n -C 5 -E 'approximate_overlay_size|apply_batch|load_existing_or_initialize' crates/bedrock-leveldb/src/db.rs || true
             echo '=== get_many references ==='
-            rg -n -C 5 'get_many_owned|get_table_entries' crates/bedrock-leveldb/src || true
+            grep -RIn -C 5 -E 'get_many_owned|get_table_entries' crates/bedrock-leveldb/src || true
             echo '=== world executor references ==='
-            rg -n -C 5 'world_pool|ThreadPoolBuilder|spawn_blocking|WorldExecutor|query_chunk_data_with_stats_blocking' crates/bedrock-world/src crates/bedrock-render/src || true
+            grep -RIn -C 5 -E 'world_pool|ThreadPoolBuilder|spawn_blocking|WorldExecutor|query_chunk_data_with_stats_blocking' crates/bedrock-world/src crates/bedrock-render/src || true
             echo '=== occupancy/cache references ==='
-            rg -n -C 5 'TileOccupancy|occupancy|DiskCacheFresh|DiskCacheStale|world_signature' crates/bedrock-render/src src/ui/window/map_viewer || true
+            grep -RIn -C 5 -E 'TileOccupancy|occupancy|DiskCacheFresh|DiskCacheStale|world_signature' crates/bedrock-render/src src/ui/window/map_viewer || true
           } > "$output"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
