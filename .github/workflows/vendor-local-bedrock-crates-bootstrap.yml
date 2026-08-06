@@ -1,17 +1,20 @@
 name: Bootstrap local Bedrock crates
 
 on:
-  push:
+  pull_request:
     branches:
       - master
-    paths:
-      - .github/workflows/vendor-local-bedrock-crates-bootstrap.yml
+    types:
+      - opened
+      - reopened
+      - synchronize
 
 permissions:
   contents: write
 
 jobs:
   vendor:
+    if: github.head_ref == 'work/local-bedrock-crates'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout work branch
@@ -20,7 +23,18 @@ jobs:
           fetch-depth: 0
           ref: work/local-bedrock-crates
 
+      - name: Detect existing local crates
+        id: detect
+        shell: bash
+        run: |
+          if [[ -f crates/bedrock-leveldb/Cargo.toml && -f crates/bedrock-world/Cargo.toml && -f crates/bedrock-render/Cargo.toml ]]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Vendor Bedrock crates
+        if: steps.detect.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -45,20 +59,15 @@ jobs:
           manifest = root / 'Cargo.toml'
           text = manifest.read_text(encoding='utf-8')
           replacements = {
-              'bedrock-world = { git = "https://github.com/BE-Community-Dev/bedrock-world.git", branch = "main" }':
-                  'bedrock-world = { path = "crates/bedrock-world" }',
-              'bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }':
-                  'bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp", "gpu-dx11"] }',
-              'bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp"] }':
-                  'bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp"] }',
-              'bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main" }':
-                  'bedrock-leveldb = { path = "crates/bedrock-leveldb" }',
+              'bedrock-world = { git = "https://github.com/BE-Community-Dev/bedrock-world.git", branch = "main" }': 'bedrock-world = { path = "crates/bedrock-world" }',
+              'bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }': 'bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp", "gpu-dx11"] }',
+              'bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp"] }': 'bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp"] }',
+              'bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main" }': 'bedrock-leveldb = { path = "crates/bedrock-leveldb" }',
           }
           for old, new in replacements.items():
               if old not in text:
                   raise SystemExit(f'missing root dependency: {old}')
               text = text.replace(old, new)
-
           if 'members = [\n    "crates/bedrock-leveldb"' not in text:
               text = text.replace(
                   'members = [\n',
@@ -102,6 +111,7 @@ jobs:
           PY
 
       - name: Validate and commit
+        if: steps.detect.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
