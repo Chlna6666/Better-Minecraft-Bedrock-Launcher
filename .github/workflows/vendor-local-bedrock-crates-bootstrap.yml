@@ -8,6 +8,7 @@ on:
       - opened
       - reopened
       - synchronize
+      - edited
 
 permissions:
   contents: write
@@ -93,7 +94,8 @@ jobs:
           if [[ "$status" -eq 0 ]]; then
             rm -f \
               scripts/remove_map_helpers_viewport_compat.py \
-              scripts/remove_bedrock_compatibility_api.py
+              scripts/remove_bedrock_compatibility_api.py \
+              scripts/trigger_map_compatibility_cleanup.txt
             git add -A src scripts Cargo.lock
             if ! git diff --cached --quiet; then
               git commit -m 'refactor(map): 删除 helpers 与 viewport 兼容层'
