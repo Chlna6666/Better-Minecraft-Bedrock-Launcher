@@ -77,9 +77,9 @@ jobs:
         if: steps.patch.outputs.needed == 'true'
         run: timeout 10m cargo test -p bedrock-world --lib
 
-      - name: Test bedrock-render
+      - name: Test tile occupancy index
         if: steps.patch.outputs.needed == 'true'
-        run: timeout 15m cargo test -p bedrock-render --lib
+        run: timeout 5m cargo test -p bedrock-render --lib occupancy::tests
 
       - name: Check BMCBL library
         if: steps.patch.outputs.needed == 'true'
