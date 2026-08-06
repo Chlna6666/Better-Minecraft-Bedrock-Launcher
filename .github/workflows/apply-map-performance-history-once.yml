@@ -1,14 +1,14 @@
 name: Apply map performance and history visualization once
 
 on:
-  workflow_run:
-    workflows:
-      - "Apply Linux raw-window-handle fix"
+  issues:
     types:
-      - completed
+      - opened
+      - edited
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: apply-map-performance-history-once
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   apply:
-    if: github.event.workflow_run.id == 29842972851
+    if: github.event.issue.title == '[internal] apply map performance history patch once'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,3 +53,11 @@ jobs:
           git push origin HEAD:master
           git push origin --delete tmp-preview-3d-perf-apply || true
           git push origin --delete trigger/map-performance-history || true
+
+      - name: Close trigger issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        shell: bash
+        run: gh issue close "$ISSUE_URL" --comment "One-time map performance and history visualization task finished."
