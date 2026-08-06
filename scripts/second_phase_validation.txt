@@ -1,11 +1,12 @@
 === apply BMCBL occupancy state ===
 === clean legacy tests and names ===
+=== remove obsolete constants ===
 === legacy API guard ===
 === fmt ===
-error: expected identifier, found `0`
-  --> /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle_stable.rs:13:7
-   |
-13 | const 0: usize = 1;
-   |       ^ expected identifier
+error: expected expression, found `.`
+   --> /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/panels.rs:117:21
+    |
+117 |                     .recent_events
+    |                     ^ expected expression
 
-Error writing files: failed to resolve mod `lifecycle`: cannot parse /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle_stable.rs
+Error writing files: failed to resolve mod `panels`: cannot parse /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/panels.rs
