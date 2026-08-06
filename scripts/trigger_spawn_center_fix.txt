@@ -1,1 +1,0 @@
-Trigger one-time map spawn center source migration on master.
