@@ -1,420 +1,63 @@
-=== prepare patch ===
-=== apply world executor ===
-=== remove manifest probe API ===
+=== apply BMCBL occupancy state ===
 === legacy API guard ===
-=== fmt ===
-=== check bedrock-world ===
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `1.1.2+spec` for dependency `toml` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `0.25.11+spec-1.1.0` for dependency `toml_edit` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
-    Updating crates.io index
-    Updating git repository `https://github.com/BE-Community-Dev/bedrock-block-model.git`
-    Updating git repository `https://github.com/BE-Community-Dev/mc-motd.git`
-    Updating git repository `https://github.com/EasyTier/http_req.git`
-    Updating git repository `https://github.com/smoltcp-rs/smoltcp.git`
-    Updating git repository `https://github.com/EasyTier/tokio-websockets`
- Downloading crates ...
-  Downloaded adler2 v2.0.1
-  Downloaded same-file v1.0.6
-  Downloaded thiserror-impl v2.0.18
-  Downloaded walkdir v2.5.0
-  Downloaded cfg-if v1.0.4
-  Downloaded simd-adler32 v0.3.7
-  Downloaded itoa v1.0.15
-  Downloaded equivalent v1.0.2
-  Downloaded quote v1.0.47
-  Downloaded either v1.15.0
-  Downloaded crossbeam-deque v0.8.6
-  Downloaded thiserror v2.0.18
-  Downloaded zmij v1.0.21
-  Downloaded pin-project-lite v0.2.16
-  Downloaded unicode-ident v1.0.22
-  Downloaded memmap2 v0.9.9
-  Downloaded snap v1.1.1
-  Downloaded crossbeam-utils v0.8.21
-  Downloaded crc32fast v1.5.0
-  Downloaded serde_derive v1.0.228
-  Downloaded serde_core v1.0.228
-  Downloaded xxhash-rust v0.8.16
-  Downloaded crossbeam-epoch v0.9.18
-  Downloaded log v0.4.29
-  Downloaded proc-macro2 v1.0.106
-  Downloaded rayon-core v1.13.0
-  Downloaded bytes v1.12.0
-  Downloaded miniz_oxide v0.8.9
-  Downloaded serde v1.0.228
-  Downloaded memchr v2.7.6
-  Downloaded flate2 v1.1.9
-  Downloaded indexmap v2.14.0
-  Downloaded serde_json v1.0.150
-  Downloaded hashbrown v0.17.1
-  Downloaded rayon v1.12.0
-  Downloaded syn v2.0.111
-  Downloaded libc v0.2.186
-  Downloaded tokio v1.52.3
-   Compiling proc-macro2 v1.0.106
-   Compiling quote v1.0.47
-   Compiling unicode-ident v1.0.22
-   Compiling crossbeam-utils v0.8.21
-   Compiling serde_core v1.0.228
-   Compiling rayon-core v1.13.0
-   Compiling libc v0.2.186
-   Compiling crc32fast v1.5.0
-    Checking cfg-if v1.0.4
-   Compiling zmij v1.0.21
-    Checking adler2 v2.0.1
-    Checking simd-adler32 v0.3.7
-   Compiling thiserror v2.0.18
-   Compiling snap v1.1.1
-    Checking miniz_oxide v0.8.9
-    Checking crossbeam-epoch v0.9.18
-    Checking crossbeam-deque v0.8.6
-   Compiling syn v2.0.111
-    Checking either v1.15.0
-   Compiling serde v1.0.228
-    Checking pin-project-lite v0.2.16
-   Compiling serde_json v1.0.150
-    Checking tokio v1.52.3
-    Checking rayon v1.12.0
-    Checking flate2 v1.1.9
-    Checking memmap2 v0.9.9
-    Checking bytes v1.12.0
-    Checking memchr v2.7.6
-    Checking log v0.4.29
-    Checking itoa v1.0.15
-    Checking hashbrown v0.17.1
-    Checking same-file v1.0.6
-    Checking equivalent v1.0.2
-    Checking walkdir v2.5.0
-   Compiling thiserror-impl v2.0.18
-   Compiling serde_derive v1.0.228
-    Checking indexmap v2.14.0
-    Checking xxhash-rust v0.8.16
-    Checking bedrock-leveldb v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-leveldb)
-warning: unused import: `NativeCacheOptions`
- --> crates/bedrock-leveldb/src/db.rs:5:51
-  |
-5 |     CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
-  |                                                   ^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-warning: `bedrock-leveldb` (lib) generated 1 warning (run `cargo fix --lib -p bedrock-leveldb` to apply 1 suggestion)
-    Checking bedrock-world v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-world)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 17.98s
-=== test partitioned world executor ===
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `1.1.2+spec` for dependency `toml` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `0.25.11+spec-1.1.0` for dependency `toml_edit` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
- Downloading crates ...
-  Downloaded ciborium-ll v0.2.2
-  Downloaded anes v0.1.6
-  Downloaded clap v4.5.60
-  Downloaded ciborium-io v0.2.2
-  Downloaded plotters-svg v0.3.7
-  Downloaded cast v0.3.0
-  Downloaded is-terminal v0.4.17
-  Downloaded ciborium v0.2.2
-  Downloaded oorandom v11.1.5
-  Downloaded tinytemplate v1.2.1
-  Downloaded once_cell v1.21.4
-  Downloaded num-traits v0.2.19
-  Downloaded half v2.7.1
-  Downloaded zerocopy-derive v0.8.39
-  Downloaded itertools v0.10.5
-  Downloaded plotters v0.3.7
-  Downloaded regex v1.12.4
-  Downloaded clap_builder v4.5.60
-  Downloaded regex-syntax v0.8.11
-  Downloaded anstyle v1.0.13
-  Downloaded clap_lex v1.0.0
-  Downloaded autocfg v1.5.0
-  Downloaded criterion-plot v0.5.0
-  Downloaded plotters-backend v0.3.7
-  Downloaded criterion v0.5.1
-  Downloaded aho-corasick v1.1.4
-  Downloaded zerocopy v0.8.39
-  Downloaded regex-automata v0.4.13
-   Compiling serde_core v1.0.228
-   Compiling cfg-if v1.0.4
-   Compiling crossbeam-utils v0.8.21
-   Compiling syn v2.0.111
-   Compiling zerocopy v0.8.39
-   Compiling serde v1.0.228
-   Compiling either v1.15.0
-   Compiling libc v0.2.186
-   Compiling autocfg v1.5.0
-   Compiling zmij v1.0.21
-   Compiling crossbeam-epoch v0.9.18
-   Compiling num-traits v0.2.19
-   Compiling crossbeam-deque v0.8.6
-   Compiling simd-adler32 v0.3.7
-   Compiling rayon-core v1.13.0
-   Compiling adler2 v2.0.1
-   Compiling memchr v2.7.6
-   Compiling itoa v1.0.15
-   Compiling rayon v1.12.0
-   Compiling miniz_oxide v0.8.9
-   Compiling serde_json v1.0.150
-   Compiling crc32fast v1.5.0
-   Compiling pin-project-lite v0.2.16
-   Compiling same-file v1.0.6
-   Compiling regex-syntax v0.8.11
-   Compiling ciborium-io v0.2.2
-   Compiling anstyle v1.0.13
-   Compiling plotters-backend v0.3.7
-   Compiling clap_lex v1.0.0
-   Compiling zerocopy-derive v0.8.39
-   Compiling serde_derive v1.0.228
-   Compiling thiserror-impl v2.0.18
-   Compiling clap_builder v4.5.60
-   Compiling thiserror v2.0.18
-   Compiling regex-automata v0.4.13
-   Compiling plotters-svg v0.3.7
-   Compiling walkdir v2.5.0
-   Compiling tokio v1.52.3
-   Compiling flate2 v1.1.9
-   Compiling half v2.7.1
-   Compiling ciborium-ll v0.2.2
-   Compiling snap v1.1.1
-   Compiling memmap2 v0.9.9
-   Compiling itertools v0.10.5
-   Compiling hashbrown v0.17.1
-   Compiling log v0.4.29
-   Compiling equivalent v1.0.2
-   Compiling cast v0.3.0
-   Compiling bytes v1.12.0
-   Compiling criterion-plot v0.5.0
-   Compiling bedrock-leveldb v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-leveldb)
-warning: unused import: `NativeCacheOptions`
- --> crates/bedrock-leveldb/src/db.rs:5:51
-  |
-5 |     CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
-  |                                                   ^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-   Compiling indexmap v2.14.0
-   Compiling plotters v0.3.7
-   Compiling ciborium v0.2.2
-   Compiling tinytemplate v1.2.1
-   Compiling regex v1.12.4
-   Compiling clap v4.5.60
-   Compiling is-terminal v0.4.17
-   Compiling anes v0.1.6
-   Compiling once_cell v1.21.4
-   Compiling xxhash-rust v0.8.16
-   Compiling oorandom v11.1.5
-   Compiling bedrock-world v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-world)
-   Compiling criterion v0.5.1
-warning: `bedrock-leveldb` (lib) generated 1 warning (run `cargo fix --lib -p bedrock-leveldb` to apply 1 suggestion)
-    Finished `test` profile [optimized + debuginfo] target(s) in 42.68s
-     Running tests/partitioned_executor.rs (target/debug/deps/partitioned_executor-d9c2a966a82ecda9)
-
-running 2 tests
-test memory_partitioned_scan_returns_worker_local_reduction ... ok
-test world_executor_uses_exact_worker_count_without_coordinator_thread ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-=== check bedrock-render map features ===
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `1.1.2+spec` for dependency `toml` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `0.25.11+spec-1.1.0` for dependency `toml_edit` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
- Downloading crates ...
-  Downloaded bitflags v2.13.1
-  Downloaded zstd v0.13.3
-  Downloaded quick-error v2.0.1
-  Downloaded shlex v1.3.0
-  Downloaded byteorder-lite v0.1.0
-  Downloaded jobserver v0.1.34
-  Downloaded zstd-safe v7.2.4
-  Downloaded fdeflate v0.3.7
-  Downloaded pkg-config v0.3.32
-  Downloaded find-msvc-tools v0.1.5
-  Downloaded bytemuck v1.25.0
-  Downloaded image-webp v0.2.4
-  Downloaded crossbeam-channel v0.5.15
-  Downloaded cc v1.2.48
-  Downloaded png v0.18.1
-  Downloaded moxcms v0.7.10
-  Downloaded sysinfo v0.38.0
-  Downloaded image v0.25.9
-  Downloaded zstd-sys v2.0.16+zstd.1.5.7
-  Downloaded pxfm v0.1.26
-   Compiling libc v0.2.186
-   Compiling find-msvc-tools v0.1.5
-   Compiling serde_json v1.0.150
-    Checking simd-adler32 v0.3.7
-   Compiling shlex v1.3.0
-   Compiling pkg-config v0.3.32
-    Checking miniz_oxide v0.8.9
-   Compiling serde_core v1.0.228
-   Compiling zmij v1.0.21
-   Compiling equivalent v1.0.2
-   Compiling hashbrown v0.17.1
-    Checking num-traits v0.2.19
-    Checking flate2 v1.1.9
-    Checking memchr v2.7.6
-   Compiling indexmap v2.14.0
-   Compiling jobserver v0.1.34
-   Compiling itoa v1.0.15
-   Compiling zstd-safe v7.2.4
-    Checking pxfm v0.1.26
-   Compiling cc v1.2.48
-    Checking fdeflate v0.3.7
-    Checking bitflags v2.13.1
-    Checking quick-error v2.0.1
-    Checking byteorder-lite v0.1.0
-    Checking bedrock-leveldb v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-leveldb)
-    Checking png v0.18.1
-warning: unused import: `NativeCacheOptions`
- --> crates/bedrock-leveldb/src/db.rs:5:51
-  |
-5 |     CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
-  |                                                   ^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-    Checking image-webp v0.2.4
-warning: `bedrock-leveldb` (lib) generated 1 warning (run `cargo fix --lib -p bedrock-leveldb` to apply 1 suggestion)
-    Checking bytemuck v1.25.0
-    Checking sysinfo v0.38.0
-   Compiling zstd-sys v2.0.16+zstd.1.5.7
-    Checking crossbeam-channel v0.5.15
-    Checking bedrock-world v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-world)
-    Checking moxcms v0.7.10
-   Compiling bedrock-render v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-render)
-    Checking image v0.25.9
-    Checking zstd v0.13.3
-warning: method `wait_if_paused` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:1989:8
-     |
-1949 | impl RenderTaskControl {
-     | ---------------------- method in this implementation
-...
-1989 |     fn wait_if_paused(&self) -> Result<()> {
-     |        ^^^^^^^^^^^^^^
-     |
-     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: struct `TileBounds` is never constructed
-    --> crates/bedrock-render/src/renderer/pipeline.rs:8993:8
-     |
-8993 | struct TileBounds {
-     |        ^^^^^^^^^^
-
-warning: function `tile_bounds_from_coords` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9000:4
-     |
-9000 | fn tile_bounds_from_coords(coords: &[(i32, i32)]) -> Option<TileBounds> {
-     |    ^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: function `tile_coords_from_bounds` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9017:4
-     |
-9017 | fn tile_coords_from_bounds(bounds: TileBounds) -> Vec<(i32, i32)> {
-     |    ^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: function `chunk_bounds_from_positions` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9030:4
-     |
-9030 | fn chunk_bounds_from_positions(
-     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: function `check_render_control_cancelled` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9053:4
-     |
-9053 | fn check_render_control_cancelled(control: &RenderTaskControl) -> Result<()> {
-     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: `bedrock-render` (lib) generated 6 warnings
-    Finished `dev` profile [optimized + debuginfo] target(s) in 23.26s
-=== test occupancy index ===
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `1.1.2+spec` for dependency `toml` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
-warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `0.25.11+spec-1.1.0` for dependency `toml_edit` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
- Downloading crates ...
-  Downloaded json5 v1.3.1
-  Downloaded ucd-trie v0.1.7
-   Compiling simd-adler32 v0.3.7
-   Compiling memchr v2.7.6
-   Compiling zstd-sys v2.0.16+zstd.1.5.7
-   Compiling pxfm v0.1.26
-   Compiling bitflags v2.13.1
-   Compiling byteorder-lite v0.1.0
-   Compiling miniz_oxide v0.8.9
-   Compiling fdeflate v0.3.7
-   Compiling serde_json v1.0.150
-   Compiling quick-error v2.0.1
-   Compiling image-webp v0.2.4
-   Compiling flate2 v1.1.9
-   Compiling tinytemplate v1.2.1
-   Compiling png v0.18.1
-   Compiling bedrock-leveldb v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-leveldb)
-warning: unused import: `NativeCacheOptions`
- --> crates/bedrock-leveldb/src/db.rs:5:51
-  |
-5 |     CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
-  |                                                   ^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-   Compiling moxcms v0.7.10
-   Compiling zstd-safe v7.2.4
-   Compiling bytemuck v1.25.0
-   Compiling ucd-trie v0.1.7
-   Compiling json5 v1.3.1
-   Compiling bedrock-world v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-world)
-   Compiling criterion v0.5.1
-   Compiling zstd v0.13.3
-   Compiling sysinfo v0.38.0
-   Compiling image v0.25.9
-   Compiling crossbeam-channel v0.5.15
-warning: `bedrock-leveldb` (lib) generated 1 warning (run `cargo fix --lib -p bedrock-leveldb` to apply 1 suggestion)
-   Compiling bedrock-render v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-render)
-warning: method `wait_if_paused` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:1989:8
-     |
-1949 | impl RenderTaskControl {
-     | ---------------------- method in this implementation
-...
-1989 |     fn wait_if_paused(&self) -> Result<()> {
-     |        ^^^^^^^^^^^^^^
-     |
-     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: struct `TileBounds` is never constructed
-    --> crates/bedrock-render/src/renderer/pipeline.rs:8993:8
-     |
-8993 | struct TileBounds {
-     |        ^^^^^^^^^^
-
-warning: function `tile_bounds_from_coords` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9000:4
-     |
-9000 | fn tile_bounds_from_coords(coords: &[(i32, i32)]) -> Option<TileBounds> {
-     |    ^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: function `tile_coords_from_bounds` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9017:4
-     |
-9017 | fn tile_coords_from_bounds(bounds: TileBounds) -> Vec<(i32, i32)> {
-     |    ^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: function `chunk_bounds_from_positions` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9030:4
-     |
-9030 | fn chunk_bounds_from_positions(
-     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: function `check_render_control_cancelled` is never used
-    --> crates/bedrock-render/src/renderer/pipeline.rs:9053:4
-     |
-9053 | fn check_render_control_cancelled(control: &RenderTaskControl) -> Result<()> {
-     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: `bedrock-render` (lib test) generated 6 warnings
-    Finished `test` profile [optimized + debuginfo] target(s) in 1m 13s
-     Running unittests src/bedrock_render.rs (target/debug/deps/bedrock_render-b381c617ab3efe76)
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 195 filtered out; finished in 0.00s
-
+src/ui/window/map_viewer/tests.rs:2294:    let manifest_path = bedrock_render::tile_manifest_cache_path(
+src/ui/window/map_viewer/tests.rs:2491:fn pending_manifest_tiles_are_not_render_queue_candidates() {
+src/ui/window/map_viewer/tests.rs:2493:    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+src/ui/window/map_viewer/tests.rs:2498:    assert_eq!(manager.pending_manifest_count(), 1);
+src/ui/window/map_viewer/tests.rs:2503:fn pending_manifest_detection_is_limited_to_requested_tiles() {
+src/ui/window/map_viewer/tests.rs:2505:    manager.ensure_pending_manifest(&[(0, 0), (8, 0)], TilePriority::Prefetch);
+src/ui/window/map_viewer/tests.rs:2507:    assert!(manager.has_pending_manifest_for_tiles(&[(0, 0)]));
+src/ui/window/map_viewer/tests.rs:2508:    assert!(!manager.has_pending_manifest_for_tiles(&[(1, 0)]));
+src/ui/window/map_viewer/tests.rs:2512:fn cancelled_probe_keeps_pending_manifest_tile_probeable() {
+src/ui/window/map_viewer/tests.rs:2514:    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::EditRefresh);
+src/ui/window/map_viewer/tests.rs:2516:    assert!(manager.is_pending_manifest((0, 0)));
+src/ui/window/map_viewer/tests.rs:2517:    assert!(manager.has_pending_manifest_for_tiles(&[(0, 0)]));
+src/ui/window/map_viewer/tests.rs:2524:    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+src/ui/window/map_viewer/tests.rs:2534:fn edit_refresh_pending_manifest_keeps_refresh_priority_after_probe() {
+src/ui/window/map_viewer/tests.rs:2536:    manager.ensure_pending_manifest(&[(3, -2)], TilePriority::EditRefresh);
+src/ui/window/map_viewer/tests.rs:2652:    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+src/ui/window/map_viewer/tests.rs:2654:    assert_eq!(manager.pending_manifest_count(), 1);
+src/ui/window/map_viewer/tests.rs:2659:    assert_eq!(manager.pending_manifest_count(), 0);
+src/ui/window/map_viewer/tests.rs:2705:    manager.ensure_pending_manifest(&[(5, 0)], TilePriority::Visible);
+src/ui/window/map_viewer/tests.rs:2706:    manager.ensure_pending_manifest(&[(2, 0)], TilePriority::EditRefresh);
+src/ui/window/map_viewer/tests.rs:2707:    manager.ensure_pending_manifest(&[(1, 0)], TilePriority::EditRefresh);
+src/ui/window/map_viewer/tests.rs:2710:        manager.pending_manifest_coords_with_priority(TilePriority::EditRefresh),
+src/ui/window/map_viewer/tests.rs:2718:    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+src/ui/window/map_viewer/tests.rs:2978:    let needs_cache_bypass = manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
+src/ui/window/map_viewer/tests.rs:3110:fn manifest_probe_worker_count_keeps_interaction_headroom() {
+src/ui/window/map_viewer/tests.rs:3113:    let workers = manifest_probe_worker_count(budget);
+src/ui/window/map_viewer/tests.rs:3351:fn manifest_probe_selects_center_ring_before_outer_visible_tiles() {
+src/ui/window/map_viewer/tests.rs:3353:    let selected = select_manifest_probe_tiles(&visible_tiles, &[], (0, 0), &BTreeSet::new());
+src/ui/window/map_viewer/tests.rs:3362:fn manifest_probe_skips_scanned_center_and_batches_remaining_visible_tiles() {
+src/ui/window/map_viewer/tests.rs:3367:    let selected = select_manifest_probe_tiles(&visible_tiles, &[], (0, 0), &scanned_tiles);
+src/ui/window/map_viewer/tests.rs:3376:fn manifest_probe_is_reserved_for_edit_refresh() {
+src/ui/window/map_viewer/tests.rs:3411:fn parallel_manifest_probe_merge_preserves_requested_tiles_and_results() {
+src/ui/window/map_viewer/tests.rs:3424:        Ok(TileManifestProbeResult {
+src/ui/window/map_viewer/tests.rs:3434:        Ok(TileManifestProbeResult {
+src/ui/window/map_viewer/tests.rs:3447:        merge_tile_manifest_probe_results(requested_tiles.clone(), results).expect("merge probes");
+src/ui/window/map_viewer/tile_state.rs:237:            .pending_manifest
+crates/bedrock-render/src/renderer/cache.rs:1152:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:1196:    reader: &mut TileManifestCacheReader<'_>,
+crates/bedrock-render/src/renderer/cache.rs:1250:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:1278:    reader: &mut TileManifestCacheReader<'_>,
+crates/bedrock-render/src/renderer/cache.rs:1317:    reader: &mut TileManifestCacheReader<'_>,
+crates/bedrock-render/src/renderer/cache.rs:1354:    reader: &mut TileManifestCacheReader<'_>,
+crates/bedrock-render/src/renderer/cache.rs:1391:    reader: &mut TileManifestCacheReader<'_>,
+crates/bedrock-render/src/renderer/cache.rs:1441:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:1492:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:1534:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:1574:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:1600:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:1695:        let mut reader = TileManifestCacheReader::new(&bytes[offset..]);
+crates/bedrock-render/src/renderer/cache.rs:1762:    let mut reader = TileManifestCacheReader::new(bytes);
+crates/bedrock-render/src/renderer/cache.rs:2043:fn ensure_authority_reader_finished(reader: &TileManifestCacheReader<'_>) -> Result<()> {
+crates/bedrock-render/src/renderer/cache.rs:2059:fn read_chunk_pos(reader: &mut TileManifestCacheReader<'_>) -> Result<ChunkPos> {
+crates/bedrock-render/src/renderer/cache.rs:2134:    let temp_path = tile_manifest_temp_path(path);
+crates/bedrock-render/src/renderer/cache.rs:2163:fn tile_manifest_temp_path(path: &Path) -> PathBuf {
+crates/bedrock-render/src/renderer/cache.rs:2228:struct TileManifestCacheReader<'a> {
+crates/bedrock-render/src/renderer/cache.rs:2233:impl<'a> TileManifestCacheReader<'a> {
+crates/bedrock-render/src/renderer/cache.rs:2322:    fn test_key(world_path: &Path) -> TileManifestCacheKey {
+crates/bedrock-render/src/renderer/cache.rs:2323:        TileManifestCacheKey::new(
+crates/bedrock-render/src/renderer/cache.rs:2344:    fn test_snapshot() -> TileManifestCacheSnapshot {
+crates/bedrock-render/src/renderer/cache.rs:2362:        TileManifestCacheSnapshot {
+legacy manifest/probe implementation remains
