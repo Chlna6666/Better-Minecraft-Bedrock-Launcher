@@ -3,7 +3,7 @@ name: Apply map performance and history visualization once
 on:
   workflow_run:
     workflows:
-      - "Backdrop blur validation"
+      - "Apply Linux raw-window-handle fix"
     types:
       - completed
 
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   apply:
-    if: github.event.workflow_run.id == 29821301759
+    if: github.event.workflow_run.id == 29842972851
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
