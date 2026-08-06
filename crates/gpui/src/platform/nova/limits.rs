@@ -29,7 +29,10 @@ pub(super) const PACKED_BACKDROP_BLUR_BYTES: usize = 136;
 pub(super) const PACKED_ANIMATION_BINDING_BYTES: usize = 16;
 pub(super) const PACKED_ANIMATION_VALUE_BYTES: usize = 64;
 pub(super) const PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES: usize = 96;
-pub(super) const PACKED_CUSTOM_MESH_3D_VERTEX_BYTES: usize = 28;
+// position.xyz stays lossless f32. RGB uses 8 bits per channel; alpha uses 5 bits and the
+// remaining 3 bits carry the skin-preview edge mask. This reduces the hot vertex stream from
+// seven f32 values (28 bytes) to a naturally aligned 16-byte record without losing map geometry.
+pub(super) const PACKED_CUSTOM_MESH_3D_VERTEX_BYTES: usize = 16;
 pub(super) const PACKED_CUSTOM_MESH_3D_INDEX_BYTES: usize = 4;
 pub(super) const MAX_CUSTOM_MESH_3D_DRAWS: usize = 4096;
 pub(super) const MAX_CUSTOM_MESH_3D_VERTICES: usize =
