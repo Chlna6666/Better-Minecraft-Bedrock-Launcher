@@ -1,0 +1,52 @@
+name: Apply spawn center fix on master
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-spawn-center-on-master
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: master
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Apply spawn center source fix
+        run: python3 scripts/apply_map_spawn_center_fix.py
+
+      - name: Format changed files
+        run: rustfmt --edition 2024 src/ui/window/map_viewer/helpers.rs src/ui/window/map_viewer/lifecycle.rs
+
+      - name: Verify BMCBL targets
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUST_MIN_STACK: "67108864"
+        run: |
+          cargo check --lib
+          cargo check --bin BMCBL
+
+      - name: Commit source fix and remove temporary files
+        shell: bash
+        run: |
+          rm -f scripts/apply_map_spawn_center_fix.py
+          rm -f .github/workflows/apply-spawn-center-on-master.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(map): 使用 level.dat 出生点初始化地图视口"
+          git push origin HEAD:master
