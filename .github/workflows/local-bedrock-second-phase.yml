@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
       - 'scripts/apply_local_bedrock_second_phase.py'
+      - 'scripts/apply_local_bedrock_second_phase_fix1.py'
   workflow_dispatch:
 
 permissions:
@@ -29,6 +30,10 @@ jobs:
           echo '=== apply ===' >> "$validation"
           python scripts/apply_local_bedrock_second_phase.py >> "$validation" 2>&1
           status=$?
+          if [ "$status" -eq 0 ]; then
+            python scripts/apply_local_bedrock_second_phase_fix1.py >> "$validation" 2>&1
+            status=$?
+          fi
           if [ "$status" -eq 0 ]; then
             echo '=== fmt ===' >> "$validation"
             cargo fmt --all >> "$validation" 2>&1
