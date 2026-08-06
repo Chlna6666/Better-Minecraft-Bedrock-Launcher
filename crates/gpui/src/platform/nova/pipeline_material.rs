@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) use super::pipeline_legacy::{
-    NovaBlendPipelineDescriptor, NovaBlendPipelines, NovaPipelines, create_blend_pipelines,
+    NovaBlendPipelines, NovaPipelines, create_blend_pipelines,
 };
 
 pub(super) fn create_custom_mesh_3d_pipeline<D>(
