@@ -3,6 +3,12 @@ use super::panels::*;
 use super::prelude::*;
 use super::preview_3d::{preview_3d_chunk_mesh_is_visible, preview_3d_draw_parameters};
 
+#[derive(Clone, Copy, Debug)]
+struct Preview3dWorldFrame {
+    center: [f32; 3],
+    fit_scale: f32,
+}
+
 impl MapViewerWindowView {
     pub(super) fn render_preview_3d_panel(
         &self,
@@ -272,6 +278,8 @@ impl MapViewerWindowView {
             ));
         if let Some(mesh) = mesh {
             let view_for_paint = view.clone();
+            let selection_bounds = self.preview_3d.signature.map(|signature| signature.bounds);
+            let world_frame = preview_3d_world_frame(mesh.as_ref(), selection_bounds);
             panel = panel.child(
                 div()
                     .relative()
@@ -287,9 +295,11 @@ impl MapViewerWindowView {
                                 let aspect = if height <= 0.0 { 1.0 } else { width / height };
                                 for chunk_mesh in &mesh.chunk_meshes {
                                     let gpu_mesh = chunk_mesh.selected_gpu_mesh(camera);
-                                    let parameters = preview_3d_draw_parameters(
+                                    let parameters = preview_3d_draw_parameters_for_world_frame(
                                         aspect,
                                         gpu_mesh.as_ref(),
+                                        chunk_mesh.world_origin,
+                                        world_frame,
                                         camera,
                                         model_rotation,
                                     );
@@ -316,6 +326,99 @@ impl MapViewerWindowView {
         }
         panel
     }
+}
+
+fn preview_3d_world_frame(
+    mesh: &Preview3dMesh,
+    selection_bounds: Option<bedrock_world::SlimeChunkBounds>,
+) -> Preview3dWorldFrame {
+    let (center_x, center_z, horizontal_span) = selection_bounds.map_or_else(
+        || {
+            let min_x = f64::from(mesh.min_x);
+            let max_x = f64::from(mesh.max_x) + 1.0;
+            let min_z = f64::from(mesh.min_z);
+            let max_z = f64::from(mesh.max_z) + 1.0;
+            (
+                ((min_x + max_x) * 0.5) as f32,
+                ((min_z + max_z) * 0.5) as f32,
+                (max_x - min_x).max(max_z - min_z).max(1.0) as f32,
+            )
+        },
+        |bounds| {
+            let min_x = f64::from(bounds.min_chunk_x.saturating_mul(16));
+            let max_x = f64::from(bounds.max_chunk_x.saturating_add(1).saturating_mul(16));
+            let min_z = f64::from(bounds.min_chunk_z.saturating_mul(16));
+            let max_z = f64::from(bounds.max_chunk_z.saturating_add(1).saturating_mul(16));
+            (
+                ((min_x + max_x) * 0.5) as f32,
+                ((min_z + max_z) * 0.5) as f32,
+                (max_x - min_x).max(max_z - min_z).max(1.0) as f32,
+            )
+        },
+    );
+
+    let (center_y, vertical_span) = selection_bounds.map_or_else(
+        || preview_3d_mesh_vertical_frame(mesh),
+        |bounds| preview_3d_dimension_vertical_frame(bounds.dimension, mesh),
+    );
+    let fitted_span = horizontal_span.max(vertical_span * 1.25).max(1.0);
+
+    Preview3dWorldFrame {
+        center: [center_x, center_y, center_z],
+        fit_scale: 1.48 / fitted_span,
+    }
+}
+
+fn preview_3d_mesh_vertical_frame(mesh: &Preview3dMesh) -> (f32, f32) {
+    let min_y = f64::from(mesh.min_y);
+    let max_y = f64::from(mesh.max_y) + 1.0;
+    (
+        ((min_y + max_y) * 0.5) as f32,
+        (max_y - min_y).max(1.0) as f32,
+    )
+}
+
+fn preview_3d_dimension_vertical_frame(
+    dimension: bedrock_world::Dimension,
+    mesh: &Preview3dMesh,
+) -> (f32, f32) {
+    let probe = bedrock_world::ChunkPos {
+        x: 0,
+        z: 0,
+        dimension,
+    };
+    let (min_y, max_y) = probe.y_range(bedrock_world::ChunkVersion::New);
+    if min_y > max_y {
+        return preview_3d_mesh_vertical_frame(mesh);
+    }
+    let min_y = f64::from(min_y);
+    let max_y = f64::from(max_y) + 1.0;
+    (
+        ((min_y + max_y) * 0.5) as f32,
+        (max_y - min_y).max(1.0) as f32,
+    )
+}
+
+fn preview_3d_draw_parameters_for_world_frame(
+    aspect: f32,
+    mesh: &gpui::GpuMesh3d,
+    world_origin: [i32; 3],
+    world_frame: Preview3dWorldFrame,
+    camera: Preview3dCamera,
+    model_rotation: Preview3dModelRotation,
+) -> gpui::GpuMesh3dDrawParameters {
+    // Region meshes use local floating-point coordinates for precision. Their cached `center`
+    // can come from an earlier incremental update, so deriving the model matrix from it lets
+    // unchanged regions retain an obsolete translation while newly built regions use a new one.
+    // Rebase every region against one immutable world-space frame instead.
+    let mut parameter_mesh = mesh.clone();
+    parameter_mesh.center = [
+        world_frame.center[0] - world_origin[0] as f32,
+        world_frame.center[1] - world_origin[1] as f32,
+        world_frame.center[2] - world_origin[2] as f32,
+    ];
+    parameter_mesh.fit_scale = world_frame.fit_scale;
+    preview_3d_draw_parameters(aspect, &parameter_mesh, camera, model_rotation)
 }
 
 fn is_preview_3d_navigation_key(key: &str) -> bool {
