@@ -6,7 +6,7 @@ on:
       - work/local-bedrock-crates
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
-      - 'scripts/apply_local_bedrock_second_phase_breaking.py'
+      - 'scripts/apply_local_bedrock_world_executor.py'
   workflow_dispatch:
 
 permissions:
@@ -20,19 +20,19 @@ jobs:
         with:
           ref: work/local-bedrock-crates
           fetch-depth: 1
-      - name: Remove legacy LevelDB cache APIs and validate
+      - name: Apply World executor and partitioned scans
         shell: bash
         run: |
           set +e
           validation=/tmp/second_phase_validation.txt
           : > "$validation"
-          echo '=== breaking API cleanup ===' >> "$validation"
-          python scripts/apply_local_bedrock_second_phase_breaking.py >> "$validation" 2>&1
+          echo '=== apply world executor ===' >> "$validation"
+          python scripts/apply_local_bedrock_world_executor.py >> "$validation" 2>&1
           status=$?
           if [ "$status" -eq 0 ]; then
             echo '=== legacy API guard ===' >> "$validation"
-            if grep -RIn -E 'cache_size|open_with_cache_options|from_total' crates/bedrock-leveldb/src crates/bedrock-leveldb/tests >> "$validation" 2>&1; then
-              echo 'legacy LevelDB cache API remains' >> "$validation"
+            if grep -RIn -E 'fn world_pool|TileManifestProbe(Request|Result)|probe_tile_manifest_(blocking|async)' crates/bedrock-world/src crates/bedrock-render/src >> "$validation" 2>&1; then
+              echo 'legacy world/renderer API remains' >> "$validation"
               status=1
             fi
           fi
@@ -42,13 +42,23 @@ jobs:
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== check bedrock-leveldb ===' >> "$validation"
-            cargo check --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features >> "$validation" 2>&1
+            echo '=== check bedrock-world ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-world/Cargo.toml --all-features >> "$validation" 2>&1
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== test bedrock-leveldb ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features >> "$validation" 2>&1
+            echo '=== test bedrock-world ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-world/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== check bedrock-render ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-render/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== test bedrock-render ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-render/Cargo.toml --all-features >> "$validation" 2>&1
             status=$?
           fi
 
@@ -59,7 +69,7 @@ jobs:
             cp "$validation" scripts/second_phase_validation.txt
             git add scripts/second_phase_validation.txt
             if ! git diff --cached --quiet; then
-              git commit -m 'chore: 记录 LevelDB 破坏性接口验证失败'
+              git commit -m 'chore: 记录 World 第二阶段验证失败'
               git push origin HEAD:work/local-bedrock-crates
             fi
             cat "$validation"
@@ -67,9 +77,9 @@ jobs:
           fi
 
           cp "$validation" scripts/second_phase_validation.txt
-          git add crates/bedrock-leveldb scripts/second_phase_validation.txt Cargo.lock
+          git add crates/bedrock-world crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
           if ! git diff --cached --quiet; then
-            git commit -m 'perf(leveldb): 删除旧缓存接口并采用分片配置'
+            git commit -m 'perf(world): 使用分区归约与持久执行器'
             git push origin HEAD:work/local-bedrock-crates
           fi
           cat "$validation"
