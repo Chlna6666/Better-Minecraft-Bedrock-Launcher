@@ -18,9 +18,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "1"
+  CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "8"
   CARGO_TARGET_DIR: target/ci-check
+  CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  RUST_MIN_STACK: "33554432"
 
 jobs:
   windows-check:
@@ -56,7 +59,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
 
-      - name: Restore Cargo cache
+      - name: Restore Cargo dependency cache
         uses: actions/cache@v5
         with:
           path: |
@@ -64,10 +67,16 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/registry/src
             ~/.cargo/git
-            target/ci-check
-          key: windows-cargo-check-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v5
+          key: windows-cargo-deps-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v6
           restore-keys: |
-            windows-cargo-check-
+            windows-cargo-deps-
+
+      - name: Remove stale compiler outputs
+        shell: pwsh
+        run: |
+          if (Test-Path $env:CARGO_TARGET_DIR) {
+            Remove-Item -Recurse -Force $env:CARGO_TARGET_DIR
+          }
 
       - name: Check all BMCBL targets
         shell: pwsh
@@ -99,7 +108,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Restore Cargo cache
+      - name: Restore Cargo dependency cache
         uses: actions/cache@v5
         with:
           path: |
@@ -107,10 +116,12 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/registry/src
             ~/.cargo/git
-            target/ci-check
-          key: linux-cargo-check-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v5
+          key: linux-cargo-deps-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v6
           restore-keys: |
-            linux-cargo-check-
+            linux-cargo-deps-
+
+      - name: Remove stale compiler outputs
+        run: rm -rf "$CARGO_TARGET_DIR"
 
       - name: Check all BMCBL targets
         run: cargo check --all-targets
