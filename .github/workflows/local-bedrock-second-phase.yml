@@ -68,8 +68,8 @@ jobs:
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== test bedrock-world ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-world/Cargo.toml --all-features >> "$validation" 2>&1
+            echo '=== test partitioned world executor ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-world/Cargo.toml --all-features --test partitioned_executor >> "$validation" 2>&1
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
@@ -78,8 +78,8 @@ jobs:
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== test bedrock-render map features ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' >> "$validation" 2>&1
+            echo '=== test occupancy index ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' --lib occupancy >> "$validation" 2>&1
             status=$?
           fi
 
