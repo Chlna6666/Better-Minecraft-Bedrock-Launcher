@@ -1,110 +1,13 @@
 name: Local Bedrock compatibility cleanup
 
 on:
-  push:
-    branches:
-      - work/local-bedrock-crates
-    paths:
-      - '.github/workflows/local-bedrock-second-phase.yml'
-      - 'scripts/remove_bedrock_compatibility_api.py'
-      - 'scripts/remove_map_helpers_viewport_compat.py'
   workflow_dispatch:
 
-concurrency:
-  group: local-bedrock-compatibility-cleanup-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  remove-and-validate:
+  archived:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: work/local-bedrock-crates
-          fetch-depth: 2
-
-      - name: Install desktop build dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libasound2-dev \
-            libudev-dev \
-            libx11-dev \
-            libxi-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxinerama-dev \
-            libgl1-mesa-dev
-
-      - name: Remove compatibility layers and compile BMCBL
-        shell: bash
-        run: |
-          set +e
-          validation=/tmp/bedrock_compatibility_cleanup.txt
-          : > "$validation"
-          status=0
-
-          if [ -f src/ui/window/map_viewer/tile_plan_stable.rs ] \
-            || [ -f src/ui/window/map_viewer/lifecycle_stable.rs ] \
-            || grep -Rqs -E 'for_each_(key|entry)_partitioned' \
-              crates/bedrock-leveldb/src crates/bedrock-world/src crates/bedrock-render/src; then
-            echo '=== remove old Bedrock APIs and first transition modules ===' >> "$validation"
-            python scripts/remove_bedrock_compatibility_api.py >> "$validation" 2>&1
-            status=$?
-          fi
-
-          if [ "$status" -eq 0 ] \
-            && { [ -f src/ui/window/map_viewer/helpers_stable.rs ] \
-              || [ -f src/ui/window/map_viewer/viewport_stable.rs ]; }; then
-            echo '=== merge helpers and viewport into canonical modules ===' >> "$validation"
-            python scripts/remove_map_helpers_viewport_compat.py >> "$validation" 2>&1
-            status=$?
-          fi
-
-          if [ "$status" -eq 0 ]; then
-            echo '=== zero-tolerance legacy symbol guard ===' >> "$validation"
-            if grep -RIn -E \
-              'for_each_(key|entry)_partitioned|PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size|occupancy_scanned_tiles|mark_occupancy_tile_empty|tile_plan_legacy|tile_plan_stable|lifecycle_stable|canvas_frontend_stable|helpers_stable|helpers_legacy|viewport_stable|viewport_base' \
-              crates/bedrock-leveldb/src crates/bedrock-world/src crates/bedrock-render/src \
-              src/ui/window/map_viewer src/ui/window/map_viewer.rs \
-              >> "$validation" 2>&1; then
-              echo 'legacy Bedrock or map API remains' >> "$validation"
-              status=1
-            fi
-          fi
-
-          if [ "$status" -eq 0 ]; then
-            echo '=== format BMCBL ===' >> "$validation"
-            cargo fmt -p bmcbl >> "$validation" 2>&1
-            status=$?
-          fi
-
-          if [ "$status" -eq 0 ]; then
-            echo '=== compile BMCBL library ===' >> "$validation"
-            cargo check -p bmcbl --lib >> "$validation" 2>&1
-            status=$?
-          fi
-
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          cp "$validation" scripts/bedrock_compatibility_cleanup.txt
-          git add -A src scripts Cargo.lock
-
-          if ! git diff --cached --quiet; then
-            if [ "$status" -eq 0 ]; then
-              git commit -m 'refactor(map): 删除 helpers 与 viewport 兼容层'
-            else
-              git commit -m 'wip(map): 保留兼容层删除后的编译错误'
-            fi
-            git push origin HEAD:work/local-bedrock-crates
-          fi
-
-          cat "$validation"
-          exit "$status"
+      - run: echo 'Compatibility cleanup is executed by the default-branch PR workflow.'
