@@ -33,7 +33,7 @@ jobs:
         id: cleanup
         shell: bash
         run: |
-          if [[ -f scripts/remove_map_helpers_viewport_compat.py ]]; then
+          if [[ -f scripts/remove_map_view_canvas_compat.py ]]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
@@ -60,17 +60,17 @@ jobs:
           validation=/tmp/map-compatibility-cleanup.txt
           : > "$validation"
 
-          echo '=== merge helpers and viewport into canonical modules ===' >> "$validation"
-          python3 scripts/remove_map_helpers_viewport_compat.py >> "$validation" 2>&1
+          echo '=== merge view and canvas into canonical modules ===' >> "$validation"
+          python3 scripts/remove_map_view_canvas_compat.py >> "$validation" 2>&1
           status=$?
 
           if [[ "$status" -eq 0 ]]; then
             echo '=== legacy symbol guard ===' >> "$validation"
             if grep -RIn -E \
-              'helpers_stable|helpers_legacy|viewport_stable|viewport_base' \
+              'canvas_stable|canvas_legacy|view_stable|view_legacy' \
               src/ui/window/map_viewer src/ui/window/map_viewer.rs \
               >> "$validation" 2>&1; then
-              echo 'helpers/viewport compatibility symbol remains' >> "$validation"
+              echo 'view/canvas compatibility symbol remains' >> "$validation"
               status=1
             fi
           fi
@@ -92,19 +92,16 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
           if [[ "$status" -eq 0 ]]; then
-            rm -f \
-              scripts/remove_map_helpers_viewport_compat.py \
-              scripts/remove_bedrock_compatibility_api.py \
-              scripts/trigger_map_compatibility_cleanup.txt
+            rm -f scripts/remove_map_view_canvas_compat.py
             git add -A src scripts Cargo.lock
             if ! git diff --cached --quiet; then
-              git commit -m 'refactor(map): 删除 helpers 与 viewport 兼容层'
+              git commit -m 'refactor(map): 删除 view 与 canvas 兼容层'
               git push origin HEAD:work/local-bedrock-crates
             fi
           else
             git add -A src scripts Cargo.lock
             if ! git diff --cached --quiet; then
-              git commit -m 'wip(map): 保留兼容层删除后的编译错误'
+              git commit -m 'wip(map): 保留 view 与 canvas 清理后的编译错误'
               git push origin HEAD:work/local-bedrock-crates
             fi
           fi
