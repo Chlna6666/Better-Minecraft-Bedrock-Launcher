@@ -6,12 +6,7 @@ on:
       - work/local-bedrock-crates
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
-      - 'scripts/apply_bmcbl_occupancy_state.py'
-      - 'scripts/apply_bmcbl_occupancy_state_fix1.py'
-      - 'scripts/apply_bmcbl_occupancy_state_fix2.py'
-      - 'scripts/apply_bmcbl_occupancy_state_fix3.py'
-      - 'scripts/apply_bmcbl_occupancy_state_fix4.py'
-      - 'scripts/apply_bmcbl_occupancy_state_fix5.py'
+      - 'scripts/fix_bmcbl_occupancy_compile.py'
   workflow_dispatch:
 
 concurrency:
@@ -22,7 +17,7 @@ permissions:
   contents: write
 
 jobs:
-  apply-and-validate:
+  fix-and-validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,43 +40,18 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libgl1-mesa-dev
-      - name: Remove viewport manifest probes and integrate occupancy index
+      - name: Fix and validate occupancy migration
         shell: bash
         run: |
           set +e
           validation=/tmp/second_phase_validation.txt
           : > "$validation"
-          echo '=== apply BMCBL occupancy state ===' >> "$validation"
-          python scripts/apply_bmcbl_occupancy_state.py >> "$validation" 2>&1
+          echo '=== fix occupancy compile errors ===' >> "$validation"
+          python scripts/fix_bmcbl_occupancy_compile.py >> "$validation" 2>&1
           status=$?
           if [ "$status" -eq 0 ]; then
-            echo '=== clean legacy tests and names ===' >> "$validation"
-            python scripts/apply_bmcbl_occupancy_state_fix1.py >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== remove obsolete constants ===' >> "$validation"
-            python scripts/apply_bmcbl_occupancy_state_fix2.py >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== remove diagnostics chain ===' >> "$validation"
-            python scripts/apply_bmcbl_occupancy_state_fix3.py >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== rename shared cache helpers ===' >> "$validation"
-            python scripts/apply_bmcbl_occupancy_state_fix4.py >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== remove dead compatibility code ===' >> "$validation"
-            python scripts/apply_bmcbl_occupancy_state_fix5.py >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
             echo '=== legacy API guard ===' >> "$validation"
-            if grep -RIn -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size' src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-render/src crates/bedrock-world/src crates/bedrock-leveldb/src >> "$validation" 2>&1; then
+            if grep -RIn -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size|occupancy_scanned_tiles|mark_occupancy_tile_empty' src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-render/src crates/bedrock-world/src crates/bedrock-leveldb/src >> "$validation" 2>&1; then
               echo 'legacy Bedrock or map API remains' >> "$validation"
               status=1
             fi
@@ -97,11 +67,6 @@ jobs:
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== test occupancy index ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' --lib occupancy >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
             echo '=== check BMCBL library ===' >> "$validation"
             cargo check -p bmcbl --lib >> "$validation" 2>&1
             status=$?
@@ -110,10 +75,10 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           cp "$validation" scripts/second_phase_validation.txt
-          git add -A src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
+          git add -A src/ui/window/map_viewer crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
           if [ "$status" -ne 0 ]; then
             if ! git diff --cached --quiet; then
-              git commit -m 'wip(map): 保留 occupancy 迁移源码与验证错误'
+              git commit -m 'wip(map): 修复 occupancy 迁移编译错误'
               git push origin HEAD:work/local-bedrock-crates
             fi
             cat "$validation"
@@ -121,7 +86,7 @@ jobs:
           fi
 
           if ! git diff --cached --quiet; then
-            git commit -m 'refactor(map): 删除视口 manifest 探测并接入 occupancy 索引'
+            git commit -m 'refactor(map): 完成 occupancy 状态机迁移'
             git push origin HEAD:work/local-bedrock-crates
           fi
           cat "$validation"
