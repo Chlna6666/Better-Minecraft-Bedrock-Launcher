@@ -132,7 +132,10 @@ fn record_custom_mesh_3d_draw_profile(steps: &[RenderStepDescriptor]) {
             .saturating_add(u64::from(step.index_count).saturating_mul(u64::from(step.instance_count)));
         submitted_instances = submitted_instances.saturating_add(u64::from(step.instance_count));
         pipelines.insert(step.pipeline);
-        index_pages.insert((step.index_buffer.offset, step.index_buffer.format));
+        index_pages.insert((
+            step.index_buffer.offset,
+            matches!(step.index_buffer.format, IndexFormat::Uint16),
+        ));
         match step.index_buffer.format {
             IndexFormat::Uint16 => uint16_draws = uint16_draws.saturating_add(1),
             IndexFormat::Uint32 => uint32_draws = uint32_draws.saturating_add(1),
