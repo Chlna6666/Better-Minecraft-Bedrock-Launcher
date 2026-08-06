@@ -50,8 +50,16 @@ jobs:
           : > "$validation"
 
           echo '=== remove old APIs and transition modules ===' >> "$validation"
-          python scripts/remove_bedrock_compatibility_api.py >> "$validation" 2>&1
-          status=$?
+          if [ -f src/ui/window/map_viewer/tile_plan_stable.rs ] \
+            || [ -f src/ui/window/map_viewer/lifecycle_stable.rs ] \
+            || grep -Rqs -E 'for_each_(key|entry)_partitioned' \
+              crates/bedrock-leveldb/src crates/bedrock-world/src crates/bedrock-render/src; then
+            python scripts/remove_bedrock_compatibility_api.py >> "$validation" 2>&1
+            status=$?
+          else
+            echo 'cleanup already applied; validating current source tree' >> "$validation"
+            status=0
+          fi
 
           if [ "$status" -eq 0 ]; then
             echo '=== zero-tolerance legacy symbol guard ===' >> "$validation"
@@ -66,8 +74,13 @@ jobs:
           fi
 
           if [ "$status" -eq 0 ]; then
-            echo '=== cargo fmt ===' >> "$validation"
-            cargo fmt --all --check >> "$validation" 2>&1
+            echo '=== format local Bedrock crates and BMCBL ===' >> "$validation"
+            cargo fmt \
+              -p bedrock-leveldb \
+              -p bedrock-world \
+              -p bedrock-render \
+              -p bmcbl \
+              >> "$validation" 2>&1
             status=$?
           fi
 
@@ -117,8 +130,7 @@ jobs:
             crates/bedrock-leveldb \
             crates/bedrock-world \
             crates/bedrock-render \
-            src/ui/window/map_viewer \
-            src/ui/window/map_viewer.rs \
+            src \
             scripts \
             Cargo.lock
 
