@@ -13,36 +13,56 @@ permissions:
   contents: write
 
 jobs:
-  inspect:
+  apply-and-validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: work/local-bedrock-crates
           fetch-depth: 1
-      - name: Inspect second phase call sites
+      - name: Apply and validate LevelDB second phase
         shell: bash
         run: |
-          set -euo pipefail
-          output=scripts/second_phase_inspection.txt
-          {
-            echo '=== manifest/probe references ==='
-            grep -RIn -C 3 -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest' src/ui/window/map_viewer src/ui/window/map_viewer.rs || true
-            echo '=== leveldb cache references ==='
-            grep -RIn -C 4 -E 'NativeBlockCache|cache_size|index_capacity|open_table_file|invalidate_paths|VecDeque|TableId' crates/bedrock-leveldb/src || true
-            echo '=== WAL overlay references ==='
-            grep -n -C 5 -E 'approximate_overlay_size|apply_batch|load_existing_or_initialize' crates/bedrock-leveldb/src/db.rs || true
-            echo '=== get_many references ==='
-            grep -RIn -C 5 -E 'get_many_owned|get_table_entries' crates/bedrock-leveldb/src || true
-            echo '=== world executor references ==='
-            grep -RIn -C 5 -E 'world_pool|ThreadPoolBuilder|spawn_blocking|WorldExecutor|query_chunk_data_with_stats_blocking' crates/bedrock-world/src crates/bedrock-render/src || true
-            echo '=== occupancy/cache references ==='
-            grep -RIn -C 5 -E 'TileOccupancy|occupancy|DiskCacheFresh|DiskCacheStale|world_signature' crates/bedrock-render/src src/ui/window/map_viewer || true
-          } > "$output"
+          set +e
+          validation=/tmp/second_phase_validation.txt
+          : > "$validation"
+          echo '=== apply ===' >> "$validation"
+          python scripts/apply_local_bedrock_second_phase.py >> "$validation" 2>&1
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            echo '=== fmt ===' >> "$validation"
+            cargo fmt --all >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== check bedrock-leveldb ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== test bedrock-leveldb ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add "$output"
+          if [ "$status" -ne 0 ]; then
+            git reset --hard HEAD
+            cp "$validation" scripts/second_phase_validation.txt
+            git add scripts/second_phase_validation.txt
+            if ! git diff --cached --quiet; then
+              git commit -m 'chore: 记录 LevelDB 第二阶段验证失败'
+              git push origin HEAD:work/local-bedrock-crates
+            fi
+            cat "$validation"
+            exit "$status"
+          fi
+
+          cp "$validation" scripts/second_phase_validation.txt
+          git add crates/bedrock-leveldb scripts/second_phase_validation.txt Cargo.lock
           if ! git diff --cached --quiet; then
-            git commit -m 'chore: 记录本地 Bedrock 第二阶段调用点'
+            git commit -m 'perf(leveldb): 分片缓存并优化批量读取与 WAL 恢复'
             git push origin HEAD:work/local-bedrock-crates
           fi
+          cat "$validation"
