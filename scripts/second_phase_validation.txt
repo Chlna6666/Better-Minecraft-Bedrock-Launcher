@@ -1,12 +1,21 @@
+=== prepare patch ===
 === apply world executor ===
-Traceback (most recent call last):
-  File "/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/scripts/apply_local_bedrock_world_executor.py", line 507, in <module>
-    main()
-  File "/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/scripts/apply_local_bedrock_world_executor.py", line 500, in main
-    patch_world()
-  File "/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/scripts/apply_local_bedrock_world_executor.py", line 267, in patch_world
-    text = replace_once(text, executor_marker, executor_code, "insert WorldExecutor")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/scripts/apply_local_bedrock_world_executor.py", line 20, in replace_once
-    raise RuntimeError(f"{label}: expected one match, found {count}")
-RuntimeError: insert WorldExecutor: expected one match, found 0
+=== legacy API guard ===
+crates/bedrock-render/src/bedrock_render.rs:32:    TerrainLightingPreset, TileCache, TileCacheKey, TileCoord, TileImage, TileManifestProbeRequest,
+crates/bedrock-render/src/bedrock_render.rs:33:    TileManifestProbeResult, TilePathScheme, TilePixelFormat, TileReadySource, TileSet,
+crates/bedrock-render/src/renderer/pipeline.rs:4592:    pub fn probe_tile_manifest_blocking(
+crates/bedrock-render/src/renderer/pipeline.rs:4594:        request: TileManifestProbeRequest,
+crates/bedrock-render/src/renderer/pipeline.rs:4596:    ) -> Result<TileManifestProbeResult> {
+crates/bedrock-render/src/renderer/pipeline.rs:4597:        self.renderer.probe_tile_manifest_blocking(request, control)
+crates/bedrock-render/src/renderer/pipeline.rs:5988:    pub fn probe_tile_manifest_blocking(
+crates/bedrock-render/src/renderer/pipeline.rs:5990:        request: TileManifestProbeRequest,
+crates/bedrock-render/src/renderer/pipeline.rs:5992:    ) -> Result<TileManifestProbeResult> {
+crates/bedrock-render/src/renderer/pipeline.rs:5997:            return Ok(TileManifestProbeResult {
+crates/bedrock-render/src/renderer/pipeline.rs:6059:        Ok(TileManifestProbeResult {
+crates/bedrock-render/src/renderer/pipeline.rs:13172:            .probe_tile_manifest_blocking(
+crates/bedrock-render/src/renderer/pipeline.rs:13173:                TileManifestProbeRequest {
+crates/bedrock-render/src/renderer/pipeline.rs:13222:        let result = source.probe_tile_manifest_blocking(
+crates/bedrock-render/src/renderer/pipeline.rs:13223:            TileManifestProbeRequest {
+crates/bedrock-render/src/renderer.rs:23:    TileCache, TileCacheKey, TileCoord, TileImage, TileManifestProbeRequest,
+crates/bedrock-render/src/renderer.rs:24:    TileManifestProbeResult, TilePathScheme, TilePixelFormat, TileReadySource, TileSet,
+legacy world/renderer API remains
