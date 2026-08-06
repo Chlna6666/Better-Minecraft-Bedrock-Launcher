@@ -20,6 +20,9 @@ mod atlas;
 mod atlas_resources;
 mod backend;
 mod diagnostics;
+#[path = "nova/draw.rs"]
+mod draw_legacy;
+#[path = "nova/draw_paged.rs"]
 mod draw;
 mod frame_upload;
 mod limits;
