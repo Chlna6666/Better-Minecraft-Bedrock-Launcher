@@ -12,10 +12,15 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: local-bedrock-occupancy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   apply:
     if: github.head_ref == 'work/local-bedrock-crates'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout work branch
         uses: actions/checkout@v4
@@ -52,18 +57,33 @@ jobs:
           python3 scripts/apply_local_bedrock_occupancy.py
           cargo fmt --all
 
-      - name: Check local Bedrock crates
+      - name: Check bedrock-leveldb
         if: steps.patch.outputs.needed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo check -p bedrock-leveldb -p bedrock-world -p bedrock-render
-          cargo test -p bedrock-leveldb -p bedrock-world -p bedrock-render --lib
+        run: timeout 10m cargo check -p bedrock-leveldb
+
+      - name: Check bedrock-world
+        if: steps.patch.outputs.needed == 'true'
+        run: timeout 10m cargo check -p bedrock-world
+
+      - name: Check bedrock-render
+        if: steps.patch.outputs.needed == 'true'
+        run: timeout 15m cargo check -p bedrock-render
+
+      - name: Test bedrock-leveldb
+        if: steps.patch.outputs.needed == 'true'
+        run: timeout 10m cargo test -p bedrock-leveldb --lib
+
+      - name: Test bedrock-world
+        if: steps.patch.outputs.needed == 'true'
+        run: timeout 10m cargo test -p bedrock-world --lib
+
+      - name: Test bedrock-render
+        if: steps.patch.outputs.needed == 'true'
+        run: timeout 15m cargo test -p bedrock-render --lib
 
       - name: Check BMCBL library
         if: steps.patch.outputs.needed == 'true'
-        shell: bash
-        run: cargo check --lib
+        run: timeout 15m cargo check --lib
 
       - name: Commit validated refactor
         if: steps.patch.outputs.needed == 'true'
