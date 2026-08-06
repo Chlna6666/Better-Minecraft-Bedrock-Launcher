@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
       - 'scripts/apply_bmcbl_occupancy_state.py'
+      - 'scripts/apply_bmcbl_occupancy_state_fix1.py'
   workflow_dispatch:
 
 permissions:
@@ -29,6 +30,11 @@ jobs:
           echo '=== apply BMCBL occupancy state ===' >> "$validation"
           python scripts/apply_bmcbl_occupancy_state.py >> "$validation" 2>&1
           status=$?
+          if [ "$status" -eq 0 ]; then
+            echo '=== clean legacy tests and names ===' >> "$validation"
+            python scripts/apply_bmcbl_occupancy_state_fix1.py >> "$validation" 2>&1
+            status=$?
+          fi
           if [ "$status" -eq 0 ]; then
             echo '=== legacy API guard ===' >> "$validation"
             if grep -RIn -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP' src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-render/src >> "$validation" 2>&1; then
