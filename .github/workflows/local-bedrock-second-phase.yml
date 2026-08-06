@@ -11,6 +11,7 @@ on:
       - 'scripts/apply_bmcbl_occupancy_state_fix2.py'
       - 'scripts/apply_bmcbl_occupancy_state_fix3.py'
       - 'scripts/apply_bmcbl_occupancy_state_fix4.py'
+      - 'scripts/apply_bmcbl_occupancy_state_fix5.py'
   workflow_dispatch:
 
 permissions:
@@ -24,6 +25,22 @@ jobs:
         with:
           ref: work/local-bedrock-crates
           fetch-depth: 1
+      - name: Install desktop build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libasound2-dev \
+            libudev-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
       - name: Remove viewport manifest probes and integrate occupancy index
         shell: bash
         run: |
@@ -54,9 +71,14 @@ jobs:
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
+            echo '=== remove dead compatibility code ===' >> "$validation"
+            python scripts/apply_bmcbl_occupancy_state_fix5.py >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
             echo '=== legacy API guard ===' >> "$validation"
-            if grep -RIn -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP' src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-render/src >> "$validation" 2>&1; then
-              echo 'legacy manifest/probe implementation remains' >> "$validation"
+            if grep -RIn -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size' src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-render/src crates/bedrock-world/src crates/bedrock-leveldb/src >> "$validation" 2>&1; then
+              echo 'legacy Bedrock or map API remains' >> "$validation"
               status=1
             fi
           fi
@@ -96,7 +118,7 @@ jobs:
           fi
 
           cp "$validation" scripts/second_phase_validation.txt
-          git add src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-leveldb crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
+          git add src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
           if ! git diff --cached --quiet; then
             git commit -m 'refactor(map): 删除视口 manifest 探测并接入 occupancy 索引'
             git push origin HEAD:work/local-bedrock-crates
