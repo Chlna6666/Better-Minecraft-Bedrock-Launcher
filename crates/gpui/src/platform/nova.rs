@@ -27,6 +27,9 @@ mod draw;
 mod frame_upload;
 mod limits;
 mod nova_renderer;
+#[path = "nova/pipeline.rs"]
+mod pipeline_legacy;
+#[path = "nova/pipeline_material.rs"]
 mod pipeline;
 mod prelude;
 mod rendering_parameters;
