@@ -4,6 +4,21 @@ root = Path(__file__).resolve().parents[1]
 
 options_path = root / "crates/bedrock-leveldb/src/options.rs"
 options = options_path.read_text(encoding="utf-8")
+legacy_from_total = '''    /// Derives balanced capacities from the legacy aggregate cache size.
+    #[must_use]
+    pub const fn from_total(total: usize) -> Self {
+        Self {
+            data_capacity: total,
+            index_capacity: total / 2,
+            file_capacity: 256,
+            shards: 16,
+        }
+    }
+
+'''
+if options.count(legacy_from_total) != 1:
+    raise RuntimeError("legacy NativeCacheOptions::from_total bridge was not found exactly once")
+options = options.replace(legacy_from_total, "", 1)
 old_field = "    /// Maximum decoded native table block cache size, in bytes.\n    pub cache_size: usize,\n"
 new_field = "    /// Independent sharded native table cache capacities.\n    pub cache: NativeCacheOptions,\n"
 if options.count(old_field) != 1:
@@ -84,7 +99,7 @@ changelog_path = root / "crates/bedrock-leveldb/CHANGELOG.md"
 if changelog_path.exists():
     changelog = changelog_path.read_text(encoding="utf-8")
     heading = "# Changelog\n"
-    entry = "\n## 0.5.0\n\n- Replace the aggregate `OpenOptions::cache_size` setting with independent sharded native cache capacities.\n- Remove the temporary `Db::open_with_cache_options` compatibility entry point.\n- Add compact table identities, bounded file handles, cache statistics, incremental WAL recovery accounting, and allocation-reduced exact batch reads.\n"
+    entry = "\n## 0.5.0\n\n- Replace the aggregate `OpenOptions::cache_size` setting with independent sharded native cache capacities.\n- Remove `NativeCacheOptions::from_total` and `Db::open_with_cache_options`; no legacy cache configuration bridge remains.\n- Add compact table identities, bounded file handles, cache statistics, incremental WAL recovery accounting, and allocation-reduced exact batch reads.\n"
     if "## 0.5.0" not in changelog:
         if changelog.startswith(heading):
             changelog = heading + entry + changelog[len(heading):]
