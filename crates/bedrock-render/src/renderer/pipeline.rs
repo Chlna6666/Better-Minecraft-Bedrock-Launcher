@@ -42,11 +42,11 @@ use crate::error::{BedrockRenderError, Result};
 use crate::palette::{RenderPalette, RgbaColor};
 use bedrock_world::{
     BedrockLevelDbStorage, BedrockWorld, BiomeDataRequirement, BlockPos, BlockState,
-    CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkBounds, ChunkData, ChunkDataRequest,
-    ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats, ChunkPos, Dimension,
-    ExactSurfaceSubchunkPolicy, LegacyBiomeSample, NbtTag, OpenOptions as WorldOpenOptions,
-    PartitionedWorldStorage, StorageCachePolicy, StoragePipelineOptions, StorageReadOptions,
-    StorageScanMode, StorageThreadingOptions, StorageVisitorControl, SubChunk, SubChunkDecodeMode,
+    CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkData, ChunkDataRequest, ChunkLoadOptions,
+    ChunkLoadPriority, ChunkLoadStats, ChunkPos, Dimension, ExactSurfaceSubchunkPolicy,
+    LegacyBiomeSample, NbtTag, OpenOptions as WorldOpenOptions, PartitionedWorldStorage,
+    StorageCachePolicy, StoragePipelineOptions, StorageReadOptions, StorageScanMode,
+    StorageThreadingOptions, StorageVisitorControl, SubChunk, SubChunkDecodeMode,
     TerrainColumnBiome, TerrainColumnOverlay, TerrainColumnSample, TerrainColumnSamples,
     WorldChunkQueryRegion, WorldChunkQueryRegionData, WorldChunkQueryRegionLoadOptions,
     WorldPipelineOptions, WorldScanOptions, WorldStorage, WorldStorageHandle,

@@ -50,11 +50,13 @@ pub(super) fn visible_tile_needs_foreground_work(
         Some(positions) if positions.is_empty() => !tile_manager
             .entries
             .get(&coord)
-            .is_some_and(|entry| entry.state == TileLoadState::Invalid),
+            .is_some_and(|entry| {
+                matches!(entry.state, TileLoadState::Empty | TileLoadState::Invalid)
+            }),
         Some(_) => !tile_manager.entries.get(&coord).is_some_and(|entry| {
             matches!(entry.state, TileLoadState::Queued | TileLoadState::Loading)
                 || (entry.state == TileLoadState::Loaded && entry.image.is_some())
-                || entry.state == TileLoadState::Invalid
+                || matches!(entry.state, TileLoadState::Empty | TileLoadState::Invalid)
         }),
         None => !tile_manager.entries.get(&coord).is_some_and(|entry| {
             matches!(
@@ -2974,12 +2976,16 @@ pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) 
                             {
                                 if let Some(chunk_positions) = chunk_positions {
                                     if chunk_positions.is_empty() {
-                                        this.mark_occupancy_tile_empty(coord, cx);
+                                        Self::drop_render_image(
+                                            this.tile_manager.mark_empty(coord),
+                                            cx,
+                                        );
+                                        this.available_tiles.remove(&coord);
+                                        this.tile_chunk_index.remove(&coord);
                                         changed_tiles.push(coord);
                                         continue;
                                     } else {
                                         this.available_tiles.insert(coord);
-                                        this.occupancy_scanned_tiles.insert(coord);
                                         this.tile_chunk_index.insert(coord, chunk_positions);
                                     }
                                 }
@@ -3085,10 +3091,11 @@ pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) 
                                     );
                                 } else {
                                     Self::drop_render_image(
-                                        this.tile_manager
-                                            .mark_invalid(coord, SharedString::from(message)),
+                                        this.tile_manager.mark_empty(coord),
                                         cx,
                                     );
+                                    this.available_tiles.remove(&coord);
+                                    this.tile_chunk_index.remove(&coord);
                                 }
                             } else {
                                 Self::drop_render_image(
@@ -3113,14 +3120,11 @@ pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) 
                                 "map_viewer render_tile_empty"
                             );
                             Self::drop_render_image(
-                                this.tile_manager
-                                    .mark_invalid(coord, SharedString::from(message)),
+                                this.tile_manager.mark_empty(coord),
                                 cx,
                             );
                             this.available_tiles.remove(&coord);
-                            this.occupancy_scanned_tiles.insert(coord);
-                            this.tile_chunk_index
-                                .insert(coord, TileChunkPositions::from(Vec::<ChunkPos>::new()));
+                            this.tile_chunk_index.remove(&coord);
                             if this.viewport_interaction_active() {
                                 this.pending_viewport_refresh = true;
                             } else {
@@ -3145,6 +3149,7 @@ pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) 
                                         .map(|entry| entry.state),
                                     Some(
                                         TileLoadState::Loaded
+                                            | TileLoadState::Empty
                                             | TileLoadState::Queued
                                             | TileLoadState::Failed
                                             | TileLoadState::Invalid,

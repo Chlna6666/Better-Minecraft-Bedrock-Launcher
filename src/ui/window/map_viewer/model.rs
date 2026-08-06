@@ -1063,16 +1063,6 @@ impl std::fmt::Debug for CopiedChunkPreviewImage {
             .finish_non_exhaustive()
     }
 }
-impl Default for ManifestProbeDiagnostics {
-    fn default() -> Self {
-        Self {
-            last_edit_serial: 0,
-            last_edit_label: SharedString::from("无"),
-            probe_starts_since_last_edit: 0,
-            recent_events: Vec::new(),
-        }
-    }
-}
 #[derive(Clone, Debug, Default)]
 pub(super) struct ProfessionalQueryState {
     pub(super) overlay_bounds: Option<SlimeChunkBounds>,
