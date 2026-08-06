@@ -1,12 +1,184 @@
 === apply BMCBL occupancy state ===
 === clean legacy tests and names ===
 === remove obsolete constants ===
+=== remove diagnostics chain ===
 === legacy API guard ===
 === fmt ===
-error: expected expression, found `.`
-   --> /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/panels.rs:117:21
+=== check bedrock-render map features ===
+warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `1.1.2+spec` for dependency `toml` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
+warning: /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/Cargo.toml: version requirement `0.25.11+spec-1.1.0` for dependency `toml_edit` includes semver metadata which will be ignored, removing the metadata is recommended to avoid confusion
+    Updating crates.io index
+    Updating git repository `https://github.com/BE-Community-Dev/bedrock-block-model.git`
+    Updating git repository `https://github.com/BE-Community-Dev/mc-motd.git`
+    Updating git repository `https://github.com/EasyTier/http_req.git`
+    Updating git repository `https://github.com/smoltcp-rs/smoltcp.git`
+    Updating git repository `https://github.com/EasyTier/tokio-websockets`
+ Downloading crates ...
+  Downloaded adler2 v2.0.1
+  Downloaded itoa v1.0.15
+  Downloaded image-webp v0.2.4
+  Downloaded indexmap v2.14.0
+  Downloaded simd-adler32 v0.3.7
+  Downloaded image v0.25.9
+  Downloaded quick-error v2.0.1
+  Downloaded shlex v1.3.0
+  Downloaded snap v1.1.1
+  Downloaded thiserror-impl v2.0.18
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded fdeflate v0.3.7
+  Downloaded equivalent v1.0.2
+  Downloaded zstd v0.13.3
+  Downloaded either v1.15.0
+  Downloaded pkg-config v0.3.32
+  Downloaded zmij v1.0.21
+  Downloaded autocfg v1.5.0
+  Downloaded pin-project-lite v0.2.16
+  Downloaded same-file v1.0.6
+  Downloaded cfg-if v1.0.4
+  Downloaded quote v1.0.47
+  Downloaded num-traits v0.2.19
+  Downloaded thiserror v2.0.18
+  Downloaded walkdir v2.5.0
+  Downloaded xxhash-rust v0.8.16
+  Downloaded zstd-safe v7.2.4
+  Downloaded byteorder-lite v0.1.0
+  Downloaded find-msvc-tools v0.1.5
+  Downloaded jobserver v0.1.34
+  Downloaded rayon-core v1.13.0
+  Downloaded unicode-ident v1.0.22
+  Downloaded crc32fast v1.5.0
+  Downloaded crossbeam-channel v0.5.15
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded log v0.4.29
+  Downloaded proc-macro2 v1.0.106
+  Downloaded serde_derive v1.0.228
+  Downloaded bitflags v2.13.1
+  Downloaded serde_core v1.0.228
+  Downloaded bytemuck v1.25.0
+  Downloaded cc v1.2.48
+  Downloaded serde v1.0.228
+  Downloaded bytes v1.12.0
+  Downloaded flate2 v1.1.9
+  Downloaded memchr v2.7.6
+  Downloaded miniz_oxide v0.8.9
+  Downloaded rayon v1.12.0
+  Downloaded png v0.18.1
+  Downloaded hashbrown v0.17.1
+  Downloaded moxcms v0.7.10
+  Downloaded sysinfo v0.38.0
+  Downloaded serde_json v1.0.150
+  Downloaded syn v2.0.111
+  Downloaded zstd-sys v2.0.16+zstd.1.5.7
+  Downloaded libc v0.2.186
+  Downloaded pxfm v0.1.26
+  Downloaded tokio v1.52.3
+   Compiling libc v0.2.186
+   Compiling proc-macro2 v1.0.106
+   Compiling crossbeam-utils v0.8.21
+   Compiling quote v1.0.47
+   Compiling zmij v1.0.21
+   Compiling unicode-ident v1.0.22
+   Compiling find-msvc-tools v0.1.5
+   Compiling crc32fast v1.5.0
+   Compiling shlex v1.3.0
+    Checking simd-adler32 v0.3.7
+   Compiling serde_json v1.0.150
+   Compiling serde_core v1.0.228
+   Compiling autocfg v1.5.0
+    Checking adler2 v2.0.1
+   Compiling pkg-config v0.3.32
+    Checking cfg-if v1.0.4
+    Checking miniz_oxide v0.8.9
+    Checking crossbeam-epoch v0.9.18
+   Compiling num-traits v0.2.19
+   Compiling rayon-core v1.13.0
+    Checking crossbeam-deque v0.8.6
+   Compiling syn v2.0.111
+    Checking flate2 v1.1.9
+   Compiling hashbrown v0.17.1
+   Compiling thiserror v2.0.18
+   Compiling jobserver v0.1.34
+   Compiling equivalent v1.0.2
+   Compiling cc v1.2.48
+   Compiling snap v1.1.1
+   Compiling indexmap v2.14.0
+    Checking pin-project-lite v0.2.16
+    Checking memchr v2.7.6
+   Compiling zstd-safe v7.2.4
+   Compiling itoa v1.0.15
+    Checking either v1.15.0
+   Compiling serde v1.0.228
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+    Checking rayon v1.12.0
+   Compiling thiserror-impl v2.0.18
+   Compiling serde_derive v1.0.228
+    Checking tokio v1.52.3
+    Checking pxfm v0.1.26
+    Checking fdeflate v0.3.7
+    Checking log v0.4.29
+    Checking same-file v1.0.6
+    Checking bytes v1.12.0
+    Checking byteorder-lite v0.1.0
+    Checking bitflags v2.13.1
+    Checking quick-error v2.0.1
+    Checking png v0.18.1
+    Checking image-webp v0.2.4
+    Checking bedrock-leveldb v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-leveldb)
+    Checking walkdir v2.5.0
+    Checking moxcms v0.7.10
+   Compiling bedrock-render v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-render)
+    Checking bytemuck v1.25.0
+    Checking xxhash-rust v0.8.16
+    Checking crossbeam-channel v0.5.15
+    Checking bedrock-world v0.5.0 (/home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/bedrock-world)
+    Checking sysinfo v0.38.0
+    Checking image v0.25.9
+    Checking zstd v0.13.3
+error[E0425]: cannot find value `TILE_MANIFEST_CACHE_VERSION` in this scope
+   --> crates/bedrock-render/src/renderer/cache.rs:747:32
     |
-117 |                     .recent_events
-    |                     ^ expected expression
+ 22 | const TILE_AUTHORITY_CACHE_VERSION: u32 = 2;
+    | -------------------------------------------- similarly named constant `TILE_AUTHORITY_CACHE_VERSION` defined here
+...
+747 |     fnv1a_write_u32(&mut hash, TILE_MANIFEST_CACHE_VERSION);
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: a constant with a similar name exists
+    |
+747 -     fnv1a_write_u32(&mut hash, TILE_MANIFEST_CACHE_VERSION);
+747 +     fnv1a_write_u32(&mut hash, TILE_AUTHORITY_CACHE_VERSION);
+    |
 
-Error writing files: failed to resolve mod `panels`: cannot parse /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/panels.rs
+error[E0425]: cannot find value `TILE_MANIFEST_CACHE_WRITE_ID` in this scope
+    --> crates/bedrock-render/src/renderer/cache.rs:2160:20
+     |
+  47 | static TILE_AUTHORITY_CACHE_WRITE_ID: AtomicUsize = AtomicUsize::new(0);
+     | ------------------------------------------------------------------------ similarly named static `TILE_AUTHORITY_CACHE_WRITE_ID` defined here
+...
+2160 |     let write_id = TILE_MANIFEST_CACHE_WRITE_ID.fetch_add(1, Ordering::Relaxed);
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: a static with a similar name exists
+     |
+2160 -     let write_id = TILE_MANIFEST_CACHE_WRITE_ID.fetch_add(1, Ordering::Relaxed);
+2160 +     let write_id = TILE_AUTHORITY_CACHE_WRITE_ID.fetch_add(1, Ordering::Relaxed);
+     |
+
+warning: unused import: `ChunkBounds`
+ --> crates/bedrock-render/src/renderer/cache.rs:8:21
+  |
+8 | use bedrock_world::{ChunkBounds, ChunkPos, Dimension};
+  |                     ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `BTreeMap`
+  --> crates/bedrock-render/src/renderer/cache.rs:10:24
+   |
+10 | use std::collections::{BTreeMap, BTreeSet};
+   |                        ^^^^^^^^
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `bedrock-render` (lib) generated 2 warnings
+error: could not compile `bedrock-render` (lib) due to 2 previous errors; 2 warnings emitted
