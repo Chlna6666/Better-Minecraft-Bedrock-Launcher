@@ -442,23 +442,20 @@ impl NovaRenderer {
         let fragmented_index_bytes = allocator_snapshot
             .3
             .saturating_sub(allocator_snapshot.5);
-        tracing::debug!(
-            surface = surface_key,
-            current_meshes = current_meshes.len(),
-            cached_meshes = self.custom_mesh_3d_mesh_cache.len(),
-            uploaded_bytes = self.custom_mesh_3d_uploaded_bytes_this_frame,
-            used_vertices = allocator_snapshot.0,
-            used_index_bytes = allocator_snapshot.1,
-            free_vertices = allocator_snapshot.2,
-            free_index_bytes = allocator_snapshot.3,
-            largest_free_vertex_span = allocator_snapshot.4,
-            largest_free_index_span = allocator_snapshot.5,
-            fragmented_vertex_count,
-            fragmented_index_bytes,
-            retired_allocations = allocator_snapshot.6,
-            evictions = allocator_snapshot.7,
-            compactions = allocator_snapshot.8,
-            "nova custom 3D mesh paged cache"
+        log::debug!(
+            "nova custom 3D mesh paged cache: surface={surface_key}, current_meshes={}, cached_meshes={}, uploaded_bytes={}, used_vertices={}, used_index_bytes={}, free_vertices={}, free_index_bytes={}, largest_free_vertex_span={}, largest_free_index_span={}, fragmented_vertex_count={fragmented_vertex_count}, fragmented_index_bytes={fragmented_index_bytes}, retired_allocations={}, evictions={}, compactions={}",
+            current_meshes.len(),
+            self.custom_mesh_3d_mesh_cache.len(),
+            self.custom_mesh_3d_uploaded_bytes_this_frame,
+            allocator_snapshot.0,
+            allocator_snapshot.1,
+            allocator_snapshot.2,
+            allocator_snapshot.3,
+            allocator_snapshot.4,
+            allocator_snapshot.5,
+            allocator_snapshot.6,
+            allocator_snapshot.7,
+            allocator_snapshot.8,
         );
         Ok(())
     }
