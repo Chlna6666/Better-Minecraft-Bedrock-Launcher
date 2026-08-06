@@ -51,6 +51,13 @@ jobs:
             libxkbcommon-dev \
             pkg-config
 
+      - name: Restore Rust build cache
+        if: steps.patch.outputs.needed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: local-bedrock-occupancy
+
       - name: Apply local refactor
         if: steps.patch.outputs.needed == 'true'
         shell: bash
@@ -69,6 +76,22 @@ jobs:
           PY
           python3 scripts/apply_local_bedrock_occupancy.py
           cargo fmt --all
+          git diff --stat
+
+      - name: Upload patched source snapshot
+        if: steps.patch.outputs.needed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-bedrock-patched-sources-${{ github.run_id }}
+          path: |
+            Cargo.toml
+            Cargo.lock
+            crates/bedrock-leveldb
+            crates/bedrock-world
+            crates/bedrock-render
+            src/ui/window/map_viewer
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Check bedrock-leveldb
         if: steps.patch.outputs.needed == 'true'
