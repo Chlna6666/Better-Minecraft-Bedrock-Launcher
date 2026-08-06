@@ -38,6 +38,19 @@ jobs:
             echo "needed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Install Linux build dependencies
+        if: steps.patch.outputs.needed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev \
+            libdbus-1-dev \
+            libegl1-mesa-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config
+
       - name: Apply local refactor
         if: steps.patch.outputs.needed == 'true'
         shell: bash
