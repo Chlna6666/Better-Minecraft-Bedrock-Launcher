@@ -1,4 +1,4 @@
-name: Apply local Bedrock occupancy refactor
+name: Apply local map compatibility cleanup
 
 on:
   pull_request:
@@ -13,14 +13,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: local-bedrock-occupancy-${{ github.event.pull_request.number }}
+  group: local-map-compatibility-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   apply:
     if: github.head_ref == 'work/local-bedrock-crates'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout work branch
         uses: actions/checkout@v4
@@ -28,18 +28,18 @@ jobs:
           fetch-depth: 0
           ref: work/local-bedrock-crates
 
-      - name: Detect staged patch
-        id: patch
+      - name: Detect staged cleanup
+        id: cleanup
         shell: bash
         run: |
-          if [[ -f scripts/apply_local_bedrock_occupancy.py.gz.b64 ]]; then
+          if [[ -f scripts/remove_map_helpers_viewport_compat.py ]]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install Linux build dependencies
-        if: steps.patch.outputs.needed == 'true'
+        if: steps.cleanup.outputs.needed == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
@@ -51,96 +51,61 @@ jobs:
             libxkbcommon-dev \
             pkg-config
 
-      - name: Restore Rust build cache
-        if: steps.patch.outputs.needed == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-          shared-key: local-bedrock-occupancy
-
-      - name: Apply local refactor
-        if: steps.patch.outputs.needed == 'true'
+      - name: Remove compatibility modules and compile BMCBL
+        if: steps.cleanup.outputs.needed == 'true'
         shell: bash
         run: |
-          set -euo pipefail
-          base64 --decode scripts/apply_local_bedrock_occupancy.py.gz.b64 | gzip --decompress > scripts/apply_local_bedrock_occupancy.py
-          python3 <<'PY'
-          from pathlib import Path
-          path = Path('scripts/apply_local_bedrock_occupancy.py')
-          text = path.read_text(encoding='utf-8')
-          old = 'anchor = "\\n}\\n\\npub(super) fn map_memory_snapshot_due"'
-          new = 'anchor = "\\n    pub(super) fn schedule_next_tile_batch"'
-          if old not in text:
-              raise SystemExit('missing obsolete occupancy lifecycle anchor')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
-          PY
-          python3 scripts/apply_local_bedrock_occupancy.py
-          cargo fmt --all
-          git diff --stat
+          set +e
+          validation=/tmp/map-compatibility-cleanup.txt
+          : > "$validation"
 
-      - name: Upload patched source snapshot
-        if: steps.patch.outputs.needed == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: local-bedrock-patched-sources-${{ github.run_id }}
-          path: |
-            Cargo.toml
-            Cargo.lock
-            crates/bedrock-leveldb
-            crates/bedrock-world
-            crates/bedrock-render
-            src/ui/window/map_viewer
-          if-no-files-found: error
-          retention-days: 3
+          echo '=== merge helpers and viewport into canonical modules ===' >> "$validation"
+          python3 scripts/remove_map_helpers_viewport_compat.py >> "$validation" 2>&1
+          status=$?
 
-      - name: Check bedrock-leveldb
-        if: steps.patch.outputs.needed == 'true'
-        run: timeout 10m cargo check -p bedrock-leveldb
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== legacy symbol guard ===' >> "$validation"
+            if grep -RIn -E \
+              'helpers_stable|helpers_legacy|viewport_stable|viewport_base' \
+              src/ui/window/map_viewer src/ui/window/map_viewer.rs \
+              >> "$validation" 2>&1; then
+              echo 'helpers/viewport compatibility symbol remains' >> "$validation"
+              status=1
+            fi
+          fi
 
-      - name: Check bedrock-world
-        if: steps.patch.outputs.needed == 'true'
-        run: timeout 10m cargo check -p bedrock-world
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== format BMCBL ===' >> "$validation"
+            cargo fmt -p bmcbl >> "$validation" 2>&1
+            status=$?
+          fi
 
-      - name: Check bedrock-render
-        if: steps.patch.outputs.needed == 'true'
-        run: timeout 15m cargo check -p bedrock-render
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== compile BMCBL library ===' >> "$validation"
+            cargo check -p bmcbl --lib >> "$validation" 2>&1
+            status=$?
+          fi
 
-      - name: Test bedrock-leveldb
-        if: steps.patch.outputs.needed == 'true'
-        run: timeout 10m cargo test -p bedrock-leveldb --lib
-
-      - name: Test bedrock-world
-        if: steps.patch.outputs.needed == 'true'
-        run: timeout 10m cargo test -p bedrock-world --lib
-
-      - name: Test tile occupancy index
-        if: steps.patch.outputs.needed == 'true'
-        run: timeout 5m cargo test -p bedrock-render --lib occupancy::tests
-
-      - name: Check BMCBL library
-        if: steps.patch.outputs.needed == 'true'
-        shell: bash
-        run: |
-          set -o pipefail
-          timeout 15m cargo check --lib 2>&1 | tee bmcbl-check.log
-
-      - name: Upload BMCBL check diagnostics
-        if: always() && steps.patch.outputs.needed == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: bmcbl-check-diagnostics-${{ github.run_id }}
-          path: bmcbl-check.log
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Commit validated refactor
-        if: steps.patch.outputs.needed == 'true' && success()
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64 bmcbl-check.log
+          cp "$validation" scripts/map_compatibility_cleanup.txt
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Cargo.lock crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render src/ui/window/map_viewer scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64
-          git commit -m "feat(map): replace viewport probes with occupancy index"
-          git push origin HEAD:work/local-bedrock-crates
+
+          if [[ "$status" -eq 0 ]]; then
+            rm -f \
+              scripts/remove_map_helpers_viewport_compat.py \
+              scripts/remove_bedrock_compatibility_api.py
+            git add -A src scripts Cargo.lock
+            if ! git diff --cached --quiet; then
+              git commit -m 'refactor(map): 删除 helpers 与 viewport 兼容层'
+              git push origin HEAD:work/local-bedrock-crates
+            fi
+          else
+            git add -A src scripts Cargo.lock
+            if ! git diff --cached --quiet; then
+              git commit -m 'wip(map): 保留兼容层删除后的编译错误'
+              git push origin HEAD:work/local-bedrock-crates
+            fi
+          fi
+
+          cat "$validation"
+          exit "$status"
