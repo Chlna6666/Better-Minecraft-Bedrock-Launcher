@@ -96,14 +96,26 @@ jobs:
 
       - name: Check BMCBL library
         if: steps.patch.outputs.needed == 'true'
-        run: timeout 15m cargo check --lib
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout 15m cargo check --lib 2>&1 | tee bmcbl-check.log
+
+      - name: Upload BMCBL check diagnostics
+        if: always() && steps.patch.outputs.needed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bmcbl-check-diagnostics-${{ github.run_id }}
+          path: bmcbl-check.log
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Commit validated refactor
-        if: steps.patch.outputs.needed == 'true'
+        if: steps.patch.outputs.needed == 'true' && success()
         shell: bash
         run: |
           set -euo pipefail
-          rm -f scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64
+          rm -f scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64 bmcbl-check.log
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add Cargo.lock crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render src/ui/window/map_viewer scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64
