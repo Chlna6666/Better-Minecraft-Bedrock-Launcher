@@ -1,9 +1,6 @@
 mod actions;
 mod bottom_panel;
-#[path = "map_viewer/canvas_stable.rs"]
 mod canvas;
-#[path = "map_viewer/canvas.rs"]
-mod canvas_legacy;
 mod editor;
 mod helpers;
 mod history_panel;
@@ -49,10 +46,7 @@ mod tile_render_stable;
 mod tile_state;
 mod tool_stripe;
 mod top_bar;
-#[path = "map_viewer/view_stable.rs"]
 mod view;
-#[path = "map_viewer/view.rs"]
-mod view_legacy;
 mod viewport;
 
 pub use actions::init;

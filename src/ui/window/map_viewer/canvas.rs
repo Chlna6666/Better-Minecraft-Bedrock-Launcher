@@ -16,9 +16,11 @@ use super::viewport::{
 };
 use crate::ui::theme::colors::ThemeColors;
 use bedrock_render::RenderLayout;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static MAP_TILE_PAINT_RESOURCES_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+const SUSTAINED_PAINT_RESOURCE_FAILURE_LIMIT: usize = 240;
+static PAINT_RESOURCE_FAILURE_STREAK: AtomicUsize = AtomicUsize::new(0);
 const SCREEN_IMAGE_VIEWPORT_EPSILON: f32 = 0.01;
 const MAP_TILE_INTERACTION_NEW_IMAGE_BUDGET_PER_FRAME: usize = 16;
 const MAP_TILE_IDLE_NEW_IMAGE_BUDGET_PER_FRAME: usize = 8;
@@ -119,7 +121,20 @@ pub(super) enum MapCanvasAction {
 }
 
 pub(super) fn take_map_tile_paint_resources_unavailable() -> bool {
-    MAP_TILE_PAINT_RESOURCES_UNAVAILABLE.swap(false, Ordering::Relaxed)
+    if !MAP_TILE_PAINT_RESOURCES_UNAVAILABLE.swap(false, Ordering::Relaxed) {
+        PAINT_RESOURCE_FAILURE_STREAK.store(0, Ordering::Release);
+        return false;
+    }
+
+    let streak = PAINT_RESOURCE_FAILURE_STREAK
+        .fetch_add(1, Ordering::AcqRel)
+        .saturating_add(1);
+    if streak < SUSTAINED_PAINT_RESOURCE_FAILURE_LIMIT {
+        return false;
+    }
+
+    PAINT_RESOURCE_FAILURE_STREAK.store(0, Ordering::Release);
+    true
 }
 
 fn map_tile_paint_resources_unavailable() -> bool {
@@ -1395,44 +1410,29 @@ fn arc_option_ptr<T>(value: &Option<Arc<T>>) -> Option<usize> {
 }
 
 pub(super) fn build_tile_paint_snapshot(
-    tile_manager: &RegionManager,
-    viewport: MapViewport,
-    layout: RenderLayout,
+    tile_manager: &super::tile_state::RegionManager,
+    viewport: super::model::MapViewport,
+    layout: bedrock_render::RenderLayout,
     diagnostics_open: bool,
     paint_radius: i32,
     generation: u64,
 ) -> TilePaintSnapshot {
-    let mut paint_tiles = Vec::new();
+    let paint_bounds =
+        super::viewport::paint_tile_bounds_for_viewport(viewport, layout, paint_radius);
+    let paint_capacity = paint_bounds
+        .map(super::viewport::tile_bounds_count)
+        .unwrap_or(0)
+        .min(tile_manager.loaded_count());
+    let mut tiles = Vec::with_capacity(paint_capacity);
     let mut debug_overlays = Vec::new();
-    let mut estimated_bytes = 0usize;
-    if region_render_range_for_viewport(viewport, layout).is_none() {
-        return TilePaintSnapshot {
-            tiles: Arc::new(paint_tiles),
-            screen_images: Arc::new(Vec::new()),
-            debug_overlays: Arc::new(debug_overlays),
-            generation,
-            estimated_bytes,
-            paint_bounds: None,
-        };
-    };
-    let Some(paint_bounds) = paint_tile_bounds_for_viewport(viewport, layout, paint_radius) else {
-        return TilePaintSnapshot {
-            tiles: Arc::new(paint_tiles),
-            screen_images: Arc::new(Vec::new()),
-            debug_overlays: Arc::new(debug_overlays),
-            generation,
-            estimated_bytes,
-            paint_bounds: None,
-        };
-    };
-    for (tile_x, tile_z) in tile_coords_for_paint_order(paint_bounds) {
-        let Some(entry) = tile_manager.entries.get(&(tile_x, tile_z)) else {
+
+    for (&coord, entry) in &tile_manager.entries {
+        if !paint_bounds.is_some_and(|bounds| bounds.contains(coord)) {
             continue;
-        };
-        if let Some(tile) = &entry.image {
-            estimated_bytes = estimated_bytes.saturating_add(tile.estimated_bytes);
-            paint_tiles.push(PaintTile {
-                coord: (tile_x, tile_z),
+        }
+        if let Some(tile) = entry.image.as_ref() {
+            tiles.push(super::tile_state::PaintTile {
+                coord,
                 image: tile.image.clone(),
                 pixel_format: tile.pixel_format,
                 width: tile.width,
@@ -1440,102 +1440,130 @@ pub(super) fn build_tile_paint_snapshot(
                 estimated_bytes: tile.estimated_bytes,
             });
         } else if diagnostics_open
-            && matches!(entry.state, TileLoadState::Failed | TileLoadState::Invalid)
+            && matches!(
+                entry.state,
+                super::tile_state::TileLoadState::Failed
+                    | super::tile_state::TileLoadState::Empty
+                    | super::tile_state::TileLoadState::Invalid
+            )
         {
             debug_overlays.push(TileDebugOverlay {
-                coord: (tile_x, tile_z),
-                label: if entry.state == TileLoadState::Invalid {
-                    SharedString::from("空")
-                } else {
-                    SharedString::from("失败")
+                coord,
+                label: match entry.state {
+                    super::tile_state::TileLoadState::Empty => SharedString::from("空"),
+                    super::tile_state::TileLoadState::Invalid => SharedString::from("无效"),
+                    _ => SharedString::from("失败"),
                 },
             });
         }
     }
-    debug_assert!(paint_tiles_are_ordered(&paint_tiles));
-    debug_assert!(debug_overlays_are_ordered(&debug_overlays));
+
+    tiles.sort_unstable_by_key(|tile| super::viewport::tile_paint_sort_key(tile.coord));
+    debug_overlays
+        .sort_unstable_by_key(|overlay| super::viewport::tile_paint_sort_key(overlay.coord));
+    let estimated_bytes = tiles.iter().map(|tile| tile.estimated_bytes).sum::<usize>();
+
+    tracing::debug!(
+        generation,
+        viewport_scale = viewport.scale,
+        tile_images = tiles.len(),
+        screen_images = 0,
+        estimated_bytes,
+        ?paint_bounds,
+        render_unit = "individual_tile",
+        frontend_layer = "single_merged_tile_canvas",
+        "map_viewer merged_tile_layer_snapshot_built"
+    );
+
     TilePaintSnapshot {
-        tiles: Arc::new(paint_tiles),
+        tiles: Arc::new(tiles),
         screen_images: Arc::new(Vec::new()),
         debug_overlays: Arc::new(debug_overlays),
         generation,
         estimated_bytes,
-        paint_bounds: Some(paint_bounds),
+        paint_bounds,
     }
 }
 
 pub(super) fn patch_tile_paint_snapshot(
     current: &TilePaintSnapshot,
-    tile_manager: &RegionManager,
-    viewport: MapViewport,
-    layout: RenderLayout,
+    tile_manager: &super::tile_state::RegionManager,
+    viewport: super::model::MapViewport,
+    layout: bedrock_render::RenderLayout,
     diagnostics_open: bool,
     paint_radius: i32,
     changed_tiles: &[(i32, i32)],
     generation: u64,
 ) -> TilePaintSnapshotPatch {
+    let paint_bounds =
+        super::viewport::paint_tile_bounds_for_viewport(viewport, layout, paint_radius);
+    if current.paint_bounds != paint_bounds {
+        return TilePaintSnapshotPatch::Rebuild;
+    }
+    // Purge any snapshot produced by an older macro-page build after a live-reload or upgrade.
+    if !current.screen_images.is_empty() {
+        tracing::debug!(
+            generation,
+            stale_screen_images = current.screen_images.len(),
+            "map_viewer rebuilding_to_remove_legacy_macro_pages"
+        );
+        return TilePaintSnapshotPatch::Rebuild;
+    }
     if changed_tiles.is_empty() {
         return TilePaintSnapshotPatch::Unchanged;
     }
-    if region_render_range_for_viewport(viewport, layout).is_none() {
-        return TilePaintSnapshotPatch::Rebuild;
-    };
-    let Some(paint_bounds) = paint_tile_bounds_for_viewport(viewport, layout, paint_radius) else {
-        return TilePaintSnapshotPatch::Rebuild;
-    };
-    let has_composite_underlay = !current.screen_images.is_empty();
-    let (mut tiles, mut debug_overlays, mut estimated_bytes) =
-        if current.paint_bounds == Some(paint_bounds) {
-            (
-                current.tiles.as_ref().clone(),
-                current.debug_overlays.as_ref().clone(),
-                current.estimated_bytes,
-            )
-        } else if has_composite_underlay {
-            (
-                Vec::new(),
-                Vec::new(),
-                current
-                    .screen_images
-                    .iter()
-                    .map(|image| image.estimated_bytes)
-                    .sum(),
-            )
-        } else {
-            return TilePaintSnapshotPatch::Rebuild;
-        };
-    if !paint_tiles_are_ordered(&tiles) {
-        tiles.sort_unstable_by_key(|tile| tile_paint_sort_key(tile.coord));
-    }
-    if !debug_overlays_are_ordered(&debug_overlays) {
-        debug_overlays.sort_unstable_by_key(|overlay| tile_paint_sort_key(overlay.coord));
-    }
-    let mut changed = false;
-    for coord in changed_tiles.iter().copied() {
-        if !paint_bounds_contains(paint_bounds, coord) {
-            continue;
+
+    let mut tiles = current.tiles.as_ref().clone();
+    let mut debug_overlays = current.debug_overlays.as_ref().clone();
+    let mut coords = changed_tiles.to_vec();
+    coords.sort_unstable();
+    coords.dedup();
+
+    let mut updated_tile_images = 0usize;
+    let mut updated_debug_overlays = 0usize;
+    for coord in coords.iter().copied() {
+        if patch_tile(&mut tiles, tile_manager, paint_bounds, coord) {
+            updated_tile_images = updated_tile_images.saturating_add(1);
         }
-        if let Some(change) = patch_paint_tile(&mut tiles, tile_manager, coord) {
-            estimated_bytes = estimated_bytes
-                .saturating_sub(change.old_bytes)
-                .saturating_add(change.new_bytes);
-            changed = true;
+        if patch_overlay(
+            &mut debug_overlays,
+            tile_manager,
+            paint_bounds,
+            coord,
+            diagnostics_open,
+        ) {
+            updated_debug_overlays = updated_debug_overlays.saturating_add(1);
         }
-        changed |= patch_debug_overlay(&mut debug_overlays, tile_manager, coord, diagnostics_open);
     }
 
-    if !changed {
+    if updated_tile_images == 0 && updated_debug_overlays == 0 {
         return TilePaintSnapshotPatch::Unchanged;
     }
-    debug_assert!(paint_tiles_are_ordered(&tiles));
-    debug_assert!(debug_overlays_are_ordered(&debug_overlays));
+
+    let estimated_bytes = tiles.iter().map(|tile| tile.estimated_bytes).sum::<usize>();
+
+    tracing::debug!(
+        generation,
+        requested_changed_tiles = changed_tiles.len(),
+        unique_changed_tiles = coords.len(),
+        updated_tile_images,
+        updated_debug_overlays,
+        retained_tile_images = tiles.len().saturating_sub(updated_tile_images),
+        tile_images = tiles.len(),
+        screen_images = 0,
+        estimated_bytes,
+        viewport_scale = viewport.scale,
+        update_granularity = "tile_subregion_of_merged_layer",
+        "map_viewer merged_tile_layer_snapshot_patched"
+    );
+
     TilePaintSnapshotPatch::Patched(TilePaintSnapshot {
         tiles: Arc::new(tiles),
-        screen_images: current.screen_images.clone(),
+        screen_images: Arc::new(Vec::new()),
         debug_overlays: Arc::new(debug_overlays),
         generation,
         estimated_bytes,
-        paint_bounds: Some(paint_bounds),
+        paint_bounds,
     })
 }
 
@@ -1707,4 +1735,58 @@ fn debug_overlays_are_ordered(debug_overlays: &[TileDebugOverlay]) -> bool {
     debug_overlays.windows(2).all(|overlays| {
         tile_paint_sort_key(overlays[0].coord) <= tile_paint_sort_key(overlays[1].coord)
     })
+}
+
+fn patch_overlay(
+    overlays: &mut Vec<TileDebugOverlay>,
+    tile_manager: &super::tile_state::RegionManager,
+    paint_bounds: Option<super::viewport::TileBounds>,
+    coord: (i32, i32),
+    diagnostics_open: bool,
+) -> bool {
+    let key = super::viewport::tile_paint_sort_key(coord);
+    let existing = overlays.binary_search_by_key(&key, |overlay| {
+        super::viewport::tile_paint_sort_key(overlay.coord)
+    });
+    let replacement = paint_bounds
+        .filter(|bounds| bounds.contains(coord))
+        .and_then(|_| tile_manager.entries.get(&coord))
+        .and_then(|entry| {
+            if !diagnostics_open
+                || !matches!(
+                    entry.state,
+                    super::tile_state::TileLoadState::Failed
+                        | super::tile_state::TileLoadState::Invalid
+                )
+            {
+                return None;
+            }
+            Some(TileDebugOverlay {
+                coord,
+                label: match entry.state {
+                    super::tile_state::TileLoadState::Empty => SharedString::from("空"),
+                    super::tile_state::TileLoadState::Invalid => SharedString::from("无效"),
+                    _ => SharedString::from("失败"),
+                },
+            })
+        });
+
+    match (existing, replacement) {
+        (Ok(index), Some(replacement)) => {
+            if overlays[index].label == replacement.label {
+                return false;
+            }
+            overlays[index] = replacement;
+            true
+        }
+        (Ok(index), None) => {
+            overlays.remove(index);
+            true
+        }
+        (Err(index), Some(replacement)) => {
+            overlays.insert(index, replacement);
+            true
+        }
+        (Err(_), None) => false,
+    }
 }
