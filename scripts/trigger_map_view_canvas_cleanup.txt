@@ -1,1 +1,0 @@
-Run view/canvas canonical module cleanup and compile BMCBL.

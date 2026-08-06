@@ -1567,174 +1567,53 @@ pub(super) fn patch_tile_paint_snapshot(
     })
 }
 
-#[derive(Clone, Copy)]
-struct PaintTilePatchChange {
-    old_bytes: usize,
-    new_bytes: usize,
-}
-
-fn patch_paint_tile(
-    tiles: &mut Vec<PaintTile>,
-    tile_manager: &RegionManager,
+fn patch_tile(
+    tiles: &mut Vec<super::tile_state::PaintTile>,
+    tile_manager: &super::tile_state::RegionManager,
+    paint_bounds: Option<super::viewport::TileBounds>,
     coord: (i32, i32),
-) -> Option<PaintTilePatchChange> {
-    match paint_tile_for_coord(tile_manager, coord) {
-        Some(tile) => insert_or_replace_paint_tile(tiles, tile),
-        None => remove_paint_tile(tiles, coord),
-    }
-}
-
-fn patch_debug_overlay(
-    debug_overlays: &mut Vec<TileDebugOverlay>,
-    tile_manager: &RegionManager,
-    coord: (i32, i32),
-    diagnostics_open: bool,
 ) -> bool {
-    match debug_overlay_for_coord(tile_manager, coord, diagnostics_open) {
-        Some(overlay) => insert_or_replace_debug_overlay(debug_overlays, overlay),
-        None => remove_debug_overlay(debug_overlays, coord),
-    }
-}
-
-fn paint_tile_for_coord(tile_manager: &RegionManager, coord: (i32, i32)) -> Option<PaintTile> {
-    let entry = tile_manager.entries.get(&coord)?;
-    let tile = entry.image.as_ref()?;
-    Some(PaintTile {
-        coord,
-        image: tile.image.clone(),
-        pixel_format: tile.pixel_format,
-        width: tile.width,
-        height: tile.height,
-        estimated_bytes: tile.estimated_bytes,
-    })
-}
-
-fn debug_overlay_for_coord(
-    tile_manager: &RegionManager,
-    coord: (i32, i32),
-    diagnostics_open: bool,
-) -> Option<TileDebugOverlay> {
-    let entry = tile_manager.entries.get(&coord)?;
-    if !diagnostics_open || !matches!(entry.state, TileLoadState::Failed | TileLoadState::Invalid) {
-        return None;
-    }
-    Some(TileDebugOverlay {
-        coord,
-        label: if entry.state == TileLoadState::Invalid {
-            SharedString::from("空")
-        } else {
-            SharedString::from("失败")
-        },
-    })
-}
-
-fn insert_or_replace_paint_tile(
-    tiles: &mut Vec<PaintTile>,
-    tile: PaintTile,
-) -> Option<PaintTilePatchChange> {
-    let key = tile_paint_sort_key(tile.coord);
-    if let Ok(index) =
-        tiles.binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
-    {
-        if paint_tile_same(&tiles[index], &tile) {
-            return None;
-        }
-        let old_bytes = tiles[index].estimated_bytes;
-        let new_bytes = tile.estimated_bytes;
-        tiles[index] = tile;
-        return Some(PaintTilePatchChange {
-            old_bytes,
-            new_bytes,
+    let key = super::viewport::tile_paint_sort_key(coord);
+    let existing = tiles.binary_search_by_key(&key, |tile| {
+        super::viewport::tile_paint_sort_key(tile.coord)
+    });
+    let replacement = paint_bounds
+        .filter(|bounds| bounds.contains(coord))
+        .and_then(|_| tile_manager.entries.get(&coord))
+        .and_then(|entry| entry.image.as_ref())
+        .map(|tile| super::tile_state::PaintTile {
+            coord,
+            image: tile.image.clone(),
+            pixel_format: tile.pixel_format,
+            width: tile.width,
+            height: tile.height,
+            estimated_bytes: tile.estimated_bytes,
         });
-    }
-    let index = tiles
-        .binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
-        .unwrap_or_else(|index| index);
-    let new_bytes = tile.estimated_bytes;
-    tiles.insert(index, tile);
-    Some(PaintTilePatchChange {
-        old_bytes: 0,
-        new_bytes,
-    })
-}
 
-fn remove_paint_tile(
-    tiles: &mut Vec<PaintTile>,
-    coord: (i32, i32),
-) -> Option<PaintTilePatchChange> {
-    let key = tile_paint_sort_key(coord);
-    let Ok(index) = tiles.binary_search_by_key(&key, |tile| tile_paint_sort_key(tile.coord)) else {
-        return None;
-    };
-    let tile = tiles.remove(index);
-    Some(PaintTilePatchChange {
-        old_bytes: tile.estimated_bytes,
-        new_bytes: 0,
-    })
-}
-
-fn insert_or_replace_debug_overlay(
-    debug_overlays: &mut Vec<TileDebugOverlay>,
-    overlay: TileDebugOverlay,
-) -> bool {
-    let key = tile_paint_sort_key(overlay.coord);
-    if let Ok(index) =
-        debug_overlays.binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
-    {
-        if debug_overlay_same(&debug_overlays[index], &overlay) {
-            return false;
+    match (existing, replacement) {
+        (Ok(index), Some(replacement)) => {
+            let current = &tiles[index];
+            if Arc::ptr_eq(&current.image, &replacement.image)
+                && current.pixel_format == replacement.pixel_format
+                && current.width == replacement.width
+                && current.height == replacement.height
+                && current.estimated_bytes == replacement.estimated_bytes
+            {
+                return false;
+            }
+            tiles[index] = replacement;
+            true
         }
-        debug_overlays[index] = overlay;
-        return true;
+        (Ok(index), None) => {
+            tiles.remove(index);
+            true
+        }
+        (Err(index), Some(replacement)) => {
+            tiles.insert(index, replacement);
+            true
+        }
+        (Err(_), None) => false,
     }
-    let index = debug_overlays
-        .binary_search_by_key(&key, |existing| tile_paint_sort_key(existing.coord))
-        .unwrap_or_else(|index| index);
-    debug_overlays.insert(index, overlay);
-    true
-}
-
-fn remove_debug_overlay(debug_overlays: &mut Vec<TileDebugOverlay>, coord: (i32, i32)) -> bool {
-    let key = tile_paint_sort_key(coord);
-    let Ok(index) =
-        debug_overlays.binary_search_by_key(&key, |overlay| tile_paint_sort_key(overlay.coord))
-    else {
-        return false;
-    };
-    debug_overlays.remove(index);
-    true
-}
-
-fn paint_bounds_contains(bounds: super::viewport::TileBounds, coord: (i32, i32)) -> bool {
-    coord.0 >= bounds.min_x
-        && coord.0 <= bounds.max_x
-        && coord.1 >= bounds.min_z
-        && coord.1 <= bounds.max_z
-}
-
-fn paint_tile_same(left: &PaintTile, right: &PaintTile) -> bool {
-    left.coord == right.coord
-        && Arc::ptr_eq(&left.image, &right.image)
-        && left.pixel_format == right.pixel_format
-        && left.width == right.width
-        && left.height == right.height
-        && left.estimated_bytes == right.estimated_bytes
-}
-
-fn debug_overlay_same(left: &TileDebugOverlay, right: &TileDebugOverlay) -> bool {
-    left.coord == right.coord && left.label == right.label
-}
-
-fn paint_tiles_are_ordered(tiles: &[PaintTile]) -> bool {
-    tiles
-        .windows(2)
-        .all(|tiles| tile_paint_sort_key(tiles[0].coord) <= tile_paint_sort_key(tiles[1].coord))
-}
-
-fn debug_overlays_are_ordered(debug_overlays: &[TileDebugOverlay]) -> bool {
-    debug_overlays.windows(2).all(|overlays| {
-        tile_paint_sort_key(overlays[0].coord) <= tile_paint_sort_key(overlays[1].coord)
-    })
 }
 
 fn patch_overlay(
@@ -1756,6 +1635,7 @@ fn patch_overlay(
                 || !matches!(
                     entry.state,
                     super::tile_state::TileLoadState::Failed
+                        | super::tile_state::TileLoadState::Empty
                         | super::tile_state::TileLoadState::Invalid
                 )
             {
