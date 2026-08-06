@@ -38,8 +38,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode scripts/apply_local_bedrock_occupancy.py.gz.b64 | gzip --decompress > /tmp/apply_local_bedrock_occupancy.py
-          python3 /tmp/apply_local_bedrock_occupancy.py
+          base64 --decode scripts/apply_local_bedrock_occupancy.py.gz.b64 | gzip --decompress > scripts/apply_local_bedrock_occupancy.py
+          python3 scripts/apply_local_bedrock_occupancy.py
           cargo fmt --all
 
       - name: Check local Bedrock crates
@@ -60,9 +60,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f scripts/apply_local_bedrock_occupancy.py.gz.b64
+          rm -f scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Cargo.lock crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render src/ui/window/map_viewer scripts/apply_local_bedrock_occupancy.py.gz.b64
+          git add Cargo.lock crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render src/ui/window/map_viewer scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64
           git commit -m "feat(map): replace viewport probes with occupancy index"
           git push origin HEAD:work/local-bedrock-crates
