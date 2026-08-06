@@ -74,11 +74,12 @@ pub use bedrock::{
     LegacyTerrain, SUBCHUNK_BLOCK_COUNT, SubChunkIndex, SubChunkPayload,
 };
 pub use db::{
-    Db, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport, Snapshot, ValueRef,
+    Db, DbCacheStats, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport,
+    Snapshot, ValueRef,
 };
 pub use error::{ErrorKind, LevelDbError, Result};
 pub use options::{
-    CachePolicy, ChecksumMode, CompressionPolicy, OpenOptions, ReadOptions, ReadStrategy,
-    ScanCancelFlag, ScanMode, ScanOutcome, ScanPipelineOptions, ScanProgress, ScanProgressSink,
-    ThreadingOptions, VisitorControl, WriteOptions,
+    CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
+    ReadStrategy, ScanCancelFlag, ScanMode, ScanOutcome, ScanPipelineOptions, ScanProgress,
+    ScanProgressSink, ThreadingOptions, VisitorControl, WriteOptions,
 };

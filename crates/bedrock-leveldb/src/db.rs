@@ -2,8 +2,8 @@ use crate::batch::{WriteBatch, WriteOp};
 use crate::error::{ErrorKind, LevelDbError, Result};
 use crate::manifest::Manifest;
 use crate::options::{
-    CachePolicy, ChecksumMode, CompressionPolicy, OpenOptions, ReadOptions, ReadStrategy, ScanMode,
-    ScanOutcome, VisitorControl, WriteOptions,
+    CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
+    ReadStrategy, ScanMode, ScanOutcome, VisitorControl, WriteOptions,
 };
 use crate::table;
 use crate::wal;
@@ -32,6 +32,37 @@ pub struct DbStats {
     pub log_number: u64,
     /// Approximate visible bytes or overlay bytes, depending on the stats path.
     pub approximate_bytes: usize,
+}
+
+/// Snapshot of the sharded native table caches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DbCacheStats {
+    /// Decoded data-block cache hits.
+    pub data_hits: u64,
+    /// Decoded data-block cache misses.
+    pub data_misses: u64,
+    /// Decoded data-block evictions.
+    pub data_evictions: u64,
+    /// Table-index cache hits.
+    pub index_hits: u64,
+    /// Table-index cache misses.
+    pub index_misses: u64,
+    /// Table-index evictions.
+    pub index_evictions: u64,
+    /// Open-file cache hits.
+    pub file_hits: u64,
+    /// Open-file cache misses.
+    pub file_misses: u64,
+    /// Open-file cache evictions.
+    pub file_evictions: u64,
+    /// Number of shard lock acquisitions that observed contention.
+    pub lock_contention: u64,
+    /// Current decoded data-block entry count.
+    pub data_entries: usize,
+    /// Current table-index entry count.
+    pub index_entries: usize,
+    /// Current cached open SSTable handle count.
+    pub open_handles: usize,
 }
 
 /// Summary returned by [`Db::repair`].
@@ -198,7 +229,7 @@ struct DbInner {
 }
 
 type Overlay = BTreeMap<Vec<u8>, Option<Bytes>>;
-type LoadedState = (Manifest, Overlay, u64);
+type LoadedState = (Manifest, Overlay, u64, usize);
 
 // ReadOptions and OpenOptions are intentionally passed by value at the public
 // boundary so callers can use struct-update syntax without storing temporaries.
@@ -212,6 +243,20 @@ impl Db {
     /// when `read_only` would require initialization, when existing metadata is
     /// corrupt, or when filesystem I/O fails.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
+        let cache_options = NativeCacheOptions::from_total(options.cache_size);
+        Self::open_with_cache_options(path, options, cache_options)
+    }
+
+    /// Opens a database with independent sharded cache capacities.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::open`].
+    pub fn open_with_cache_options(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        cache_options: NativeCacheOptions,
+    ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         log::debug!(
             "opening database at {} (read_only={}, create_if_missing={})",
@@ -242,9 +287,9 @@ impl Db {
             return Err(LevelDbError::not_found(root.clone()));
         }
 
-        let (manifest, overlay, last_sequence) = load_existing_or_initialize(&root, &options)?;
-        let approximate_bytes = approximate_overlay_size(&overlay);
-        let cache_size = options.cache_size;
+        let (manifest, overlay, last_sequence, approximate_bytes) =
+            load_existing_or_initialize(&root, &options)?;
+        let cache_options = cache_options.normalized();
         log::debug!(
             "opened database at {} (tables={}, overlay_entries={}, last_sequence={})",
             root.display(),
@@ -261,8 +306,34 @@ impl Db {
                 last_sequence,
                 approximate_bytes,
             }),
-            block_cache: table::NativeBlockCache::new(cache_size),
+            block_cache: table::NativeBlockCache::new(
+                cache_options.data_capacity,
+                cache_options.index_capacity,
+                cache_options.file_capacity,
+                cache_options.shards,
+            ),
         })
+    }
+
+    /// Returns a point-in-time snapshot of cache activity and occupancy.
+    #[must_use]
+    pub fn cache_stats(&self) -> DbCacheStats {
+        let stats = self.block_cache.stats();
+        DbCacheStats {
+            data_hits: stats.data_hits,
+            data_misses: stats.data_misses,
+            data_evictions: stats.data_evictions,
+            index_hits: stats.index_hits,
+            index_misses: stats.index_misses,
+            index_evictions: stats.index_evictions,
+            file_hits: stats.file_hits,
+            file_misses: stats.file_misses,
+            file_evictions: stats.file_evictions,
+            lock_contention: stats.lock_contention,
+            data_entries: stats.data_entries,
+            index_entries: stats.index_entries,
+            open_handles: stats.open_handles,
+        }
     }
 
     #[cfg(feature = "async")]
@@ -413,14 +484,20 @@ impl Db {
         }
         let inner = self.read_inner()?;
         let mut results = vec![None; keys.len()];
-        let mut unresolved = BTreeMap::<Vec<u8>, Vec<usize>>::new();
+        let mut unresolved = Vec::with_capacity(keys.len());
         for (index, key) in keys.iter().enumerate() {
             if let Some(value) = inner.overlay.get(key.as_ref()) {
                 results[index].clone_from(value);
             } else {
-                unresolved.entry(key.to_vec()).or_default().push(index);
+                unresolved.push(index);
             }
         }
+        unresolved.sort_unstable_by(|left, right| {
+            keys[*left]
+                .as_ref()
+                .cmp(keys[*right].as_ref())
+                .then_with(|| left.cmp(right))
+        });
 
         let mut table_probes = 0usize;
         let mut table_hits = 0usize;
@@ -428,19 +505,22 @@ impl Db {
             if unresolved.is_empty() {
                 break;
             }
-            let lower = table.smallest_key.as_deref().map_or(Unbounded, Included);
-            let upper = table.largest_key.as_deref().map_or(Unbounded, Included);
-            let table_keys = unresolved
-                .range::<[u8], _>((lower, upper))
-                .map(|(key, _)| Bytes::copy_from_slice(key))
+            let table_indices = unresolved
+                .iter()
+                .copied()
+                .filter(|index| table.may_contain_user_key(keys[*index].as_ref()))
                 .collect::<Vec<_>>();
-            if table_keys.is_empty() {
+            if table_indices.is_empty() {
                 continue;
             }
             let table_path = self.root.join(Manifest::table_name(table.number));
             if !table_path.exists() {
                 continue;
             }
+            let table_keys = table_indices
+                .iter()
+                .map(|index| keys[*index].clone())
+                .collect::<Vec<_>>();
             table_probes = table_probes.saturating_add(1);
             let table_results = table::get_table_entries(
                 &table_path,
@@ -448,16 +528,13 @@ impl Db {
                 read_checksums(&self.options, &options),
                 read_cache(&options, &self.block_cache),
             )?;
-            for (key, value) in table_keys.into_iter().zip(table_results) {
+            for (input_index, value) in table_indices.into_iter().zip(table_results) {
                 if let Some(value) = value {
-                    if let Some(indexes) = unresolved.remove(key.as_ref()) {
-                        table_hits = table_hits.saturating_add(indexes.len());
-                        for index in indexes {
-                            results[index] = Some(value.clone());
-                        }
-                    }
+                    results[input_index] = Some(value);
+                    table_hits = table_hits.saturating_add(1);
                 }
             }
+            unresolved.retain(|index| results[*index].is_none());
         }
         log::debug!(
             "batch exact get complete (keys={}, hits={}, table_probes={}, elapsed_ms={})",
@@ -470,7 +547,7 @@ impl Db {
             "batch exact get detail (keys={}, table_hits={}, unresolved={})",
             keys.len(),
             table_hits,
-            unresolved.values().map(Vec::len).sum::<usize>()
+            unresolved.len()
         );
         Ok(results)
     }
@@ -1052,10 +1129,11 @@ impl Db {
             } else if path.extension().and_then(|ext| ext.to_str()) == Some("log") {
                 match File::open(&path) {
                     Ok(mut file) => {
+                        let mut approximate_bytes = approximate_entries_size(&values);
                         for record in wal::read_records(&mut file, false)? {
                             if let Ok(batch) = WriteBatch::decode(&record) {
-                                let approximate_bytes = approximate_entries_size(&values);
-                                apply_batch_to_values(&mut values, &batch, approximate_bytes);
+                                approximate_bytes =
+                                    apply_batch_to_values(&mut values, &batch, approximate_bytes);
                                 report.recovered_log_records += 1;
                             }
                         }
@@ -1932,6 +2010,7 @@ fn load_existing_or_initialize(root: &Path, options: &OpenOptions) -> Result<Loa
         Ok(manifest) => {
             let mut overlay = BTreeMap::new();
             let mut last_sequence = 0_u64;
+            let mut approximate_bytes = 0usize;
             let log_path = root.join(Manifest::log_name(manifest.log_number));
             log::trace!(
                 "loaded manifest from {} (tables={}, log_number={})",
@@ -1967,11 +2046,10 @@ fn load_existing_or_initialize(root: &Path, options: &OpenOptions) -> Result<Loa
                             )
                         })?;
                     last_sequence = last_sequence.max(batch_last_sequence);
-                    let approximate_bytes = approximate_overlay_size(&overlay);
-                    let _ = apply_batch(&mut overlay, &batch, approximate_bytes);
+                    approximate_bytes = apply_batch(&mut overlay, &batch, approximate_bytes);
                 }
             }
-            Ok((manifest, overlay, last_sequence))
+            Ok((manifest, overlay, last_sequence, approximate_bytes))
         }
         Err(error)
             if error.kind() == ErrorKind::NotFound
@@ -1987,7 +2065,7 @@ fn load_existing_or_initialize(root: &Path, options: &OpenOptions) -> Result<Loa
             let log_path = root.join(Manifest::log_name(manifest.log_number));
             File::create(&log_path)
                 .map_err(|error| LevelDbError::io_at("create WAL", &log_path, error))?;
-            Ok((manifest, BTreeMap::new(), 0))
+            Ok((manifest, BTreeMap::new(), 0, 0))
         }
         Err(error) => Err(error),
     }
@@ -2144,16 +2222,6 @@ fn approximate_entries_size(values: &BTreeMap<Vec<u8>, Bytes>) -> usize {
     values
         .iter()
         .map(|(key, value)| key.len().saturating_add(value.len()))
-        .sum()
-}
-
-fn approximate_overlay_size(values: &BTreeMap<Vec<u8>, Option<Bytes>>) -> usize {
-    values
-        .iter()
-        .map(|(key, value)| {
-            key.len()
-                .saturating_add(value.as_ref().map_or(0, Bytes::len))
-        })
         .sum()
 }
 

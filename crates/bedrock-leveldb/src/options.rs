@@ -10,6 +10,64 @@ pub enum CompressionPolicy {
     Zlib,
 }
 
+/// Independent native table cache capacities.
+///
+/// The data and index caches are byte-bounded and sharded. The file cache is
+/// entry-bounded so a read-heavy map viewer cannot retain an unbounded number
+/// of open SSTable handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeCacheOptions {
+    /// Maximum decoded data-block bytes retained across all shards.
+    pub data_capacity: usize,
+    /// Maximum decoded index-block bytes retained across all shards.
+    pub index_capacity: usize,
+    /// Maximum number of open SSTable file handles retained.
+    pub file_capacity: usize,
+    /// Number of cache shards. Values are normalized to `1..=64`.
+    pub shards: usize,
+}
+
+impl NativeCacheOptions {
+    /// Derives balanced capacities from the legacy aggregate cache size.
+    #[must_use]
+    pub const fn from_total(total: usize) -> Self {
+        Self {
+            data_capacity: total,
+            index_capacity: total / 2,
+            file_capacity: 256,
+            shards: 16,
+        }
+    }
+
+    /// Returns a normalized configuration suitable for cache construction.
+    #[must_use]
+    pub const fn normalized(self) -> Self {
+        Self {
+            data_capacity: self.data_capacity,
+            index_capacity: self.index_capacity,
+            file_capacity: self.file_capacity,
+            shards: if self.shards == 0 {
+                1
+            } else if self.shards > 64 {
+                64
+            } else {
+                self.shards
+            },
+        }
+    }
+}
+
+impl Default for NativeCacheOptions {
+    fn default() -> Self {
+        Self {
+            data_capacity: 64 * 1024 * 1024,
+            index_capacity: 32 * 1024 * 1024,
+            file_capacity: 256,
+            shards: 16,
+        }
+    }
+}
+
 /// Options used when opening a database directory.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
