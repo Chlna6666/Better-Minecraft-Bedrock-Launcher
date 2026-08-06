@@ -23,13 +23,56 @@ jobs:
           fetch-depth: 0
           ref: work/local-bedrock-crates
 
-      - name: Decode and inspect patch
+      - name: Detect staged patch
+        id: patch
+        shell: bash
+        run: |
+          if [[ -f scripts/apply_local_bedrock_occupancy.py.gz.b64 ]]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply local refactor
+        if: steps.patch.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
           base64 --decode scripts/apply_local_bedrock_occupancy.py.gz.b64 | gzip --decompress > scripts/apply_local_bedrock_occupancy.py
-          echo '--- patch lines 440-510 ---'
-          nl -ba scripts/apply_local_bedrock_occupancy.py | sed -n '440,510p'
-          echo '--- lifecycle candidate methods ---'
-          grep -n "fn schedule_\|fn refresh_render_session\|fn retire_render_session" src/ui/window/map_viewer/lifecycle.rs | tail -n 40
-          exit 1
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('scripts/apply_local_bedrock_occupancy.py')
+          text = path.read_text(encoding='utf-8')
+          old = 'anchor = "\\n}\\n\\npub(super) fn map_memory_snapshot_due"'
+          new = 'anchor = "\\n    pub(super) fn schedule_next_tile_batch"'
+          if old not in text:
+              raise SystemExit('missing obsolete occupancy lifecycle anchor')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+          PY
+          python3 scripts/apply_local_bedrock_occupancy.py
+          cargo fmt --all
+
+      - name: Check local Bedrock crates
+        if: steps.patch.outputs.needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check -p bedrock-leveldb -p bedrock-world -p bedrock-render
+          cargo test -p bedrock-leveldb -p bedrock-world -p bedrock-render --lib
+
+      - name: Check BMCBL library
+        if: steps.patch.outputs.needed == 'true'
+        shell: bash
+        run: cargo check --lib
+
+      - name: Commit validated refactor
+        if: steps.patch.outputs.needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.lock crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render src/ui/window/map_viewer scripts/apply_local_bedrock_occupancy.py scripts/apply_local_bedrock_occupancy.py.gz.b64
+          git commit -m "feat(map): replace viewport probes with occupancy index"
+          git push origin HEAD:work/local-bedrock-crates
