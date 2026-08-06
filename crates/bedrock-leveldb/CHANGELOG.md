@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- Replace the aggregate `OpenOptions::cache_size` setting with independent sharded native cache capacities.
+- Remove `NativeCacheOptions::from_total` and `Db::open_with_cache_options`; no legacy cache configuration bridge remains.
+- Add compact table identities, bounded file handles, cache statistics, incremental WAL recovery accounting, and allocation-reduced exact batch reads.
+
 All notable changes to `bedrock-leveldb` are tracked here.
 
 ## 0.4.0 - 2026-08-03

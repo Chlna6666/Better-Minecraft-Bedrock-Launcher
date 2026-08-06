@@ -28,17 +28,6 @@ pub struct NativeCacheOptions {
 }
 
 impl NativeCacheOptions {
-    /// Derives balanced capacities from the legacy aggregate cache size.
-    #[must_use]
-    pub const fn from_total(total: usize) -> Self {
-        Self {
-            data_capacity: total,
-            index_capacity: total / 2,
-            file_capacity: 256,
-            shards: 16,
-        }
-    }
-
     /// Returns a normalized configuration suitable for cache construction.
     #[must_use]
     pub const fn normalized(self) -> Self {
@@ -82,8 +71,8 @@ pub struct OpenOptions {
     pub paranoid_checks: bool,
     /// Compression used for native tables written by this crate.
     pub compression_policy: CompressionPolicy,
-    /// Maximum decoded native table block cache size, in bytes.
-    pub cache_size: usize,
+    /// Independent sharded native table cache capacities.
+    pub cache: NativeCacheOptions,
     /// Approximate overlay size that triggers a flush to a native table.
     ///
     /// Use `0` to disable automatic flushes and keep writes in the WAL overlay
@@ -99,7 +88,7 @@ impl Default for OpenOptions {
             error_if_exists: false,
             paranoid_checks: true,
             compression_policy: CompressionPolicy::Zlib,
-            cache_size: 64 * 1024 * 1024,
+            cache: NativeCacheOptions::default(),
             write_buffer_size: 4 * 1024 * 1024,
         }
     }

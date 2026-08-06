@@ -243,20 +243,7 @@ impl Db {
     /// when `read_only` would require initialization, when existing metadata is
     /// corrupt, or when filesystem I/O fails.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
-        let cache_options = NativeCacheOptions::from_total(options.cache_size);
-        Self::open_with_cache_options(path, options, cache_options)
-    }
-
-    /// Opens a database with independent sharded cache capacities.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::open`].
-    pub fn open_with_cache_options(
-        path: impl AsRef<Path>,
-        options: OpenOptions,
-        cache_options: NativeCacheOptions,
-    ) -> Result<Self> {
+        let cache_options = options.cache.normalized();
         let root = path.as_ref().to_path_buf();
         log::debug!(
             "opening database at {} (read_only={}, create_if_missing={})",
@@ -289,7 +276,6 @@ impl Db {
 
         let (manifest, overlay, last_sequence, approximate_bytes) =
             load_existing_or_initialize(&root, &options)?;
-        let cache_options = cache_options.normalized();
         log::debug!(
             "opened database at {} (tables={}, overlay_entries={}, last_sequence={})",
             root.display(),

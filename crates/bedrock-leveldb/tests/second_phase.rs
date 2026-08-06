@@ -4,14 +4,16 @@ use bytes::Bytes;
 #[test]
 fn duplicate_batch_keys_share_payload_without_losing_input_order() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = Db::open_with_cache_options(
+    let db = Db::open(
         dir.path(),
-        OpenOptions::default(),
-        NativeCacheOptions {
-            data_capacity: 1024 * 1024,
-            index_capacity: 1024 * 1024,
-            file_capacity: 8,
-            shards: 4,
+        OpenOptions {
+            cache: NativeCacheOptions {
+                data_capacity: 1024 * 1024,
+                index_capacity: 1024 * 1024,
+                file_capacity: 8,
+                shards: 4,
+            },
+            ..OpenOptions::default()
         },
     )?;
     db.put(
