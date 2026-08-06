@@ -1,4 +1,4 @@
-name: Apply local map compatibility cleanup
+name: Validate local Bedrock integration
 
 on:
   pull_request:
@@ -14,14 +14,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: local-map-compatibility-${{ github.event.pull_request.number }}
+  group: local-bedrock-validation-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  apply:
+  validate:
     if: github.head_ref == 'work/local-bedrock-crates'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout work branch
         uses: actions/checkout@v4
@@ -29,18 +29,7 @@ jobs:
           fetch-depth: 0
           ref: work/local-bedrock-crates
 
-      - name: Detect staged cleanup
-        id: cleanup
-        shell: bash
-        run: |
-          if [[ -f scripts/remove_map_render_preview_version_layers.py ]]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install Linux build dependencies
-        if: steps.cleanup.outputs.needed == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
@@ -52,32 +41,85 @@ jobs:
             libxkbcommon-dev \
             pkg-config
 
-      - name: Rename render and preview modules and compile BMCBL
-        if: steps.cleanup.outputs.needed == 'true'
+      - name: Remove final migration artifacts and validate
         shell: bash
         run: |
           set +e
-          validation=/tmp/map-compatibility-cleanup.txt
+          validation=/tmp/local-bedrock-final-validation.txt
           : > "$validation"
+          status=0
 
-          echo '=== replace versioned render and preview modules ===' >> "$validation"
-          python3 scripts/remove_map_render_preview_version_layers.py >> "$validation" 2>&1
-          status=$?
+          echo '=== remove final dead compatibility files ===' >> "$validation"
+          rm -f \
+            src/ui/window/map_viewer/preview_3d_stable.rs \
+            .github/workflows/local-bedrock-second-phase.yml \
+            scripts/bedrock_compatibility_cleanup.txt \
+            scripts/map_compatibility_cleanup.txt \
+            scripts/trigger_map_canvas_fix.txt \
+            scripts/trigger_map_render_preview_cleanup.txt \
+            scripts/trigger_map_compatibility_cleanup.txt \
+            scripts/trigger_map_view_canvas_cleanup.txt
 
-          if [[ "$status" -eq 0 ]]; then
-            echo '=== compatibility symbol guard ===' >> "$validation"
-            if grep -RIn -E \
-              'tile_render_(current|stable|legacy)|preview_3d_(region|legacy)|LegacyMeshSignature|legacy_mesh_signature|convert_legacy_mesh' \
-              src/ui/window/map_viewer src/ui/window/map_viewer.rs \
-              >> "$validation" 2>&1; then
-              echo 'render/preview version compatibility layer remains' >> "$validation"
-              status=1
-            fi
+          echo '=== zero-tolerance legacy API and file guard ===' >> "$validation"
+          if grep -RIn -E \
+            'for_each_(key|entry)_partitioned|PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size|occupancy_scanned_tiles|mark_occupancy_tile_empty|tile_plan_(stable|legacy)|lifecycle_stable|canvas_(frontend_)?stable|canvas_legacy|helpers_(stable|legacy)|viewport_(stable|base)|view_(stable|legacy)|tile_render_(current|stable|legacy)|preview_3d_(region|stable|legacy)|LegacyMeshSignature|legacy_mesh_signature|convert_legacy_mesh' \
+            crates/bedrock-leveldb/src crates/bedrock-world/src crates/bedrock-render/src \
+            src/ui/window/map_viewer src/ui/window/map_viewer.rs \
+            >> "$validation" 2>&1; then
+            echo 'legacy API or compatibility symbol remains' >> "$validation"
+            status=1
+          fi
+          if find src/ui/window/map_viewer -maxdepth 1 -type f \
+            \( -name '*_legacy.rs' -o -name '*_stable.rs' -o -name '*_current.rs' \) \
+            -print -quit | grep -q .; then
+            echo 'versioned compatibility file remains:' >> "$validation"
+            find src/ui/window/map_viewer -maxdepth 1 -type f \
+              \( -name '*_legacy.rs' -o -name '*_stable.rs' -o -name '*_current.rs' \) \
+              -print >> "$validation"
+            status=1
           fi
 
           if [[ "$status" -eq 0 ]]; then
-            echo '=== format BMCBL ===' >> "$validation"
-            cargo fmt -p bmcbl >> "$validation" 2>&1
+            echo '=== format local Bedrock crates and BMCBL ===' >> "$validation"
+            cargo fmt \
+              -p bedrock-leveldb \
+              -p bedrock-world \
+              -p bedrock-render \
+              -p bmcbl \
+              >> "$validation" 2>&1
+            status=$?
+          fi
+
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== check bedrock-leveldb ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== test bedrock-leveldb ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features --lib >> "$validation" 2>&1
+            status=$?
+          fi
+
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== check bedrock-world ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-world/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== test bedrock-world partitioned executor ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-world/Cargo.toml --all-features --test partitioned_executor >> "$validation" 2>&1
+            status=$?
+          fi
+
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== check bedrock-render map features ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' >> "$validation" 2>&1
+            status=$?
+          fi
+          if [[ "$status" -eq 0 ]]; then
+            echo '=== test bedrock-render occupancy ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' --lib occupancy >> "$validation" 2>&1
             status=$?
           fi
 
@@ -87,21 +129,22 @@ jobs:
             status=$?
           fi
 
-          cp "$validation" scripts/map_compatibility_cleanup.txt
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
           if [[ "$status" -eq 0 ]]; then
-            rm -f scripts/remove_map_render_preview_version_layers.py
-            git add -A src scripts Cargo.lock
+            git add -A .github/workflows/local-bedrock-second-phase.yml src scripts Cargo.lock \
+              crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render
             if ! git diff --cached --quiet; then
-              git commit -m 'refactor(map): 删除渲染与预览版本兼容层'
+              git commit -m 'refactor(bedrock): 删除剩余兼容层并完成集成验证'
               git push origin HEAD:work/local-bedrock-crates
             fi
           else
-            git add -A src scripts Cargo.lock
+            cp "$validation" scripts/local_bedrock_final_validation.txt
+            git add -A .github/workflows/local-bedrock-second-phase.yml src scripts Cargo.lock \
+              crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render
             if ! git diff --cached --quiet; then
-              git commit -m 'wip(map): 保留渲染与预览清理后的编译错误'
+              git commit -m 'wip(bedrock): 保留最终兼容层清理后的验证错误'
               git push origin HEAD:work/local-bedrock-crates
             fi
           fi
