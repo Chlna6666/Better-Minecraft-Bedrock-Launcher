@@ -30,7 +30,7 @@ mod players;
 mod prelude;
 #[path = "map_viewer/preview_3d.rs"]
 mod preview_3d_legacy;
-#[path = "map_viewer/preview_3d_stable.rs"]
+#[path = "map_viewer/preview_3d_region.rs"]
 mod preview_3d;
 mod preview_3d_obj;
 mod preview_panel;
