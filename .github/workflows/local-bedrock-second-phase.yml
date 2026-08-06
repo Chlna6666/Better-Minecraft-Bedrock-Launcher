@@ -1,4 +1,4 @@
-name: Local Bedrock second phase
+name: Local Bedrock compatibility cleanup
 
 on:
   push:
@@ -6,24 +6,25 @@ on:
       - work/local-bedrock-crates
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
-      - 'scripts/fix_bmcbl_occupancy_compile.py'
+      - 'scripts/remove_bedrock_compatibility_api.py'
   workflow_dispatch:
 
 concurrency:
-  group: local-bedrock-second-phase-${{ github.ref }}
+  group: local-bedrock-compatibility-cleanup-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: write
 
 jobs:
-  fix-and-validate:
+  remove-and-validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: work/local-bedrock-crates
-          fetch-depth: 1
+          fetch-depth: 2
+
       - name: Install desktop build dependencies
         shell: bash
         run: |
@@ -40,53 +41,95 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libgl1-mesa-dev
-      - name: Fix and validate occupancy migration
+
+      - name: Remove old APIs and compile
         shell: bash
         run: |
           set +e
-          validation=/tmp/second_phase_validation.txt
+          validation=/tmp/bedrock_compatibility_cleanup.txt
           : > "$validation"
-          echo '=== fix occupancy compile errors ===' >> "$validation"
-          python scripts/fix_bmcbl_occupancy_compile.py >> "$validation" 2>&1
+
+          echo '=== remove old APIs and transition modules ===' >> "$validation"
+          python scripts/remove_bedrock_compatibility_api.py >> "$validation" 2>&1
           status=$?
+
           if [ "$status" -eq 0 ]; then
-            echo '=== legacy API guard ===' >> "$validation"
-            if grep -RIn -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size|occupancy_scanned_tiles|mark_occupancy_tile_empty' src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-render/src crates/bedrock-world/src crates/bedrock-leveldb/src >> "$validation" 2>&1; then
+            echo '=== zero-tolerance legacy symbol guard ===' >> "$validation"
+            if grep -RIn -E \
+              'for_each_(key|entry)_partitioned|PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size|occupancy_scanned_tiles|mark_occupancy_tile_empty|tile_plan_legacy|tile_plan_stable|lifecycle_stable|canvas_frontend_stable' \
+              crates/bedrock-leveldb/src crates/bedrock-world/src crates/bedrock-render/src \
+              src/ui/window/map_viewer src/ui/window/map_viewer.rs \
+              >> "$validation" 2>&1; then
               echo 'legacy Bedrock or map API remains' >> "$validation"
               status=1
             fi
           fi
+
           if [ "$status" -eq 0 ]; then
-            echo '=== fmt ===' >> "$validation"
-            cargo fmt --all >> "$validation" 2>&1
+            echo '=== cargo fmt ===' >> "$validation"
+            cargo fmt --all --check >> "$validation" 2>&1
             status=$?
           fi
+
+          if [ "$status" -eq 0 ]; then
+            echo '=== check bedrock-leveldb ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== test bedrock-leveldb ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features --lib >> "$validation" 2>&1
+            status=$?
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            echo '=== check bedrock-world ===' >> "$validation"
+            cargo check --manifest-path crates/bedrock-world/Cargo.toml --all-features >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== test bedrock-world partitioned/executor ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-world/Cargo.toml --all-features --test partitioned_executor >> "$validation" 2>&1
+            status=$?
+          fi
+
           if [ "$status" -eq 0 ]; then
             echo '=== check bedrock-render map features ===' >> "$validation"
             cargo check --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' >> "$validation" 2>&1
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
-            echo '=== check BMCBL library ===' >> "$validation"
+            echo '=== test bedrock-render occupancy ===' >> "$validation"
+            cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' --lib occupancy >> "$validation" 2>&1
+            status=$?
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            echo '=== compile BMCBL library ===' >> "$validation"
             cargo check -p bmcbl --lib >> "$validation" 2>&1
             status=$?
           fi
 
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          cp "$validation" scripts/second_phase_validation.txt
-          git add -A src/ui/window/map_viewer crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
-          if [ "$status" -ne 0 ]; then
-            if ! git diff --cached --quiet; then
-              git commit -m 'wip(map): 修复 occupancy 迁移编译错误'
-              git push origin HEAD:work/local-bedrock-crates
-            fi
-            cat "$validation"
-            exit "$status"
-          fi
+          cp "$validation" scripts/bedrock_compatibility_cleanup.txt
+          git add -A \
+            crates/bedrock-leveldb \
+            crates/bedrock-world \
+            crates/bedrock-render \
+            src/ui/window/map_viewer \
+            src/ui/window/map_viewer.rs \
+            scripts \
+            Cargo.lock
 
           if ! git diff --cached --quiet; then
-            git commit -m 'refactor(map): 完成 occupancy 状态机迁移'
+            if [ "$status" -eq 0 ]; then
+              git commit -m 'refactor(bedrock): 删除旧接口并更新 BMCBL 调用'
+            else
+              git commit -m 'wip(bedrock): 保留旧接口清理后的编译错误'
+            fi
             git push origin HEAD:work/local-bedrock-crates
           fi
+
           cat "$validation"
+          exit "$status"
