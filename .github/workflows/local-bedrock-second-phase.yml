@@ -8,6 +8,7 @@ on:
       - '.github/workflows/local-bedrock-second-phase.yml'
       - 'scripts/apply_local_bedrock_second_phase.py'
       - 'scripts/apply_local_bedrock_second_phase_fix1.py'
+      - 'scripts/apply_local_bedrock_second_phase_breaking.py'
   workflow_dispatch:
 
 permissions:
@@ -33,6 +34,17 @@ jobs:
           if [ "$status" -eq 0 ]; then
             python scripts/apply_local_bedrock_second_phase_fix1.py >> "$validation" 2>&1
             status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            python scripts/apply_local_bedrock_second_phase_breaking.py >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== legacy API guard ===' >> "$validation"
+            if grep -RIn -E 'cache_size|open_with_cache_options' crates/bedrock-leveldb/src crates/bedrock-leveldb/tests >> "$validation" 2>&1; then
+              echo 'legacy LevelDB cache API remains' >> "$validation"
+              status=1
+            fi
           fi
           if [ "$status" -eq 0 ]; then
             echo '=== fmt ===' >> "$validation"
@@ -67,7 +79,7 @@ jobs:
           cp "$validation" scripts/second_phase_validation.txt
           git add crates/bedrock-leveldb scripts/second_phase_validation.txt Cargo.lock
           if ! git diff --cached --quiet; then
-            git commit -m 'perf(leveldb): 分片缓存并优化批量读取与 WAL 恢复'
+            git commit -m 'perf(leveldb): 采用破坏性分片缓存接口并优化热路径'
             git push origin HEAD:work/local-bedrock-crates
           fi
           cat "$validation"
