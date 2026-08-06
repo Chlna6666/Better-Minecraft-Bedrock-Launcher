@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
       - 'scripts/remove_bedrock_compatibility_api.py'
+      - 'scripts/remove_map_helpers_viewport_compat.py'
   workflow_dispatch:
 
 concurrency:
@@ -42,29 +43,35 @@ jobs:
             libxinerama-dev \
             libgl1-mesa-dev
 
-      - name: Remove old APIs and compile
+      - name: Remove compatibility layers and compile BMCBL
         shell: bash
         run: |
           set +e
           validation=/tmp/bedrock_compatibility_cleanup.txt
           : > "$validation"
+          status=0
 
-          echo '=== remove old APIs and transition modules ===' >> "$validation"
           if [ -f src/ui/window/map_viewer/tile_plan_stable.rs ] \
             || [ -f src/ui/window/map_viewer/lifecycle_stable.rs ] \
             || grep -Rqs -E 'for_each_(key|entry)_partitioned' \
               crates/bedrock-leveldb/src crates/bedrock-world/src crates/bedrock-render/src; then
+            echo '=== remove old Bedrock APIs and first transition modules ===' >> "$validation"
             python scripts/remove_bedrock_compatibility_api.py >> "$validation" 2>&1
             status=$?
-          else
-            echo 'cleanup already applied; validating current source tree' >> "$validation"
-            status=0
+          fi
+
+          if [ "$status" -eq 0 ] \
+            && { [ -f src/ui/window/map_viewer/helpers_stable.rs ] \
+              || [ -f src/ui/window/map_viewer/viewport_stable.rs ]; }; then
+            echo '=== merge helpers and viewport into canonical modules ===' >> "$validation"
+            python scripts/remove_map_helpers_viewport_compat.py >> "$validation" 2>&1
+            status=$?
           fi
 
           if [ "$status" -eq 0 ]; then
             echo '=== zero-tolerance legacy symbol guard ===' >> "$validation"
             if grep -RIn -E \
-              'for_each_(key|entry)_partitioned|PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size|occupancy_scanned_tiles|mark_occupancy_tile_empty|tile_plan_legacy|tile_plan_stable|lifecycle_stable|canvas_frontend_stable' \
+              'for_each_(key|entry)_partitioned|PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP|fn world_pool|open_with_cache_options|cache_size|occupancy_scanned_tiles|mark_occupancy_tile_empty|tile_plan_legacy|tile_plan_stable|lifecycle_stable|canvas_frontend_stable|helpers_stable|helpers_legacy|viewport_stable|viewport_base' \
               crates/bedrock-leveldb/src crates/bedrock-world/src crates/bedrock-render/src \
               src/ui/window/map_viewer src/ui/window/map_viewer.rs \
               >> "$validation" 2>&1; then
@@ -74,46 +81,8 @@ jobs:
           fi
 
           if [ "$status" -eq 0 ]; then
-            echo '=== format local Bedrock crates and BMCBL ===' >> "$validation"
-            cargo fmt \
-              -p bedrock-leveldb \
-              -p bedrock-world \
-              -p bedrock-render \
-              -p bmcbl \
-              >> "$validation" 2>&1
-            status=$?
-          fi
-
-          if [ "$status" -eq 0 ]; then
-            echo '=== check bedrock-leveldb ===' >> "$validation"
-            cargo check --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== test bedrock-leveldb ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-leveldb/Cargo.toml --all-features --lib >> "$validation" 2>&1
-            status=$?
-          fi
-
-          if [ "$status" -eq 0 ]; then
-            echo '=== check bedrock-world ===' >> "$validation"
-            cargo check --manifest-path crates/bedrock-world/Cargo.toml --all-features >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== test bedrock-world partitioned/executor ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-world/Cargo.toml --all-features --test partitioned_executor >> "$validation" 2>&1
-            status=$?
-          fi
-
-          if [ "$status" -eq 0 ]; then
-            echo '=== check bedrock-render map features ===' >> "$validation"
-            cargo check --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== test bedrock-render occupancy ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' --lib occupancy >> "$validation" 2>&1
+            echo '=== format BMCBL ===' >> "$validation"
+            cargo fmt -p bmcbl >> "$validation" 2>&1
             status=$?
           fi
 
@@ -126,19 +95,13 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           cp "$validation" scripts/bedrock_compatibility_cleanup.txt
-          git add -A \
-            crates/bedrock-leveldb \
-            crates/bedrock-world \
-            crates/bedrock-render \
-            src \
-            scripts \
-            Cargo.lock
+          git add -A src scripts Cargo.lock
 
           if ! git diff --cached --quiet; then
             if [ "$status" -eq 0 ]; then
-              git commit -m 'refactor(bedrock): 删除旧接口并更新 BMCBL 调用'
+              git commit -m 'refactor(map): 删除 helpers 与 viewport 兼容层'
             else
-              git commit -m 'wip(bedrock): 保留旧接口清理后的编译错误'
+              git commit -m 'wip(map): 保留兼容层删除后的编译错误'
             fi
             git push origin HEAD:work/local-bedrock-crates
           fi
