@@ -143,7 +143,7 @@ fn record_custom_mesh_3d_draw_profile(steps: &[RenderStepDescriptor]) {
     }
 
     if indexed_draws > 0 && (frame == 1 || frame % 120 == 0) {
-        tracing::debug!(
+        log::debug!(
             frame,
             indexed_draws,
             uint16_draws,
