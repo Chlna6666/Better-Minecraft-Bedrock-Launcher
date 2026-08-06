@@ -6,8 +6,7 @@ on:
       - work/local-bedrock-crates
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
-      - 'scripts/apply_local_bedrock_world_executor.py'
-      - 'scripts/remove_bedrock_render_manifest_probe.py'
+      - 'scripts/apply_bmcbl_occupancy_state.py'
   workflow_dispatch:
 
 permissions:
@@ -21,55 +20,25 @@ jobs:
         with:
           ref: work/local-bedrock-crates
           fetch-depth: 1
-      - name: Apply World executor and partitioned scans
+      - name: Remove viewport manifest probes and integrate occupancy index
         shell: bash
         run: |
           set +e
           validation=/tmp/second_phase_validation.txt
           : > "$validation"
-          echo '=== prepare patch ===' >> "$validation"
-          python - <<'PY' >> "$validation" 2>&1
-          from pathlib import Path
-          path = Path('scripts/apply_local_bedrock_world_executor.py')
-          text = path.read_text(encoding='utf-8')
-          old = '#[derive(Debug, Clone, Default)]\n/// Options controlling world scan operations.\npub struct WorldScanOptions'
-          new = '#[derive(Debug, Clone)]\n/// Options controlling world scan operations.\npub struct WorldScanOptions'
-          count = text.count(old)
-          if count != 2:
-              raise RuntimeError(f'expected two WorldScanOptions patch markers, found {count}')
-          path.write_text(text.replace(old, new), encoding='utf-8')
-          PY
+          echo '=== apply BMCBL occupancy state ===' >> "$validation"
+          python scripts/apply_bmcbl_occupancy_state.py >> "$validation" 2>&1
           status=$?
           if [ "$status" -eq 0 ]; then
-            echo '=== apply world executor ===' >> "$validation"
-            python scripts/apply_local_bedrock_world_executor.py >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== remove manifest probe API ===' >> "$validation"
-            python scripts/remove_bedrock_render_manifest_probe.py >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
             echo '=== legacy API guard ===' >> "$validation"
-            if grep -RIn -E 'fn world_pool|TileManifestProbe(Request|Result)|probe_tile_manifest_(blocking|async)' crates/bedrock-world/src crates/bedrock-render/src >> "$validation" 2>&1; then
-              echo 'legacy world/renderer API remains' >> "$validation"
+            if grep -RIn -E 'PendingManifest|pending_manifest|manifest_probe|manifest_scanned|tile_manifest|TileManifest|PROBE_GROUP' src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-render/src >> "$validation" 2>&1; then
+              echo 'legacy manifest/probe implementation remains' >> "$validation"
               status=1
             fi
           fi
           if [ "$status" -eq 0 ]; then
             echo '=== fmt ===' >> "$validation"
             cargo fmt --all >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== check bedrock-world ===' >> "$validation"
-            cargo check --manifest-path crates/bedrock-world/Cargo.toml --all-features >> "$validation" 2>&1
-            status=$?
-          fi
-          if [ "$status" -eq 0 ]; then
-            echo '=== test partitioned world executor ===' >> "$validation"
-            cargo test --manifest-path crates/bedrock-world/Cargo.toml --all-features --test partitioned_executor >> "$validation" 2>&1
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
@@ -82,6 +51,11 @@ jobs:
             cargo test --manifest-path crates/bedrock-render/Cargo.toml --no-default-features --features 'async,webp,png' --lib occupancy >> "$validation" 2>&1
             status=$?
           fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== check BMCBL library ===' >> "$validation"
+            cargo check -p bmcbl --lib >> "$validation" 2>&1
+            status=$?
+          fi
 
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
@@ -90,7 +64,7 @@ jobs:
             cp "$validation" scripts/second_phase_validation.txt
             git add scripts/second_phase_validation.txt
             if ! git diff --cached --quiet; then
-              git commit -m 'chore: 记录 World 第二阶段验证失败'
+              git commit -m 'chore: 记录 BMCBL occupancy 迁移验证失败'
               git push origin HEAD:work/local-bedrock-crates
             fi
             cat "$validation"
@@ -98,9 +72,9 @@ jobs:
           fi
 
           cp "$validation" scripts/second_phase_validation.txt
-          git add crates/bedrock-world crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
+          git add src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-leveldb crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
           if ! git diff --cached --quiet; then
-            git commit -m 'perf(world): 使用分区归约与持久执行器'
+            git commit -m 'refactor(map): 删除视口 manifest 探测并接入 occupancy 索引'
             git push origin HEAD:work/local-bedrock-crates
           fi
           cat "$validation"
