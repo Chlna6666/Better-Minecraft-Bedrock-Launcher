@@ -77,11 +77,10 @@ impl NovaRenderer {
         self.custom_mesh_3d_index_cursor = 0;
         self.custom_mesh_3d_vertex_upload_scratch.shrink_to_fit();
         self.custom_mesh_3d_index_upload_scratch.shrink_to_fit();
-        tracing::debug!(
-            ?level,
-            placeholder_vertices = CUSTOM_MESH_3D_PLACEHOLDER_VERTICES,
-            placeholder_indices = CUSTOM_MESH_3D_PLACEHOLDER_INDICES,
-            "nova custom 3D mesh buffers demoted"
+        log::debug!(
+            "nova custom 3D mesh buffers demoted: level={level:?}, placeholder_vertices={}, placeholder_indices={}",
+            CUSTOM_MESH_3D_PLACEHOLDER_VERTICES,
+            CUSTOM_MESH_3D_PLACEHOLDER_INDICES
         );
         Ok(true)
     }
