@@ -18,18 +18,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # GitHub runner 是一次性环境，不恢复 rustc 增量查询缓存。
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "8"
   CARGO_TARGET_DIR: target/ci-check
-  # `cargo check --all-targets` 会同时构建普通目标和测试目标。项目的 dev
-  # 配置使用 opt-level=3；CI 类型检查无需进行这种高成本优化。
   CARGO_PROFILE_DEV_OPT_LEVEL: "1"
   CARGO_PROFILE_DEV_DEBUG: "1"
   CARGO_PROFILE_TEST_OPT_LEVEL: "1"
   CARGO_PROFILE_TEST_DEBUG: "1"
-  # bmcbl + gpui 测试目标的类型/MIR 图较深。Windows rustc 默认线程栈不足时
-  # 会以 stack overflow/SIGSEGV 中止，而不会产生普通 Rust 编译错误。
   RUST_MIN_STACK: "67108864"
 
 jobs:
@@ -85,9 +80,13 @@ jobs:
             Remove-Item -Recurse -Force $env:CARGO_TARGET_DIR
           }
 
-      - name: Check all BMCBL targets
+      - name: Check BMCBL library
         shell: pwsh
-        run: cargo check --all-targets
+        run: cargo check --lib
+
+      - name: Compile tests without running
+        shell: pwsh
+        run: cargo test --no-run
 
   linux-check:
     name: Linux cargo check
@@ -130,5 +129,8 @@ jobs:
       - name: Remove stale compiler outputs
         run: rm -rf "$CARGO_TARGET_DIR"
 
-      - name: Check all BMCBL targets
-        run: cargo check --all-targets
+      - name: Check BMCBL library
+        run: cargo check --lib
+
+      - name: Compile tests without running
+        run: cargo test --no-run
