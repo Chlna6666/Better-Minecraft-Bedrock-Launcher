@@ -1,4 +1,4 @@
-name: Bootstrap local Bedrock crates
+name: Apply local Bedrock occupancy refactor
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  vendor:
+  apply:
     if: github.head_ref == 'work/local-bedrock-crates'
     runs-on: ubuntu-latest
     steps:
@@ -23,102 +23,46 @@ jobs:
           fetch-depth: 0
           ref: work/local-bedrock-crates
 
-      - name: Detect existing local crates
-        id: detect
+      - name: Detect staged patch
+        id: patch
         shell: bash
         run: |
-          if [[ -f crates/bedrock-leveldb/Cargo.toml && -f crates/bedrock-world/Cargo.toml && -f crates/bedrock-render/Cargo.toml ]]; then
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-          else
+          if [[ -f scripts/apply_local_bedrock_occupancy.py.gz.b64 ]]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Vendor Bedrock crates
-        if: steps.detect.outputs.needed == 'true'
+      - name: Apply local refactor
+        if: steps.patch.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          temp_dir="$(mktemp -d)"
-          trap 'rm -rf "$temp_dir"' EXIT
+          base64 --decode scripts/apply_local_bedrock_occupancy.py.gz.b64 | gzip --decompress > /tmp/apply_local_bedrock_occupancy.py
+          python3 /tmp/apply_local_bedrock_occupancy.py
+          cargo fmt --all
 
-          git clone --depth 1 --branch main https://github.com/BE-Community-Dev/bedrock-leveldb.git "$temp_dir/bedrock-leveldb"
-          git clone --depth 1 --branch main https://github.com/BE-Community-Dev/bedrock-world.git "$temp_dir/bedrock-world"
-          git clone --depth 1 --branch main https://github.com/BE-Community-Dev/bedrock-render.git "$temp_dir/bedrock-render"
-
-          for crate in bedrock-leveldb bedrock-world bedrock-render; do
-            rm -rf "crates/$crate"
-            cp -a "$temp_dir/$crate" "crates/$crate"
-            rm -rf "crates/$crate/.git" "crates/$crate/target"
-          done
-
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          root = Path('.')
-          manifest = root / 'Cargo.toml'
-          text = manifest.read_text(encoding='utf-8')
-          replacements = {
-              'bedrock-world = { git = "https://github.com/BE-Community-Dev/bedrock-world.git", branch = "main" }': 'bedrock-world = { path = "crates/bedrock-world" }',
-              'bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }': 'bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp", "gpu-dx11"] }',
-              'bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp"] }': 'bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp"] }',
-              'bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main" }': 'bedrock-leveldb = { path = "crates/bedrock-leveldb" }',
-          }
-          for old, new in replacements.items():
-              if old not in text:
-                  raise SystemExit(f'missing root dependency: {old}')
-              text = text.replace(old, new)
-          if 'members = [\n    "crates/bedrock-leveldb"' not in text:
-              text = text.replace(
-                  'members = [\n',
-                  'members = [\n'
-                  '    "crates/bedrock-leveldb",\n'
-                  '    "crates/bedrock-world",\n'
-                  '    "crates/bedrock-render",\n',
-                  1,
-              )
-          manifest.write_text(text, encoding='utf-8', newline='\n')
-
-          world_manifest = root / 'crates/bedrock-world/Cargo.toml'
-          text = world_manifest.read_text(encoding='utf-8')
-          text, count = re.subn(
-              r'bedrock-leveldb = \{ version = "[^"]+", git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main",',
-              'bedrock-leveldb = { path = "../bedrock-leveldb",',
-              text,
-              count=1,
-          )
-          if count != 1:
-              raise SystemExit('failed to localize bedrock-world -> bedrock-leveldb')
-          world_manifest.write_text(text, encoding='utf-8', newline='\n')
-
-          render_manifest = root / 'crates/bedrock-render/Cargo.toml'
-          text = render_manifest.read_text(encoding='utf-8')
-          text, leveldb_count = re.subn(
-              r'bedrock-leveldb = \{ version = "[^"]+", git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main",',
-              'bedrock-leveldb = { path = "../bedrock-leveldb",',
-              text,
-              count=1,
-          )
-          text, world_count = re.subn(
-              r'bedrock-world = \{ version = "[^"]+", git = "https://github.com/BE-Community-Dev/bedrock-world.git", branch = "main",',
-              'bedrock-world = { path = "../bedrock-world",',
-              text,
-              count=1,
-          )
-          if leveldb_count != 1 or world_count != 1:
-              raise SystemExit('failed to localize bedrock-render dependencies')
-          render_manifest.write_text(text, encoding='utf-8', newline='\n')
-          PY
-
-      - name: Validate and commit
-        if: steps.detect.outputs.needed == 'true'
+      - name: Check local Bedrock crates
+        if: steps.patch.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          cargo metadata --no-deps --format-version 1 > /dev/null
-          rm -f .github/workflows/vendor-local-bedrock-crates.yml
+          cargo check -p bedrock-leveldb -p bedrock-world -p bedrock-render
+          cargo test -p bedrock-leveldb -p bedrock-world -p bedrock-render --lib
+
+      - name: Check BMCBL library
+        if: steps.patch.outputs.needed == 'true'
+        shell: bash
+        run: cargo check --lib
+
+      - name: Commit validated refactor
+        if: steps.patch.outputs.needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply_local_bedrock_occupancy.py.gz.b64
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Cargo.toml crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render .github/workflows/vendor-local-bedrock-crates.yml
-          git commit -m "build: use local Bedrock crates"
+          git add Cargo.lock crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render src/ui/window/map_viewer scripts/apply_local_bedrock_occupancy.py.gz.b64
+          git commit -m "feat(map): replace viewport probes with occupancy index"
           git push origin HEAD:work/local-bedrock-crates
