@@ -44,6 +44,7 @@ jobs:
         shell: bash
         run: |
           rm -f scripts/apply_map_spawn_center_fix.py
+          rm -f scripts/trigger_spawn_center_fix.txt
           rm -f .github/workflows/apply-spawn-center-on-master.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
