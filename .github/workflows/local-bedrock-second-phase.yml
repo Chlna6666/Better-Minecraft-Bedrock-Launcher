@@ -10,6 +10,7 @@ on:
       - 'scripts/apply_bmcbl_occupancy_state_fix1.py'
       - 'scripts/apply_bmcbl_occupancy_state_fix2.py'
       - 'scripts/apply_bmcbl_occupancy_state_fix3.py'
+      - 'scripts/apply_bmcbl_occupancy_state_fix4.py'
   workflow_dispatch:
 
 permissions:
@@ -45,6 +46,11 @@ jobs:
           if [ "$status" -eq 0 ]; then
             echo '=== remove diagnostics chain ===' >> "$validation"
             python scripts/apply_bmcbl_occupancy_state_fix3.py >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== rename shared cache helpers ===' >> "$validation"
+            python scripts/apply_bmcbl_occupancy_state_fix4.py >> "$validation" 2>&1
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
