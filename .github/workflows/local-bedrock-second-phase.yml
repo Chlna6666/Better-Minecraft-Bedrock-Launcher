@@ -26,9 +26,24 @@ jobs:
           set +e
           validation=/tmp/second_phase_validation.txt
           : > "$validation"
-          echo '=== apply world executor ===' >> "$validation"
-          python scripts/apply_local_bedrock_world_executor.py >> "$validation" 2>&1
+          echo '=== prepare patch ===' >> "$validation"
+          python - <<'PY' >> "$validation" 2>&1
+          from pathlib import Path
+          path = Path('scripts/apply_local_bedrock_world_executor.py')
+          text = path.read_text(encoding='utf-8')
+          old = '#[derive(Debug, Clone, Default)]\n/// Options controlling world scan operations.\npub struct WorldScanOptions'
+          new = '#[derive(Debug, Clone)]\n/// Options controlling world scan operations.\npub struct WorldScanOptions'
+          count = text.count(old)
+          if count != 2:
+              raise RuntimeError(f'expected two WorldScanOptions patch markers, found {count}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
           status=$?
+          if [ "$status" -eq 0 ]; then
+            echo '=== apply world executor ===' >> "$validation"
+            python scripts/apply_local_bedrock_world_executor.py >> "$validation" 2>&1
+            status=$?
+          fi
           if [ "$status" -eq 0 ]; then
             echo '=== legacy API guard ===' >> "$validation"
             if grep -RIn -E 'fn world_pool|TileManifestProbe(Request|Result)|probe_tile_manifest_(blocking|async)' crates/bedrock-world/src crates/bedrock-render/src >> "$validation" 2>&1; then
