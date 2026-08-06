@@ -2,6 +2,41 @@ use super::model::*;
 use super::prelude::*;
 use super::tile_state::*;
 
+const CANVAS_PAINT_PAGE_TILES: i32 = 32;
+const CANVAS_PAINT_GUARD_TILES: i32 = 8;
+
+pub(super) fn paint_tile_bounds_for_viewport(
+    viewport: super::model::MapViewport,
+    layout: bedrock_render::RenderLayout,
+    radius: i32,
+) -> Option<TileBounds> {
+    let bounds = raw_paint_tile_bounds_for_viewport(
+        viewport,
+        layout,
+        radius.saturating_add(CANVAS_PAINT_GUARD_TILES),
+    )?;
+
+    let align_min = |value: i32| {
+        value
+            .div_euclid(CANVAS_PAINT_PAGE_TILES)
+            .saturating_mul(CANVAS_PAINT_PAGE_TILES)
+    };
+    let align_max = |value: i32| {
+        value
+            .div_euclid(CANVAS_PAINT_PAGE_TILES)
+            .saturating_add(1)
+            .saturating_mul(CANVAS_PAINT_PAGE_TILES)
+            .saturating_sub(1)
+    };
+
+    Some(TileBounds {
+        min_x: align_min(bounds.min_x),
+        max_x: align_max(bounds.max_x),
+        min_z: align_min(bounds.min_z),
+        max_z: align_max(bounds.max_z),
+    })
+}
+
 pub(super) fn viewport_block_bounds(
     viewport: MapViewport,
     layout: RenderLayout,
@@ -588,7 +623,7 @@ pub(super) fn visible_tile_bounds_for_viewport(
     (bounds.min_x <= bounds.max_x && bounds.min_z <= bounds.max_z).then_some(bounds)
 }
 
-pub(super) fn paint_tile_bounds_for_viewport(
+fn raw_paint_tile_bounds_for_viewport(
     viewport: MapViewport,
     layout: RenderLayout,
     radius: i32,

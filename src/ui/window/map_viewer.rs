@@ -5,10 +5,7 @@ mod canvas;
 #[path = "map_viewer/canvas.rs"]
 mod canvas_legacy;
 mod editor;
-#[path = "map_viewer/helpers_stable.rs"]
 mod helpers;
-#[path = "map_viewer/helpers.rs"]
-mod helpers_legacy;
 mod history_panel;
 mod import_preview;
 mod interactions;
@@ -56,10 +53,7 @@ mod top_bar;
 mod view;
 #[path = "map_viewer/view.rs"]
 mod view_legacy;
-#[path = "map_viewer/viewport_stable.rs"]
 mod viewport;
-#[path = "map_viewer/viewport.rs"]
-mod viewport_base;
 
 pub use actions::init;
 pub use model::MapViewerWindowInit;
