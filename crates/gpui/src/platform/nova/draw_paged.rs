@@ -1,12 +1,27 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+const INDEX_FORMAT_U16_FLAG: u32 = 1 << 31;
+const INDEX_OFFSET_MASK: u32 = !INDEX_FORMAT_U16_FLAG;
+
 pub(super) use super::draw_legacy::{
     NovaBackdropBlurRenderPass, NovaDrawStepMode, apply_scissor_to_steps,
     backdrop_blur_render_passes_for_targets_into, partial_scissor_for_plan,
     path_mask_draw_steps_for_upload, path_mask_draw_steps_for_upload_into,
     scaled_pixels_ceil_u32, scaled_pixels_floor_u32,
 };
+
+fn custom_mesh_3d_index_byte_offset(entry: NovaMeshCacheEntry) -> u32 {
+    entry.index_offset & INDEX_OFFSET_MASK
+}
+
+fn custom_mesh_3d_index_format(entry: NovaMeshCacheEntry) -> IndexFormat {
+    if entry.index_offset & INDEX_FORMAT_U16_FLAG != 0 {
+        IndexFormat::Uint16
+    } else {
+        IndexFormat::Uint32
+    }
+}
 
 pub(super) fn draw_steps_for_upload(
     upload: &NovaFrameUpload,
@@ -144,17 +159,9 @@ fn record_custom_mesh_3d_draw_profile(steps: &[RenderStepDescriptor]) {
 
     if indexed_draws > 0 && (frame == 1 || frame % 120 == 0) {
         log::debug!(
-            frame,
-            indexed_draws,
-            uint16_draws,
-            uint32_draws,
-            submitted_indices,
-            submitted_instances,
-            pipeline_count = pipelines.len(),
-            index_page_count = index_pages.len(),
-            native_multi_draw_indirect = false,
-            strategy = "paged_index_binding+material_sort_ready",
-            "nova custom 3D draw profile"
+            "nova custom 3D draw profile: frame={frame}, indexed_draws={indexed_draws}, uint16_draws={uint16_draws}, uint32_draws={uint32_draws}, submitted_indices={submitted_indices}, submitted_instances={submitted_instances}, pipeline_count={}, index_page_count={}, native_multi_draw_indirect=false, strategy=paged_index_binding+material_sort_ready",
+            pipelines.len(),
+            index_pages.len()
         );
     }
 }
