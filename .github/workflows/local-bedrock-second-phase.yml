@@ -14,6 +14,10 @@ on:
       - 'scripts/apply_bmcbl_occupancy_state_fix5.py'
   workflow_dispatch:
 
+concurrency:
+  group: local-bedrock-second-phase-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -105,20 +109,17 @@ jobs:
 
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          cp "$validation" scripts/second_phase_validation.txt
+          git add -A src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
           if [ "$status" -ne 0 ]; then
-            git reset --hard HEAD
-            cp "$validation" scripts/second_phase_validation.txt
-            git add scripts/second_phase_validation.txt
             if ! git diff --cached --quiet; then
-              git commit -m 'chore: 记录 BMCBL occupancy 迁移验证失败'
+              git commit -m 'wip(map): 保留 occupancy 迁移源码与验证错误'
               git push origin HEAD:work/local-bedrock-crates
             fi
             cat "$validation"
             exit "$status"
           fi
 
-          cp "$validation" scripts/second_phase_validation.txt
-          git add src/ui/window/map_viewer src/ui/window/map_viewer.rs crates/bedrock-leveldb crates/bedrock-world crates/bedrock-render scripts/second_phase_validation.txt Cargo.lock
           if ! git diff --cached --quiet; then
             git commit -m 'refactor(map): 删除视口 manifest 探测并接入 occupancy 索引'
             git push origin HEAD:work/local-bedrock-crates
