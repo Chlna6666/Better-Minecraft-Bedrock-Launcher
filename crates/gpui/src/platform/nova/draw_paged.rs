@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) use super::draw_legacy::{
     NovaBackdropBlurRenderPass, NovaDrawStepMode, apply_scissor_to_steps,
@@ -94,7 +95,7 @@ pub(super) fn draw_steps_for_upload_into(
         steps,
     );
 
-    for step in steps {
+    for step in steps.iter_mut() {
         let RenderStepDescriptor::DrawIndexed(step) = step else {
             continue;
         };
@@ -103,5 +104,54 @@ pub(super) fn draw_steps_for_upload_into(
         };
         step.index_buffer.offset = offset;
         step.index_buffer.format = format;
+    }
+
+    if mode == NovaDrawStepMode::Present {
+        record_custom_mesh_3d_draw_profile(steps);
+    }
+}
+
+fn record_custom_mesh_3d_draw_profile(steps: &[RenderStepDescriptor]) {
+    static PROFILE_FRAME: AtomicU64 = AtomicU64::new(0);
+
+    let frame = PROFILE_FRAME.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    let mut indexed_draws = 0usize;
+    let mut uint16_draws = 0usize;
+    let mut uint32_draws = 0usize;
+    let mut submitted_indices = 0u64;
+    let mut submitted_instances = 0u64;
+    let mut pipelines = FxHashSet::default();
+    let mut index_pages = FxHashSet::default();
+
+    for step in steps {
+        let RenderStepDescriptor::DrawIndexed(step) = step else {
+            continue;
+        };
+        indexed_draws = indexed_draws.saturating_add(1);
+        submitted_indices = submitted_indices
+            .saturating_add(u64::from(step.index_count).saturating_mul(u64::from(step.instance_count)));
+        submitted_instances = submitted_instances.saturating_add(u64::from(step.instance_count));
+        pipelines.insert(step.pipeline);
+        index_pages.insert((step.index_buffer.offset, step.index_buffer.format));
+        match step.index_buffer.format {
+            IndexFormat::Uint16 => uint16_draws = uint16_draws.saturating_add(1),
+            IndexFormat::Uint32 => uint32_draws = uint32_draws.saturating_add(1),
+        }
+    }
+
+    if indexed_draws > 0 && (frame == 1 || frame % 120 == 0) {
+        tracing::debug!(
+            frame,
+            indexed_draws,
+            uint16_draws,
+            uint32_draws,
+            submitted_indices,
+            submitted_instances,
+            pipeline_count = pipelines.len(),
+            index_page_count = index_pages.len(),
+            native_multi_draw_indirect = false,
+            strategy = "paged_index_binding+material_sort_ready",
+            "nova custom 3D draw profile"
+        );
     }
 }
