@@ -18,12 +18,19 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # GitHub runner 是一次性环境，不恢复 rustc 增量查询缓存。
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "8"
   CARGO_TARGET_DIR: target/ci-check
+  # `cargo check --all-targets` 会同时构建普通目标和测试目标。项目的 dev
+  # 配置使用 opt-level=3；CI 类型检查无需进行这种高成本优化。
+  CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+  CARGO_PROFILE_DEV_DEBUG: "1"
   CARGO_PROFILE_TEST_OPT_LEVEL: "1"
   CARGO_PROFILE_TEST_DEBUG: "1"
-  RUST_MIN_STACK: "33554432"
+  # bmcbl + gpui 测试目标的类型/MIR 图较深。Windows rustc 默认线程栈不足时
+  # 会以 stack overflow/SIGSEGV 中止，而不会产生普通 Rust 编译错误。
+  RUST_MIN_STACK: "67108864"
 
 jobs:
   windows-check:
@@ -59,7 +66,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
 
-      - name: Restore Cargo dependency cache
+      - name: Restore Cargo source cache
         uses: actions/cache@v5
         with:
           path: |
@@ -67,9 +74,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/registry/src
             ~/.cargo/git
-          key: windows-cargo-deps-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v6
+          key: windows-cargo-sources-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-v7
           restore-keys: |
-            windows-cargo-deps-
+            windows-cargo-sources-${{ runner.arch }}-
 
       - name: Remove stale compiler outputs
         shell: pwsh
@@ -108,7 +115,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Restore Cargo dependency cache
+      - name: Restore Cargo source cache
         uses: actions/cache@v5
         with:
           path: |
@@ -116,9 +123,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/registry/src
             ~/.cargo/git
-          key: linux-cargo-deps-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v6
+          key: linux-cargo-sources-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-v7
           restore-keys: |
-            linux-cargo-deps-
+            linux-cargo-sources-${{ runner.arch }}-
 
       - name: Remove stale compiler outputs
         run: rm -rf "$CARGO_TARGET_DIR"
