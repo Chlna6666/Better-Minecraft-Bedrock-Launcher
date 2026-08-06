@@ -1,3 +1,23 @@
+const VIEWPORT_INTERACTION_IDLE_DELAY: std::time::Duration = std::time::Duration::ZERO;
+const VIEWPORT_TILE_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+const INTERACTION_VISIBLE_TILE_FOREGROUND_WORK_LIMIT: usize = usize::MAX;
+
+fn paint_tile_bounds_for_viewport(
+    viewport: super::model::MapViewport,
+    layout: bedrock_render::RenderLayout,
+    radius: i32,
+) -> Option<super::viewport::TileBounds> {
+    super::viewport::paint_tile_bounds_for_viewport(viewport, layout, radius)
+}
+
+fn screen_image_bounds(
+    _bounds: gpui::Bounds<gpui::Pixels>,
+    _viewport: super::model::MapViewport,
+    _image: &super::canvas::ScreenPaintImage,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    None
+}
+
 use super::helpers::*;
 use super::model::*;
 use super::prelude::*;

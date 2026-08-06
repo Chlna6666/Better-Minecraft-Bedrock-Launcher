@@ -1117,7 +1117,7 @@ pub mod backend {
         {
             let visitor_error = Arc::new(std::sync::Mutex::new(None));
             let visitor_error_for_scan = Arc::clone(&visitor_error);
-            let scan_result = self.db.for_each_key_partitioned(
+            let scan_result = self.db.scan_keys_partitioned(
                 to_leveldb_read_options(options),
                 init,
                 move |partition, key| match visitor(partition, key) {

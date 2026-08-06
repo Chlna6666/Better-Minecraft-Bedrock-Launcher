@@ -928,7 +928,7 @@ impl Db {
     /// Returns an error when scan cancellation is requested, an underlying table
     /// cannot be read, checksum or compression validation fails, thread options
     /// are invalid, or the visitor returns an error.
-    pub fn for_each_key_partitioned<T, I, F>(
+    pub fn scan_keys_partitioned<T, I, F>(
         &self,
         options: ReadOptions,
         init: I,
@@ -940,7 +940,7 @@ impl Db {
         F: Fn(&mut T, &[u8]) -> Result<VisitorControl> + Send + Sync,
     {
         let inner = self.read_inner()?;
-        self.for_each_key_partitioned_locked(&inner, &options, &init, &visitor)
+        self.scan_keys_partitioned_locked(&inner, &options, &init, &visitor)
     }
 
     /// Visits entries with per-worker local state for table-parallel reductions.
@@ -950,7 +950,7 @@ impl Db {
     /// Returns an error when scan cancellation is requested, an underlying table
     /// cannot be read, checksum or compression validation fails, thread options
     /// are invalid, or the visitor returns an error.
-    pub fn for_each_entry_partitioned<T, I, F>(
+    pub fn scan_entries_partitioned<T, I, F>(
         &self,
         options: ReadOptions,
         init: I,
@@ -962,7 +962,7 @@ impl Db {
         F: Fn(&mut T, &[u8], &Bytes) -> Result<VisitorControl> + Send + Sync,
     {
         let inner = self.read_inner()?;
-        self.for_each_entry_partitioned_locked(&inner, &options, &init, &visitor)
+        self.scan_entries_partitioned_locked(&inner, &options, &init, &visitor)
     }
 
     /// Materializes all visible entries into an iterator.
@@ -1744,7 +1744,7 @@ impl Db {
         Ok(outcome)
     }
 
-    fn for_each_key_partitioned_locked<T, I, F>(
+    fn scan_keys_partitioned_locked<T, I, F>(
         &self,
         inner: &DbInner,
         options: &ReadOptions,
@@ -1825,7 +1825,7 @@ impl Db {
         Ok((outcome, partitions))
     }
 
-    fn for_each_entry_partitioned_locked<T, I, F>(
+    fn scan_entries_partitioned_locked<T, I, F>(
         &self,
         inner: &DbInner,
         options: &ReadOptions,
@@ -3681,7 +3681,7 @@ mod tests {
         db.flush().expect("flush");
 
         let (outcome, partitions) = db
-            .for_each_key_partitioned(
+            .scan_keys_partitioned(
                 ReadOptions {
                     scan_mode: ScanMode::ParallelTables,
                     ..ReadOptions::default()
@@ -3718,7 +3718,7 @@ mod tests {
         db.flush().expect("flush");
 
         let (outcome, partitions) = db
-            .for_each_entry_partitioned(
+            .scan_entries_partitioned(
                 ReadOptions {
                     scan_mode: ScanMode::ParallelTables,
                     ..ReadOptions::default()

@@ -1,0 +1,307 @@
+=== remove old APIs and transition modules ===
+=== zero-tolerance legacy symbol guard ===
+=== cargo fmt ===
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/easytier-bmcbl/src/lib.rs:9:
+     use std::ops::Deref;
+     use std::path::PathBuf;
+ 
+-    use easytier_core::common::config::{
+-        ConfigFileControl, ConfigLoader as _, TomlConfigLoader,
+-    };
++    use easytier_core::common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader};
+     use easytier_core::proto::common::CompressionAlgoPb;
+ 
+     const MIN_WORKER_THREADS: usize = 4;
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/draw_paged.rs:7:
+ pub(super) use super::draw_legacy::{
+     NovaBackdropBlurRenderPass, NovaDrawStepMode, apply_scissor_to_steps,
+     backdrop_blur_render_passes_for_targets_into, partial_scissor_for_plan,
+-    path_mask_draw_steps_for_upload, path_mask_draw_steps_for_upload_into,
+-    scaled_pixels_ceil_u32, scaled_pixels_floor_u32,
++    path_mask_draw_steps_for_upload, path_mask_draw_steps_for_upload_into, scaled_pixels_ceil_u32,
++    scaled_pixels_floor_u32,
+ };
+ 
+ fn custom_mesh_3d_index_byte_offset(entry: NovaMeshCacheEntry) -> u32 {
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/draw_paged.rs:129:
+ fn record_custom_mesh_3d_draw_profile(steps: &[RenderStepDescriptor]) {
+     static PROFILE_FRAME: AtomicU64 = AtomicU64::new(0);
+ 
+-    let frame = PROFILE_FRAME.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
++    let frame = PROFILE_FRAME
++        .fetch_add(1, Ordering::Relaxed)
++        .wrapping_add(1);
+     let mut indexed_draws = 0usize;
+     let mut uint16_draws = 0usize;
+     let mut uint32_draws = 0usize;
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/draw_paged.rs:143:
+             continue;
+         };
+         indexed_draws = indexed_draws.saturating_add(1);
+-        submitted_indices = submitted_indices
+-            .saturating_add(u64::from(step.index_count).saturating_mul(u64::from(step.instance_count)));
++        submitted_indices = submitted_indices.saturating_add(
++            u64::from(step.index_count).saturating_mul(u64::from(step.instance_count)),
++        );
+         submitted_instances = submitted_instances.saturating_add(u64::from(step.instance_count));
+         pipelines.insert(step.pipeline);
+         index_pages.insert((
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:79:
+         }
+     }
+ 
+-    fn reserve(
+-        &mut self,
+-        vertex_count: usize,
+-        index_byte_count: usize,
+-    ) -> Option<(usize, usize)> {
++    fn reserve(&mut self, vertex_count: usize, index_byte_count: usize) -> Option<(usize, usize)> {
+         let vertex_offset = allocate_best_fit(&mut self.free_vertices, vertex_count, 1)?;
+         let Some(index_byte_offset) =
+             allocate_best_fit(&mut self.free_index_bytes, index_byte_count, 4)
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:178:
+         }
+     }
+ 
+-    fn evict_unused(&mut self, current: &FxHashSet<GpuMesh3dId>, aggressive: bool) -> Vec<GpuMesh3dId> {
++    fn evict_unused(
++        &mut self,
++        current: &FxHashSet<GpuMesh3dId>,
++        aggressive: bool,
++    ) -> Vec<GpuMesh3dId> {
+         let epoch = self.epoch;
+         let mut candidates = self
+             .allocations
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:237:
+     }
+ 
+     fn largest_free_vertex_span(&self) -> usize {
+-        self.free_vertices.iter().map(|span| span.len).max().unwrap_or(0)
++        self.free_vertices
++            .iter()
++            .map(|span| span.len)
++            .max()
++            .unwrap_or(0)
+     }
+ 
+     fn largest_free_index_span(&self) -> usize {
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:323:
+ 
+ fn index_uses_u16(mesh: &GpuMesh3d) -> bool {
+     mesh.vertices.len() <= usize::from(u16::MAX)
+-        && mesh.indices.iter().all(|index| *index <= u32::from(u16::MAX))
++        && mesh
++            .indices
++            .iter()
++            .all(|index| *index <= u32::from(u16::MAX))
+ }
+ 
+ fn packed_index_offset(index_byte_offset: usize, uses_u16: bool) -> Result<u32> {
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:330:
+-    let offset = u32::try_from(index_byte_offset)
+-        .context("custom 3D mesh index byte offset exceeds u32")?;
++    let offset =
++        u32::try_from(index_byte_offset).context("custom 3D mesh index byte offset exceeds u32")?;
+     if offset & INDEX_FORMAT_U16_FLAG != 0 {
+         anyhow::bail!("custom 3D mesh index byte offset exceeds packed offset range");
+     }
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:436:
+         };
+         self.custom_mesh_3d_vertex_cursor = allocator_snapshot.0;
+         self.custom_mesh_3d_index_cursor = allocator_snapshot.1 / PACKED_CUSTOM_MESH_3D_INDEX_BYTES;
+-        let fragmented_vertex_count = allocator_snapshot
+-            .2
+-            .saturating_sub(allocator_snapshot.4);
+-        let fragmented_index_bytes = allocator_snapshot
+-            .3
+-            .saturating_sub(allocator_snapshot.5);
++        let fragmented_vertex_count = allocator_snapshot.2.saturating_sub(allocator_snapshot.4);
++        let fragmented_index_bytes = allocator_snapshot.3.saturating_sub(allocator_snapshot.5);
+         log::debug!(
+             "nova custom 3D mesh paged cache: surface={surface_key}, current_meshes={}, cached_meshes={}, uploaded_bytes={}, used_vertices={}, used_index_bytes={}, free_vertices={}, free_index_bytes={}, largest_free_vertex_span={}, largest_free_index_span={}, fragmented_vertex_count={fragmented_vertex_count}, fragmented_index_bytes={fragmented_index_bytes}, retired_allocations={}, evictions={}, compactions={}",
+             current_meshes.len(),
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:539:
+             };
+         }
+ 
+-        let (vertex_offset, index_byte_offset) = reservation
+-            .context("custom 3D mesh paged cache capacity exceeded by current frame")?;
+-        let upload_result = self.upload_custom_mesh_3d_to_cache(
+-            mesh,
+-            vertex_offset,
+-            index_byte_offset,
+-            uses_u16,
+-        );
++        let (vertex_offset, index_byte_offset) =
++            reservation.context("custom 3D mesh paged cache capacity exceeded by current frame")?;
++        let upload_result =
++            self.upload_custom_mesh_3d_to_cache(mesh, vertex_offset, index_byte_offset, uses_u16);
+         if let Err(error) = upload_result {
+             surface_mesh_allocators()
+                 .lock()
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:580:
+             .or_default()
+             .reserve(mesh.vertices.len(), index_byte_count)
+             .context("custom 3D mesh compaction capacity exceeded")?;
+-        self.upload_custom_mesh_3d_to_cache(
+-            mesh,
+-            reservation.0,
+-            reservation.1,
+-            uses_u16,
+-        )
++        self.upload_custom_mesh_3d_to_cache(mesh, reservation.0, reservation.1, uses_u16)
+     }
+ 
+     pub(super) fn custom_mesh_3d_cache_entry(
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/nova_renderer/mesh_cache.rs:691:
+             }
+         }
+ 
+-        let vertex_byte_offset =
+-            (vertex_offset * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64;
++        let vertex_byte_offset = (vertex_offset * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64;
+         let vertex_buffer = self.custom_mesh_3d_vertices_buffer;
+         let index_buffer = self.custom_mesh_3d_indices_buffer;
+         let upload_result: Result<()> = match &mut self.backend {
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/pipeline_material.rs:31:
+         })
+         .context("creating nova custom GPU mesh 3D fragment shader module")?;
+ 
+-    let opaque_or_cutout = fragment_entry_point.ends_with("_opaque")
+-        || fragment_entry_point.ends_with("_cutout");
++    let opaque_or_cutout =
++        fragment_entry_point.ends_with("_opaque") || fragment_entry_point.ends_with("_cutout");
+     let blend_mode = if opaque_or_cutout {
+         BlendMode::Replace
+     } else {
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova/pipeline_material.rs:44:
+             &RenderPipelineDescriptor {
+                 label: Some(format!(
+                     "{label} custom GPU mesh 3D {} pipeline",
+-                    if opaque_or_cutout { "opaque" } else { "transparent" }
++                    if opaque_or_cutout {
++                        "opaque"
++                    } else {
++                        "transparent"
++                    }
+                 )),
+                 vertex_shader,
+                 vertex_entry_point: vertex_entry_point.to_string(),
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova.rs:20:
+ mod atlas_resources;
+ mod backend;
+ mod diagnostics;
+-#[path = "nova/draw.rs"]
+-mod draw_legacy;
+ #[path = "nova/draw_paged.rs"]
+ mod draw;
++#[path = "nova/draw.rs"]
++mod draw_legacy;
+ mod frame_upload;
+ mod limits;
+ mod nova_renderer;
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/crates/gpui/src/platform/nova.rs:30:
+-#[path = "nova/pipeline.rs"]
+-mod pipeline_legacy;
+ #[path = "nova/pipeline_material.rs"]
+ mod pipeline;
++#[path = "nova/pipeline.rs"]
++mod pipeline_legacy;
+ mod prelude;
+ mod rendering_parameters;
+ mod resource_bindings;
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle.rs:67:
+     coord: (i32, i32),
+ ) -> bool {
+     match tile_chunk_index.get(&coord) {
+-        Some(positions) if positions.is_empty() => !tile_manager
+-            .entries
+-            .get(&coord)
+-            .is_some_and(|entry| {
++        Some(positions) if positions.is_empty() => {
++            !tile_manager.entries.get(&coord).is_some_and(|entry| {
+                 matches!(entry.state, TileLoadState::Empty | TileLoadState::Invalid)
+-            }),
++            })
++        }
+         Some(_) => !tile_manager.entries.get(&coord).is_some_and(|entry| {
+             matches!(entry.state, TileLoadState::Queued | TileLoadState::Loading)
+                 || (entry.state == TileLoadState::Loaded && entry.image.is_some())
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle.rs:1233:
+         self.metadata_loading = false;
+     }
+ 
+-
+-pub(super) fn show_map_error(&mut self, message: impl Into<SharedString>, cx: &mut App) {
++    pub(super) fn show_map_error(&mut self, message: impl Into<SharedString>, cx: &mut App) {
+         let message = message.into();
+         self.status = message.clone();
+         if self
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle.rs:1444:
+         self.refresh_metadata(cx);
+     }
+ 
+-pub(super) fn schedule_chunk_patch_refresh(
++    pub(super) fn schedule_chunk_patch_refresh(
+         &mut self,
+         requests: Vec<ChunkPatchRefreshPlan>,
+         tile_priority: TilePriority,
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle.rs:1740:
+         .detach();
+     }
+ 
+-fn refresh_metadata_consumers_if_ready(&mut self, cx: &mut Context<Self>) {
++    fn refresh_metadata_consumers_if_ready(&mut self, cx: &mut Context<Self>) {
+         if self.render_session.is_none() || self.metadata_loading {
+             return;
+         }
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle.rs:1893:
+                         .is_some_and(|bounds| tile_bounds_contains(bounds, *coord))
+                 })
+                 .collect::<Vec<_>>();
+-            let prefetch_renderable_tiles =
+-                self.resolve_occupancy_tiles(&prefetch_candidates, cx);
++            let prefetch_renderable_tiles = self.resolve_occupancy_tiles(&prefetch_candidates, cx);
+             self.tile_manager.ensure_tiles_for_layout(
+                 &prefetch_renderable_tiles,
+                 TilePriority::Prefetch,
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/lifecycle.rs:1979:
+         .detach();
+     }
+ 
+-
+-pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) {
++    pub(super) fn ensure_visible_tiles_throttled(&mut self, cx: &mut Context<Self>) {
+         if self.right_selection_drag.is_some() {
+             self.pending_viewport_refresh = true;
+             return;
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/tile_plan.rs:27:
+     };
+     let canvas_budget = canvas_tile_image_budget(options.viewport, options.layout);
+     let retain_filter = visible_bounds.map(|bounds| {
+-        retained_tile_filter_for_visible_bounds(
+-            bounds,
+-            center,
+-            retain_radius,
+-            canvas_budget,
+-        )
++        retained_tile_filter_for_visible_bounds(bounds, center, retain_radius, canvas_budget)
+     });
+ 
+     let prefetch_radius = if actively_dragging {
+Diff in /home/runner/work/Better-Minecraft-Bedrock-Launcher/Better-Minecraft-Bedrock-Launcher/src/ui/window/map_viewer/tile_plan.rs:42:
+     };
+     let prefetch = if prefetch_radius > 0 {
+         visible_bounds
+-            .map(|bounds| {
+-                tile_coords_for_bounds(
+-                    bounds,
+-                    prefetch_radius,
+-                    center,
+-                    canvas_budget,
+-                )
+-            })
++            .map(|bounds| tile_coords_for_bounds(bounds, prefetch_radius, center, canvas_budget))
+             .unwrap_or_default()
+     } else {
+         Vec::new()

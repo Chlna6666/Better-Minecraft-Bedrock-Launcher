@@ -1,9 +1,7 @@
 mod actions;
 mod bottom_panel;
-#[path = "map_viewer/canvas_frontend_stable.rs"]
-mod canvas;
 #[path = "map_viewer/canvas_stable.rs"]
-mod canvas_base;
+mod canvas;
 #[path = "map_viewer/canvas.rs"]
 mod canvas_legacy;
 mod editor;
@@ -15,7 +13,6 @@ mod history_panel;
 mod import_preview;
 mod interactions;
 mod layout;
-#[path = "map_viewer/lifecycle_stable.rs"]
 mod lifecycle;
 pub(crate) mod map_history;
 mod mcstructure;
@@ -46,10 +43,7 @@ mod status_bar;
 mod tests;
 mod tile_cache;
 mod tile_occupancy;
-#[path = "map_viewer/tile_plan_stable.rs"]
 mod tile_plan;
-#[path = "map_viewer/tile_plan.rs"]
-mod tile_plan_legacy;
 #[path = "map_viewer/tile_render_current.rs"]
 mod tile_render;
 mod tile_render_legacy;
