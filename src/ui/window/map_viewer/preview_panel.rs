@@ -323,7 +323,10 @@ impl MapViewerWindowView {
 
     pub(super) fn preview_3d_zoom_by(&mut self, factor: f32, cx: &mut Context<Self>) {
         if let Some(mesh) = self.preview_3d.mesh.as_ref() {
-            self.preview_3d.camera.zoom_by_for_mesh(factor, mesh);
+            let span = mesh.horizontal_span().max(1.0);
+            let dynamic_max = 64.0_f32.max(span / 4.0).min(4096.0);
+            self.preview_3d.camera.zoom =
+                (self.preview_3d.camera.zoom * factor).clamp(0.05, dynamic_max);
         } else {
             self.preview_3d.camera.zoom_by(factor);
         }
