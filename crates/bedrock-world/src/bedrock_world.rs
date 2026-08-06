@@ -107,11 +107,11 @@ pub use query::{
     query_selection_stats_blocking, query_slime_chunk_windows, write_chunk_record_nbt_blocking,
 };
 pub use storage::{
-    MemoryStorage, POCKET_CHUNKS_DAT_TERRAIN_VALUE_LEN, PocketChunksDatStorage, StorageBatch,
-    StorageCachePolicy, StorageCancelFlag, StorageEntry, StorageEntryRef, StorageOp,
-    StoragePipelineOptions, StorageProgressSink, StorageReadOptions, StorageScanMode,
-    StorageScanOutcome, StorageScanProgress, StorageThreadingOptions, StorageVisitorControl,
-    WorldStorage, backend::BedrockLevelDbStorage,
+    MemoryStorage, POCKET_CHUNKS_DAT_TERRAIN_VALUE_LEN, PartitionedWorldStorage,
+    PocketChunksDatStorage, StorageBatch, StorageCachePolicy, StorageCancelFlag, StorageEntry,
+    StorageEntryRef, StorageOp, StoragePipelineOptions, StorageProgressSink, StorageReadOptions,
+    StorageScanMode, StorageScanOutcome, StorageScanProgress, StorageThreadingOptions,
+    StorageVisitorControl, WorldStorage, backend::BedrockLevelDbStorage,
 };
 pub use world::{
     BedrockWorld, BiomeDataRequirement, CancelFlag, ChunkBlockEntity, ChunkBounds, ChunkData,
@@ -120,7 +120,7 @@ pub use world::{
     SurfaceColumnOptions, TerrainColumnBiome, TerrainColumnOverlay, TerrainColumnSample,
     TerrainColumnSamples, TerrainColumnWater, TerrainSampleSource, TerrainSurfaceRole,
     WorldChunkQueryRegion, WorldChunkQueryRegionData, WorldChunkQueryRegionLoadOptions,
-    WorldFormat, WorldFormatHint, WorldPipelineOptions, WorldScanOptions, WorldScanProgress,
-    WorldStorageHandle, WorldThreadingOptions, WorldTransaction, terrain_surface_overlay_alpha,
-    terrain_surface_role,
+    WorldExecutor, WorldFormat, WorldFormatHint, WorldPipelineOptions, WorldScanOptions,
+    WorldScanProgress, WorldStorageHandle, WorldThreadingOptions, WorldTransaction,
+    terrain_surface_overlay_alpha, terrain_surface_role,
 };

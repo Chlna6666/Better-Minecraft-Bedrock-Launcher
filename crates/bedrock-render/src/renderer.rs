@@ -20,10 +20,10 @@ pub use pipeline::{
     RenderSurfaceLoadPolicy, RenderTaskControl, RenderThreadingOptions, RenderTileOutputOptions,
     RenderTilePriority, RenderWebTilesResult, ResolvedRenderBackend, RgbaPlane, SurfacePlane,
     SurfacePlaneAtlas, SurfaceRenderOptions, TerrainLightingOptions, TerrainLightingPreset,
-    TileCache, TileCacheKey, TileCoord, TileImage, TileManifestProbeRequest,
-    TileManifestProbeResult, TilePathScheme, TilePixelFormat, TileReadySource, TileSet,
-    TileStreamEvent, TileStreamEventV2, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
-    encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation, tile_cache_validation_value,
+    TileCache, TileCacheKey, TileCoord, TileImage, TilePathScheme, TilePixelFormat,
+    TileReadySource, TileSet, TileStreamEvent, TileStreamEventV2, decode_fast_rgba_zstd,
+    decode_fast_rgba_zstd_header, encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation,
+    tile_cache_validation_value,
 };
 
 #[cfg(feature = "async")]

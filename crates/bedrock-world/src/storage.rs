@@ -405,6 +405,25 @@ pub trait WorldStorage: Send + Sync {
     }
 }
 
+/// Storage backend capable of table-parallel scans with worker-local reduction state.
+///
+/// Unlike [`WorldStorage::for_each_key`], this API never serializes successful
+/// visitor calls through one shared mutable closure. Each backend worker owns one
+/// `T`; callers merge the returned partitions after the scan.
+pub trait PartitionedWorldStorage: WorldStorage {
+    /// Scans visible keys with one independently initialized reduction value per worker.
+    fn scan_keys_partitioned<T, I, F>(
+        &self,
+        options: StorageReadOptions,
+        init: I,
+        visitor: F,
+    ) -> Result<(StorageScanOutcome, Vec<T>)>
+    where
+        T: Send,
+        I: Fn() -> T + Send + Sync,
+        F: Fn(&mut T, &[u8]) -> Result<StorageVisitorControl> + Send + Sync;
+}
+
 #[derive(Debug, Clone, Default)]
 /// In-memory storage backend for tests and synthetic tools.
 pub struct MemoryStorage {
@@ -547,6 +566,24 @@ impl WorldStorage for MemoryStorage {
 
     fn compact(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+impl PartitionedWorldStorage for MemoryStorage {
+    fn scan_keys_partitioned<T, I, F>(
+        &self,
+        options: StorageReadOptions,
+        init: I,
+        visitor: F,
+    ) -> Result<(StorageScanOutcome, Vec<T>)>
+    where
+        T: Send,
+        I: Fn() -> T + Send + Sync,
+        F: Fn(&mut T, &[u8]) -> Result<StorageVisitorControl> + Send + Sync,
+    {
+        let mut partition = init();
+        let outcome = self.for_each_key(options, &mut |key| visitor(&mut partition, key))?;
+        Ok((outcome, vec![partition]))
     }
 }
 
@@ -869,7 +906,16 @@ pub mod backend {
                 error_if_exists: false,
                 paranoid_checks,
                 compression_policy: bedrock_leveldb::CompressionPolicy::Zlib,
-                cache_size: 64 * 1024 * 1024,
+                cache: if read_only {
+                    bedrock_leveldb::NativeCacheOptions {
+                        data_capacity: 32 * 1024 * 1024,
+                        index_capacity: 64 * 1024 * 1024,
+                        file_capacity: 256,
+                        shards: 16,
+                    }
+                } else {
+                    bedrock_leveldb::NativeCacheOptions::default()
+                },
                 write_buffer_size: 4 * 1024 * 1024,
             };
             let db = bedrock_leveldb::Db::open(path, options).map_err(map_leveldb_error)?;
@@ -1057,6 +1103,49 @@ pub mod backend {
     }
 
     #[cfg(feature = "backend-bedrock-leveldb")]
+    impl PartitionedWorldStorage for BedrockLevelDbStorage {
+        fn scan_keys_partitioned<T, I, F>(
+            &self,
+            options: StorageReadOptions,
+            init: I,
+            visitor: F,
+        ) -> Result<(StorageScanOutcome, Vec<T>)>
+        where
+            T: Send,
+            I: Fn() -> T + Send + Sync,
+            F: Fn(&mut T, &[u8]) -> Result<StorageVisitorControl> + Send + Sync,
+        {
+            let visitor_error = Arc::new(std::sync::Mutex::new(None));
+            let visitor_error_for_scan = Arc::clone(&visitor_error);
+            let scan_result = self.db.for_each_key_partitioned(
+                to_leveldb_read_options(options),
+                init,
+                move |partition, key| match visitor(partition, key) {
+                    Ok(StorageVisitorControl::Continue) => {
+                        Ok(bedrock_leveldb::VisitorControl::Continue)
+                    }
+                    Ok(StorageVisitorControl::Stop) => Ok(bedrock_leveldb::VisitorControl::Stop),
+                    Err(error) => {
+                        if let Ok(mut slot) = visitor_error_for_scan.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(error);
+                        }
+                        Ok(bedrock_leveldb::VisitorControl::Stop)
+                    }
+                },
+            );
+            if let Ok(mut slot) = visitor_error.lock()
+                && let Some(error) = slot.take()
+            {
+                return Err(error);
+            }
+            let (outcome, partitions) = scan_result.map_err(map_leveldb_error)?;
+            Ok((to_storage_outcome(outcome), partitions))
+        }
+    }
+
+    #[cfg(feature = "backend-bedrock-leveldb")]
     const fn write_options() -> bedrock_leveldb::WriteOptions {
         bedrock_leveldb::WriteOptions { sync: true }
     }
@@ -1153,6 +1242,25 @@ pub mod backend {
 
         /// Returns an error because the LevelDB backend feature is disabled.
         pub fn open_read_only_best_effort(_path: impl AsRef<Path>) -> Result<Self> {
+            Err(BedrockWorldError::LevelDb(
+                "backend-bedrock-leveldb feature is disabled".to_string(),
+            ))
+        }
+    }
+
+    #[cfg(not(feature = "backend-bedrock-leveldb"))]
+    impl PartitionedWorldStorage for BedrockLevelDbStorage {
+        fn scan_keys_partitioned<T, I, F>(
+            &self,
+            _options: StorageReadOptions,
+            _init: I,
+            _visitor: F,
+        ) -> Result<(StorageScanOutcome, Vec<T>)>
+        where
+            T: Send,
+            I: Fn() -> T + Send + Sync,
+            F: Fn(&mut T, &[u8]) -> Result<StorageVisitorControl> + Send + Sync,
+        {
             Err(BedrockWorldError::LevelDb(
                 "backend-bedrock-leveldb feature is disabled".to_string(),
             ))

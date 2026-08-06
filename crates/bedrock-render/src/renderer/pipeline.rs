@@ -45,8 +45,8 @@ use bedrock_world::{
     CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkBounds, ChunkData, ChunkDataRequest,
     ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats, ChunkPos, Dimension,
     ExactSurfaceSubchunkPolicy, LegacyBiomeSample, NbtTag, OpenOptions as WorldOpenOptions,
-    StorageCachePolicy, StoragePipelineOptions, StorageReadOptions, StorageScanMode,
-    StorageThreadingOptions, StorageVisitorControl, SubChunk, SubChunkDecodeMode,
+    PartitionedWorldStorage, StorageCachePolicy, StoragePipelineOptions, StorageReadOptions,
+    StorageScanMode, StorageThreadingOptions, StorageVisitorControl, SubChunk, SubChunkDecodeMode,
     TerrainColumnBiome, TerrainColumnOverlay, TerrainColumnSample, TerrainColumnSamples,
     WorldChunkQueryRegion, WorldChunkQueryRegionData, WorldChunkQueryRegionLoadOptions,
     WorldPipelineOptions, WorldScanOptions, WorldStorage, WorldStorageHandle,
@@ -1997,39 +1997,11 @@ impl RenderTaskControl {
     }
 }
 
-/// Request used to probe renderable chunks for a group of map tiles.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TileManifestProbeRequest {
-    /// Dimension to scan.
-    pub dimension: Dimension,
-    /// Render layout used by the requested tiles.
-    pub layout: RenderLayout,
-    /// Tile coordinates requested by the caller.
-    pub requested_tiles: Vec<(i32, i32)>,
-    /// Optional scan pipeline queue depth.
-    pub queue_depth: usize,
-    /// Optional table batch size for parallel LevelDB scans.
-    pub table_batch_size: usize,
-    /// Progress interval for LevelDB scans.
-    pub progress_interval: usize,
-}
-
-/// Result of a render-owned tile manifest probe.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TileManifestProbeResult {
-    /// Tiles covered by the scan.
-    pub requested_tiles: Vec<(i32, i32)>,
-    /// Renderable chunk positions grouped by tile coordinate.
-    pub tile_chunk_index: BTreeMap<(i32, i32), Vec<ChunkPos>>,
-    /// Bounds of all renderable chunks returned by the probe.
-    pub bounds: Option<ChunkBounds>,
-}
-
 /// Direct LevelDB-backed render source for map tile metadata and sessions.
 #[derive(Clone)]
 pub struct LevelDbRenderSource {
     world_path: PathBuf,
-    world: Arc<BedrockWorld<Arc<dyn WorldStorage>>>,
+    world: Arc<BedrockWorld<BedrockLevelDbStorage>>,
     full_render_chunk_index: Arc<OnceLock<Arc<[ChunkPos]>>>,
 }
 
@@ -2050,10 +2022,8 @@ impl LevelDbRenderSource {
     /// Returns an error if the `db` directory cannot be opened.
     pub fn open_read_only(world_path: impl AsRef<Path>) -> Result<Self> {
         let world_path = world_path.as_ref().to_path_buf();
-        let storage: Arc<dyn WorldStorage> = Arc::new(
-            BedrockLevelDbStorage::open_read_only_best_effort(world_path.join("db"))?,
-        );
-        let world = Arc::new(BedrockWorld::from_storage(
+        let storage = BedrockLevelDbStorage::open_read_only_best_effort(world_path.join("db"))?;
+        let world = Arc::new(BedrockWorld::from_typed_storage(
             world_path.clone(),
             storage,
             WorldOpenOptions::default(),
@@ -2063,108 +2033,6 @@ impl LevelDbRenderSource {
             world,
             full_render_chunk_index: Arc::new(OnceLock::new()),
         })
-    }
-
-    /// Probes renderable chunks for requested tiles using direct LevelDB key scans.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the layout is invalid, scanning fails, or cancellation
-    /// is requested.
-    pub fn probe_tile_manifest_blocking(
-        &self,
-        request: TileManifestProbeRequest,
-        control: &RenderTaskControl,
-    ) -> Result<TileManifestProbeResult> {
-        control.wait_if_paused()?;
-        check_render_control_cancelled(control)?;
-        validate_layout(request.layout)?;
-        let Some(tile_bounds) = tile_bounds_from_coords(&request.requested_tiles) else {
-            return Ok(TileManifestProbeResult {
-                requested_tiles: request.requested_tiles,
-                tile_chunk_index: BTreeMap::new(),
-                bounds: None,
-            });
-        };
-        let chunks_per_tile = i32::try_from(request.layout.chunks_per_tile)
-            .map_err(|_| {
-                BedrockRenderError::Validation("layout chunks_per_tile is too large".to_string())
-            })?
-            .max(1);
-        let region = ChunkRegion {
-            dimension: request.dimension,
-            min_chunk_x: tile_bounds.min_x.saturating_mul(chunks_per_tile),
-            min_chunk_z: tile_bounds.min_z.saturating_mul(chunks_per_tile),
-            max_chunk_x: tile_bounds
-                .max_x
-                .saturating_mul(chunks_per_tile)
-                .saturating_add(chunks_per_tile.saturating_sub(1)),
-            max_chunk_z: tile_bounds
-                .max_z
-                .saturating_mul(chunks_per_tile)
-                .saturating_add(chunks_per_tile.saturating_sub(1)),
-        };
-        let scanned_tiles = tile_coords_from_bounds(tile_bounds);
-        let options = WorldScanOptions {
-            threading: if request.queue_depth <= 1 {
-                WorldThreadingOptions::Single
-            } else {
-                WorldThreadingOptions::Fixed(request.queue_depth)
-            },
-            pipeline: WorldPipelineOptions {
-                queue_depth: request.queue_depth,
-                chunk_batch_size: request.table_batch_size,
-                progress_interval: request.progress_interval,
-                subchunk_decode_workers: 0,
-            },
-            cancel: Some(WorldCancelFlag::from_shared(Arc::clone(&control.cancel.0))),
-            progress: None,
-        };
-        let renderable_chunks =
-            self.list_chunk_positions_in_region_blocking(region.into(), options)?;
-        check_render_control_cancelled(control)?;
-
-        let mut tile_chunk_index = scanned_tiles
-            .iter()
-            .map(|coord| (*coord, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        for position in renderable_chunks.iter().copied() {
-            let coord = (
-                position.x.div_euclid(chunks_per_tile),
-                position.z.div_euclid(chunks_per_tile),
-            );
-            if let Some(chunks) = tile_chunk_index.get_mut(&coord) {
-                chunks.push(position);
-            }
-        }
-        for positions in tile_chunk_index.values_mut() {
-            positions.sort();
-            positions.dedup();
-        }
-        let bounds = chunk_bounds_from_positions(request.dimension, &renderable_chunks);
-        Ok(TileManifestProbeResult {
-            requested_tiles: scanned_tiles,
-            tile_chunk_index,
-            bounds,
-        })
-    }
-
-    /// Probes renderable chunks for requested tiles on a blocking worker thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the blocking worker panics, the layout is invalid,
-    /// scanning fails, or cancellation is requested.
-    #[cfg(feature = "async")]
-    pub async fn probe_tile_manifest_async(
-        &self,
-        request: TileManifestProbeRequest,
-        control: RenderTaskControl,
-    ) -> Result<TileManifestProbeResult> {
-        let source = self.clone();
-        tokio::task::spawn_blocking(move || source.probe_tile_manifest_blocking(request, &control))
-            .await
-            .map_err(|error| BedrockRenderError::Join(error.to_string()))?
     }
 }
 
@@ -2254,7 +2122,6 @@ impl LevelDbRenderSource {
         {
             return Err(BedrockRenderError::Cancelled);
         }
-        let mut positions = BTreeSet::new();
         let scan_options = StorageReadOptions {
             threading: match options.threading {
                 WorldThreadingOptions::Auto => StorageThreadingOptions::Auto,
@@ -2279,30 +2146,31 @@ impl LevelDbRenderSource {
                 .map(WorldCancelFlag::to_storage_cancel),
             progress: None,
         };
-        let scan_result = self.world.storage().for_each_key(scan_options, &mut |key| {
-            if options
-                .cancel
-                .as_ref()
-                .is_some_and(WorldCancelFlag::is_cancelled)
-            {
-                return Ok(StorageVisitorControl::Stop);
-            }
-            if let bedrock_world::BedrockDbKey::Chunk(chunk_key) =
-                bedrock_world::BedrockDbKey::decode(key)
-            {
-                let position = chunk_key.pos;
-                if chunk_key.tag.is_render_chunk_record()
-                    && region.is_none_or(|region| render_chunk_region_contains(region, position))
+        let (_, partitions) = self.world.storage_backend().scan_keys_partitioned(
+            scan_options,
+            || Vec::<ChunkPos>::with_capacity(4096),
+            |positions, key| {
+                if options
+                    .cancel
+                    .as_ref()
+                    .is_some_and(WorldCancelFlag::is_cancelled)
                 {
-                    positions.insert(position);
+                    return Ok(StorageVisitorControl::Stop);
                 }
-            }
-            Ok(StorageVisitorControl::Continue)
-        });
-        match scan_result {
-            Ok(_) => {}
-            Err(error) => return Err(error.into()),
-        }
+                if let bedrock_world::BedrockDbKey::Chunk(chunk_key) =
+                    bedrock_world::BedrockDbKey::decode(key)
+                {
+                    let position = chunk_key.pos;
+                    if chunk_key.tag.is_render_chunk_record()
+                        && region
+                            .is_none_or(|region| render_chunk_region_contains(region, position))
+                    {
+                        positions.push(position);
+                    }
+                }
+                Ok(StorageVisitorControl::Continue)
+            },
+        )?;
         if options
             .cancel
             .as_ref()
@@ -2310,7 +2178,12 @@ impl LevelDbRenderSource {
         {
             return Err(BedrockRenderError::Cancelled);
         }
-        Ok(positions.into_iter().collect())
+        let total_positions = partitions.iter().map(Vec::len).sum();
+        let mut positions = Vec::with_capacity(total_positions);
+        positions.extend(partitions.into_iter().flatten());
+        positions.sort_unstable();
+        positions.dedup();
+        Ok(positions)
     }
 }
 
@@ -4705,20 +4578,6 @@ where
     pub const fn renderer(&self) -> &MapRenderer<S> {
         &self.renderer
     }
-
-    /// Probes renderable chunks for requested tiles using the session's shared world source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the layout is invalid, scanning fails, or cancellation is requested.
-    pub fn probe_tile_manifest_blocking(
-        &self,
-        request: TileManifestProbeRequest,
-        control: &RenderTaskControl,
-    ) -> Result<TileManifestProbeResult> {
-        self.renderer.probe_tile_manifest_blocking(request, control)
-    }
-
     /// Returns true when this session has initialized a reusable GPU context.
     #[must_use]
     pub const fn gpu_available(&self) -> bool {
@@ -6101,90 +5960,6 @@ where
             _marker: PhantomData,
         }
     }
-
-    /// Probes renderable chunks for requested tiles using this renderer's source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the layout is invalid, scanning fails, or cancellation is requested.
-    pub fn probe_tile_manifest_blocking(
-        &self,
-        request: TileManifestProbeRequest,
-        control: &RenderTaskControl,
-    ) -> Result<TileManifestProbeResult> {
-        control.wait_if_paused()?;
-        check_render_control_cancelled(control)?;
-        validate_layout(request.layout)?;
-        let Some(tile_bounds) = tile_bounds_from_coords(&request.requested_tiles) else {
-            return Ok(TileManifestProbeResult {
-                requested_tiles: request.requested_tiles,
-                tile_chunk_index: BTreeMap::new(),
-                bounds: None,
-            });
-        };
-        let chunks_per_tile = i32::try_from(request.layout.chunks_per_tile)
-            .map_err(|_| {
-                BedrockRenderError::Validation("layout chunks_per_tile is too large".to_string())
-            })?
-            .max(1);
-        let region = ChunkRegion {
-            dimension: request.dimension,
-            min_chunk_x: tile_bounds.min_x.saturating_mul(chunks_per_tile),
-            min_chunk_z: tile_bounds.min_z.saturating_mul(chunks_per_tile),
-            max_chunk_x: tile_bounds
-                .max_x
-                .saturating_mul(chunks_per_tile)
-                .saturating_add(chunks_per_tile.saturating_sub(1)),
-            max_chunk_z: tile_bounds
-                .max_z
-                .saturating_mul(chunks_per_tile)
-                .saturating_add(chunks_per_tile.saturating_sub(1)),
-        };
-        let scanned_tiles = tile_coords_from_bounds(tile_bounds);
-        let world_options = WorldScanOptions {
-            threading: if request.queue_depth <= 1 {
-                WorldThreadingOptions::Single
-            } else {
-                WorldThreadingOptions::Fixed(request.queue_depth)
-            },
-            pipeline: WorldPipelineOptions {
-                queue_depth: request.queue_depth,
-                chunk_batch_size: request.table_batch_size,
-                progress_interval: request.progress_interval,
-                subchunk_decode_workers: 0,
-            },
-            cancel: Some(WorldCancelFlag::from_shared(Arc::clone(&control.cancel.0))),
-            progress: None,
-        };
-        let positions = self
-            .source
-            .list_chunk_positions_in_region_blocking(region.into(), world_options)?;
-        check_render_control_cancelled(control)?;
-        let mut tile_chunk_index = scanned_tiles
-            .iter()
-            .map(|coord| (*coord, Vec::new()))
-            .collect::<BTreeMap<_, _>>();
-        for position in positions.iter().copied() {
-            let coord = (
-                position.x.div_euclid(chunks_per_tile),
-                position.z.div_euclid(chunks_per_tile),
-            );
-            if let Some(chunks) = tile_chunk_index.get_mut(&coord) {
-                chunks.push(position);
-            }
-        }
-        for positions in tile_chunk_index.values_mut() {
-            positions.sort();
-            positions.dedup();
-        }
-        let bounds = chunk_bounds_from_positions(request.dimension, &positions);
-        Ok(TileManifestProbeResult {
-            requested_tiles: scanned_tiles,
-            tile_chunk_index,
-            bounds,
-        })
-    }
-
     fn with_region_bake_cache(mut self, cache: Arc<Mutex<RegionBakeMemoryCache>>) -> Self {
         self.region_bake_cache = Some(cache);
         self
@@ -13273,94 +13048,6 @@ mod tests {
         }
         path
     }
-
-    #[test]
-    fn leveldb_render_source_probe_indexes_render_chunk_keys() {
-        let world_path = temp_world_dir("leveldb-render-source-probe");
-        let db_path = world_path.join("db");
-        let db = Db::open(&db_path, LevelDbOpenOptions::default()).expect("open db");
-        let key = bedrock_leveldb::ChunkKey::new(
-            bedrock_leveldb::ChunkCoordinates::new(-1, 2),
-            bedrock_leveldb::Dimension::Overworld,
-            bedrock_leveldb::ChunkRecordTag::Data2D,
-        )
-        .encode();
-        db.put(key, vec![1], Default::default())
-            .expect("write render key");
-        drop(db);
-
-        let source = LevelDbRenderSource::open_read_only(&world_path).expect("open render source");
-        let result = source
-            .probe_tile_manifest_blocking(
-                TileManifestProbeRequest {
-                    dimension: Dimension::Overworld,
-                    layout: RenderLayout {
-                        chunks_per_tile: 8,
-                        blocks_per_pixel: 1,
-                        pixels_per_block: 4,
-                    },
-                    requested_tiles: vec![(-1, 0)],
-                    queue_depth: 1,
-                    table_batch_size: 1,
-                    progress_interval: 1,
-                },
-                &RenderTaskControl::new(),
-            )
-            .expect("probe");
-
-        assert_eq!(result.requested_tiles, vec![(-1, 0)]);
-        assert_eq!(
-            result.tile_chunk_index.get(&(-1, 0)).cloned(),
-            Some(vec![ChunkPos {
-                x: -1,
-                z: 2,
-                dimension: Dimension::Overworld,
-            }])
-        );
-        assert_eq!(
-            result.bounds,
-            Some(ChunkBounds {
-                dimension: Dimension::Overworld,
-                min_chunk_x: -1,
-                min_chunk_z: 2,
-                max_chunk_x: -1,
-                max_chunk_z: 2,
-                chunk_count: 1,
-            })
-        );
-        fs::remove_dir_all(&world_path).expect("remove temp world");
-    }
-
-    #[test]
-    fn leveldb_render_source_probe_observes_cancelled_control() {
-        let world_path = temp_world_dir("leveldb-render-source-cancel");
-        let db_path = world_path.join("db");
-        let db = Db::open(&db_path, LevelDbOpenOptions::default()).expect("open db");
-        drop(db);
-
-        let source = LevelDbRenderSource::open_read_only(&world_path).expect("open render source");
-        let control = RenderTaskControl::new();
-        control.cancel();
-        let result = source.probe_tile_manifest_blocking(
-            TileManifestProbeRequest {
-                dimension: Dimension::Overworld,
-                layout: RenderLayout {
-                    chunks_per_tile: 8,
-                    blocks_per_pixel: 1,
-                    pixels_per_block: 4,
-                },
-                requested_tiles: vec![(0, 0)],
-                queue_depth: 1,
-                table_batch_size: 1,
-                progress_interval: 1,
-            },
-            &control,
-        );
-
-        assert!(matches!(result, Err(BedrockRenderError::Cancelled)));
-        fs::remove_dir_all(&world_path).expect("remove temp world");
-    }
-
     #[test]
     fn render_chunk_index_strategy_switches_after_measured_region_threshold() {
         assert!(!should_use_full_render_chunk_index(

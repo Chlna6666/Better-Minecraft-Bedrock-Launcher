@@ -43,7 +43,7 @@ use std::time::Instant;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -883,6 +883,69 @@ impl ChunkBounds {
     }
 }
 
+/// Persistent decode executor shared by world operations with the same worker budget.
+pub struct WorldExecutor {
+    worker_count: usize,
+    pool: rayon::ThreadPool,
+}
+
+impl std::fmt::Debug for WorldExecutor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorldExecutor")
+            .field("worker_count", &self.worker_count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WorldExecutor {
+    /// Creates a fixed persistent world executor.
+    pub fn new(worker_count: usize) -> Result<Self> {
+        let worker_count = worker_count.clamp(1, MAX_WORLD_THREADS);
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .thread_name(|index| format!("bedrock-world-worker-{index}"))
+            .build()
+            .map_err(|error| {
+                BedrockWorldError::ConcurrentWrite(format!(
+                    "failed to build persistent world executor: {error}"
+                ))
+            })?;
+        Ok(Self { worker_count, pool })
+    }
+
+    /// Number of worker threads owned by this executor.
+    #[must_use]
+    pub const fn worker_count(&self) -> usize {
+        self.worker_count
+    }
+}
+
+fn default_world_worker_budget() -> usize {
+    let logical = std::thread::available_parallelism().map_or(1, usize::from);
+    logical.div_ceil(2).clamp(2, 6)
+}
+
+fn world_executor(worker_count: usize) -> Result<Arc<WorldExecutor>> {
+    static EXECUTORS: OnceLock<Mutex<HashMap<usize, Arc<WorldExecutor>>>> = OnceLock::new();
+    let worker_count = worker_count.clamp(1, MAX_WORLD_THREADS);
+    let executors = EXECUTORS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(executors) = executors.lock()
+        && let Some(executor) = executors.get(&worker_count)
+    {
+        return Ok(Arc::clone(executor));
+    }
+    let executor = Arc::new(WorldExecutor::new(worker_count)?);
+    let mut executors = executors.lock().map_err(|_| {
+        BedrockWorldError::ConcurrentWrite("world executor registry poisoned".to_string())
+    })?;
+    Ok(Arc::clone(
+        executors
+            .entry(worker_count)
+            .or_insert_with(|| Arc::clone(&executor)),
+    ))
+}
+
 #[derive(Debug, Clone)]
 /// Options controlling world scan operations.
 pub struct WorldScanOptions {
@@ -935,9 +998,7 @@ impl WorldThreadingOptions {
         match self {
             Self::Single => 1,
             Self::Fixed(threads) => threads.clamp(1, MAX_WORLD_THREADS),
-            Self::Auto => std::thread::available_parallelism()
-                .map_or(1, usize::from)
-                .min(work_items.max(1)),
+            Self::Auto => default_world_worker_budget().min(work_items.max(1)),
         }
     }
 
@@ -1169,6 +1230,11 @@ where
         self.storage.storage()
     }
 
+    /// Returns the concrete storage handle used by this world.
+    pub const fn storage_backend(&self) -> &S {
+        &self.storage
+    }
+
     #[must_use]
     /// Returns the world folder path.
     pub fn path(&self) -> &Path {
@@ -1387,8 +1453,8 @@ where
             .pipeline
             .resolve_queue_depth(worker_count, positions.len());
         let (sender, receiver) = mpsc::sync_channel::<Result<Option<ChunkPos>>>(queue_depth);
-        let pool = world_pool(worker_count)?;
-        pool.scope(|scope| {
+        let executor = world_executor(worker_count)?;
+        executor.pool.scope(|scope| {
             for worker_index in 0..worker_count {
                 let next_position = Arc::clone(&next_position);
                 let sender = sender.clone();
@@ -2082,8 +2148,8 @@ where
             }
             (chunks, timing)
         } else {
-            let pool = world_pool(worker_count)?;
-            let decoded = pool.install(|| {
+            let executor = world_executor(worker_count)?;
+            let decoded = executor.pool.install(|| {
                 raw_chunks
                     .into_par_iter()
                     .map(|raw| {
@@ -4815,16 +4881,6 @@ fn log_render_load_complete(stats: &ChunkLoadStats) {
     );
 }
 
-fn world_pool(worker_count: usize) -> Result<rayon::ThreadPool> {
-    ThreadPoolBuilder::new()
-        .num_threads(worker_count.max(1).saturating_add(1))
-        .thread_name(|index| format!("bedrock-world-worker-{index}"))
-        .build()
-        .map_err(|error| {
-            BedrockWorldError::Validation(format!("failed to build world worker pool: {error}"))
-        })
-}
-
 fn to_storage_read_options(options: &WorldScanOptions) -> StorageReadOptions {
     StorageReadOptions {
         threading: match options.threading {
@@ -5105,10 +5161,8 @@ mod tests {
     }
 
     #[test]
-    fn world_threading_validates_fixed_range_and_auto_is_not_capped_to_eight() {
-        let expected_auto = std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            .min(10_000);
+    fn world_threading_uses_bounded_desktop_background_budget() {
+        let expected_auto = default_world_worker_budget().min(10_000);
         assert_eq!(
             WorldThreadingOptions::Auto
                 .resolve_checked(10_000)

@@ -29,10 +29,10 @@ pub use renderer::{
     RenderProgressSink, RenderSurfaceLoadPolicy, RenderTaskControl, RenderThreadingOptions,
     RenderTileOutputOptions, RenderTilePriority, RenderWebTilesResult, ResolvedRenderBackend,
     RgbaPlane, SurfacePlane, SurfacePlaneAtlas, SurfaceRenderOptions, TerrainLightingOptions,
-    TerrainLightingPreset, TileCache, TileCacheKey, TileCoord, TileImage, TileManifestProbeRequest,
-    TileManifestProbeResult, TilePathScheme, TilePixelFormat, TileReadySource, TileSet,
-    TileStreamEvent, TileStreamEventV2, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
-    encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation, tile_cache_validation_value,
+    TerrainLightingPreset, TileCache, TileCacheKey, TileCoord, TileImage, TilePathScheme,
+    TilePixelFormat, TileReadySource, TileSet, TileStreamEvent, TileStreamEventV2,
+    decode_fast_rgba_zstd, decode_fast_rgba_zstd_header, encode_fast_rgba_zstd,
+    encode_fast_rgba_zstd_with_validation, tile_cache_validation_value,
 };
 pub use renderer::{
     ChunkFingerprintInput, TILE_AUTHORITY_FLAG_EMPTY, TILE_AUTHORITY_FLAG_NON_EMPTY,
