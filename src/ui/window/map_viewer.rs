@@ -35,7 +35,7 @@ mod selection;
 mod state;
 mod status_bar;
 #[cfg(test)]
-mod tests;
+mod r#tests;
 mod tile_cache;
 mod tile_occupancy;
 mod tile_plan;
