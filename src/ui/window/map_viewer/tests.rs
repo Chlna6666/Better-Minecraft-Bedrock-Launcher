@@ -13,7 +13,7 @@ use super::players::*;
 use super::prelude::*;
 use super::query_cache::*;
 use super::tile_cache::*;
-use super::tile_manifest::*;
+use super::tile_occupancy::*;
 use super::tile_plan::*;
 use super::tile_render::*;
 use super::tile_state::*;
@@ -2286,30 +2286,6 @@ fn selected_tile_work_estimate_counts_chunks_and_unique_regions() {
         }
     );
 }
-
-#[::core::prelude::v1::test]
-fn region_cache_identity_uses_eight_chunk_tile_layout() {
-    let layout = web_relief_render_layout();
-    let world_path = PathBuf::from("test-world");
-    let manifest_path = bedrock_render::tile_manifest_cache_path(
-        &file_ops::cache_subdir("bedrock-render"),
-        &world_path,
-        RenderBackend::Cpu,
-        RenderGpuBackend::Auto,
-        RenderMode::SurfaceBlocks,
-        Dimension::Overworld,
-        layout,
-    );
-    let manifest_path = manifest_path.to_string_lossy();
-
-    assert_eq!(layout.chunks_per_tile, 8);
-    assert_eq!(layout.blocks_per_pixel, 1);
-    assert_eq!(layout.pixels_per_block, 4);
-    assert!(manifest_path.contains("map-manifest-index"));
-    assert!(manifest_path.contains("8c-1bpp-4ppb.bridx"));
-    assert!(!manifest_path.contains("32c-1bpp-4ppb"));
-}
-
 #[::core::prelude::v1::test]
 fn non_empty_tile_index_uses_exact_manifest_chunk_set() {
     let layout = web_relief_render_layout();
@@ -2486,66 +2462,6 @@ fn missing_tile_index_expands_to_region_candidates_for_exact_reads() {
         })
     );
 }
-
-#[::core::prelude::v1::test]
-fn pending_manifest_tiles_are_not_render_queue_candidates() {
-    let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
-    manager.ensure_tiles(&[(1, 0)], TilePriority::Visible);
-
-    let queued = manager.queued_coords((0, 0), None, false, true);
-
-    assert_eq!(manager.pending_manifest_count(), 1);
-    assert_eq!(queued, vec![(1, 0)]);
-}
-
-#[::core::prelude::v1::test]
-fn pending_manifest_detection_is_limited_to_requested_tiles() {
-    let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(0, 0), (8, 0)], TilePriority::Prefetch);
-
-    assert!(manager.has_pending_manifest_for_tiles(&[(0, 0)]));
-    assert!(!manager.has_pending_manifest_for_tiles(&[(1, 0)]));
-}
-
-#[::core::prelude::v1::test]
-fn cancelled_probe_keeps_pending_manifest_tile_probeable() {
-    let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::EditRefresh);
-
-    assert!(manager.is_pending_manifest((0, 0)));
-    assert!(manager.has_pending_manifest_for_tiles(&[(0, 0)]));
-    assert!(should_probe_edit_refresh_manifest(false, true));
-}
-
-#[::core::prelude::v1::test]
-fn manifest_ready_tile_enters_render_queue_after_probe() {
-    let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
-    manager.mark_manifest_ready((0, 0), TilePriority::Visible);
-
-    assert_eq!(
-        manager.queued_coords((0, 0), None, false, true),
-        vec![(0, 0)]
-    );
-}
-
-#[::core::prelude::v1::test]
-fn edit_refresh_pending_manifest_keeps_refresh_priority_after_probe() {
-    let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(3, -2)], TilePriority::EditRefresh);
-    manager.mark_manifest_ready((3, -2), TilePriority::EditRefresh);
-
-    assert_eq!(
-        manager.entries.get(&(3, -2)).map(|entry| entry.priority),
-        Some(TilePriority::EditRefresh)
-    );
-    assert_eq!(
-        manager.queued_coords((0, 0), None, false, true),
-        vec![(3, -2)]
-    );
-}
-
 #[::core::prelude::v1::test]
 fn mark_loaded_preserves_visible_priority_after_ready_return() {
     let mut manager = RegionManager::default();
@@ -2625,48 +2541,6 @@ fn mark_invalid_removes_loaded_tile_and_releases_estimated_memory() {
     assert_eq!(manager.loaded_estimated_bytes(), 0);
     assert!(dropped_image.is_some_and(|dropped_image| Arc::ptr_eq(&dropped_image, &image)));
 }
-
-#[::core::prelude::v1::test]
-fn region_manager_counts_track_state_transitions() {
-    let mut manager = RegionManager::default();
-    manager.ensure_tiles(&[(0, 0), (1, 0)], TilePriority::Visible);
-
-    assert_eq!(manager.queued_count(), 2);
-    assert_eq!(manager.loading_count(), 0);
-    assert_eq!(manager.loaded_count(), 0);
-
-    manager.mark_loading(&[(0, 0)]);
-    assert_eq!(manager.queued_count(), 1);
-    assert_eq!(manager.loading_count(), 1);
-
-    manager.mark_failed((0, 0), SharedString::from("failed"));
-    assert_eq!(manager.queued_count(), 2);
-    assert_eq!(manager.loading_count(), 0);
-    assert_eq!(manager.failed_count(), 1);
-
-    manager.mark_invalid((1, 0), SharedString::from("empty"));
-    assert_eq!(manager.queued_count(), 1);
-    assert_eq!(manager.failed_count(), 1);
-    assert_eq!(manager.invalid_count(), 1);
-
-    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
-    assert_eq!(manager.queued_count(), 0);
-    assert_eq!(manager.pending_manifest_count(), 1);
-    assert_eq!(manager.failed_count(), 0);
-
-    manager.mark_manifest_ready((0, 0), TilePriority::Visible);
-    assert_eq!(manager.queued_count(), 1);
-    assert_eq!(manager.pending_manifest_count(), 0);
-
-    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
-    assert_eq!(manager.loaded_count(), 1);
-    assert_eq!(manager.queued_count(), 0);
-
-    manager.remove_tile((0, 0));
-    assert_eq!(manager.loaded_count(), 0);
-    assert_eq!(manager.invalid_count(), 1);
-}
-
 #[::core::prelude::v1::test]
 fn cancelled_loading_tiles_return_to_queue_without_backoff() {
     let mut manager = RegionManager::default();
@@ -2698,29 +2572,6 @@ fn cancelling_active_render_requeues_tiles_before_task_finishes() {
     assert_eq!(manager.loading_count(), 0);
     assert!(active_tiles.is_empty());
 }
-
-#[::core::prelude::v1::test]
-fn pending_edit_refresh_manifest_coords_keep_queue_order() {
-    let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(5, 0)], TilePriority::Visible);
-    manager.ensure_pending_manifest(&[(2, 0)], TilePriority::EditRefresh);
-    manager.ensure_pending_manifest(&[(1, 0)], TilePriority::EditRefresh);
-
-    assert_eq!(
-        manager.pending_manifest_coords_with_priority(TilePriority::EditRefresh),
-        vec![(2, 0), (1, 0)]
-    );
-}
-
-#[::core::prelude::v1::test]
-fn invalid_empty_manifest_tile_is_not_render_queue_candidate() {
-    let mut manager = RegionManager::default();
-    manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
-    manager.mark_invalid((0, 0), SharedString::from("索引确认该瓦片没有可渲染区块"));
-
-    assert!(manager.queued_coords((0, 0), None, false, true).is_empty());
-}
-
 #[::core::prelude::v1::test]
 fn render_tile_plan_rejects_empty_chunk_positions() {
     let plan = RenderTilePlan::new(
@@ -2968,25 +2819,6 @@ fn render_image_eviction_waits_until_viewport_interaction_is_idle() {
     assert!(should_defer_render_image_evictions(true));
     assert!(!should_defer_render_image_evictions(false));
 }
-
-#[::core::prelude::v1::test]
-fn loaded_tile_without_manifest_keeps_cached_image_without_requeue() {
-    let mut manager = RegionManager::default();
-    manager.ensure_tiles(&[(0, 0)], TilePriority::Visible);
-    manager.mark_loaded((0, 0), test_tile([1, 2, 3, 255]));
-
-    let needs_cache_bypass = manager.ensure_pending_manifest(&[(0, 0)], TilePriority::Visible);
-
-    let entry = manager
-        .entries
-        .get(&(0, 0))
-        .expect("loaded tile should remain available while verification runs");
-    assert!(!needs_cache_bypass);
-    assert_eq!(entry.state, TileLoadState::Loaded);
-    assert_eq!(entry.source_status, TileSourceStatus::Fresh);
-    assert!(entry.image.is_some());
-}
-
 #[::core::prelude::v1::test]
 fn loaded_tile_without_image_is_requeued_for_visible_render() {
     let mut manager = RegionManager::default();
@@ -3105,18 +2937,6 @@ fn map_cpu_budget_defaults_to_sixty_percent_with_interactive_cap() {
         requested.clamp(1, available.saturating_sub(1).max(1))
     );
 }
-
-#[::core::prelude::v1::test]
-fn manifest_probe_worker_count_keeps_interaction_headroom() {
-    let budget = RenderCpuBudget::default();
-
-    let workers = manifest_probe_worker_count(budget);
-
-    assert!(workers >= 1);
-    assert!(workers <= TILE_MANIFEST_PROBE_MAX_WORKERS);
-    assert!(workers <= budget.thread_count());
-}
-
 #[::core::prelude::v1::test]
 fn circular_prefetch_keeps_axis_neighbors_and_excludes_outer_corners() {
     let coords = collect_circular_tile_coords(
@@ -3346,39 +3166,6 @@ fn edit_refresh_tiles_are_queued_before_visible_tiles() {
         Some(TilePriority::EditRefresh)
     );
 }
-
-#[::core::prelude::v1::test]
-fn manifest_probe_selects_center_ring_before_outer_visible_tiles() {
-    let visible_tiles = [(2, 0), (1, 1), (0, 1), (-1, 0), (0, 0), (1, 0), (0, -1)];
-    let selected = select_manifest_probe_tiles(&visible_tiles, &[], (0, 0), &BTreeSet::new());
-
-    assert_eq!(
-        selected,
-        vec![(0, 0), (0, -1), (1, 0), (1, 1), (0, 1), (-1, 0), (2, 0)]
-    );
-}
-
-#[::core::prelude::v1::test]
-fn manifest_probe_skips_scanned_center_and_batches_remaining_visible_tiles() {
-    let visible_tiles = [(2, 0), (1, 1), (0, 1), (-1, 0), (0, 0), (1, 0), (0, -1)];
-    let mut scanned_tiles = BTreeSet::new();
-    scanned_tiles.insert((0, 0));
-
-    let selected = select_manifest_probe_tiles(&visible_tiles, &[], (0, 0), &scanned_tiles);
-
-    assert_eq!(
-        selected,
-        vec![(0, -1), (1, 0), (1, 1), (0, 1), (-1, 0), (2, 0)]
-    );
-}
-
-#[::core::prelude::v1::test]
-fn manifest_probe_is_reserved_for_edit_refresh() {
-    assert!(should_probe_edit_refresh_manifest(false, true));
-    assert!(!should_probe_edit_refresh_manifest(true, true));
-    assert!(!should_probe_edit_refresh_manifest(false, false));
-}
-
 #[::core::prelude::v1::test]
 fn cached_manifest_marks_all_scanned_tiles_without_reprobing_empty_tiles() {
     let requested_tiles = vec![(0, 0), (1, 0)];
@@ -3406,69 +3193,6 @@ fn cached_manifest_marks_all_scanned_tiles_without_reprobing_empty_tiles() {
             .is_some_and(|chunks| chunks.is_empty())
     );
 }
-
-#[::core::prelude::v1::test]
-fn parallel_manifest_probe_merge_preserves_requested_tiles_and_results() {
-    let requested_tiles = vec![(0, 0), (1, 0), (2, 0)];
-    let first_chunk = ChunkPos {
-        x: 0,
-        z: 0,
-        dimension: Dimension::Overworld,
-    };
-    let second_chunk = ChunkPos {
-        x: 8,
-        z: 0,
-        dimension: Dimension::Overworld,
-    };
-    let results = vec![
-        Ok(TileManifestProbeResult {
-            requested_tiles: vec![(0, 0)],
-            tile_chunk_index: BTreeMap::from([(
-                (0, 0),
-                TileChunkPositions::from(vec![first_chunk]),
-            )]),
-            bounds: None,
-            center_block_x: None,
-            center_block_z: None,
-        }),
-        Ok(TileManifestProbeResult {
-            requested_tiles: vec![(1, 0)],
-            tile_chunk_index: BTreeMap::from([(
-                (1, 0),
-                TileChunkPositions::from(vec![second_chunk]),
-            )]),
-            bounds: None,
-            center_block_x: None,
-            center_block_z: None,
-        }),
-    ];
-
-    let merged =
-        merge_tile_manifest_probe_results(requested_tiles.clone(), results).expect("merge probes");
-
-    assert_eq!(merged.requested_tiles, requested_tiles);
-    assert_eq!(
-        merged
-            .tile_chunk_index
-            .get(&(0, 0))
-            .and_then(|positions| positions.first()),
-        Some(&first_chunk)
-    );
-    assert_eq!(
-        merged
-            .tile_chunk_index
-            .get(&(1, 0))
-            .and_then(|positions| positions.first()),
-        Some(&second_chunk)
-    );
-    assert!(
-        merged
-            .tile_chunk_index
-            .get(&(2, 0))
-            .is_some_and(|positions| positions.is_empty())
-    );
-}
-
 #[::core::prelude::v1::test]
 fn overlay_query_waits_for_visible_tile_pipeline_but_not_idle_viewport() {
     assert!(should_defer_overlay_query_for_visible_tiles(

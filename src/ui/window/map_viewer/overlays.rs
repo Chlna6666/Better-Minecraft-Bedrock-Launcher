@@ -115,7 +115,6 @@ impl MapViewerWindowView {
             return;
         }
         if should_defer_overlay_query_for_visible_tiles(
-            self.manifest_probe_in_flight,
             self.render_batch_active,
             self.tile_manager.has_visible_work(),
         ) {
@@ -817,11 +816,10 @@ fn tile_bound_map_info_requested(options: RegionOverlayQueryOptions) -> bool {
 }
 
 pub(super) const fn should_defer_overlay_query_for_visible_tiles(
-    manifest_probe_in_flight: bool,
     render_batch_active: bool,
     has_visible_work: bool,
 ) -> bool {
-    manifest_probe_in_flight || render_batch_active || has_visible_work
+    render_batch_active || has_visible_work
 }
 
 fn overlay_query_cache_key(

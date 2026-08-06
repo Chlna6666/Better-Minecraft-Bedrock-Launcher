@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bedrock Web Map</title>
+<link rel="stylesheet" href="assets/viewer.css">
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <strong>Bedrock Web Map</strong>
+    <select id="dimension"></select>
+    <select id="mode"></select>
+    <button id="zoomOut" type="button">-</button>
+    <span id="zoomLabel">100%</span>
+    <button id="zoomIn" type="button">+</button>
+  </div>
+  <div id="map">
+    <canvas id="gridCanvas"></canvas>
+    <div id="layer"></div>
+    <div id="pluginLayer"></div>
+    <div id="markerLayer"></div>
+  </div>
+  <aside id="pluginPanel" aria-live="polite"></aside>
+  <div id="status">Loading map data...</div>
+  <div id="coordHud">X 0 · Z 0</div>
+  <div id="contextMenu">
+    <div class="menu-title" id="contextCoords">X 0 · Z 0</div>
+    <button class="menu-button" id="copyTp" type="button">复制 /tp 0 ~ 0</button>
+    <button class="menu-button menu-primary" id="addMarker" type="button">在此处放置红点标记</button>
+    <button class="menu-button" id="jumpToCoordinate" type="button">跳转到坐标...</button>
+    <button class="menu-button" id="resetView" type="button">重置到原点</button>
+    <button class="menu-button" id="clearMarkers" type="button">清除当前维度标记</button>
+    <div class="menu-separator"></div>
+    <button class="menu-button menu-toggle active" data-overlay="axis" type="button">显示坐标轴</button>
+    <button class="menu-button menu-toggle" data-overlay="denseGrid" type="button">密集坐标网格</button>
+    <button class="menu-button menu-toggle" data-overlay="binaryCoordinates" type="button">二进制坐标</button>
+    <button class="menu-button menu-toggle active" data-overlay="ruler" type="button">显示标尺</button>
+  </div>
+</div>
+<script src="map-data.js"></script>
+<script src="tile-index.js"></script>
+<script src="plugin-index.js"></script>
+<script src="assets/plugin-runtime.js"></script>
+<script src="assets/viewer.js"></script>
+</body>
+</html>

@@ -18,13 +18,16 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "1"
+  CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "8"
   CARGO_TARGET_DIR: target/ci-check
+  CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  RUST_MIN_STACK: "67108864"
 
 jobs:
-  windows-check:
-    name: Windows cargo check
+  windows-build:
+    name: Windows build
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -38,8 +41,16 @@ jobs:
         shell: pwsh
         run: ./scripts/check_gpui_layout.ps1
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Show Rust versions
+        shell: pwsh
+        run: |
+          rustc -Vv
+          cargo -V
 
       - name: Configure LLVM
         shell: pwsh
@@ -56,7 +67,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmBin"
 
-      - name: Restore Cargo cache
+      - name: Restore Cargo source cache
         uses: actions/cache@v5
         with:
           path: |
@@ -64,17 +75,27 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/registry/src
             ~/.cargo/git
-            target/ci-check
-          key: windows-cargo-check-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v5
+          key: windows-cargo-sources-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-v8
           restore-keys: |
-            windows-cargo-check-
+            windows-cargo-sources-${{ runner.arch }}-
 
-      - name: Check all BMCBL targets
+      - name: Remove stale compiler outputs
         shell: pwsh
-        run: cargo check --all-targets
+        run: |
+          if (Test-Path $env:CARGO_TARGET_DIR) {
+            Remove-Item -Recurse -Force $env:CARGO_TARGET_DIR
+          }
 
-  linux-check:
-    name: Linux cargo check
+      - name: Build BMCBL library
+        shell: pwsh
+        run: cargo build --lib
+
+      - name: Build BMCBL executable
+        shell: pwsh
+        run: cargo build --bin BMCBL
+
+  linux-build:
+    name: Linux build
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -96,10 +117,17 @@ jobs:
             libxcursor-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libxrandr-dev nasm yasm
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
 
-      - name: Restore Cargo cache
+      - name: Show Rust versions
+        run: |
+          rustc -Vv
+          cargo -V
+
+      - name: Restore Cargo source cache
         uses: actions/cache@v5
         with:
           path: |
@@ -107,10 +135,15 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/registry/src
             ~/.cargo/git
-            target/ci-check
-          key: linux-cargo-check-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}-v5
+          key: linux-cargo-sources-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-v8
           restore-keys: |
-            linux-cargo-check-
+            linux-cargo-sources-${{ runner.arch }}-
 
-      - name: Check all BMCBL targets
-        run: cargo check --all-targets
+      - name: Remove stale compiler outputs
+        run: rm -rf "$CARGO_TARGET_DIR"
+
+      - name: Build BMCBL library
+        run: cargo build --lib
+
+      - name: Build BMCBL executable
+        run: cargo build --bin BMCBL

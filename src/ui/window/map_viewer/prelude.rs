@@ -86,14 +86,16 @@ pub(super) use bedrock_render::{
     RenderGpuOptions, RenderGpuPipelineLevel, RenderJob, RenderLayout, RenderMemoryBudget,
     RenderMode, RenderOptions, RenderPalette, RenderPipelineStats, RenderTaskControl,
     RenderThreadingOptions, RenderTileOutputOptions, RenderTilePriority, ResolvedRenderBackend,
-    SurfaceRenderOptions, TerrainLightingOptions, TileCoord, TileManifestProbeRequest,
-    TilePixelFormat, TileReadySource, TileStreamEventV2,
+    SurfaceRenderOptions, TerrainLightingOptions, TileCoord, TileOccupancyIndex,
+    TileOccupancyIndexRequest, TileOccupancyIndexSource, TilePixelFormat, TileReadySource,
+    TileStreamEventV2,
     editor::{
         ActorRecord, ActorSource, Biome3d, BlockEntityRecord, GlobalRecordKind,
         HardcodedSpawnAreaKind, HeightMap2d, MapEditInvalidation, MapRecordId, MapWorldEditor,
         ParsedBiomeStorage, ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData,
         WorldScanOptions,
     },
+    load_or_build_tile_occupancy_index_blocking,
 };
 pub(super) use bedrock_world::{
     ActorDigestKey, BedrockWorld, BlockPos, CancelFlag, ChunkDetail, ChunkKey, ChunkRecord,

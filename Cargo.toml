@@ -38,7 +38,7 @@ gpui_hooks = { path = "crates/gpui-hooks" }
 lucide-gpui = { path = "crates/lucide-gpui" }
 image = { version = "0.25.9", default-features = false, features = ["png", "tga", "jpeg", "webp"] }
 mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main" }
-bedrock-world = { git = "https://github.com/BE-Community-Dev/bedrock-world.git", branch = "main" }
+bedrock-world = { path = "crates/bedrock-world" }
 bedrock-block-model = { git = "https://github.com/BE-Community-Dev/bedrock-block-model.git", branch = "main" }
 
 serde = { version = "1.0.219", features = ["derive", "rc"] }
@@ -118,6 +118,9 @@ gpui-windows-vulkan = ["gpui/nova-gfx-vulkan"]
 [workspace]
 resolver = "3"
 members = [
+    "crates/bedrock-leveldb",
+    "crates/bedrock-world",
+    "crates/bedrock-render",
     "crates/egpui",
     "crates/egpui-build",
     "crates/egpui-manifest",
@@ -148,7 +151,7 @@ exclude = ["crates/easytier", "crates/raknet", "vendor/sctk-adwaita"]
 
 [target.'cfg(windows)'.dependencies]
 windows-future = "0.3.2"
-bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp", "gpu-dx11"] }
+bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp", "gpu-dx11"] }
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 lofty = "0.23.2"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "mp4", "wav", "flac", "vorbis"] }
@@ -161,13 +164,13 @@ winreg = "0.56.0"
 winres = "0.1"
 
 [target.'cfg(not(windows))'.dependencies]
-bedrock-render = { git = "https://github.com/BE-Community-Dev/bedrock-render.git", branch = "main", default-features = false, features = ["async", "webp"] }
+bedrock-render = { path = "crates/bedrock-render", default-features = false, features = ["async", "webp"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["async-io", "crypto-rust", "linux-native-async-persistent"] }
 
 [dev-dependencies]
-bedrock-leveldb = { git = "https://github.com/BE-Community-Dev/bedrock-leveldb.git", branch = "main" }
+bedrock-leveldb = { path = "crates/bedrock-leveldb" }
 
 [patch.crates-io]
 dtls = { path = "vendor/dtls" }

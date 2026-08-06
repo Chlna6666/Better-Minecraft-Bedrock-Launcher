@@ -551,7 +551,7 @@ impl MapViewerWindowView {
                         self.tile_manager.queued_count(),
                         self.tile_manager.loading_count(),
                         self.tile_manager.failed_count(),
-                        self.tile_manager.invalid_count(),
+                        self.tile_manager.empty_count(),
                         self.tile_reveal_state.ready_batches,
                         self.tile_reveal_state.last_batch_size,
                     )),
@@ -631,25 +631,7 @@ impl MapViewerWindowView {
                 div()
                     .text_size(px(11.0))
                     .text_color(colors.text_muted)
-                    .child(format!(
-                        "Probe 诊断 最近编辑 #{} {} · edit后 manifest_probe_start {} 次",
-                        self.manifest_probe_diagnostics.last_edit_serial,
-                        self.manifest_probe_diagnostics.last_edit_label,
-                        self.manifest_probe_diagnostics.probe_starts_since_last_edit,
-                    )),
-            )
-            .children(
-                self.manifest_probe_diagnostics
-                    .recent_events
-                    .iter()
-                    .rev()
-                    .map(|event| {
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(colors.text_muted)
-                            .child(event.clone())
-                            .into_any_element()
-                    }),
+        ,
             )
     }
 }
@@ -684,8 +666,8 @@ pub(super) fn compact_activity_label(view: &MapViewerWindowView) -> String {
     if view.tile_manager.failed_count() > 0 {
         return format!("失败 {}", view.tile_manager.failed_count());
     }
-    if view.tile_manager.invalid_count() > 0 {
-        return format!("空 {}", view.tile_manager.invalid_count());
+    if view.tile_manager.empty_count() > 0 {
+        return format!("空 {}", view.tile_manager.empty_count());
     }
     "就绪".to_string()
 }

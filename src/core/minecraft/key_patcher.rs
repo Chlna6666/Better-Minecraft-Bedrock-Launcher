@@ -21,6 +21,26 @@ pub enum PatchError {
     BackupFailed(io::Error), // 备份创建失败
 }
 
+impl std::fmt::Display for PatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "补丁操作发生 IO 错误: {error}"),
+            Self::InvalidExeName => formatter.write_str("文件名不是受支持的 Minecraft 可执行文件"),
+            Self::KeyNotFound => formatter.write_str("未在可执行文件中找到待替换的旧公钥"),
+            Self::BackupFailed(error) => write!(formatter, "创建原文件备份失败: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) | Self::BackupFailed(error) => Some(error),
+            Self::InvalidExeName | Self::KeyNotFound => None,
+        }
+    }
+}
+
 /// 补丁操作的结果
 #[derive(Debug)]
 pub enum PatchResult {
@@ -47,13 +67,11 @@ fn compute_lps(pattern: &[u8]) -> Vec<usize> {
             len += 1;
             lps[i] = len;
             i += 1;
+        } else if len != 0 {
+            len = lps[len - 1];
         } else {
-            if len != 0 {
-                len = lps[len - 1];
-            } else {
-                lps[i] = 0;
-                i += 1;
-            }
+            lps[i] = 0;
+            i += 1;
         }
     }
 
@@ -290,13 +308,11 @@ pub fn patch_path(path: &Path) -> Result<PatchResult, PatchError> {
     let exe_to_patch = if path.is_dir() {
         info!("patch_path: 提供的是目录，正在目录中查找 exe");
         find_exe_in_dir(path)
-    } else {
+    } else if is_valid_exe_path(path) {
         // 如果是文件，仅当它是有效 exe 时才处理
-        if is_valid_exe_path(path) {
-            Some(path.to_path_buf())
-        } else {
-            None
-        }
+        Some(path.to_path_buf())
+    } else {
+        None
     };
 
     if let Some(exe_path) = exe_to_patch {

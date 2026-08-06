@@ -2,6 +2,41 @@ use super::model::*;
 use super::prelude::*;
 use super::tile_state::*;
 
+const CANVAS_PAINT_PAGE_TILES: i32 = 32;
+const CANVAS_PAINT_GUARD_TILES: i32 = 8;
+
+pub(super) fn paint_tile_bounds_for_viewport(
+    viewport: super::model::MapViewport,
+    layout: bedrock_render::RenderLayout,
+    radius: i32,
+) -> Option<TileBounds> {
+    let bounds = raw_paint_tile_bounds_for_viewport(
+        viewport,
+        layout,
+        radius.saturating_add(CANVAS_PAINT_GUARD_TILES),
+    )?;
+
+    let align_min = |value: i32| {
+        value
+            .div_euclid(CANVAS_PAINT_PAGE_TILES)
+            .saturating_mul(CANVAS_PAINT_PAGE_TILES)
+    };
+    let align_max = |value: i32| {
+        value
+            .div_euclid(CANVAS_PAINT_PAGE_TILES)
+            .saturating_add(1)
+            .saturating_mul(CANVAS_PAINT_PAGE_TILES)
+            .saturating_sub(1)
+    };
+
+    Some(TileBounds {
+        min_x: align_min(bounds.min_x),
+        max_x: align_max(bounds.max_x),
+        min_z: align_min(bounds.min_z),
+        max_z: align_max(bounds.max_z),
+    })
+}
+
 pub(super) fn viewport_block_bounds(
     viewport: MapViewport,
     layout: RenderLayout,
@@ -588,7 +623,7 @@ pub(super) fn visible_tile_bounds_for_viewport(
     (bounds.min_x <= bounds.max_x && bounds.min_z <= bounds.max_z).then_some(bounds)
 }
 
-pub(super) fn paint_tile_bounds_for_viewport(
+fn raw_paint_tile_bounds_for_viewport(
     viewport: MapViewport,
     layout: RenderLayout,
     radius: i32,
@@ -744,70 +779,6 @@ fn tile_ring_rotation_rank(dx: i64, dz: i64, ring: i64) -> i64 {
     ring.saturating_mul(7).saturating_add(-dx)
 }
 
-pub(super) fn select_manifest_probe_tiles(
-    visible_tiles: &[(i32, i32)],
-    prefetch_tiles: &[(i32, i32)],
-    center: (i32, i32),
-    scanned_tiles: &BTreeSet<(i32, i32)>,
-) -> Vec<(i32, i32)> {
-    if tiles_are_sorted_center_first(visible_tiles, center)
-        && tiles_are_sorted_center_first(prefetch_tiles, center)
-    {
-        return select_manifest_probe_tiles_from_ordered(
-            visible_tiles,
-            prefetch_tiles,
-            scanned_tiles,
-        );
-    }
-    let visible_bounds = tile_bounds_from_coords(visible_tiles);
-    let mut seen = BTreeSet::new();
-    let mut candidates = Vec::new();
-
-    for coord in visible_tiles.iter().copied() {
-        if scanned_tiles.contains(&coord) || !seen.insert(coord) {
-            continue;
-        }
-        let (ring, rotation, distance_squared, z, x) = tile_distance_sort_key(coord, center);
-        candidates.push((0_u8, ring, rotation, distance_squared, 0_i64, z, x, coord));
-    }
-    for coord in prefetch_tiles.iter().copied() {
-        if scanned_tiles.contains(&coord) || !seen.insert(coord) {
-            continue;
-        }
-        let (ring, rotation, distance_squared, z, x) = tile_distance_sort_key(coord, center);
-        let visible_distance = visible_bounds
-            .map(|bounds| squared_distance_to_tile_bounds(coord.0, coord.1, bounds))
-            .unwrap_or(distance_squared);
-        candidates.push((
-            1_u8,
-            ring,
-            rotation,
-            distance_squared,
-            visible_distance,
-            z,
-            x,
-            coord,
-        ));
-    }
-    candidates.sort_by_key(|candidate| {
-        (
-            candidate.0,
-            candidate.1,
-            candidate.2,
-            candidate.3,
-            candidate.4,
-            candidate.5,
-            candidate.6,
-        )
-    });
-
-    candidates
-        .into_iter()
-        .take(TILE_MANIFEST_PROBE_BATCH_TILES)
-        .map(|candidate| candidate.7)
-        .collect()
-}
-
 fn collect_tile_coords_unsorted(
     visible: TileBounds,
     expanded: TileBounds,
@@ -937,37 +908,6 @@ fn push_tile_if_selected(
             || squared_distance_to_tile_bounds(coord.0, coord.1, visible) <= radius_squared)
     {
         coords.push(coord);
-    }
-}
-
-fn select_manifest_probe_tiles_from_ordered(
-    visible_tiles: &[(i32, i32)],
-    prefetch_tiles: &[(i32, i32)],
-    scanned_tiles: &BTreeSet<(i32, i32)>,
-) -> Vec<(i32, i32)> {
-    let mut seen = BTreeSet::new();
-    let mut selected = Vec::with_capacity(TILE_MANIFEST_PROBE_BATCH_TILES);
-    push_ordered_manifest_probe_tiles(visible_tiles, scanned_tiles, &mut seen, &mut selected);
-    if selected.len() < TILE_MANIFEST_PROBE_BATCH_TILES {
-        push_ordered_manifest_probe_tiles(prefetch_tiles, scanned_tiles, &mut seen, &mut selected);
-    }
-    selected
-}
-
-fn push_ordered_manifest_probe_tiles(
-    tiles: &[(i32, i32)],
-    scanned_tiles: &BTreeSet<(i32, i32)>,
-    seen: &mut BTreeSet<(i32, i32)>,
-    selected: &mut Vec<(i32, i32)>,
-) {
-    for coord in tiles.iter().copied() {
-        if selected.len() >= TILE_MANIFEST_PROBE_BATCH_TILES {
-            break;
-        }
-        if scanned_tiles.contains(&coord) || !seen.insert(coord) {
-            continue;
-        }
-        selected.push(coord);
     }
 }
 

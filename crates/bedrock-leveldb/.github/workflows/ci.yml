@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.87.0
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-features --all-targets -- -D warnings
+      - name: Test all features
+        run: cargo test --all-features
+      - name: Test no default features
+        run: cargo test --no-default-features
+      - name: Test feature matrix
+        run: |
+          cargo test --no-default-features --features zlib
+          cargo test --no-default-features --features snappy
+          cargo test --no-default-features --features async
+          cargo test --no-default-features --features mmap
+      - name: Docs
+        run: cargo doc --all-features --no-deps
+      - name: Public API docs
+        run: cargo rustdoc --all-features -- -D missing_docs
+      - name: Package
+        run: cargo package

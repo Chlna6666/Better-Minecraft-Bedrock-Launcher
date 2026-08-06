@@ -282,7 +282,6 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         let affected_chunks = invalidation.affected_chunks().clone();
-        self.record_manifest_probe_edit(&affected_chunks, invalidation);
         if invalidation.clear_tile_cache() {
             self.invalidate_tiles_for_chunks_with_options(
                 &affected_chunks,
@@ -303,22 +302,6 @@ impl MapViewerWindowView {
         }
         self.set_professional_detail(None, cx);
         self.refresh_chunk_tree_if_selected();
-    }
-
-    fn record_manifest_probe_edit(
-        &mut self,
-        chunks: &BTreeSet<ChunkPos>,
-        invalidation: &MapEditInvalidation,
-    ) {
-        let affected_tiles = tile_coords_for_chunks(chunks, self.active_layout);
-        self.manifest_probe_diagnostics.record_edit(format!(
-            "chunks={} tiles={} cache={} metadata={} overlays={}",
-            chunks.len(),
-            affected_tiles.len(),
-            invalidation.clear_tile_cache(),
-            invalidation.refresh_metadata(),
-            invalidation.refresh_overlays()
-        ));
     }
 
     pub(super) fn invalidate_tiles_for_chunks_with_options(
@@ -354,9 +337,7 @@ impl MapViewerWindowView {
                 );
             }
             self.available_tiles.remove(coord);
-            if !reuse_known_tile_index {
-                self.manifest_scanned_tiles.remove(coord);
-            }
+            if !reuse_known_tile_index {}
             if !reuse_known_tile_index {
                 Self::drop_render_image(self.tile_manager.remove_tile(*coord), cx);
             }
