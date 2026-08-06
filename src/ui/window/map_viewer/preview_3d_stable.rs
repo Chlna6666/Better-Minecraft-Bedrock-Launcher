@@ -1,4 +1,4 @@
-pub(super) use super::preview_3d_legacy::{
+pub(super) use super::preview_3d_source::{
     Preview3dBuildStatus, Preview3dCamera, Preview3dChunkMesh, Preview3dDragMode,
     Preview3dDragState, Preview3dFaceMetadata, Preview3dMesh, Preview3dModelRotation,
     Preview3dSelectionSignature, Preview3dSource, Preview3dState, Preview3dStatus,
@@ -67,7 +67,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
     cancel: Option<CancelFlag>,
     mut update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
-    let mesh = super::preview_3d_legacy::load_preview_3d_mesh_blocking_incremental(
+    let mesh = super::preview_3d_source::load_preview_3d_mesh_blocking_incremental(
         world_path,
         bounds,
         cancel,
@@ -84,7 +84,7 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
     mut update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
     let mesh =
-        super::preview_3d_legacy::load_preview_3d_mesh_blocking_incremental_with_block_models(
+        super::preview_3d_source::load_preview_3d_mesh_blocking_incremental_with_block_models(
             world_path,
             bounds,
             block_models,
@@ -99,7 +99,7 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
     anchor_chunk: ChunkPos,
     origin_y: i32,
 ) -> Result<Preview3dMesh, String> {
-    super::preview_3d_legacy::load_preview_3d_mesh_from_mcstructure_blocking(
+    super::preview_3d_source::load_preview_3d_mesh_from_mcstructure_blocking(
         structure,
         anchor_chunk,
         origin_y,
@@ -110,7 +110,7 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
 pub(super) fn load_preview_3d_mesh_from_copied_chunk_blocking(
     copied_chunk: &super::model::CopiedChunkData,
 ) -> Result<Preview3dMesh, String> {
-    super::preview_3d_legacy::load_preview_3d_mesh_from_copied_chunk_blocking(copied_chunk)
+    super::preview_3d_source::load_preview_3d_mesh_from_copied_chunk_blocking(copied_chunk)
         .map(optimize_preview_3d_mesh)
 }
 

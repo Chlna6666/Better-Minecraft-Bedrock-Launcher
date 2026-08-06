@@ -19,11 +19,9 @@ mod panels;
 mod player_panel;
 mod players;
 mod prelude;
-#[path = "map_viewer/preview_3d_region.rs"]
 mod preview_3d;
-#[path = "map_viewer/preview_3d.rs"]
-mod preview_3d_legacy;
 mod preview_3d_obj;
+mod preview_3d_source;
 mod preview_panel;
 mod preview_panel_render;
 mod professional_panel;
@@ -38,11 +36,9 @@ mod tests;
 mod tile_cache;
 mod tile_occupancy;
 mod tile_plan;
-#[path = "map_viewer/tile_render_current.rs"]
 mod tile_render;
-mod tile_render_legacy;
-#[path = "map_viewer/tile_render_stable.rs"]
-mod tile_render_stable;
+mod tile_render_composite;
+mod tile_render_core;
 mod tile_state;
 mod tool_stripe;
 mod top_bar;

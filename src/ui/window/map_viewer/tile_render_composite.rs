@@ -1,10 +1,10 @@
-pub(super) use super::tile_render_legacy::*;
+pub(super) use super::tile_render_core::*;
 use crate::ui::window::map_viewer::model::MapViewport;
 
 use super::model::{CHUNKS_PER_TILE, MAX_VIEWPORT_COMPOSITE_DIMENSION};
 use super::prelude::*;
 use super::tile_cache::decoded_tile_byte_len;
-use super::tile_render_legacy as legacy;
+use super::tile_render_core as core;
 use super::tile_state::MapRenderRange;
 use super::viewport::{region_render_range_for_viewport, tile_paint_rect};
 use bedrock_render::RenderLayout;
@@ -34,10 +34,10 @@ pub(super) const fn tile_texture_render_layout(
 }
 
 pub(super) fn render_viewport_composite_stream(
-    request: legacy::ViewportCompositeRequest,
-    event_sender: UnboundedSender<legacy::ViewportCompositeEvent>,
+    request: core::ViewportCompositeRequest,
+    event_sender: UnboundedSender<core::ViewportCompositeEvent>,
 ) -> Result<(), String> {
-    let legacy::ViewportCompositeRequest {
+    let core::ViewportCompositeRequest {
         render_session,
         dimension,
         layout,
@@ -51,7 +51,7 @@ pub(super) fn render_viewport_composite_stream(
         tile_cache_validation_seed,
         render_cancel,
     } = request;
-    legacy::validate_ui_render_layout(layout)?;
+    core::validate_ui_render_layout(layout)?;
     let render_range = region_render_range_for_viewport(viewport, layout)
         .ok_or_else(|| "视口合成范围无效".to_string())?;
     let (image_width, image_height, output_scale) = viewport_composite_image_size(viewport)?;
@@ -90,10 +90,10 @@ pub(super) fn render_viewport_composite_stream(
             planned_tiles: requested_tile_count,
             ..RenderPipelineStats::default()
         };
-        legacy::send_viewport_composite_event_or_cancel(
+        core::send_viewport_composite_event_or_cancel(
             &event_sender,
             &render_cancel,
-            legacy::ViewportCompositeEvent::Complete {
+            core::ViewportCompositeEvent::Complete {
                 frame: None,
                 requested_tiles,
                 rendered_tiles: 0,
@@ -106,7 +106,7 @@ pub(super) fn render_viewport_composite_stream(
         return Ok(());
     }
 
-    let render_options = legacy::interactive_render_options(
+    let render_options = core::interactive_render_options(
         render_backend,
         render_gpu_backend,
         cpu_budget,
@@ -152,10 +152,10 @@ pub(super) fn render_viewport_composite_stream(
                                     .map_err(bedrock_render::BedrockRenderError::Validation)?
                             };
                             if let Some(preview) = preview {
-                                legacy::send_viewport_composite_event_or_cancel(
+                                core::send_viewport_composite_event_or_cancel(
                                     &event_sender,
                                     &stream_cancel,
-                                    legacy::ViewportCompositeEvent::Tile { tile: preview },
+                                    core::ViewportCompositeEvent::Tile { tile: preview },
                                 )?;
                                 std::thread::sleep(PROGRESSIVE_PREVIEW_PRESENT_INTERVAL);
                             }
@@ -195,10 +195,10 @@ pub(super) fn render_viewport_composite_stream(
                                     "map_viewer viewport_composite_completed_with_partial_failures"
                                 );
                             }
-                            legacy::send_viewport_composite_event_or_cancel(
+                            core::send_viewport_composite_event_or_cancel(
                                 &event_sender,
                                 &stream_cancel,
-                                legacy::ViewportCompositeEvent::Complete {
+                                core::ViewportCompositeEvent::Complete {
                                     frame,
                                     requested_tiles: requested_tiles.clone(),
                                     rendered_tiles,
@@ -271,7 +271,7 @@ impl ProgressiveViewportCompositor {
         &mut self,
         coord: (i32, i32),
         tile: &DecodedTileImage,
-    ) -> Result<Option<legacy::ViewportCompositeTile>, String> {
+    ) -> Result<Option<core::ViewportCompositeTile>, String> {
         if tile.pixel_format != TilePixelFormat::Rgba8 {
             return Err(format!("视口合成不支持像素格式: {:?}", tile.pixel_format));
         }
@@ -393,7 +393,7 @@ impl ProgressiveViewportCompositor {
         Ok(None)
     }
 
-    fn snapshot_dirty_region(&mut self) -> Result<legacy::ViewportCompositeTile, String> {
+    fn snapshot_dirty_region(&mut self) -> Result<core::ViewportCompositeTile, String> {
         let dirty = self
             .dirty
             .take()
@@ -448,7 +448,7 @@ impl ProgressiveViewportCompositor {
         self.dirty_tiles = 0;
         self.preview_frames = self.preview_frames.saturating_add(1);
         let inverse_scale = 1.0 / self.output_scale.max(0.001);
-        Ok(legacy::ViewportCompositeTile {
+        Ok(core::ViewportCompositeTile {
             image: Arc::new(image),
             source_viewport: self.viewport,
             left: dirty.left as f32 * inverse_scale,
@@ -459,7 +459,7 @@ impl ProgressiveViewportCompositor {
         })
     }
 
-    fn finish_frame(&mut self) -> Result<Option<legacy::ViewportCompositeFrame>, String> {
+    fn finish_frame(&mut self) -> Result<Option<core::ViewportCompositeFrame>, String> {
         if self.rendered_tiles == 0 {
             return Ok(None);
         }
@@ -472,7 +472,7 @@ impl ProgressiveViewportCompositor {
             pixels,
         )
         .map_err(|error| format!("视口合成图创建失败: {error}"))?;
-        Ok(Some(legacy::ViewportCompositeFrame {
+        Ok(Some(core::ViewportCompositeFrame {
             image: Arc::new(image),
             source_viewport: self.viewport,
             width: self.width,
