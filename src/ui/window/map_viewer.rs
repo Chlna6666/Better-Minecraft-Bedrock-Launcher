@@ -19,6 +19,9 @@ mod panels;
 mod player_panel;
 mod players;
 mod prelude;
+
+// The 3D preview and tile renderer are split by responsibility rather than by
+// migration generation. No stable/legacy/current compatibility modules remain.
 mod preview_3d;
 mod preview_3d_obj;
 mod preview_3d_source;
