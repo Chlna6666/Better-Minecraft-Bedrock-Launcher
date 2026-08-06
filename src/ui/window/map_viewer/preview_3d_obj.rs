@@ -32,9 +32,7 @@ impl ObjMeshFaceSource for Preview3dChunkMesh {
     }
 
     fn obj_face_material(&self, face_index: usize) -> Option<&str> {
-        self.face_metadata
-            .get(face_index)
-            .map(|metadata| metadata.material.as_ref())
+        self.face_material(face_index)
     }
 
     fn obj_face_color(&self, face_index: usize) -> Option<[f32; 4]> {
