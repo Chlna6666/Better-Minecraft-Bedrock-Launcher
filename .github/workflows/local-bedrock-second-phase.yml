@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/local-bedrock-second-phase.yml'
       - 'scripts/apply_local_bedrock_world_executor.py'
+      - 'scripts/remove_bedrock_render_manifest_probe.py'
   workflow_dispatch:
 
 permissions:
@@ -42,6 +43,11 @@ jobs:
           if [ "$status" -eq 0 ]; then
             echo '=== apply world executor ===' >> "$validation"
             python scripts/apply_local_bedrock_world_executor.py >> "$validation" 2>&1
+            status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            echo '=== remove manifest probe API ===' >> "$validation"
+            python scripts/remove_bedrock_render_manifest_probe.py >> "$validation" 2>&1
             status=$?
           fi
           if [ "$status" -eq 0 ]; then
