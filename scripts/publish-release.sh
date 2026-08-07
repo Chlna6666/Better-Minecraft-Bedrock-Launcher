@@ -27,11 +27,17 @@ Linux artifacts include DEB, RPM, AppImage and Flatpak packages.
 EOF
 fi
 
+append_changes() {
+  git log --no-merges --pretty='%s%x09%h' "$@" \
+    | awk -F '\t' 'tolower($1) !~ /^ci(\([^)]*\))?!?:[[:space:]]/ { printf "- %s (%s)\n", $1, $2 }' \
+    >> "$notes"
+}
+
 previous="$(git tag --list 'v*' --sort=-version:refname | grep -Ev 'nightly' | grep -Fxv "$RELEASE_TAG" | head -n 1 || true)"
 if [[ -n "$previous" ]]; then
-  git log --no-merges --pretty='- %s (%h)' "$previous..$RELEASE_REF" >> "$notes"
+  append_changes "$previous..$RELEASE_REF"
 else
-  git log --no-merges --pretty='- %s (%h)' -n 100 "$RELEASE_REF" >> "$notes"
+  append_changes -n 100 "$RELEASE_REF"
 fi
 
 if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
