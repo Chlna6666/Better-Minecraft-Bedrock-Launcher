@@ -9,7 +9,9 @@ use super::model::{
 use super::paint::{draw_map_canvas, draw_professional_overlay_canvas};
 use super::selection::{
     ChunkSelection, ExistingSelectionTarget, SelectionResizeHandle, SelectionScreenBounds,
-    existing_selection_target,
+    chunk_from_block, exact_selection_chunks, existing_selection_target,
+    selection_chunks_are_rectangular, selection_contains_chunk,
+    set_additive_right_selection_requested,
 };
 use super::state::MIN_CENTER_HEIGHT;
 use super::tile_state::{MapRenderRange, PaintTile, RegionManager, TileLoadState};
@@ -776,6 +778,7 @@ fn render_interaction_layer(
             MouseButton::Right,
             cx.listener(move |_this, event: &MouseDownEvent, window, cx| {
                 focus_for_right_down.focus(window);
+                set_additive_right_selection_requested(event.modifiers.control);
                 cx.emit(MapCanvasAction::BeginRightSelection(event.position));
                 cx.stop_propagation();
             }),
@@ -845,6 +848,22 @@ pub(super) fn selection_cursor_at(
         || local_position.y > px(snapshot.viewport.height)
     {
         return CursorStyle::Arrow;
+    }
+    if let Some(exact_chunks) = exact_selection_chunks(snapshot.selection)
+        && !selection_chunks_are_rectangular(snapshot.selection, Some(exact_chunks.as_ref()))
+    {
+        let (block_x, block_z) = snapshot
+            .viewport
+            .screen_to_block(local_position, snapshot.layout);
+        let chunk = chunk_from_block(block_x, block_z, snapshot.selection.start.dimension);
+        if !selection_contains_chunk(snapshot.selection, Some(exact_chunks.as_ref()), chunk) {
+            return CursorStyle::Arrow;
+        }
+        return if pressed_button == Some(MouseButton::Left) {
+            CursorStyle::ClosedHand
+        } else {
+            CursorStyle::OpenHand
+        };
     }
     let Some(bounds) = selection_screen_bounds(snapshot) else {
         return CursorStyle::Arrow;
