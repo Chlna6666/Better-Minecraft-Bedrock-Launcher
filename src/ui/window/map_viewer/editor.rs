@@ -572,15 +572,7 @@ impl MapViewerWindowView {
         };
         self.context_menu = None;
         let bounds = selection.bounds();
-        let affected_chunks = (bounds.min_chunk_z..=bounds.max_chunk_z)
-            .flat_map(|chunk_z| {
-                (bounds.min_chunk_x..=bounds.max_chunk_x).map(move |chunk_x| ChunkPos {
-                    x: chunk_x,
-                    z: chunk_z,
-                    dimension: bounds.dimension,
-                })
-            })
-            .collect::<BTreeSet<_>>();
+        let affected_chunks = selection.chunks().into_iter().collect::<BTreeSet<_>>();
         let affected_chunk_list = affected_chunks.iter().copied().collect::<Vec<_>>();
         let progress_total = affected_chunk_list.len().max(1);
         let task_id = task_manager::create_task_with_details(
@@ -633,8 +625,9 @@ impl MapViewerWindowView {
                     let world = BedrockWorld::open_blocking(&world_path, options)
                         .map_err(|error| error.to_string())?;
                     let operation = format!(
-                        "clear chunks dim={} x={}..{} z={}..{}",
+                        "clear chunks dim={} count={} bounds=x{}..{} z{}..{}",
                         bounds.dimension.id(),
+                        progress_total,
                         bounds.min_chunk_x,
                         bounds.max_chunk_x,
                         bounds.min_chunk_z,
@@ -1651,7 +1644,7 @@ pub(super) fn biome_storage_editor_detail(
     editor: &MapWorldEditor,
     pos: ChunkPos,
 ) -> bedrock_render::Result<ProfessionalDetail> {
-    let heightmap = editor.heightmap(pos)?;
+    let height_map = editor.heightmap(pos)?;
     Ok(ProfessionalDetail::Editor {
         target: EditTarget::BiomeStorage(pos),
         title: SharedString::from(format!("生物群系 chunk {}, {}", pos.x, pos.z)),
@@ -1660,7 +1653,7 @@ pub(super) fn biome_storage_editor_detail(
             rows: vec![
                 readonly_row(
                     "高度图",
-                    if heightmap.is_some() {
+                    if height_map.is_some() {
                         "存在"
                     } else {
                         "缺失"
@@ -1672,7 +1665,7 @@ pub(super) fn biome_storage_editor_detail(
         }],
         json: pretty_json(serde_json::json!({
             "chunk": chunk_json(pos),
-            "heightmap_present": heightmap.is_some(),
+            "heightmap_present": height_map.is_some(),
             "write_model": "Data3D with validated Biome3d payload",
         })),
     })
