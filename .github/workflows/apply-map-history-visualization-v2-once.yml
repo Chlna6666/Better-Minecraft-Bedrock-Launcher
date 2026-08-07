@@ -80,6 +80,7 @@ jobs:
             }
             Invoke-Logged "Apply source patch" {
               python tools/apply_map_history_visualization_v2.py
+              python tools/fix_map_history_visualization_v2_compile.py
             }
             Invoke-Logged "Format changed map history files" {
               rustfmt --edition 2024 `
@@ -93,7 +94,7 @@ jobs:
               git diff --check
             }
             Invoke-Logged "Check BMCBL library" {
-              cargo check -p bmcbl --lib
+              cargo check -p bmcbl --lib --message-format short
             }
           } catch {
             "`nFAILED: $($_.Exception.Message)" | Tee-Object -FilePath $log -Append
@@ -110,17 +111,30 @@ jobs:
         run: |
           $log = "history-v2-validation.log"
           $tail = if (Test-Path $log) {
-            (Get-Content $log -Tail 1200 | Out-String)
+            (Get-Content $log -Tail 360 | Out-String)
           } else {
             "Validation log was not created."
           }
-          if ($tail.Length -gt 58000) {
-            $tail = $tail.Substring($tail.Length - 58000)
+          $focused = if (Test-Path $log) {
+            (Select-String -Path $log -Pattern 'error\[E[0-9]+\]|error:' -Context 3,6 | Out-String)
+          } else {
+            ""
+          }
+          if ($focused.Length -gt 30000) {
+            $focused = $focused.Substring($focused.Length - 30000)
+          }
+          if ($tail.Length -gt 26000) {
+            $tail = $tail.Substring($tail.Length - 26000)
           }
           $status = if ($env:VALIDATION_OUTCOME -eq "success") { "succeeded" } else { "failed" }
           $body = @(
             "Map history visualization v2 validation **$status**. Run $($env:RUN_ID)."
             ""
+            "Focused compiler errors:"
+            '```text'
+            $focused
+            '```'
+            "Validation tail:"
             '```text'
             $tail
             '```'
@@ -135,6 +149,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           Remove-Item -Force -ErrorAction SilentlyContinue tools/.apply-map-history-visualization-v2-trigger
           Remove-Item -Force -ErrorAction SilentlyContinue tools/apply_map_history_visualization_v2.py
+          Remove-Item -Force -ErrorAction SilentlyContinue tools/fix_map_history_visualization_v2_compile.py
           Remove-Item -Force -ErrorAction SilentlyContinue .github/workflows/apply-map-history-visualization-v2-once.yml
           Remove-Item -Force -ErrorAction SilentlyContinue history-v2-validation.log
           Remove-Item -Force -ErrorAction SilentlyContinue history-v2-comment.md
