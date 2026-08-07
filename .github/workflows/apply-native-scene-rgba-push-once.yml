@@ -145,6 +145,53 @@ jobs:
           text = text.replace(fn_new, fn_old, 1)
           path.write_text(text, encoding='utf-8')
           PY
+            python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f'expected one migration fix in {path}, found {count}: {old!r}'
+                  )
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          paint = Path('crates/gpui/src/window/paint.rs')
+          paint_text = paint.read_text(encoding='utf-8')
+          if 'use crate::Rgba;\n' not in paint_text:
+              if paint_text.count('use super::*;\n') != 1:
+                  raise SystemExit('unable to insert explicit Rgba import in window/paint.rs')
+              paint_text = paint_text.replace(
+                  'use super::*;\n',
+                  'use super::*;\nuse crate::Rgba;\n',
+                  1,
+              )
+              paint.write_text(paint_text, encoding='utf-8')
+
+          replace_once(
+              'crates/gpui/src/platform/nova/frame_upload/encode.rs',
+              'border_color: crate::Hsla::transparent_black(),',
+              'border_color: crate::Hsla::transparent_black().into(),',
+          )
+          replace_once(
+              'crates/gpui/src/style/paint.rs',
+              'None => Hsla::default(),',
+              'None => Hsla::default().into(),',
+          )
+          replace_once(
+              'crates/gpui/src/platform/bootstrap.rs',
+              '''#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+          use super::{HeadlessClient, WaylandClient, X11Client};''',
+              '''#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+          use super::HeadlessClient;
+          #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "wayland"))]
+          use super::WaylandClient;
+          #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11"))]
+          use super::X11Client;''',
+          )
+          PY
             git diff --check
             cargo check -p gpui --lib --features build-shader-validation,x11
           ) > >(tee /tmp/native-rgba-validation.log) 2>&1
