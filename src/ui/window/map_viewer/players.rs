@@ -1550,7 +1550,7 @@ fn load_item_catalog(instance_root: &Path) -> Vec<PlayerItemTexture> {
             if stem.ends_with("_0") || stem.ends_with("_1") {
                 continue;
             }
-            let id = normalize_item_id(stem);
+            let id = normalize_item_id(&stem);
             by_id
                 .entry(id.clone())
                 .or_insert_with(|| PlayerItemTexture {
