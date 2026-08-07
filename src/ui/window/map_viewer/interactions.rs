@@ -388,12 +388,14 @@ impl MapViewerWindowView {
         self.ui_state.active_left_panel = panel;
         self.ui_state.left_panel_open = true;
         if panel == MapViewerLeftPanel::Players {
+            self.player_workspace.center = PlayerWorkspaceCenter::Inventory;
             if self.players.players.is_empty() {
+                self.player_workspace.open_first_after_refresh = true;
                 self.refresh_players(cx);
-            }
-            if self.players.selected.is_some() {
-                self.ui_state.active_right_panel = MapViewerRightPanel::Player;
-                self.ui_state.set_right_panel_open(true);
+            } else if let Some(id) = self.players.players.first().map(|p| p.id.clone()) {
+                self.player_workspace.open_first_after_refresh = false;
+                self.open_player_workspace_for_player(id, PlayerWorkspaceCenter::Inventory, cx);
+                return;
             }
         } else if self.ui_state.active_right_panel == MapViewerRightPanel::Player {
             self.ui_state.set_right_panel_open(false);

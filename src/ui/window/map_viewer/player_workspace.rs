@@ -8,8 +8,8 @@ use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum PlayerWorkspaceCenter {
-    #[default]
     Map,
+    #[default]
     Inventory,
     EnderChest,
     Equipment,
@@ -44,6 +44,10 @@ pub(super) struct PlayerWorkspaceState {
     pub(super) center: PlayerWorkspaceCenter,
     pub(super) inspector_mode: PlayerInspectorMode,
     pub(super) selected_item: Option<PlayerItemSelection>,
+    pub(super) multi_selected_items: Vec<PlayerItemSelection>,
+    pub(super) pressed_item: Option<PlayerItemSelection>,
+    pub(super) press_generation: u64,
+    pub(super) open_first_after_refresh: bool,
     pub(super) search: Entity<InputState>,
     pub(super) item_id: Entity<InputState>,
     pub(super) count: Entity<InputState>,
@@ -77,9 +81,13 @@ impl PlayerWorkspaceState {
             editor
         });
         Self {
-            center: PlayerWorkspaceCenter::Map,
+            center: PlayerWorkspaceCenter::Inventory,
             inspector_mode: PlayerInspectorMode::Visual,
             selected_item: None,
+            multi_selected_items: Vec::new(),
+            pressed_item: None,
+            press_generation: 0,
+            open_first_after_refresh: false,
             search,
             item_id,
             count,
@@ -159,14 +167,21 @@ struct PlayerVisualItemPatch {
 struct PlayerWorkspaceMetrics {
     slot_size: f32,
     slot_gap: f32,
+    grid_width: f32,
     panel_padding: f32,
     outer_padding: f32,
     compact: bool,
 }
 
 #[derive(Clone)]
+enum PlayerItemDragOrigin {
+    Slots(Vec<PlayerItemSelection>),
+    Catalog(String),
+}
+
+#[derive(Clone)]
 struct PlayerItemDrag {
-    source: PlayerItemSelection,
+    origin: PlayerItemDragOrigin,
     label: SharedString,
     texture: Option<Arc<Path>>,
     count: i32,
@@ -266,9 +281,11 @@ impl MapViewerWindowView {
             .min(584.0)
             .max(288.0);
         let slot_size = ((usable - slot_gap * 8.0) / 9.0).clamp(30.0, 52.0);
+        let grid_width = slot_size * 9.0 + slot_gap * 8.0;
         PlayerWorkspaceMetrics {
             slot_size,
             slot_gap,
+            grid_width,
             panel_padding,
             outer_padding,
             compact,
@@ -430,6 +447,8 @@ impl MapViewerWindowView {
         };
         div()
             .mb(px(4.0))
+            .h(px(72.0))
+            .flex_none()
             .p(px(7.0))
             .overflow_hidden()
             .rounded(px(crate::ui::theme::tokens::radius::MD))
@@ -487,6 +506,7 @@ impl MapViewerWindowView {
                                 div()
                                     .w_full()
                                     .overflow_hidden()
+                                    .whitespace_nowrap()
                                     .text_size(px(11.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(colors.text_primary)
@@ -496,12 +516,16 @@ impl MapViewerWindowView {
                                 div()
                                     .w_full()
                                     .overflow_hidden()
+                                    .whitespace_nowrap()
                                     .text_size(px(9.0))
                                     .text_color(colors.text_muted)
                                     .child(stable_raw),
                             )
                             .child(
                                 div()
+                                    .w_full()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
                                     .flex()
                                     .items_center()
                                     .gap(px(5.0))
@@ -543,15 +567,28 @@ impl MapViewerWindowView {
     ) {
         self.context_menu = None;
         self.players.context_target = None;
+        let player_changed = self.players.selected.as_ref() != Some(&id);
+        let dock_changed = !self.ui_state.left_panel_open
+            || self.ui_state.active_left_panel != MapViewerLeftPanel::Players
+            || !self.ui_state.right_panel_open
+            || self.ui_state.active_right_panel != MapViewerRightPanel::Player;
         self.ui_state.active_left_panel = MapViewerLeftPanel::Players;
         self.ui_state.left_panel_open = true;
         self.player_workspace.center = center;
-        self.player_workspace.selected_item = None;
+        if player_changed {
+            self.player_workspace.selected_item = None;
+            self.player_workspace.multi_selected_items.clear();
+            self.player_workspace.pressed_item = None;
+            self.player_workspace.press_generation =
+                self.player_workspace.press_generation.saturating_add(1);
+        }
         self.player_workspace.inspector_mode = PlayerInspectorMode::Visual;
         self.player_workspace.item_editor_error = None;
         self.ui_state.active_right_panel = MapViewerRightPanel::Player;
         self.ui_state.set_right_panel_open(true);
-        self.update_viewport_after_dock_change(cx);
+        if dock_changed {
+            self.update_viewport_after_dock_change(cx);
+        }
         self.load_player_detail(id, cx);
     }
 
@@ -628,6 +665,7 @@ impl MapViewerWindowView {
             .find(|player| player.id == detail.id)
             .map(|player| player.label.clone())
             .unwrap_or_else(|| SharedString::from(player_id_label(&detail.id)));
+        let title = SharedString::from(stable_middle_ellipsis(title.as_ref(), 38));
         div()
             .min_h(px(50.0))
             .flex_none()
@@ -654,7 +692,8 @@ impl MapViewerWindowView {
                 div()
                     .min_w(px(120.0))
                     .max_w(px(280.0))
-                    .truncate()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
                     .text_size(px(12.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors.text_primary)
@@ -703,7 +742,7 @@ impl MapViewerWindowView {
         let metrics = self.player_workspace_metrics();
         div()
             .w_full()
-            .max_w(px(620.0))
+            .max_w(px(metrics.grid_width + metrics.panel_padding * 2.0 + 2.0))
             .mx_auto()
             .rounded(px(crate::ui::theme::tokens::radius::LG))
             .border_1()
@@ -768,7 +807,7 @@ impl MapViewerWindowView {
         let metrics = self.player_workspace_metrics();
         div()
             .w_full()
-            .max_w(px(620.0))
+            .max_w(px(metrics.grid_width + metrics.panel_padding * 2.0 + 2.0))
             .mx_auto()
             .rounded(px(crate::ui::theme::tokens::radius::LG))
             .border_1()
@@ -807,7 +846,7 @@ impl MapViewerWindowView {
         let metrics = self.player_workspace_metrics();
         div()
             .w_full()
-            .max_w(px(620.0))
+            .max_w(px(metrics.grid_width + metrics.panel_padding * 2.0 + 2.0))
             .mx_auto()
             .rounded(px(crate::ui::theme::tokens::radius::LG))
             .border_1()
@@ -887,6 +926,9 @@ impl MapViewerWindowView {
     ) -> Div {
         let metrics = self.player_workspace_metrics();
         div()
+            .w(px(metrics.grid_width))
+            .flex_none()
+            .mx_auto()
             .flex()
             .items_center()
             .justify_center()
@@ -918,7 +960,11 @@ impl MapViewerWindowView {
         let selected = self
             .player_workspace
             .selected_item
-            .is_some_and(|selected| selected.kind == kind && selected.slot == slot);
+            .is_some_and(|selected| selected.kind == kind && selected.slot == slot)
+            || self
+                .player_workspace
+                .multi_selected_items
+                .contains(&selection);
         let texture = entry.and_then(|entry| self.player_item_texture(entry.item.name.as_deref()));
         let count = entry.and_then(|entry| entry.item.count).unwrap_or(0);
         let enchanted =
@@ -926,18 +972,33 @@ impl MapViewerWindowView {
         let has_custom_name = entry
             .and_then(|entry| player_item_custom_name(&entry.item.nbt))
             .is_some_and(|name| !name.trim().is_empty());
-        let drag_payload = entry.map(|entry| PlayerItemDrag {
-            source: selection,
-            label: SharedString::from(
-                entry
-                    .item
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| "未知物品".to_string()),
-            ),
-            texture: texture.clone(),
-            count,
-            position: Point::default(),
+        let drag_sources = if self
+            .player_workspace
+            .multi_selected_items
+            .contains(&selection)
+        {
+            self.player_workspace.multi_selected_items.clone()
+        } else {
+            vec![selection]
+        };
+        let drag_payload = entry.map(|entry| {
+            let base = entry
+                .item
+                .name
+                .clone()
+                .unwrap_or_else(|| "未知物品".to_string());
+            let label = if drag_sources.len() > 1 {
+                format!("{} + {} 项", base, drag_sources.len() - 1)
+            } else {
+                base
+            };
+            PlayerItemDrag {
+                origin: PlayerItemDragOrigin::Slots(drag_sources.clone()),
+                label: SharedString::from(label),
+                texture: texture.clone(),
+                count,
+                position: Point::default(),
+            }
         });
         let icon_size = (metrics.slot_size * 0.72).clamp(20.0, 38.0);
         let kind_index = match kind {
@@ -1048,15 +1109,31 @@ impl MapViewerWindowView {
                         cx.new(|_| info.clone().at(position))
                     })
             })
-            .on_drop(
-                cx.listener(move |this, drag: &PlayerItemDrag, _window, cx| {
-                    this.move_player_workspace_item(drag.source, selection, cx);
-                }),
-            )
+            .on_drop(cx.listener(
+                move |this, drag: &PlayerItemDrag, _window, cx| match &drag.origin {
+                    PlayerItemDragOrigin::Slots(sources) if sources.len() > 1 => {
+                        this.move_player_workspace_items(sources.clone(), selection, cx)
+                    }
+                    PlayerItemDragOrigin::Slots(sources) => {
+                        if let Some(source) = sources.first().copied() {
+                            this.move_player_workspace_item(source, selection, cx);
+                        }
+                    }
+                    PlayerItemDragOrigin::Catalog(id) => {
+                        this.replace_player_workspace_item_at(selection, id, cx)
+                    }
+                },
+            ))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, window, cx| {
-                    this.select_player_workspace_item(selection, window, cx)
+                    this.begin_player_item_press(selection, window, cx)
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.end_player_item_press(selection, cx)
                 }),
             )
     }
@@ -1092,36 +1169,55 @@ impl MapViewerWindowView {
                             .child("先选中一个槽位，再点击物品替换/添加"),
                     ),
             )
-            .child(div().flex().flex_wrap().gap(px(4.0)).children(
-                catalog.into_iter().take(20).map(|entry| {
-                    let id = entry.id.to_string();
-                    div()
-                        .w(px(42.0))
-                        .h(px(42.0))
-                        .rounded(px(3.0))
-                        .border_1()
-                        .border_color(Hsla {
-                            a: 0.28,
-                            ..colors.border
-                        })
-                        .bg(Hsla {
-                            a: 0.58,
-                            ..colors.surface_hover
-                        })
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(img(entry.path).w(px(32.0)).h(px(32.0)))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.replace_selected_player_item_with_id(&id, cx)
-                            }),
-                        )
-                        .into_any_element()
-                }),
-            ))
+            .child(
+                div().w_full().flex().flex_wrap().gap(px(4.0)).children(
+                    catalog
+                        .into_iter()
+                        .take(20)
+                        .enumerate()
+                        .map(|(index, entry)| {
+                            let id = entry.id.to_string();
+                            let click_id = id.clone();
+                            let texture = entry.path.clone();
+                            let drag = PlayerItemDrag {
+                                origin: PlayerItemDragOrigin::Catalog(id),
+                                label: entry.id.clone(),
+                                texture: Some(texture.clone()),
+                                count: 1,
+                                position: Point::default(),
+                            };
+                            div()
+                                .id(("player-quick-catalog", index))
+                                .w(px(42.0))
+                                .h(px(42.0))
+                                .rounded(px(3.0))
+                                .border_1()
+                                .border_color(Hsla {
+                                    a: 0.28,
+                                    ..colors.border
+                                })
+                                .bg(Hsla {
+                                    a: 0.58,
+                                    ..colors.surface_hover
+                                })
+                                .cursor_move()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(img(texture).w(px(32.0)).h(px(32.0)))
+                                .on_drag(drag, |info: &PlayerItemDrag, position, _window, cx| {
+                                    cx.new(|_| info.clone().at(position))
+                                })
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        this.replace_selected_player_item_with_id(&click_id, cx)
+                                    }),
+                                )
+                                .into_any_element()
+                        }),
+                ),
+            )
     }
 
     pub(super) fn select_player_workspace_item(
@@ -1133,12 +1229,70 @@ impl MapViewerWindowView {
         self.player_workspace.selected_item = Some(selection);
         self.player_workspace.inspector_mode = PlayerInspectorMode::Visual;
         self.player_workspace.item_editor_error = None;
+        let dock_changed = !self.ui_state.right_panel_open
+            || self.ui_state.active_right_panel != MapViewerRightPanel::Player;
         self.ui_state.active_right_panel = MapViewerRightPanel::Player;
         self.ui_state.set_right_panel_open(true);
-        self.update_viewport_after_dock_change(cx);
+        if dock_changed {
+            self.update_viewport_after_dock_change(cx);
+        }
         self.populate_player_item_visual_inputs(selection, window, cx);
         self.sync_player_item_raw_editor(cx);
         cx.notify();
+    }
+
+    fn begin_player_item_press(
+        &mut self,
+        selection: PlayerItemSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_player_workspace_item(selection, window, cx);
+        self.player_workspace.press_generation =
+            self.player_workspace.press_generation.saturating_add(1);
+        let generation = self.player_workspace.press_generation;
+        self.player_workspace.pressed_item = Some(selection);
+        cx.spawn(async move |handle, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(420))
+                .await;
+            let Some(view) = handle.upgrade() else {
+                return Ok(());
+            };
+            view.update(cx, move |this, cx| {
+                if this.player_workspace.press_generation != generation
+                    || this.player_workspace.pressed_item != Some(selection)
+                {
+                    return;
+                }
+                if let Some(index) = this
+                    .player_workspace
+                    .multi_selected_items
+                    .iter()
+                    .position(|item| *item == selection)
+                {
+                    this.player_workspace.multi_selected_items.remove(index);
+                } else {
+                    this.player_workspace.multi_selected_items.push(selection);
+                }
+                this.status = SharedString::from(format!(
+                    "物品多选：{} 项 · 长按继续选择，拖动已选物品批量移动",
+                    this.player_workspace.multi_selected_items.len()
+                ));
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn end_player_item_press(&mut self, selection: PlayerItemSelection, cx: &mut Context<Self>) {
+        if self.player_workspace.pressed_item == Some(selection) {
+            self.player_workspace.pressed_item = None;
+            self.player_workspace.press_generation =
+                self.player_workspace.press_generation.saturating_add(1);
+            cx.notify();
+        }
     }
 
     fn selected_workspace_entry(&self) -> Option<PlayerInventoryEntry> {
@@ -1325,6 +1479,18 @@ impl MapViewerWindowView {
         detail: &PlayerDetail,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let record_id = player_id_label(&detail.id);
+        let display_name = self
+            .players
+            .players
+            .iter()
+            .find(|player| player.id == detail.id)
+            .map(|player| player.label.to_string())
+            .unwrap_or_else(|| record_id.clone());
+        let uid = detail.unique_id.map(|value| value.to_string());
+        let copy_name = display_name.clone();
+        let copy_record = record_id.clone();
+        let copy_uid = uid.clone();
         div()
             .size_full()
             .overflow_y_scrollbar()
@@ -1333,6 +1499,24 @@ impl MapViewerWindowView {
             .flex_col()
             .gap(px(10.0))
             .child(player_detail_grid(colors, detail))
+            .child(div().flex().flex_wrap().gap(px(6.0))
+                .child(toolbar_button(colors, "复制名称").on_mouse_down(MouseButton::Left,
+                    cx.listener(move |this, _event, _window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_name.clone()));
+                        this.status = SharedString::from("玩家名称已复制"); cx.notify();
+                    })))
+                .child(toolbar_button(colors, "复制记录 ID").on_mouse_down(MouseButton::Left,
+                    cx.listener(move |this, _event, _window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_record.clone()));
+                        this.status = SharedString::from("玩家记录 ID 已复制"); cx.notify();
+                    })))
+                .when_some(copy_uid, |this, uid| this.child(
+                    toolbar_button(colors, "复制 UID").on_mouse_down(MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(uid.clone()));
+                            this.status = SharedString::from("玩家 UID 已复制"); cx.notify();
+                        }))
+                )))
             .child(self.render_player_quick_actions(colors, cx))
             .child(
                 div()
@@ -1889,13 +2073,23 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         let Some(selection) = self.player_workspace.selected_item else {
-            self.status = SharedString::from("请先点击一个空槽位或已有物品槽位");
+            self.status = SharedString::from("请先选择槽位，或直接拖动物品到目标槽位");
             cx.notify();
             return;
         };
+        self.replace_player_workspace_item_at(selection, id, cx);
+    }
+
+    fn replace_player_workspace_item_at(
+        &mut self,
+        selection: PlayerItemSelection,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) {
         let mut tag = simple_workspace_item(id, selection.slot);
         let _ = set_workspace_item_slot(&mut tag, selection.slot);
-        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：从原版图标库添加", cx);
+        self.player_workspace.selected_item = Some(selection);
+        self.write_player_workspace_slot(selection, Some(tag), "玩家物品：从资源图标库添加", cx);
     }
 
     pub(super) fn clear_selected_player_item_slot(&mut self, cx: &mut Context<Self>) {
@@ -1987,6 +2181,131 @@ impl MapViewerWindowView {
         summary.quality.item_count = item_count;
         summary.quality.ender_item_count = ender_item_count;
         summary.quality.has_inventory = true;
+    }
+
+    fn move_player_workspace_items(
+        &mut self,
+        mut sources: Vec<PlayerItemSelection>,
+        target: PlayerItemSelection,
+        cx: &mut Context<Self>,
+    ) {
+        sources.sort_by_key(|s| (inventory_kind_order(s.kind), s.slot));
+        sources.dedup_by_key(|s| (inventory_kind_order(s.kind), s.slot));
+        if sources.len() <= 1 {
+            if let Some(s) = sources.first().copied() {
+                self.move_player_workspace_item(s, target, cx);
+            }
+            return;
+        }
+        let Some(id) = self.players.selected.clone() else {
+            return;
+        };
+        if self.players.saving {
+            self.status = SharedString::from("上一项玩家写入尚未完成");
+            cx.notify();
+            return;
+        }
+        self.players.saving = true;
+        self.players.generation = self.players.generation.saturating_add(1);
+        let generation = self.players.generation;
+        let world_path = self.world_path.clone();
+        let count = sources.len();
+        self.status = SharedString::from(format!("正在批量移动 {count} 个物品..."));
+        cx.notify();
+        cx.spawn(async move |handle, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let mut options = bedrock_world::OpenOptions::default();
+                    options.read_only = false;
+                    let world = BedrockWorld::open_blocking(&world_path, options)
+                        .map_err(|e| e.to_string())?;
+                    let history = capture_player_history(
+                        &world_path,
+                        &id,
+                        format!("玩家物品：批量拖拽 {count} 项"),
+                    );
+                    let mut data = world
+                        .get_player_blocking(&id)
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                    let mut items = Vec::new();
+                    for source in sources.iter().copied() {
+                        if let Some(item) = player_slot_item(&data.nbt, source) {
+                            items.push((source, item));
+                        }
+                    }
+                    if items.is_empty() {
+                        return Err("已选择物品已经不存在，请刷新玩家数据".to_string());
+                    }
+                    for (source, _) in &items {
+                        replace_player_slot(&mut data.nbt, *source, None)?;
+                    }
+                    let capacity = inventory_kind_capacity(target.kind);
+                    let mut occupied = player_inventory_entries(&data.nbt)
+                        .into_iter()
+                        .filter(|e| e.kind == target.kind)
+                        .map(|e| e.slot.unwrap_or(e.list_index as i32))
+                        .collect::<BTreeSet<_>>();
+                    let mut candidate = target.slot.clamp(0, capacity.saturating_sub(1));
+                    let mut last = target;
+                    for (_, mut item) in items {
+                        let slot = (0..capacity)
+                            .map(|o| (candidate + o) % capacity)
+                            .find(|s| !occupied.contains(s))
+                            .ok_or_else(|| format!("{}没有足够空槽位", target.kind.label()))?;
+                        occupied.insert(slot);
+                        candidate = (slot + 1) % capacity;
+                        let dst = PlayerItemSelection {
+                            kind: target.kind,
+                            list_index: None,
+                            slot,
+                        };
+                        set_workspace_item_slot(&mut item, slot)?;
+                        replace_player_slot(&mut data.nbt, dst, Some(item))?;
+                        last = dst;
+                    }
+                    data = PlayerData::from_nbt(id.clone(), data.nbt).map_err(|e| e.to_string())?;
+                    world
+                        .put_player_blocking(&data)
+                        .map_err(|e| e.to_string())?;
+                    let detail = player_detail_from_data(data)?;
+                    if let Ok(capture) = history {
+                        complete_after(capture, format!("玩家物品：批量拖拽 {count} 项"))?;
+                    }
+                    Ok::<_, String>((detail, last))
+                })
+                .await;
+            let Some(view) = handle.upgrade() else {
+                return Ok(());
+            };
+            view.update(cx, move |this, cx| {
+                if this.players.generation != generation {
+                    return;
+                }
+                this.players.saving = false;
+                match result {
+                    Ok((detail, last)) => {
+                        this.sync_player_summary_inventory_counts(&detail);
+                        this.players.detail = Some(detail);
+                        this.player_workspace.multi_selected_items.clear();
+                        this.player_workspace.selected_item = Some(last);
+                        this.player_workspace.item_editor_dirty = false;
+                        this.player_workspace.item_editor_error = None;
+                        this.sync_player_item_raw_editor(cx);
+                        this.status =
+                            SharedString::from("批量物品移动完成 · 未覆盖其他槽位 · 可从历史撤销");
+                    }
+                    Err(error) => {
+                        this.player_workspace.item_editor_error =
+                            Some(SharedString::from(error.clone()));
+                        this.status = SharedString::from(error);
+                    }
+                }
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     fn move_player_workspace_item(
@@ -2161,6 +2480,23 @@ impl MapViewerWindowView {
             Ok::<(), anyhow::Error>(())
         })
         .detach();
+    }
+}
+
+fn inventory_kind_order(kind: PlayerInventoryKind) -> u8 {
+    match kind {
+        PlayerInventoryKind::Inventory => 0,
+        PlayerInventoryKind::Armor => 1,
+        PlayerInventoryKind::Offhand => 2,
+        PlayerInventoryKind::EnderChest => 3,
+    }
+}
+fn inventory_kind_capacity(kind: PlayerInventoryKind) -> i32 {
+    match kind {
+        PlayerInventoryKind::Inventory => 36,
+        PlayerInventoryKind::Armor => 4,
+        PlayerInventoryKind::Offhand => 1,
+        PlayerInventoryKind::EnderChest => 27,
     }
 }
 

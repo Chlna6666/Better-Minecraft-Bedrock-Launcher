@@ -406,7 +406,19 @@ impl MapViewerWindowView {
                         ));
                         let colors = this.theme_colors(cx);
                         this.sync_canvas_snapshot(colors, cx);
-                        if this.player_workspace_active() {
+                        if this.player_workspace.open_first_after_refresh
+                            && this.ui_state.active_left_panel == MapViewerLeftPanel::Players
+                            && this.ui_state.left_panel_open
+                        {
+                            this.player_workspace.open_first_after_refresh = false;
+                            if let Some(id) = this.players.players.first().map(|p| p.id.clone()) {
+                                this.open_player_workspace_for_player(
+                                    id,
+                                    PlayerWorkspaceCenter::Inventory,
+                                    cx,
+                                );
+                            }
+                        } else if this.player_workspace_active() {
                             if let Some(id) = this.players.selected.clone() {
                                 this.load_player_detail(id, cx);
                             }
@@ -1603,68 +1615,106 @@ fn cached_item_catalog(instance_root: &Path) -> Arc<Vec<PlayerItemTexture>> {
     loaded
 }
 
+fn player_resource_pack_roots(instance_root: &Path) -> Vec<PathBuf> {
+    let root = instance_root.join("data").join("resource_packs");
+    let mut out = Vec::new();
+    for name in ["vanilla", "chemistry"] {
+        let p = root.join(name);
+        if p.is_dir() {
+            out.push(p);
+        }
+    }
+    let mut versioned = Vec::<(String, PathBuf)>::new();
+    if let Ok(entries) = fs::read_dir(&root) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let Some(name) = p.file_name().and_then(|v| v.to_str()) else {
+                continue;
+            };
+            if name.starts_with("vanilla_") || name.starts_with("chemistry_") {
+                versioned.push((name.to_ascii_lowercase(), p));
+            }
+        }
+    }
+    versioned.sort_by(|a, b| {
+        let af = if a.0.starts_with("vanilla_") { 0 } else { 1 };
+        let bf = if b.0.starts_with("vanilla_") { 0 } else { 1 };
+        af.cmp(&bf).then_with(|| b.0.cmp(&a.0))
+    });
+    out.extend(versioned.into_iter().map(|(_, p)| p));
+    out
+}
+fn add_texture(
+    by_id: &mut BTreeMap<String, PlayerItemTexture>,
+    pack: &Path,
+    key: &str,
+    texture: &str,
+) {
+    let path = pack.join(format!("{texture}.png"));
+    if !path.is_file() {
+        return;
+    }
+    let id = normalize_item_id(key);
+    by_id
+        .entry(id.clone())
+        .or_insert_with(|| PlayerItemTexture {
+            id: SharedString::from(id),
+            label: SharedString::from(key.replace('_', " ")),
+            path: Arc::<Path>::from(path.into_boxed_path()),
+        });
+}
+fn scan_flat_textures(by_id: &mut BTreeMap<String, PlayerItemTexture>, dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path
+            .extension()
+            .and_then(|v| v.to_str())
+            .is_some_and(|v| v.eq_ignore_ascii_case("png"))
+        {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        if stem.ends_with("_0") || stem.ends_with("_1") {
+            continue;
+        }
+        let id = normalize_item_id(stem);
+        by_id
+            .entry(id.clone())
+            .or_insert_with(|| PlayerItemTexture {
+                id: SharedString::from(id),
+                label: SharedString::from(stem.replace('_', " ")),
+                path: Arc::<Path>::from(path.into_boxed_path()),
+            });
+    }
+}
 fn load_item_catalog(instance_root: &Path) -> Vec<PlayerItemTexture> {
-    let vanilla_root = instance_root
-        .join("data")
-        .join("resource_packs")
-        .join("vanilla");
-    let item_dir = vanilla_root.join("textures").join("items");
     let mut by_id = BTreeMap::<String, PlayerItemTexture>::new();
-
-    let item_texture_json = vanilla_root.join("textures").join("item_texture.json");
-    if let Ok(bytes) = fs::read(&item_texture_json)
-        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
-        && let Some(texture_data) = value
-            .get("texture_data")
-            .and_then(|value| value.as_object())
-    {
-        for (key, entry) in texture_data {
-            let Some(texture) = texture_reference(entry) else {
-                continue;
-            };
-            let path = vanilla_root.join(format!("{texture}.png"));
-            if !path.is_file() {
-                continue;
+    for pack in player_resource_pack_roots(instance_root) {
+        let textures = pack.join("textures");
+        for atlas in ["item_texture.json", "terrain_texture.json"] {
+            let file = textures.join(atlas);
+            if let Ok(bytes) = fs::read(file)
+                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                && let Some(data) = value.get("texture_data").and_then(|v| v.as_object())
+            {
+                for (key, entry) in data {
+                    if let Some(texture) = texture_reference(entry) {
+                        add_texture(&mut by_id, &pack, key, texture);
+                    }
+                }
             }
-            let id = normalize_item_id(key);
-            by_id
-                .entry(id.clone())
-                .or_insert_with(|| PlayerItemTexture {
-                    id: SharedString::from(id),
-                    label: SharedString::from(key.replace('_', " ")),
-                    path: Arc::<Path>::from(path.into_boxed_path()),
-                });
         }
+        scan_flat_textures(&mut by_id, &textures.join("items"));
+        scan_flat_textures(&mut by_id, &textures.join("blocks"));
     }
-
-    if let Ok(entries) = fs::read_dir(&item_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_png = path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("png"));
-            if !is_png {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            let stem = stem.to_owned();
-            if stem.ends_with("_0") || stem.ends_with("_1") {
-                continue;
-            }
-            let id = normalize_item_id(&stem);
-            by_id
-                .entry(id.clone())
-                .or_insert_with(|| PlayerItemTexture {
-                    id: SharedString::from(id),
-                    label: SharedString::from(stem.replace('_', " ")),
-                    path: Arc::<Path>::from(path.into_boxed_path()),
-                });
-        }
-    }
-
     by_id.into_values().collect()
 }
 
