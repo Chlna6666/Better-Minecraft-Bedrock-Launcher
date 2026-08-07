@@ -7,16 +7,32 @@ use serde::{
 };
 use std::{borrow::Cow, fmt};
 
-/// Convert an RGB hex color code number to a color type
-pub fn rgb(hex: u32) -> Rgba {
-    let [_, r, g, b] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
-    Rgba { r, g, b, a: 1.0 }
+/// Convert an RGB hex color code number to a color type.
+///
+/// This is const-evaluable, so fixed palette colors can be materialized once instead
+/// of reconstructed in every paint pass.
+pub const fn rgb(hex: u32) -> Rgba {
+    let [_, r, g, b] = hex.to_be_bytes();
+    Rgba {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: 1.0,
+    }
 }
 
-/// Convert an RGBA hex color code number to [`Rgba`]
-pub fn rgba(hex: u32) -> Rgba {
-    let [r, g, b, a] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
-    Rgba { r, g, b, a }
+/// Convert an RGBA hex color code number to [`Rgba`].
+///
+/// This is const-evaluable, so fixed palette colors can be materialized once instead
+/// of reconstructed in every paint pass.
+pub const fn rgba(hex: u32) -> Rgba {
+    let [r, g, b, a] = hex.to_be_bytes();
+    Rgba {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: a as f32 / 255.0,
+    }
 }
 
 /// Swap from RGBA with premultiplied alpha to BGRA
@@ -51,6 +67,32 @@ impl fmt::Debug for Rgba {
 }
 
 impl Rgba {
+    /// Returns a copy with an absolute alpha value.
+    pub fn alpha(self, alpha: f32) -> Self {
+        Self {
+            a: alpha.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
+    /// Multiplies the current alpha by `factor`.
+    pub fn opacity(self, factor: f32) -> Self {
+        Self {
+            a: self.a * factor.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
+    /// Returns whether this color is fully transparent.
+    pub fn is_transparent(self) -> bool {
+        self.a == 0.0
+    }
+
+    /// Returns whether this color is fully opaque.
+    pub fn is_opaque(self) -> bool {
+        self.a == 1.0
+    }
+
     /// Create a new [`Rgba`] color by blending this and another color together
     pub fn blend(&self, other: Rgba) -> Self {
         if other.a >= 1.0 {

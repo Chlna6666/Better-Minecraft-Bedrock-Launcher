@@ -699,7 +699,7 @@ fn history_toolbar_button(
         })
 }
 
-fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Hsla {
+fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Rgba {
     if entry.status == MapHistoryEntryStatus::Failed {
         return rgb(0xef4444);
     }
@@ -767,14 +767,14 @@ fn history_visualization_legend(colors: &ThemeColors, history: &MapHistoryState)
 fn history_legend_item(
     label: &'static str,
     count: usize,
-    color: Hsla,
+    color: Rgba,
     colors: &ThemeColors,
 ) -> Div {
     div()
         .flex()
         .items_center()
         .gap(px(5.0))
-        .child(div().w(px(10.0)).h(px(10.0)).rounded(px(2.0)).bg(Hsla { a: 0.55, ..color }))
+        .child(div().w(px(10.0)).h(px(10.0)).rounded(px(2.0)).bg(color.alpha(0.55)))
         .child(
             div()
                 .text_color(colors.text_secondary)

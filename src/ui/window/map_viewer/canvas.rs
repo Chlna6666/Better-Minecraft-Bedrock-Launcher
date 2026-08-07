@@ -1420,9 +1420,9 @@ fn draw_history_visualization_overlay(
     }
 }
 
-fn paint_history_chunk_rect(rect: Bounds<Pixels>, color: Hsla, window: &mut Window) {
-    let fill_color = Hsla { a: 0.28, ..color };
-    let border_color = Hsla { a: 0.78, ..color };
+fn paint_history_chunk_rect(rect: Bounds<Pixels>, color: Rgba, window: &mut Window) {
+    let fill_color = color.alpha(0.28);
+    let border_color = color.alpha(0.78);
     window.paint_quad(fill(rect, fill_color));
     let thickness = px(1.0);
     window.paint_quad(fill(
