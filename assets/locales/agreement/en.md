@@ -15,7 +15,7 @@ By installing, launching, signing in to, or otherwise using the Software, you ac
 * **Account Security Responsibility**: You must safeguard your accounts, tokens, and device environment. Any bans, restrictions, losses, or disputes caused by your own acts or omissions are your responsibility.
 
 ### 4. Privacy and Data Processing
-* **Necessary Runtime Data**: To maintain stability and improve quality, the Software may collect basic runtime and diagnostic data. By default, this does not include account passwords or in-game save data.
+* **Necessary Runtime Data**: To maintain stability and improve quality, the Software may only collect basic runtime and diagnostic data.
 * **Local Encryption and Data Minimization**: Relevant data is encrypted locally before upload and is handled under a data-minimization principle where practical.
 * **Opt-Out**: You may disable telemetry in `Settings -> Launcher`. Doing so does not affect core functionality, but may reduce troubleshooting effectiveness.
 * **Local Storage**: Configuration, resources, and game-related files are generally stored on your local device. You are responsible for backup and device-related risks.
