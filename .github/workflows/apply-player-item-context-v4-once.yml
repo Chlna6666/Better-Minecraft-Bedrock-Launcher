@@ -40,7 +40,7 @@ jobs:
 
       - name: Apply patch
         shell: pwsh
-        run: python tools/apply-player-item-context-v4.py
+        run: python tools/run-player-item-context-v4.py
 
       - name: Install Rust 1.95
         shell: pwsh
@@ -88,6 +88,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           Remove-Item -Force tools/.apply-player-item-context-v4-trigger
           Remove-Item -Force tools/apply-player-item-context-v4.py
+          Remove-Item -Force tools/run-player-item-context-v4.py
           Remove-Item -Force tools/player-item-context-v4-validation.log -ErrorAction SilentlyContinue
           Remove-Item -Force .github/workflows/apply-player-item-context-v4-once.yml
           git add -A
