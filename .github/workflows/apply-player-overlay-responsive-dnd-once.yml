@@ -35,9 +35,9 @@ jobs:
             player-overlay-responsive-dnd-${{ runner.os }}-rust-1.95-
             player-workspace-v2-${{ runner.os }}-rust-1.95-
 
-      - name: Apply drag element id fix
+      - name: Apply drag return type fix
         shell: pwsh
-        run: python tools/fix-player-dnd-element-id.py
+        run: python tools/fix-player-dnd-return-type.py
 
       - name: Install Rust 1.95
         shell: pwsh
@@ -82,7 +82,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/ui/window/map_viewer tools/player-overlay-responsive-dnd-validation.log
-          git commit -m "ci: apply player drag element id fix and record failure"
+          git commit -m "ci: apply player drag return type fix and record failure"
           git push origin HEAD:master
 
       - name: Commit validated integration and clean one-time files
@@ -96,6 +96,7 @@ jobs:
           Remove-Item -Force tools/fix-player-overlay-responsive-dnd-compile.py
           Remove-Item -Force tools/fix-player-dnd-stateful.py
           Remove-Item -Force tools/fix-player-dnd-element-id.py
+          Remove-Item -Force tools/fix-player-dnd-return-type.py
           Remove-Item -Force tools/player-overlay-responsive-dnd-validation.log -ErrorAction SilentlyContinue
           Remove-Item -Force .github/workflows/apply-player-overlay-responsive-dnd-once.yml
           git add -A
