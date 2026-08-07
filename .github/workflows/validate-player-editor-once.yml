@@ -51,6 +51,17 @@ jobs:
             Invoke-Logged "Install Rust 1.95" { rustup toolchain install 1.95.0 --profile minimal }
             Invoke-Logged "Install rustfmt" { rustup component add rustfmt --toolchain 1.95.0 }
             Invoke-Logged "Select Rust 1.95" { rustup default 1.95.0 }
+            Invoke-Logged "Apply texture scan borrow fix" {
+              $file = "src/ui/window/map_viewer/players.rs"
+              $source = Get-Content -Raw $file
+              if ($source -notmatch 'let stem = stem\.to_owned\(\);') {
+                $needle = '            if stem.ends_with("_0") || stem.ends_with("_1") {'
+                $replacement = '            let stem = stem.to_owned();' + [Environment]::NewLine + $needle
+                if (-not $source.Contains($needle)) { throw "texture scan insertion point not found" }
+                $source = $source.Replace($needle, $replacement)
+                Set-Content -Path $file -Value $source -Encoding utf8 -NoNewline
+              }
+            }
             Invoke-Logged "Format player editor" {
               rustfmt --edition 2024 src/ui/window/map_viewer/players.rs src/ui/window/map_viewer/player_panel.rs
             }
@@ -68,7 +79,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/ui/window/map_viewer/players.rs src/ui/window/map_viewer/player_panel.rs tools/player-editor-validation.log
-          git commit -m "ci: format player editor and record validation failure"
+          git commit -m "ci: apply player editor compile fix and record validation failure"
           git push origin HEAD:master
 
       - name: Commit validated source and clean one-time files
