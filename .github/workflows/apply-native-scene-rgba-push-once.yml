@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          {
+          (
             set -euo pipefail
             python3 - <<'PY'
           from pathlib import Path
@@ -47,14 +47,24 @@ jobs:
           end_marker = "\n          PY\n\n      - name: Validate Rust and shader changes"
           start = workflow.index(start_marker) + len(start_marker)
           end = workflow.index(end_marker, start)
-          Path('/tmp/apply_native_scene_rgba.py').write_text(
-              textwrap.dedent(workflow[start:end]), encoding='utf-8'
-          )
+          script = textwrap.dedent(workflow[start:end])
+
+          old = '''path = "crates/gpui/src/platform/nova/shaders/path.wgsl"
+          replace_once(path, "            Hsla(0.0, 0.0, 0.0, 0.0),", "            vec4<f32>(0.0),")
+          replace_count(path, "                    Hsla(0.0, 0.0, 0.0, 0.0),", "                    vec4<f32>(0.0),", 2)
+          '''
+          new = '''path = "crates/gpui/src/platform/nova/shaders/path.wgsl"
+          replace_count(path, "            Hsla(0.0, 0.0, 0.0, 0.0),", "            vec4<f32>(0.0),", 3)
+          '''
+          if script.count(old) != 1:
+              raise SystemExit(f"expected one Nova path replacement block, found {script.count(old)}")
+          script = script.replace(old, new, 1)
+          Path('/tmp/apply_native_scene_rgba.py').write_text(script, encoding='utf-8')
           PY
             python3 /tmp/apply_native_scene_rgba.py
             git diff --check
             cargo check -p gpui --lib --features build-shader-validation
-          } > >(tee /tmp/native-rgba-validation.log) 2>&1
+          ) > >(tee /tmp/native-rgba-validation.log) 2>&1
           status=$?
           {
             if [ "$status" -eq 0 ]; then
