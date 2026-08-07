@@ -399,7 +399,7 @@ impl MapViewerWindowView {
                     .overflow_y_scrollbar()
                     .px(px(8.0))
                     .pb(px(10.0))
-                    .when(self.players.loading, |this| {
+                    .when(self.players.loading && self.players.players.is_empty(), |this| {
                         this.child(
                             div()
                                 .p(px(8.0))
@@ -723,6 +723,18 @@ impl MapViewerWindowView {
                 }),
             )
             .child(div().flex_1())
+            .when(
+                !self.player_workspace.multi_selected_items.is_empty(),
+                |this| {
+                    this.child(status_badge(
+                        colors,
+                        format!(
+                            "已选 {} 项",
+                            self.player_workspace.multi_selected_items.len()
+                        ),
+                    ))
+                },
+            )
             .child(status_badge(
                 colors,
                 format!("{} 个物品", detail.item_count),
@@ -1166,7 +1178,7 @@ impl MapViewerWindowView {
                         div()
                             .text_size(px(10.0))
                             .text_color(colors.text_muted)
-                            .child("先选中一个槽位，再点击物品替换/添加"),
+                            .child("点击可替换已选槽位，也可直接拖到背包 / 末影箱 / 装备槽"),
                     ),
             )
             .child(
@@ -1208,7 +1220,7 @@ impl MapViewerWindowView {
                                 .on_drag(drag, |info: &PlayerItemDrag, position, _window, cx| {
                                     cx.new(|_| info.clone().at(position))
                                 })
-                                .on_mouse_down(
+                                .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(move |this, _event, _window, cx| {
                                         this.replace_selected_player_item_with_id(&click_id, cx)
@@ -1426,6 +1438,7 @@ impl MapViewerWindowView {
             .find(|player| player.id == detail.id)
             .map(|player| player.label.clone())
             .unwrap_or_else(|| SharedString::from(player_id_label(&detail.id)));
+        let title = SharedString::from(stable_middle_ellipsis(title.as_ref(), 42));
         div()
             .size_full()
             .min_w(px(0.0))
@@ -1449,7 +1462,8 @@ impl MapViewerWindowView {
                         div()
                             .flex_1()
                             .min_w(px(0.0))
-                            .truncate()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .text_size(px(12.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_primary)

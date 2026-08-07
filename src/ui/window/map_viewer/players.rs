@@ -390,8 +390,7 @@ impl MapViewerWindowView {
                             });
                         this.players.players = result.players;
                         if !selected_still_exists {
-                            this.players.selected =
-                                this.players.players.first().map(|player| player.id.clone());
+                            this.players.selected = preferred_player_id(&this.players.players);
                         }
                         this.markers = result.markers;
                         this.markers_generation = this.markers_generation.saturating_add(1);
@@ -411,7 +410,7 @@ impl MapViewerWindowView {
                             && this.ui_state.left_panel_open
                         {
                             this.player_workspace.open_first_after_refresh = false;
-                            if let Some(id) = this.players.players.first().map(|p| p.id.clone()) {
+                            if let Some(id) = preferred_player_id(&this.players.players) {
                                 this.open_player_workspace_for_player(
                                     id,
                                     PlayerWorkspaceCenter::Inventory,
@@ -937,6 +936,14 @@ pub(super) fn player_friendly_label(id: &PlayerId, valid: bool) -> String {
         PlayerId::Unknown(_) if is_server_like_player_id(id) => format!("服务器记录 · {raw}"),
         PlayerId::Unknown(_) => format!("其他玩家 · {raw}"),
     }
+}
+
+pub(super) fn preferred_player_id(players: &[PlayerSummary]) -> Option<PlayerId> {
+    players
+        .iter()
+        .find(|player| matches!(&player.id, PlayerId::Local))
+        .or_else(|| players.first())
+        .map(|player| player.id.clone())
 }
 
 pub(super) fn player_id_label(id: &PlayerId) -> String {

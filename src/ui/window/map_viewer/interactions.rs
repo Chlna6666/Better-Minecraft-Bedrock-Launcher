@@ -392,7 +392,7 @@ impl MapViewerWindowView {
             if self.players.players.is_empty() {
                 self.player_workspace.open_first_after_refresh = true;
                 self.refresh_players(cx);
-            } else if let Some(id) = self.players.players.first().map(|p| p.id.clone()) {
+            } else if let Some(id) = preferred_player_id(&self.players.players) {
                 self.player_workspace.open_first_after_refresh = false;
                 self.open_player_workspace_for_player(id, PlayerWorkspaceCenter::Inventory, cx);
                 return;
