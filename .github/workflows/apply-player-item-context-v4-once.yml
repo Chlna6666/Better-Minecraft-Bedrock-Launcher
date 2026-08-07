@@ -5,6 +5,10 @@ on:
     branches: [master]
     paths:
       - tools/.apply-player-item-context-v4-trigger
+  pull_request:
+    branches: [master]
+    paths:
+      - tools/.apply-player-item-context-v4-pr-trigger
 
 permissions:
   contents: write
