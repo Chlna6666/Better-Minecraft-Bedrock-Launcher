@@ -86,29 +86,27 @@ jobs:
 
           path = Path('crates/gpui/src/platform/blade/shaders.wgsl')
           text = path.read_text(encoding='utf-8')
-          old = '''    let gradient_color = prepare_gradient_color(
-              background.tag,
-              background.color_space,
-              background.solid,
-              background.colors,
-          );
-              let color = gradient_color(background, input.position.xy, bounds,
-              gradient_color.solid, gradient_color.color0, gradient_color.color1);
-          '''
-          new = '''    let prepared_gradient = prepare_gradient_color(
-              background.tag,
-              background.color_space,
-              background.solid,
-              background.colors,
-          );
-              let color = gradient_color(background, input.position.xy, bounds,
-              prepared_gradient.solid, prepared_gradient.color0, prepared_gradient.color1);
-          '''
-          if text.count(old) != 1:
+          declaration = 'let gradient_color = prepare_gradient_color('
+          fields = 'gradient_color.solid, gradient_color.color0, gradient_color.color1'
+          if text.count(declaration) != 1:
               raise SystemExit(
-                  f'expected one Blade path gradient block, found {text.count(old)}'
+                  f'expected one Blade prepared-gradient declaration, found {text.count(declaration)}'
               )
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          if text.count(fields) != 1:
+              raise SystemExit(
+                  f'expected one Blade prepared-gradient field list, found {text.count(fields)}'
+              )
+          text = text.replace(
+              declaration,
+              'let prepared_gradient = prepare_gradient_color(',
+              1,
+          )
+          text = text.replace(
+              fields,
+              'prepared_gradient.solid, prepared_gradient.color0, prepared_gradient.color1',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
           PY
             git diff --check
             cargo check -p gpui --lib --features build-shader-validation,x11
