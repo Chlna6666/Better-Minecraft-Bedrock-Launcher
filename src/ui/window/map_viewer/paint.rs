@@ -1,7 +1,9 @@
 use super::model::*;
 use super::prelude::*;
+use super::selection::{exact_selection_chunks, selection_chunks_are_rectangular};
 use super::tile_state::MapRenderRange;
 use super::viewport::*;
+use std::collections::BTreeSet;
 
 pub(super) fn draw_map_canvas(
     bounds: Bounds<Pixels>,
@@ -222,26 +224,51 @@ pub(super) fn draw_professional_overlay_canvas(
     }
 
     if let Some(selection) = selection {
-        let selection_bounds = selection.bounds();
-        paint_chunk_rect(
-            bounds,
-            viewport,
-            layout,
-            selection_bounds.min_chunk_x,
-            selection_bounds.min_chunk_z,
-            selection_bounds.max_chunk_x,
-            selection_bounds.max_chunk_z,
-            Hsla {
-                a: 0.10,
-                ..colors.accent
-            },
-            Some(Hsla {
-                a: 0.92,
-                ..colors.accent
-            }),
-            window,
-        );
-        paint_selection_resize_handles(bounds, viewport, layout, selection_bounds, colors, window);
+        let exact_chunks = exact_selection_chunks(selection);
+        let irregular = exact_chunks.as_deref().is_some_and(|chunks| {
+            !selection_chunks_are_rectangular(selection, Some(chunks))
+        });
+        if irregular {
+            if let Some(exact_chunks) = exact_chunks.as_deref() {
+                paint_exact_chunk_selection(
+                    bounds,
+                    viewport,
+                    layout,
+                    dimension,
+                    exact_chunks,
+                    colors,
+                    window,
+                );
+            }
+        } else {
+            let selection_bounds = selection.bounds();
+            paint_chunk_rect(
+                bounds,
+                viewport,
+                layout,
+                selection_bounds.min_chunk_x,
+                selection_bounds.min_chunk_z,
+                selection_bounds.max_chunk_x,
+                selection_bounds.max_chunk_z,
+                Hsla {
+                    a: 0.10,
+                    ..colors.accent
+                },
+                Some(Hsla {
+                    a: 0.92,
+                    ..colors.accent
+                }),
+                window,
+            );
+            paint_selection_resize_handles(
+                bounds,
+                viewport,
+                layout,
+                selection_bounds,
+                colors,
+                window,
+            );
+        }
     }
 
     if let Some(preview) = paste_preview {
@@ -329,6 +356,136 @@ fn paint_selection_resize_handles(
         window.paint_quad(fill(outer, colors.surface));
         window.paint_quad(fill(inner, colors.accent));
     }
+}
+
+fn paint_exact_chunk_selection(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    dimension: Dimension,
+    chunks: &[ChunkPos],
+    colors: ThemeColors,
+    window: &mut Window,
+) {
+    let selected = chunks
+        .iter()
+        .copied()
+        .filter(|chunk| chunk.dimension == dimension)
+        .collect::<BTreeSet<_>>();
+    if selected.is_empty() {
+        return;
+    }
+
+    for chunk in &selected {
+        paint_chunk_rect(
+            bounds,
+            viewport,
+            layout,
+            chunk.x,
+            chunk.z,
+            chunk.x,
+            chunk.z,
+            Hsla {
+                a: 0.10,
+                ..colors.accent
+            },
+            None,
+            window,
+        );
+    }
+
+    let stroke = Hsla {
+        a: 0.92,
+        ..colors.accent
+    };
+    for chunk in &selected {
+        let left = screen_x_for_block(
+            bounds,
+            viewport,
+            layout,
+            chunk.x.saturating_mul(16),
+        );
+        let right = screen_x_for_block(
+            bounds,
+            viewport,
+            layout,
+            chunk.x.saturating_add(1).saturating_mul(16),
+        );
+        let top = screen_y_for_block(
+            bounds,
+            viewport,
+            layout,
+            chunk.z.saturating_mul(16),
+        );
+        let bottom = screen_y_for_block(
+            bounds,
+            viewport,
+            layout,
+            chunk.z.saturating_add(1).saturating_mul(16),
+        );
+        if right <= left || bottom <= top {
+            continue;
+        }
+
+        let edge_width = (right - left).min(bottom - top).clamp(0.75, 2.0);
+        let thickness = px(edge_width);
+        let rect_left = px(left.floor());
+        let rect_top = px(top.floor());
+        let rect_right = px(right.ceil());
+        let rect_bottom = px(bottom.ceil());
+        let rect_width = rect_right - rect_left;
+        let rect_height = rect_bottom - rect_top;
+
+        if !selected_chunk_neighbor(&selected, *chunk, 0, -1) {
+            window.paint_quad(fill(
+                Bounds::new(point(rect_left, rect_top), size(rect_width, thickness)),
+                stroke,
+            ));
+        }
+        if !selected_chunk_neighbor(&selected, *chunk, 1, 0) {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(rect_right - thickness, rect_top),
+                    size(thickness, rect_height),
+                ),
+                stroke,
+            ));
+        }
+        if !selected_chunk_neighbor(&selected, *chunk, 0, 1) {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(rect_left, rect_bottom - thickness),
+                    size(rect_width, thickness),
+                ),
+                stroke,
+            ));
+        }
+        if !selected_chunk_neighbor(&selected, *chunk, -1, 0) {
+            window.paint_quad(fill(
+                Bounds::new(point(rect_left, rect_top), size(thickness, rect_height)),
+                stroke,
+            ));
+        }
+    }
+}
+
+fn selected_chunk_neighbor(
+    selected: &BTreeSet<ChunkPos>,
+    chunk: ChunkPos,
+    delta_x: i32,
+    delta_z: i32,
+) -> bool {
+    let Some(x) = chunk.x.checked_add(delta_x) else {
+        return false;
+    };
+    let Some(z) = chunk.z.checked_add(delta_z) else {
+        return false;
+    };
+    selected.contains(&ChunkPos {
+        x,
+        z,
+        dimension: chunk.dimension,
+    })
 }
 
 fn paint_pending_paste_chunks(
