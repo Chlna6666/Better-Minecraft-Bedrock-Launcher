@@ -698,7 +698,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> impl IntoElement {
         let metrics = self.player_workspace_metrics();
         div()
             .w_full()
@@ -939,8 +939,17 @@ impl MapViewerWindowView {
             position: Point::default(),
         });
         let icon_size = (metrics.slot_size * 0.72).clamp(20.0, 38.0);
+        let kind_index = match kind {
+            PlayerInventoryKind::Inventory => 0usize,
+            PlayerInventoryKind::Armor => 1,
+            PlayerInventoryKind::Offhand => 2,
+            PlayerInventoryKind::EnderChest => 3,
+        };
+        let slot_element_id = kind_index
+            .saturating_mul(256)
+            .saturating_add(usize::try_from(slot.max(0)).unwrap_or_default());
         div()
-            .id(("player-item-slot", kind.nbt_key(), slot))
+            .id(("player-item-slot", slot_element_id))
             .relative()
             .w(px(metrics.slot_size))
             .h(px(metrics.slot_size))
