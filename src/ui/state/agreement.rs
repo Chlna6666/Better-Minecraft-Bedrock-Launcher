@@ -24,7 +24,8 @@ pub struct AgreementState {
 impl Global for AgreementState {}
 
 impl AgreementState {
-    pub fn initialize(&mut self, accepted: bool) {
+    pub fn initialize(&mut self, _legacy_accepted: bool) {
+        let accepted = crate::config::agreement::is_current_agreement_accepted();
         self.accepted = accepted;
         self.show_modal = !accepted;
         self.agreement_scroll_handle = ScrollHandle::new();
