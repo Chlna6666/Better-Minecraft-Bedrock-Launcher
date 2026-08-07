@@ -142,15 +142,25 @@ pub(super) fn draw_professional_overlay_canvas(
             let canvas_width = bounds.size.width / px(1.0);
             let canvas_height = bounds.size.height / px(1.0);
             for point in &overlay_paint.entity_points {
-                paint_point_marker(
-                    bounds,
-                    viewport,
-                    layout,
-                    point.block_x,
-                    point.block_z,
-                    rgb(0xf97316).into(),
-                    window,
-                );
+                // BedrockMap uses either the entity image or its unknown fallback. Do not
+                // unconditionally paint our orange fallback underneath a known transparent
+                // avatar: transparent pixels (for example shulker.png) otherwise expose the
+                // orange square and make a valid icon look like the fallback marker.
+                let avatar = point
+                    .identifier
+                    .as_ref()
+                    .and_then(|id| overlay_paint.entity_avatars.get(id));
+                if avatar.is_none() || avatar_requests.len() >= MAX_ENTITY_AVATAR_REQUESTS {
+                    paint_point_marker(
+                        bounds,
+                        viewport,
+                        layout,
+                        point.block_x,
+                        point.block_z,
+                        rgb(0xf97316).into(),
+                        window,
+                    );
+                }
                 if avatar_requests.len() >= MAX_ENTITY_AVATAR_REQUESTS {
                     continue;
                 }
@@ -163,11 +173,7 @@ pub(super) fn draw_professional_overlay_canvas(
                 {
                     continue;
                 }
-                if let Some(image) = point
-                    .identifier
-                    .as_ref()
-                    .and_then(|id| overlay_paint.entity_avatars.get(id))
-                {
+                if let Some(image) = avatar {
                     avatar_requests.push(entity_avatar_request(
                         bounds,
                         viewport,

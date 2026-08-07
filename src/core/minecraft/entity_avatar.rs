@@ -62,6 +62,7 @@ mod tests {
             "glow_squid",
             "slime",
             "silverfish",
+            "shulker",
             "magma_cube",
             "witch",
             "villager",

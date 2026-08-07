@@ -1924,6 +1924,10 @@ fn entity_avatar_keys_accept_namespaced_identifiers() {
         normalize_entity_avatar_key("entity.minecraft:glow-squid"),
         Some("glow_squid".to_string())
     );
+    assert_eq!(
+        normalize_entity_avatar_key("minecraft:shulker"),
+        Some("shulker".to_string())
+    );
     assert_eq!(normalize_entity_avatar_key("  "), None);
 }
 

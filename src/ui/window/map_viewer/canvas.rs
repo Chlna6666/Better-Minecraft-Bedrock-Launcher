@@ -1762,10 +1762,14 @@ fn render_markers(snapshot: &MarkerLayerSnapshot, cx: &mut Context<MapMarkerLaye
                     .child(
                         div()
                             .id(("player-map-marker", marker_index))
-                            .w(px(28.0))
-                            .h(px(28.0))
+                            // Keep the image inside the border box. Previously the 28x28 image
+                            // was placed inside a 28x28 element with a 2px border, so GPUI clipped
+                            // four pixels from the avatar on each axis at some DPI scales.
+                            .w(px(32.0))
+                            .h(px(32.0))
                             .flex_none()
-                            .rounded(px(4.0))
+                            .p(px(2.0))
+                            .rounded(px(5.0))
                             .overflow_hidden()
                             .border_2()
                             .border_color(rgb(0xffffff))
@@ -1774,7 +1778,10 @@ fn render_markers(snapshot: &MarkerLayerSnapshot, cx: &mut Context<MapMarkerLaye
                                 ..snapshot.colors.surface
                             })
                             .cursor(CursorStyle::PointingHand)
-                            .child(img("images/map/entity/player.png").w(px(28.0)).h(px(28.0)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(img("images/map/entity/player.png").w(px(24.0)).h(px(24.0)))
                             .on_mouse_down(
                                 MouseButton::Right,
                                 cx.listener(move |_this, event: &MouseDownEvent, _window, cx| {
