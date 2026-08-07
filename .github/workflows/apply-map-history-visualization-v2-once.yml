@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: apply-map-history-visualization-v2-once
@@ -23,37 +24,106 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Use Rust 1.95
+      - name: Apply and validate history visualization v2
+        id: validate
+        continue-on-error: true
         shell: pwsh
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
-          rustc --version
-          cargo --version
+          $log = "history-v2-validation.log"
+          Remove-Item -Force -ErrorAction SilentlyContinue $log
 
-      - name: Apply history visualization v2
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python tools/apply_map_history_visualization_v2.py
-          cargo fmt --all
-          git diff --check
+          function Invoke-Logged {
+            param(
+              [string]$Label,
+              [scriptblock]$Command
+            )
+            "`n===== $Label =====" | Tee-Object -FilePath $log -Append
+            & $Command *>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Label failed with exit code $LASTEXITCODE"
+            }
+          }
 
-      - name: Validate BMCBL library
+          try {
+            Invoke-Logged "Install Rust 1.95" {
+              rustup toolchain install 1.95.0 --profile minimal
+            }
+            Invoke-Logged "Select Rust 1.95" {
+              rustup default 1.95.0
+            }
+            Invoke-Logged "Toolchain versions" {
+              rustc --version
+              cargo --version
+            }
+            Invoke-Logged "Apply source patch" {
+              python tools/apply_map_history_visualization_v2.py
+            }
+            Invoke-Logged "Format workspace" {
+              cargo fmt --all
+            }
+            Invoke-Logged "Check patch whitespace" {
+              git diff --check
+            }
+            Invoke-Logged "Check BMCBL library" {
+              cargo check -p bmcbl --lib
+            }
+          } catch {
+            "`nFAILED: $($_.Exception.Message)" | Tee-Object -FilePath $log -Append
+            exit 1
+          }
+
+      - name: Report validation result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+          RUN_ID: ${{ github.run_id }}
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          cargo check -p bmcbl --lib
+          $log = "history-v2-validation.log"
+          $tail = if (Test-Path $log) {
+            (Get-Content $log -Tail 1200 | Out-String)
+          } else {
+            "Validation log was not created."
+          }
+          if ($tail.Length -gt 58000) {
+            $tail = $tail.Substring($tail.Length - 58000)
+          }
+          $status = if ($env:VALIDATION_OUTCOME -eq "success") { "succeeded" } else { "failed" }
+          @"
+          Map history visualization v2 validation **$status**. Run `$env:RUN_ID`.
+
+          ```text
+          $tail
+          ```
+          "@ | Set-Content -Encoding utf8 history-v2-comment.md
+          gh issue comment 16 --repo Chlna6666/Better-Minecraft-Bedrock-Launcher --body-file history-v2-comment.md
 
       - name: Commit implementation directly to master
+        if: steps.validate.outcome == 'success'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           Remove-Item -Force -ErrorAction SilentlyContinue tools/.apply-map-history-visualization-v2-trigger
           Remove-Item -Force -ErrorAction SilentlyContinue tools/apply_map_history_visualization_v2.py
           Remove-Item -Force -ErrorAction SilentlyContinue .github/workflows/apply-map-history-visualization-v2-once.yml
+          Remove-Item -Force -ErrorAction SilentlyContinue history-v2-validation.log
+          Remove-Item -Force -ErrorAction SilentlyContinue history-v2-comment.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "feat: add block-level map history visualization"
           git push origin HEAD:master
+
+      - name: Close diagnostic issue
+        if: steps.validate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh issue close 16 --repo Chlna6666/Better-Minecraft-Bedrock-Launcher --comment "Block-level map history visualization committed directly to master."
+
+      - name: Fail after reporting validation error
+        if: steps.validate.outcome != 'success'
+        shell: pwsh
+        run: exit 1
