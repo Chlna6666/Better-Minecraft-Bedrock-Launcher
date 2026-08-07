@@ -82,7 +82,7 @@ jobs:
           PY
             python3 /tmp/apply_native_scene_rgba.py
             git diff --check
-            cargo check -p gpui --lib --features build-shader-validation
+            cargo check -p gpui --lib --features build-shader-validation,x11
           ) > >(tee /tmp/native-rgba-validation.log) 2>&1
           status=$?
           {
