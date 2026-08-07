@@ -1,0 +1,181 @@
+name: Apply RGBA first-class color fix once
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: apply-rgba-first-class-color-fix-once
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.event.issue.title == '[internal] apply RGBA first-class color fix once'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Apply RGBA API and map history fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one match in {path}, found {count}: {old[:100]!r}")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "crates/gpui/src/foundation/color/rgba.rs",
+              """/// Convert an RGB hex color code number to a color type
+          pub fn rgb(hex: u32) -> Rgba {
+              let [_, r, g, b] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
+              Rgba { r, g, b, a: 1.0 }
+          }
+
+          /// Convert an RGBA hex color code number to [`Rgba`]
+          pub fn rgba(hex: u32) -> Rgba {
+              let [r, g, b, a] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
+              Rgba { r, g, b, a }
+          }
+          """,
+              """/// Convert an RGB hex color code number to a color type.
+          ///
+          /// This is const-evaluable, so fixed palette colors can be materialized once instead
+          /// of reconstructed in every paint pass.
+          pub const fn rgb(hex: u32) -> Rgba {
+              let [_, r, g, b] = hex.to_be_bytes();
+              Rgba {
+                  r: r as f32 / 255.0,
+                  g: g as f32 / 255.0,
+                  b: b as f32 / 255.0,
+                  a: 1.0,
+              }
+          }
+
+          /// Convert an RGBA hex color code number to [`Rgba`].
+          ///
+          /// This is const-evaluable, so fixed palette colors can be materialized once instead
+          /// of reconstructed in every paint pass.
+          pub const fn rgba(hex: u32) -> Rgba {
+              let [r, g, b, a] = hex.to_be_bytes();
+              Rgba {
+                  r: r as f32 / 255.0,
+                  g: g as f32 / 255.0,
+                  b: b as f32 / 255.0,
+                  a: a as f32 / 255.0,
+              }
+          }
+          """,
+          )
+
+          replace_once(
+              "crates/gpui/src/foundation/color/rgba.rs",
+              """impl Rgba {
+              /// Create a new [`Rgba`] color by blending this and another color together
+          """,
+              """impl Rgba {
+              /// Returns a copy with an absolute alpha value.
+              pub fn alpha(self, alpha: f32) -> Self {
+                  Self {
+                      a: alpha.clamp(0.0, 1.0),
+                      ..self
+                  }
+              }
+
+              /// Multiplies the current alpha by `factor`.
+              pub fn opacity(self, factor: f32) -> Self {
+                  Self {
+                      a: self.a * factor.clamp(0.0, 1.0),
+                      ..self
+                  }
+              }
+
+              /// Returns whether this color is fully transparent.
+              pub fn is_transparent(self) -> bool {
+                  self.a == 0.0
+              }
+
+              /// Returns whether this color is fully opaque.
+              pub fn is_opaque(self) -> bool {
+                  self.a == 1.0
+              }
+
+              /// Create a new [`Rgba`] color by blending this and another color together
+          """,
+          )
+
+          replace_once(
+              "src/ui/window/map_viewer/canvas.rs",
+              "fn paint_history_chunk_rect(rect: Bounds<Pixels>, color: Hsla, window: &mut Window) {\n    let fill_color = Hsla { a: 0.28, ..color };\n    let border_color = Hsla { a: 0.78, ..color };",
+              "fn paint_history_chunk_rect(rect: Bounds<Pixels>, color: Rgba, window: &mut Window) {\n    let fill_color = color.alpha(0.28);\n    let border_color = color.alpha(0.78);",
+          )
+
+          replace_once(
+              "src/ui/window/map_viewer/history_panel.rs",
+              "fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Hsla {",
+              "fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Rgba {",
+          )
+          replace_once(
+              "src/ui/window/map_viewer/history_panel.rs",
+              """fn history_legend_item(
+              label: &'static str,
+              count: usize,
+              color: Hsla,
+              colors: &ThemeColors,
+          ) -> Div {
+          """,
+              """fn history_legend_item(
+              label: &'static str,
+              count: usize,
+              color: Rgba,
+              colors: &ThemeColors,
+          ) -> Div {
+          """,
+          )
+          replace_once(
+              "src/ui/window/map_viewer/history_panel.rs",
+              ".child(div().w(px(10.0)).h(px(10.0)).rounded(px(2.0)).bg(Hsla { a: 0.55, ..color }))",
+              ".child(div().w(px(10.0)).h(px(10.0)).rounded(px(2.0)).bg(color.alpha(0.55)))",
+          )
+          PY
+
+      - name: Validate patch shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -F "pub const fn rgb" crates/gpui/src/foundation/color/rgba.rs
+          grep -F "color: Rgba" src/ui/window/map_viewer/canvas.rs
+          grep -F "-> Rgba" src/ui/window/map_viewer/history_panel.rs
+
+      - name: Commit directly to master
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-rgba-first-class-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: make RGBA a first-class paint color"
+          git push origin HEAD:master
+
+      - name: Close trigger issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        shell: bash
+        run: gh issue close "$ISSUE_URL" --comment "One-time RGBA color API fix finished."
