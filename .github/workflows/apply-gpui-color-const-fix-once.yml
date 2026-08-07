@@ -1,0 +1,335 @@
+name: Apply GPUI color conversion fix once
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: apply-gpui-color-const-fix-once
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.event.issue.title == '[internal] apply gpui const color fix once'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Apply source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one match in {path}, found {count}: {old[:80]!r}")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "crates/gpui/src/foundation/color/rgba.rs",
+              """/// Convert an RGB hex color code number to a color type
+          pub fn rgb(hex: u32) -> Rgba {
+              let [_, r, g, b] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
+              Rgba { r, g, b, a: 1.0 }
+          }
+
+          /// Convert an RGBA hex color code number to [`Rgba`]
+          pub fn rgba(hex: u32) -> Rgba {
+              let [r, g, b, a] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
+              Rgba { r, g, b, a }
+          }
+          """,
+              """/// Convert an RGB hex color code number to a color type.
+          ///
+          /// This function is const-evaluable, so fixed palette colors can be converted at
+          /// compile time when used from a const context.
+          pub const fn rgb(hex: u32) -> Rgba {
+              let [_, r, g, b] = hex.to_be_bytes();
+              Rgba {
+                  r: r as f32 / 255.0,
+                  g: g as f32 / 255.0,
+                  b: b as f32 / 255.0,
+                  a: 1.0,
+              }
+          }
+
+          /// Convert an RGBA hex color code number to [`Rgba`].
+          ///
+          /// This function is const-evaluable, so fixed palette colors can be converted at
+          /// compile time when used from a const context.
+          pub const fn rgba(hex: u32) -> Rgba {
+              let [r, g, b, a] = hex.to_be_bytes();
+              Rgba {
+                  r: r as f32 / 255.0,
+                  g: g as f32 / 255.0,
+                  b: b as f32 / 255.0,
+                  a: a as f32 / 255.0,
+              }
+          }
+          """,
+          )
+
+          replace_once(
+              "crates/gpui/src/foundation/color/rgba.rs",
+              """impl Rgba {
+              /// Create a new [`Rgba`] color by blending this and another color together
+          """,
+              """impl Rgba {
+              /// Converts this RGBA color to HSLA.
+              ///
+              /// Unlike the stable [`From`] conversion, this inherent method can be used in a
+              /// const context on Rust 1.95 and later.
+              pub const fn to_hsla(self) -> Hsla {
+                  Hsla::from_rgba(self)
+              }
+
+              /// Create a new [`Rgba`] color by blending this and another color together
+          """,
+          )
+
+          replace_once(
+              "crates/gpui/src/foundation/color/hsla.rs",
+              """impl Hsla {
+              /// Converts this HSLA color to an RGBA color.
+          """,
+              """impl Hsla {
+              /// Converts an RGBA color to HSLA.
+              ///
+              /// This is an inherent const conversion because stable Rust does not yet support
+              /// const implementations of [`From`]. Runtime [`From<Rgba>`] conversion delegates
+              /// to this function so both paths use identical math.
+              pub const fn from_rgba(color: Rgba) -> Self {
+                  let r = color.r;
+                  let g = color.g;
+                  let b = color.b;
+
+                  let max = r.max(g.max(b));
+                  let min = r.min(g.min(b));
+                  let delta = max - min;
+
+                  let l = (max + min) / 2.0;
+                  let s = if l == 0.0 || l == 1.0 {
+                      0.0
+                  } else if l < 0.5 {
+                      delta / (2.0 * l)
+                  } else {
+                      delta / (2.0 - 2.0 * l)
+                  };
+
+                  let h = if delta == 0.0 {
+                      0.0
+                  } else if max == r {
+                      ((g - b) / delta).rem_euclid(6.0) / 6.0
+                  } else if max == g {
+                      ((b - r) / delta + 2.0) / 6.0
+                  } else {
+                      ((r - g) / delta + 4.0) / 6.0
+                  };
+
+                  Hsla {
+                      h,
+                      s,
+                      l,
+                      a: color.a,
+                  }
+              }
+
+              /// Converts this HSLA color to an RGBA color.
+          """,
+          )
+
+          old_from = """impl From<Rgba> for Hsla {
+              fn from(color: Rgba) -> Self {
+                  let r = color.r;
+                  let g = color.g;
+                  let b = color.b;
+
+                  let max = r.max(g.max(b));
+                  let min = r.min(g.min(b));
+                  let delta = max - min;
+
+                  let l = (max + min) / 2.0;
+                  let s = if l == 0.0 || l == 1.0 {
+                      0.0
+                  } else if l < 0.5 {
+                      delta / (2.0 * l)
+                  } else {
+                      delta / (2.0 - 2.0 * l)
+                  };
+
+                  let h = if delta == 0.0 {
+                      0.0
+                  } else if max == r {
+                      ((g - b) / delta).rem_euclid(6.0) / 6.0
+                  } else if max == g {
+                      ((b - r) / delta + 2.0) / 6.0
+                  } else {
+                      ((r - g) / delta + 4.0) / 6.0
+                  };
+
+                  Hsla {
+                      h,
+                      s,
+                      l,
+                      a: color.a,
+                  }
+              }
+          }
+          """
+          replace_once(
+              "crates/gpui/src/foundation/color/hsla.rs",
+              old_from,
+              """impl From<Rgba> for Hsla {
+              fn from(color: Rgba) -> Self {
+                  Self::from_rgba(color)
+              }
+          }
+          """,
+          )
+
+          replace_once(
+              "src/ui/window/map_viewer/canvas.rs",
+              """fn draw_history_visualization_overlay(
+          """,
+              """const HISTORY_ADDED_COLOR: Hsla = rgb(0x3b82f6).to_hsla();
+          const HISTORY_REMOVED_COLOR: Hsla = rgb(0xef4444).to_hsla();
+
+          fn draw_history_visualization_overlay(
+          """,
+          )
+          replace_once(
+              "src/ui/window/map_viewer/canvas.rs",
+              "paint_history_chunk_rect(rect, rgb(0x3b82f6), window);",
+              "paint_history_chunk_rect(rect, HISTORY_ADDED_COLOR, window);",
+          )
+          replace_once(
+              "src/ui/window/map_viewer/canvas.rs",
+              "paint_history_chunk_rect(rect, rgb(0xef4444), window);",
+              "paint_history_chunk_rect(rect, HISTORY_REMOVED_COLOR, window);",
+          )
+          replace_once(
+              "src/ui/window/map_viewer/canvas.rs",
+              """                    rgb(0x3b82f6),
+                      window,
+          """,
+              """                    HISTORY_ADDED_COLOR,
+                      window,
+          """,
+          )
+          replace_once(
+              "src/ui/window/map_viewer/canvas.rs",
+              """                    rgb(0xef4444),
+                      window,
+          """,
+              """                    HISTORY_REMOVED_COLOR,
+                      window,
+          """,
+          )
+
+          replace_once(
+              "src/ui/window/map_viewer/history_panel.rs",
+              """fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Hsla {
+          """,
+              """const HISTORY_ADDED_COLOR: Hsla = rgb(0x3b82f6).to_hsla();
+          const HISTORY_REMOVED_COLOR: Hsla = rgb(0xef4444).to_hsla();
+          const HISTORY_MODIFIED_COLOR: Hsla = rgb(0x8b5cf6).to_hsla();
+          const HISTORY_UNDONE_COLOR: Hsla = rgb(0x94a3b8).to_hsla();
+
+          fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Hsla {
+          """,
+          )
+          replace_once(
+              "src/ui/window/map_viewer/history_panel.rs",
+              """fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Hsla {
+              if entry.status == MapHistoryEntryStatus::Failed {
+                  return rgb(0xef4444);
+              }
+              if entry.status == MapHistoryEntryStatus::Undone {
+                  return rgb(0x94a3b8);
+              }
+              match entry.kind {
+                  MapHistoryEntryKind::ChunkDelete | MapHistoryEntryKind::RecordDelete => rgb(0xef4444),
+                  MapHistoryEntryKind::ChunkPaste | MapHistoryEntryKind::RecordSave => rgb(0x3b82f6),
+                  _ => rgb(0x8b5cf6),
+              }
+          }
+          """,
+              """fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Hsla {
+              if entry.status == MapHistoryEntryStatus::Failed {
+                  return HISTORY_REMOVED_COLOR;
+              }
+              if entry.status == MapHistoryEntryStatus::Undone {
+                  return HISTORY_UNDONE_COLOR;
+              }
+              match entry.kind {
+                  MapHistoryEntryKind::ChunkDelete | MapHistoryEntryKind::RecordDelete => {
+                      HISTORY_REMOVED_COLOR
+                  }
+                  MapHistoryEntryKind::ChunkPaste | MapHistoryEntryKind::RecordSave => {
+                      HISTORY_ADDED_COLOR
+                  }
+                  _ => HISTORY_MODIFIED_COLOR,
+              }
+          }
+          """,
+          )
+          replace_once(
+              "src/ui/window/map_viewer/history_panel.rs",
+              """        .child(history_legend_item("新增", added, rgb(0x3b82f6), colors))
+                  .child(history_legend_item("删除", removed, rgb(0xef4444), colors))
+                  .child(history_legend_item("修改", modified, rgb(0x8b5cf6), colors))
+          """,
+              """        .child(history_legend_item(
+                      "新增",
+                      added,
+                      HISTORY_ADDED_COLOR,
+                      colors,
+                  ))
+                  .child(history_legend_item(
+                      "删除",
+                      removed,
+                      HISTORY_REMOVED_COLOR,
+                      colors,
+                  ))
+                  .child(history_legend_item(
+                      "修改",
+                      modified,
+                      HISTORY_MODIFIED_COLOR,
+                      colors,
+                  ))
+          """,
+          )
+          PY
+
+      - name: Commit implementation directly to master
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-gpui-color-const-fix-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: support const RGBA to HSLA colors"
+          git push origin HEAD:master
+
+      - name: Close trigger issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        shell: bash
+        run: gh issue close "$ISSUE_URL" --comment "One-time GPUI const color conversion fix finished."
