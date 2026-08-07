@@ -93,8 +93,19 @@ struct Hsla {
     a: f32,
 }
 
+struct Rgba {
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+}
+
+fn rgba_to_vec4(color: Rgba) -> vec4<f32> {
+    return vec4<f32>(color.r, color.g, color.b, color.a);
+}
+
 struct LinearColorStop {
-    color: vec4<f32>,
+    color: Rgba,
     percentage: f32,
 }
 
@@ -106,7 +117,7 @@ struct Background {
     // 0u is sRGB linear color
     // 1u is Oklab color
     color_space: u32,
-    solid: vec4<f32>,
+    solid: Rgba,
     gradient_angle_or_pattern_height: f32,
     colors: array<LinearColorStop, 2>,
     pad: u32,

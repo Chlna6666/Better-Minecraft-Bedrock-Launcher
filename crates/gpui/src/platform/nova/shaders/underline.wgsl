@@ -5,7 +5,7 @@ struct Underline {
     pad: u32,
     bounds: Bounds,
     content_mask: ContentMask,
-    color: vec4<f32>,
+    color: Rgba,
     thickness: f32,
     wavy: u32,
 }
@@ -30,7 +30,7 @@ fn vs_underline(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) 
 
     var out = UnderlineVarying();
     out.position = to_device_position(unit_vertex, underline.bounds);
-    out.color = underline.color;
+    out.color = rgba_to_vec4(underline.color);
     out.bounds = vec4<f32>(underline.bounds.origin, underline.bounds.size);
     out.thickness = underline.thickness;
     out.wavy = underline.wavy;

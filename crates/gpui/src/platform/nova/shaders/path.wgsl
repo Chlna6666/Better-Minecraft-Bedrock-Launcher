@@ -96,15 +96,15 @@ fn fs_path_rasterization(input: PathRasterizationVarying) -> @location(0) vec4<f
         let background = Background(
             input.background_tag,
             input.background_color_space,
-            vec4<f32>(0.0),
+            Rgba(0.0, 0.0, 0.0, 0.0),
             input.background_pattern_or_angle,
             array<LinearColorStop, 2>(
                 LinearColorStop(
-                    vec4<f32>(0.0),
+                    Rgba(0.0, 0.0, 0.0, 0.0),
                     input.background_stop_percentages.x,
                 ),
                 LinearColorStop(
-                    vec4<f32>(0.0),
+                    Rgba(0.0, 0.0, 0.0, 0.0),
                     input.background_stop_percentages.y,
                 ),
             ),

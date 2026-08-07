@@ -104,8 +104,19 @@ struct Hsla {
     a: f32,
 }
 
+struct Rgba {
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+}
+
+fn rgba_to_vec4(color: Rgba) -> vec4<f32> {
+    return vec4<f32>(color.r, color.g, color.b, color.a);
+}
+
 struct LinearColorStop {
-    color: vec4<f32>,
+    color: Rgba,
     percentage: f32,
 }
 
@@ -117,7 +128,7 @@ struct Background {
     // 0u is sRGB linear color
     // 1u is Oklab color
     color_space: u32,
-    solid: vec4<f32>,
+    solid: Rgba,
     gradient_angle_or_pattern_height: f32,
     colors: array<LinearColorStop, 2>,
     pad: u32,
@@ -380,15 +391,15 @@ struct GradientColor {
 }
 
 fn prepare_gradient_color(tag: u32, color_space: u32,
-    solid: vec4<f32>, colors: array<LinearColorStop, 2>) -> GradientColor {
+    solid: Rgba, colors: array<LinearColorStop, 2>) -> GradientColor {
     var result = GradientColor();
 
     if (tag == 0u || tag == 2u) {
-        result.solid = solid;
+        result.solid = rgba_to_vec4(solid);
     } else if (tag == 1u) {
         // Scene colors are already linear RGBA
-        result.color0 = colors[0].color;
-        result.color1 = colors[1].color;
+        result.color0 = rgba_to_vec4(colors[0].color);
+        result.color1 = rgba_to_vec4(colors[1].color);
 
         // Prepare color space in vertex for avoid conversion
         // in fragment shader for performance reasons
@@ -487,7 +498,7 @@ struct Quad {
     bounds: Bounds,
     content_mask: ContentMask,
     background: Background,
-    border_color: vec4<f32>,
+    border_color: Rgba,
     corner_radii: Corners,
     border_widths: Edges,
 }
@@ -521,7 +532,7 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     out.background_solid = gradient.solid;
     out.background_color0 = gradient.color0;
     out.background_color1 = gradient.color1;
-    out.border_color = quad.border_color;
+    out.border_color = rgba_to_vec4(quad.border_color);
     out.quad_id = instance_id;
     out.clip_distances = distance_from_clip_rect(unit_vertex, quad.bounds, quad.content_mask.bounds);
     return out;
@@ -926,7 +937,7 @@ struct Shadow {
     bounds: Bounds,
     corner_radii: Corners,
     content_mask: ContentMask,
-    color: vec4<f32>,
+    color: Rgba,
 }
 var<storage, read> b_shadows: array<Shadow>;
 
@@ -951,7 +962,7 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
 
     var out = ShadowVarying();
     out.position = to_device_position(unit_vertex, shadow.bounds);
-    out.color = shadow.color;
+    out.color = rgba_to_vec4(shadow.color);
     out.shadow_id = instance_id;
     out.clip_distances = distance_from_clip_rect(unit_vertex, shadow.bounds, shadow.content_mask.bounds);
     return out;
@@ -1097,7 +1108,7 @@ struct Underline {
     pad: u32,
     bounds: Bounds,
     content_mask: ContentMask,
-    color: vec4<f32>,
+    color: Rgba,
     thickness: f32,
     wavy: u32,
 }
@@ -1118,7 +1129,7 @@ fn vs_underline(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) 
 
     var out = UnderlineVarying();
     out.position = to_device_position(unit_vertex, underline.bounds);
-    out.color = underline.color;
+    out.color = rgba_to_vec4(underline.color);
     out.underline_id = instance_id;
     out.clip_distances = distance_from_clip_rect(unit_vertex, underline.bounds, underline.content_mask.bounds);
     return out;
@@ -1163,7 +1174,7 @@ struct MonochromeSprite {
     pad: u32,
     bounds: Bounds,
     content_mask: ContentMask,
-    color: vec4<f32>,
+    color: Rgba,
     tile: AtlasTile,
     transformation: TransformationMatrix,
 }
@@ -1185,7 +1196,7 @@ fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     out.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
 
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
-    out.color = sprite.color;
+    out.color = rgba_to_vec4(sprite.color);
     out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask.bounds, sprite.transformation);
     return out;
 }
