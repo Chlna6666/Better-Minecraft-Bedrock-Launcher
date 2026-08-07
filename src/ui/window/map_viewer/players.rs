@@ -1679,13 +1679,13 @@ fn scan_flat_textures(by_id: &mut BTreeMap<String, PlayerItemTexture>, dir: &Pat
         {
             continue;
         }
-        let Some(stem) = path.file_stem().and_then(|v| v.to_str()) else {
+        let Some(stem) = path.file_stem().and_then(|v| v.to_str()).map(str::to_owned) else {
             continue;
         };
         if stem.ends_with("_0") || stem.ends_with("_1") {
             continue;
         }
-        let id = normalize_item_id(stem);
+        let id = normalize_item_id(&stem);
         by_id
             .entry(id.clone())
             .or_insert_with(|| PlayerItemTexture {
