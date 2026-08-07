@@ -1,0 +1,110 @@
+name: Apply player workspace v2 once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - tools/.apply-player-workspace-v2-trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-player-workspace-v2-once
+  cancel-in-progress: true
+
+jobs:
+  integrate-and-validate:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: player-workspace-v2-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            player-workspace-v2-${{ runner.os }}-rust-1.95-
+            player-editor-${{ runner.os }}-rust-1.95-
+
+      - name: Apply workspace integration
+        shell: pwsh
+        run: python tools/apply-player-workspace-v2.py
+
+      - name: Install Rust 1.95
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup component add rustfmt --toolchain 1.95.0
+          rustup default 1.95.0
+
+      - name: Format changed map viewer sources
+        shell: pwsh
+        run: |
+          rustfmt --edition 2024 `
+            src/ui/window/map_viewer.rs `
+            src/ui/window/map_viewer/actions.rs `
+            src/ui/window/map_viewer/bottom_panel.rs `
+            src/ui/window/map_viewer/interactions.rs `
+            src/ui/window/map_viewer/layout.rs `
+            src/ui/window/map_viewer/lifecycle.rs `
+            src/ui/window/map_viewer/model.rs `
+            src/ui/window/map_viewer/panels.rs `
+            src/ui/window/map_viewer/player_workspace.rs `
+            src/ui/window/map_viewer/players.rs `
+            src/ui/window/map_viewer/prelude.rs `
+            src/ui/window/map_viewer/right_panel.rs `
+            src/ui/window/map_viewer/state.rs `
+            src/ui/window/map_viewer/tool_stripe.rs `
+            src/ui/window/map_viewer/view.rs
+
+      - name: Validate whitespace
+        shell: pwsh
+        run: git diff --check
+
+      - name: Cargo check
+        id: cargo_check
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = "tools/player-workspace-v2-validation.log"
+          Remove-Item -Force -ErrorAction SilentlyContinue $log
+          cargo check -p bmcbl --lib --message-format short *>&1 | Tee-Object -FilePath $log
+          exit $LASTEXITCODE
+
+      - name: Publish failure diagnostics
+        if: steps.cargo_check.outcome != 'success'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ui/window/map_viewer.rs src/ui/window/map_viewer tools/player-workspace-v2-validation.log
+          git commit -m "ci: apply player workspace v2 and record validation failure"
+          git push origin HEAD:master
+
+      - name: Commit validated integration and clean one-time files
+        if: steps.cargo_check.outcome == 'success'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          Remove-Item -Force tools/.apply-player-workspace-v2-trigger
+          Remove-Item -Force tools/apply-player-workspace-v2.py
+          Remove-Item -Force tools/player-workspace-v2-validation.log -ErrorAction SilentlyContinue
+          Remove-Item -Force .github/workflows/apply-player-workspace-v2-once.yml
+          git add -A
+          git commit -m "feat(map): integrate IDE player inventory workspace"
+          git push origin HEAD:master
+
+      - name: Fail after publishing diagnostics
+        if: steps.cargo_check.outcome != 'success'
+        shell: pwsh
+        run: exit 1
