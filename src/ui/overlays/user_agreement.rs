@@ -1,4 +1,4 @@
-use crate::config::config;
+use crate::config::agreement;
 use crate::ui::components::markdown_renderer::{MarkdownDocument, render_markdown_document};
 use crate::ui::components::modal;
 use crate::ui::state::agreement::AgreementState;
@@ -190,24 +190,22 @@ pub fn render_user_agreement_modal(
                 });
 
                 if let Err(error) = crate::tasks::runtime::spawn_io(async {
-                    let result = crate::tasks::runtime::run_io_blocking(|| {
-                        config::update_config(|cfg| {
-                            cfg.agreement_accepted = true;
-                        })
-                    })
+                    let result = crate::tasks::runtime::run_io_blocking(
+                        agreement::accept_current_agreement,
+                    )
                     .await;
 
                     match result {
                         Ok(Ok(())) => {}
                         Ok(Err(error)) => {
-                            eprintln!("persist agreement_accepted failed: {error}");
+                            eprintln!("persist agreement version failed: {error}");
                         }
                         Err(join_error) => {
-                            eprintln!("persist agreement_accepted join error: {join_error}");
+                            eprintln!("persist agreement version join error: {join_error}");
                         }
                     }
                 }) {
-                    tracing::error!(%error, "failed to schedule agreement persistence");
+                    tracing::error!(%error, "failed to schedule agreement version persistence");
                 }
             })
             .into_any_element()
