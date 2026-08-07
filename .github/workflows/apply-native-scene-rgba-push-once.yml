@@ -49,16 +49,35 @@ jobs:
           end = workflow.index(end_marker, start)
           script = textwrap.dedent(workflow[start:end])
 
-          old = '''path = "crates/gpui/src/platform/nova/shaders/path.wgsl"
+          nova_old = '''path = "crates/gpui/src/platform/nova/shaders/path.wgsl"
           replace_once(path, "            Hsla(0.0, 0.0, 0.0, 0.0),", "            vec4<f32>(0.0),")
           replace_count(path, "                    Hsla(0.0, 0.0, 0.0, 0.0),", "                    vec4<f32>(0.0),", 2)
           '''
-          new = '''path = "crates/gpui/src/platform/nova/shaders/path.wgsl"
+          nova_new = '''path = "crates/gpui/src/platform/nova/shaders/path.wgsl"
           replace_count(path, "            Hsla(0.0, 0.0, 0.0, 0.0),", "            vec4<f32>(0.0),", 3)
           '''
-          if script.count(old) != 1:
-              raise SystemExit(f"expected one Nova path replacement block, found {script.count(old)}")
-          script = script.replace(old, new, 1)
+          if script.count(nova_old) != 1:
+              raise SystemExit(
+                  f"expected one Nova path replacement block, found {script.count(nova_old)}"
+              )
+          script = script.replace(nova_old, nova_new, 1)
+
+          blade_start = script.index(
+              'path = "crates/gpui/src/platform/blade/shaders.wgsl"'
+          )
+          blade_broad = 'replace_once(path, "    solid: Hsla,", "    solid: vec4<f32>,")'
+          blade_match = script.index(blade_broad, blade_start)
+          blade_scoped = r'''replace_once(
+              path,
+              "    color_space: u32,\n    solid: Hsla,\n    gradient_angle_or_pattern_height: f32,",
+              "    color_space: u32,\n    solid: vec4<f32>,\n    gradient_angle_or_pattern_height: f32,",
+          )'''
+          script = (
+              script[:blade_match]
+              + blade_scoped
+              + script[blade_match + len(blade_broad):]
+          )
+
           Path('/tmp/apply_native_scene_rgba.py').write_text(script, encoding='utf-8')
           PY
             python3 /tmp/apply_native_scene_rgba.py
