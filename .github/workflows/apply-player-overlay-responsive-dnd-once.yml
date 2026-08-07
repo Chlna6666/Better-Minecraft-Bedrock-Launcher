@@ -1,0 +1,105 @@
+name: Apply player overlay responsive drag fixes once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - tools/.apply-player-overlay-responsive-dnd-trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-player-overlay-responsive-dnd-once
+  cancel-in-progress: true
+
+jobs:
+  integrate-and-validate:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: player-overlay-responsive-dnd-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            player-overlay-responsive-dnd-${{ runner.os }}-rust-1.95-
+            player-workspace-v2-${{ runner.os }}-rust-1.95-
+
+      - name: Apply player overlay responsive drag fixes
+        shell: pwsh
+        run: python tools/apply-player-overlay-responsive-dnd.py
+
+      - name: Install Rust 1.95
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup component add rustfmt --toolchain 1.95.0
+          rustup default 1.95.0
+
+      - name: Format changed map viewer sources
+        shell: pwsh
+        run: |
+          rustfmt --edition 2024 `
+            src/ui/window/map_viewer/tool_stripe.rs `
+            src/ui/window/map_viewer/model.rs `
+            src/ui/window/map_viewer/panels.rs `
+            src/ui/window/map_viewer/layout.rs `
+            src/ui/window/map_viewer/state.rs `
+            src/ui/window/map_viewer/players.rs `
+            src/ui/window/map_viewer/canvas.rs `
+            src/ui/window/map_viewer/interactions.rs `
+            src/ui/window/map_viewer/menus.rs `
+            src/ui/window/map_viewer/player_workspace.rs
+
+      - name: Validate whitespace
+        shell: pwsh
+        run: git diff --check
+
+      - name: Cargo check
+        id: cargo_check
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = "tools/player-overlay-responsive-dnd-validation.log"
+          Remove-Item -Force -ErrorAction SilentlyContinue $log
+          cargo check -p bmcbl --lib --message-format short *>&1 | Tee-Object -FilePath $log
+          exit $LASTEXITCODE
+
+      - name: Publish failure diagnostics
+        if: steps.cargo_check.outcome != 'success'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ui/window/map_viewer tools/player-overlay-responsive-dnd-validation.log
+          git commit -m "ci: apply player overlay responsive drag fixes and record failure"
+          git push origin HEAD:master
+
+      - name: Commit validated integration and clean one-time files
+        if: steps.cargo_check.outcome == 'success'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          Remove-Item -Force tools/.apply-player-overlay-responsive-dnd-trigger
+          Remove-Item -Force tools/apply-player-overlay-responsive-dnd.py
+          Remove-Item -Force tools/player-overlay-responsive-dnd-validation.log -ErrorAction SilentlyContinue
+          Remove-Item -Force .github/workflows/apply-player-overlay-responsive-dnd-once.yml
+          git add -A
+          git commit -m "fix(map): player overlay responsive inventory drag"
+          git push origin HEAD:master
+
+      - name: Fail after publishing diagnostics
+        if: steps.cargo_check.outcome != 'success'
+        shell: pwsh
+        run: exit 1
