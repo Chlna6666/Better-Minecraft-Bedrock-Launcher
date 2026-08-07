@@ -1,3 +1,4 @@
+pub mod agreement;
 pub mod config;
 mod defaults;
 mod storage;
