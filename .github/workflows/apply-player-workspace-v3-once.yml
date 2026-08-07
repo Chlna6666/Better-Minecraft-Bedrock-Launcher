@@ -35,9 +35,9 @@ jobs:
             player-workspace-v3-${{ runner.os }}-rust-1.95-
             player-overlay-responsive-dnd-${{ runner.os }}-rust-1.95-
 
-      - name: Apply player workspace v3 patch
+      - name: Apply player workspace v3 compile fix
         shell: pwsh
-        run: python tools/apply-player-workspace-v3.py
+        run: python tools/fix-player-workspace-v3-compile.py
 
       - name: Install Rust 1.95
         shell: pwsh
@@ -75,7 +75,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/ui/window/map_viewer tools/player-workspace-v3-validation.log
-          git commit -m "ci: apply player workspace v3 and record failure"
+          git commit -m "ci: apply player workspace v3 compile fix and record failure"
           git push origin HEAD:master
 
       - name: Commit validated integration and clean one-time files
@@ -86,6 +86,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           Remove-Item -Force tools/.apply-player-workspace-v3-trigger
           Remove-Item -Force tools/apply-player-workspace-v3.py
+          Remove-Item -Force tools/fix-player-workspace-v3-compile.py
           Remove-Item -Force tools/player-workspace-v3-validation.log -ErrorAction SilentlyContinue
           Remove-Item -Force .github/workflows/apply-player-workspace-v3-once.yml
           git add -A
