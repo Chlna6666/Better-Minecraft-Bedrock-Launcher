@@ -1,8 +1,11 @@
+use super::map_history::{
+    MapHistoryChunkVisual, MapHistoryChunkVisualKind, MapHistoryVisualFilter,
+    MapHistoryVisualization,
+};
 use super::model::{
     MapViewport, Marker, OverlayOptions, PastePreview, PastePreviewImage,
     ProfessionalOverlayPaintCache, SlimeOverlayRunCache,
 };
-use super::map_history::{MapHistoryChunkVisual, MapHistoryChunkVisualKind};
 use super::paint::{draw_map_canvas, draw_professional_overlay_canvas};
 use super::selection::{
     ChunkSelection, ExistingSelectionTarget, SelectionResizeHandle, SelectionScreenBounds,
@@ -25,6 +28,7 @@ static PAINT_RESOURCE_FAILURE_STREAK: AtomicUsize = AtomicUsize::new(0);
 const SCREEN_IMAGE_VIEWPORT_EPSILON: f32 = 0.01;
 const MAP_TILE_INTERACTION_NEW_IMAGE_BUDGET_PER_FRAME: usize = 16;
 const MAP_TILE_IDLE_NEW_IMAGE_BUDGET_PER_FRAME: usize = 8;
+const HISTORY_VISUAL_COLUMN_SIDE: usize = 16;
 use bedrock_world::{Dimension, SlimeChunkWindow};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -87,8 +91,9 @@ pub(super) struct MapCanvasSnapshot {
     pub(super) paste_preview_images: Arc<Vec<PastePreviewImage>>,
     pub(super) paste_preview_images_generation: u64,
     pub(super) highlighted_window: Option<SlimeChunkWindow>,
-    pub(super) history_visualization: Arc<Vec<MapHistoryChunkVisual>>,
+    pub(super) history_visualization: Arc<MapHistoryVisualization>,
     pub(super) history_visualization_enabled: bool,
+    pub(super) history_visualization_filter: MapHistoryVisualFilter,
     pub(super) markers: Arc<Vec<Marker>>,
     pub(super) markers_generation: u64,
     pub(super) hover_label: SharedString,
@@ -473,8 +478,9 @@ struct OverlayLayerSnapshot {
     paste_preview_images: Arc<Vec<PastePreviewImage>>,
     paste_preview_images_generation: u64,
     highlighted_window: Option<SlimeChunkWindow>,
-    history_visualization: Arc<Vec<MapHistoryChunkVisual>>,
+    history_visualization: Arc<MapHistoryVisualization>,
     history_visualization_enabled: bool,
+    history_visualization_filter: MapHistoryVisualFilter,
     history_visualization_ptr: usize,
     overlay_paint_ptr: Option<usize>,
     slime_runs_ptr: Option<usize>,
@@ -497,6 +503,7 @@ impl OverlayLayerSnapshot {
             highlighted_window: snapshot.highlighted_window.clone(),
             history_visualization: snapshot.history_visualization.clone(),
             history_visualization_enabled: snapshot.history_visualization_enabled,
+            history_visualization_filter: snapshot.history_visualization_filter,
             history_visualization_ptr: Arc::as_ptr(&snapshot.history_visualization) as usize,
             overlay_paint_ptr: arc_option_ptr(&snapshot.overlay_paint),
             slime_runs_ptr: arc_option_ptr(&snapshot.slime_runs),
@@ -514,6 +521,7 @@ impl OverlayLayerSnapshot {
             && self.paste_preview_images_generation == other.paste_preview_images_generation
             && self.highlighted_window == other.highlighted_window
             && self.history_visualization_enabled == other.history_visualization_enabled
+            && self.history_visualization_filter == other.history_visualization_filter
             && self.history_visualization_ptr == other.history_visualization_ptr
             && self.overlay_paint_ptr == other.overlay_paint_ptr
             && self.slime_runs_ptr == other.slime_runs_ptr
@@ -1303,6 +1311,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     let highlighted_window = snapshot.highlighted_window.clone();
     let history_visualization = snapshot.history_visualization.clone();
     let history_visualization_enabled = snapshot.history_visualization_enabled;
+    let history_visualization_filter = snapshot.history_visualization_filter;
     let colors = snapshot.colors;
     div().absolute().inset_0().child(
         canvas(
@@ -1330,6 +1339,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                         layout,
                         dimension,
                         &history_visualization,
+                        history_visualization_filter,
                         window,
                     );
                 }
@@ -1344,30 +1354,37 @@ fn draw_history_visualization_overlay(
     viewport: MapViewport,
     layout: RenderLayout,
     dimension: Dimension,
-    visualization: &[MapHistoryChunkVisual],
+    visualization: &MapHistoryVisualization,
+    filter: MapHistoryVisualFilter,
     window: &mut Window,
 ) {
+    if !filter.any_enabled() {
+        return;
+    }
+
+    draw_history_operation_envelope(
+        bounds,
+        viewport,
+        layout,
+        dimension,
+        &visualization.chunks,
+        filter,
+        window,
+    );
+
     let canvas_left = bounds.left() / px(1.0);
     let canvas_top = bounds.top() / px(1.0);
     let canvas_right = bounds.right() / px(1.0);
     let canvas_bottom = bounds.bottom() / px(1.0);
     for item in visualization
+        .chunks
         .iter()
         .filter(|item| item.pos.dimension == dimension)
-        .take(8192)
+        .filter(|item| item.filtered_total(filter) > 0)
+        .take(4096)
     {
-        let left = screen_x_for_block(
-            bounds,
-            viewport,
-            layout,
-            item.pos.x.saturating_mul(16),
-        );
-        let top = screen_y_for_block(
-            bounds,
-            viewport,
-            layout,
-            item.pos.z.saturating_mul(16),
-        );
+        let left = screen_x_for_block(bounds, viewport, layout, item.pos.x.saturating_mul(16));
+        let top = screen_y_for_block(bounds, viewport, layout, item.pos.z.saturating_mul(16));
         let right = screen_x_for_block(
             bounds,
             viewport,
@@ -1389,63 +1406,314 @@ fn draw_history_visualization_overlay(
         {
             continue;
         }
+
         let rect = Bounds::new(
             point(px(left), px(top)),
             size(px(right - left), px(bottom - top)),
         );
-        match item.kind {
-            MapHistoryChunkVisualKind::Added => {
-                paint_history_chunk_rect(rect, rgb(0x3b82f6), window);
+        let chunk_pixels = (right - left).abs();
+        let Some(kind) = item.filtered_kind(filter) else {
+            continue;
+        };
+        let outline_color = history_visual_kind_color(kind);
+        let intensity = history_visual_intensity(item.filtered_total(filter));
+
+        if item.precise_block_diff() && item.filtered_block_counts(filter) != (0, 0, 0) {
+            let grid_side = if chunk_pixels >= 64.0 {
+                16
+            } else if chunk_pixels >= 12.0 {
+                4
+            } else {
+                0
+            };
+            if grid_side > 0 {
+                paint_history_block_grid(rect, item, grid_side, filter, window);
+            } else {
+                window.paint_quad(fill(rect, outline_color.alpha(0.06 + intensity * 0.08)));
             }
-            MapHistoryChunkVisualKind::Removed => {
-                paint_history_chunk_rect(rect, rgb(0xef4444), window);
-            }
-            MapHistoryChunkVisualKind::Modified => {
-                let half = rect.size.width * 0.5;
-                paint_history_chunk_rect(
-                    Bounds::new(rect.origin, size(half, rect.size.height)),
-                    rgb(0x3b82f6),
-                    window,
-                );
-                paint_history_chunk_rect(
-                    Bounds::new(
-                        point(rect.origin.x + half, rect.origin.y),
-                        size(rect.size.width - half, rect.size.height),
-                    ),
-                    rgb(0xef4444),
-                    window,
-                );
-            }
+        } else {
+            paint_history_record_summary(rect, item, filter, intensity, window);
+        }
+
+        let border_alpha = 0.42 + intensity * 0.34;
+        let border_width = if chunk_pixels >= 28.0 {
+            px(1.5)
+        } else {
+            px(1.0)
+        };
+        paint_history_outline(
+            rect,
+            outline_color.alpha(border_alpha.min(0.82)),
+            border_width,
+            window,
+        );
+
+        if item.unresolved_terrain_records > 0 && chunk_pixels >= 14.0 {
+            paint_history_uncertainty_corner(rect, window);
         }
     }
 }
 
-fn paint_history_chunk_rect(rect: Bounds<Pixels>, color: Rgba, window: &mut Window) {
-    let fill_color = color.alpha(0.28);
-    let border_color = color.alpha(0.78);
-    window.paint_quad(fill(rect, fill_color));
-    let thickness = px(1.0);
+fn draw_history_operation_envelope(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    dimension: Dimension,
+    visualization: &[MapHistoryChunkVisual],
+    filter: MapHistoryVisualFilter,
+    window: &mut Window,
+) {
+    let mut min_x = i32::MAX;
+    let mut min_z = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_z = i32::MIN;
+    let mut count = 0usize;
+    for item in visualization
+        .iter()
+        .filter(|item| item.pos.dimension == dimension)
+        .filter(|item| item.filtered_total(filter) > 0)
+    {
+        min_x = min_x.min(item.pos.x);
+        min_z = min_z.min(item.pos.z);
+        max_x = max_x.max(item.pos.x);
+        max_z = max_z.max(item.pos.z);
+        count = count.saturating_add(1);
+    }
+    if count < 2 {
+        return;
+    }
+    let width = i64::from(max_x)
+        .saturating_sub(i64::from(min_x))
+        .saturating_add(1);
+    let height = i64::from(max_z)
+        .saturating_sub(i64::from(min_z))
+        .saturating_add(1);
+    let area = width.saturating_mul(height);
+    if area <= 0 || area > 65_536 {
+        return;
+    }
+    let density = count as f32 / area as f32;
+    if density < 0.32 {
+        return;
+    }
+
+    let left = screen_x_for_block(bounds, viewport, layout, min_x.saturating_mul(16));
+    let top = screen_y_for_block(bounds, viewport, layout, min_z.saturating_mul(16));
+    let right = screen_x_for_block(
+        bounds,
+        viewport,
+        layout,
+        max_x.saturating_add(1).saturating_mul(16),
+    );
+    let bottom = screen_y_for_block(
+        bounds,
+        viewport,
+        layout,
+        max_z.saturating_add(1).saturating_mul(16),
+    );
+    if right <= left || bottom <= top {
+        return;
+    }
+    let rect = Bounds::new(
+        point(px(left), px(top)),
+        size(px(right - left), px(bottom - top)),
+    );
+    paint_history_outline(rect, rgb(0xf59e0b).alpha(0.72), px(2.0), window);
+}
+
+fn paint_history_block_grid(
+    rect: Bounds<Pixels>,
+    item: &MapHistoryChunkVisual,
+    grid_side: usize,
+    filter: MapHistoryVisualFilter,
+    window: &mut Window,
+) {
+    let cell_width = rect.size.width / grid_side as f32;
+    let cell_height = rect.size.height / grid_side as f32;
+    let mut max_total = 0u32;
+    for cell_z in 0..grid_side {
+        for cell_x in 0..grid_side {
+            let counts = history_grid_cell_counts(item, grid_side, cell_x, cell_z, filter);
+            max_total = max_total.max(counts.0.saturating_add(counts.1).saturating_add(counts.2));
+        }
+    }
+    if max_total == 0 {
+        return;
+    }
+
+    for cell_z in 0..grid_side {
+        for cell_x in 0..grid_side {
+            let counts = history_grid_cell_counts(item, grid_side, cell_x, cell_z, filter);
+            if counts == (0, 0, 0) {
+                continue;
+            }
+            let cell = Bounds::new(
+                point(
+                    rect.origin.x + cell_width * cell_x as f32,
+                    rect.origin.y + cell_height * cell_z as f32,
+                ),
+                size(cell_width, cell_height),
+            );
+            paint_history_change_segments(cell, counts, max_total, window);
+        }
+    }
+}
+
+fn history_grid_cell_counts(
+    item: &MapHistoryChunkVisual,
+    grid_side: usize,
+    cell_x: usize,
+    cell_z: usize,
+    filter: MapHistoryVisualFilter,
+) -> (u32, u32, u32) {
+    let span = HISTORY_VISUAL_COLUMN_SIDE / grid_side;
+    let mut added = 0u32;
+    let mut removed = 0u32;
+    let mut modified = 0u32;
+    for local_z in cell_z * span..(cell_z + 1) * span {
+        for local_x in cell_x * span..(cell_x + 1) * span {
+            let index = local_z * HISTORY_VISUAL_COLUMN_SIDE + local_x;
+            let Some(column) = item.columns.get(index) else {
+                continue;
+            };
+            let counts = column.filtered_counts(filter);
+            added = added.saturating_add(counts.0);
+            removed = removed.saturating_add(counts.1);
+            modified = modified.saturating_add(counts.2);
+        }
+    }
+    (added, removed, modified)
+}
+
+fn paint_history_record_summary(
+    rect: Bounds<Pixels>,
+    item: &MapHistoryChunkVisual,
+    filter: MapHistoryVisualFilter,
+    intensity: f32,
+    window: &mut Window,
+) {
+    let Some(kind) = item.filtered_kind(filter) else {
+        return;
+    };
+    window.paint_quad(fill(
+        rect,
+        history_visual_kind_color(kind).alpha(0.06 + intensity * 0.10),
+    ));
+    let records = item.filtered_record_counts(filter);
+    let record_counts = (
+        u32::try_from(records.0).unwrap_or(u32::MAX),
+        u32::try_from(records.1).unwrap_or(u32::MAX),
+        u32::try_from(records.2).unwrap_or(u32::MAX),
+    );
+    let total = record_counts
+        .0
+        .saturating_add(record_counts.1)
+        .saturating_add(record_counts.2);
+    if total == 0 {
+        return;
+    }
+    let bar_height = if rect.size.height / px(1.0) >= 10.0 {
+        px(2.0)
+    } else {
+        px(1.0)
+    };
+    paint_history_change_segments(
+        Bounds::new(rect.origin, size(rect.size.width, bar_height)),
+        record_counts,
+        total,
+        window,
+    );
+}
+
+fn paint_history_change_segments(
+    rect: Bounds<Pixels>,
+    counts: (u32, u32, u32),
+    max_total: u32,
+    window: &mut Window,
+) {
+    let total = counts.0.saturating_add(counts.1).saturating_add(counts.2);
+    if total == 0 {
+        return;
+    }
+    let density = (total as f32 / max_total.max(1) as f32).sqrt();
+    let alpha = (0.12 + density * 0.28).min(0.40);
+    let segments = [
+        (counts.0, rgb(0x3b82f6)),
+        (counts.1, rgb(0xef4444)),
+        (counts.2, rgb(0x8b5cf6)),
+    ];
+    let mut cursor = rect.origin.x;
+    let mut remaining = rect.size.width;
+    let mut non_empty = segments.iter().filter(|(count, _)| *count > 0).count();
+    for (count, color) in segments {
+        if count == 0 {
+            continue;
+        }
+        non_empty = non_empty.saturating_sub(1);
+        let width = if non_empty == 0 {
+            remaining
+        } else {
+            rect.size.width * (count as f32 / total as f32)
+        };
+        if width > px(0.0) {
+            window.paint_quad(fill(
+                Bounds::new(point(cursor, rect.origin.y), size(width, rect.size.height)),
+                color.alpha(alpha),
+            ));
+            cursor += width;
+            remaining -= width;
+        }
+    }
+}
+
+fn paint_history_uncertainty_corner(rect: Bounds<Pixels>, window: &mut Window) {
+    let side = px((rect.size.width / px(1.0)).min(5.0).max(2.0));
+    window.paint_quad(fill(
+        Bounds::new(point(rect.right() - side, rect.origin.y), size(side, side)),
+        rgb(0xf59e0b).alpha(0.82),
+    ));
+}
+
+fn history_visual_intensity(total: u64) -> f32 {
+    ((total as f32 + 1.0).ln() / 8.0).clamp(0.18, 1.0)
+}
+
+fn history_visual_kind_color(kind: MapHistoryChunkVisualKind) -> Rgba {
+    match kind {
+        MapHistoryChunkVisualKind::Added => rgb(0x3b82f6),
+        MapHistoryChunkVisualKind::Removed => rgb(0xef4444),
+        MapHistoryChunkVisualKind::Modified => rgb(0x8b5cf6),
+        MapHistoryChunkVisualKind::Mixed => rgb(0xf59e0b),
+    }
+}
+
+fn paint_history_outline(
+    rect: Bounds<Pixels>,
+    color: Rgba,
+    thickness: Pixels,
+    window: &mut Window,
+) {
     window.paint_quad(fill(
         Bounds::new(rect.origin, size(rect.size.width, thickness)),
-        border_color,
+        color,
     ));
     window.paint_quad(fill(
         Bounds::new(
             point(rect.origin.x, rect.bottom() - thickness),
             size(rect.size.width, thickness),
         ),
-        border_color,
+        color,
     ));
     window.paint_quad(fill(
         Bounds::new(rect.origin, size(thickness, rect.size.height)),
-        border_color,
+        color,
     ));
     window.paint_quad(fill(
         Bounds::new(
             point(rect.right() - thickness, rect.origin.y),
             size(thickness, rect.size.height),
         ),
-        border_color,
+        color,
     ));
 }
 

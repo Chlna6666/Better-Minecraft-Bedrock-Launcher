@@ -59,7 +59,7 @@ impl MapViewerWindowView {
             return;
         }
         let Some(entry_id) = self.history.selected_entry_id.clone() else {
-            self.history.visualization = Arc::new(Vec::new());
+            self.history.visualization = Arc::new(MapHistoryVisualization::default());
             self.history.visualization_loading = false;
             self.history.visualization_error = None;
             self.professional.overlay_generation =
@@ -73,9 +73,9 @@ impl MapViewerWindowView {
         let task_entry_id = entry_id.clone();
         cx.spawn(async move |handle, cx| {
             let result = cx
-                .background_spawn(async move {
-                    load_history_visualization(&world_path, &task_entry_id)
-                })
+                .background_spawn(
+                    async move { load_history_visualization(&world_path, &task_entry_id) },
+                )
                 .await;
             let Some(view) = handle.upgrade() else {
                 return Ok(());
@@ -91,7 +91,7 @@ impl MapViewerWindowView {
                         this.history.visualization_error = None;
                     }
                     Err(error) => {
-                        this.history.visualization = Arc::new(Vec::new());
+                        this.history.visualization = Arc::new(MapHistoryVisualization::default());
                         this.history.visualization_error = Some(SharedString::from(error));
                     }
                 }
@@ -113,6 +113,18 @@ impl MapViewerWindowView {
         if self.history.visualization_enabled {
             self.load_selected_history_visualization(cx);
         }
+        cx.notify();
+    }
+
+    fn toggle_history_visualization_filter(
+        &mut self,
+        kind: MapHistoryVisualFilterKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.history.visualization_filter.toggle(kind);
+        self.professional.overlay_generation =
+            self.professional.overlay_generation.saturating_add(1);
+        self.last_synced_canvas_snapshot_key = None;
         cx.notify();
     }
 
@@ -236,7 +248,7 @@ impl MapViewerWindowView {
                     Ok(()) => {
                         this.history.entries = Arc::new(Vec::new());
                         this.history.selected_entry_id = None;
-                        this.history.visualization = Arc::new(Vec::new());
+                        this.history.visualization = Arc::new(MapHistoryVisualization::default());
                         this.history.visualization_error = None;
                         this.professional.overlay_generation =
                             this.professional.overlay_generation.saturating_add(1);
@@ -329,8 +341,12 @@ impl MapViewerWindowView {
                     .text_size(px(12.0))
                     .line_height(px(19.0))
                     .text_color(colors.text_secondary)
-                    .child(history_visualization_legend(colors, &self.history))
-                    .child(history_detail_text(selected, self.history.error.as_ref())),
+                    .child(history_visualization_legend(colors, &self.history, cx))
+                    .child(history_detail_text(
+                        selected,
+                        self.history.error.as_ref(),
+                        &self.history,
+                    )),
             )
     }
 
@@ -713,22 +729,12 @@ fn history_entry_timeline_color(entry: &MapHistoryEntry) -> Rgba {
     }
 }
 
-fn history_visualization_legend(colors: &ThemeColors, history: &MapHistoryState) -> Div {
-    let added = history
-        .visualization
-        .iter()
-        .filter(|item| item.kind == MapHistoryChunkVisualKind::Added)
-        .count();
-    let removed = history
-        .visualization
-        .iter()
-        .filter(|item| item.kind == MapHistoryChunkVisualKind::Removed)
-        .count();
-    let modified = history
-        .visualization
-        .iter()
-        .filter(|item| item.kind == MapHistoryChunkVisualKind::Modified)
-        .count();
+fn history_visualization_legend(
+    colors: &ThemeColors,
+    history: &MapHistoryState,
+    cx: &mut Context<MapViewerWindowView>,
+) -> Div {
+    let visualization = history.visualization.as_ref();
     div()
         .mb(px(10.0))
         .p(px(9.0))
@@ -745,46 +751,175 @@ fn history_visualization_legend(colors: &ThemeColors, history: &MapHistoryState)
         .flex()
         .flex_wrap()
         .items_center()
-        .gap(px(10.0))
-        .child(history_legend_item("新增", added, rgb(0x3b82f6), colors))
-        .child(history_legend_item("删除", removed, rgb(0xef4444), colors))
-        .child(history_legend_item("修改", modified, rgb(0x8b5cf6), colors))
+        .gap(px(8.0))
+        .child(history_filter_chip(
+            "新增",
+            MapHistoryVisualFilterKind::Added,
+            visualization,
+            history.visualization_filter,
+            rgb(0x3b82f6),
+            colors,
+            cx,
+        ))
+        .child(history_filter_chip(
+            "删除",
+            MapHistoryVisualFilterKind::Removed,
+            visualization,
+            history.visualization_filter,
+            rgb(0xef4444),
+            colors,
+            cx,
+        ))
+        .child(history_filter_chip(
+            "修改",
+            MapHistoryVisualFilterKind::Modified,
+            visualization,
+            history.visualization_filter,
+            rgb(0x8b5cf6),
+            colors,
+            cx,
+        ))
+        .child(history_summary_badge(
+            format!("混合 {} chunk", visualization.mixed_chunks),
+            rgb(0xf59e0b),
+            colors,
+        ))
+        .child(history_summary_badge(
+            format!(
+                "精确 {} · 部分 {} · 记录级 {}",
+                visualization.precise_chunks,
+                visualization.partial_chunks,
+                visualization.record_only_chunks
+            ),
+            rgb(0x10b981),
+            colors,
+        ))
         .when(history.visualization_loading, |this| {
             this.child(
                 div()
                     .text_color(colors.text_muted)
-                    .child("正在解析差异..."),
+                    .child("正在解析块级差异..."),
             )
         })
         .when(!history.visualization_enabled, |this| {
             this.child(div().text_color(colors.text_muted).child("地图差异已隐藏"))
+        })
+        .when(!history.visualization_filter.any_enabled(), |this| {
+            this.child(
+                div()
+                    .text_color(colors.text_muted)
+                    .child("所有差异类型均已过滤"),
+            )
         })
         .when_some(history.visualization_error.clone(), |this, error| {
             this.child(div().text_color(colors.danger).child(error))
         })
 }
 
-fn history_legend_item(
+fn history_filter_chip(
     label: &'static str,
-    count: usize,
+    kind: MapHistoryVisualFilterKind,
+    visualization: &MapHistoryVisualization,
+    filter: MapHistoryVisualFilter,
     color: Rgba,
     colors: &ThemeColors,
+    cx: &mut Context<MapViewerWindowView>,
 ) -> Div {
+    let active = filter.includes(kind);
+    let blocks = visualization.kind_blocks(kind);
+    let records = visualization.kind_records(kind);
+    let chunks = visualization
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.has_kind(kind))
+        .count();
+    let metric = if blocks > 0 {
+        format!("{} block", format_history_count(blocks))
+    } else {
+        format!("{records} record")
+    };
     div()
         .flex()
         .items_center()
         .gap(px(5.0))
-        .child(div().w(px(10.0)).h(px(10.0)).rounded(px(2.0)).bg(color.alpha(0.55)))
+        .px(px(7.0))
+        .py(px(4.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(if active {
+            color.alpha(0.48)
+        } else {
+            Hsla {
+                a: 0.14,
+                ..colors.border
+            }
+            .into()
+        })
+        .bg(if active {
+            color.alpha(0.12)
+        } else {
+            Hsla {
+                a: 0.16,
+                ..colors.surface_hover
+            }
+            .into()
+        })
+        .cursor(CursorStyle::PointingHand)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _event, _window, cx| {
+                this.toggle_history_visualization_filter(kind, cx);
+            }),
+        )
         .child(
             div()
-                .text_color(colors.text_secondary)
-                .child(format!("{label} {count}")),
+                .w(px(9.0))
+                .h(px(9.0))
+                .rounded(px(2.0))
+                .bg(color.alpha(if active { 0.68 } else { 0.20 })),
         )
+        .child(
+            div()
+                .text_color(if active {
+                    colors.text_secondary
+                } else {
+                    colors.text_muted
+                })
+                .child(format!("{label} {metric} · {chunks} chunk")),
+        )
+}
+
+fn history_summary_badge(label: String, color: Rgba, colors: &ThemeColors) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(7.0))
+        .py(px(4.0))
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.14,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.16,
+            ..colors.surface_hover
+        })
+        .child(
+            div()
+                .w(px(8.0))
+                .h(px(8.0))
+                .rounded_full()
+                .bg(color.alpha(0.58)),
+        )
+        .child(div().text_color(colors.text_muted).child(label))
 }
 
 fn history_detail_text(
     entry: Option<&MapHistoryEntry>,
     error: Option<&SharedString>,
+    history: &MapHistoryState,
 ) -> SharedString {
     if let Some(error) = error {
         return SharedString::from(format!("历史加载错误\n\n{error}"));
@@ -792,32 +927,83 @@ fn history_detail_text(
     let Some(entry) = entry else {
         return SharedString::from("选择左侧历史项查看详情。");
     };
+    let visualization = history.visualization.as_ref();
     let mut lines = Vec::new();
+    lines.push(format!("变更集 ID: {}", entry.id));
     lines.push(format!("类型: {}", entry.kind_label()));
     lines.push(format!("状态: {}", entry.short_status()));
     lines.push(format!(
         "时间: {}",
         format_history_time(entry.timestamp_secs)
     ));
+    lines.push(format!("标题: {}", entry.label));
     lines.push(format!("说明: {}", entry.message));
+    lines.push(String::new());
+
+    lines.push("空间范围".to_string());
+    lines.extend(history_dimension_bounds_text(&visualization.chunks));
+    lines.push(format!(
+        "影响 chunk: {}（混合 {}）",
+        visualization.chunks.len(),
+        visualization.mixed_chunks
+    ));
+    lines.push(String::new());
+
+    lines.push("块级差异".to_string());
+    lines.push(format!(
+        "新增 {} · 删除 {} · 修改 {} · 总计 {} block",
+        format_history_count(visualization.added_blocks),
+        format_history_count(visualization.removed_blocks),
+        format_history_count(visualization.modified_blocks),
+        format_history_count(visualization.total_blocks()),
+    ));
+    lines.push(format!(
+        "精确 chunk {} · 部分解析 {} · 仅记录级 {}",
+        visualization.precise_chunks,
+        visualization.partial_chunks,
+        visualization.record_only_chunks
+    ));
+    lines.push(format!("变化子区块: {}", visualization.changed_subchunks));
+    lines.push(String::new());
+
+    lines.push("数据库记录".to_string());
+    lines.push(format!(
+        "新增 {} · 删除 {} · 修改 {} · 总计 {} record",
+        visualization.added_records,
+        visualization.removed_records,
+        visualization.modified_records,
+        visualization.total_records(),
+    ));
+    lines.push(format!(
+        "地形 {} · 方块实体 {} · 实体 {} · 元数据 {} · 未映射 {}",
+        visualization.terrain_records,
+        visualization.block_entity_records,
+        visualization.entity_records,
+        visualization.metadata_records,
+        visualization.unmapped_records,
+    ));
+    lines.push(format!(
+        "level.dat: {}",
+        if visualization.level_dat_changed {
+            "有变化"
+        } else {
+            "无变化"
+        }
+    ));
+    lines.push(String::new());
+
+    lines.push("存储".to_string());
     lines.push(format!("世界: {}", entry.world_path));
-    lines.push(format!("影响 chunk: {}", entry.chunks.len()));
-    if !entry.chunks.is_empty() {
-        lines.push(format!(
-            "chunk: {}",
-            entry
-                .chunks
-                .iter()
-                .take(12)
-                .map(|chunk| format!("{}:{},{}", chunk.dimension.id(), chunk.x, chunk.z))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        ));
-    }
-    lines.push(format!("raw 记录变化: {}", entry.raw_delta_count));
-    lines.push(format!("raw 变化字节: {}", entry.raw_delta_bytes));
+    lines.push(format!(
+        "原始变化字节: {}",
+        format_history_count(entry.raw_delta_bytes)
+    ));
     lines.push(format!("存储格式: {}", history_storage_label(entry)));
-    lines.push(format!("实际新增存储: {} bytes", entry.stored_bytes));
+    lines.push(format!(
+        "实际新增存储: {} bytes{}",
+        format_history_count(entry.stored_bytes),
+        history_compression_ratio(entry)
+    ));
     if entry.stored_object_count > 0 || entry.reused_object_count > 0 {
         lines.push(format!(
             "对象库: 新增 {} · 复用 {}",
@@ -825,17 +1011,89 @@ fn history_detail_text(
         ));
     }
     lines.push(format!(
-        "level.dat: {}",
-        if entry.level_dat_changed {
-            "有变化"
-        } else {
-            "无变化"
-        }
+        "当前地图筛选: {}",
+        history_filter_text(history.visualization_filter)
     ));
     if let Some(error) = &entry.error {
         lines.push(format!("错误: {error}"));
     }
     SharedString::from(lines.join("\n"))
+}
+
+fn history_dimension_bounds_text(chunks: &[MapHistoryChunkVisual]) -> Vec<String> {
+    let mut bounds = BTreeMap::<Dimension, (i32, i32, i32, i32, usize)>::new();
+    for chunk in chunks {
+        let entry = bounds.entry(chunk.pos.dimension).or_insert((
+            chunk.pos.x,
+            chunk.pos.z,
+            chunk.pos.x,
+            chunk.pos.z,
+            0,
+        ));
+        entry.0 = entry.0.min(chunk.pos.x);
+        entry.1 = entry.1.min(chunk.pos.z);
+        entry.2 = entry.2.max(chunk.pos.x);
+        entry.3 = entry.3.max(chunk.pos.z);
+        entry.4 = entry.4.saturating_add(1);
+    }
+    if bounds.is_empty() {
+        return vec!["无可映射的 chunk 范围".to_string()];
+    }
+    bounds
+        .into_iter()
+        .map(|(dimension, (min_x, min_z, max_x, max_z, count))| {
+            format!(
+                "{}: chunk ({min_x},{min_z}) → ({max_x},{max_z}) · block X {}..{} · Z {}..{} · {count} chunk",
+                history_dimension_label(dimension),
+                min_x.saturating_mul(16),
+                max_x.saturating_add(1).saturating_mul(16).saturating_sub(1),
+                min_z.saturating_mul(16),
+                max_z.saturating_add(1).saturating_mul(16).saturating_sub(1),
+            )
+        })
+        .collect()
+}
+
+fn history_dimension_label(dimension: Dimension) -> String {
+    match dimension {
+        Dimension::Overworld => "主世界".to_string(),
+        Dimension::Nether => "下界".to_string(),
+        Dimension::End => "末地".to_string(),
+        Dimension::Unknown(id) => format!("维度 {id}"),
+    }
+}
+
+fn history_filter_text(filter: MapHistoryVisualFilter) -> &'static str {
+    match (filter.show_added, filter.show_removed, filter.show_modified) {
+        (true, true, true) => "新增、删除、修改",
+        (true, true, false) => "新增、删除",
+        (true, false, true) => "新增、修改",
+        (false, true, true) => "删除、修改",
+        (true, false, false) => "仅新增",
+        (false, true, false) => "仅删除",
+        (false, false, true) => "仅修改",
+        (false, false, false) => "全部隐藏",
+    }
+}
+
+fn history_compression_ratio(entry: &MapHistoryEntry) -> String {
+    if entry.raw_delta_bytes == 0 {
+        return String::new();
+    }
+    let ratio = entry.stored_bytes as f64 / entry.raw_delta_bytes as f64 * 100.0;
+    format!("（{ratio:.1}%）")
+}
+
+fn format_history_count(value: u64) -> String {
+    let raw = value.to_string();
+    let mut output = String::with_capacity(raw.len() + raw.len() / 3);
+    for (index, ch) in raw.chars().enumerate() {
+        if index > 0 && (raw.len() - index) % 3 == 0 {
+            output.push(',');
+        }
+        output.push(ch);
+    }
+    output
 }
 
 fn history_storage_label(entry: &MapHistoryEntry) -> &'static str {

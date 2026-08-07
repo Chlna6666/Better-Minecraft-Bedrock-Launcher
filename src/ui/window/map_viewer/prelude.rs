@@ -17,14 +17,14 @@ pub(super) use super::layout::{
     IDE_STATUS_BAR_HEIGHT, center_stage_rect_for_layout,
 };
 pub(super) use super::map_history::{
-    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryChunkVisualKind,
-    MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus, MapHistoryState,
-    apply_redo_with_progress,
-    apply_undo_with_progress, capture_before, capture_before_with_progress,
-    capture_before_with_world_and_progress, complete_after, complete_after_with_progress,
-    complete_after_with_world_and_progress, complete_failed, create_restore_protection_point,
-    history_dir_for_world, list_history, load_history_visualization,
-    restore_history_entry_with_progress,
+    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryChunkVisual,
+    MapHistoryChunkVisualKind, MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus,
+    MapHistoryState, MapHistoryVisualFilter, MapHistoryVisualFilterKind, MapHistoryVisualization,
+    apply_redo_with_progress, apply_undo_with_progress, capture_before,
+    capture_before_with_progress, capture_before_with_world_and_progress, complete_after,
+    complete_after_with_progress, complete_after_with_world_and_progress, complete_failed,
+    create_restore_protection_point, history_dir_for_world, list_history,
+    load_history_visualization, restore_history_entry_with_progress,
 };
 pub(super) use super::menu_overlay::{MapMenuOverlaySnapshot, MapMenuOverlayView};
 pub(super) use super::model::ChunkTransferProgress;
