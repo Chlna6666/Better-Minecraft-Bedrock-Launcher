@@ -1072,6 +1072,9 @@ pub(super) struct ProfessionalQueryState {
     pub(super) overlay_bounds: Option<SlimeChunkBounds>,
     pub(super) overlays: Option<RegionOverlayQuery>,
     pub(super) overlay_paint: Option<Arc<ProfessionalOverlayPaintCache>>,
+    /// True only after the current overlay scope was validated against LevelDB.
+    /// A fast disk-cache preview is intentionally provisional.
+    pub(super) overlay_complete: bool,
     pub(super) entity_avatar_pool: BTreeMap<String, Arc<RenderImage>>,
     pub(super) overlay_loading: bool,
     pub(super) overlay_generation: u64,

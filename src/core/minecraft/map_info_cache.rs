@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, bail};
 use bedrock_world::{
-    BedrockWorld, CancelFlag, ChunkPos, ChunkRecordQuery, ChunkRecordQueryResult, Dimension,
-    ParsedChunkRecordValue, query_chunk_records_many_blocking_with_control,
+    BedrockWorld, CancelFlag, ChunkPos, ChunkRecordFingerprint, ChunkRecordQuery,
+    ChunkRecordQueryResult, Dimension, ParsedChunkRecordValue,
+    fingerprint_chunk_records_many_blocking_with_control,
+    query_chunk_records_many_blocking_with_control,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -10,9 +12,9 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use xxhash_rust::xxh3::xxh3_128;
+use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-const CACHE_VERSION: u16 = 2;
+const CACHE_VERSION: u16 = 3;
 const INDEX_FILE: &str = "index.bin";
 const MAP_INFO_CACHE_DIRECTORY: &str = "map-info";
 const MAX_MAP_INFO_QUERY_WORKERS: usize = 4;
@@ -104,6 +106,8 @@ pub struct MapInfoOverlaySnapshot {
     pub cached_tile_count: usize,
     /// Number of tiles rebuilt from world records.
     pub rebuilt_tile_count: usize,
+    /// Number of map-information tiles requested for this snapshot.
+    pub requested_tile_count: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -115,6 +119,8 @@ struct MapInfoIndex {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct MapInfoIndexEntry {
     payload_hash: u128,
+    /// Fingerprint of the selected LevelDB records, including digp and actorprefix data.
+    source_hash: u128,
 }
 
 /// Loads valid information tiles and rebuilds only changed tile dependencies.
@@ -133,19 +139,36 @@ pub fn load_map_info_tiles_blocking(
     if keys.is_empty() {
         return Ok(MapInfoOverlaySnapshot::default());
     }
+    let requested_tile_count = keys.len();
     let cache = MapInfoCache::for_world(world_path);
     let mut index = cache.load_index()?;
 
-    // Map edits invalidate their owning information tiles explicitly. Query only
-    // missing tiles so the initial build does not read every LevelDB record twice.
+    // Validate the compact persistent cache against exactly the records that feed it.
+    // The fingerprint path does not decode NBT, but it does include the legacy Entity
+    // record, the modern digp actor digest and every referenced actorprefix record.
+    // This makes cache hits reliable even when Minecraft or another editor changed the
+    // world behind BMCBL's back.
+    cancel_if_requested(cancel)?;
+    let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
+        .context("open world for map information cache validation")?;
+    let source_hashes = map_info_source_hashes(&world, &keys, cancel)?;
+
     let mut payloads = BTreeMap::new();
     let mut rebuild_keys = Vec::new();
     let mut cached_tile_count = 0usize;
     for key in &keys {
+        let Some(source_hash) = source_hashes.get(key).copied() else {
+            rebuild_keys.push(*key);
+            continue;
+        };
         let Some(entry) = index.entries.get(key).copied() else {
             rebuild_keys.push(*key);
             continue;
         };
+        if entry.source_hash != source_hash {
+            rebuild_keys.push(*key);
+            continue;
+        }
         match cache.load_tile(*key, entry.payload_hash) {
             Ok(payload) => {
                 cached_tile_count = cached_tile_count.saturating_add(1);
@@ -157,10 +180,9 @@ pub fn load_map_info_tiles_blocking(
             }
         }
     }
+
     if !rebuild_keys.is_empty() {
         cancel_if_requested(cancel)?;
-        let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
-            .context("open world for map information cache")?;
         let records = query_map_info_records_parallel(&world, &rebuild_keys, cancel, max_workers)?;
         let records_by_tile = records_by_tile(records, chunks_per_tile);
         for key in &rebuild_keys {
@@ -170,18 +192,67 @@ pub fn load_map_info_tiles_blocking(
                     MapInfoTilePayload::from_records(records)
                 });
             let payload_hash = cache.store_tile(*key, &payload)?;
-            index
-                .entries
-                .insert(*key, MapInfoIndexEntry { payload_hash });
+            let source_hash = source_hashes.get(key).copied().unwrap_or_default();
+            index.entries.insert(
+                *key,
+                MapInfoIndexEntry {
+                    payload_hash,
+                    source_hash,
+                },
+            );
             payloads.insert(*key, payload);
         }
         cache.store_index(&index)?;
     }
+
     Ok(MapInfoOverlaySnapshot::from_payloads(
         payloads.into_values(),
         cached_tile_count,
         rebuild_keys.len(),
+        requested_tile_count,
     ))
+}
+
+fn map_info_source_hashes(
+    world: &BedrockWorld,
+    keys: &[MapInfoTileKey],
+    cancel: &CancelFlag,
+) -> Result<BTreeMap<MapInfoTileKey, u128>> {
+    let fingerprints = fingerprint_chunk_records_many_blocking_with_control(
+        world,
+        chunks_for_keys(keys)?,
+        map_info_record_query(),
+        cancel,
+    )?;
+    Ok(source_hashes_by_tile(
+        fingerprints,
+        keys.first().map_or(1, |key| key.chunks_per_tile),
+    ))
+}
+
+fn source_hashes_by_tile(
+    fingerprints: Vec<ChunkRecordFingerprint>,
+    chunks_per_tile: u16,
+) -> BTreeMap<MapInfoTileKey, u128> {
+    let edge = i32::from(chunks_per_tile).max(1);
+    let mut hashers = BTreeMap::<MapInfoTileKey, Xxh3>::new();
+    for fingerprint in fingerprints {
+        let key = MapInfoTileKey {
+            dimension_id: fingerprint.pos.dimension.id(),
+            tile_x: fingerprint.pos.x.div_euclid(edge),
+            tile_z: fingerprint.pos.z.div_euclid(edge),
+            chunks_per_tile,
+        };
+        let hasher = hashers.entry(key).or_insert_with(Xxh3::new);
+        hasher.update(&fingerprint.pos.x.to_le_bytes());
+        hasher.update(&fingerprint.pos.z.to_le_bytes());
+        hasher.update(&fingerprint.pos.dimension.id().to_le_bytes());
+        hasher.update(&fingerprint.value.to_le_bytes());
+    }
+    hashers
+        .into_iter()
+        .map(|(key, hasher)| (key, hasher.digest128()))
+        .collect()
 }
 
 fn query_map_info_records_parallel(
@@ -243,6 +314,7 @@ pub fn load_cached_map_info_tiles_blocking(
     }
     let cache = MapInfoCache::for_world(world_path);
     let index = cache.load_index()?;
+    let requested_tile_count = keys.len();
     let mut payloads = BTreeMap::new();
     for key in keys {
         cancel_if_requested(cancel)?;
@@ -263,6 +335,7 @@ pub fn load_cached_map_info_tiles_blocking(
         payloads.into_values(),
         cached_tile_count,
         0,
+        requested_tile_count,
     ))
 }
 
@@ -370,10 +443,12 @@ impl MapInfoOverlaySnapshot {
         payloads: impl IntoIterator<Item = MapInfoTilePayload>,
         cached_tile_count: usize,
         rebuilt_tile_count: usize,
+        requested_tile_count: usize,
     ) -> Self {
         let mut snapshot = Self {
             cached_tile_count,
             rebuilt_tile_count,
+            requested_tile_count,
             ..Self::default()
         };
         for payload in payloads {
