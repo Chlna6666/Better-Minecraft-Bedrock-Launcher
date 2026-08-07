@@ -234,7 +234,7 @@ impl MapViewerWindowView {
                                 ..colors.surface_hover
                             })
                             .child(
-                                Input::new(self.player_workspace.search.clone())
+                                Input::new(&self.player_workspace.search)
                                     .appearance(false)
                                     .bordered(false)
                                     .focus_bordered(false)
@@ -1026,7 +1026,7 @@ impl MapViewerWindowView {
             .map(|entry| entry.item.nbt)
             .unwrap_or_else(|| empty_workspace_item(selection.slot));
         let text = serde_json::to_value(&tag)
-            .map(pretty_json)
+            .map(workspace_pretty_json)
             .unwrap_or_else(|_| SharedString::from("{}"));
         self.player_workspace
             .item_editor_state
@@ -1651,7 +1651,7 @@ impl MapViewerWindowView {
             .to_string();
         match serde_json::from_str::<NbtTag>(&text).and_then(serde_json::to_value) {
             Ok(value) => {
-                let formatted = pretty_json(value);
+                let formatted = workspace_pretty_json(value);
                 self.player_workspace
                     .item_editor_state
                     .update(cx, |editor, cx| editor.set_value(formatted, cx));
@@ -1926,7 +1926,7 @@ fn player_form_field(colors: &ThemeColors, label: &'static str, input: Entity<In
                     ..colors.surface_hover
                 })
                 .child(
-                    Input::new(input)
+                    Input::new(&input)
                         .appearance(false)
                         .bordered(false)
                         .focus_bordered(false)
@@ -2384,4 +2384,8 @@ fn find_item_id_in_text(text: &str) -> Option<String> {
         }
     }
     fallback
+}
+
+fn workspace_pretty_json(value: serde_json::Value) -> SharedString {
+    SharedString::from(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
 }

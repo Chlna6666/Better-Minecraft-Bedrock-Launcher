@@ -48,7 +48,7 @@ impl PlayerRecordQuality {
     fn invalid() -> Self {
         Self {
             health: PlayerRecordHealth::Invalid,
-            score: i16::MIN,
+            score: -32767,
             trusted_server: false,
             has_unique_id: false,
             has_position: false,
@@ -1034,10 +1034,10 @@ fn player_probe(id: &PlayerId, data: &PlayerData) -> Result<PlayerProbe, String>
     let server_like = is_server_like_player_id(id);
     let trusted_server =
         server_like && has_unique_id && has_position && has_dimension && has_inventory;
-    let completeness = i16::from(has_unique_id)
-        + i16::from(has_position)
-        + i16::from(has_dimension)
-        + i16::from(has_inventory);
+    let completeness = (if has_unique_id { 1 } else { 0 })
+        + (if has_position { 1 } else { 0 })
+        + (if has_dimension { 1 } else { 0 })
+        + (if has_inventory { 1 } else { 0 });
     let health =
         if (matches!(id, PlayerId::Local) && has_position && has_dimension && has_inventory)
             || trusted_server
