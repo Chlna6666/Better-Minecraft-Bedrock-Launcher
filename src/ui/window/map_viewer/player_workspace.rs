@@ -217,7 +217,8 @@ impl Render for PlayerItemDrag {
                                 .bottom(px(1.0))
                                 .text_size(px(10.0))
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0x2b2620)),
+                                .text_color(rgb(0x2b2620))
+                                .child(self.count.to_string()),
                         )
                     })
                     .child(
@@ -903,7 +904,7 @@ impl MapViewerWindowView {
         slot: i32,
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> impl IntoElement {
         let metrics = self.player_workspace_metrics();
         let entry = entries.iter().find(|entry| {
             entry.kind == kind && entry.slot.unwrap_or(entry.list_index as i32) == slot
