@@ -48,12 +48,16 @@ jobs:
             Invoke-Logged "Install Rust 1.95" {
               rustup toolchain install 1.95.0 --profile minimal
             }
+            Invoke-Logged "Install rustfmt" {
+              rustup component add rustfmt --toolchain 1.95.0
+            }
             Invoke-Logged "Select Rust 1.95" {
               rustup default 1.95.0
             }
             Invoke-Logged "Toolchain versions" {
               rustc --version
               cargo --version
+              cargo fmt --version
             }
             Invoke-Logged "Apply source patch" {
               python tools/apply_map_history_visualization_v2.py
@@ -90,13 +94,14 @@ jobs:
             $tail = $tail.Substring($tail.Length - 58000)
           }
           $status = if ($env:VALIDATION_OUTCOME -eq "success") { "succeeded" } else { "failed" }
-          @"
-          Map history visualization v2 validation **$status**. Run `$env:RUN_ID`.
-
-          ```text
-          $tail
-          ```
-          "@ | Set-Content -Encoding utf8 history-v2-comment.md
+          $body = @(
+            "Map history visualization v2 validation **$status**. Run $($env:RUN_ID)."
+            ""
+            '```text'
+            $tail
+            '```'
+          ) -join "`n"
+          $body | Set-Content -Encoding utf8 history-v2-comment.md
           gh issue comment 16 --repo Chlna6666/Better-Minecraft-Bedrock-Launcher --body-file history-v2-comment.md
 
       - name: Commit implementation directly to master
