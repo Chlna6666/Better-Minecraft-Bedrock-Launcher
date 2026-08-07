@@ -198,6 +198,7 @@ impl MapViewerWindowView {
 
     pub(super) fn close_all_menus(&mut self, cx: &mut Context<Self>) {
         let changed = self.context_menu.take().is_some()
+            || self.professional.entity_context_target.take().is_some()
             || self.player_workspace.item_context_menu.take().is_some()
             || self.players.context_target.take().is_some()
             || self.ui_state.top_more_open
@@ -292,6 +293,7 @@ impl MapViewerWindowView {
         self.drag = None;
         self.right_selection_drag = None;
         self.players.context_target = Some(player_id);
+        self.professional.entity_context_target = None;
         self.context_menu = Some(ContextMenuState {
             position,
             block_x: marker.x,
@@ -1725,12 +1727,48 @@ impl MapViewerWindowView {
         self.preview_3d.clear_surface();
     }
 
+    fn entity_context_target_at(&self, position: Point<Pixels>) -> Option<EntityContextTarget> {
+        if !self.overlay_options.entities {
+            return None;
+        }
+        let paint = self.professional.overlay_paint.as_ref()?;
+        let local = self.stage_local_position(position);
+        let pointer_x = local.x / px(1.0);
+        let pointer_y = local.y / px(1.0);
+        let hit_radius = 18.0_f32;
+        let hit_radius_sq = hit_radius * hit_radius;
+        paint
+            .entity_points
+            .iter()
+            .filter_map(|entity| {
+                let (screen_x, screen_y) = viewport_screen_for_block(
+                    self.viewport,
+                    self.active_layout,
+                    entity.block_x.floor() as i32,
+                    entity.block_z.floor() as i32,
+                )?;
+                let dx = screen_x - pointer_x;
+                let dy = screen_y - pointer_y;
+                let distance_sq = dx * dx + dy * dy;
+                (distance_sq <= hit_radius_sq).then_some((distance_sq, entity))
+            })
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+            .map(|(_, entity)| EntityContextTarget {
+                source_chunk: entity.source_chunk,
+                unique_id: entity.unique_id,
+                identifier: entity.identifier.clone(),
+                position: [entity.block_x, entity.block_y, entity.block_z],
+            })
+    }
+
     pub(super) fn open_context_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         let local_position = self.stage_local_position(position);
         let (block_x, block_z) = self
             .viewport
             .screen_to_block(local_position, self.active_layout);
         self.ui_state.top_more_open = false;
+        self.players.context_target = None;
+        self.professional.entity_context_target = self.entity_context_target_at(position);
         self.ui_state.context_more_open = false;
         self.ui_state.context_paste_open = false;
         self.context_menu = Some(ContextMenuState {
@@ -1753,6 +1791,7 @@ impl MapViewerWindowView {
 
     pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         let changed = self.context_menu.take().is_some()
+            || self.professional.entity_context_target.take().is_some()
             || self.ui_state.context_more_open
             || self.ui_state.context_paste_open;
         self.ui_state.context_more_open = false;

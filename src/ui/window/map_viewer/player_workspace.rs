@@ -177,6 +177,52 @@ struct PlayerWorkspaceMetrics {
     compact: bool,
 }
 
+fn player_workspace_metrics_for_width(available: f32) -> PlayerWorkspaceMetrics {
+    let available = available.max(1.0);
+    let compact = available < 620.0;
+    let tight = available < 470.0;
+    let outer_padding = if tight {
+        6.0
+    } else if compact {
+        10.0
+    } else {
+        18.0
+    };
+    let panel_padding = if tight {
+        7.0
+    } else if compact {
+        11.0
+    } else {
+        18.0
+    };
+    let slot_gap = if tight {
+        2.0
+    } else if compact {
+        3.0
+    } else {
+        4.0
+    };
+    let available_grid = (available - outer_padding * 2.0 - panel_padding * 2.0 - 2.0).max(1.0);
+    let natural_slot = ((available_grid - slot_gap * 8.0) / 9.0).floor();
+    // 22 px keeps the controls usable on very narrow layouts while still guaranteeing that
+    // a nine-slot row never invents width beyond its parent. Extremely small stages become
+    // horizontally dense instead of offsetting the hotbar outside the inventory card.
+    let slot_size = natural_slot
+        .clamp(22.0, 52.0)
+        .min((available_grid / 9.0).max(1.0));
+    let grid_width = (slot_size * 9.0 + slot_gap * 8.0)
+        .min(available_grid)
+        .max(1.0);
+    PlayerWorkspaceMetrics {
+        slot_size,
+        slot_gap,
+        grid_width,
+        panel_padding,
+        outer_padding,
+        compact,
+    }
+}
+
 #[derive(Clone)]
 enum PlayerItemDragOrigin {
     Slots(Vec<PlayerItemSelection>),
@@ -264,43 +310,15 @@ impl Render for PlayerItemDrag {
 
 impl MapViewerWindowView {
     fn player_workspace_metrics(&self) -> PlayerWorkspaceMetrics {
-        // Do not reuse viewport.width here: opening/closing the right dock can leave it one
-        // layout tick behind the actual center workspace. Compute against the current dock
-        // geometry directly so backpack rows and hotbar share the same pixel grid immediately.
+        // The center stage is the actual flex container available to the inventory. Do not
+        // clamp it upward: doing so made narrow windows calculate a grid wider than their
+        // parent and pushed the hotbar out of the card.
         let available = (self
             .center_stage_size(size(px(self.window_width), px(self.window_height)))
             .width
             / px(1.0))
-        .max(320.0);
-        let compact = available < 620.0;
-        let outer_padding = if available < 470.0 {
-            8.0
-        } else if compact {
-            12.0
-        } else {
-            18.0
-        };
-        let panel_padding = if available < 470.0 {
-            9.0
-        } else if compact {
-            12.0
-        } else {
-            18.0
-        };
-        let slot_gap = if compact { 3.0 } else { 4.0 };
-        let usable = (available - outer_padding * 2.0 - panel_padding * 2.0)
-            .min(584.0)
-            .max(288.0);
-        let slot_size = ((usable - slot_gap * 8.0) / 9.0).floor().clamp(30.0, 52.0);
-        let grid_width = (slot_size * 9.0 + slot_gap * 8.0).round();
-        PlayerWorkspaceMetrics {
-            slot_size,
-            slot_gap,
-            grid_width,
-            panel_padding,
-            outer_padding,
-            compact,
-        }
+        .max(1.0);
+        player_workspace_metrics_for_width(available)
     }
 
     pub(super) fn player_workspace_active(&self) -> bool {
@@ -677,6 +695,7 @@ impl MapViewerWindowView {
             .map(|player| player.label.clone())
             .unwrap_or_else(|| SharedString::from(player_id_label(&detail.id)));
         let title = SharedString::from(stable_middle_ellipsis(title.as_ref(), 38));
+        let delete_player_id = detail.id.clone();
         div()
             .min_h(px(50.0))
             .flex_none()
@@ -754,6 +773,16 @@ impl MapViewerWindowView {
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| this.open_selected_player_in_editor(cx)),
             ))
+            .child(danger_button(colors, "删除玩家").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event, _window, cx| {
+                    this.confirm_or_run_edit(
+                        EditTarget::Player(delete_player_id.clone()),
+                        EditAction::Delete,
+                        cx,
+                    )
+                }),
+            ))
     }
 
     fn render_inventory_workspace(
@@ -788,8 +817,11 @@ impl MapViewerWindowView {
             ))
             .child(
                 div()
+                    .w_full()
+                    .min_w(px(0.0))
                     .flex()
                     .flex_col()
+                    .items_center()
                     .gap(px(4.0))
                     .children((0..3).map(|row| {
                         self.render_slot_row(
@@ -804,8 +836,12 @@ impl MapViewerWindowView {
             )
             .child(
                 div()
+                    .w_full()
+                    .min_w(px(0.0))
                     .pt(px(8.0))
                     .border_t_1()
+                    .flex()
+                    .justify_center()
                     .border_color(Hsla {
                         a: 0.18,
                         ..colors.border
@@ -3130,4 +3166,24 @@ fn stable_middle_ellipsis(value: &str, max_chars: usize) -> String {
         .skip(count.saturating_sub(tail))
         .collect::<String>();
     format!("{prefix}…{suffix}")
+}
+
+#[cfg(test)]
+mod responsive_inventory_layout_tests {
+    use super::player_workspace_metrics_for_width;
+
+    #[::core::prelude::v1::test]
+    fn nine_slot_grid_never_exceeds_available_center_width() {
+        for available in [240.0_f32, 320.0, 420.0, 560.0, 800.0] {
+            let metrics = player_workspace_metrics_for_width(available);
+            let occupied = metrics.grid_width
+                + metrics.panel_padding * 2.0
+                + metrics.outer_padding * 2.0
+                + 2.0;
+            assert!(
+                occupied <= available + 0.5,
+                "available={available} occupied={occupied}"
+            );
+        }
+    }
 }

@@ -178,6 +178,10 @@ impl MapViewerWindowView {
         let action_for_task = action.clone();
         let document_text = matches!(action, EditAction::Save)
             .then(|| self.editor_state.read(cx).value().to_string());
+        let deletes_player = matches!(
+            (&target, &action),
+            (EditTarget::Player(_), EditAction::Delete)
+        );
         self.status =
             SharedString::from(format!("正在{}...", edit_action_status(&action, &target)));
         cx.notify();
@@ -240,6 +244,12 @@ impl MapViewerWindowView {
                 match result {
                     Ok(invalidation) => {
                         this.apply_map_edit_invalidation(&invalidation, cx);
+                        if deletes_player {
+                            this.players.selected = None;
+                            this.players.detail = None;
+                            this.players.context_target = None;
+                            this.refresh_players(cx);
+                        }
                         this.status = SharedString::from("世界记录已写入并刷新地图状态");
                     }
                     Err(error) => {
@@ -1308,6 +1318,7 @@ pub(super) fn load_edit_detail_blocking(
             block_entity_at_editor_detail(editor, chunk, block)
         }
         EditTarget::Actors(pos) => actors_editor_detail(editor, pos),
+        EditTarget::Actor { chunk, unique_id } => actor_editor_detail(editor, chunk, unique_id),
         EditTarget::HeightMap(pos) => heightmap_editor_detail(editor, pos),
         EditTarget::BiomeStorage(pos) => biome_storage_editor_detail(editor, pos),
         EditTarget::MapRecord(id) => map_record_editor_detail(editor, &id),
@@ -1322,6 +1333,10 @@ pub(super) fn run_edit_action_blocking(
     document_text: Option<String>,
 ) -> bedrock_render::Result<MapEditInvalidation> {
     let invalidation = match (target, action) {
+        (EditTarget::Player(id), EditAction::Delete) => {
+            editor.world().delete_player_blocking(&id)?;
+            Ok(MapEditInvalidation::metadata())
+        }
         (EditTarget::Player(id), EditAction::Save) => {
             let text = document_text.ok_or_else(|| {
                 bedrock_render::BedrockRenderError::Validation(
@@ -1372,6 +1387,28 @@ pub(super) fn run_edit_action_blocking(
                 ));
             };
             editor.delete_actor(pos, uid)
+        }
+        (EditTarget::Actor { chunk, unique_id }, EditAction::Save) => {
+            let text = document_text.ok_or_else(|| {
+                bedrock_render::BedrockRenderError::Validation(
+                    "missing actor JSON document".to_string(),
+                )
+            })?;
+            let nbt = serde_json::from_str::<NbtTag>(&text).map_err(|error| {
+                bedrock_render::BedrockRenderError::Validation(format!(
+                    "actor JSON is not valid NBT JSON: {error}"
+                ))
+            })?;
+            let affected = editor
+                .world()
+                .edit_actor_nbt_by_unique_id_blocking(chunk, unique_id, nbt)?;
+            Ok(MapEditInvalidation::chunks(affected).with_metadata())
+        }
+        (EditTarget::Actor { chunk, unique_id }, EditAction::Delete) => {
+            editor
+                .world()
+                .delete_actor_by_unique_id_blocking(chunk, unique_id)?;
+            Ok(MapEditInvalidation::chunk(chunk).with_metadata())
         }
         (EditTarget::HeightMap(pos), EditAction::Save) => {
             let height_map = editor.heightmap(pos)?.unwrap_or_else(default_heightmap);
@@ -1424,6 +1461,7 @@ fn edit_history_spec(
         EditTarget::HsaChunk(chunk)
         | EditTarget::BlockEntities(chunk)
         | EditTarget::Actors(chunk)
+        | EditTarget::Actor { chunk, .. }
         | EditTarget::HeightMap(chunk)
         | EditTarget::BiomeStorage(chunk) => {
             chunks.insert(*chunk);
@@ -1538,6 +1576,52 @@ pub(super) fn actors_editor_detail(
             "chunk": chunk_json(pos),
             "actors": actors.iter().map(actor_json).collect::<Vec<_>>(),
         })),
+    })
+}
+
+pub(super) fn actor_editor_detail(
+    editor: &MapWorldEditor,
+    chunk: ChunkPos,
+    unique_id: i64,
+) -> bedrock_render::Result<ProfessionalDetail> {
+    let actor = editor
+        .actors_in_chunk(chunk)?
+        .into_iter()
+        .find(|actor| actor.entity.unique_id == Some(unique_id))
+        .ok_or_else(|| {
+            bedrock_render::BedrockRenderError::Validation(format!(
+                "actor UniqueID {unique_id} does not exist in chunk {},{}",
+                chunk.x, chunk.z
+            ))
+        })?;
+    let identifier = actor
+        .entity
+        .identifier
+        .clone()
+        .unwrap_or_else(|| "minecraft:unknown".to_string());
+    let position = actor.entity.position;
+    Ok(ProfessionalDetail::Editor {
+        target: EditTarget::Actor { chunk, unique_id },
+        title: SharedString::from(format!("实体 {identifier}")),
+        sections: vec![EditSection {
+            title: SharedString::from("实体信息"),
+            rows: vec![
+                readonly_row("identifier", identifier),
+                readonly_row("UniqueID", unique_id.to_string()),
+                readonly_row(
+                    "position",
+                    position.map_or_else(
+                        || "缺失".to_string(),
+                        |value| format!("{:.3}, {:.3}, {:.3}", value[0], value[1], value[2]),
+                    ),
+                ),
+                readonly_row("source chunk", format!("{}, {}", chunk.x, chunk.z)),
+                readonly_row("storage", format!("{:?}", actor.source)),
+            ],
+        }],
+        // Individual actors intentionally expose the NBT root itself. Unlike the chunk-level
+        // Actors inspector this document can be parsed back and written safely.
+        json: pretty_json(serde_json::json!(actor.entity.nbt)),
     })
 }
 
