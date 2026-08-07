@@ -24,6 +24,17 @@ jobs:
           ref: master
           fetch-depth: 0
 
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: map-history-v2-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            map-history-v2-${{ runner.os }}-rust-1.95-
+
       - name: Mark validation started
         env:
           GH_TOKEN: ${{ github.token }}
@@ -65,13 +76,18 @@ jobs:
             Invoke-Logged "Toolchain versions" {
               rustc --version
               cargo --version
-              cargo fmt --version
+              rustfmt --version
             }
             Invoke-Logged "Apply source patch" {
               python tools/apply_map_history_visualization_v2.py
             }
-            Invoke-Logged "Format workspace" {
-              cargo fmt --all
+            Invoke-Logged "Format changed map history files" {
+              rustfmt --edition 2024 `
+                src/ui/window/map_viewer/map_history.rs `
+                src/ui/window/map_viewer/prelude.rs `
+                src/ui/window/map_viewer/canvas.rs `
+                src/ui/window/map_viewer/lifecycle.rs `
+                src/ui/window/map_viewer/history_panel.rs
             }
             Invoke-Logged "Check patch whitespace" {
               git diff --check
