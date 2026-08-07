@@ -4516,10 +4516,7 @@ pub(super) fn preview_3d_local_draw_parameters(
 ) -> GpuMesh3dDrawParameters {
     let local_to_world = mat4_translation(world_origin.map(|value| value as f32));
     GpuMesh3dDrawParameters {
-        view_projection_model: mat4_mul(
-            world_parameters.view_projection_model,
-            local_to_world,
-        ),
+        view_projection_model: mat4_mul(world_parameters.view_projection_model, local_to_world),
     }
 }
 

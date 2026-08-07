@@ -1,6 +1,6 @@
 use super::actions::MapViewerAction;
 use super::layout::IDE_LEFT_STRIPE_WIDTH;
-use super::state::{MapViewerBottomTab, MapViewerRightPanel};
+use super::state::{MapViewerBottomTab, MapViewerLeftPanel, MapViewerRightPanel};
 use crate::ui::theme::colors::ThemeColors;
 use gpui::{
     App, Context, CursorStyle, EventEmitter, Hsla, InteractiveElement, IntoElement, MouseButton,
@@ -13,6 +13,7 @@ pub struct MapToolStripeSnapshot {
     pub left_panel_open: bool,
     pub right_panel_open: bool,
     pub bottom_panel_open: bool,
+    pub active_left_panel: MapViewerLeftPanel,
     pub active_bottom_tab: MapViewerBottomTab,
     pub active_right_panel: MapViewerRightPanel,
 }
@@ -41,6 +42,7 @@ impl Render for MapToolStripeView {
             left_panel_open: true,
             right_panel_open: false,
             bottom_panel_open: false,
+            active_left_panel: MapViewerLeftPanel::Tools,
             active_bottom_tab: MapViewerBottomTab::ChunkTree,
             active_right_panel: MapViewerRightPanel::Nbt,
         });
@@ -61,9 +63,11 @@ impl Render for MapToolStripeView {
                 &colors,
                 lucide_icons::icon_wrench(),
                 "工具",
-                snapshot.left_panel_open,
+                snapshot.left_panel_open && snapshot.active_left_panel == MapViewerLeftPanel::Tools,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::ToggleLeftPanel);
+                    cx.emit(MapViewerAction::ToggleLeftPanelKind(
+                        MapViewerLeftPanel::Tools,
+                    ));
                 }),
             ))
             .child(stripe_button(
@@ -84,11 +88,11 @@ impl Render for MapToolStripeView {
                 &colors,
                 lucide_icons::icon_users(),
                 "玩家",
-                snapshot.bottom_panel_open
-                    && snapshot.active_bottom_tab == MapViewerBottomTab::Players,
+                snapshot.left_panel_open
+                    && snapshot.active_left_panel == MapViewerLeftPanel::Players,
                 cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::ToggleBottomTab(
-                        MapViewerBottomTab::Players,
+                    cx.emit(MapViewerAction::ToggleLeftPanelKind(
+                        MapViewerLeftPanel::Players,
                     ));
                 }),
             ))

@@ -215,6 +215,7 @@ impl MapViewerWindowView {
             MapViewerAction::ImportStructureFile => self.open_import_structure_dialog(cx),
             MapViewerAction::ToggleTopMore => self.toggle_top_more(cx),
             MapViewerAction::ToggleLeftPanel => self.toggle_left_panel(cx),
+            MapViewerAction::ToggleLeftPanelKind(panel) => self.toggle_left_panel_kind(panel, cx),
             MapViewerAction::ToggleBottomTab(tab) => self.toggle_bottom_tab(tab, cx),
             MapViewerAction::ToggleRightPanel(panel) => self.toggle_right_panel_kind(panel, cx),
             MapViewerAction::BeginRightSelectionAt(position) => {
@@ -286,6 +287,16 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
+    pub(super) fn open_right_player_panel(&mut self, cx: &mut Context<Self>) {
+        if self.ui_state.active_right_panel == MapViewerRightPanel::Preview3d {
+            self.clear_preview_3d_resources(false);
+        }
+        self.ui_state.active_right_panel = MapViewerRightPanel::Player;
+        self.ui_state.set_right_panel_open(true);
+        self.update_viewport_after_dock_change(cx);
+        cx.notify();
+    }
+
     pub(super) fn open_right_preview_3d_panel(&mut self, cx: &mut Context<Self>) {
         self.show_right_preview_3d_panel(cx);
         cx.notify();
@@ -321,6 +332,32 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
+    pub(super) fn toggle_left_panel_kind(
+        &mut self,
+        panel: MapViewerLeftPanel,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ui_state.left_panel_open && self.ui_state.active_left_panel == panel {
+            self.toggle_left_panel(cx);
+            return;
+        }
+        self.ui_state.active_left_panel = panel;
+        self.ui_state.left_panel_open = true;
+        if panel == MapViewerLeftPanel::Players {
+            if self.players.players.is_empty() {
+                self.refresh_players(cx);
+            }
+            if self.players.selected.is_some() {
+                self.ui_state.active_right_panel = MapViewerRightPanel::Player;
+                self.ui_state.set_right_panel_open(true);
+            }
+        } else if self.ui_state.active_right_panel == MapViewerRightPanel::Player {
+            self.ui_state.set_right_panel_open(false);
+        }
+        self.update_viewport_after_dock_change(cx);
+        cx.notify();
+    }
+
     pub(super) fn toggle_bottom_panel(&mut self, cx: &mut Context<Self>) {
         self.ui_state.bottom_panel_open = !self.ui_state.bottom_panel_open;
         let size = size(px(self.window_width), px(self.window_height));
@@ -336,9 +373,6 @@ impl MapViewerWindowView {
     pub(super) fn set_bottom_tab(&mut self, tab: MapViewerBottomTab, cx: &mut Context<Self>) {
         self.ui_state.active_bottom_tab = tab;
         self.ui_state.bottom_panel_open = true;
-        if tab == MapViewerBottomTab::Players && self.players.players.is_empty() {
-            self.refresh_players(cx);
-        }
         if tab == MapViewerBottomTab::History {
             self.refresh_history(cx);
         }
@@ -364,6 +398,7 @@ impl MapViewerWindowView {
         }
         match panel {
             MapViewerRightPanel::Nbt => self.open_right_nbt_panel(cx),
+            MapViewerRightPanel::Player => self.open_right_player_panel(cx),
             MapViewerRightPanel::Preview3d => self.open_right_preview_3d_panel(cx),
         }
     }

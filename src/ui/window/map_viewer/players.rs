@@ -13,6 +13,104 @@ const PLAYER_MAIN_INVENTORY_SIZE: i32 = 36;
 const PLAYER_ITEM_CATALOG_LIMIT: usize = 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PlayerRecordHealth {
+    Complete,
+    Partial,
+    Stub,
+    Invalid,
+}
+
+impl PlayerRecordHealth {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "完整",
+            Self::Partial => "部分",
+            Self::Stub => "残留",
+            Self::Invalid => "无效",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PlayerRecordQuality {
+    pub(super) health: PlayerRecordHealth,
+    pub(super) score: i16,
+    pub(super) trusted_server: bool,
+    pub(super) has_unique_id: bool,
+    pub(super) has_position: bool,
+    pub(super) has_dimension: bool,
+    pub(super) has_inventory: bool,
+    pub(super) item_count: usize,
+    pub(super) ender_item_count: usize,
+}
+
+impl PlayerRecordQuality {
+    fn invalid() -> Self {
+        Self {
+            health: PlayerRecordHealth::Invalid,
+            score: i16::MIN,
+            trusted_server: false,
+            has_unique_id: false,
+            has_position: false,
+            has_dimension: false,
+            has_inventory: false,
+            item_count: 0,
+            ender_item_count: 0,
+        }
+    }
+
+    fn sort_bucket(&self, id: &PlayerId) -> u8 {
+        if self.health == PlayerRecordHealth::Invalid {
+            return 7;
+        }
+        if matches!(id, PlayerId::Local) {
+            return 0;
+        }
+        if self.trusted_server {
+            return 1;
+        }
+        match self.health {
+            PlayerRecordHealth::Complete => 2,
+            PlayerRecordHealth::Partial if is_server_like_player_id(id) => 3,
+            PlayerRecordHealth::Partial => 4,
+            PlayerRecordHealth::Stub if is_server_like_player_id(id) => 5,
+            PlayerRecordHealth::Stub => 6,
+            PlayerRecordHealth::Invalid => 7,
+        }
+    }
+
+    fn marker_candidate(&self, id: &PlayerId) -> bool {
+        self.has_position
+            && self.has_dimension
+            && (matches!(id, PlayerId::Local)
+                || self.trusted_server
+                || self.health == PlayerRecordHealth::Complete)
+    }
+
+    pub(super) fn search_text(&self) -> String {
+        format!(
+            "{} score:{} uid:{} pos:{} dim:{} inventory:{} items:{} ender:{}",
+            self.health.label(),
+            self.score,
+            self.has_unique_id,
+            self.has_position,
+            self.has_dimension,
+            self.has_inventory,
+            self.item_count,
+            self.ender_item_count
+        )
+        .to_ascii_lowercase()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PlayerProbe {
+    position: Option<[f64; 3]>,
+    dimension_id: Option<i32>,
+    quality: PlayerRecordQuality,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PlayerInventoryKind {
     Inventory,
     Armor,
@@ -195,50 +293,69 @@ impl MapViewerWindowView {
                             .map_err(|error| error.to_string())
                             .and_then(|data| {
                                 let data = data.ok_or_else(|| "玩家记录不存在".to_string())?;
-                                player_probe(&data)
+                                player_probe(&id, &data)
                             });
 
                         match probe {
-                            Ok((position, dimension_id)) => {
+                            Ok(probe) => {
                                 let label = SharedString::from(player_friendly_label(&id, true));
-                                let rank = player_sort_rank(&id, true);
-                                if let (Some(position), Some(dimension_id)) =
-                                    (position, dimension_id)
-                                {
-                                    if position[0].is_finite() && position[2].is_finite() {
-                                        marker_records.push(PlayerRefreshMarker {
-                                            label: label.clone(),
-                                            dimension: Dimension::from_id(dimension_id),
-                                            x: position[0]
-                                                .floor()
-                                                .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
-                                                as i32,
-                                            z: position[2]
-                                                .floor()
-                                                .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
-                                                as i32,
-                                        });
+                                let bucket = probe.quality.sort_bucket(&id);
+                                let score = probe.quality.score;
+                                if probe.quality.marker_candidate(&id) {
+                                    if let (Some(position), Some(dimension_id)) =
+                                        (probe.position, probe.dimension_id)
+                                    {
+                                        if position[0].is_finite() && position[2].is_finite() {
+                                            marker_records.push(PlayerRefreshMarker {
+                                                label: label.clone(),
+                                                dimension: Dimension::from_id(dimension_id),
+                                                x: position[0]
+                                                    .floor()
+                                                    .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
+                                                    as i32,
+                                                z: position[2]
+                                                    .floor()
+                                                    .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
+                                                    as i32,
+                                            });
+                                        }
                                     }
                                 }
-                                rows.push((rank, raw_label, PlayerSummary { id, label }));
+                                rows.push((
+                                    bucket,
+                                    -score,
+                                    raw_label,
+                                    PlayerSummary {
+                                        id,
+                                        label,
+                                        quality: probe.quality,
+                                    },
+                                ));
                             }
                             Err(_) => {
+                                let quality = PlayerRecordQuality::invalid();
                                 rows.push((
-                                    player_sort_rank(&id, false),
+                                    quality.sort_bucket(&id),
+                                    -quality.score,
                                     raw_label.clone(),
                                     PlayerSummary {
                                         id,
                                         label: SharedString::from(format!(
                                             "无效记录 · {raw_label}"
                                         )),
+                                        quality,
                                     },
                                 ));
                             }
                         }
                     }
 
-                    rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-                    let players = rows.into_iter().map(|(_, _, player)| player).collect();
+                    rows.sort_by(|a, b| {
+                        a.0.cmp(&b.0)
+                            .then_with(|| a.1.cmp(&b.1))
+                            .then_with(|| a.2.cmp(&b.2))
+                    });
+                    let players = rows.into_iter().map(|(_, _, _, player)| player).collect();
                     let mut markers: BTreeMap<Dimension, Vec<Marker>> = BTreeMap::new();
                     for marker in marker_records {
                         markers.entry(marker.dimension).or_default().push(Marker {
@@ -317,8 +434,8 @@ impl MapViewerWindowView {
             move |this, _canvas, action: &MapCanvasAction, cx| match *action {
                 MapCanvasAction::BeginDrag(position) => {
                     click_start = Some(position);
-                    players_were_active = this.ui_state.bottom_panel_open
-                        && this.ui_state.active_bottom_tab == MapViewerBottomTab::Players;
+                    players_were_active = this.ui_state.left_panel_open
+                        && this.ui_state.active_left_panel == MapViewerLeftPanel::Players;
                 }
                 MapCanvasAction::EndDrag(position) => {
                     let Some(start) = click_start.take() else {
@@ -336,8 +453,12 @@ impl MapViewerWindowView {
                         return;
                     };
 
-                    this.ui_state.active_bottom_tab = MapViewerBottomTab::Players;
-                    this.ui_state.bottom_panel_open = true;
+                    this.ui_state.active_left_panel = MapViewerLeftPanel::Players;
+                    this.ui_state.left_panel_open = true;
+                    this.player_workspace.center = PlayerWorkspaceCenter::Map;
+                    this.ui_state.active_right_panel = MapViewerRightPanel::Player;
+                    this.ui_state.set_right_panel_open(true);
+                    this.update_viewport_after_dock_change(cx);
                     this.load_player_detail(id, cx);
                 }
                 _ => {}
@@ -829,7 +950,7 @@ impl MapViewerWindowView {
     }
 }
 
-fn capture_player_history(
+pub(super) fn capture_player_history(
     world_path: &Path,
     id: &PlayerId,
     label: impl Into<String>,
@@ -852,14 +973,16 @@ fn capture_player_history(
     .map_err(|error| error.to_string())
 }
 
-fn player_sort_rank(id: &PlayerId, valid: bool) -> u8 {
-    if !valid {
-        return 3;
-    }
+fn is_server_like_player_id(id: &PlayerId) -> bool {
     match id {
-        PlayerId::Local => 0,
-        PlayerId::Xuid(_) => 1,
-        PlayerId::LegacyLevelDat | PlayerId::Unknown(_) => 2,
+        PlayerId::Xuid(_) => true,
+        PlayerId::Unknown(value) => {
+            let value = value.to_ascii_lowercase();
+            value.starts_with("player_")
+                || value.starts_with("server_")
+                || value.contains("_server_")
+        }
+        PlayerId::Local | PlayerId::LegacyLevelDat => false,
     }
 }
 
@@ -872,6 +995,7 @@ pub(super) fn player_friendly_label(id: &PlayerId, valid: bool) -> String {
         PlayerId::Local => "本地玩家 · ~local_player".to_string(),
         PlayerId::Xuid(xuid) => format!("服务器玩家 · {xuid}"),
         PlayerId::LegacyLevelDat => "旧版玩家 · level.dat".to_string(),
+        PlayerId::Unknown(_) if is_server_like_player_id(id) => format!("服务器记录 · {raw}"),
         PlayerId::Unknown(_) => format!("其他玩家 · {raw}"),
     }
 }
@@ -885,15 +1009,68 @@ pub(super) fn player_id_label(id: &PlayerId) -> String {
     }
 }
 
-fn player_probe(data: &PlayerData) -> Result<(Option<[f64; 3]>, Option<i32>), String> {
+fn player_probe(id: &PlayerId, data: &PlayerData) -> Result<PlayerProbe, String> {
     let root = match &data.nbt {
         NbtTag::Compound(root) => root,
         _ => return Err("玩家 NBT 根节点不是 Compound".to_string()),
     };
-    Ok((
-        nbt_vec3_f64(root.get("Pos")),
-        nbt_i32_any(root.get("DimensionId")),
-    ))
+    let position = nbt_vec3_f64(root.get("Pos"));
+    let position = position.filter(|value| value.iter().all(|value| value.is_finite()));
+    let dimension_id = nbt_i32_any(root.get("DimensionId"));
+    let has_unique_id = nbt_i64(root.get("UniqueID")).is_some();
+    let has_position = position.is_some();
+    let has_dimension = dimension_id.is_some();
+    let has_inventory = matches!(root.get("Inventory"), Some(NbtTag::List(_)));
+    let entries = player_inventory_entries(&data.nbt);
+    let item_count = entries.len();
+    let ender_item_count = entries
+        .iter()
+        .filter(|entry| entry.kind == PlayerInventoryKind::EnderChest)
+        .count();
+    let container_count = ["Inventory", "Armor", "Offhand", "EnderChestInventory"]
+        .into_iter()
+        .filter(|key| matches!(root.get(*key), Some(NbtTag::List(_))))
+        .count() as i16;
+    let server_like = is_server_like_player_id(id);
+    let trusted_server =
+        server_like && has_unique_id && has_position && has_dimension && has_inventory;
+    let completeness = i16::from(has_unique_id)
+        + i16::from(has_position)
+        + i16::from(has_dimension)
+        + i16::from(has_inventory);
+    let health =
+        if (matches!(id, PlayerId::Local) && has_position && has_dimension && has_inventory)
+            || trusted_server
+            || (has_unique_id && has_position && has_dimension && has_inventory)
+        {
+            PlayerRecordHealth::Complete
+        } else if completeness >= 2 || (has_inventory && item_count > 0) {
+            PlayerRecordHealth::Partial
+        } else {
+            PlayerRecordHealth::Stub
+        };
+    let score = (if has_unique_id { 30 } else { 0 })
+        + (if has_position { 25 } else { 0 })
+        + (if has_dimension { 15 } else { 0 })
+        + (if has_inventory { 25 } else { 0 })
+        + container_count * 2
+        + i16::try_from(item_count.min(10)).unwrap_or(10)
+        + if ender_item_count > 0 { 5 } else { 0 };
+    Ok(PlayerProbe {
+        position,
+        dimension_id,
+        quality: PlayerRecordQuality {
+            health,
+            score,
+            trusted_server,
+            has_unique_id,
+            has_position,
+            has_dimension,
+            has_inventory,
+            item_count,
+            ender_item_count,
+        },
+    })
 }
 
 pub(super) fn player_detail_from_data(data: PlayerData) -> Result<PlayerDetail, String> {

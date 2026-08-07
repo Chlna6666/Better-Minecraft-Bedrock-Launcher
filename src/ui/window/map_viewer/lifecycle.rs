@@ -343,6 +343,7 @@ impl MapViewerWindowView {
             editor.set_language(CodeEditorLanguage::JsonNbt, cx);
             editor
         });
+        let player_workspace = PlayerWorkspaceState::new(window, cx);
         let mut subscriptions = vec![cx.observe_window_bounds(window, |this, window, cx| {
             if this.update_viewport_size(window) {
                 this.invalidate_professional_overlay_for_viewport_change();
@@ -353,6 +354,7 @@ impl MapViewerWindowView {
             }
         })];
         subscriptions.extend(map_input_subscriptions(&input_fields, cx));
+        subscriptions.extend(player_workspace_subscriptions(&player_workspace, cx));
         let top_bar_view = cx.new(|_cx| MapTopBarView::default());
         let tool_stripe_view = cx.new(|_cx| MapToolStripeView::default());
         let menu_overlay_view = cx.new(|_cx| MapMenuOverlayView::default());
@@ -416,6 +418,7 @@ impl MapViewerWindowView {
             professional: ProfessionalQueryState::default(),
             history: MapHistoryState::default(),
             players: PlayerPanelState::default(),
+            player_workspace,
             preview_3d: Preview3dState::default(),
             map_focus_handle,
             preview_3d_focus_handle: cx.focus_handle().tab_stop(true),

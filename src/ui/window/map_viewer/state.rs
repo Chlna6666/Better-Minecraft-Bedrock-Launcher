@@ -6,17 +6,23 @@ use bedrock_render::{ChunkPos, Dimension};
 use gpui::SharedString;
 use std::sync::Arc;
 
-pub const RIGHT_PANEL_DEFAULT_WIDTH: f32 = 420.0;
-pub const RIGHT_PANEL_MIN_WIDTH: f32 = 300.0;
+pub const RIGHT_PANEL_DEFAULT_WIDTH: f32 = 460.0;
+pub const RIGHT_PANEL_MIN_WIDTH: f32 = 340.0;
 pub const BOTTOM_PANEL_DEFAULT_HEIGHT: f32 = 260.0;
 pub const BOTTOM_PANEL_MIN_HEIGHT: f32 = 170.0;
 pub const MIN_CENTER_WIDTH: f32 = 360.0;
 pub const MIN_CENTER_HEIGHT: f32 = 240.0;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MapViewerLeftPanel {
+    #[default]
+    Tools,
+    Players,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MapViewerBottomTab {
     ChunkTree,
-    Players,
     Details,
     Diagnostics,
     History,
@@ -26,6 +32,7 @@ pub enum MapViewerBottomTab {
 pub enum MapViewerRightPanel {
     #[default]
     Nbt,
+    Player,
     Preview3d,
 }
 
@@ -50,6 +57,7 @@ pub struct MapViewerUiState {
     pub bottom_panel_open: bool,
     pub right_panel_width: f32,
     pub bottom_panel_height: f32,
+    pub active_left_panel: MapViewerLeftPanel,
     pub active_bottom_tab: MapViewerBottomTab,
     pub active_right_panel: MapViewerRightPanel,
     pub top_more_open: bool,
@@ -66,6 +74,7 @@ impl Default for MapViewerUiState {
             bottom_panel_open: false,
             right_panel_width: RIGHT_PANEL_DEFAULT_WIDTH,
             bottom_panel_height: BOTTOM_PANEL_DEFAULT_HEIGHT,
+            active_left_panel: MapViewerLeftPanel::Tools,
             active_bottom_tab: MapViewerBottomTab::ChunkTree,
             active_right_panel: MapViewerRightPanel::Nbt,
             top_more_open: false,

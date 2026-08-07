@@ -25,9 +25,6 @@ impl MapViewerWindowView {
                 MapViewerBottomTab::Details => self
                     .render_bottom_details_panel(colors, cx)
                     .into_any_element(),
-                MapViewerBottomTab::Players => {
-                    self.render_players_panel(colors, cx).into_any_element()
-                }
                 MapViewerBottomTab::Diagnostics => {
                     self.render_diagnostics_panel(colors).into_any_element()
                 }
@@ -40,7 +37,7 @@ impl MapViewerWindowView {
     /// Bottom dock header: iconified tab strip + collapse button.
     fn render_bottom_dock_header(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let active = self.ui_state.active_bottom_tab;
-        let tabs: [(&'static str, &'static str, MapViewerBottomTab); 5] = [
+        let tabs: [(&'static str, &'static str, MapViewerBottomTab); 4] = [
             (
                 lucide_icons::icon_layers(),
                 "区块树",
@@ -50,11 +47,6 @@ impl MapViewerWindowView {
                 lucide_icons::icon_info(),
                 "详情",
                 MapViewerBottomTab::Details,
-            ),
-            (
-                lucide_icons::icon_users(),
-                "玩家",
-                MapViewerBottomTab::Players,
             ),
             (
                 lucide_icons::icon_activity(),

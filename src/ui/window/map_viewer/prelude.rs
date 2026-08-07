@@ -28,6 +28,10 @@ pub(super) use super::map_history::{
 };
 pub(super) use super::menu_overlay::{MapMenuOverlaySnapshot, MapMenuOverlayView};
 pub(super) use super::model::ChunkTransferProgress;
+pub(super) use super::player_workspace::{
+    PlayerInspectorMode, PlayerItemSelection, PlayerWorkspaceCenter, PlayerWorkspaceState,
+    player_workspace_subscriptions,
+};
 pub(super) use super::preview_3d::{
     Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState, Preview3dMesh,
     Preview3dModelRotation, Preview3dSelectionSignature, Preview3dSource, Preview3dState,
@@ -46,8 +50,8 @@ pub(super) use super::selection::{
 };
 pub(super) use super::state::{
     BOTTOM_PANEL_MIN_HEIGHT, DbTreeNode, DbTreeNodeKind, DbTreeState, DockDrag, DockDragState,
-    EditorDocument, MIN_CENTER_HEIGHT, MIN_CENTER_WIDTH, MapViewerBottomTab, MapViewerRightPanel,
-    MapViewerUiState, chunk_tree_nodes_for_tile, clamp_bottom_panel_height,
+    EditorDocument, MIN_CENTER_HEIGHT, MIN_CENTER_WIDTH, MapViewerBottomTab, MapViewerLeftPanel,
+    MapViewerRightPanel, MapViewerUiState, chunk_tree_nodes_for_tile, clamp_bottom_panel_height,
     clamp_right_panel_width,
 };
 pub(super) use super::tool_stripe::{MapToolStripeSnapshot, MapToolStripeView};

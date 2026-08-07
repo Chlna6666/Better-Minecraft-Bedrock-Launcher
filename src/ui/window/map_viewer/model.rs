@@ -1,6 +1,7 @@
 use super::editor::*;
 use super::helpers::*;
 use super::panels::*;
+use super::player_workspace::*;
 use super::players::*;
 use super::prelude::*;
 pub(super) use super::query_cache::{MAP_QUERY_CONCURRENCY, MapQueryBudget};
@@ -1113,6 +1114,7 @@ pub(super) struct ProfessionalQueryState {
 pub(super) struct PlayerSummary {
     pub(super) id: PlayerId,
     pub(super) label: SharedString,
+    pub(super) quality: PlayerRecordQuality,
 }
 
 #[derive(Clone, Debug)]
@@ -1582,6 +1584,7 @@ pub struct MapViewerWindowView {
     pub(super) professional: ProfessionalQueryState,
     pub(super) history: MapHistoryState,
     pub(super) players: PlayerPanelState,
+    pub(super) player_workspace: PlayerWorkspaceState,
     pub(super) preview_3d: Preview3dState,
     pub(super) map_focus_handle: FocusHandle,
     pub(super) preview_3d_focus_handle: FocusHandle,

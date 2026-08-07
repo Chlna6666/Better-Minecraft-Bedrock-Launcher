@@ -1,5 +1,5 @@
 use super::model::ViewerMode;
-use super::state::{MapViewerBottomTab, MapViewerRightPanel};
+use super::state::{MapViewerBottomTab, MapViewerLeftPanel, MapViewerRightPanel};
 use gpui::{App, KeyBinding, Pixels, Point, actions};
 
 actions!(
@@ -49,6 +49,7 @@ pub enum MapViewerAction {
     ImportStructureFile,
     ToggleTopMore,
     ToggleLeftPanel,
+    ToggleLeftPanelKind(MapViewerLeftPanel),
     ToggleBottomTab(MapViewerBottomTab),
     ToggleRightPanel(MapViewerRightPanel),
     BeginRightSelectionAt(Point<Pixels>),

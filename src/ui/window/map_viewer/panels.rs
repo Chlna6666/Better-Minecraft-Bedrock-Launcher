@@ -24,6 +24,7 @@ impl MapViewerWindowView {
             left_panel_open: self.ui_state.left_panel_open,
             right_panel_open: self.ui_state.right_panel_open,
             bottom_panel_open: self.ui_state.bottom_panel_open,
+            active_left_panel: self.ui_state.active_left_panel,
             active_bottom_tab: self.ui_state.active_bottom_tab,
             active_right_panel: self.ui_state.active_right_panel,
         }
@@ -127,7 +128,16 @@ impl MapViewerWindowView {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(self.canvas_view.clone()),
+                    .child(
+                        if self.player_workspace_active()
+                            && self.player_workspace.center != PlayerWorkspaceCenter::Map
+                        {
+                            self.render_player_center_workspace(colors, cx)
+                                .into_any_element()
+                        } else {
+                            self.canvas_view.clone().into_any_element()
+                        },
+                    ),
             )
             .when(self.ui_state.right_panel_open, |this| {
                 this.child(
@@ -143,6 +153,19 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn render_left_dock(
+        &self,
+        colors: &ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match self.ui_state.active_left_panel {
+            MapViewerLeftPanel::Tools => self.render_tools_left_dock(colors, cx).into_any_element(),
+            MapViewerLeftPanel::Players => {
+                self.render_player_left_dock(colors, cx).into_any_element()
+            }
+        }
+    }
+
+    fn render_tools_left_dock(
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,

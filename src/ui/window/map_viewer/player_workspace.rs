@@ -57,10 +57,7 @@ pub(super) struct PlayerWorkspaceState {
 }
 
 impl PlayerWorkspaceState {
-    pub(super) fn new(
-        window: &mut Window,
-        cx: &mut Context<MapViewerWindowView>,
-    ) -> Self {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
         let search = workspace_input(window, cx, "搜索玩家 / UID / XUID...");
         let item_id = workspace_input(window, cx, "minecraft:diamond_sword");
         let count = workspace_input(window, cx, "1");
@@ -126,12 +123,14 @@ pub(super) fn player_workspace_subscriptions(
         state.enchant_id.clone(),
         state.enchant_level.clone(),
     ] {
-        subscriptions.push(cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.player_workspace.item_editor_error = None;
-                cx.notify();
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.player_workspace.item_editor_error = None;
+                    cx.notify();
+                }
+            }),
+        );
     }
     subscriptions.push(cx.subscribe(
         &state.item_editor_state,
@@ -302,7 +301,7 @@ impl MapViewerWindowView {
         let quality_label = player.quality.health.label();
         let quality_color = match player.quality.health {
             PlayerRecordHealth::Complete => colors.accent,
-            PlayerRecordHealth::Partial => colors.warning,
+            PlayerRecordHealth::Partial => colors.stat_orange_text,
             PlayerRecordHealth::Stub | PlayerRecordHealth::Invalid => colors.danger,
         };
         div()
@@ -549,12 +548,13 @@ impl MapViewerWindowView {
                 }),
             )
             .child(div().flex_1())
-            .child(status_badge(colors, format!("{} 个物品", detail.item_count)))
+            .child(status_badge(
+                colors,
+                format!("{} 个物品", detail.item_count),
+            ))
             .child(toolbar_button(colors, "玩家 NBT").on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| {
-                    this.open_selected_player_in_editor(cx)
-                }),
+                cx.listener(|this, _event, _window, cx| this.open_selected_player_in_editor(cx)),
             ))
     }
 
@@ -581,7 +581,11 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(15.0))
-            .child(inventory_section_title(colors, "玩家背包", "3 × 9 主背包 + 9 格快捷栏"))
+            .child(inventory_section_title(
+                colors,
+                "玩家背包",
+                "3 × 9 主背包 + 9 格快捷栏",
+            ))
             .child(
                 div()
                     .flex()
@@ -606,15 +610,13 @@ impl MapViewerWindowView {
                         a: 0.18,
                         ..colors.border
                     })
-                    .child(
-                        self.render_slot_row(
-                            colors,
-                            PlayerInventoryKind::Inventory,
-                            0..9,
-                            entries,
-                            cx,
-                        ),
-                    ),
+                    .child(self.render_slot_row(
+                        colors,
+                        PlayerInventoryKind::Inventory,
+                        0..9,
+                        entries,
+                        cx,
+                    )),
             )
             .child(self.render_workspace_quick_catalog(colors, cx))
     }
@@ -763,12 +765,14 @@ impl MapViewerWindowView {
             entry.kind == kind && entry.slot.unwrap_or(entry.list_index as i32) == slot
         });
         let list_index = entry.map(|entry| entry.list_index);
-        let selected = self.player_workspace.selected_item.is_some_and(|selected| {
-            selected.kind == kind && selected.slot == slot
-        });
+        let selected = self
+            .player_workspace
+            .selected_item
+            .is_some_and(|selected| selected.kind == kind && selected.slot == slot);
         let texture = entry.and_then(|entry| self.player_item_texture(entry.item.name.as_deref()));
         let count = entry.and_then(|entry| entry.item.count).unwrap_or(0);
-        let enchanted = entry.is_some_and(|entry| !player_item_enchantments(&entry.item.nbt).is_empty());
+        let enchanted =
+            entry.is_some_and(|entry| !player_item_enchantments(&entry.item.nbt).is_empty());
         let has_custom_name = entry
             .and_then(|entry| player_item_custom_name(&entry.item.nbt))
             .is_some_and(|name| !name.trim().is_empty());
@@ -855,7 +859,7 @@ impl MapViewerWindowView {
                         .w(px(6.0))
                         .h(px(6.0))
                         .rounded_full()
-                        .bg(colors.warning),
+                        .bg(colors.stat_orange_text),
                 )
             })
             .on_mouse_down(
@@ -874,11 +878,7 @@ impl MapViewerWindowView {
             )
     }
 
-    fn render_workspace_quick_catalog(
-        &self,
-        colors: &ThemeColors,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn render_workspace_quick_catalog(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let catalog = self.player_quick_item_catalog();
         div()
             .pt(px(10.0))
@@ -909,40 +909,36 @@ impl MapViewerWindowView {
                             .child("先选中一个槽位，再点击物品替换/添加"),
                     ),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(4.0))
-                    .children(catalog.into_iter().take(20).map(|entry| {
-                        let id = entry.id.to_string();
-                        div()
-                            .w(px(42.0))
-                            .h(px(42.0))
-                            .rounded(px(3.0))
-                            .border_1()
-                            .border_color(Hsla {
-                                a: 0.28,
-                                ..colors.border
-                            })
-                            .bg(Hsla {
-                                a: 0.58,
-                                ..colors.surface_hover
-                            })
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(img(entry.path).w(px(32.0)).h(px(32.0)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.replace_selected_player_item_with_id(&id, cx)
-                                }),
-                            )
-                            .into_any_element()
-                    })),
-            )
+            .child(div().flex().flex_wrap().gap(px(4.0)).children(
+                catalog.into_iter().take(20).map(|entry| {
+                    let id = entry.id.to_string();
+                    div()
+                        .w(px(42.0))
+                        .h(px(42.0))
+                        .rounded(px(3.0))
+                        .border_1()
+                        .border_color(Hsla {
+                            a: 0.28,
+                            ..colors.border
+                        })
+                        .bg(Hsla {
+                            a: 0.58,
+                            ..colors.surface_hover
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(img(entry.path).w(px(32.0)).h(px(32.0)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.replace_selected_player_item_with_id(&id, cx)
+                            }),
+                        )
+                        .into_any_element()
+                }),
+            ))
     }
 
     pub(super) fn select_player_workspace_item(
@@ -1130,17 +1126,13 @@ impl MapViewerWindowView {
                         cx.listener(|this, _event, _window, cx| this.close_right_panel(cx)),
                     )),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_hidden()
-                    .child(if self.player_workspace.selected_item.is_some() {
-                        self.render_selected_player_item_inspector(colors, cx)
-                    } else {
-                        self.render_player_overview_inspector(colors, detail, cx)
-                    }),
-            )
+            .child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(
+                if self.player_workspace.selected_item.is_some() {
+                    self.render_selected_player_item_inspector(colors, cx)
+                } else {
+                    self.render_player_overview_inspector(colors, detail, cx)
+                },
+            ))
             .into_any_element()
     }
 
@@ -1252,7 +1244,11 @@ impl MapViewerWindowView {
                                 div()
                                     .text_size(px(10.0))
                                     .text_color(colors.text_muted)
-                                    .child(format!("{} · 槽位 {}", selection.kind.label(), selection.slot)),
+                                    .child(format!(
+                                        "{} · 槽位 {}",
+                                        selection.kind.label(),
+                                        selection.slot
+                                    )),
                             ),
                     )
                     .when(unknown > 0, |this| {
@@ -1268,29 +1264,30 @@ impl MapViewerWindowView {
                     .items_center()
                     .gap(px(6.0))
                     .child(
+                        workspace_tab_button(colors, "可视化", mode == PlayerInspectorMode::Visual)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.player_workspace.inspector_mode =
+                                        PlayerInspectorMode::Visual;
+                                    cx.notify();
+                                }),
+                            ),
+                    )
+                    .child(
                         workspace_tab_button(
                             colors,
-                            "可视化",
-                            mode == PlayerInspectorMode::Visual,
+                            "原始 NBT",
+                            mode == PlayerInspectorMode::RawNbt,
                         )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
-                                this.player_workspace.inspector_mode = PlayerInspectorMode::Visual;
+                                this.player_workspace.inspector_mode = PlayerInspectorMode::RawNbt;
+                                this.sync_player_item_raw_editor(cx);
                                 cx.notify();
                             }),
                         ),
-                    )
-                    .child(
-                        workspace_tab_button(colors, "原始 NBT", mode == PlayerInspectorMode::RawNbt)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.player_workspace.inspector_mode = PlayerInspectorMode::RawNbt;
-                                    this.sync_player_item_raw_editor(cx);
-                                    cx.notify();
-                                }),
-                            ),
                     )
                     .child(div().flex_1())
                     .child(danger_button(colors, "清空槽位").on_mouse_down(
@@ -1511,28 +1508,27 @@ impl MapViewerWindowView {
                     )),
             )
             .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_hidden()
-                    .child(
-                        CodeEditor::new(&self.player_workspace.item_editor_state, colors)
-                            .size_full()
-                            .min_w(px(0.0))
-                            .min_h(px(0.0)),
-                    ),
+                div().flex_1().min_h(px(0.0)).overflow_hidden().child(
+                    CodeEditor::new(&self.player_workspace.item_editor_state, colors)
+                        .size_full()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0)),
+                ),
             )
-            .when_some(self.player_workspace.item_editor_error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .flex_none()
-                        .px(px(10.0))
-                        .py(px(6.0))
-                        .text_size(px(10.0))
-                        .text_color(colors.danger)
-                        .child(error),
-                )
-            })
+            .when_some(
+                self.player_workspace.item_editor_error.clone(),
+                |this, error| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .text_size(px(10.0))
+                            .text_color(colors.danger)
+                            .child(error),
+                    )
+                },
+            )
             .into_any_element()
     }
 
@@ -1540,10 +1536,17 @@ impl MapViewerWindowView {
         let Some(selection) = self.player_workspace.selected_item else {
             return;
         };
-        let id = self.player_workspace.item_id.read(cx).value().trim().to_string();
+        let id = self
+            .player_workspace
+            .item_id
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         if id.is_empty() {
-            self.player_workspace.item_editor_error =
-                Some(SharedString::from("物品 ID 不能为空；清空槽位请使用“清空槽位”。"));
+            self.player_workspace.item_editor_error = Some(SharedString::from(
+                "物品 ID 不能为空；清空槽位请使用“清空槽位”。",
+            ));
             cx.notify();
             return;
         }
@@ -1625,9 +1628,8 @@ impl MapViewerWindowView {
                 return;
             }
             Err(error) => {
-                self.player_workspace.item_editor_error = Some(SharedString::from(format!(
-                    "NBT JSON 解析失败: {error}"
-                )));
+                self.player_workspace.item_editor_error =
+                    Some(SharedString::from(format!("NBT JSON 解析失败: {error}")));
                 cx.notify();
                 return;
             }
@@ -1647,9 +1649,7 @@ impl MapViewerWindowView {
             .read(cx)
             .value()
             .to_string();
-        match serde_json::from_str::<NbtTag>(&text)
-            .and_then(|tag| serde_json::to_value(tag).map_err(serde_json::Error::io))
-        {
+        match serde_json::from_str::<NbtTag>(&text).and_then(serde_json::to_value) {
             Ok(value) => {
                 let formatted = pretty_json(value);
                 self.player_workspace
@@ -1659,9 +1659,8 @@ impl MapViewerWindowView {
                 self.player_workspace.item_editor_error = None;
             }
             Err(error) => {
-                self.player_workspace.item_editor_error = Some(SharedString::from(format!(
-                    "NBT JSON 格式化失败: {error}"
-                )));
+                self.player_workspace.item_editor_error =
+                    Some(SharedString::from(format!("NBT JSON 格式化失败: {error}")));
             }
         }
         cx.notify();
@@ -1693,7 +1692,11 @@ impl MapViewerWindowView {
         self.write_player_workspace_slot(selection, Some(tag), "玩家物品：剪贴板导入", cx);
     }
 
-    pub(super) fn replace_selected_player_item_with_id(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(super) fn replace_selected_player_item_with_id(
+        &mut self,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(selection) = self.player_workspace.selected_item else {
             self.status = SharedString::from("请先点击一个空槽位或已有物品槽位");
             cx.notify();
@@ -1798,11 +1801,7 @@ impl MapViewerWindowView {
                         .get_player_blocking(&id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
-                    replace_player_slot(
-                        &mut data.nbt,
-                        selection,
-                        replacement,
-                    )?;
+                    replace_player_slot(&mut data.nbt, selection, replacement)?;
                     data = PlayerData::from_nbt(id.clone(), data.nbt)
                         .map_err(|error| error.to_string())?;
                     world
@@ -1829,7 +1828,9 @@ impl MapViewerWindowView {
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
                         this.sync_player_item_raw_editor(cx);
-                        this.status = SharedString::from("玩家物品已写入 · 未识别 NBT 字段已保留 · 可从历史撤销");
+                        this.status = SharedString::from(
+                            "玩家物品已写入 · 未识别 NBT 字段已保留 · 可从历史撤销",
+                        );
                     }
                     Err(error) => {
                         this.player_workspace.item_editor_error =
@@ -1899,11 +1900,7 @@ fn inventory_section_title(colors: &ThemeColors, title: &'static str, detail: &'
         )
 }
 
-fn player_form_field(
-    colors: &ThemeColors,
-    label: &'static str,
-    input: Entity<InputState>,
-) -> Div {
+fn player_form_field(colors: &ThemeColors, label: &'static str, input: Entity<InputState>) -> Div {
     div()
         .flex()
         .flex_col()
@@ -1976,7 +1973,9 @@ fn nbt_compound_ref(tag: &NbtTag) -> Option<&indexmap::IndexMap<String, NbtTag>>
     }
 }
 
-fn nbt_compound_mut_ref(tag: &mut NbtTag) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
+fn nbt_compound_mut_ref(
+    tag: &mut NbtTag,
+) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
     match tag {
         NbtTag::Compound(compound) => Ok(compound),
         _ => Err("物品 NBT 根节点必须是 Compound".to_string()),
@@ -2155,8 +2154,7 @@ fn replace_player_slot(
         .filter(|index| *index < list.len())
         .or_else(|| {
             list.iter().position(|item| {
-                nbt_compound_ref(item)
-                    .and_then(|compound| nbt_number_i32(compound.get("Slot")))
+                nbt_compound_ref(item).and_then(|compound| nbt_number_i32(compound.get("Slot")))
                     == Some(selection.slot)
             })
         });
@@ -2198,8 +2196,7 @@ fn upsert_workspace_enchant(item: &mut NbtTag, id: i16, level: i16) -> Result<()
         unreachable!();
     };
     if let Some(existing) = ench.iter_mut().find(|entry| {
-        nbt_compound_ref(entry)
-            .and_then(|compound| nbt_number_i32(compound.get("id")))
+        nbt_compound_ref(entry).and_then(|compound| nbt_number_i32(compound.get("id")))
             == Some(i32::from(id))
     }) {
         let compound = nbt_compound_mut_ref(existing)?;
@@ -2217,7 +2214,15 @@ fn unknown_item_field_count(item: &NbtTag) -> usize {
     let Some(compound) = nbt_compound_ref(item) else {
         return 0;
     };
-    let known_root = ["Name", "Count", "Damage", "Slot", "WasPickedUp", "tag", "Block"];
+    let known_root = [
+        "Name",
+        "Count",
+        "Damage",
+        "Slot",
+        "WasPickedUp",
+        "tag",
+        "Block",
+    ];
     let mut count = compound
         .keys()
         .filter(|key| !known_root.contains(&key.as_str()))
@@ -2255,8 +2260,10 @@ fn parse_workspace_item_import(text: &str, slot: i32) -> Result<NbtTag, String> 
             return simplified_json_item(object, slot);
         }
     }
-    let id = find_item_id_in_text(text)
-        .ok_or_else(|| "无法识别剪贴板内容。支持完整 NbtTag JSON、简化物品 JSON、/give 或 namespace:item_id".to_string())?;
+    let id = find_item_id_in_text(text).ok_or_else(|| {
+        "无法识别剪贴板内容。支持完整 NbtTag JSON、简化物品 JSON、/give 或 namespace:item_id"
+            .to_string()
+    })?;
     Ok(simple_workspace_item(&id, slot))
 }
 
@@ -2295,8 +2302,7 @@ fn simplified_json_item(
             .map(|value| NbtTag::String(value.to_string()))
             .collect::<Vec<_>>();
         if !lines.is_empty() {
-            ensure_nested_compound(tag, "display")
-                .insert("Lore".to_string(), NbtTag::List(lines));
+            ensure_nested_compound(tag, "display").insert("Lore".to_string(), NbtTag::List(lines));
         }
     }
     if let Some(values) = json_string_array(object.get("can_place_on")) {
@@ -2358,7 +2364,10 @@ fn find_item_id_in_text(text: &str) -> Option<String> {
     let mut fallback = None;
     for token in text.split_whitespace() {
         let token = token.trim_matches(|character: char| {
-            matches!(character, '"' | '\'' | '`' | ',' | ';' | '[' | ']' | '{' | '}' | ':')
+            matches!(
+                character,
+                '"' | '\'' | '`' | ',' | ';' | '[' | ']' | '{' | '}' | ':'
+            )
         });
         if token.starts_with("minecraft:") || token.contains(':') && !token.starts_with('@') {
             return Some(normalize_workspace_item_id(token));

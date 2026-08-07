@@ -467,7 +467,8 @@ fn convert_source_mesh(
         .chunk_meshes
         .first()
         .map_or(1.0, |chunk| chunk.gpu_mesh.fit_scale);
-    let mut groups = FxHashMap::<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>::default();
+    let mut groups =
+        FxHashMap::<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>::default();
     let mut extracted_faces = 0usize;
     for chunk in &source_mesh.chunk_meshes {
         extract_legacy_faces(chunk, &mut groups, &mut extracted_faces);
@@ -580,10 +581,7 @@ fn convert_source_mesh(
     }
 }
 
-fn region_faces_fingerprint(
-    faces: &[RegionFace],
-    build_lods: bool,
-) -> RegionFaceFingerprint {
+fn region_faces_fingerprint(faces: &[RegionFace], build_lods: bool) -> RegionFaceFingerprint {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     let mut push = |value: u32| {
         hash ^= u64::from(value);

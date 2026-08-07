@@ -39,6 +39,7 @@ impl MapViewerWindowView {
             .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation())
             .child(match self.ui_state.active_right_panel {
                 MapViewerRightPanel::Nbt => self.render_nbt_right_panel(colors, cx),
+                MapViewerRightPanel::Player => self.render_player_right_panel(colors, cx),
                 MapViewerRightPanel::Preview3d => {
                     self.render_preview_3d_panel(colors, cx).into_any_element()
                 }
