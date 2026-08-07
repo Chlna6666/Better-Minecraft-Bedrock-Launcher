@@ -1,6 +1,7 @@
 use bedrock_render::{ChunkPos, Dimension};
 use bedrock_world::SlimeChunkBounds;
 use gpui::{Pixels, Point, px};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct ChunkSelection {
@@ -21,15 +22,18 @@ impl ChunkSelection {
 
     pub(super) fn chunk_count(self) -> usize {
         let bounds = self.bounds();
-        let width = i64::from(bounds.max_chunk_x) - i64::from(bounds.min_chunk_x) + 1;
-        let depth = i64::from(bounds.max_chunk_z) - i64::from(bounds.min_chunk_z) + 1;
-        usize::try_from(width.saturating_mul(depth)).unwrap_or(usize::MAX)
+        let width = i64::from(bounds.max_chunk_x)
+            .saturating_sub(i64::from(bounds.min_chunk_x))
+            .saturating_add(1);
+        let height = i64::from(bounds.max_chunk_z)
+            .saturating_sub(i64::from(bounds.min_chunk_z))
+            .saturating_add(1);
+        usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX)
     }
 
     pub(super) fn chunks(self) -> Vec<ChunkPos> {
         let bounds = self.bounds();
-        let capacity = self.chunk_count();
-        let mut chunks = Vec::with_capacity(capacity.min(4096));
+        let mut chunks = Vec::with_capacity(self.chunk_count());
         for z in bounds.min_chunk_z..=bounds.max_chunk_z {
             for x in bounds.min_chunk_x..=bounds.max_chunk_x {
                 chunks.push(ChunkPos {
@@ -41,6 +45,95 @@ impl ChunkSelection {
         }
         chunks
     }
+}
+
+pub(super) fn selection_chunks(
+    selection: Option<ChunkSelection>,
+    exact_chunks: Option<&[ChunkPos]>,
+) -> Vec<ChunkPos> {
+    if let Some(chunks) = exact_chunks {
+        return chunks.to_vec();
+    }
+    selection.map(ChunkSelection::chunks).unwrap_or_default()
+}
+
+pub(super) fn merged_selection_chunks(
+    base_chunks: &[ChunkPos],
+    addition: ChunkSelection,
+) -> Vec<ChunkPos> {
+    let mut chunks = base_chunks.iter().copied().collect::<BTreeSet<_>>();
+    chunks.extend(addition.chunks());
+    chunks.into_iter().collect()
+}
+
+pub(super) fn chunk_selection_from_chunks(chunks: &[ChunkPos]) -> Option<ChunkSelection> {
+    let first = *chunks.first()?;
+    if chunks
+        .iter()
+        .any(|chunk| chunk.dimension != first.dimension)
+    {
+        return None;
+    }
+
+    let mut min_x = first.x;
+    let mut max_x = first.x;
+    let mut min_z = first.z;
+    let mut max_z = first.z;
+    for chunk in chunks.iter().copied().skip(1) {
+        min_x = min_x.min(chunk.x);
+        max_x = max_x.max(chunk.x);
+        min_z = min_z.min(chunk.z);
+        max_z = max_z.max(chunk.z);
+    }
+
+    Some(ChunkSelection {
+        start: ChunkPos {
+            x: min_x,
+            z: min_z,
+            dimension: first.dimension,
+        },
+        end: ChunkPos {
+            x: max_x,
+            z: max_z,
+            dimension: first.dimension,
+        },
+    })
+}
+
+pub(super) fn selection_chunks_are_rectangular(
+    selection: ChunkSelection,
+    exact_chunks: Option<&[ChunkPos]>,
+) -> bool {
+    let Some(chunks) = exact_chunks else {
+        return true;
+    };
+    if chunks.len() != selection.chunk_count() {
+        return false;
+    }
+    let bounds = selection.bounds();
+    chunks.iter().all(|chunk| {
+        chunk.dimension == bounds.dimension
+            && chunk.x >= bounds.min_chunk_x
+            && chunk.x <= bounds.max_chunk_x
+            && chunk.z >= bounds.min_chunk_z
+            && chunk.z <= bounds.max_chunk_z
+    })
+}
+
+pub(super) fn selection_contains_chunk(
+    selection: ChunkSelection,
+    exact_chunks: Option<&[ChunkPos]>,
+    chunk: ChunkPos,
+) -> bool {
+    if let Some(chunks) = exact_chunks {
+        return chunks.binary_search(&chunk).is_ok();
+    }
+    let bounds = selection.bounds();
+    chunk.dimension == bounds.dimension
+        && chunk.x >= bounds.min_chunk_x
+        && chunk.x <= bounds.max_chunk_x
+        && chunk.z >= bounds.min_chunk_z
+        && chunk.z <= bounds.max_chunk_z
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -63,6 +156,15 @@ impl RightSelectionDrag {
         )
     }
 
+    pub(super) fn additive(start_position: Point<Pixels>, start_chunk: ChunkPos) -> Self {
+        Self::with_intent(
+            start_position,
+            start_chunk,
+            SelectionPointerButton::Right,
+            RightSelectionIntent::AddSelection,
+        )
+    }
+
     pub(super) fn existing_for_button(
         start_position: Point<Pixels>,
         start_chunk: ChunkPos,
@@ -71,19 +173,20 @@ impl RightSelectionDrag {
         button: SelectionPointerButton,
     ) -> Self {
         let intent = match target {
-            ExistingSelectionTarget::Inside if button == SelectionPointerButton::Left => {
-                RightSelectionIntent::Move(selection)
-            }
-            ExistingSelectionTarget::Inside => RightSelectionIntent::OpenMenu(selection),
+            ExistingSelectionTarget::Inside => match button {
+                SelectionPointerButton::Left => RightSelectionIntent::Move(selection),
+                SelectionPointerButton::Right => RightSelectionIntent::OpenMenu(selection),
+            },
             ExistingSelectionTarget::Outside => RightSelectionIntent::Cancel(selection),
-            ExistingSelectionTarget::Resize(handle) => {
-                RightSelectionIntent::Resize { selection, handle }
-            }
+            ExistingSelectionTarget::Resize(handle) => RightSelectionIntent::Resize {
+                selection,
+                handle,
+            },
         };
         Self::with_intent(start_position, start_chunk, button, intent)
     }
 
-    fn with_intent(
+    pub(super) fn with_intent(
         start_position: Point<Pixels>,
         start_chunk: ChunkPos,
         button: SelectionPointerButton,
@@ -101,10 +204,12 @@ impl RightSelectionDrag {
 
     pub(super) fn selection(self) -> ChunkSelection {
         match self.intent {
-            RightSelectionIntent::NewSelection => ChunkSelection {
-                start: self.start_chunk,
-                end: self.current_chunk,
-            },
+            RightSelectionIntent::NewSelection | RightSelectionIntent::AddSelection => {
+                ChunkSelection {
+                    start: self.start_chunk,
+                    end: self.current_chunk,
+                }
+            }
             RightSelectionIntent::Resize { selection, handle } => {
                 resize_chunk_selection(selection, handle, self.current_chunk)
             }
@@ -123,6 +228,7 @@ impl RightSelectionDrag {
         matches!(
             self.intent,
             RightSelectionIntent::NewSelection
+                | RightSelectionIntent::AddSelection
                 | RightSelectionIntent::Move(_)
                 | RightSelectionIntent::Resize { .. }
         )
@@ -135,9 +241,10 @@ pub(super) enum SelectionPointerButton {
     Right,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum RightSelectionIntent {
     NewSelection,
+    AddSelection,
     Move(ChunkSelection),
     OpenMenu(ChunkSelection),
     Cancel(ChunkSelection),
@@ -156,44 +263,47 @@ pub(super) enum RightSelectionReleaseAction {
     OpenMenu,
 }
 
-pub(super) const fn right_selection_release_action(
-    button: SelectionPointerButton,
-    intent: RightSelectionIntent,
-    moved: bool,
+pub(super) fn right_selection_release_action(
+    drag: RightSelectionDrag,
 ) -> RightSelectionReleaseAction {
-    match (button, intent, moved) {
-        (_, RightSelectionIntent::Cancel(_), _) => RightSelectionReleaseAction::CancelSelection,
-        (_, RightSelectionIntent::Move(_), false)
-        | (SelectionPointerButton::Left, RightSelectionIntent::Resize { .. }, false) => {
+    match drag.intent {
+        RightSelectionIntent::Cancel(_) => RightSelectionReleaseAction::CancelSelection,
+        RightSelectionIntent::Move(_) if !drag.moved => RightSelectionReleaseAction::KeepSelection,
+        RightSelectionIntent::Resize { .. }
+            if drag.button == SelectionPointerButton::Left && !drag.moved =>
+        {
             RightSelectionReleaseAction::KeepSelection
         }
-        (_, RightSelectionIntent::Move(_), true)
-        | (_, RightSelectionIntent::Resize { .. }, true) => {
+        RightSelectionIntent::Move(_) | RightSelectionIntent::Resize { .. } if drag.moved => {
             RightSelectionReleaseAction::ApplySelection
         }
-        (SelectionPointerButton::Right, RightSelectionIntent::OpenMenu(_), false)
-        | (SelectionPointerButton::Right, RightSelectionIntent::Resize { .. }, false) => {
+        RightSelectionIntent::OpenMenu(_)
+            if drag.button == SelectionPointerButton::Right && !drag.moved =>
+        {
             RightSelectionReleaseAction::OpenMenu
         }
-        (_, RightSelectionIntent::OpenMenu(_), true) => RightSelectionReleaseAction::KeepSelection,
-        (_, RightSelectionIntent::NewSelection, _) => {
-            RightSelectionReleaseAction::ApplySelectionAndOpenMenu
-        }
-        (SelectionPointerButton::Left, RightSelectionIntent::OpenMenu(_), false) => {
+        RightSelectionIntent::OpenMenu(_) if drag.moved => {
             RightSelectionReleaseAction::KeepSelection
         }
+        RightSelectionIntent::NewSelection => {
+            RightSelectionReleaseAction::ApplySelectionAndOpenMenu
+        }
+        RightSelectionIntent::AddSelection => RightSelectionReleaseAction::ApplySelection,
+        RightSelectionIntent::OpenMenu(_) => RightSelectionReleaseAction::KeepSelection,
+        RightSelectionIntent::Resize { .. } => RightSelectionReleaseAction::KeepSelection,
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExistingSelectionTarget {
-    Inside,
     Outside,
+    Inside,
     Resize(SelectionResizeHandle),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SelectionResizeHandle {
+    NorthWest,
     North,
     NorthEast,
     East,
@@ -201,10 +311,9 @@ pub(super) enum SelectionResizeHandle {
     South,
     SouthWest,
     West,
-    NorthWest,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct SelectionScreenBounds {
     pub(super) left: f32,
     pub(super) top: f32,
@@ -215,77 +324,40 @@ pub(super) struct SelectionScreenBounds {
 pub(super) fn existing_selection_target(
     position: Point<Pixels>,
     bounds: SelectionScreenBounds,
-    tolerance: f32,
+    tolerance_px: f32,
 ) -> ExistingSelectionTarget {
     let x = position.x / px(1.0);
     let y = position.y / px(1.0);
-    let left = bounds.left.min(bounds.right);
-    let right = bounds.left.max(bounds.right);
-    let top = bounds.top.min(bounds.bottom);
-    let bottom = bounds.top.max(bounds.bottom);
-    let horizontal_tolerance = tolerance.min((right - left) * 0.25);
-    let vertical_tolerance = tolerance.min((bottom - top) * 0.25);
-    let within_horizontal_span =
-        (left - horizontal_tolerance..=right + horizontal_tolerance).contains(&x);
-    let within_vertical_span =
-        (top - vertical_tolerance..=bottom + vertical_tolerance).contains(&y);
-    let horizontal = within_horizontal_span
-        .then(|| closest_resize_edge(y, top, bottom, vertical_tolerance, false))
-        .flatten();
-    let vertical = within_vertical_span
-        .then(|| closest_resize_edge(x, left, right, horizontal_tolerance, true))
-        .flatten();
+    if x < bounds.left - tolerance_px
+        || x > bounds.right + tolerance_px
+        || y < bounds.top - tolerance_px
+        || y > bounds.bottom + tolerance_px
+    {
+        return ExistingSelectionTarget::Outside;
+    }
 
-    let handle = match (vertical, horizontal) {
-        (Some(SelectionResizeHandle::West), Some(SelectionResizeHandle::North)) => {
-            Some(SelectionResizeHandle::NorthWest)
-        }
-        (Some(SelectionResizeHandle::East), Some(SelectionResizeHandle::North)) => {
-            Some(SelectionResizeHandle::NorthEast)
-        }
-        (Some(SelectionResizeHandle::West), Some(SelectionResizeHandle::South)) => {
-            Some(SelectionResizeHandle::SouthWest)
-        }
-        (Some(SelectionResizeHandle::East), Some(SelectionResizeHandle::South)) => {
-            Some(SelectionResizeHandle::SouthEast)
-        }
-        (Some(handle), None) | (None, Some(handle)) => Some(handle),
+    let near_left = (x - bounds.left).abs() <= tolerance_px;
+    let near_right = (x - bounds.right).abs() <= tolerance_px;
+    let near_top = (y - bounds.top).abs() <= tolerance_px;
+    let near_bottom = (y - bounds.bottom).abs() <= tolerance_px;
+    let handle = match (near_left, near_right, near_top, near_bottom) {
+        (true, _, true, _) => Some(SelectionResizeHandle::NorthWest),
+        (_, true, true, _) => Some(SelectionResizeHandle::NorthEast),
+        (true, _, _, true) => Some(SelectionResizeHandle::SouthWest),
+        (_, true, _, true) => Some(SelectionResizeHandle::SouthEast),
+        (_, _, true, _) => Some(SelectionResizeHandle::North),
+        (_, true, _, _) => Some(SelectionResizeHandle::East),
+        (_, _, _, true) => Some(SelectionResizeHandle::South),
+        (true, _, _, _) => Some(SelectionResizeHandle::West),
         _ => None,
     };
     if let Some(handle) = handle {
-        ExistingSelectionTarget::Resize(handle)
-    } else if (left..=right).contains(&x) && (top..=bottom).contains(&y) {
+        return ExistingSelectionTarget::Resize(handle);
+    }
+    if x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom {
         ExistingSelectionTarget::Inside
     } else {
         ExistingSelectionTarget::Outside
-    }
-}
-
-fn closest_resize_edge(
-    value: f32,
-    minimum: f32,
-    maximum: f32,
-    tolerance: f32,
-    horizontal_axis: bool,
-) -> Option<SelectionResizeHandle> {
-    let minimum_distance = (value - minimum).abs();
-    let maximum_distance = (value - maximum).abs();
-    let minimum_handle = if horizontal_axis {
-        SelectionResizeHandle::West
-    } else {
-        SelectionResizeHandle::North
-    };
-    let maximum_handle = if horizontal_axis {
-        SelectionResizeHandle::East
-    } else {
-        SelectionResizeHandle::South
-    };
-    match (minimum_distance <= tolerance, maximum_distance <= tolerance) {
-        (true, true) if minimum_distance <= maximum_distance => Some(minimum_handle),
-        (true, true) => Some(maximum_handle),
-        (true, false) => Some(minimum_handle),
-        (false, true) => Some(maximum_handle),
-        (false, false) => None,
     }
 }
 
@@ -295,55 +367,41 @@ pub(super) fn resize_chunk_selection(
     current: ChunkPos,
 ) -> ChunkSelection {
     let bounds = selection.bounds();
-    let moves_west = matches!(
-        handle,
-        SelectionResizeHandle::West
-            | SelectionResizeHandle::NorthWest
-            | SelectionResizeHandle::SouthWest
-    );
-    let moves_east = matches!(
-        handle,
-        SelectionResizeHandle::East
-            | SelectionResizeHandle::NorthEast
-            | SelectionResizeHandle::SouthEast
-    );
-    let moves_north = matches!(
-        handle,
-        SelectionResizeHandle::North
-            | SelectionResizeHandle::NorthEast
-            | SelectionResizeHandle::NorthWest
-    );
-    let moves_south = matches!(
-        handle,
-        SelectionResizeHandle::South
-            | SelectionResizeHandle::SouthEast
-            | SelectionResizeHandle::SouthWest
-    );
+    let mut min_x = bounds.min_chunk_x;
+    let mut max_x = bounds.max_chunk_x;
+    let mut min_z = bounds.min_chunk_z;
+    let mut max_z = bounds.max_chunk_z;
+    match handle {
+        SelectionResizeHandle::NorthWest => {
+            min_x = current.x.min(max_x);
+            min_z = current.z.min(max_z);
+        }
+        SelectionResizeHandle::North => min_z = current.z.min(max_z),
+        SelectionResizeHandle::NorthEast => {
+            max_x = current.x.max(min_x);
+            min_z = current.z.min(max_z);
+        }
+        SelectionResizeHandle::East => max_x = current.x.max(min_x),
+        SelectionResizeHandle::SouthEast => {
+            max_x = current.x.max(min_x);
+            max_z = current.z.max(min_z);
+        }
+        SelectionResizeHandle::South => max_z = current.z.max(min_z),
+        SelectionResizeHandle::SouthWest => {
+            min_x = current.x.min(max_x);
+            max_z = current.z.max(min_z);
+        }
+        SelectionResizeHandle::West => min_x = current.x.min(max_x),
+    }
     ChunkSelection {
         start: ChunkPos {
-            x: if moves_west {
-                current.x
-            } else {
-                bounds.min_chunk_x
-            },
-            z: if moves_north {
-                current.z
-            } else {
-                bounds.min_chunk_z
-            },
+            x: min_x,
+            z: min_z,
             dimension: bounds.dimension,
         },
         end: ChunkPos {
-            x: if moves_east {
-                current.x
-            } else {
-                bounds.max_chunk_x
-            },
-            z: if moves_south {
-                current.z
-            } else {
-                bounds.max_chunk_z
-            },
+            x: max_x,
+            z: max_z,
             dimension: bounds.dimension,
         },
     }
@@ -354,17 +412,16 @@ pub(super) fn translate_chunk_selection(
     delta_x: i32,
     delta_z: i32,
 ) -> ChunkSelection {
-    let bounds = selection.bounds();
     ChunkSelection {
         start: ChunkPos {
-            x: bounds.min_chunk_x.saturating_add(delta_x),
-            z: bounds.min_chunk_z.saturating_add(delta_z),
-            dimension: bounds.dimension,
+            x: selection.start.x.saturating_add(delta_x),
+            z: selection.start.z.saturating_add(delta_z),
+            dimension: selection.start.dimension,
         },
         end: ChunkPos {
-            x: bounds.max_chunk_x.saturating_add(delta_x),
-            z: bounds.max_chunk_z.saturating_add(delta_z),
-            dimension: bounds.dimension,
+            x: selection.end.x.saturating_add(delta_x),
+            z: selection.end.z.saturating_add(delta_z),
+            dimension: selection.end.dimension,
         },
     }
 }
@@ -380,136 +437,112 @@ pub(super) fn chunk_from_block(block_x: i32, block_z: i32, dimension: Dimension)
 pub(super) fn right_selection_moved(
     start: Point<Pixels>,
     current: Point<Pixels>,
-    threshold: f32,
+    threshold_px: f32,
 ) -> bool {
-    let delta_x = (current.x - start.x) / px(1.0);
-    let delta_y = (current.y - start.y) / px(1.0);
-    delta_x.hypot(delta_y) > threshold
+    let dx = (current.x - start.x) / px(1.0);
+    let dy = (current.y - start.y) / px(1.0);
+    dx.abs().max(dy.abs()) >= threshold_px
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[::core::prelude::v1::test]
-    fn chunk_selection_bounds_normalize_negative_coordinates() {
-        let selection = ChunkSelection {
-            start: ChunkPos {
-                x: 7,
-                z: -12,
-                dimension: Dimension::Overworld,
-            },
-            end: ChunkPos {
-                x: -4,
-                z: 3,
-                dimension: Dimension::Overworld,
-            },
-        };
-        let bounds = selection.bounds();
-
-        assert_eq!(bounds.min_chunk_x, -4);
-        assert_eq!(bounds.max_chunk_x, 7);
-        assert_eq!(bounds.min_chunk_z, -12);
-        assert_eq!(bounds.max_chunk_z, 3);
-        assert_eq!(bounds.dimension, Dimension::Overworld);
+    fn chunk(x: i32, z: i32) -> ChunkPos {
+        ChunkPos {
+            x,
+            z,
+            dimension: Dimension::Overworld,
+        }
     }
 
-    #[::core::prelude::v1::test]
-    fn right_selection_drag_builds_normalized_selection() {
-        let mut drag = RightSelectionDrag::new(
-            gpui::point(px(10.0), px(10.0)),
-            ChunkPos {
-                x: 4,
-                z: 8,
-                dimension: Dimension::Overworld,
-            },
-        );
-        drag.current_chunk = ChunkPos {
-            x: 1,
-            z: 2,
-            dimension: Dimension::Overworld,
+    #[test]
+    fn selection_bounds_are_normalized() {
+        let selection = ChunkSelection {
+            start: chunk(5, 8),
+            end: chunk(2, 3),
         };
-        let bounds = drag.selection().bounds();
+        let bounds = selection.bounds();
+        assert_eq!(bounds.min_chunk_x, 2);
+        assert_eq!(bounds.max_chunk_x, 5);
+        assert_eq!(bounds.min_chunk_z, 3);
+        assert_eq!(bounds.max_chunk_z, 8);
+        assert_eq!(selection.chunk_count(), 24);
+    }
 
+    #[test]
+    fn right_drag_selection_is_normalized() {
+        let mut drag = RightSelectionDrag::new(Point::default(), chunk(4, 7));
+        drag.current_chunk = chunk(1, 2);
+        let bounds = drag.selection().bounds();
         assert_eq!(bounds.min_chunk_x, 1);
         assert_eq!(bounds.max_chunk_x, 4);
         assert_eq!(bounds.min_chunk_z, 2);
-        assert_eq!(bounds.max_chunk_z, 8);
+        assert_eq!(bounds.max_chunk_z, 7);
     }
 
-    #[::core::prelude::v1::test]
-    fn left_drag_inside_translates_existing_selection() {
+    #[test]
+    fn left_drag_inside_selection_moves_it() {
         let selection = ChunkSelection {
-            start: ChunkPos {
-                x: -2,
-                z: 4,
-                dimension: Dimension::Overworld,
-            },
-            end: ChunkPos {
-                x: 1,
-                z: 8,
-                dimension: Dimension::Overworld,
-            },
+            start: chunk(1, 2),
+            end: chunk(3, 4),
         };
         let mut drag = RightSelectionDrag::existing_for_button(
-            gpui::point(px(10.0), px(10.0)),
-            ChunkPos {
-                x: 0,
-                z: 6,
-                dimension: Dimension::Overworld,
-            },
+            Point::default(),
+            chunk(2, 3),
             selection,
             ExistingSelectionTarget::Inside,
             SelectionPointerButton::Left,
         );
-        drag.current_chunk.x = 3;
-        drag.current_chunk.z = 4;
-
-        let bounds = drag.selection().bounds();
-        assert_eq!(bounds.min_chunk_x, 1);
-        assert_eq!(bounds.max_chunk_x, 4);
-        assert_eq!(bounds.min_chunk_z, 2);
-        assert_eq!(bounds.max_chunk_z, 6);
+        drag.current_chunk = chunk(4, 5);
+        drag.moved = true;
+        let moved = drag.selection().bounds();
+        assert_eq!(moved.min_chunk_x, 3);
+        assert_eq!(moved.max_chunk_x, 5);
+        assert_eq!(moved.min_chunk_z, 4);
+        assert_eq!(moved.max_chunk_z, 6);
     }
 
-    #[::core::prelude::v1::test]
-    fn resize_selection_moves_only_the_selected_edges() {
+    #[test]
+    fn selection_resize_uses_requested_edge() {
         let selection = ChunkSelection {
-            start: ChunkPos {
-                x: 10,
-                z: 20,
-                dimension: Dimension::Overworld,
-            },
-            end: ChunkPos {
-                x: 14,
-                z: 26,
-                dimension: Dimension::Overworld,
-            },
+            start: chunk(1, 2),
+            end: chunk(3, 4),
         };
-        let east = resize_chunk_selection(
-            selection,
-            SelectionResizeHandle::East,
-            ChunkPos {
-                x: 18,
-                z: 23,
-                dimension: Dimension::Overworld,
-            },
-        )
-        .bounds();
-        assert_eq!((east.min_chunk_x, east.max_chunk_x), (10, 18));
-        assert_eq!((east.min_chunk_z, east.max_chunk_z), (20, 26));
+        let resized = resize_chunk_selection(selection, SelectionResizeHandle::East, chunk(7, 3));
+        let bounds = resized.bounds();
+        assert_eq!(bounds.min_chunk_x, 1);
+        assert_eq!(bounds.max_chunk_x, 7);
+        assert_eq!(bounds.min_chunk_z, 2);
+        assert_eq!(bounds.max_chunk_z, 4);
+    }
 
-        let north_west = resize_chunk_selection(
-            selection,
-            SelectionResizeHandle::NorthWest,
-            ChunkPos {
-                x: 7,
-                z: 16,
-                dimension: Dimension::Overworld,
-            },
-        )
-        .bounds();
-        assert_eq!((north_west.min_chunk_x, north_west.max_chunk_x), (7, 14));
-        assert_eq!((north_west.min_chunk_z, north_west.max_chunk_z), (16, 26));
+    #[test]
+    fn additive_selection_keeps_non_rectangular_exact_chunks() {
+        let horizontal = ChunkSelection {
+            start: chunk(-1, 0),
+            end: chunk(1, 0),
+        };
+        let vertical = ChunkSelection {
+            start: chunk(0, -1),
+            end: chunk(0, 1),
+        };
+        let merged = merged_selection_chunks(&horizontal.chunks(), vertical);
+        let bounds = chunk_selection_from_chunks(&merged).expect("merged selection bounds");
+
+        assert_eq!(merged.len(), 5);
+        assert_eq!(bounds.chunk_count(), 9);
+        assert!(!selection_chunks_are_rectangular(bounds, Some(&merged)));
+        assert!(selection_contains_chunk(bounds, Some(&merged), chunk(0, 0)));
+        assert!(!selection_contains_chunk(bounds, Some(&merged), chunk(1, 1)));
+    }
+
+    #[test]
+    fn additive_right_selection_does_not_open_context_menu() {
+        let drag = RightSelectionDrag::additive(Point::default(), chunk(0, 0));
+        assert_eq!(
+            right_selection_release_action(drag),
+            RightSelectionReleaseAction::ApplySelection
+        );
     }
 }
