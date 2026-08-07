@@ -303,6 +303,7 @@ mod macos {
             "Pixels".into(),
             "PointF".into(),
             "Hsla".into(),
+            "Rgba".into(),
             "ContentMask".into(),
             "Uniforms".into(),
             "AtlasTile".into(),

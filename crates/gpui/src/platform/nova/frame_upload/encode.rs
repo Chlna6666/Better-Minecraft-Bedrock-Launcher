@@ -277,7 +277,7 @@ impl NovaFrameUpload {
                                 bounds: blur.bounds,
                                 content_mask: blur.content_mask.clone(),
                                 background: tint.into(),
-                                border_color: crate::Hsla::transparent_black(),
+                                border_color: crate::Hsla::transparent_black().into(),
                                 corner_radii: blur.corner_radii,
                                 border_widths: Default::default(),
                             };

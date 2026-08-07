@@ -140,7 +140,7 @@ pub(super) fn write_quad(bytes: &mut Vec<u8>, quad: &Quad) {
     write_bounds_scaled(bytes, &quad.bounds);
     write_content_mask(bytes, &quad.content_mask);
     write_background(bytes, &quad.background);
-    write_hsla(bytes, quad.border_color);
+    write_rgba(bytes, quad.border_color);
     write_corners(bytes, &quad.corner_radii);
     write_edges(bytes, &quad.border_widths);
 }
@@ -151,7 +151,7 @@ pub(super) fn write_shadow(bytes: &mut Vec<u8>, shadow: &Shadow) {
     write_bounds_scaled(bytes, &shadow.bounds);
     write_corners(bytes, &shadow.corner_radii);
     write_content_mask(bytes, &shadow.content_mask);
-    write_hsla(bytes, shadow.color);
+    write_rgba(bytes, shadow.color);
 }
 
 pub(super) fn write_path_rasterization_vertex(
@@ -177,7 +177,7 @@ pub(super) fn write_monochrome_sprite(bytes: &mut Vec<u8>, sprite: &MonochromeSp
     write_u32_vec(bytes, sprite.pad);
     write_bounds_scaled(bytes, &sprite.bounds);
     write_content_mask(bytes, &sprite.content_mask);
-    write_hsla(bytes, sprite.color);
+    write_rgba(bytes, sprite.color);
     write_atlas_tile(bytes, &sprite.tile);
     write_transformation(bytes, &sprite.transformation);
 }
@@ -198,7 +198,7 @@ pub(super) fn write_underline(bytes: &mut Vec<u8>, underline: &Underline) {
     write_u32_vec(bytes, underline.pad);
     write_bounds_scaled(bytes, &underline.bounds);
     write_content_mask(bytes, &underline.content_mask);
-    write_hsla(bytes, underline.color);
+    write_rgba(bytes, underline.color);
     write_f32_vec(bytes, underline.thickness.0);
     write_u32_vec(bytes, underline.wavy);
 }
@@ -206,10 +206,10 @@ pub(super) fn write_underline(bytes: &mut Vec<u8>, underline: &Underline) {
 pub(super) fn write_background(bytes: &mut Vec<u8>, background: &crate::Background) {
     write_u32_vec(bytes, background.tag as u32);
     write_u32_vec(bytes, background.color_space as u32);
-    write_hsla(bytes, background.solid);
+    write_rgba(bytes, background.solid);
     write_f32_vec(bytes, background.gradient_angle_or_pattern_height);
     for stop in background.colors {
-        write_hsla(bytes, stop.color);
+        write_rgba(bytes, stop.color);
         write_f32_vec(bytes, stop.percentage);
     }
     write_u32_vec(bytes, 0);
@@ -250,6 +250,13 @@ pub(super) fn write_edges(bytes: &mut Vec<u8>, edges: &crate::Edges<crate::Scale
     write_f32_vec(bytes, edges.right.0);
     write_f32_vec(bytes, edges.bottom.0);
     write_f32_vec(bytes, edges.left.0);
+}
+
+pub(super) fn write_rgba(bytes: &mut Vec<u8>, color: crate::Rgba) {
+    write_f32_vec(bytes, color.r);
+    write_f32_vec(bytes, color.g);
+    write_f32_vec(bytes, color.b);
+    write_f32_vec(bytes, color.a);
 }
 
 pub(super) fn write_hsla(bytes: &mut Vec<u8>, color: crate::Hsla) {

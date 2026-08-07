@@ -7,7 +7,7 @@ struct Quad {
     bounds: Bounds,
     content_mask: ContentMask,
     background: Background,
-    border_color: Hsla,
+    border_color: vec4<f32>,
     corner_radii: Corners,
     border_widths: Edges,
 }
@@ -28,7 +28,7 @@ fn vs_solid_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index)
 
     var out = SolidQuadVarying();
     out.position = to_device_position(unit_vertex, quad.bounds);
-    out.color = hsla_to_rgba(quad.background.solid);
+    out.color = quad.background.solid;
     out.clip_distances = distance_from_clip_rect(unit_vertex, quad.bounds, quad.content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(quad.content_mask.corner_bounds.origin, quad.content_mask.corner_bounds.size);
     out.content_mask_radii = vec4<f32>(quad.content_mask.corner_radii.top_left, quad.content_mask.corner_radii.top_right, quad.content_mask.corner_radii.bottom_right, quad.content_mask.corner_radii.bottom_left);

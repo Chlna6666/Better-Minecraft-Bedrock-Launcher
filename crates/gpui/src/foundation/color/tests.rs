@@ -46,14 +46,14 @@ fn test_deserialize_eight_value_hex_with_mixed_case_to_rgba() {
 
 #[test]
 fn test_background_solid() {
-    let color = Hsla::from(rgba(0xff0099ff));
-    let mut background = Background::from(color);
+    let color = rgba(0xff0099ff);
+    let mut background = Background::from(Hsla::from(color));
     assert_eq!(background.tag, BackgroundTag::Solid);
     assert_eq!(background.solid, color);
 
     assert_eq!(background.opacity(0.5).solid, color.opacity(0.5));
     assert!(!background.is_transparent());
-    background.solid = hsla(0.0, 0.0, 0.0, 0.0);
+    background.solid = rgba(0x00000000);
     assert!(background.is_transparent());
 }
 

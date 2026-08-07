@@ -13,7 +13,7 @@ struct Quad {
     bounds: Bounds,
     content_mask: ContentMask,
     background: Background,
-    border_color: Hsla,
+    border_color: vec4<f32>,
     corner_radii: Corners,
     border_widths: Edges,
 }
@@ -51,7 +51,7 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     out.background_color0 = gradient.color0;
     out.background_color1 = gradient.color1;
     out.background_tag = quad.background.tag;
-    out.border_color = hsla_to_rgba(quad.border_color);
+    out.border_color = quad.border_color;
     out.quad_id = instance_id;
     out.clip_distances = distance_from_clip_rect(unit_vertex, quad.bounds, quad.content_mask.bounds);
     out.content_mask_bounds = vec4<f32>(quad.content_mask.corner_bounds.origin, quad.content_mask.corner_bounds.size);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::Rgba;
 
 /// A rectangle to be rendered in the window at the given position and size.
 /// Passed as an argument [`Window::paint_quad`].
@@ -13,7 +14,7 @@ pub struct PaintQuad {
     /// The widths of the quad's borders.
     pub border_widths: Edges<Pixels>,
     /// The color of the quad's borders.
-    pub border_color: Hsla,
+    pub border_color: Rgba,
     /// The style of the quad's borders.
     pub border_style: BorderStyle,
 }
@@ -36,7 +37,7 @@ impl PaintQuad {
     }
 
     /// Sets the border color of the quad.
-    pub fn border_color(self, border_color: impl Into<Hsla>) -> Self {
+    pub fn border_color(self, border_color: impl Into<Rgba>) -> Self {
         PaintQuad {
             border_color: border_color.into(),
             ..self
@@ -58,7 +59,7 @@ pub fn quad(
     corner_radii: impl Into<Corners<Pixels>>,
     background: impl Into<Background>,
     border_widths: impl Into<Edges<Pixels>>,
-    border_color: impl Into<Hsla>,
+    border_color: impl Into<Rgba>,
     border_style: BorderStyle,
 ) -> PaintQuad {
     PaintQuad {
@@ -78,7 +79,7 @@ pub fn fill(bounds: impl Into<Bounds<Pixels>>, background: impl Into<Background>
         corner_radii: (0.).into(),
         background: background.into(),
         border_widths: (0.).into(),
-        border_color: transparent_black(),
+        border_color: transparent_black().into(),
         border_style: BorderStyle::default(),
     }
 }
@@ -86,7 +87,7 @@ pub fn fill(bounds: impl Into<Bounds<Pixels>>, background: impl Into<Background>
 /// Creates a rectangle outline with the given bounds, border color, and a 1px border width
 pub fn outline(
     bounds: impl Into<Bounds<Pixels>>,
-    border_color: impl Into<Hsla>,
+    border_color: impl Into<Rgba>,
     border_style: BorderStyle,
 ) -> PaintQuad {
     PaintQuad {
@@ -181,7 +182,7 @@ impl Window {
                 bounds: shadow_bounds.scale(scale_factor),
                 content_mask: content_mask.scale(scale_factor),
                 corner_radii: corner_radii.scale(scale_factor * visual_scale),
-                color: shadow.color.opacity(opacity),
+                color: shadow.color.opacity(opacity).into(),
             });
         }
     }
@@ -266,7 +267,7 @@ impl Window {
             pad: 0,
             bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
-            color: style.color.unwrap_or_default().opacity(element_opacity),
+            color: style.color.unwrap_or_default().opacity(element_opacity).into(),
             thickness: style.thickness.scale(scale_factor * visual_scale),
             wavy: if style.wavy { 1 } else { 0 },
         });
@@ -299,7 +300,7 @@ impl Window {
             bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
             thickness: style.thickness.scale(scale_factor * visual_scale),
-            color: style.color.unwrap_or_default().opacity(opacity),
+            color: style.color.unwrap_or_default().opacity(opacity).into(),
             wavy: 0,
         });
     }
@@ -367,7 +368,7 @@ impl Window {
                 animation_id: None,
                 bounds,
                 content_mask,
-                color: color.opacity(element_opacity),
+                color: color.opacity(element_opacity).into(),
                 tile,
                 transformation: TransformationMatrix::unit(),
             });

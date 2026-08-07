@@ -96,7 +96,7 @@ fn monochrome_sprite(order: DrawOrder, pad: u32) -> MonochromeSprite {
             ),
             ..Default::default()
         },
-        color: Hsla::default(),
+        color: Hsla::default().into(),
         tile: AtlasTile {
             texture_id: AtlasTextureId {
                 index: 0,
@@ -372,7 +372,7 @@ fn prepared_quad_runs_split_solid_and_bordered_quads() {
         bounds,
         content_mask,
         background: Hsla::white().into(),
-        border_color: Hsla::black(),
+        border_color: Hsla::black().into(),
         border_widths: Edges::all(ScaledPixels(1.0)),
         ..Quad::default()
     });

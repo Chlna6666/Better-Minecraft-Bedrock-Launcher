@@ -94,7 +94,7 @@ struct Hsla {
 }
 
 struct LinearColorStop {
-    color: Hsla,
+    color: vec4<f32>,
     percentage: f32,
 }
 
@@ -106,7 +106,7 @@ struct Background {
     // 0u is sRGB linear color
     // 1u is Oklab color
     color_space: u32,
-    solid: Hsla,
+    solid: vec4<f32>,
     gradient_angle_or_pattern_height: f32,
     colors: array<LinearColorStop, 2>,
     pad: u32,

@@ -280,7 +280,7 @@ impl Style {
                         .unwrap_or_default(),
                     BackgroundTag::PatternSlash => color.solid,
                 },
-                None => Hsla::default(),
+                None => Hsla::default().into(),
             };
             border_color.a = 0.;
             window.paint_quad(quad(

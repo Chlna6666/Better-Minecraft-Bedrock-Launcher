@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels, ScaledPixels,
+    AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels, Rgba, ScaledPixels,
     TransitionProperty,
 };
 
@@ -155,7 +155,7 @@ pub(crate) struct Quad {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub background: Background,
-    pub border_color: Hsla,
+    pub border_color: Rgba,
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
 }
@@ -173,7 +173,7 @@ pub(crate) struct Underline {
     pub pad: u32, // align to 8 bytes
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    pub color: Hsla,
+    pub color: Rgba,
     pub thickness: ScaledPixels,
     pub wavy: u32,
 }
@@ -193,7 +193,7 @@ pub(crate) struct Shadow {
     pub bounds: Bounds<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    pub color: Hsla,
+    pub color: Rgba,
 }
 
 impl From<Shadow> for Primitive {
@@ -221,7 +221,7 @@ pub(crate) struct MonochromeSprite {
     pub animation_id: Option<SceneAnimationId>,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    pub color: Hsla,
+    pub color: Rgba,
     pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
 }

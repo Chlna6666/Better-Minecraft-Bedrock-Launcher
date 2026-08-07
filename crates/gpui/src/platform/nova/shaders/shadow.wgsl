@@ -27,7 +27,7 @@ struct Shadow {
     bounds: Bounds,
     corner_radii: Corners,
     content_mask: ContentMask,
-    color: Hsla,
+    color: vec4<f32>,
 }
 @group(0) @binding(2) var<storage, read> b_shadows: array<Shadow>;
 
@@ -57,7 +57,7 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
 
     var out = ShadowVarying();
     out.position = to_device_position(unit_vertex, shadow.bounds);
-    out.color = hsla_to_rgba(shadow.color);
+    out.color = shadow.color;
     out.blur_radius = shadow.blur_radius;
     out.bounds = vec4<f32>(shadow_bounds.origin, shadow_bounds.size);
     out.corner_radii = vec4<f32>(

@@ -75,15 +75,15 @@ struct GradientColor {
 }
 
 fn prepare_gradient_color(tag: u32, color_space: u32,
-    solid: Hsla, colors: array<LinearColorStop, 2>) -> GradientColor {
+    solid: vec4<f32>, colors: array<LinearColorStop, 2>) -> GradientColor {
     var result = GradientColor();
 
     if (tag == 0u || tag == 2u) {
-        result.solid = hsla_to_rgba(solid);
+        result.solid = solid;
     } else if (tag == 1u) {
-        // The hsla_to_rgba is returns a linear sRGB color
-        result.color0 = hsla_to_rgba(colors[0].color);
-        result.color1 = hsla_to_rgba(colors[1].color);
+        // Scene colors are already linear RGBA
+        result.color0 = colors[0].color;
+        result.color1 = colors[1].color;
 
         // Prepare color space in vertex for avoid conversion
         // in fragment shader for performance reasons

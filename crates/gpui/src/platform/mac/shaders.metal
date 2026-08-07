@@ -4,6 +4,7 @@
 using namespace metal;
 
 float4 hsla_to_rgba(Hsla hsla);
+float4 rgba_to_float4(Rgba rgba);
 float3 srgb_to_linear(float3 color);
 float3 linear_to_srgb(float3 color);
 float4 srgb_to_oklab(float4 color);
@@ -42,7 +43,7 @@ struct GradientColor {
   float4 color0;
   float4 color1;
 };
-GradientColor prepare_fill_color(uint tag, uint color_space, Hsla solid, Hsla color0, Hsla color1);
+GradientColor prepare_fill_color(uint tag, uint color_space, Rgba solid, Rgba color0, Rgba color1);
 
 struct QuadVertexOutput {
   uint quad_id [[flat]];
@@ -77,7 +78,7 @@ vertex QuadVertexOutput quad_vertex(uint unit_vertex_id [[vertex_id]],
       to_device_position(unit_vertex, quad.bounds, viewport_size);
   float4 clip_distance = distance_from_clip_rect(unit_vertex, quad.bounds,
                                                  quad.content_mask.bounds);
-  float4 border_color = hsla_to_rgba(quad.border_color);
+  float4 border_color = rgba_to_float4(quad.border_color);
 
   GradientColor gradient = prepare_fill_color(
     quad.background.tag,
@@ -481,7 +482,7 @@ vertex ShadowVertexOutput shadow_vertex(
       to_device_position(unit_vertex, bounds, viewport_size);
   float4 clip_distance =
       distance_from_clip_rect(unit_vertex, bounds, shadow.content_mask.bounds);
-  float4 color = hsla_to_rgba(shadow.color);
+  float4 color = rgba_to_float4(shadow.color);
 
   return ShadowVertexOutput{
       device_position,
@@ -566,7 +567,7 @@ vertex UnderlineVertexOutput underline_vertex(
       to_device_position(unit_vertex, underline.bounds, viewport_size);
   float4 clip_distance = distance_from_clip_rect(unit_vertex, underline.bounds,
                                                  underline.content_mask.bounds);
-  float4 color = hsla_to_rgba(underline.color);
+  float4 color = rgba_to_float4(underline.color);
   return UnderlineVertexOutput{
       device_position,
       color,
@@ -634,7 +635,7 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
   float4 clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds,
                                                  sprite.content_mask.bounds, sprite.transformation);
   float2 tile_position = to_tile_position(unit_vertex, sprite.tile, atlas_size);
-  float4 color = hsla_to_rgba(sprite.color);
+  float4 color = rgba_to_float4(sprite.color);
   return MonochromeSpriteVertexOutput{
       device_position,
       tile_position,
@@ -884,6 +885,10 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
 
   return ycbcrToRGBTransform * ycbcr;
+}
+
+float4 rgba_to_float4(Rgba rgba) {
+  return float4(rgba.r, rgba.g, rgba.b, rgba.a);
 }
 
 float4 hsla_to_rgba(Hsla hsla) {
@@ -1137,14 +1142,14 @@ float4 over(float4 below, float4 above) {
   return result;
 }
 
-GradientColor prepare_fill_color(uint tag, uint color_space, Hsla solid,
-                                     Hsla color0, Hsla color1) {
+GradientColor prepare_fill_color(uint tag, uint color_space, Rgba solid,
+                                     Rgba color0, Rgba color1) {
   GradientColor out;
   if (tag == 0 || tag == 2) {
-    out.solid = hsla_to_rgba(solid);
+    out.solid = rgba_to_float4(solid);
   } else if (tag == 1) {
-    out.color0 = hsla_to_rgba(color0);
-    out.color1 = hsla_to_rgba(color1);
+    out.color0 = rgba_to_float4(color0);
+    out.color1 = rgba_to_float4(color1);
 
     // Prepare color space in vertex for avoid conversion
     // in fragment shader for performance reasons

@@ -142,7 +142,7 @@ impl Window {
             animation_id: None,
             bounds: svg_bounds,
             content_mask,
-            color: color.opacity(element_opacity),
+            color: color.opacity(element_opacity).into(),
             tile,
             transformation,
         });

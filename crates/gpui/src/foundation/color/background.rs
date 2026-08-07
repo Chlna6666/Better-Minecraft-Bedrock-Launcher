@@ -41,7 +41,7 @@ impl Display for ColorSpace {
 pub struct Background {
     pub(crate) tag: BackgroundTag,
     pub(crate) color_space: ColorSpace,
-    pub(crate) solid: Hsla,
+    pub(crate) solid: Rgba,
     pub(crate) gradient_angle_or_pattern_height: f32,
     pub(crate) colors: [LinearColorStop; 2],
     /// Padding for alignment for repr(C) layout.
@@ -76,7 +76,7 @@ impl Default for Background {
     fn default() -> Self {
         Self {
             tag: BackgroundTag::Solid,
-            solid: Hsla::default(),
+            solid: Rgba::default(),
             color_space: ColorSpace::default(),
             gradient_angle_or_pattern_height: 0.0,
             colors: [LinearColorStop::default(), LinearColorStop::default()],
@@ -86,21 +86,21 @@ impl Default for Background {
 }
 
 /// Creates a hash pattern background
-pub fn pattern_slash(color: Hsla, width: f32, interval: f32) -> Background {
+pub fn pattern_slash(color: impl Into<Rgba>, width: f32, interval: f32) -> Background {
     let width_scaled = (width * 255.0) as u32;
     let interval_scaled = (interval * 255.0) as u32;
     let height = ((width_scaled * 0xFFFF) + interval_scaled) as f32;
 
     Background {
         tag: BackgroundTag::PatternSlash,
-        solid: color,
+        solid: color.into(),
         gradient_angle_or_pattern_height: height,
         ..Default::default()
     }
 }
 
 /// Creates a solid background color.
-pub fn solid_background(color: impl Into<Hsla>) -> Background {
+pub fn solid_background(color: impl Into<Rgba>) -> Background {
     Background {
         solid: color.into(),
         ..Default::default()
@@ -134,7 +134,7 @@ pub fn linear_gradient(
 #[repr(C)]
 pub struct LinearColorStop {
     /// The color of the color stop.
-    pub color: Hsla,
+    pub color: Rgba,
     /// The percentage of the gradient, in the range 0.0 to 1.0.
     pub percentage: f32,
 }
@@ -142,7 +142,7 @@ pub struct LinearColorStop {
 /// Creates a new linear color stop.
 ///
 /// The percentage of the gradient, in the range 0.0 to 1.0.
-pub fn linear_color_stop(color: impl Into<Hsla>, percentage: f32) -> LinearColorStop {
+pub fn linear_color_stop(color: impl Into<Rgba>, percentage: f32) -> LinearColorStop {
     LinearColorStop {
         color: color.into(),
         percentage,
@@ -193,7 +193,7 @@ impl From<Hsla> for Background {
     fn from(value: Hsla) -> Self {
         Background {
             tag: BackgroundTag::Solid,
-            solid: value,
+            solid: value.into(),
             ..Default::default()
         }
     }
@@ -203,7 +203,7 @@ impl From<Rgba> for Background {
     fn from(value: Rgba) -> Self {
         Background {
             tag: BackgroundTag::Solid,
-            solid: Hsla::from(value),
+            solid: value,
             ..Default::default()
         }
     }

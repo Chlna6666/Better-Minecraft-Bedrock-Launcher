@@ -5,7 +5,11 @@ use std::{path::Path, rc::Rc};
 use super::MacPlatform;
 use super::platform_traits::Platform;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-use super::{HeadlessClient, WaylandClient, X11Client};
+use super::HeadlessClient;
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "wayland"))]
+use super::WaylandClient;
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11"))]
+use super::X11Client;
 #[cfg(target_os = "windows")]
 use super::{WindowsPlatform, show_error};
 
