@@ -24,6 +24,14 @@ jobs:
           ref: master
           fetch-depth: 0
 
+      - name: Mark validation started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        shell: pwsh
+        run: |
+          gh issue comment 16 --repo Chlna6666/Better-Minecraft-Bedrock-Launcher --body "Map history visualization v2 validation started. Run $($env:RUN_ID)."
+
       - name: Apply and validate history visualization v2
         id: validate
         continue-on-error: true
