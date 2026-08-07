@@ -3,7 +3,7 @@ use super::prelude::*;
 use super::selection::{exact_selection_chunks, selection_chunks_are_rectangular};
 use super::tile_state::MapRenderRange;
 use super::viewport::*;
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 pub(super) fn draw_map_canvas(
     bounds: Bounds<Pixels>,
@@ -371,7 +371,7 @@ fn paint_exact_chunk_selection(
         .iter()
         .copied()
         .filter(|chunk| chunk.dimension == dimension)
-        .collect::<BTreeSet<_>>();
+        .collect::<HashSet<_>>();
     if selected.is_empty() {
         return;
     }
@@ -470,7 +470,7 @@ fn paint_exact_chunk_selection(
 }
 
 fn selected_chunk_neighbor(
-    selected: &BTreeSet<ChunkPos>,
+    selected: &HashSet<ChunkPos>,
     chunk: ChunkPos,
     delta_x: i32,
     delta_z: i32,
