@@ -795,6 +795,7 @@ impl MapViewerWindowView {
                             .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
                             as i32,
                         label,
+                        player_id: Some(detail.id.clone()),
                     });
             }
         }

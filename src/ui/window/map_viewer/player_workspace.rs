@@ -3,6 +3,7 @@ use super::panels::*;
 use super::players::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
+use gpui::StatefulInteractiveElement as _;
 use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

@@ -7,27 +7,27 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking dtls v0.17.2 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\dtls)
     Checking webrtc-ice v0.17.2 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\webrtc-ice)
     Checking gfx-shader v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-shader)
-    Checking bedrock-leveldb v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-leveldb)
     Checking gfx-memory v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-memory)
+    Checking bedrock-leveldb v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-leveldb)
    Compiling bedrock-render v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-render)
-    Checking gfx-vulkan v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-vulkan)
     Checking gfx-dx12 v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-dx12)
-crates\nova-gfx\gfx-vulkan\src\device.rs:1130:8: warning: methods `render_steps_and_present` and `render_steps_to_texture` are never used
+    Checking gfx-vulkan v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-vulkan)
    Compiling lucide-gpui v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\lucide-gpui)
-warning: `gfx-vulkan` (lib) generated 1 warning
+crates\nova-gfx\gfx-vulkan\src\device.rs:1130:8: warning: methods `render_steps_and_present` and `render_steps_to_texture` are never used
    Compiling bmcbl v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher)
+warning: `gfx-vulkan` (lib) generated 1 warning
     Checking bedrock-world v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-world)
 build.rs:283:16: warning: usage of an `unsafe` block
     Checking webrtc v0.17.2 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\webrtc)
-   Compiling bmcbl_plugin_macros v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bmcbl-plugin-macros)
 warning: `bmcbl` (build script) generated 1 warning
+   Compiling bmcbl_plugin_macros v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bmcbl-plugin-macros)
     Checking raknet v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\raknet\raknet)
    Compiling gpui_hooks_macros v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui-hooks-macros)
-    Checking bmcbl_plugin_api v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bmcbl-plugin-api)
     Checking raknet-tokio v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\raknet\raknet-tokio)
+    Checking nethernet v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nethernet)
+    Checking bmcbl_plugin_api v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bmcbl-plugin-api)
 crates\bmcbl-plugin-api\src\lib.rs:2509:17: warning: usage of an `unsafe` block
 warning: `bmcbl_plugin_api` (lib) generated 1 warning
-    Checking nethernet v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nethernet)
 crates\gpui\src\assets\decode\webp.rs:63:19: warning: usage of an `unsafe` block
 crates\gpui\src\assets\decode\webp.rs:71:22: warning: usage of an `unsafe` block
 crates\gpui\src\assets\decode\webp.rs:76:26: warning: usage of an `unsafe` block
@@ -269,9 +269,9 @@ crates\gpui\src\window\titlebar.rs:13:8: warning: struct `RasterizedTitleGlyph` 
 crates\gpui\src\window\titlebar.rs:19:15: warning: function `rasterize_platform_title` is never used
 crates\gpui\src\app\state.rs:497:14: warning: this lint expectation is unfulfilled
 warning: `gpui` (lib) generated 240 warnings (run `cargo fix --lib -p gpui` to apply 7 suggestions)
-    Checking gpui_tokio v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui_tokio)
     Checking gpui-router v0.3.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\gpui-router)
     Checking gpui_hooks v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui-hooks)
+    Checking gpui_tokio v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui_tokio)
     Checking easytier-bmcbl v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\easytier-bmcbl)
 src\app.rs:177:5: warning: usage of an `unsafe` block
 src\config\config.rs:13:54: warning: unused import: `default_proton_gdk_source`
@@ -408,8 +408,7 @@ src\utils\system_info.rs:117:5: warning: usage of an `unsafe` block
 src\ui\window\map_viewer\view.rs:134:13: warning: variable does not need to be mutable
 src\downloads\md5.rs:30:22: warning: use of deprecated method `md5::Context::compute`: Use `finalize`.
 src\ui\window\map_viewer\interactions.rs:3981:48: warning: use of deprecated method `futures::futures_channel::mpsc::UnboundedReceiver::<T>::try_next`: please use `try_recv` instead
-src\ui\window\map_viewer\player_workspace.rs:1035:22: error[E0599]: no method named `on_drag` found for struct `gpui::Div` in the current scope
-src\ui\window\map_viewer\players.rs:788:27: error[E0063]: missing field `player_id` in initializer of `model::Marker`: missing `player_id`
+src\ui\window\map_viewer\player_workspace.rs:1036:22: error[E0599]: no method named `on_drag` found for struct `gpui::Div` in the current scope
 src\ui\window\map_viewer\tile_render.rs:35:33: warning: use of deprecated method `futures::futures_channel::mpsc::UnboundedReceiver::<T>::try_next`: please use `try_recv` instead
 src\core\online\online.rs:8:24: warning: unused import: `ConfigRpc`
 src\ui\overlays\update.rs:18:26: warning: unused import: `StatefulInteractiveElement`
@@ -544,4 +543,4 @@ src\ui\window\level_dat\view.rs:429:17: warning: unused variable: `colors`: help
 src\ui\window\map_viewer\menus.rs:11:9: warning: unused variable: `chunk`: help: if this is intentional, prefix it with an underscore: `_chunk`
 src\ui\window\map_viewer\tile_render_core.rs:849:9: warning: variable does not need to be mutable
 warning: `bmcbl` (lib) generated 268 warnings
-error: could not compile `bmcbl` (lib) due to 2 previous errors; 268 warnings emitted
+error: could not compile `bmcbl` (lib) due to 1 previous error; 268 warnings emitted
