@@ -1602,6 +1602,22 @@ where
         self.storage().put(key.as_ref(), &player.raw)
     }
 
+    /// Deletes an exact LevelDB-backed player record.
+    ///
+    /// Legacy level.dat pseudo players are intentionally rejected because they are not
+    /// independent LevelDB records.
+    pub fn delete_player_blocking(&self, id: &PlayerId) -> Result<()> {
+        self.ensure_writable()?;
+        let Some(key) = id.storage_key() else {
+            return Err(BedrockWorldError::Validation(
+                "player id has no deletable LevelDB key".to_string(),
+            ));
+        };
+        let mut transaction = self.transaction();
+        transaction.delete_raw_key(Bytes::copy_from_slice(key.as_ref()));
+        transaction.commit()
+    }
+
     /// Get chunk blocking.
     pub fn get_chunk_blocking(&self, pos: ChunkPos) -> Result<Chunk> {
         let mut records = Vec::new();
@@ -2966,14 +2982,152 @@ where
     /// errors when `actor` has no `UniqueID`, or storage errors from the commit.
     pub fn put_actor_blocking(&self, pos: ChunkPos, actor: &ParsedEntity) -> Result<()> {
         self.ensure_writable()?;
-        let uid = actor.unique_id.map(ActorUid).ok_or_else(|| {
-            BedrockWorldError::Validation("actor UniqueID is required".to_string())
-        })?;
+        let uid = actor
+            .unique_id
+            .map(ActorUid::from_unique_id)
+            .ok_or_else(|| {
+                BedrockWorldError::Validation("actor UniqueID is required".to_string())
+            })?;
         let value = Bytes::from(serialize_root_nbt(&actor.nbt)?);
         parse_entities_from_value(&value, &mut WorldParseReport::default());
         let mut transaction = self.transaction();
         transaction.put_actor(pos, uid, value)?;
         transaction.commit()
+    }
+
+    /// Replaces one actor NBT document selected by its NBT `UniqueID`.
+    ///
+    /// Modern actors preserve the exact storage token read from `digp`; changing `UniqueID`
+    /// in the edited document is rejected because that would require a new entity identity.
+    pub fn edit_actor_nbt_by_unique_id_blocking(
+        &self,
+        pos: ChunkPos,
+        unique_id: i64,
+        nbt: NbtTag,
+    ) -> Result<BTreeSet<ChunkPos>> {
+        self.ensure_writable()?;
+        let records = self.actors_in_chunk_blocking(pos)?;
+        let source = records
+            .iter()
+            .find(|record| record.entity.unique_id == Some(unique_id))
+            .map(|record| record.source.clone())
+            .ok_or_else(|| {
+                BedrockWorldError::Validation(format!("actor UniqueID {unique_id} does not exist"))
+            })?;
+        let value = Bytes::from(serialize_root_nbt(&nbt)?);
+        let mut report = WorldParseReport::default();
+        let mut parsed = parse_entities_from_value(&value, &mut report);
+        if parsed.len() != 1 {
+            return Err(BedrockWorldError::Validation(
+                "edited actor NBT must contain exactly one entity root".to_string(),
+            ));
+        }
+        let edited = parsed.remove(0);
+        if edited.unique_id != Some(unique_id) {
+            return Err(BedrockWorldError::Validation(
+                "editing actor UniqueID is not supported; duplicate/delete and recreate instead"
+                    .to_string(),
+            ));
+        }
+        let target = edited.position.map_or(pos, |position| {
+            BlockPos {
+                x: position[0].floor() as i32,
+                y: position[1].floor() as i32,
+                z: position[2].floor() as i32,
+            }
+            .to_chunk_pos(pos.dimension)
+        });
+        let mut affected = BTreeSet::from([pos]);
+        match source {
+            ActorSource::ActorPrefix(storage_uid) => {
+                let mut transaction = self.transaction();
+                if target != pos {
+                    transaction.delete_actor(pos, storage_uid)?;
+                    affected.insert(target);
+                }
+                transaction.put_actor(target, storage_uid, value)?;
+                transaction.commit()?;
+            }
+            ActorSource::InlineChunk(inline_key) => {
+                if target != pos {
+                    return Err(BedrockWorldError::Validation(
+                        "moving a legacy inline actor to another chunk is not supported"
+                            .to_string(),
+                    ));
+                }
+                let raw = self.storage().get(&inline_key.encode())?.ok_or_else(|| {
+                    BedrockWorldError::Validation(
+                        "legacy inline actor record disappeared".to_string(),
+                    )
+                })?;
+                let mut inline_report = WorldParseReport::default();
+                let mut actors = parse_entities_from_value(&raw, &mut inline_report);
+                let actor = actors
+                    .iter_mut()
+                    .find(|actor| actor.unique_id == Some(unique_id))
+                    .ok_or_else(|| {
+                        BedrockWorldError::Validation("legacy inline actor disappeared".to_string())
+                    })?;
+                *actor = edited;
+                let mut encoded = Vec::new();
+                for actor in actors {
+                    encoded.extend(serialize_root_nbt(&actor.nbt)?);
+                }
+                let mut transaction = self.transaction();
+                transaction.put_raw_key(inline_key.encode(), Bytes::from(encoded));
+                transaction.commit()?;
+            }
+        }
+        Ok(affected)
+    }
+
+    /// Deletes exactly one actor selected by NBT `UniqueID` from modern or legacy storage.
+    pub fn delete_actor_by_unique_id_blocking(&self, pos: ChunkPos, unique_id: i64) -> Result<()> {
+        self.ensure_writable()?;
+        let records = self.actors_in_chunk_blocking(pos)?;
+        let source = records
+            .iter()
+            .find(|record| record.entity.unique_id == Some(unique_id))
+            .map(|record| record.source.clone())
+            .ok_or_else(|| {
+                BedrockWorldError::Validation(format!("actor UniqueID {unique_id} does not exist"))
+            })?;
+        match source {
+            ActorSource::ActorPrefix(storage_uid) => self.delete_actor_blocking(pos, storage_uid),
+            ActorSource::InlineChunk(inline_key) => {
+                let raw = self.storage().get(&inline_key.encode())?.ok_or_else(|| {
+                    BedrockWorldError::Validation(
+                        "legacy inline actor record disappeared".to_string(),
+                    )
+                })?;
+                let mut report = WorldParseReport::default();
+                let mut removed = false;
+                let actors = parse_entities_from_value(&raw, &mut report)
+                    .into_iter()
+                    .filter(|actor| {
+                        let keep = actor.unique_id != Some(unique_id);
+                        removed |= !keep;
+                        keep
+                    })
+                    .collect::<Vec<_>>();
+                if !removed {
+                    return Err(BedrockWorldError::Validation(
+                        "legacy inline actor disappeared".to_string(),
+                    ));
+                }
+                let mut transaction = self.transaction();
+                if actors.is_empty() {
+                    transaction.delete_raw_key(inline_key.encode());
+                } else {
+                    let mut encoded = Vec::new();
+                    for actor in actors {
+                        encoded.extend(serialize_root_nbt(&actor.nbt)?);
+                    }
+                    transaction.put_raw_key(inline_key.encode(), Bytes::from(encoded));
+                }
+                transaction.commit()
+            }
+        }
     }
 
     /// Deletes a modern actor record and removes it from the chunk digest.
@@ -3002,9 +3156,12 @@ where
         actor: &ParsedEntity,
     ) -> Result<()> {
         self.ensure_writable()?;
-        let uid = actor.unique_id.map(ActorUid).ok_or_else(|| {
-            BedrockWorldError::Validation("actor UniqueID is required".to_string())
-        })?;
+        let uid = actor
+            .unique_id
+            .map(ActorUid::from_unique_id)
+            .ok_or_else(|| {
+                BedrockWorldError::Validation("actor UniqueID is required".to_string())
+            })?;
         let value = Bytes::from(serialize_root_nbt(&actor.nbt)?);
         let mut transaction = self.transaction();
         transaction.delete_actor(from, uid)?;

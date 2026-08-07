@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-const CACHE_VERSION: u16 = 3;
+const CACHE_VERSION: u16 = 4;
 const INDEX_FILE: &str = "index.bin";
 const MAP_INFO_CACHE_DIRECTORY: &str = "map-info";
 const MAX_MAP_INFO_QUERY_WORKERS: usize = 4;
@@ -39,8 +39,18 @@ pub struct MapInfoTileKey {
 pub struct MapInfoEntity {
     /// Absolute X coordinate in blocks.
     pub block_x: f32,
+    /// Absolute Y coordinate in blocks.
+    pub block_y: f32,
     /// Absolute Z coordinate in blocks.
     pub block_z: f32,
+    /// Chunk whose Entity/digp record referenced this actor.
+    pub source_chunk_x: i32,
+    /// Chunk whose Entity/digp record referenced this actor.
+    pub source_chunk_z: i32,
+    /// Dimension of the source chunk.
+    pub dimension_id: i32,
+    /// NBT UniqueID used to resolve the exact actor for editing.
+    pub unique_id: Option<i64>,
     /// Bedrock entity identifier, when available.
     pub identifier: Option<String>,
 }
@@ -83,6 +93,8 @@ pub struct MapInfoBlockRect {
 pub struct MapInfoTilePayload {
     /// Entity markers within the tile's chunk range.
     pub entities: Vec<MapInfoEntity>,
+    /// Parsed entity roots omitted only because they had no usable Pos value.
+    pub skipped_entity_count: u32,
     /// Block-entity markers within the tile's chunk range.
     pub block_entities: Vec<MapInfoBlockEntity>,
     /// Pending tick counts grouped by chunk.
@@ -96,6 +108,8 @@ pub struct MapInfoTilePayload {
 pub struct MapInfoOverlaySnapshot {
     /// Entity markers from all requested tiles.
     pub entities: Vec<MapInfoEntity>,
+    /// Parsed entity roots omitted only because they had no usable Pos value.
+    pub skipped_entity_count: usize,
     /// Block-entity markers from all requested tiles.
     pub block_entities: Vec<MapInfoBlockEntity>,
     /// Pending tick counts from all requested tiles.
@@ -385,11 +399,18 @@ impl MapInfoTilePayload {
                     ParsedChunkRecordValue::Entities(entities) => {
                         for entity in entities {
                             let Some(position) = entity.position else {
+                                payload.skipped_entity_count =
+                                    payload.skipped_entity_count.saturating_add(1);
                                 continue;
                             };
                             payload.entities.push(MapInfoEntity {
                                 block_x: position[0] as f32,
+                                block_y: position[1] as f32,
                                 block_z: position[2] as f32,
+                                source_chunk_x: result.pos.x,
+                                source_chunk_z: result.pos.z,
+                                dimension_id: result.pos.dimension.id(),
+                                unique_id: entity.unique_id,
                                 identifier: entity.identifier.clone(),
                             });
                         }
@@ -452,6 +473,9 @@ impl MapInfoOverlaySnapshot {
             ..Self::default()
         };
         for payload in payloads {
+            snapshot.skipped_entity_count = snapshot
+                .skipped_entity_count
+                .saturating_add(payload.skipped_entity_count as usize);
             snapshot.entities.extend(payload.entities);
             snapshot.block_entities.extend(payload.block_entities);
             snapshot

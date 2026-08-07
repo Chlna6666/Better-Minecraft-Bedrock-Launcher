@@ -459,16 +459,37 @@ impl AsRef<str> for MapRecordId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-/// Actor unique id used by modern `actorprefix` records.
+/// Opaque 8-byte actor storage token stored in `digp` and appended to `actorprefix`.
+///
+/// This is deliberately not the NBT `UniqueID`. Bedrock derives this token from
+/// `UniqueID` by complementing the world-start-count half and encoding the result
+/// big-endian before storing those raw bytes in the database key.
 pub struct ActorUid(pub i64);
 
 impl ActorUid {
     #[must_use]
-    /// Encodes this actor id as `actorprefix<little-endian i64>`.
+    /// Derives the modern actor storage token from the NBT `UniqueID` using the
+    /// same transformation as Bedrock/BedrockMap.
+    pub fn from_unique_id(unique_id: i64) -> Self {
+        let unique = unique_id as u64;
+        let world_start_count = unique >> 32;
+        let index = unique & 0xffff_ffff;
+        let storage = ((0xffff_ffff_u64.wrapping_sub(world_start_count)) << 32) | index;
+        Self(i64::from_le_bytes(storage.to_be_bytes()))
+    }
+
+    #[must_use]
+    /// Returns the exact eight storage bytes referenced by `digp`.
+    pub const fn raw_storage_bytes(self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+
+    #[must_use]
+    /// Encodes this storage token as `actorprefix<raw 8 bytes>`.
     pub fn storage_key(self) -> Bytes {
         let mut bytes = Vec::with_capacity(19);
         bytes.extend_from_slice(b"actorprefix");
-        bytes.extend_from_slice(&self.0.to_le_bytes());
+        bytes.extend_from_slice(&self.raw_storage_bytes());
         Bytes::from(bytes)
     }
 
@@ -2767,5 +2788,19 @@ mod tests {
             ]));
             bytes.extend_from_slice(&serialize_root_nbt(&tag).expect("serialize palette"));
         }
+    }
+}
+
+#[cfg(test)]
+mod actor_storage_key_tests {
+    use super::ActorUid;
+
+    #[test]
+    fn unique_id_is_not_used_as_raw_actorprefix_suffix() {
+        let unique_id = 0x0000_0002_1234_5678_i64;
+        let storage = ActorUid::from_unique_id(unique_id);
+        let expected_numeric = ((0xffff_ffff_u64 - 2) << 32) | 0x1234_5678;
+        assert_eq!(storage.raw_storage_bytes(), expected_numeric.to_be_bytes());
+        assert_ne!(storage.raw_storage_bytes(), unique_id.to_le_bytes());
     }
 }

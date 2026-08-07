@@ -5067,3 +5067,16 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
     }
     std::fs::remove_dir_all(&world_path).expect("remove temporary target world");
 }
+
+#[::core::prelude::v1::test]
+fn individual_actor_edit_target_has_stable_identity() {
+    let target = EditTarget::Actor {
+        chunk: ChunkPos {
+            x: -5,
+            z: 4,
+            dimension: Dimension::Overworld,
+        },
+        unique_id: 123456789,
+    };
+    assert!(target.operation_label().contains("123456789"));
+}

@@ -303,7 +303,9 @@ impl MapViewerWindowView {
                         this.professional.overlay_paint = Some(overlay);
                         this.professional.overlays = None;
                         this.status = SharedString::from(format!(
-                            "实体/叠加区域已完整 · 缓存 {}/{} · 重建 {}",
+                            "实体/叠加区域已完整 · 实体 {} · 无坐标跳过 {} · 缓存 {}/{} · 重建 {}",
+                            map_info.entities.len(),
+                            map_info.skipped_entity_count,
                             map_info.cached_tile_count,
                             map_info.requested_tile_count,
                             map_info.rebuilt_tile_count

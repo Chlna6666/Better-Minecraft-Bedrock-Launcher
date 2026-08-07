@@ -256,6 +256,65 @@ impl MapViewerWindowView {
             ContextMenuGroup::titled("选区", selection_entries),
             ContextMenuGroup::titled("编辑", more_edit_entries),
         ];
+        if let Some(actor) = self.professional.entity_context_target.clone() {
+            let identifier = actor
+                .identifier
+                .clone()
+                .unwrap_or_else(|| "minecraft:unknown".to_string());
+            let edit_target = actor.unique_id.map(|unique_id| EditTarget::Actor {
+                chunk: actor.source_chunk,
+                unique_id,
+            });
+            let mut entries = Vec::new();
+            if let Some(target) = edit_target.clone() {
+                let entity = cx.entity();
+                entries.push(ContextMenuEntry::item(
+                    ContextMenuItem::new("编辑此实体 NBT")
+                        .description(format!(
+                            "{identifier} · UniqueID {}",
+                            actor.unique_id.unwrap_or_default()
+                        ))
+                        .on_click(move |cx| {
+                            let target = target.clone();
+                            entity.update(cx, move |this, cx| {
+                                this.context_menu = None;
+                                this.professional.entity_context_target = None;
+                                this.load_edit_detail(target, cx);
+                            })
+                        }),
+                ));
+                let target = edit_target.expect("entity edit target");
+                let entity = cx.entity();
+                entries.push(ContextMenuEntry::item(
+                    ContextMenuItem::new("删除此实体")
+                        .danger(true)
+                        .description("第一次点击进入确认；再次执行后可从历史记录撤销")
+                        .on_click(move |cx| {
+                            let target = target.clone();
+                            entity.update(cx, move |this, cx| {
+                                this.context_menu = None;
+                                this.professional.entity_context_target = None;
+                                this.confirm_or_run_edit(target, EditAction::Delete, cx);
+                            })
+                        }),
+                ));
+            } else {
+                let entity = cx.entity();
+                entries.push(ContextMenuEntry::item(
+                    ContextMenuItem::new("查看所在 chunk 实体")
+                        .description("该实体缺少 UniqueID，不能安全执行单实体写入")
+                        .on_click(move |cx| {
+                            let chunk = actor.source_chunk;
+                            entity.update(cx, move |this, cx| {
+                                this.context_menu = None;
+                                this.professional.entity_context_target = None;
+                                this.load_edit_detail(EditTarget::Actors(chunk), cx);
+                            })
+                        }),
+                ));
+            }
+            groups.insert(0, ContextMenuGroup::titled(identifier, entries));
+        }
         if let Some(player_id) = self.players.context_target.clone() {
             let entity = cx.entity();
             groups.insert(

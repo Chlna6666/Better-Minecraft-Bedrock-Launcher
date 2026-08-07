@@ -470,6 +470,7 @@ pub(super) enum EditTarget {
     BlockEntities(ChunkPos),
     BlockEntityAt { chunk: ChunkPos, block: BlockPos },
     Actors(ChunkPos),
+    Actor { chunk: ChunkPos, unique_id: i64 },
     HeightMap(ChunkPos),
     BiomeStorage(ChunkPos),
 }
@@ -486,6 +487,9 @@ impl EditTarget {
                 format!("edit block entity {},{},{}", block.x, block.y, block.z)
             }
             Self::Actors(pos) => format!("edit actors chunk {},{}", pos.x, pos.z),
+            Self::Actor { chunk, unique_id } => {
+                format!("edit actor {unique_id} in chunk {},{}", chunk.x, chunk.z)
+            }
             Self::HeightMap(pos) => format!("edit heightmap chunk {},{}", pos.x, pos.z),
             Self::BiomeStorage(pos) => format!("edit biome storage chunk {},{}", pos.x, pos.z),
         }
@@ -1072,6 +1076,8 @@ pub(super) struct ProfessionalQueryState {
     pub(super) overlay_bounds: Option<SlimeChunkBounds>,
     pub(super) overlays: Option<RegionOverlayQuery>,
     pub(super) overlay_paint: Option<Arc<ProfessionalOverlayPaintCache>>,
+    /// Entity currently hit by a right-click on the map overlay.
+    pub(super) entity_context_target: Option<EntityContextTarget>,
     /// True only after the current overlay scope was validated against LevelDB.
     /// A fast disk-cache preview is intentionally provisional.
     pub(super) overlay_complete: bool,
@@ -1234,7 +1240,14 @@ impl ProfessionalOverlayPaintCache {
         for entity in &snapshot.entities {
             cache.entity_points.push(EntityOverlayPoint {
                 block_x: entity.block_x,
+                block_y: entity.block_y,
                 block_z: entity.block_z,
+                source_chunk: ChunkPos {
+                    x: entity.source_chunk_x,
+                    z: entity.source_chunk_z,
+                    dimension: Dimension::from_id(entity.dimension_id),
+                },
+                unique_id: entity.unique_id,
                 identifier: entity.identifier.clone(),
             });
         }
@@ -1279,7 +1292,10 @@ impl ProfessionalOverlayPaintCache {
         for entity in &query.entities {
             cache.entity_points.push(EntityOverlayPoint {
                 block_x: entity.position[0] as f32,
+                block_y: entity.position[1] as f32,
                 block_z: entity.position[2] as f32,
+                source_chunk: entity.chunk,
+                unique_id: entity.unique_id,
                 identifier: entity.identifier.clone(),
             });
         }
@@ -1351,9 +1367,20 @@ pub(super) struct BlockOverlayPoint {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(super) struct EntityContextTarget {
+    pub(super) source_chunk: ChunkPos,
+    pub(super) unique_id: Option<i64>,
+    pub(super) identifier: Option<String>,
+    pub(super) position: [f32; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct EntityOverlayPoint {
     pub(super) block_x: f32,
+    pub(super) block_y: f32,
     pub(super) block_z: f32,
+    pub(super) source_chunk: ChunkPos,
+    pub(super) unique_id: Option<i64>,
     pub(super) identifier: Option<String>,
 }
 

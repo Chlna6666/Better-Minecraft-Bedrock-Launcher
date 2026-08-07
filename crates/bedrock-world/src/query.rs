@@ -237,6 +237,8 @@ pub struct BlockTip {
 pub struct EntityOverlay {
     /// Entity identifier decoded from NBT, when present.
     pub identifier: Option<String>,
+    /// NBT `UniqueID`, retained for exact editor targeting.
+    pub unique_id: Option<i64>,
     /// World position `[x, y, z]` decoded from the entity record.
     pub position: [f64; 3],
     /// Chunk containing the entity position.
@@ -1243,6 +1245,7 @@ fn push_entities(
         };
         target.push(EntityOverlay {
             identifier: entity.identifier,
+            unique_id: entity.unique_id,
             chunk: BlockPos {
                 x: position[0].floor() as i32,
                 y: position[1].floor() as i32,
