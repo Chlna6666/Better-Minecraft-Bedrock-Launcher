@@ -159,7 +159,7 @@ jobs:
           git diff --check
           grep -F "pub const fn rgb" crates/gpui/src/foundation/color/rgba.rs
           grep -F "color: Rgba" src/ui/window/map_viewer/canvas.rs
-          grep -F "-> Rgba" src/ui/window/map_viewer/history_panel.rs
+          grep -F -- "-> Rgba" src/ui/window/map_viewer/history_panel.rs
 
       - name: Commit directly to master
         shell: bash
