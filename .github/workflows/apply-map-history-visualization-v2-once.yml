@@ -1,0 +1,59 @@
+name: Apply map history visualization v2 once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - tools/.apply-map-history-visualization-v2-trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-map-history-visualization-v2-once
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Use Rust 1.95
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+
+      - name: Apply history visualization v2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python tools/apply_map_history_visualization_v2.py
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate BMCBL library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo check -p bmcbl --lib
+
+      - name: Commit implementation directly to master
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Remove-Item -Force -ErrorAction SilentlyContinue tools/.apply-map-history-visualization-v2-trigger
+          Remove-Item -Force -ErrorAction SilentlyContinue tools/apply_map_history_visualization_v2.py
+          Remove-Item -Force -ErrorAction SilentlyContinue .github/workflows/apply-map-history-visualization-v2-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add block-level map history visualization"
+          git push origin HEAD:master
