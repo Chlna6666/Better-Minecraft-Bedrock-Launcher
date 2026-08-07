@@ -100,6 +100,7 @@ impl MapViewerWindowView {
             if self.professional.overlay_loading {
                 self.cancel_professional_overlay_query();
             }
+            let was_complete = self.professional.overlay_complete;
             let changed = self.professional.overlay_bounds != Some(bounds)
                 || self.professional.overlay_paint.is_none();
             if changed {
@@ -108,16 +109,22 @@ impl MapViewerWindowView {
                 self.professional.overlay_paint = Some(Arc::new(overlay));
             }
             self.professional.overlay_bounds = Some(bounds);
+            self.professional.overlay_complete = true;
             self.professional.pending_overlay_refresh = false;
-            if changed {
+            if changed || !was_complete {
                 self.sync_professional_render_snapshot(cx);
             }
             return;
         }
-        if should_defer_overlay_query_for_visible_tiles(
-            self.render_batch_active,
-            self.tile_manager.has_visible_work(),
-        ) {
+        // Entity markers are lightweight, viewport-paged LevelDB reads. Do not let a
+        // long terrain render queue starve them; other professional overlays retain the
+        // conservative defer policy.
+        if !self.overlay_options.entities
+            && should_defer_overlay_query_for_visible_tiles(
+                self.render_batch_active,
+                self.tile_manager.has_visible_work(),
+            )
+        {
             self.professional.pending_overlay_refresh = true;
             return;
         }
@@ -137,6 +144,7 @@ impl MapViewerWindowView {
         if self.professional.overlay_bounds == Some(bounds)
             && self.professional.last_overlay_request_options == Some(options)
             && self.professional.overlay_paint.is_some()
+            && self.professional.overlay_complete
         {
             self.professional.pending_overlay_refresh = false;
             return;
@@ -147,6 +155,7 @@ impl MapViewerWindowView {
         let query_generation = self.map_query_budget.next_generation(MapQueryKind::Overlay);
         self.professional.overlay_cancel = Some(cancel.clone());
         self.professional.overlay_loading = true;
+        self.professional.overlay_complete = false;
         self.professional.pending_overlay_refresh = false;
         self.professional.last_overlay_request_bounds = Some(bounds);
         self.professional.last_overlay_request_options = Some(options);
@@ -212,6 +221,9 @@ impl MapViewerWindowView {
                     if let Ok((map_info, villages)) = cached_result {
                         if map_info.cached_tile_count > 0 || !villages.is_empty() {
                             this.professional.overlay_bounds = Some(bounds);
+                            // Cached tiles are an immediate preview only. The following full
+                            // stage validates source fingerprints and fills every missing/stale tile.
+                            this.professional.overlay_complete = false;
                             let mut overlay = ProfessionalOverlayPaintCache::from_map_info_snapshot(
                                 &map_info, &villages,
                             );
@@ -219,8 +231,8 @@ impl MapViewerWindowView {
                             let overlay = Arc::new(overlay);
                             this.professional.overlay_paint = Some(overlay);
                             this.status = SharedString::from(format!(
-                                "已显示缓存叠加层 · 缓存 {} · 正在补齐未缓存区域",
-                                map_info.cached_tile_count
+                                "已显示实体/叠加缓存 {}/{} · 正在校验并补齐当前区域",
+                                map_info.cached_tile_count, map_info.requested_tile_count
                             ));
                         }
                     }
@@ -281,6 +293,7 @@ impl MapViewerWindowView {
                 match full_result {
                     Ok((map_info, villages)) => {
                         this.professional.overlay_bounds = Some(bounds);
+                        this.professional.overlay_complete = true;
                         let mut overlay = ProfessionalOverlayPaintCache::from_map_info_snapshot(
                             &map_info, &villages,
                         );
@@ -290,11 +303,14 @@ impl MapViewerWindowView {
                         this.professional.overlay_paint = Some(overlay);
                         this.professional.overlays = None;
                         this.status = SharedString::from(format!(
-                            "地图叠加层已更新 · 缓存 {} · 重建 {}",
-                            map_info.cached_tile_count, map_info.rebuilt_tile_count
+                            "实体/叠加区域已完整 · 缓存 {}/{} · 重建 {}",
+                            map_info.cached_tile_count,
+                            map_info.requested_tile_count,
+                            map_info.rebuilt_tile_count
                         ));
                     }
                     Err(error) => {
+                        this.professional.overlay_complete = false;
                         if error.contains("cancelled") || error.contains("cancel") {
                             this.status = SharedString::from("地图叠加层查询已取消");
                         } else {
@@ -427,13 +443,10 @@ impl MapViewerWindowView {
     pub(super) fn invalidate_professional_overlay_for_viewport_change(&mut self) {
         self.cancel_slime_window_candidate_query();
         self.professional.slime_window_candidates = None;
-        if self.metadata_index_ready
-            && self.chunk_bounds.is_some()
-            && !self.available_tiles.is_empty()
-        {
-            return;
-        }
 
+        // Entity/map-info data is demand-paged by the current viewport. An indexed world
+        // must therefore invalidate its query scope too; the previous early return made a
+        // partial whole-world cache look permanent after the camera moved elsewhere.
         self.map_query_budget.next_generation(MapQueryKind::Overlay);
         if let Some(cancel) = self.professional.overlay_cancel.take() {
             cancel.cancel();
@@ -441,10 +454,10 @@ impl MapViewerWindowView {
         self.professional.overlay_generation =
             self.professional.overlay_generation.saturating_add(1);
         self.professional.overlay_loading = false;
+        self.professional.overlay_complete = false;
         self.professional.overlay_bounds = None;
-        // Keep the last immutable paint cache while the new viewport query is
-        // running. It follows the viewport and is replaced atomically on
-        // completion, so dragging never flashes an empty overlay layer.
+        // Retain the last immutable paint cache until the replacement arrives so a drag
+        // never flashes an empty overlay layer. World coordinates keep old points harmless.
         self.professional.pending_overlay_refresh = true;
         self.professional.last_overlay_request_bounds = None;
         self.professional.last_overlay_request_options = None;
@@ -874,37 +887,89 @@ pub(super) struct MapInfoQueryScope {
     pub(super) indexed_world: bool,
 }
 
+const MAP_INFO_PREFETCH_TILE_RADIUS: i32 = 1;
+const MAP_INFO_PREFETCH_VISIBLE_TILE_LIMIT: i64 = 64;
+
 pub(super) fn map_info_query_scope(
     metadata_index_ready: bool,
     dimension: Dimension,
     chunk_bounds: Option<ChunkBounds>,
-    available_tiles: &BTreeSet<(i32, i32)>,
+    _available_tiles: &BTreeSet<(i32, i32)>,
     visible_bounds: Option<SlimeChunkBounds>,
     chunks_per_tile: u16,
 ) -> Option<MapInfoQueryScope> {
-    if metadata_index_ready
-        && !available_tiles.is_empty()
-        && let Some(chunk_bounds) = chunk_bounds
-        && chunk_bounds.dimension == dimension
-    {
-        return Some(MapInfoQueryScope {
-            bounds: SlimeChunkBounds {
-                dimension,
-                min_chunk_x: chunk_bounds.min_chunk_x,
-                max_chunk_x: chunk_bounds.max_chunk_x,
-                min_chunk_z: chunk_bounds.min_chunk_z,
-                max_chunk_z: chunk_bounds.max_chunk_z,
-            },
-            tile_coordinates: available_tiles.iter().copied().collect(),
-            indexed_world: true,
-        });
+    let visible_bounds = visible_bounds?;
+    if visible_bounds.dimension != dimension {
+        return None;
+    }
+    let edge = i32::from(chunks_per_tile).max(1);
+    let mut min_tile_x = visible_bounds.min_chunk_x.div_euclid(edge);
+    let mut max_tile_x = visible_bounds.max_chunk_x.div_euclid(edge);
+    let mut min_tile_z = visible_bounds.min_chunk_z.div_euclid(edge);
+    let mut max_tile_z = visible_bounds.max_chunk_z.div_euclid(edge);
+
+    // Align requests to persistent map-info tiles. Small camera movement inside the same
+    // tile then reuses both the memory Overlay cache and the on-disk tile payloads.
+    let visible_tile_width = i64::from(max_tile_x)
+        .saturating_sub(i64::from(min_tile_x))
+        .saturating_add(1);
+    let visible_tile_height = i64::from(max_tile_z)
+        .saturating_sub(i64::from(min_tile_z))
+        .saturating_add(1);
+    let visible_tile_count = visible_tile_width.saturating_mul(visible_tile_height);
+    let prefetch = if visible_tile_count <= MAP_INFO_PREFETCH_VISIBLE_TILE_LIMIT {
+        MAP_INFO_PREFETCH_TILE_RADIUS
+    } else {
+        0
+    };
+    min_tile_x = min_tile_x.saturating_sub(prefetch);
+    max_tile_x = max_tile_x.saturating_add(prefetch);
+    min_tile_z = min_tile_z.saturating_sub(prefetch);
+    max_tile_z = max_tile_z.saturating_add(prefetch);
+
+    let indexed_bounds =
+        chunk_bounds.filter(|bounds| metadata_index_ready && bounds.dimension == dimension);
+    if let Some(world_bounds) = indexed_bounds.as_ref() {
+        min_tile_x = min_tile_x.max(world_bounds.min_chunk_x.div_euclid(edge));
+        max_tile_x = max_tile_x.min(world_bounds.max_chunk_x.div_euclid(edge));
+        min_tile_z = min_tile_z.max(world_bounds.min_chunk_z.div_euclid(edge));
+        max_tile_z = max_tile_z.min(world_bounds.max_chunk_z.div_euclid(edge));
+    }
+    if min_tile_x > max_tile_x || min_tile_z > max_tile_z {
+        return None;
     }
 
-    let bounds = visible_bounds?;
+    let mut tile_coordinates = Vec::new();
+    for tile_z in min_tile_z..=max_tile_z {
+        for tile_x in min_tile_x..=max_tile_x {
+            tile_coordinates.push((tile_x, tile_z));
+        }
+    }
+
+    let mut bounds = SlimeChunkBounds {
+        dimension,
+        min_chunk_x: min_tile_x.saturating_mul(edge),
+        max_chunk_x: max_tile_x
+            .saturating_add(1)
+            .saturating_mul(edge)
+            .saturating_sub(1),
+        min_chunk_z: min_tile_z.saturating_mul(edge),
+        max_chunk_z: max_tile_z
+            .saturating_add(1)
+            .saturating_mul(edge)
+            .saturating_sub(1),
+    };
+    if let Some(world_bounds) = indexed_bounds.as_ref() {
+        bounds.min_chunk_x = bounds.min_chunk_x.max(world_bounds.min_chunk_x);
+        bounds.max_chunk_x = bounds.max_chunk_x.min(world_bounds.max_chunk_x);
+        bounds.min_chunk_z = bounds.min_chunk_z.max(world_bounds.min_chunk_z);
+        bounds.max_chunk_z = bounds.max_chunk_z.min(world_bounds.max_chunk_z);
+    }
+
     Some(MapInfoQueryScope {
         bounds,
-        tile_coordinates: map_info_tile_coordinates(bounds, chunks_per_tile),
-        indexed_world: false,
+        tile_coordinates,
+        indexed_world: indexed_bounds.is_some(),
     })
 }
 

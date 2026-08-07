@@ -1915,6 +1915,79 @@ fn retained_paint_bounds_absorb_small_viewport_movements() {
 }
 
 #[::core::prelude::v1::test]
+fn map_info_scope_stays_viewport_paged_when_world_index_is_ready() {
+    let world_bounds = ChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: -1024,
+        max_chunk_x: 1024,
+        min_chunk_z: -1024,
+        max_chunk_z: 1024,
+    };
+    let visible = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: 10,
+        max_chunk_x: 20,
+        min_chunk_z: 30,
+        max_chunk_z: 40,
+    };
+    let scope = map_info_query_scope(
+        true,
+        Dimension::Overworld,
+        Some(world_bounds),
+        &BTreeSet::new(),
+        Some(visible),
+        8,
+    )
+    .expect("map info scope");
+
+    assert!(scope.indexed_world);
+    assert!(scope.bounds.min_chunk_x > world_bounds.min_chunk_x);
+    assert!(scope.bounds.max_chunk_x < world_bounds.max_chunk_x);
+    assert!(scope.bounds.min_chunk_z > world_bounds.min_chunk_z);
+    assert!(scope.bounds.max_chunk_z < world_bounds.max_chunk_z);
+    assert!(scope.tile_coordinates.len() <= 20);
+}
+
+#[::core::prelude::v1::test]
+fn map_info_scope_is_stable_inside_the_same_cache_tile() {
+    let first = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: 9,
+        max_chunk_x: 14,
+        min_chunk_z: 17,
+        max_chunk_z: 22,
+    };
+    let second = SlimeChunkBounds {
+        dimension: Dimension::Overworld,
+        min_chunk_x: 10,
+        max_chunk_x: 15,
+        min_chunk_z: 18,
+        max_chunk_z: 23,
+    };
+    let first_scope = map_info_query_scope(
+        false,
+        Dimension::Overworld,
+        None,
+        &BTreeSet::new(),
+        Some(first),
+        8,
+    )
+    .expect("first map info scope");
+    let second_scope = map_info_query_scope(
+        false,
+        Dimension::Overworld,
+        None,
+        &BTreeSet::new(),
+        Some(second),
+        8,
+    )
+    .expect("second map info scope");
+
+    assert_eq!(first_scope.bounds, second_scope.bounds);
+    assert_eq!(first_scope.tile_coordinates, second_scope.tile_coordinates);
+}
+
+#[::core::prelude::v1::test]
 fn entity_avatar_keys_accept_namespaced_identifiers() {
     assert_eq!(
         normalize_entity_avatar_key("minecraft:zombie"),
