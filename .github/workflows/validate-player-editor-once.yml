@@ -1,0 +1,89 @@
+name: Validate player editor once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - tools/.validate-player-editor-trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: validate-player-editor-once
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: player-editor-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            player-editor-${{ runner.os }}-rust-1.95-
+
+      - name: Validate player editor
+        id: validate
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = "tools/player-editor-validation.log"
+          Remove-Item -Force -ErrorAction SilentlyContinue $log
+          function Invoke-Logged {
+            param([string]$Label, [scriptblock]$Command)
+            "`n===== $Label =====" | Tee-Object -FilePath $log -Append
+            & $Command *>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { throw "$Label failed with exit code $LASTEXITCODE" }
+          }
+          try {
+            Invoke-Logged "Install Rust 1.95" { rustup toolchain install 1.95.0 --profile minimal }
+            Invoke-Logged "Install rustfmt" { rustup component add rustfmt --toolchain 1.95.0 }
+            Invoke-Logged "Select Rust 1.95" { rustup default 1.95.0 }
+            Invoke-Logged "Format check" {
+              rustfmt --edition 2024 --check src/ui/window/map_viewer/players.rs src/ui/window/map_viewer/player_panel.rs
+            }
+            Invoke-Logged "Cargo check" { cargo check -p bmcbl --lib --message-format short }
+          } catch {
+            "`nFAILED: $($_.Exception.Message)" | Tee-Object -FilePath $log -Append
+            exit 1
+          }
+
+      - name: Publish failure log
+        if: steps.validate.outcome != 'success'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/player-editor-validation.log
+          git commit -m "ci: record player editor validation failure"
+          git push origin HEAD:master
+
+      - name: Clean one-time validation files
+        if: steps.validate.outcome == 'success'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          Remove-Item -Force tools/.validate-player-editor-trigger
+          Remove-Item -Force tools/player-editor-validation.log -ErrorAction SilentlyContinue
+          Remove-Item -Force .github/workflows/validate-player-editor-once.yml
+          git add -A
+          git commit -m "ci: finish player editor validation"
+          git push origin HEAD:master
+
+      - name: Fail after publishing diagnostics
+        if: steps.validate.outcome != 'success'
+        shell: pwsh
+        run: exit 1
