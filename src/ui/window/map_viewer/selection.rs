@@ -104,6 +104,17 @@ fn normalize_chunk_set(chunks: impl IntoIterator<Item = ChunkPos>) -> Vec<ChunkP
     chunks
 }
 
+fn advanced_selection_identity(
+    chunks: &[ChunkPos],
+    advanced_id: u64,
+    revision: u64,
+) -> Option<ChunkSelection> {
+    let mut selection = chunk_selection_from_chunks(chunks)?;
+    selection.advanced_id = advanced_id;
+    selection.advanced_revision = revision;
+    Some(selection)
+}
+
 fn begin_additive_selection(selection: Option<ChunkSelection>) -> u64 {
     let base_chunks = selection
         .and_then(exact_selection_chunks)
@@ -115,14 +126,16 @@ fn begin_additive_selection(selection: Option<ChunkSelection>) -> u64 {
     }
 
     let id = next_advanced_selection_id();
+    let revision = u64::from(!base_chunks.is_empty());
+    let inherited_selection = advanced_selection_identity(&base_chunks, id, revision);
     if let Ok(mut states) = advanced_selection_states().lock() {
         states.insert(
             id,
             AdvancedSelectionState {
-                selection: None,
+                selection: inherited_selection,
                 base_chunks: Arc::new(base_chunks.clone()),
                 current_chunks: Arc::new(base_chunks),
-                revision: 0,
+                revision,
             },
         );
         trim_advanced_selection_states(&mut states);
@@ -133,14 +146,16 @@ fn begin_additive_selection(selection: Option<ChunkSelection>) -> u64 {
 fn begin_exact_move(selection: ChunkSelection, chunks: Arc<Vec<ChunkPos>>) -> u64 {
     remove_advanced_selection_state(selection);
     let id = next_advanced_selection_id();
+    let revision = 1;
+    let inherited_selection = advanced_selection_identity(chunks.as_ref(), id, revision);
     if let Ok(mut states) = advanced_selection_states().lock() {
         states.insert(
             id,
             AdvancedSelectionState {
-                selection: None,
+                selection: inherited_selection,
                 base_chunks: chunks.clone(),
                 current_chunks: chunks,
-                revision: 0,
+                revision,
             },
         );
         trim_advanced_selection_states(&mut states);
@@ -809,6 +824,18 @@ mod tests {
     }
 
     #[test]
+    fn additive_selection_preserves_base_before_pointer_moves() {
+        let base = selection(chunk(-1, 0), chunk(1, 0));
+        let advanced_id = begin_additive_selection(Some(base));
+        let drag = RightSelectionDrag::additive(Point::default(), chunk(0, 0), advanced_id);
+        let inherited = drag.selection();
+        let exact = exact_selection_chunks(inherited).expect("inherited exact chunks");
+
+        assert_eq!(exact.len(), 3);
+        assert_eq!(inherited.bounds(), base.bounds());
+    }
+
+    #[test]
     fn irregular_selection_move_keeps_shape() {
         let horizontal = selection(chunk(-1, 0), chunk(1, 0));
         let add_id = begin_additive_selection(Some(horizontal));
@@ -824,6 +851,10 @@ mod tests {
             RightSelectionIntent::MoveExact(selection),
             Some(move_id),
         );
+        let zero_delta = drag.selection();
+        let zero_delta_chunks = exact_selection_chunks(zero_delta).expect("zero delta exact chunks");
+        assert_eq!(zero_delta_chunks.len(), 5);
+
         drag.current_chunk = chunk(2, 3);
         drag.moved = true;
         let moved = drag.selection();
