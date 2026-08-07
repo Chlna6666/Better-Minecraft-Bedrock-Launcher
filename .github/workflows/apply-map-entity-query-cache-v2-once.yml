@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - tools/apply-map-entity-query-cache-v2.py
+      - tools/apply-map-entity-query-cache-v2-followup.py
       - .github/workflows/apply-map-entity-query-cache-v2-once.yml
 
 permissions:
@@ -38,7 +39,9 @@ jobs:
 
       - name: Apply source patch
         shell: pwsh
-        run: python tools/apply-map-entity-query-cache-v2.py
+        run: |
+          python tools/apply-map-entity-query-cache-v2.py
+          python tools/apply-map-entity-query-cache-v2-followup.py
 
       - name: Install Rust 1.95
         shell: pwsh
@@ -67,6 +70,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           Remove-Item -Force tools/apply-map-entity-query-cache-v2.py
+          Remove-Item -Force tools/apply-map-entity-query-cache-v2-followup.py
           Remove-Item -Force .github/workflows/apply-map-entity-query-cache-v2-once.yml -ErrorAction SilentlyContinue
           git add -A
           git commit -m "fix(map): page and validate entity overlay cache"
