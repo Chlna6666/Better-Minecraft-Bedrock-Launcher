@@ -1,6 +1,9 @@
 from_latest_tag = false
 ignore_merge_commits = true
 
+[commit_types.ci]
+omit_from_changelog = true
+
 [changelog]
 path = "CHANGELOG.md"
 
