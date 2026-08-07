@@ -131,17 +131,15 @@ impl PlayerItemMutation {
             Self::AddItem { .. } => "玩家物品：添加物品".to_string(),
             Self::DeleteItem { .. } => "玩家物品：删除物品".to_string(),
             Self::DuplicateItem { .. } => "玩家物品：复制物品".to_string(),
-            Self::AdjustCount { .. } | Self::SetCount { .. } => {
-                "玩家物品：修改数量".to_string()
-            }
+            Self::AdjustCount { .. } | Self::SetCount { .. } => "玩家物品：修改数量".to_string(),
             Self::AdjustDamage { .. } | Self::SetDamage { .. } => {
                 "玩家物品：修改 Damage".to_string()
             }
             Self::SetCustomName { .. } => "玩家物品：修改自定义名称".to_string(),
             Self::SetLore { .. } => "玩家物品：修改 Lore".to_string(),
-            Self::AddEnchant { .. }
-            | Self::AdjustEnchant { .. }
-            | Self::RemoveEnchant { .. } => "玩家物品：修改附魔".to_string(),
+            Self::AddEnchant { .. } | Self::AdjustEnchant { .. } | Self::RemoveEnchant { .. } => {
+                "玩家物品：修改附魔".to_string()
+            }
         }
     }
 }
@@ -222,11 +220,7 @@ impl MapViewerWindowView {
                                         });
                                     }
                                 }
-                                rows.push((
-                                    rank,
-                                    raw_label,
-                                    PlayerSummary { id, label },
-                                ));
+                                rows.push((rank, raw_label, PlayerSummary { id, label }));
                             }
                             Err(_) => {
                                 rows.push((
@@ -276,9 +270,10 @@ impl MapViewerWindowView {
                 this.players.loading = false;
                 match result {
                     Ok(result) => {
-                        let selected_still_exists = this.players.selected.as_ref().is_some_and(|id| {
-                            result.players.iter().any(|player| &player.id == id)
-                        });
+                        let selected_still_exists =
+                            this.players.selected.as_ref().is_some_and(|id| {
+                                result.players.iter().any(|player| &player.id == id)
+                            });
                         this.players.players = result.players;
                         if !selected_still_exists {
                             this.players.selected =
@@ -288,10 +283,8 @@ impl MapViewerWindowView {
                         this.markers_generation = this.markers_generation.saturating_add(1);
                         this.last_synced_canvas_snapshot_key = None;
 
-                        let visible_marker_count = this
-                            .markers
-                            .get(&this.dimension)
-                            .map_or(0, Vec::len);
+                        let visible_marker_count =
+                            this.markers.get(&this.dimension).map_or(0, Vec::len);
                         this.status = SharedString::from(format!(
                             "玩家列表已加载 · {} 条记录 · 当前维度 {} 个地图标记",
                             this.players.players.len(),
@@ -455,9 +448,8 @@ impl MapViewerWindowView {
     pub(super) fn add_player_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
         let text = clipboard_text(cx);
         let Some(name) = parse_item_id(&text) else {
-            self.status = SharedString::from(
-                "剪贴板中没有有效物品 ID；示例：minecraft:diamond_sword",
-            );
+            self.status =
+                SharedString::from("剪贴板中没有有效物品 ID；示例：minecraft:diamond_sword");
             cx.notify();
             return;
         };
@@ -528,9 +520,8 @@ impl MapViewerWindowView {
     ) {
         let text = clipboard_text(cx);
         let Some((id, level)) = parse_enchant_spec(&text) else {
-            self.status = SharedString::from(
-                "剪贴板附魔格式无效；使用 `id:等级`，例如 `9:32767`（锋利）",
-            );
+            self.status =
+                SharedString::from("剪贴板附魔格式无效；使用 `id:等级`，例如 `9:32767`（锋利）");
             cx.notify();
             return;
         };
@@ -671,8 +662,7 @@ impl MapViewerWindowView {
                     options.read_only = false;
                     let world = BedrockWorld::open_blocking(&world_path, options)
                         .map_err(|error| error.to_string())?;
-                    let history_capture =
-                        capture_player_history(&world_path, &id, edit.label());
+                    let history_capture = capture_player_history(&world_path, &id, edit.label());
                     let mut data = world
                         .get_player_blocking(&id)
                         .map_err(|error| error.to_string())?
@@ -1204,8 +1194,7 @@ pub(super) fn apply_player_item_mutation(
             value,
         } => {
             let item = inventory_item_mut(root, *kind, *list_index)?;
-            item_compound_mut(item)?
-                .insert("Count".to_string(), NbtTag::Byte((*value).max(1)));
+            item_compound_mut(item)?.insert("Count".to_string(), NbtTag::Byte((*value).max(1)));
         }
         PlayerItemMutation::AdjustDamage {
             kind,
@@ -1226,8 +1215,7 @@ pub(super) fn apply_player_item_mutation(
             value,
         } => {
             let item = inventory_item_mut(root, *kind, *list_index)?;
-            item_compound_mut(item)?
-                .insert("Damage".to_string(), NbtTag::Short(*value));
+            item_compound_mut(item)?.insert("Damage".to_string(), NbtTag::Short(*value));
         }
         PlayerItemMutation::SetCustomName {
             kind,
@@ -1265,8 +1253,7 @@ pub(super) fn apply_player_item_mutation(
             let user_tag = nested_compound_mut(compound, "tag");
             let enchantments = nested_list_mut(user_tag, "ench");
             if let Some(existing) = enchantments.iter_mut().find(|value| {
-                nbt_compound(value)
-                    .and_then(|compound| nbt_i32_any(compound.get("id")))
+                nbt_compound(value).and_then(|compound| nbt_i32_any(compound.get("id")))
                     == Some(i32::from(*id))
             }) {
                 let existing = item_compound_mut(existing)?;
@@ -1313,9 +1300,7 @@ pub(super) fn apply_player_item_mutation(
     Ok(())
 }
 
-fn player_root_mut(
-    tag: &mut NbtTag,
-) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
+fn player_root_mut(tag: &mut NbtTag) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
     match tag {
         NbtTag::Compound(root) => Ok(root),
         _ => Err("玩家 NBT 根节点不是 Compound".to_string()),
@@ -1347,9 +1332,7 @@ fn inventory_item_mut(
         .ok_or_else(|| "物品索引已失效，请刷新玩家数据".to_string())
 }
 
-fn item_compound_mut(
-    tag: &mut NbtTag,
-) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
+fn item_compound_mut(tag: &mut NbtTag) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
     match tag {
         NbtTag::Compound(compound) => Ok(compound),
         _ => Err("物品 NBT 不是 Compound".to_string()),
@@ -1361,10 +1344,7 @@ fn nested_compound_mut<'a>(
     key: &str,
 ) -> &'a mut indexmap::IndexMap<String, NbtTag> {
     if !matches!(parent.get(key), Some(NbtTag::Compound(_))) {
-        parent.insert(
-            key.to_string(),
-            NbtTag::Compound(indexmap::IndexMap::new()),
-        );
+        parent.insert(key.to_string(), NbtTag::Compound(indexmap::IndexMap::new()));
     }
     match parent.get_mut(key) {
         Some(NbtTag::Compound(compound)) => compound,
@@ -1409,8 +1389,7 @@ fn replace_empty_slot_or_push(items: &mut Vec<NbtTag>, slot: i32, item: NbtTag) 
             return false;
         };
         let value_slot = nbt_i32_any(compound.get("Slot"));
-        let empty = nbt_string_any(compound.get("Name"))
-            .is_none_or(|name| name.trim().is_empty());
+        let empty = nbt_string_any(compound.get("Name")).is_none_or(|name| name.trim().is_empty());
         empty && value_slot == Some(slot)
     }) {
         items[index] = item;
@@ -1469,7 +1448,10 @@ fn parse_item_id(text: &str) -> Option<String> {
         .split_whitespace()
         .next()?
         .trim_matches(|character: char| {
-            matches!(character, '"' | '\'' | '`' | ',' | ';' | '[' | ']' | '{' | '}')
+            matches!(
+                character,
+                '"' | '\'' | '`' | ',' | ';' | '[' | ']' | '{' | '}'
+            )
         });
     if token.is_empty()
         || !token
@@ -1528,7 +1510,9 @@ fn load_item_catalog(instance_root: &Path) -> Vec<PlayerItemTexture> {
     let item_texture_json = vanilla_root.join("textures").join("item_texture.json");
     if let Ok(bytes) = fs::read(&item_texture_json)
         && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
-        && let Some(texture_data) = value.get("texture_data").and_then(|value| value.as_object())
+        && let Some(texture_data) = value
+            .get("texture_data")
+            .and_then(|value| value.as_object())
     {
         for (key, entry) in texture_data {
             let Some(texture) = texture_reference(entry) else {
@@ -1539,11 +1523,13 @@ fn load_item_catalog(instance_root: &Path) -> Vec<PlayerItemTexture> {
                 continue;
             }
             let id = normalize_item_id(key);
-            by_id.entry(id.clone()).or_insert_with(|| PlayerItemTexture {
-                id: SharedString::from(id),
-                label: SharedString::from(key.replace('_', " ")),
-                path: Arc::<Path>::from(path.into_boxed_path()),
-            });
+            by_id
+                .entry(id.clone())
+                .or_insert_with(|| PlayerItemTexture {
+                    id: SharedString::from(id),
+                    label: SharedString::from(key.replace('_', " ")),
+                    path: Arc::<Path>::from(path.into_boxed_path()),
+                });
         }
     }
 
@@ -1564,11 +1550,13 @@ fn load_item_catalog(instance_root: &Path) -> Vec<PlayerItemTexture> {
                 continue;
             }
             let id = normalize_item_id(stem);
-            by_id.entry(id.clone()).or_insert_with(|| PlayerItemTexture {
-                id: SharedString::from(id),
-                label: SharedString::from(stem.replace('_', " ")),
-                path: Arc::<Path>::from(path.into_boxed_path()),
-            });
+            by_id
+                .entry(id.clone())
+                .or_insert_with(|| PlayerItemTexture {
+                    id: SharedString::from(id),
+                    label: SharedString::from(stem.replace('_', " ")),
+                    path: Arc::<Path>::from(path.into_boxed_path()),
+                });
         }
     }
 

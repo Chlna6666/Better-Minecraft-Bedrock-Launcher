@@ -181,11 +181,7 @@ impl MapViewerWindowView {
                                 a: 0.48,
                                 ..colors.surface_hover
                             })
-                            .child(
-                                img("images/map/entity/player.png")
-                                    .w(px(34.0))
-                                    .h(px(34.0)),
-                            ),
+                            .child(img("images/map/entity/player.png").w(px(34.0)).h(px(34.0))),
                     )
                     .child(
                         div()
@@ -283,11 +279,7 @@ impl MapViewerWindowView {
                                 a: 0.52,
                                 ..colors.surface_hover
                             })
-                            .child(
-                                img("images/map/entity/player.png")
-                                    .w(px(42.0))
-                                    .h(px(42.0)),
-                            ),
+                            .child(img("images/map/entity/player.png").w(px(42.0)).h(px(42.0))),
                     )
                     .child(
                         div()
@@ -307,14 +299,12 @@ impl MapViewerWindowView {
                     .when(self.players.saving, |this| {
                         this.child(status_badge(colors, "正在写入..."))
                     })
-                    .child(
-                        toolbar_button(colors, "高级 NBT 文本").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.open_selected_player_in_editor(cx)
-                            }),
-                        ),
-                    ),
+                    .child(toolbar_button(colors, "高级 NBT 文本").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| {
+                            this.open_selected_player_in_editor(cx)
+                        }),
+                    )),
             )
             .child(self.render_player_quick_actions(colors, cx))
             .child(player_detail_grid(colors, detail))
@@ -344,7 +334,10 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child("物品"),
                     )
-                    .child(status_badge(colors, format!("{} 个有效物品", entries.len())))
+                    .child(status_badge(
+                        colors,
+                        format!("{} 个有效物品", entries.len()),
+                    ))
                     .child(div().flex_1())
                     .child(
                         div()
@@ -595,17 +588,15 @@ impl MapViewerWindowView {
                             )
                         }),
                     ))
-                    .child(
-                        danger_button(colors, "删除").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.run_player_item_mutation(
-                                    PlayerItemMutation::DeleteItem { kind, list_index },
-                                    cx,
-                                )
-                            }),
-                        ),
-                    ),
+                    .child(danger_button(colors, "删除").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.run_player_item_mutation(
+                                PlayerItemMutation::DeleteItem { kind, list_index },
+                                cx,
+                            )
+                        }),
+                    )),
             )
             .child(
                 div()
@@ -613,18 +604,22 @@ impl MapViewerWindowView {
                     .flex_wrap()
                     .items_center()
                     .gap(px(5.0))
-                    .child(player_item_action_button(colors, "名称 ← 剪贴板").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.set_player_item_name_from_clipboard(kind, list_index, cx)
-                        }),
-                    ))
-                    .child(player_item_action_button(colors, "Lore ← 剪贴板").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.set_player_item_lore_from_clipboard(kind, list_index, cx)
-                        }),
-                    ))
+                    .child(
+                        player_item_action_button(colors, "名称 ← 剪贴板").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.set_player_item_name_from_clipboard(kind, list_index, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        player_item_action_button(colors, "Lore ← 剪贴板").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.set_player_item_lore_from_clipboard(kind, list_index, cx)
+                            }),
+                        ),
+                    )
                     .when(lore_count > 0, |this| {
                         this.child(status_badge(colors, format!("Lore {lore_count} 行")))
                     })
@@ -632,13 +627,7 @@ impl MapViewerWindowView {
                         this.child(status_badge(colors, "含 tag"))
                     }),
             )
-            .child(self.render_player_enchant_editor(
-                colors,
-                kind,
-                list_index,
-                &enchantments,
-                cx,
-            ))
+            .child(self.render_player_enchant_editor(colors, kind, list_index, &enchantments, cx))
     }
 
     fn render_player_enchant_editor(
@@ -737,12 +726,14 @@ impl MapViewerWindowView {
                             )
                         }),
                     ))
-                    .child(player_item_action_button(colors, "id:等级 ← 剪贴板").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.add_player_item_enchant_from_clipboard(kind, list_index, cx)
-                        }),
-                    )),
+                    .child(
+                        player_item_action_button(colors, "id:等级 ← 剪贴板").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.add_player_item_enchant_from_clipboard(kind, list_index, cx)
+                            }),
+                        ),
+                    ),
             )
             .children(enchantments.iter().map(|enchantment| {
                 let enchant_index = enchantment.list_index;
@@ -812,7 +803,9 @@ impl MapViewerWindowView {
                         .pl(px(4.0))
                         .text_size(px(10.0))
                         .text_color(colors.text_muted)
-                        .child("无附魔。高级值可直接粘贴，例如 `9:32767`；NBT Short 范围内均允许。"),
+                        .child(
+                            "无附魔。高级值可直接粘贴，例如 `9:32767`；NBT Short 范围内均允许。",
+                        ),
                 )
             })
     }
