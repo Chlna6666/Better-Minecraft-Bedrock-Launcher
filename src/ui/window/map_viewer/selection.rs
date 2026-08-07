@@ -1,7 +1,7 @@
 use bedrock_render::{ChunkPos, Dimension};
 use bedrock_world::SlimeChunkBounds;
 use gpui::{Pixels, Point, px};
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -65,6 +65,16 @@ fn rectangular_selection_chunks(selection: ChunkSelection) -> Vec<ChunkPos> {
     chunks
 }
 
+fn normalize_chunk_set(chunks: impl IntoIterator<Item = ChunkPos>) -> Vec<ChunkPos> {
+    let mut seen = HashSet::new();
+    let mut chunks = chunks
+        .into_iter()
+        .filter(|chunk| seen.insert(*chunk))
+        .collect::<Vec<_>>();
+    chunks.sort_unstable_by_key(|chunk| (chunk.z, chunk.x));
+    chunks
+}
+
 fn begin_additive_selection(selection: Option<ChunkSelection>) {
     let base_chunks = selection
         .and_then(exact_selection_chunks)
@@ -83,6 +93,16 @@ fn begin_additive_selection(selection: Option<ChunkSelection>) {
         });
     } else if selection.is_none() && let Ok(mut state) = advanced_selection_state().lock() {
         *state = None;
+    }
+}
+
+fn begin_exact_move(selection: ChunkSelection, chunks: Arc<Vec<ChunkPos>>) {
+    if let Ok(mut state) = advanced_selection_state().lock() {
+        *state = Some(AdvancedSelectionState {
+            selection,
+            base_chunks: chunks.clone(),
+            current_chunks: chunks,
+        });
     }
 }
 
@@ -134,6 +154,32 @@ fn alternate_selection_for_bounds(
         .unwrap_or(candidates[0])
 }
 
+fn same_selection_bounds(selection: ChunkSelection, bounds: SlimeChunkBounds) -> bool {
+    let current = selection.bounds();
+    current.dimension == bounds.dimension
+        && current.min_chunk_x == bounds.min_chunk_x
+        && current.max_chunk_x == bounds.max_chunk_x
+        && current.min_chunk_z == bounds.min_chunk_z
+        && current.max_chunk_z == bounds.max_chunk_z
+}
+
+fn apply_advanced_chunks(
+    current: &mut AdvancedSelectionState,
+    chunks: Vec<ChunkPos>,
+) -> ChunkSelection {
+    if current.current_chunks.as_ref() == &chunks {
+        return current.selection;
+    }
+    let Some(bounds_selection) = chunk_selection_from_chunks(&chunks) else {
+        return current.selection;
+    };
+    let bounds = bounds_selection.bounds();
+    let previous = same_selection_bounds(current.selection, bounds).then_some(current.selection);
+    current.selection = alternate_selection_for_bounds(bounds, previous);
+    current.current_chunks = Arc::new(chunks);
+    current.selection
+}
+
 fn apply_additive_drag(addition: ChunkSelection) -> ChunkSelection {
     let Ok(mut state) = advanced_selection_state().lock() else {
         return addition;
@@ -149,17 +195,22 @@ fn apply_additive_drag(addition: ChunkSelection) -> ChunkSelection {
     };
 
     let merged = merged_selection_chunks(current.base_chunks.as_ref(), addition);
-    if current.current_chunks.as_ref() == &merged {
-        return current.selection;
-    }
-    let Some(bounds_selection) = chunk_selection_from_chunks(&merged) else {
-        return current.selection;
+    apply_advanced_chunks(current, merged)
+}
+
+fn apply_exact_move(delta_x: i32, delta_z: i32, fallback: ChunkSelection) -> ChunkSelection {
+    let Ok(mut state) = advanced_selection_state().lock() else {
+        return translate_chunk_selection(fallback, delta_x, delta_z);
     };
-    let bounds = bounds_selection.bounds();
-    let previous = (current.selection.bounds() == bounds).then_some(current.selection);
-    current.selection = alternate_selection_for_bounds(bounds, previous);
-    current.current_chunks = Arc::new(merged);
-    current.selection
+    let Some(current) = state.as_mut() else {
+        return translate_chunk_selection(fallback, delta_x, delta_z);
+    };
+    let translated = normalize_chunk_set(current.base_chunks.iter().copied().map(|chunk| ChunkPos {
+        x: chunk.x.saturating_add(delta_x),
+        z: chunk.z.saturating_add(delta_z),
+        dimension: chunk.dimension,
+    }));
+    apply_advanced_chunks(current, translated)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -180,7 +231,9 @@ impl ChunkSelection {
     }
 
     pub(super) fn chunk_count(self) -> usize {
-        rectangular_chunk_count(self)
+        exact_selection_chunks(self)
+            .map(|chunks| chunks.len())
+            .unwrap_or_else(|| rectangular_chunk_count(self))
     }
 
     pub(super) fn chunks(self) -> Vec<ChunkPos> {
@@ -204,9 +257,12 @@ pub(super) fn merged_selection_chunks(
     base_chunks: &[ChunkPos],
     addition: ChunkSelection,
 ) -> Vec<ChunkPos> {
-    let mut chunks = base_chunks.iter().copied().collect::<BTreeSet<_>>();
-    chunks.extend(rectangular_selection_chunks(addition));
-    chunks.into_iter().collect()
+    normalize_chunk_set(
+        base_chunks
+            .iter()
+            .copied()
+            .chain(rectangular_selection_chunks(addition)),
+    )
 }
 
 pub(super) fn chunk_selection_from_chunks(chunks: &[ChunkPos]) -> Option<ChunkSelection> {
@@ -269,7 +325,7 @@ pub(super) fn selection_contains_chunk(
     chunk: ChunkPos,
 ) -> bool {
     if let Some(chunks) = exact_chunks {
-        return chunks.binary_search(&chunk).is_ok();
+        return chunks.contains(&chunk);
     }
     let bounds = selection.bounds();
     chunk.dimension == bounds.dimension
@@ -326,10 +382,10 @@ impl RightSelectionDrag {
         }
 
         let exact_chunks = exact_selection_chunks(selection);
-        let target = if exact_chunks
+        let irregular = exact_chunks
             .as_deref()
-            .is_some_and(|chunks| !selection_chunks_are_rectangular(selection, Some(chunks)))
-        {
+            .is_some_and(|chunks| !selection_chunks_are_rectangular(selection, Some(chunks)));
+        let target = if irregular {
             if selection_contains_chunk(selection, exact_chunks.as_deref(), start_chunk) {
                 ExistingSelectionTarget::Inside
             } else {
@@ -340,6 +396,12 @@ impl RightSelectionDrag {
         };
         let intent = match target {
             ExistingSelectionTarget::Inside => match button {
+                SelectionPointerButton::Left if irregular => {
+                    if let Some(chunks) = exact_chunks.clone() {
+                        begin_exact_move(selection, chunks);
+                    }
+                    RightSelectionIntent::MoveExact(selection)
+                }
                 SelectionPointerButton::Left => RightSelectionIntent::Move(selection),
                 SelectionPointerButton::Right => RightSelectionIntent::OpenMenu(selection),
             },
@@ -394,6 +456,11 @@ impl RightSelectionDrag {
                 self.current_chunk.x.saturating_sub(self.start_chunk.x),
                 self.current_chunk.z.saturating_sub(self.start_chunk.z),
             ),
+            RightSelectionIntent::MoveExact(selection) => apply_exact_move(
+                self.current_chunk.x.saturating_sub(self.start_chunk.x),
+                self.current_chunk.z.saturating_sub(self.start_chunk.z),
+                selection,
+            ),
             RightSelectionIntent::OpenMenu(selection) | RightSelectionIntent::Cancel(selection) => {
                 selection
             }
@@ -406,6 +473,7 @@ impl RightSelectionDrag {
             RightSelectionIntent::NewSelection
                 | RightSelectionIntent::AddSelection
                 | RightSelectionIntent::Move(_)
+                | RightSelectionIntent::MoveExact(_)
                 | RightSelectionIntent::Resize { .. }
         )
     }
@@ -422,6 +490,7 @@ pub(super) enum RightSelectionIntent {
     NewSelection,
     AddSelection,
     Move(ChunkSelection),
+    MoveExact(ChunkSelection),
     OpenMenu(ChunkSelection),
     Cancel(ChunkSelection),
     Resize {
@@ -446,13 +515,19 @@ pub(super) fn right_selection_release_action(
 ) -> RightSelectionReleaseAction {
     match intent {
         RightSelectionIntent::Cancel(_) => RightSelectionReleaseAction::CancelSelection,
-        RightSelectionIntent::Move(_) if !moved => RightSelectionReleaseAction::KeepSelection,
+        RightSelectionIntent::Move(_) | RightSelectionIntent::MoveExact(_) if !moved => {
+            RightSelectionReleaseAction::KeepSelection
+        }
         RightSelectionIntent::Resize { .. }
             if button == SelectionPointerButton::Left && !moved =>
         {
             RightSelectionReleaseAction::KeepSelection
         }
-        RightSelectionIntent::Move(_) | RightSelectionIntent::Resize { .. } if moved => {
+        RightSelectionIntent::Move(_)
+        | RightSelectionIntent::MoveExact(_)
+        | RightSelectionIntent::Resize { .. }
+            if moved =>
+        {
             RightSelectionReleaseAction::ApplySelection
         }
         RightSelectionIntent::OpenMenu(_)
@@ -636,6 +711,7 @@ mod tests {
 
     #[test]
     fn selection_bounds_are_normalized() {
+        clear_advanced_selection_state();
         let selection = ChunkSelection {
             start: chunk(5, 8),
             end: chunk(2, 3),
@@ -650,6 +726,7 @@ mod tests {
 
     #[test]
     fn right_drag_selection_is_normalized() {
+        clear_advanced_selection_state();
         let mut drag = RightSelectionDrag::new(Point::default(), chunk(4, 7));
         drag.current_chunk = chunk(1, 2);
         let bounds = drag.selection().bounds();
@@ -661,6 +738,7 @@ mod tests {
 
     #[test]
     fn left_drag_inside_selection_moves_it() {
+        clear_advanced_selection_state();
         let selection = ChunkSelection {
             start: chunk(1, 2),
             end: chunk(3, 4),
@@ -683,6 +761,7 @@ mod tests {
 
     #[test]
     fn selection_resize_uses_requested_edge() {
+        clear_advanced_selection_state();
         let selection = ChunkSelection {
             start: chunk(1, 2),
             end: chunk(3, 4),
@@ -709,7 +788,7 @@ mod tests {
         let exact = exact_selection_chunks(bounds).expect("exact selection chunks");
 
         assert_eq!(exact.len(), 5);
-        assert_eq!(bounds.chunk_count(), 9);
+        assert_eq!(bounds.chunk_count(), 5);
         assert!(!selection_chunks_are_rectangular(bounds, Some(&exact)));
         assert!(selection_contains_chunk(bounds, Some(&exact), chunk(0, 0)));
         assert!(!selection_contains_chunk(bounds, Some(&exact), chunk(1, 1)));
@@ -717,7 +796,39 @@ mod tests {
     }
 
     #[test]
+    fn irregular_selection_move_keeps_shape() {
+        clear_advanced_selection_state();
+        let horizontal = ChunkSelection {
+            start: chunk(-1, 0),
+            end: chunk(1, 0),
+        };
+        begin_additive_selection(Some(horizontal));
+        let mut add = RightSelectionDrag::additive(Point::default(), chunk(0, -1));
+        add.current_chunk = chunk(0, 1);
+        let selection = add.selection();
+        let exact = exact_selection_chunks(selection).expect("exact selection chunks");
+        begin_exact_move(selection, exact);
+        let mut drag = RightSelectionDrag::with_intent(
+            Point::default(),
+            chunk(0, 0),
+            SelectionPointerButton::Left,
+            RightSelectionIntent::MoveExact(selection),
+        );
+        drag.current_chunk = chunk(2, 3);
+        drag.moved = true;
+        let moved = drag.selection();
+        let moved_chunks = exact_selection_chunks(moved).expect("moved exact chunks");
+
+        assert_eq!(moved_chunks.len(), 5);
+        assert!(moved_chunks.contains(&chunk(2, 3)));
+        assert!(moved_chunks.contains(&chunk(1, 3)));
+        assert!(moved_chunks.contains(&chunk(2, 2)));
+        clear_advanced_selection_state();
+    }
+
+    #[test]
     fn additive_right_selection_does_not_open_context_menu() {
+        clear_advanced_selection_state();
         let drag = RightSelectionDrag::additive(Point::default(), chunk(0, 0));
         assert_eq!(
             right_selection_release_action(drag.button, drag.intent, drag.moved),
