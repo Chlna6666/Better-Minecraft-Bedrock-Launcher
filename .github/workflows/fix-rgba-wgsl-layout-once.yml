@@ -1,0 +1,264 @@
+name: Fix RGBA WGSL layout once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - tools/.fix-rgba-wgsl-layout-trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-rgba-wgsl-layout-once
+  cancel-in-progress: true
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Repair CPU/WGSL RGBA layout compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"expected one match in {path}, found {count}: {old[:140]!r}"
+                  )
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          def replace_count(path: str, old: str, new: str, expected: int) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f"expected {expected} matches in {path}, found {count}: {old[:140]!r}"
+                  )
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          rgba_struct = """struct Hsla {
+              h: f32,
+              s: f32,
+              l: f32,
+              a: f32,
+          }
+
+          struct Rgba {
+              r: f32,
+              g: f32,
+              b: f32,
+              a: f32,
+          }
+
+          fn rgba_to_vec4(color: Rgba) -> vec4<f32> {
+              return vec4<f32>(color.r, color.g, color.b, color.a);
+          }
+          """
+          hsla_struct = """struct Hsla {
+              h: f32,
+              s: f32,
+              l: f32,
+              a: f32,
+          }
+          """
+
+          # Nova: storage structs must use a four-f32 struct, not vec4<f32>.
+          # vec4 has 16-byte alignment while Rust Rgba has 4-byte alignment.
+          core = "crates/gpui/src/platform/nova/shaders/core.wgsl"
+          replace_once(core, hsla_struct, rgba_struct)
+          replace_once(
+              core,
+              "struct LinearColorStop {\n    color: vec4<f32>,\n    percentage: f32,\n}",
+              "struct LinearColorStop {\n    color: Rgba,\n    percentage: f32,\n}",
+          )
+          replace_once(
+              core,
+              "    color_space: u32,\n    solid: vec4<f32>,\n    gradient_angle_or_pattern_height: f32,",
+              "    color_space: u32,\n    solid: Rgba,\n    gradient_angle_or_pattern_height: f32,",
+          )
+
+          common = "crates/gpui/src/platform/nova/shaders/quad_common.wgsl"
+          replace_once(
+              common,
+              "    solid: vec4<f32>, colors: array<LinearColorStop, 2>) -> GradientColor {",
+              "    solid: Rgba, colors: array<LinearColorStop, 2>) -> GradientColor {",
+          )
+          replace_once(common, "        result.solid = solid;", "        result.solid = rgba_to_vec4(solid);")
+          replace_once(
+              common,
+              "        result.color0 = colors[0].color;",
+              "        result.color0 = rgba_to_vec4(colors[0].color);",
+          )
+          replace_once(
+              common,
+              "        result.color1 = colors[1].color;",
+              "        result.color1 = rgba_to_vec4(colors[1].color);",
+          )
+
+          quad = "crates/gpui/src/platform/nova/shaders/quad.wgsl"
+          replace_once(
+              quad,
+              "    background: Background,\n    border_color: vec4<f32>,\n    corner_radii: Corners,",
+              "    background: Background,\n    border_color: Rgba,\n    corner_radii: Corners,",
+          )
+          replace_once(
+              quad,
+              "    out.border_color = quad.border_color;",
+              "    out.border_color = rgba_to_vec4(quad.border_color);",
+          )
+
+          solid_quad = "crates/gpui/src/platform/nova/shaders/solid_quad.wgsl"
+          replace_once(
+              solid_quad,
+              "    background: Background,\n    border_color: vec4<f32>,\n    corner_radii: Corners,",
+              "    background: Background,\n    border_color: Rgba,\n    corner_radii: Corners,",
+          )
+          replace_once(
+              solid_quad,
+              "    out.color = quad.background.solid;",
+              "    out.color = rgba_to_vec4(quad.background.solid);",
+          )
+
+          for path, struct_name, source in [
+              ("crates/gpui/src/platform/nova/shaders/shadow.wgsl", "Shadow", "shadow"),
+              ("crates/gpui/src/platform/nova/shaders/underline.wgsl", "Underline", "underline"),
+              ("crates/gpui/src/platform/nova/shaders/mono_sprite.wgsl", "MonochromeSprite", "sprite"),
+          ]:
+              text = Path(path).read_text(encoding="utf-8")
+              marker = f"struct {struct_name} {{"
+              start = text.index(marker)
+              end = text.index("}\n", start) + 2
+              block = text[start:end]
+              if block.count("    color: vec4<f32>,") != 1:
+                  raise SystemExit(f"unexpected {struct_name} color layout in {path}")
+              block_new = block.replace("    color: vec4<f32>,", "    color: Rgba,", 1)
+              text = text[:start] + block_new + text[end:]
+              assignment = f"    out.color = {source}.color;"
+              if text.count(assignment) != 1:
+                  raise SystemExit(f"expected one color assignment in {path}: {assignment}")
+              text = text.replace(
+                  assignment,
+                  f"    out.color = rgba_to_vec4({source}.color);",
+                  1,
+              )
+              Path(path).write_text(text, encoding="utf-8")
+
+          path_shader = "crates/gpui/src/platform/nova/shaders/path.wgsl"
+          replace_once(
+              path_shader,
+              "            input.background_color_space,\n            vec4<f32>(0.0),\n            input.background_pattern_or_angle,",
+              "            input.background_color_space,\n            Rgba(0.0, 0.0, 0.0, 0.0),\n            input.background_pattern_or_angle,",
+          )
+          replace_count(
+              path_shader,
+              "                LinearColorStop(\n                    vec4<f32>(0.0),",
+              "                LinearColorStop(\n                    Rgba(0.0, 0.0, 0.0, 0.0),",
+              2,
+          )
+
+          # Blade uses the same packed Rust scene buffers and requires the same ABI fix.
+          blade = "crates/gpui/src/platform/blade/shaders.wgsl"
+          replace_once(blade, hsla_struct, rgba_struct)
+          replace_once(
+              blade,
+              "struct LinearColorStop {\n    color: vec4<f32>,\n    percentage: f32,\n}",
+              "struct LinearColorStop {\n    color: Rgba,\n    percentage: f32,\n}",
+          )
+          replace_once(
+              blade,
+              "    color_space: u32,\n    solid: vec4<f32>,\n    gradient_angle_or_pattern_height: f32,",
+              "    color_space: u32,\n    solid: Rgba,\n    gradient_angle_or_pattern_height: f32,",
+          )
+          replace_once(
+              blade,
+              "    solid: vec4<f32>, colors: array<LinearColorStop, 2>) -> GradientColor {",
+              "    solid: Rgba, colors: array<LinearColorStop, 2>) -> GradientColor {",
+          )
+          replace_once(blade, "        result.solid = solid;", "        result.solid = rgba_to_vec4(solid);")
+          replace_once(
+              blade,
+              "        result.color0 = colors[0].color;",
+              "        result.color0 = rgba_to_vec4(colors[0].color);",
+          )
+          replace_once(
+              blade,
+              "        result.color1 = colors[1].color;",
+              "        result.color1 = rgba_to_vec4(colors[1].color);",
+          )
+          replace_once(
+              blade,
+              "    background: Background,\n    border_color: vec4<f32>,\n    corner_radii: Corners,",
+              "    background: Background,\n    border_color: Rgba,\n    corner_radii: Corners,",
+          )
+          replace_once(
+              blade,
+              "    out.border_color = quad.border_color;",
+              "    out.border_color = rgba_to_vec4(quad.border_color);",
+          )
+
+          blade_text = Path(blade).read_text(encoding="utf-8")
+          for struct_name, source in [
+              ("Shadow", "shadow"),
+              ("Underline", "underline"),
+              ("MonochromeSprite", "sprite"),
+          ]:
+              marker = f"struct {struct_name} {{"
+              start = blade_text.index(marker)
+              end = blade_text.index("}\n", start) + 2
+              block = blade_text[start:end]
+              if block.count("    color: vec4<f32>,") != 1:
+                  raise SystemExit(f"unexpected Blade {struct_name} color layout")
+              block_new = block.replace("    color: vec4<f32>,", "    color: Rgba,", 1)
+              blade_text = blade_text[:start] + block_new + blade_text[end:]
+              assignment = f"    out.color = {source}.color;"
+              if blade_text.count(assignment) != 1:
+                  raise SystemExit(f"expected one Blade color assignment: {assignment}")
+              blade_text = blade_text.replace(
+                  assignment,
+                  f"    out.color = rgba_to_vec4({source}.color);",
+                  1,
+              )
+          Path(blade).write_text(blade_text, encoding="utf-8")
+
+          # Guard against reintroducing the exact incompatible storage layout.
+          checks = {
+              core: ["solid: Rgba", "color: Rgba", "struct Rgba"],
+              quad: ["border_color: Rgba"],
+              solid_quad: ["border_color: Rgba"],
+              blade: ["solid: Rgba", "border_color: Rgba", "struct Rgba"],
+          }
+          for path, needles in checks.items():
+              text = Path(path).read_text(encoding="utf-8")
+              for needle in needles:
+                  if needle not in text:
+                      raise SystemExit(f"missing ABI guard {needle!r} in {path}")
+          PY
+
+          git diff --check
+          cargo check -p gpui --lib --features build-shader-validation,x11
+
+      - name: Commit repair and remove one-time task
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f tools/.fix-rgba-wgsl-layout-trigger
+          rm -f .github/workflows/fix-rgba-wgsl-layout-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: preserve RGBA shader buffer alignment"
+          git push origin HEAD:master
