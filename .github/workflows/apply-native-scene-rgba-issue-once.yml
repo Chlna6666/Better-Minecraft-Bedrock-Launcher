@@ -22,11 +22,16 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Extract and apply staged source patch
+      - name: Apply and validate native RGBA refactor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
         shell: bash
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
+          set +e
+          {
+            set -euo pipefail
+            python3 - <<'PY'
           from pathlib import Path
           import textwrap
 
@@ -39,14 +44,24 @@ jobs:
               textwrap.dedent(workflow[start:end]), encoding='utf-8'
           )
           PY
-          python3 /tmp/apply_native_scene_rgba.py
-
-      - name: Validate Rust and shader changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --check
-          cargo check -p gpui --all-targets --features build-shader-validation
+            python3 /tmp/apply_native_scene_rgba.py
+            git diff --check
+            cargo check -p gpui --all-targets --features build-shader-validation
+          } > >(tee /tmp/native-rgba-validation.log) 2>&1
+          status=$?
+          {
+            if [ "$status" -eq 0 ]; then
+              echo 'Native Scene RGBA patch and validation succeeded.'
+            else
+              echo "Native Scene RGBA patch or validation failed with status $status."
+            fi
+            echo
+            echo '```text'
+            tail -c 50000 /tmp/native-rgba-validation.log
+            echo '```'
+          } > /tmp/native-rgba-comment.md
+          gh issue comment "$ISSUE_URL" --body-file /tmp/native-rgba-comment.md
+          exit "$status"
 
       - name: Commit implementation directly to master
         shell: bash
@@ -60,10 +75,9 @@ jobs:
           git commit -m "perf: store scene colors as native RGBA"
           git push origin HEAD:master
 
-      - name: Close trigger issue
-        if: always()
+      - name: Close trigger issue after successful commit
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_URL: ${{ github.event.issue.html_url }}
         shell: bash
-        run: gh issue close "$ISSUE_URL" --comment "Native scene RGBA refactor workflow finished."
+        run: gh issue close "$ISSUE_URL" --comment "Native scene RGBA refactor committed to master."
