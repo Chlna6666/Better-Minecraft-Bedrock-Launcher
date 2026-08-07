@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - tools/apply-map-entity-player-editor-v3.py
+      - tools/run-map-entity-player-editor-v3.py
       - .github/workflows/apply-map-entity-player-editor-v3-once.yml
 
 permissions:
@@ -38,7 +39,7 @@ jobs:
 
       - name: Apply source patch
         shell: pwsh
-        run: python tools/apply-map-entity-player-editor-v3.py
+        run: python tools/run-map-entity-player-editor-v3.py
 
       - name: Install Rust 1.95
         shell: pwsh
@@ -78,6 +79,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           Remove-Item -Force tools/apply-map-entity-player-editor-v3.py
+          Remove-Item -Force tools/run-map-entity-player-editor-v3.py
           Remove-Item -Force .github/workflows/apply-map-entity-player-editor-v3-once.yml -ErrorAction SilentlyContinue
           git add -A
           git commit -m "fix(map): align inventory and add exact entity player editing"
