@@ -51,26 +51,27 @@ jobs:
             Invoke-Logged "Install Rust 1.95" { rustup toolchain install 1.95.0 --profile minimal }
             Invoke-Logged "Install rustfmt" { rustup component add rustfmt --toolchain 1.95.0 }
             Invoke-Logged "Select Rust 1.95" { rustup default 1.95.0 }
-            Invoke-Logged "Format check" {
-              rustfmt --edition 2024 --check src/ui/window/map_viewer/players.rs src/ui/window/map_viewer/player_panel.rs
+            Invoke-Logged "Format player editor" {
+              rustfmt --edition 2024 src/ui/window/map_viewer/players.rs src/ui/window/map_viewer/player_panel.rs
             }
+            Invoke-Logged "Check whitespace" { git diff --check }
             Invoke-Logged "Cargo check" { cargo check -p bmcbl --lib --message-format short }
           } catch {
             "`nFAILED: $($_.Exception.Message)" | Tee-Object -FilePath $log -Append
             exit 1
           }
 
-      - name: Publish failure log
+      - name: Publish failure diagnostics
         if: steps.validate.outcome != 'success'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tools/player-editor-validation.log
-          git commit -m "ci: record player editor validation failure"
+          git add src/ui/window/map_viewer/players.rs src/ui/window/map_viewer/player_panel.rs tools/player-editor-validation.log
+          git commit -m "ci: format player editor and record validation failure"
           git push origin HEAD:master
 
-      - name: Clean one-time validation files
+      - name: Commit validated source and clean one-time files
         if: steps.validate.outcome == 'success'
         shell: pwsh
         run: |
