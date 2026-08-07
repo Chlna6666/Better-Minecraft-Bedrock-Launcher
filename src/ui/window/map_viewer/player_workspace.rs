@@ -47,6 +47,8 @@ pub(super) struct PlayerWorkspaceState {
     pub(super) multi_selected_items: Vec<PlayerItemSelection>,
     pub(super) pressed_item: Option<PlayerItemSelection>,
     pub(super) press_generation: u64,
+    pub(super) item_context_menu: Option<super::player_item_menu::PlayerItemContextMenuState>,
+    pub(super) item_context_copy_open: bool,
     pub(super) open_first_after_refresh: bool,
     pub(super) search: Entity<InputState>,
     pub(super) item_id: Entity<InputState>,
@@ -66,13 +68,13 @@ pub(super) struct PlayerWorkspaceState {
 impl PlayerWorkspaceState {
     pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
         let search = workspace_input(window, cx, "搜索玩家 / UID / XUID...");
-        let item_id = workspace_input(window, cx, "minecraft:diamond_sword");
-        let count = workspace_input(window, cx, "1");
-        let damage = workspace_input(window, cx, "0");
+        let item_id = workspace_input(window, cx, "物品 ID，例如 minecraft:gold_ingot");
+        let count = workspace_input(window, cx, "数量");
+        let damage = workspace_input(window, cx, "Damage");
         let custom_name = workspace_input(window, cx, "自定义名称（留空移除）");
         let lore = workspace_input(window, cx, "Lore，多行使用 | 分隔");
-        let can_place_on = workspace_input(window, cx, "minecraft:stone, minecraft:dirt");
-        let can_destroy = workspace_input(window, cx, "minecraft:stone, minecraft:dirt");
+        let can_place_on = workspace_input(window, cx, "可放置方块 ID，逗号分隔");
+        let can_destroy = workspace_input(window, cx, "可破坏方块 ID，逗号分隔");
         let enchant_id = workspace_input(window, cx, "附魔 ID，例如 9");
         let enchant_level = workspace_input(window, cx, "等级，例如 32767");
         let item_editor_state = cx.new(|cx| {
@@ -87,6 +89,8 @@ impl PlayerWorkspaceState {
             multi_selected_items: Vec::new(),
             pressed_item: None,
             press_generation: 0,
+            item_context_menu: None,
+            item_context_copy_open: false,
             open_first_after_refresh: false,
             search,
             item_id,
@@ -260,7 +264,14 @@ impl Render for PlayerItemDrag {
 
 impl MapViewerWindowView {
     fn player_workspace_metrics(&self) -> PlayerWorkspaceMetrics {
-        let available = self.viewport.width.max(320.0);
+        // Do not reuse viewport.width here: opening/closing the right dock can leave it one
+        // layout tick behind the actual center workspace. Compute against the current dock
+        // geometry directly so backpack rows and hotbar share the same pixel grid immediately.
+        let available = (self
+            .center_stage_size(size(px(self.window_width), px(self.window_height)))
+            .width
+            / px(1.0))
+        .max(320.0);
         let compact = available < 620.0;
         let outer_padding = if available < 470.0 {
             8.0
@@ -280,8 +291,8 @@ impl MapViewerWindowView {
         let usable = (available - outer_padding * 2.0 - panel_padding * 2.0)
             .min(584.0)
             .max(288.0);
-        let slot_size = ((usable - slot_gap * 8.0) / 9.0).clamp(30.0, 52.0);
-        let grid_width = slot_size * 9.0 + slot_gap * 8.0;
+        let slot_size = ((usable - slot_gap * 8.0) / 9.0).floor().clamp(30.0, 52.0);
+        let grid_width = (slot_size * 9.0 + slot_gap * 8.0).round();
         PlayerWorkspaceMetrics {
             slot_size,
             slot_gap,
@@ -1148,6 +1159,13 @@ impl MapViewerWindowView {
                     this.end_player_item_press(selection, cx)
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                    this.open_player_item_context_menu(selection, event.position, cx);
+                    cx.stop_propagation();
+                }),
+            )
     }
 
     fn render_workspace_quick_catalog(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
@@ -1245,11 +1263,12 @@ impl MapViewerWindowView {
             || self.ui_state.active_right_panel != MapViewerRightPanel::Player;
         self.ui_state.active_right_panel = MapViewerRightPanel::Player;
         self.ui_state.set_right_panel_open(true);
+        self.sync_selected_player_item_visual_inputs(cx);
+        self.sync_player_item_raw_editor(cx);
         if dock_changed {
             self.update_viewport_after_dock_change(cx);
         }
-        self.populate_player_item_visual_inputs(selection, window, cx);
-        self.sync_player_item_raw_editor(cx);
+        let _ = window;
         cx.notify();
     }
 
@@ -1307,8 +1326,10 @@ impl MapViewerWindowView {
         }
     }
 
-    fn selected_workspace_entry(&self) -> Option<PlayerInventoryEntry> {
-        let selection = self.player_workspace.selected_item?;
+    pub(super) fn workspace_entry_for_selection(
+        &self,
+        selection: PlayerItemSelection,
+    ) -> Option<PlayerInventoryEntry> {
         let detail = self.players.detail.as_ref()?;
         player_inventory_entries(&detail.nbt)
             .into_iter()
@@ -1318,13 +1339,15 @@ impl MapViewerWindowView {
             })
     }
 
-    fn populate_player_item_visual_inputs(
-        &mut self,
-        selection: PlayerItemSelection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let entry = self.selected_workspace_entry();
+    fn selected_workspace_entry(&self) -> Option<PlayerInventoryEntry> {
+        self.workspace_entry_for_selection(self.player_workspace.selected_item?)
+    }
+
+    pub(super) fn sync_selected_player_item_visual_inputs(&mut self, cx: &mut Context<Self>) {
+        let Some(selection) = self.player_workspace.selected_item else {
+            return;
+        };
+        let entry = self.workspace_entry_for_selection(selection);
         let item = entry.as_ref().map(|entry| &entry.item.nbt);
         let id = entry
             .as_ref()
@@ -1360,13 +1383,12 @@ impl MapViewerWindowView {
             (self.player_workspace.can_destroy.clone(), can_destroy),
         ] {
             input.update(cx, |input, cx| {
-                input.set_value(SharedString::from(value), window, cx);
+                input.set_text(SharedString::from(value), cx)
             });
         }
-        let _ = selection;
     }
 
-    fn sync_player_item_raw_editor(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn sync_player_item_raw_editor(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.player_workspace.selected_item else {
             return;
         };
@@ -2305,6 +2327,7 @@ impl MapViewerWindowView {
                         this.player_workspace.selected_item = Some(last);
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
+                        this.sync_selected_player_item_visual_inputs(cx);
                         this.sync_player_item_raw_editor(cx);
                         this.status =
                             SharedString::from("批量物品移动完成 · 未覆盖其他槽位 · 可从历史撤销");
@@ -2397,6 +2420,7 @@ impl MapViewerWindowView {
                         this.player_workspace.selected_item = Some(target);
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
+                        this.sync_selected_player_item_visual_inputs(cx);
                         this.sync_player_item_raw_editor(cx);
                         this.status = SharedString::from(
                             "物品拖拽已写入 · 目标有物品时自动交换 · 可从历史撤销",
@@ -2415,7 +2439,7 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    fn write_player_workspace_slot(
+    pub(super) fn write_player_workspace_slot(
         &mut self,
         selection: PlayerItemSelection,
         replacement: Option<NbtTag>,
@@ -2478,6 +2502,7 @@ impl MapViewerWindowView {
                         this.players.detail = Some(detail);
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
+                        this.sync_selected_player_item_visual_inputs(cx);
                         this.sync_player_item_raw_editor(cx);
                         this.status = SharedString::from(
                             "玩家物品已写入 · 未识别 NBT 字段已保留 · 可从历史撤销",
@@ -2505,7 +2530,7 @@ fn inventory_kind_order(kind: PlayerInventoryKind) -> u8 {
         PlayerInventoryKind::EnderChest => 3,
     }
 }
-fn inventory_kind_capacity(kind: PlayerInventoryKind) -> i32 {
+pub(super) fn inventory_kind_capacity(kind: PlayerInventoryKind) -> i32 {
     match kind {
         PlayerInventoryKind::Inventory => 36,
         PlayerInventoryKind::Armor => 4,
@@ -2797,7 +2822,7 @@ fn simple_workspace_item(id: &str, slot: i32) -> NbtTag {
     item
 }
 
-fn set_workspace_item_slot(item: &mut NbtTag, slot: i32) -> Result<(), String> {
+pub(super) fn set_workspace_item_slot(item: &mut NbtTag, slot: i32) -> Result<(), String> {
     let slot = i8::try_from(slot).map_err(|_| "物品槽位超出 NBT Byte 范围".to_string())?;
     nbt_compound_mut_ref(item)?.insert("Slot".to_string(), NbtTag::Byte(slot));
     Ok(())
@@ -2936,7 +2961,7 @@ fn unknown_item_field_count(item: &NbtTag) -> usize {
     count
 }
 
-fn parse_workspace_item_import(text: &str, slot: i32) -> Result<NbtTag, String> {
+pub(super) fn parse_workspace_item_import(text: &str, slot: i32) -> Result<NbtTag, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("剪贴板为空".to_string());
@@ -2949,6 +2974,15 @@ fn parse_workspace_item_import(text: &str, slot: i32) -> Result<NbtTag, String> 
         return Ok(tag);
     }
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(item) = value.get("item") {
+            let mut tag = serde_json::from_value::<NbtTag>(item.clone())
+                .map_err(|error| format!("BMCBL 物品配置中的 item 无法解析: {error}"))?;
+            if !matches!(tag, NbtTag::Compound(_)) {
+                return Err("BMCBL 物品配置中的 item 必须是 Compound".to_string());
+            }
+            set_workspace_item_slot(&mut tag, slot)?;
+            return Ok(tag);
+        }
         if let Some(object) = value.as_object() {
             return simplified_json_item(object, slot);
         }

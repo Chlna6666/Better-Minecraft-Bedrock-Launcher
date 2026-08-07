@@ -16,6 +16,7 @@ mod model;
 mod overlays;
 mod paint;
 mod panels;
+mod player_item_menu;
 mod player_panel;
 mod player_workspace;
 mod players;

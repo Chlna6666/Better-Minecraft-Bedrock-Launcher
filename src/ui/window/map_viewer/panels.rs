@@ -32,7 +32,9 @@ impl MapViewerWindowView {
 
     pub(super) fn menu_overlay_snapshot(&self) -> MapMenuOverlaySnapshot {
         MapMenuOverlaySnapshot {
-            open: self.ui_state.top_more_open || self.context_menu.is_some(),
+            open: self.ui_state.top_more_open
+                || self.context_menu.is_some()
+                || self.player_workspace.item_context_menu.is_some(),
         }
     }
 
@@ -90,7 +92,9 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn render_menu_overlay(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
-        let has_menu = self.ui_state.top_more_open || self.context_menu.is_some();
+        let has_menu = self.ui_state.top_more_open
+            || self.context_menu.is_some()
+            || self.player_workspace.item_context_menu.is_some();
         div().absolute().inset_0().when(has_menu, |this| {
             this.child(self.menu_overlay_view.clone()).child(
                 div()
@@ -101,6 +105,9 @@ impl MapViewerWindowView {
                     })
                     .when_some(self.context_menu, |this, menu| {
                         this.child(self.render_context_menu(colors, menu, cx))
+                    })
+                    .when_some(self.player_workspace.item_context_menu, |this, menu| {
+                        this.child(self.render_player_item_context_menu(colors, menu, cx))
                     }),
             )
         })

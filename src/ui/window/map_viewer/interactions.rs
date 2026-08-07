@@ -187,6 +187,8 @@ impl MapViewerWindowView {
     pub(super) fn toggle_top_more(&mut self, cx: &mut Context<Self>) {
         self.ui_state.top_more_open = !self.ui_state.top_more_open;
         self.context_menu = None;
+        self.player_workspace.item_context_menu = None;
+        self.player_workspace.item_context_copy_open = false;
         cx.notify();
     }
 
@@ -196,11 +198,13 @@ impl MapViewerWindowView {
 
     pub(super) fn close_all_menus(&mut self, cx: &mut Context<Self>) {
         let changed = self.context_menu.take().is_some()
+            || self.player_workspace.item_context_menu.take().is_some()
             || self.players.context_target.take().is_some()
             || self.ui_state.top_more_open
             || self.ui_state.context_more_open
             || self.ui_state.context_paste_open;
         self.ui_state.top_more_open = false;
+        self.player_workspace.item_context_copy_open = false;
         self.ui_state.context_more_open = false;
         self.ui_state.context_paste_open = false;
         if changed {
