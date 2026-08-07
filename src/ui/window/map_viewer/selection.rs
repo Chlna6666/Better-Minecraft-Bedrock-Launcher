@@ -264,25 +264,27 @@ pub(super) enum RightSelectionReleaseAction {
 }
 
 pub(super) fn right_selection_release_action(
-    drag: RightSelectionDrag,
+    button: SelectionPointerButton,
+    intent: RightSelectionIntent,
+    moved: bool,
 ) -> RightSelectionReleaseAction {
-    match drag.intent {
+    match intent {
         RightSelectionIntent::Cancel(_) => RightSelectionReleaseAction::CancelSelection,
-        RightSelectionIntent::Move(_) if !drag.moved => RightSelectionReleaseAction::KeepSelection,
+        RightSelectionIntent::Move(_) if !moved => RightSelectionReleaseAction::KeepSelection,
         RightSelectionIntent::Resize { .. }
-            if drag.button == SelectionPointerButton::Left && !drag.moved =>
+            if button == SelectionPointerButton::Left && !moved =>
         {
             RightSelectionReleaseAction::KeepSelection
         }
-        RightSelectionIntent::Move(_) | RightSelectionIntent::Resize { .. } if drag.moved => {
+        RightSelectionIntent::Move(_) | RightSelectionIntent::Resize { .. } if moved => {
             RightSelectionReleaseAction::ApplySelection
         }
         RightSelectionIntent::OpenMenu(_)
-            if drag.button == SelectionPointerButton::Right && !drag.moved =>
+            if button == SelectionPointerButton::Right && !moved =>
         {
             RightSelectionReleaseAction::OpenMenu
         }
-        RightSelectionIntent::OpenMenu(_) if drag.moved => {
+        RightSelectionIntent::OpenMenu(_) if moved => {
             RightSelectionReleaseAction::KeepSelection
         }
         RightSelectionIntent::NewSelection => {
@@ -541,7 +543,7 @@ mod tests {
     fn additive_right_selection_does_not_open_context_menu() {
         let drag = RightSelectionDrag::additive(Point::default(), chunk(0, 0));
         assert_eq!(
-            right_selection_release_action(drag),
+            right_selection_release_action(drag.button, drag.intent, drag.moved),
             RightSelectionReleaseAction::ApplySelection
         );
     }
