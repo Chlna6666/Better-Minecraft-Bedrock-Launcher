@@ -31,9 +31,9 @@ jobs:
           key: player-workspace-v3-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             player-workspace-v3-${{ runner.os }}-rust-1.95-
-      - name: Apply polish
+      - name: Apply compile fix
         shell: pwsh
-        run: python tools/apply-player-workspace-v3-polish.py
+        run: python tools/fix-player-workspace-v3-polish-compile.py
       - name: Rust 1.95
         shell: pwsh
         run: |
@@ -64,7 +64,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/ui/window/map_viewer tools/player-workspace-v3-polish-validation.log
-          git commit -m "ci: apply player workspace v3 polish and record failure"
+          git commit -m "ci: apply player workspace v3 polish compile fix and record failure"
           git push origin HEAD:master
       - name: Commit success and clean temporary files
         if: steps.check.outcome == 'success'
@@ -74,6 +74,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           Remove-Item -Force tools/.apply-player-workspace-v3-polish-trigger
           Remove-Item -Force tools/apply-player-workspace-v3-polish.py
+          Remove-Item -Force tools/fix-player-workspace-v3-polish-compile.py
           Remove-Item -Force tools/player-workspace-v3-polish-validation.log -ErrorAction SilentlyContinue
           Remove-Item -Force .github/workflows/apply-player-workspace-v3-polish-once.yml
           git add -A
