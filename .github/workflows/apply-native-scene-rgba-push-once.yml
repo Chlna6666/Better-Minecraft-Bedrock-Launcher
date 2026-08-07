@@ -108,6 +108,43 @@ jobs:
           )
           path.write_text(text, encoding='utf-8')
           PY
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/gpui/build.rs')
+          text = path.read_text(encoding='utf-8')
+          call_new = '''    #[cfg(feature = "build-shader-validation")]
+              check_blade_wgsl_shaders();
+          '''
+          call_old = '''    #[cfg(all(
+                  feature = "build-shader-validation",
+                  target_os = "macos",
+                  feature = "macos-blade"
+              ))]
+              check_blade_wgsl_shaders();
+          '''
+          fn_new = '''#[cfg(feature = "build-shader-validation")]
+          fn check_blade_wgsl_shaders() {
+          '''
+          fn_old = '''#[cfg(all(
+              feature = "build-shader-validation",
+              target_os = "macos",
+              feature = "macos-blade"
+          ))]
+          fn check_blade_wgsl_shaders() {
+          '''
+          if text.count(call_new) != 1:
+              raise SystemExit(
+                  f'expected one broadened Blade validation call, found {text.count(call_new)}'
+              )
+          if text.count(fn_new) != 1:
+              raise SystemExit(
+                  f'expected one broadened Blade validator, found {text.count(fn_new)}'
+              )
+          text = text.replace(call_new, call_old, 1)
+          text = text.replace(fn_new, fn_old, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
             git diff --check
             cargo check -p gpui --lib --features build-shader-validation,x11
           ) > >(tee /tmp/native-rgba-validation.log) 2>&1
