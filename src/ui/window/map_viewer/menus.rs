@@ -256,6 +256,28 @@ impl MapViewerWindowView {
             ContextMenuGroup::titled("选区", selection_entries),
             ContextMenuGroup::titled("编辑", more_edit_entries),
         ];
+        if let Some(player_id) = self.players.context_target.clone() {
+            let entity = cx.entity();
+            groups.insert(
+                0,
+                ContextMenuGroup::new(vec![ContextMenuEntry::item(
+                    ContextMenuItem::new("编辑玩家")
+                        .description("打开玩家背包、末影箱、装备与 NBT 编辑器")
+                        .on_click(move |cx| {
+                            let player_id = player_id.clone();
+                            entity.update(cx, move |this, cx| {
+                                this.context_menu = None;
+                                this.players.context_target = None;
+                                this.open_player_workspace_for_player(
+                                    player_id,
+                                    PlayerWorkspaceCenter::Inventory,
+                                    cx,
+                                );
+                            })
+                        }),
+                )]),
+            );
+        }
         {
             let Some(chunk) = self.context_chunk_pos() else {
                 return div().child(

@@ -7,8 +7,6 @@ use super::viewport::viewport_screen_for_block;
 use std::collections::HashMap as StdHashMap;
 use std::fs;
 
-const PLAYER_CLICK_HIT_RADIUS_PX: f32 = 22.0;
-const PLAYER_CLICK_DRAG_THRESHOLD_PX: f32 = 4.0;
 const PLAYER_MAIN_INVENTORY_SIZE: i32 = 36;
 const PLAYER_ITEM_CATALOG_LIMIT: usize = 96;
 
@@ -244,6 +242,7 @@ impl PlayerItemMutation {
 
 #[derive(Clone, Debug)]
 struct PlayerRefreshMarker {
+    id: PlayerId,
     label: SharedString,
     dimension: Dimension,
     x: i32,
@@ -258,10 +257,6 @@ struct PlayerRefreshResult {
 
 impl MapViewerWindowView {
     pub(super) fn refresh_players(&mut self, cx: &mut Context<Self>) {
-        if self.players.generation == 0 {
-            self.install_player_canvas_click_hook(cx);
-        }
-
         self.players.generation = self.players.generation.saturating_add(1);
         self.players.loading = true;
         self.players.error = None;
@@ -307,6 +302,7 @@ impl MapViewerWindowView {
                                     {
                                         if position[0].is_finite() && position[2].is_finite() {
                                             marker_records.push(PlayerRefreshMarker {
+                                                id: id.clone(),
                                                 label: label.clone(),
                                                 dimension: Dimension::from_id(dimension_id),
                                                 x: position[0]
@@ -362,6 +358,7 @@ impl MapViewerWindowView {
                             x: marker.x,
                             z: marker.z,
                             label: marker.label,
+                            player_id: Some(marker.id),
                         });
                     }
                     for values in markers.values_mut() {
@@ -409,8 +406,10 @@ impl MapViewerWindowView {
                         ));
                         let colors = this.theme_colors(cx);
                         this.sync_canvas_snapshot(colors, cx);
-                        if let Some(id) = this.players.selected.clone() {
-                            this.load_player_detail(id, cx);
+                        if this.player_workspace_active() {
+                            if let Some(id) = this.players.selected.clone() {
+                                this.load_player_detail(id, cx);
+                            }
                         }
                     }
                     Err(error) => {
@@ -423,79 +422,6 @@ impl MapViewerWindowView {
             Ok::<(), anyhow::Error>(())
         })
         .detach();
-    }
-
-    fn install_player_canvas_click_hook(&mut self, cx: &mut Context<Self>) {
-        let canvas = self.canvas_view.clone();
-        let mut click_start: Option<Point<Pixels>> = None;
-        let mut players_were_active = false;
-        let subscription = cx.subscribe(
-            &canvas,
-            move |this, _canvas, action: &MapCanvasAction, cx| match *action {
-                MapCanvasAction::BeginDrag(position) => {
-                    click_start = Some(position);
-                    players_were_active = this.ui_state.left_panel_open
-                        && this.ui_state.active_left_panel == MapViewerLeftPanel::Players;
-                }
-                MapCanvasAction::EndDrag(position) => {
-                    let Some(start) = click_start.take() else {
-                        players_were_active = false;
-                        return;
-                    };
-                    let was_players = players_were_active;
-                    players_were_active = false;
-                    let dx = (position.x - start.x) / px(1.0);
-                    let dy = (position.y - start.y) / px(1.0);
-                    if !was_players || dx.hypot(dy) > PLAYER_CLICK_DRAG_THRESHOLD_PX {
-                        return;
-                    }
-                    let Some(id) = this.player_at_canvas_position(position) else {
-                        return;
-                    };
-
-                    this.ui_state.active_left_panel = MapViewerLeftPanel::Players;
-                    this.ui_state.left_panel_open = true;
-                    this.player_workspace.center = PlayerWorkspaceCenter::Map;
-                    this.ui_state.active_right_panel = MapViewerRightPanel::Player;
-                    this.ui_state.set_right_panel_open(true);
-                    this.update_viewport_after_dock_change(cx);
-                    this.load_player_detail(id, cx);
-                }
-                _ => {}
-            },
-        );
-        self._subscriptions.push(subscription);
-    }
-
-    fn player_at_canvas_position(&self, position: Point<Pixels>) -> Option<PlayerId> {
-        let markers = self.markers.get(&self.dimension)?;
-        let x = position.x / px(1.0);
-        let y = position.y / px(1.0);
-        let radius2 = PLAYER_CLICK_HIT_RADIUS_PX * PLAYER_CLICK_HIT_RADIUS_PX;
-        let mut best: Option<(f32, &Marker)> = None;
-        for marker in markers {
-            let Some((screen_x, screen_y)) =
-                viewport_screen_for_block(self.viewport, self.active_layout, marker.x, marker.z)
-            else {
-                continue;
-            };
-            let dx = screen_x - x;
-            let dy = screen_y - y;
-            let distance2 = dx * dx + dy * dy;
-            if distance2 > radius2 {
-                continue;
-            }
-            if best.is_none_or(|(best_distance, _)| distance2 < best_distance) {
-                best = Some((distance2, marker));
-            }
-        }
-
-        let (_, marker) = best?;
-        self.players
-            .players
-            .iter()
-            .find(|player| player.label == marker.label)
-            .map(|player| player.id.clone())
     }
 
     pub(super) fn load_player_detail(&mut self, id: PlayerId, cx: &mut Context<Self>) {

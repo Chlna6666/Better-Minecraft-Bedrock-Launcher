@@ -6,8 +6,8 @@ use bedrock_render::{ChunkPos, Dimension};
 use gpui::SharedString;
 use std::sync::Arc;
 
-pub const RIGHT_PANEL_DEFAULT_WIDTH: f32 = 460.0;
-pub const RIGHT_PANEL_MIN_WIDTH: f32 = 340.0;
+pub const RIGHT_PANEL_DEFAULT_WIDTH: f32 = 420.0;
+pub const RIGHT_PANEL_MIN_WIDTH: f32 = 300.0;
 pub const BOTTOM_PANEL_DEFAULT_HEIGHT: f32 = 260.0;
 pub const BOTTOM_PANEL_MIN_HEIGHT: f32 = 170.0;
 pub const MIN_CENTER_WIDTH: f32 = 360.0;

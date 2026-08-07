@@ -84,19 +84,6 @@ impl Render for MapToolStripeView {
                 }),
             ))
             .child(stripe_button(
-                "stripe-players",
-                &colors,
-                lucide_icons::icon_users(),
-                "玩家",
-                snapshot.left_panel_open
-                    && snapshot.active_left_panel == MapViewerLeftPanel::Players,
-                cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(MapViewerAction::ToggleLeftPanelKind(
-                        MapViewerLeftPanel::Players,
-                    ));
-                }),
-            ))
-            .child(stripe_button(
                 "stripe-details",
                 &colors,
                 lucide_icons::icon_info(),

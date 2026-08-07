@@ -2,7 +2,7 @@ use gpui::{Bounds, Pixels, point, px, size};
 
 pub const IDE_TOP_BAR_HEIGHT: f32 = 62.0;
 pub const IDE_LEFT_STRIPE_WIDTH: f32 = 76.0;
-pub const IDE_LEFT_DOCK_WIDTH: f32 = 300.0;
+pub const IDE_LEFT_DOCK_WIDTH: f32 = 280.0;
 pub const IDE_SPLITTER_WIDTH: f32 = 6.0;
 pub const IDE_DIVIDER_WIDTH: f32 = 1.0;
 pub const IDE_STATUS_BAR_HEIGHT: f32 = 30.0;

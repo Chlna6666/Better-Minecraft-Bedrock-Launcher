@@ -2,6 +2,8 @@ use super::model::*;
 use super::panels::*;
 use super::players::*;
 use super::prelude::*;
+use crate::ui::components::icon::themed_icon;
+use lucide_gpui::icons as lucide_icons;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum PlayerWorkspaceCenter {
@@ -152,10 +154,128 @@ struct PlayerVisualItemPatch {
     can_destroy: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PlayerWorkspaceMetrics {
+    slot_size: f32,
+    slot_gap: f32,
+    panel_padding: f32,
+    outer_padding: f32,
+    compact: bool,
+}
+
+#[derive(Clone)]
+struct PlayerItemDrag {
+    source: PlayerItemSelection,
+    label: SharedString,
+    texture: Option<Arc<Path>>,
+    count: i32,
+    position: Point<Pixels>,
+}
+
+impl PlayerItemDrag {
+    fn at(mut self, position: Point<Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+impl Render for PlayerItemDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let size = 48.0;
+        div()
+            .pl(self.position.x - px(size * 0.5))
+            .pt(self.position.y - px(size * 0.5))
+            .child(
+                div()
+                    .relative()
+                    .w(px(size))
+                    .h(px(size))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(0xffffff))
+                    .bg(rgb(0xf3efe8))
+                    .shadow_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when_some(self.texture.clone(), |this, texture| {
+                        this.child(img(texture).w(px(36.0)).h(px(36.0)))
+                    })
+                    .when(self.texture.is_none(), |this| {
+                        this.child(themed_icon(
+                            lucide_icons::icon_package(),
+                            24.0,
+                            rgb(0x6f675c).into(),
+                        ))
+                    })
+                    .when(self.count > 1, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .right(px(3.0))
+                                .bottom(px(1.0))
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0x2b2620)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(size + 6.0))
+                            .top(px(12.0))
+                            .max_w(px(180.0))
+                            .overflow_hidden()
+                            .px(px(6.0))
+                            .py(px(3.0))
+                            .rounded(px(4.0))
+                            .bg(Hsla {
+                                a: 0.92,
+                                ..rgb(0xf3efe8).into()
+                            })
+                            .text_size(px(10.0))
+                            .text_color(rgb(0x2b2620))
+                            .child(self.label.clone()),
+                    ),
+            )
+    }
+}
+
 impl MapViewerWindowView {
+    fn player_workspace_metrics(&self) -> PlayerWorkspaceMetrics {
+        let available = self.viewport.width.max(320.0);
+        let compact = available < 620.0;
+        let outer_padding = if available < 470.0 {
+            8.0
+        } else if compact {
+            12.0
+        } else {
+            18.0
+        };
+        let panel_padding = if available < 470.0 {
+            9.0
+        } else if compact {
+            12.0
+        } else {
+            18.0
+        };
+        let slot_gap = if compact { 3.0 } else { 4.0 };
+        let usable = (available - outer_padding * 2.0 - panel_padding * 2.0)
+            .min(584.0)
+            .max(288.0);
+        let slot_size = ((usable - slot_gap * 8.0) / 9.0).clamp(30.0, 52.0);
+        PlayerWorkspaceMetrics {
+            slot_size,
+            slot_gap,
+            panel_padding,
+            outer_padding,
+            compact,
+        }
+    }
+
     pub(super) fn player_workspace_active(&self) -> bool {
-        self.ui_state.left_panel_open
-            && self.ui_state.active_left_panel == MapViewerLeftPanel::Players
+        self.ui_state.active_left_panel == MapViewerLeftPanel::Players
+            && (self.ui_state.left_panel_open || self.players.selected.is_some())
     }
 
     pub(super) fn render_player_left_dock(
@@ -298,6 +418,8 @@ impl MapViewerWindowView {
             .is_some_and(|selected| selected == &player.id);
         let id = player.id.clone();
         let raw = player_id_label(&player.id);
+        let stable_label = stable_middle_ellipsis(player.label.as_ref(), 30);
+        let stable_raw = stable_middle_ellipsis(&raw, 34);
         let quality_label = player.quality.health.label();
         let quality_color = match player.quality.health {
             PlayerRecordHealth::Complete => colors.accent,
@@ -307,6 +429,7 @@ impl MapViewerWindowView {
         div()
             .mb(px(4.0))
             .p(px(7.0))
+            .overflow_hidden()
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .cursor_pointer()
             .bg(if selected {
@@ -360,18 +483,20 @@ impl MapViewerWindowView {
                             .gap(px(2.0))
                             .child(
                                 div()
-                                    .truncate()
+                                    .w_full()
+                                    .overflow_hidden()
                                     .text_size(px(11.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(colors.text_primary)
-                                    .child(player.label.clone()),
+                                    .child(stable_label),
                             )
                             .child(
                                 div()
-                                    .truncate()
+                                    .w_full()
+                                    .overflow_hidden()
                                     .text_size(px(9.0))
                                     .text_color(colors.text_muted)
-                                    .child(raw),
+                                    .child(stable_raw),
                             )
                             .child(
                                 div()
@@ -390,7 +515,11 @@ impl MapViewerWindowView {
                     )
                     .child(
                         div()
-                            .px(px(5.0))
+                            .w(px(34.0))
+                            .flex_none()
+                            .flex()
+                            .justify_center()
+                            .px(px(4.0))
                             .py(px(2.0))
                             .rounded_full()
                             .bg(Hsla {
@@ -410,6 +539,8 @@ impl MapViewerWindowView {
         center: PlayerWorkspaceCenter,
         cx: &mut Context<Self>,
     ) {
+        self.context_menu = None;
+        self.players.context_target = None;
         self.ui_state.active_left_panel = MapViewerLeftPanel::Players;
         self.ui_state.left_panel_open = true;
         self.player_workspace.center = center;
@@ -452,6 +583,7 @@ impl MapViewerWindowView {
                 });
         };
         let entries = player_inventory_entries(&detail.nbt);
+        let metrics = self.player_workspace_metrics();
         div()
             .size_full()
             .min_w(px(0.0))
@@ -465,7 +597,7 @@ impl MapViewerWindowView {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scrollbar()
-                    .p(px(18.0))
+                    .p(px(metrics.outer_padding))
                     .child(match self.player_workspace.center {
                         PlayerWorkspaceCenter::Map => div().into_any_element(),
                         PlayerWorkspaceCenter::Inventory => self
@@ -495,15 +627,17 @@ impl MapViewerWindowView {
             .map(|player| player.label.clone())
             .unwrap_or_else(|| SharedString::from(player_id_label(&detail.id)));
         div()
-            .h(px(50.0))
+            .min_h(px(50.0))
             .flex_none()
-            .px(px(14.0))
+            .px(px(12.0))
+            .py(px(6.0))
             .border_b_1()
             .border_color(Hsla {
                 a: CHROME_HAIRLINE_ALPHA,
                 ..colors.border
             })
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(7.0))
             .child(
@@ -564,7 +698,9 @@ impl MapViewerWindowView {
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
     ) -> Div {
+        let metrics = self.player_workspace_metrics();
         div()
+            .w_full()
             .max_w(px(620.0))
             .mx_auto()
             .rounded(px(crate::ui::theme::tokens::radius::LG))
@@ -577,7 +713,7 @@ impl MapViewerWindowView {
                 a: 0.72,
                 ..colors.surface
             })
-            .p(px(18.0))
+            .p(px(metrics.panel_padding))
             .flex()
             .flex_col()
             .gap(px(15.0))
@@ -627,7 +763,9 @@ impl MapViewerWindowView {
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
     ) -> Div {
+        let metrics = self.player_workspace_metrics();
         div()
+            .w_full()
             .max_w(px(620.0))
             .mx_auto()
             .rounded(px(crate::ui::theme::tokens::radius::LG))
@@ -640,7 +778,7 @@ impl MapViewerWindowView {
                 a: 0.72,
                 ..colors.surface
             })
-            .p(px(18.0))
+            .p(px(metrics.panel_padding))
             .flex()
             .flex_col()
             .gap(px(12.0))
@@ -664,7 +802,9 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) -> Div {
         let armor_labels = ["头盔", "胸甲", "护腿", "靴子"];
+        let metrics = self.player_workspace_metrics();
         div()
+            .w_full()
             .max_w(px(620.0))
             .mx_auto()
             .rounded(px(crate::ui::theme::tokens::radius::LG))
@@ -677,7 +817,7 @@ impl MapViewerWindowView {
                 a: 0.72,
                 ..colors.surface
             })
-            .p(px(18.0))
+            .p(px(metrics.panel_padding))
             .flex()
             .flex_col()
             .gap(px(14.0))
@@ -685,6 +825,7 @@ impl MapViewerWindowView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap(px(20.0))
                     .child(
                         div()
@@ -742,11 +883,12 @@ impl MapViewerWindowView {
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
     ) -> Div {
+        let metrics = self.player_workspace_metrics();
         div()
             .flex()
             .items_center()
             .justify_center()
-            .gap(px(4.0))
+            .gap(px(metrics.slot_gap))
             .children(slots.map(|slot| {
                 self.render_player_inventory_slot(colors, kind, slot, entries, cx)
                     .into_any_element()
@@ -761,10 +903,16 @@ impl MapViewerWindowView {
         entries: &[PlayerInventoryEntry],
         cx: &mut Context<Self>,
     ) -> Div {
+        let metrics = self.player_workspace_metrics();
         let entry = entries.iter().find(|entry| {
             entry.kind == kind && entry.slot.unwrap_or(entry.list_index as i32) == slot
         });
         let list_index = entry.map(|entry| entry.list_index);
+        let selection = PlayerItemSelection {
+            kind,
+            list_index,
+            slot,
+        };
         let selected = self
             .player_workspace
             .selected_item
@@ -776,10 +924,24 @@ impl MapViewerWindowView {
         let has_custom_name = entry
             .and_then(|entry| player_item_custom_name(&entry.item.nbt))
             .is_some_and(|name| !name.trim().is_empty());
+        let drag_payload = entry.map(|entry| PlayerItemDrag {
+            source: selection,
+            label: SharedString::from(
+                entry
+                    .item
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "未知物品".to_string()),
+            ),
+            texture: texture.clone(),
+            count,
+            position: Point::default(),
+        });
+        let icon_size = (metrics.slot_size * 0.72).clamp(20.0, 38.0);
         div()
             .relative()
-            .w(px(52.0))
-            .h(px(52.0))
+            .w(px(metrics.slot_size))
+            .h(px(metrics.slot_size))
             .flex_none()
             .rounded(px(3.0))
             .border_1()
@@ -812,19 +974,25 @@ impl MapViewerWindowView {
             .flex()
             .items_center()
             .justify_center()
-            .when_some(texture, |this, texture| {
-                this.child(img(texture).w(px(38.0)).h(px(38.0)))
+            .when_some(texture.clone(), |this, texture| {
+                this.child(img(texture).w(px(icon_size)).h(px(icon_size)))
+            })
+            .when(entry.is_some() && texture.is_none(), |this| {
+                this.child(themed_icon(
+                    lucide_icons::icon_package(),
+                    icon_size.min(26.0),
+                    colors.text_muted,
+                ))
             })
             .when(entry.is_none(), |this| {
-                this.child(
-                    div()
-                        .text_size(px(18.0))
-                        .text_color(Hsla {
-                            a: 0.34,
-                            ..colors.text_muted
-                        })
-                        .child("+"),
-                )
+                this.child(themed_icon(
+                    lucide_icons::icon_plus(),
+                    (icon_size * 0.55).max(12.0),
+                    Hsla {
+                        a: 0.42,
+                        ..colors.text_muted
+                    },
+                ))
             })
             .when(entry.is_some() && count > 1, |this| {
                 this.child(
@@ -832,7 +1000,7 @@ impl MapViewerWindowView {
                         .absolute()
                         .right(px(3.0))
                         .bottom(px(1.0))
-                        .text_size(px(10.0))
+                        .text_size(px(if metrics.compact { 9.0 } else { 10.0 }))
                         .font_weight(FontWeight::BOLD)
                         .text_color(colors.text_primary)
                         .child(count.to_string()),
@@ -862,18 +1030,21 @@ impl MapViewerWindowView {
                         .bg(colors.stat_orange_text),
                 )
             })
+            .when_some(drag_payload, |this, drag| {
+                this.cursor_move()
+                    .on_drag(drag, |info: &PlayerItemDrag, position, _window, cx| {
+                        cx.new(|_| info.clone().at(position))
+                    })
+            })
+            .on_drop(
+                cx.listener(move |this, drag: &PlayerItemDrag, _window, cx| {
+                    this.move_player_workspace_item(drag.source, selection, cx);
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, window, cx| {
-                    this.select_player_workspace_item(
-                        PlayerItemSelection {
-                            kind,
-                            list_index,
-                            slot,
-                        },
-                        window,
-                        cx,
-                    )
+                    this.select_player_workspace_item(selection, window, cx)
                 }),
             )
     }
@@ -1221,8 +1392,15 @@ impl MapViewerWindowView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .when_some(texture, |this, texture| {
+                            .when_some(texture.clone(), |this, texture| {
                                 this.child(img(texture).w(px(34.0)).h(px(34.0)))
+                            })
+                            .when(texture.is_none(), |this| {
+                                this.child(themed_icon(
+                                    lucide_icons::icon_package(),
+                                    24.0,
+                                    colors.text_muted,
+                                ))
                             }),
                     )
                     .child(
@@ -1330,6 +1508,7 @@ impl MapViewerWindowView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap(px(7.0))
                     .child(
                         player_form_field(colors, "数量", self.player_workspace.count.clone())
@@ -1765,6 +1944,132 @@ impl MapViewerWindowView {
         self.write_player_workspace_slot(selection, Some(tag), "玩家物品：修改附魔", cx);
     }
 
+    fn sync_player_summary_inventory_counts(&mut self, detail: &PlayerDetail) {
+        let entries = player_inventory_entries(&detail.nbt);
+        let item_count = entries.len();
+        let ender_item_count = entries
+            .iter()
+            .filter(|entry| entry.kind == PlayerInventoryKind::EnderChest)
+            .count();
+        let Some(summary) = self
+            .players
+            .players
+            .iter_mut()
+            .find(|summary| summary.id == detail.id)
+        else {
+            return;
+        };
+        let old_bonus = i16::try_from(summary.quality.item_count.min(10)).unwrap_or(10)
+            + if summary.quality.ender_item_count > 0 {
+                5
+            } else {
+                0
+            };
+        let new_bonus = i16::try_from(item_count.min(10)).unwrap_or(10)
+            + if ender_item_count > 0 { 5 } else { 0 };
+        summary.quality.score = summary
+            .quality
+            .score
+            .saturating_sub(old_bonus)
+            .saturating_add(new_bonus);
+        summary.quality.item_count = item_count;
+        summary.quality.ender_item_count = ender_item_count;
+        summary.quality.has_inventory = true;
+    }
+
+    fn move_player_workspace_item(
+        &mut self,
+        source: PlayerItemSelection,
+        target: PlayerItemSelection,
+        cx: &mut Context<Self>,
+    ) {
+        if source.kind == target.kind && source.slot == target.slot {
+            return;
+        }
+        let Some(id) = self.players.selected.clone() else {
+            return;
+        };
+        if self.players.saving {
+            self.status = SharedString::from("上一项玩家写入尚未完成");
+            cx.notify();
+            return;
+        }
+        self.players.saving = true;
+        self.players.generation = self.players.generation.saturating_add(1);
+        let generation = self.players.generation;
+        let world_path = self.world_path.clone();
+        self.status = SharedString::from(format!(
+            "正在移动物品：{} {} → {} {}...",
+            source.kind.label(),
+            source.slot,
+            target.kind.label(),
+            target.slot
+        ));
+        cx.notify();
+
+        cx.spawn(async move |handle, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let mut options = bedrock_world::OpenOptions::default();
+                    options.read_only = false;
+                    let world = BedrockWorld::open_blocking(&world_path, options)
+                        .map_err(|error| error.to_string())?;
+                    let history_capture =
+                        capture_player_history(&world_path, &id, "玩家物品：拖拽移动/交换");
+                    let mut data = world
+                        .get_player_blocking(&id)
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| "玩家记录不存在".to_string())?;
+                    let source_item = player_slot_item(&data.nbt, source)
+                        .ok_or_else(|| "拖拽源物品已经不存在，请刷新玩家数据".to_string())?;
+                    let target_item = player_slot_item(&data.nbt, target);
+                    replace_player_slot(&mut data.nbt, source, target_item)?;
+                    replace_player_slot(&mut data.nbt, target, Some(source_item))?;
+                    data = PlayerData::from_nbt(id.clone(), data.nbt)
+                        .map_err(|error| error.to_string())?;
+                    world
+                        .put_player_blocking(&data)
+                        .map_err(|error| error.to_string())?;
+                    let detail = player_detail_from_data(data)?;
+                    if let Ok(capture) = history_capture {
+                        complete_after(capture, "玩家物品：拖拽移动/交换")?;
+                    }
+                    Ok::<_, String>(detail)
+                })
+                .await;
+            let Some(view) = handle.upgrade() else {
+                return Ok(());
+            };
+            view.update(cx, move |this, cx| {
+                if this.players.generation != generation {
+                    return;
+                }
+                this.players.saving = false;
+                match result {
+                    Ok(detail) => {
+                        this.sync_player_summary_inventory_counts(&detail);
+                        this.players.detail = Some(detail);
+                        this.player_workspace.selected_item = Some(target);
+                        this.player_workspace.item_editor_dirty = false;
+                        this.player_workspace.item_editor_error = None;
+                        this.sync_player_item_raw_editor(cx);
+                        this.status = SharedString::from(
+                            "物品拖拽已写入 · 目标有物品时自动交换 · 可从历史撤销",
+                        );
+                    }
+                    Err(error) => {
+                        this.player_workspace.item_editor_error =
+                            Some(SharedString::from(error.clone()));
+                        this.status = SharedString::from(error);
+                    }
+                }
+                cx.notify();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     fn write_player_workspace_slot(
         &mut self,
         selection: PlayerItemSelection,
@@ -1824,6 +2129,7 @@ impl MapViewerWindowView {
                 this.players.saving = false;
                 match result {
                     Ok(detail) => {
+                        this.sync_player_summary_inventory_counts(&detail);
                         this.players.detail = Some(detail);
                         this.player_workspace.item_editor_dirty = false;
                         this.player_workspace.item_editor_error = None;
@@ -2135,6 +2441,31 @@ fn set_workspace_item_slot(item: &mut NbtTag, slot: i32) -> Result<(), String> {
     Ok(())
 }
 
+fn player_slot_item(player: &NbtTag, selection: PlayerItemSelection) -> Option<NbtTag> {
+    let root = nbt_compound_ref(player)?;
+    let NbtTag::List(list) = root.get(selection.kind.nbt_key())? else {
+        return None;
+    };
+    let index = selection
+        .list_index
+        .filter(|index| *index < list.len())
+        .or_else(|| {
+            list.iter().position(|item| {
+                nbt_compound_ref(item).and_then(|compound| nbt_number_i32(compound.get("Slot")))
+                    == Some(selection.slot)
+            })
+        })?;
+    let item = list.get(index)?.clone();
+    let name = nbt_compound_ref(&item)
+        .and_then(|compound| compound.get("Name"))
+        .and_then(|tag| match tag {
+            NbtTag::String(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    (!name.trim().is_empty()).then_some(item)
+}
+
 fn replace_player_slot(
     player: &mut NbtTag,
     selection: PlayerItemSelection,
@@ -2388,4 +2719,19 @@ fn find_item_id_in_text(text: &str) -> Option<String> {
 
 fn workspace_pretty_json(value: serde_json::Value) -> SharedString {
     SharedString::from(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
+}
+
+fn stable_middle_ellipsis(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars || max_chars < 5 {
+        return value.to_string();
+    }
+    let tail = (max_chars / 3).max(2);
+    let head = max_chars.saturating_sub(tail + 1);
+    let prefix = value.chars().take(head).collect::<String>();
+    let suffix = value
+        .chars()
+        .skip(count.saturating_sub(tail))
+        .collect::<String>();
+    format!("{prefix}…{suffix}")
 }

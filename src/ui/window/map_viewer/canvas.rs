@@ -122,6 +122,10 @@ pub(super) enum MapCanvasAction {
     TogglePastePreviewTools,
     ExportPastePreviewImage,
     OpenPastePreview3d,
+    OpenPlayerMarkerContext {
+        marker_index: usize,
+        position: Point<Pixels>,
+    },
     PointerMoved {
         position: Point<Pixels>,
         pressed_button: Option<MouseButton>,
@@ -263,16 +267,25 @@ pub(super) struct SelectionHitSnapshot {
 impl MapCanvasView {
     pub(super) fn new(map_focus_handle: FocusHandle, cx: &mut Context<Self>) -> Self {
         let paste_controls_layer = cx.new(|_cx| MapPasteControlsView::default());
-        let subscriptions = vec![cx.subscribe(
-            &paste_controls_layer,
-            |_this, _controls, action: &MapCanvasAction, cx| {
-                cx.emit(*action);
-            },
-        )];
+        let marker_layer = cx.new(|_cx| MapMarkerLayerView::default());
+        let subscriptions = vec![
+            cx.subscribe(
+                &paste_controls_layer,
+                |_this, _controls, action: &MapCanvasAction, cx| {
+                    cx.emit(*action);
+                },
+            ),
+            cx.subscribe(
+                &marker_layer,
+                |_this, _markers, action: &MapCanvasAction, cx| {
+                    cx.emit(*action);
+                },
+            ),
+        ];
         Self {
             tile_layer: cx.new(|_cx| MapTileLayerView::default()),
             overlay_layer: cx.new(|_cx| MapOverlayLayerView::default()),
-            marker_layer: cx.new(|_cx| MapMarkerLayerView::default()),
+            marker_layer,
             hud_layer: cx.new(|_cx| MapHudView::default()),
             paste_controls_layer,
             frame_revision: 0,
@@ -379,13 +392,13 @@ impl Render for MapCanvasView {
             .bg(colors.surface)
             .child(cached_absolute_layer(&self.tile_layer, tile_revision))
             .child(cached_absolute_layer(&self.overlay_layer, frame_revision))
-            .child(cached_absolute_layer(&self.marker_layer, frame_revision))
             .child(cached_absolute_layer(&self.hud_layer, frame_revision))
             .child(render_interaction_layer(
                 &self.map_focus_handle,
                 self.interaction_cursor,
                 cx,
             ))
+            .child(cached_absolute_layer(&self.marker_layer, frame_revision))
             .child(cached_absolute_layer(
                 &self.paste_controls_layer,
                 frame_revision,
@@ -562,6 +575,7 @@ struct MarkerLayerSnapshot {
     viewport: MapViewport,
     layout: RenderLayout,
     colors: ThemeColors,
+    overlays: OverlayOptions,
     markers: Arc<Vec<Marker>>,
     markers_generation: u64,
 }
@@ -572,6 +586,7 @@ impl MarkerLayerSnapshot {
             viewport: snapshot.viewport,
             layout: snapshot.layout,
             colors: snapshot.colors,
+            overlays: snapshot.overlays,
             markers: snapshot.markers.clone(),
             markers_generation: snapshot.markers_generation,
         }
@@ -581,6 +596,7 @@ impl MarkerLayerSnapshot {
         self.viewport == other.viewport
             && self.layout == other.layout
             && self.colors == other.colors
+            && self.overlays == other.overlays
             && self.markers_generation == other.markers_generation
     }
 }
@@ -604,11 +620,13 @@ impl MapMarkerLayerView {
     }
 }
 
+impl EventEmitter<MapCanvasAction> for MapMarkerLayerView {}
+
 impl Render for MapMarkerLayerView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.snapshot
             .as_ref()
-            .map(render_markers)
+            .map(|snapshot| render_markers(snapshot, cx))
             .unwrap_or_else(|| div().absolute().inset_0())
     }
 }
@@ -1717,9 +1735,13 @@ fn paint_history_outline(
     ));
 }
 
-fn render_markers(snapshot: &MarkerLayerSnapshot) -> Div {
+fn render_markers(snapshot: &MarkerLayerSnapshot, cx: &mut Context<MapMarkerLayerView>) -> Div {
     let mut layer = div().absolute().inset_0();
-    for marker in snapshot.markers.iter() {
+    for (marker_index, marker) in snapshot.markers.iter().enumerate() {
+        let is_player = marker.player_id.is_some();
+        if is_player && !snapshot.overlays.players {
+            continue;
+        }
         let Some((screen_x, screen_y)) =
             viewport_screen_for_block(snapshot.viewport, snapshot.layout, marker.x, marker.z)
         else {
@@ -1727,37 +1749,94 @@ fn render_markers(snapshot: &MarkerLayerSnapshot) -> Div {
         };
         let left = px(screen_x);
         let top = px(screen_y);
-        layer = layer.child(
-            div()
-                .absolute()
-                .left(left - px(7.0))
-                .top(top - px(7.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .w(px(14.0))
-                        .h(px(14.0))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(rgb(0xffffff))
-                        .bg(snapshot.colors.danger),
-                )
-                .child(
-                    div()
-                        .px(px(6.0))
-                        .py(px(2.0))
-                        .rounded(px(crate::ui::theme::tokens::radius::SM))
-                        .bg(Hsla {
-                            a: 0.78,
-                            ..snapshot.colors.surface
-                        })
-                        .text_size(px(11.0))
-                        .text_color(snapshot.colors.text_primary)
-                        .child(marker.label.clone()),
-                ),
-        );
+        if is_player {
+            let show_label = snapshot.viewport.scale >= 0.75;
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(left - px(14.0))
+                    .top(top - px(14.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .id(("player-map-marker", marker_index))
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .flex_none()
+                            .rounded(px(4.0))
+                            .overflow_hidden()
+                            .border_2()
+                            .border_color(rgb(0xffffff))
+                            .bg(Hsla {
+                                a: 0.90,
+                                ..snapshot.colors.surface
+                            })
+                            .cursor(CursorStyle::PointingHand)
+                            .child(img("images/map/entity/player.png").w(px(28.0)).h(px(28.0)))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |_this, event: &MouseDownEvent, _window, cx| {
+                                    cx.emit(MapCanvasAction::OpenPlayerMarkerContext {
+                                        marker_index,
+                                        position: event.position,
+                                    });
+                                    cx.stop_propagation();
+                                }),
+                            ),
+                    )
+                    .when(show_label, |this| {
+                        this.child(
+                            div()
+                                .max_w(px(220.0))
+                                .overflow_hidden()
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded(px(crate::ui::theme::tokens::radius::SM))
+                                .bg(Hsla {
+                                    a: 0.82,
+                                    ..snapshot.colors.surface
+                                })
+                                .text_size(px(10.0))
+                                .text_color(snapshot.colors.text_primary)
+                                .child(marker.label.clone()),
+                        )
+                    }),
+            );
+        } else {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(left - px(7.0))
+                    .top(top - px(7.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(rgb(0xffffff))
+                            .bg(snapshot.colors.danger),
+                    )
+                    .child(
+                        div()
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded(px(crate::ui::theme::tokens::radius::SM))
+                            .bg(Hsla {
+                                a: 0.78,
+                                ..snapshot.colors.surface
+                            })
+                            .text_size(px(11.0))
+                            .text_color(snapshot.colors.text_primary)
+                            .child(marker.label.clone()),
+                    ),
+            );
+        }
     }
     layer
 }

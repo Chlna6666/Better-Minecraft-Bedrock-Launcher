@@ -196,6 +196,7 @@ impl MapViewerWindowView {
 
     pub(super) fn close_all_menus(&mut self, cx: &mut Context<Self>) {
         let changed = self.context_menu.take().is_some()
+            || self.players.context_target.take().is_some()
             || self.ui_state.top_more_open
             || self.ui_state.context_more_open
             || self.ui_state.context_paste_open;
@@ -252,6 +253,49 @@ impl MapViewerWindowView {
 
     pub(super) fn toggle_ruler(&mut self, cx: &mut Context<Self>) {
         self.overlay_options.ruler = !self.overlay_options.ruler;
+        cx.notify();
+    }
+
+    pub(super) fn toggle_player_overlay(&mut self, cx: &mut Context<Self>) {
+        self.overlay_options.players = !self.overlay_options.players;
+        self.last_synced_canvas_snapshot_key = None;
+        if self.overlay_options.players && self.players.players.is_empty() {
+            self.refresh_players(cx);
+            return;
+        }
+        let colors = self.theme_colors(cx);
+        self.sync_canvas_snapshot(colors, cx);
+        cx.notify();
+    }
+
+    pub(super) fn open_player_marker_context(
+        &mut self,
+        marker_index: usize,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(marker) = self
+            .markers
+            .get(&self.dimension)
+            .and_then(|markers| markers.get(marker_index))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(player_id) = marker.player_id.clone() else {
+            return;
+        };
+        self.drag = None;
+        self.right_selection_drag = None;
+        self.players.context_target = Some(player_id);
+        self.context_menu = Some(ContextMenuState {
+            position,
+            block_x: marker.x,
+            block_z: marker.z,
+        });
+        self.ui_state.top_more_open = false;
+        self.ui_state.context_more_open = false;
+        self.ui_state.context_paste_open = false;
         cx.notify();
     }
 
@@ -616,6 +660,7 @@ impl MapViewerWindowView {
         self.preview_3d.drag = None;
         self.ui_state.dock_drag = None;
         self.context_menu = None;
+        self.players.context_target = None;
         self.ui_state.top_more_open = false;
     }
 
@@ -1751,6 +1796,10 @@ impl MapViewerWindowView {
                     self.release_pointer_captures("map canvas right mouse up", cx);
                 }
             }
+            MapCanvasAction::OpenPlayerMarkerContext {
+                marker_index,
+                position,
+            } => self.open_player_marker_context(marker_index, position, cx),
             MapCanvasAction::PointerMoved {
                 position,
                 pressed_button,
@@ -3392,6 +3441,7 @@ impl MapViewerWindowView {
                     x: menu.block_x,
                     z: menu.block_z,
                     label: SharedString::from(format!("{}, {}", menu.block_x, menu.block_z)),
+                    player_id: None,
                 });
             self.markers_generation = self.markers_generation.saturating_add(1);
             self.status = SharedString::from("已添加地图标记");

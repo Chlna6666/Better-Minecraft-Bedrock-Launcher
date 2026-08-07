@@ -370,6 +370,15 @@ impl MapViewerWindowView {
                     .items_center()
                     .gap(px(6.0))
                     .child(
+                        mode_button(colors, "玩家显示", self.overlay_options.players)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_player_overlay(cx)
+                                }),
+                            ),
+                    )
+                    .child(
                         mode_button(colors, "生物实体", self.overlay_options.entities)
                             .on_mouse_down(
                                 MouseButton::Left,

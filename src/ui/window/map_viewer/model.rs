@@ -340,6 +340,7 @@ pub(super) struct Marker {
     pub(super) x: i32,
     pub(super) z: i32,
     pub(super) label: SharedString,
+    pub(super) player_id: Option<PlayerId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -347,6 +348,7 @@ pub(super) struct OverlayOptions {
     pub(super) axis: bool,
     pub(super) dense_grid: bool,
     pub(super) ruler: bool,
+    pub(super) players: bool,
     pub(super) slime_chunks: bool,
     pub(super) entities: bool,
     pub(super) block_entities: bool,
@@ -361,6 +363,7 @@ impl Default for OverlayOptions {
             axis: true,
             dense_grid: true,
             ruler: true,
+            players: false,
             slime_chunks: false,
             entities: false,
             block_entities: false,
@@ -1139,6 +1142,7 @@ pub(super) struct PlayerPanelState {
     pub(super) generation: u64,
     pub(super) error: Option<SharedString>,
     pub(super) pending_save_confirmation: Option<PlayerQuickEdit>,
+    pub(super) context_target: Option<PlayerId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
