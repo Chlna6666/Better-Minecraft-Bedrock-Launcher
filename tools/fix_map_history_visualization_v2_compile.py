@@ -38,5 +38,19 @@ helper = '''fn history_block_name_is_air(name: &str) -> bool {
 
 '''
 text = text.replace(marker, helper + marker, 1)
-
 path.write_text(text, encoding="utf-8")
+
+prelude_path = Path("src/ui/window/map_viewer/prelude.rs")
+prelude = prelude_path.read_text(encoding="utf-8")
+old_export = '''    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec,
+    MapHistoryChunkVisualKind, MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus,
+'''
+new_export = '''    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec,
+    MapHistoryChunkVisual, MapHistoryChunkVisualKind, MapHistoryEntry, MapHistoryEntryKind,
+    MapHistoryEntryStatus,
+'''
+if prelude.count(old_export) != 1:
+    raise SystemExit(
+        f"expected one map history prelude export block, found {prelude.count(old_export)}"
+    )
+prelude_path.write_text(prelude.replace(old_export, new_export, 1), encoding="utf-8")
