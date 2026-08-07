@@ -1546,6 +1546,7 @@ fn load_item_catalog(instance_root: &Path) -> Vec<PlayerItemTexture> {
             let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
                 continue;
             };
+            let stem = stem.to_owned();
             if stem.ends_with("_0") || stem.ends_with("_1") {
                 continue;
             }

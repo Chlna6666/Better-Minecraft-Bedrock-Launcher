@@ -12,16 +12,16 @@ info: downloading component rustfmt
 
 ===== Select Rust 1.95 =====
 info: using existing install for 1.95.0-x86_64-pc-windows-msvc
-
 info: default toolchain set to 1.95.0-x86_64-pc-windows-msvc
+
   1.95.0-x86_64-pc-windows-msvc unchanged - rustc 1.95.0 (59807616e 2026-04-14)
 
+
+===== Apply texture scan borrow fix =====
 
 ===== Format player editor =====
 
 ===== Check whitespace =====
-warning: in the working copy of 'src/ui/window/map_viewer/player_panel.rs', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'src/ui/window/map_viewer/players.rs', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'tools/player-editor-validation.log', LF will be replaced by CRLF the next time Git touches it
 
 ===== Cargo check =====
@@ -34,191 +34,179 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Updating git repository `https://github.com/smoltcp-rs/smoltcp.git`
     Updating git repository `https://github.com/EasyTier/tokio-websockets`
  Downloading crates ...
-  Downloaded async-channel v1.9.0
-  Downloaded chacha20 v0.10.0
-  Downloaded enum-as-inner v0.6.1
+  Downloaded async-stream v0.3.6
+  Downloaded clap_lex v1.0.0
+  Downloaded crossbeam v0.8.4
   Downloaded extended v0.1.0
-  Downloaded event-listener-strategy v0.5.4
-  Downloaded ff v0.13.1
-  Downloaded forwarded-header-value v0.1.1
-  Downloaded gpui_semantic_version v0.2.2
-  Downloaded gpui_perf v0.2.2
-  Downloaded hostname v0.4.2
-  Downloaded lyon v1.0.16
-  Downloaded normpath v1.5.0
-  Downloaded nu-ansi-term v0.50.3
-  Downloaded pbjson-build v0.9.0
-  Downloaded poly1305 v0.8.0
-  Downloaded protox v0.9.1
-  Downloaded rust-i18n-macro v3.1.5
-  Downloaded secrecy v0.10.3
-  Downloaded profiling v1.0.17
+  Downloaded event-listener v2.5.3
+  Downloaded fastrand v2.3.0
+  Downloaded gpui_derive_refineable v0.2.2
+  Downloaded gpui_http_client v0.2.2
+  Downloaded git-version v0.3.9
+  Downloaded globset v0.4.18
+  Downloaded hybrid-array v0.4.10
+  Downloaded munge v0.4.7
+  Downloaded ordered-float v2.10.1
+  Downloaded percent-encoding v2.3.2
+  Downloaded phf_generator v0.13.1
+  Downloaded prefix-trie v0.7.0
+  Downloaded quick-error v2.0.1
+  Downloaded rustc_version v0.4.1
+  Downloaded sentry v0.49.0
   Downloaded sentry-tracing v0.49.0
-  Downloaded rcgen v0.13.2
-  Downloaded siphasher v1.0.1
-  Downloaded simdutf8 v0.1.5
-  Downloaded simplecss v0.2.2
-  Downloaded rustls-pemfile v2.2.0
-  Downloaded tinywasm-types v0.10.0
-  Downloaded tower-layer v0.3.3
-  Downloaded tracing-core v0.1.36
-  Downloaded take-until v0.2.0
-  Downloaded typetag-impl v0.2.23
-  Downloaded winapi-util v0.1.11
-  Downloaded windows-core v0.61.2
-  Downloaded windows-strings v0.4.2
-  Downloaded winres v0.1.12
+  Downloaded self_cell v1.2.2
+  Downloaded socket2 v0.5.10
+  Downloaded resvg v0.45.1
+  Downloaded symphonia v0.5.5
+  Downloaded symphonia-format-riff v0.5.5
+  Downloaded tower-service v0.3.3
+  Downloaded try-lock v0.2.5
+  Downloaded unicase v2.8.1
+  Downloaded webpki-roots v0.26.11
+  Downloaded webpki v0.22.4
+  Downloaded windows-registry v0.4.0
+  Downloaded unicode-ident v1.0.22
+  Downloaded winreg v0.56.0
+  Downloaded zerocopy-derive v0.7.35
+  Downloaded which v6.0.3
+  Downloaded windows-targets v0.53.5
+  Downloaded windows-targets v0.52.6
+  Downloaded yoke-derive v0.8.1
+  Downloaded yoke v0.8.1
+  Downloaded xml-rs v0.8.28
+  Downloaded zerofrom-derive v0.1.6
   Downloaded zune-core v0.5.0
-  Downloaded vcpkg v0.2.15
-  Downloaded windows-threading v0.2.1
-  Downloaded windows-threading v0.1.0
-  Downloaded zed-async-tar v0.5.0-zed
-  Downloaded zeroize_derive v1.4.2
   Downloaded zstd-safe v7.2.4
-  Downloaded tracing-subscriber v0.3.23
-  Downloaded usvg v0.45.1
-  Downloaded unicode-width v0.2.2
-  Downloaded url v2.5.8
-  Downloaded ureq v3.3.0
-  Downloaded unicode-segmentation v1.13.3
-  Downloaded zed-reqwest v0.12.15-zed
-  Downloaded x509-parser v0.16.0
-  Downloaded x25519-dalek v2.0.1
-  Downloaded zerocopy-derive v0.8.39
-  Downloaded zip v9.0.0-pre2
-  Downloaded zerovec v0.11.5
-  Downloaded zerotrie v0.2.3
-  Downloaded zerocopy v0.8.39
-  Downloaded yansi v1.0.1
-  Downloaded windows_x86_64_msvc v0.48.5
-  Downloaded tokio-util v0.7.17
+  Downloaded tracing v0.1.44
   Downloaded zstd v0.13.3
   Downloaded zmij v1.0.21
   Downloaded zerovec-derive v0.11.2
-  Downloaded zerofrom-derive v0.1.6
-  Downloaded zerocopy-derive v0.7.35
+  Downloaded zeroize_derive v1.4.2
   Downloaded zeroize v1.8.2
   Downloaded zerofrom v0.1.6
-  Downloaded yazi v0.2.1
-  Downloaded xxhash-rust v0.8.16
+  Downloaded unicode-segmentation v1.13.3
+  Downloaded protoc-bin-vendored-linux-x86_64 v3.2.0
+  Downloaded winapi v0.3.9
+  Downloaded protoc-bin-vendored-win32 v3.2.0
+  Downloaded protoc-bin-vendored-linux-x86_32 v3.2.0
+  Downloaded protoc-bin-vendored-linux-ppcle_64 v3.2.0
   Downloaded webrtc-srtp v0.17.2
   Downloaded webrtc-util v0.17.2
-  Downloaded webrtc-media v0.17.2
-  Downloaded webrtc-mdns v0.17.2
-  Downloaded xml v1.2.0
-  Downloaded yoke-derive v0.8.1
-  Downloaded yoke v0.8.1
+  Downloaded webrtc-sctp v0.17.2
+  Downloaded protoc-bin-vendored-linux-s390_64 v3.2.0
+  Downloaded protoc-bin-vendored-macos-x86_64 v3.2.0
+  Downloaded widestring v1.2.1
+  Downloaded protoc-bin-vendored-macos-aarch_64 v3.2.0
+  Downloaded tracing-subscriber v0.3.23
+  Downloaded time v0.3.47
+  Downloaded yazi v0.2.1
   Downloaded yasna v0.5.2
+  Downloaded xxhash-rust v0.8.16
   Downloaded xmlwriter v0.1.0
   Downloaded xmltree v0.12.0
+  Downloaded xml v1.2.0
+  Downloaded tiny-skia v0.11.4
   Downloaded xmltree v0.10.3
-  Downloaded xml-rs v0.8.28
   Downloaded writeable v0.6.2
+  Downloaded winres v0.1.12
   Downloaded wasmparser v0.254.0
+  Downloaded tower-http v0.6.8
+  Downloaded tokio-util v0.7.17
+  Downloaded x25519-dalek v2.0.1
+  Downloaded windows-targets v0.48.5
+  Downloaded windows-strings v0.5.1
+  Downloaded windows-strings v0.4.2
+  Downloaded windows-strings v0.3.1
+  Downloaded windows-service v0.7.0
+  Downloaded windows-result v0.4.1
+  Downloaded windows-result v0.3.4
+  Downloaded windows-result v0.1.2
+  Downloaded windows-registry v0.6.1
+  Downloaded webrtc-mdns v0.17.2
+  Downloaded x509-parser v0.16.0
+  Downloaded webpki-roots v1.0.6
+  Downloaded yansi v1.0.1
+  Downloaded webpki-root-certs v1.0.6
   Downloaded zune-jpeg v0.5.5
-  Downloaded taffy v0.11.0
-  Downloaded sysinfo v0.39.5
-  Downloaded sysinfo v0.38.0
-  Downloaded sysinfo v0.31.4
-  Downloaded zerocopy v0.7.35
-  Downloaded syn v3.0.3
   Downloaded winnow v1.0.3
   Downloaded winnow v0.7.14
-  Downloaded winapi v0.3.9
-  Downloaded syn v2.0.111
-  Downloaded zstd-sys v2.0.16+zstd.1.5.7
-  Downloaded syn v1.0.109
-  Downloaded windows-targets v0.53.5
-  Downloaded windows-targets v0.52.6
-  Downloaded windows-targets v0.48.5
-  Downloaded windows-interface v0.59.3
-  Downloaded windows-future v0.2.1
-  Downloaded windows-core v0.62.2
-  Downloaded webrtc-sctp v0.17.2
-  Downloaded webpki-roots v1.0.6
-  Downloaded webpki-root-certs v1.0.6
-  Downloaded symphonia-core v0.5.5
-  Downloaded sval v2.16.0
-  Downloaded stun v0.17.2
-  Downloaded protoc-bin-vendored-linux-s390_64 v3.2.0
+  Downloaded zerocopy-derive v0.8.39
+  Downloaded zerovec v0.11.5
+  Downloaded zip v9.0.0-pre2
+  Downloaded zerotrie v0.2.3
+  Downloaded vcpkg v0.2.15
+  Downloaded tower v0.5.2
+  Downloaded toml_edit v0.25.12+spec-1.1.0
+  Downloaded toml_edit v0.22.27
+  Downloaded winit v0.30.13
+  Downloaded weezl v0.1.12
+  Downloaded webrtc-media v0.17.2
+  Downloaded usvg v0.45.1
   Downloaded winsafe v0.0.19
+  Downloaded windows_x86_64_msvc v0.48.5
+  Downloaded url v2.5.8
+  Downloaded windows-sys v0.59.0
+  Downloaded ureq v3.3.0
+  Downloaded unicode-width v0.2.2
+  Downloaded typenum v1.19.0
+  Downloaded typed-path v0.12.3
+  Downloaded turn v0.17.2
+  Downloaded zerocopy v0.7.35
+  Downloaded windows-sys v0.61.2
+  Downloaded zed-reqwest v0.12.15-zed
+  Downloaded swash v0.2.6
+  Downloaded zeno v0.3.3
+  Downloaded zed-async-tar v0.5.0-zed
+  Downloaded zerocopy v0.8.39
+  Downloaded untrusted v0.9.0
+  Downloaded unsafe-libyaml v0.2.11
+  Downloaded windows-sys v0.52.0
+  Downloaded universal-hash v0.5.1
+  Downloaded windows-sys v0.60.2
+  Downloaded windows-sys v0.48.0
+  Downloaded unicode-xid v0.2.6
+  Downloaded zstd-sys v2.0.16+zstd.1.5.7
+  Downloaded ttf-parser v0.25.1
+  Downloaded symphonia-core v0.5.5
+  Downloaded ring v0.17.14
+  Downloaded winreg v0.52.0
+  Downloaded winreg v0.50.0
+  Downloaded windows-threading v0.2.1
+  Downloaded windows-threading v0.1.0
+  Downloaded tokio v1.52.3
+  Downloaded snow v0.10.0
+  Downloaded tinywasm v0.10.0
+  Downloaded windows-numerics v0.3.1
+  Downloaded windows_x86_64_msvc v0.52.6
+  Downloaded windows-numerics v0.2.0
+  Downloaded windows-link v0.2.1
+  Downloaded windows-link v0.1.3
+  Downloaded windows-interface v0.59.3
   Downloaded windows-interface v0.57.0
   Downloaded windows-implement v0.60.2
   Downloaded windows-implement v0.57.0
   Downloaded windows-future v0.3.2
-  Downloaded widestring v1.2.1
-  Downloaded winit v0.30.13
-  Downloaded protoc-bin-vendored-linux-ppcle_64 v3.2.0
-  Downloaded protoc-bin-vendored-linux-aarch_64 v3.2.0
-  Downloaded turn v0.17.2
-  Downloaded ttf-parser v0.25.1
-  Downloaded protoc-bin-vendored-linux-x86_32 v3.2.0
-  Downloaded zeno v0.3.3
-  Downloaded typenum v1.19.0
-  Downloaded typed-path v0.12.3
-  Downloaded protoc-bin-vendored-win32 v3.2.0
-  Downloaded winreg v0.56.0
-  Downloaded winreg v0.52.0
-  Downloaded windows_x86_64_msvc v0.52.6
-  Downloaded windows_x86_64_msvc v0.53.1
-  Downloaded winreg v0.50.0
-  Downloaded windows-strings v0.5.1
-  Downloaded windows-service v0.7.0
-  Downloaded windows-result v0.4.1
-  Downloaded windows-registry v0.4.0
-  Downloaded windows-numerics v0.3.1
-  Downloaded windows-numerics v0.2.0
-  Downloaded windows-link v0.2.1
-  Downloaded windows-link v0.1.3
-  Downloaded ureq-proto v0.6.0
-  Downloaded unsafe-libyaml v0.2.11
-  Downloaded unicode-xid v0.2.6
-  Downloaded unicode-width v0.1.11
-  Downloaded unicode-script v0.5.8
-  Downloaded unicode-properties v0.1.4
-  Downloaded unicode-linebreak v0.1.5
-  Downloaded unicode-ident v1.0.22
-  Downloaded unicode-ccc v0.4.0
-  Downloaded unicode-bidi v0.3.18
-  Downloaded unicase v2.8.1
-  Downloaded uncased v0.9.10
-  Downloaded tracing v0.1.44
-  Downloaded tokio v1.52.3
-  Downloaded windows-strings v0.3.1
-  Downloaded windows-result v0.3.4
-  Downloaded windows-result v0.1.2
-  Downloaded windows-registry v0.6.1
+  Downloaded windows-future v0.2.1
+  Downloaded windows-core v0.62.2
+  Downloaded windows-core v0.61.2
   Downloaded windows-core v0.57.0
-  Downloaded windows-capture v1.5.0
-  Downloaded wildmatch v2.6.1
-  Downloaded which v6.0.3
-  Downloaded weezl v0.1.12
-  Downloaded webpki v0.22.4
-  Downloaded untrusted v0.9.0
-  Downloaded universal-hash v0.5.1
-  Downloaded unicode-vo v0.1.0
-  Downloaded unicode-bidi-mirroring v0.4.0
-  Downloaded protoc-bin-vendored-macos-x86_64 v3.2.0
   Downloaded windows-collections v0.3.2
   Downloaded windows-collections v0.2.0
-  Downloaded webpki-roots v0.26.11
+  Downloaded windows-capture v1.5.0
+  Downloaded winapi-util v0.1.11
+  Downloaded windows_x86_64_msvc v0.53.1
+  Downloaded wildmatch v2.6.1
+  Downloaded webrtc-data v0.17.2
+  Downloaded taffy v0.11.0
+  Downloaded sysinfo v0.39.5
+  Downloaded sysinfo v0.38.0
+  Downloaded sysinfo v0.31.4
+  Downloaded syn v3.0.3
+  Downloaded syn v2.0.111
+  Downloaded syn v1.0.109
   Downloaded web_atoms v0.2.3
   Downloaded walkdir v2.5.0
   Downloaded waitgroup v0.1.2
-  Downloaded triomphe v0.1.15
-  Downloaded tower-http v0.6.8
-  Downloaded tower v0.5.2
-  Downloaded toml_edit v0.25.12+spec-1.1.0
-  Downloaded toml_edit v0.22.27
-  Downloaded tinywasm v0.10.0
-  Downloaded time v0.3.47
-  Downloaded skrifa v0.37.0
-  Downloaded serde_json_lenient v0.2.4
-  Downloaded serde_json v1.0.150
-  Downloaded protoc-bin-vendored-linux-x86_64 v3.2.0
-  Downloaded webrtc-data v0.17.2
-  Downloaded want v0.3.1
-  Downloaded waker-fn v1.2.0
   Downloaded version_check v0.9.5
   Downloaded version-compare v0.2.1
   Downloaded value-bag-sval2 v1.12.0
@@ -226,117 +214,104 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded value-bag v1.12.0
   Downloaded uuid v1.23.4
   Downloaded utf8parse v0.2.2
-  Downloaded utf8_iter v1.0.4
   Downloaded utf8-zero v0.8.1
+  Downloaded ureq-proto v0.6.0
+  Downloaded unicode-vo v0.1.0
+  Downloaded unicode-script v0.5.8
+  Downloaded unicode-properties v0.1.4
+  Downloaded unicode-linebreak v0.1.5
+  Downloaded unicode-bidi-mirroring v0.4.0
+  Downloaded stun v0.17.2
+  Downloaded smol v2.0.2
+  Downloaded want v0.3.1
+  Downloaded waker-fn v1.2.0
+  Downloaded utf8_iter v1.0.4
   Downloaded utf-8 v0.7.6
+  Downloaded unicode-width v0.1.11
+  Downloaded unicode-ccc v0.4.0
+  Downloaded unicode-bidi v0.3.18
+  Downloaded uncased v0.9.10
+  Downloaded typetag-impl v0.2.23
+  Downloaded typetag v0.2.23
+  Downloaded typeid v1.0.3
+  Downloaded sval v2.16.0
+  Downloaded skrifa v0.40.0
+  Downloaded skrifa v0.37.0
+  Downloaded serde_json_lenient v0.2.4
+  Downloaded serde_json v1.0.150
+  Downloaded serde v1.0.228
+  Downloaded rustix v1.1.4
+  Downloaded regex-automata v0.4.13
+  Downloaded pxfm v0.1.26
+  Downloaded protoc-bin-vendored-linux-aarch_64 v3.2.0
+  Downloaded triomphe v0.1.15
+  Downloaded trackable v0.2.24
   Downloaded tracing-log v0.2.0
+  Downloaded tokio-stream v0.1.18
+  Downloaded selectors v0.38.0
+  Downloaded rustls v0.23.35
+  Downloaded aws-lc-sys v0.38.0
+  Downloaded trackable_derive v1.0.0
+  Downloaded trackable v1.3.0
+  Downloaded tracing-core v0.1.36
+  Downloaded tracing-attributes v0.1.31
+  Downloaded tower-layer v0.3.3
+  Downloaded toml_writer v1.1.1+spec-1.1.0
+  Downloaded toml_write v0.1.2
+  Downloaded toml_parser v1.1.2+spec-1.1.0
   Downloaded toml_datetime v1.1.1+spec-1.1.0
   Downloaded toml_datetime v0.6.11
   Downloaded toml v1.1.2+spec-1.1.0
   Downloaded toml v0.8.23
   Downloaded toml v0.5.11
-  Downloaded tokio-stream v0.1.18
-  Downloaded windows v0.61.3
   Downloaded tokio-socks v0.5.2
   Downloaded tokio-rustls v0.26.4
-  Downloaded tiny-skia v0.11.4
-  Downloaded windows-sys v0.59.0
-  Downloaded swash v0.2.6
-  Downloaded snow v0.10.0
-  Downloaded smol v2.0.2
-  Downloaded skrifa v0.40.0
-  Downloaded serde v1.0.228
-  Downloaded windows v0.57.0
+  Downloaded tinywasm-parser v0.10.0
+  Downloaded tinyvec v1.10.0
+  Downloaded tiny-skia-path v0.11.4
   Downloaded sentry-types v0.49.0
-  Downloaded typetag v0.2.23
-  Downloaded typeid v1.0.3
-  Downloaded windows-sys v0.61.2
-  Downloaded windows-sys v0.60.2
-  Downloaded try-lock v0.2.5
-  Downloaded windows-sys v0.52.0
-  Downloaded trackable_derive v1.0.0
-  Downloaded windows-sys v0.48.0
-  Downloaded trackable v1.3.0
-  Downloaded trackable v0.2.24
-  Downloaded rustls v0.23.35
-  Downloaded rustix v1.1.4
+  Downloaded sentry-core v0.49.0
+  Downloaded sdp v0.17.2
+  Downloaded schemars v1.1.0
+  Downloaded rustybuzz v0.20.1
+  Downloaded windows v0.61.3
   Downloaded rust-embed v8.9.0
-  Downloaded ring v0.17.14
-  Downloaded regex-automata v0.4.13
+  Downloaded read-fonts v0.37.0
+  Downloaded read-fonts v0.35.0
+  Downloaded libwebp-sys2 v0.2.0
+  Downloaded tokio-native-tls v0.3.1
+  Downloaded tokio-macros v2.7.0
+  Downloaded tinywasm-types v0.10.0
+  Downloaded tinyvec_macros v0.1.1
+  Downloaded tinystr v0.8.2
+  Downloaded timedmap v1.0.1
+  Downloaded time-macros v0.2.27
+  Downloaded time-core v0.1.8
+  Downloaded thread_local v1.1.9
+  Downloaded thiserror-impl v2.0.18
+  Downloaded thiserror-impl v1.0.69
+  Downloaded thiserror v2.0.18
+  Downloaded thiserror v1.0.69
+  Downloaded tendril v0.5.0
+  Downloaded tendril v0.4.3
+  Downloaded tempfile v3.27.0
+  Downloaded take-until v0.2.0
   Downloaded tagptr v0.2.0
   Downloaded sys-locale v0.3.2
   Downloaded synstructure v0.13.2
   Downloaded sync_wrapper v1.0.2
   Downloaded symphonia-utils-xiph v0.5.5
   Downloaded symphonia-metadata v0.5.5
-  Downloaded symphonia-format-riff v0.5.5
+  Downloaded rodio v0.22.2
+  Downloaded rkyv v0.8.17
+  Downloaded regex-syntax v0.8.11
   Downloaded symphonia-format-ogg v0.5.5
   Downloaded symphonia-format-isomp4 v0.5.5
   Downloaded symphonia-codec-vorbis v0.5.5
   Downloaded symphonia-codec-pcm v0.5.5
   Downloaded symphonia-codec-aac v0.5.5
   Downloaded symphonia-bundle-mp3 v0.5.5
-  Downloaded sentry-core v0.49.0
-  Downloaded regex-syntax v0.8.11
-  Downloaded read-fonts v0.37.0
-  Downloaded read-fonts v0.35.0
-  Downloaded tracing-attributes v0.1.31
-  Downloaded tower-service v0.3.3
-  Downloaded toml_writer v1.1.1+spec-1.1.0
-  Downloaded toml_write v0.1.2
-  Downloaded toml_parser v1.1.2+spec-1.1.0
-  Downloaded subtle v2.6.1
-  Downloaded substring v1.4.5
-  Downloaded stun_codec v0.3.5
-  Downloaded strum_macros v0.28.0
-  Downloaded strum_macros v0.27.2
-  Downloaded strum v0.28.0
-  Downloaded strum v0.27.2
-  Downloaded string_cache_codegen v0.6.1
-  Downloaded string_cache v0.9.0
-  Downloaded strict-num v0.1.1
-  Downloaded static_assertions v1.1.0
-  Downloaded stacksafe-macro v1.0.1
-  Downloaded stacksafe v1.0.1
-  Downloaded stacker v0.1.22
-  Downloaded spki v0.7.3
-  Downloaded spirv v0.4.0+sdk-1.4.341.0
-  Downloaded resvg v0.45.1
-  Downloaded reqwest v0.13.4
-  Downloaded regex v1.12.4
-  Downloaded pxfm v0.1.26
-  Downloaded tokio-native-tls v0.3.1
-  Downloaded tokio-macros v2.7.0
-  Downloaded tinystr v0.8.2
-  Downloaded timedmap v1.0.1
-  Downloaded time-macros v0.2.27
-  Downloaded time-core v0.1.8
-  Downloaded thiserror-impl v2.0.18
-  Downloaded thiserror v1.0.69
-  Downloaded tendril v0.5.0
-  Downloaded tendril v0.4.3
-  Downloaded tempfile v3.27.0
-  Downloaded strsim v0.11.1
-  Downloaded stable_deref_trait v1.2.1
-  Downloaded selectors v0.38.0
-  Downloaded rustybuzz v0.20.1
-  Downloaded rodio v0.22.2
-  Downloaded rkyv v0.8.17
-  Downloaded rand v0.10.2
-  Downloaded rand v0.9.4
-  Downloaded rand v0.8.5
-  Downloaded quinn-proto v0.11.13
-  Downloaded quinn v0.11.9
-  Downloaded pulldown-cmark v0.13.4
-  Downloaded tinywasm-parser v0.10.0
-  Downloaded tinyvec_macros v0.1.1
-  Downloaded tinyvec v1.10.0
-  Downloaded tiny-skia-path v0.11.4
-  Downloaded thread_local v1.1.9
-  Downloaded thiserror-impl v1.0.69
-  Downloaded thiserror v2.0.18
   Downloaded symphonia-bundle-flac v0.5.5
-  Downloaded symphonia v0.5.5
   Downloaded svgtypes v0.15.3
   Downloaded sval_serde v2.16.0
   Downloaded sval_ref v2.16.0
@@ -345,109 +320,76 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded sval_fmt v2.16.0
   Downloaded sval_dynamic v2.16.0
   Downloaded sval_buffer v2.16.0
+  Downloaded subtle v2.6.1
+  Downloaded substring v1.4.5
+  Downloaded stun_codec v0.3.5
+  Downloaded strum_macros v0.28.0
+  Downloaded strum_macros v0.27.2
+  Downloaded strum v0.28.0
+  Downloaded strum v0.27.2
+  Downloaded strsim v0.11.1
+  Downloaded string_cache_codegen v0.6.1
+  Downloaded string_cache v0.9.0
+  Downloaded strict-num v0.1.1
+  Downloaded static_assertions v1.1.0
+  Downloaded stacksafe-macro v1.0.1
+  Downloaded stacksafe v1.0.1
+  Downloaded stacker v0.1.22
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded spki v0.7.3
+  Downloaded spirv v0.4.0+sdk-1.4.341.0
   Downloaded spin v0.9.8
   Downloaded socket2 v0.6.3
-  Downloaded socket2 v0.5.10
-  Downloaded snap v1.1.1
-  Downloaded smol_str v0.3.6
-  Downloaded smol_str v0.2.2
+  Downloaded rtp v0.17.2
+  Downloaded rtcp v0.17.2
+  Downloaded rand v0.10.2
+  Downloaded quinn-proto v0.11.13
   Downloaded smallvec v1.15.1
   Downloaded slotmap v1.0.7
   Downloaded slab v0.4.11
-  Downloaded sdp v0.17.2
-  Downloaded schemars v1.1.0
-  Downloaded rustls-webpki v0.103.8
-  Downloaded rtp v0.17.2
-  Downloaded rtcp v0.17.2
-  Downloaded rayon v1.12.0
-  Downloaded raw-cpuid v11.6.0
-  Downloaded prettyplease v0.2.37
-  Downloaded postage v0.5.0
-  Downloaded petgraph v0.8.3
-  Downloaded pelite v0.10.0
-  Downloaded rustls-native-certs v0.8.2
-  Downloaded rusticata-macros v4.1.0
-  Downloaded rustc_version v0.4.1
-  Downloaded rustc-hash v2.1.1
-  Downloaded rustc-hash v1.1.0
-  Downloaded rustc-demangle v0.1.27
-  Downloaded ntapi v0.4.1
-  Downloaded libwebp-sys2 v0.2.0
-  Downloaded libwebp-sys2 v0.1.11
-  Downloaded sharded-slab v0.1.7
-  Downloaded sha2 v0.11.0
-  Downloaded serde_derive v1.0.228
-  Downloaded serde_core v1.0.228
+  Downloaded siphasher v1.0.1
+  Downloaded simplecss v0.2.2
+  Downloaded simdutf8 v0.1.5
   Downloaded simd-adler32 v0.3.7
   Downloaded signature v2.2.0
   Downloaded shlex v1.3.0
   Downloaded shellexpand v3.1.1
+  Downloaded sharded-slab v0.1.7
+  Downloaded sha2 v0.11.0
   Downloaded sha2 v0.10.9
   Downloaded sha1_smol v1.0.1
   Downloaded sha1 v0.10.6
   Downloaded servo_arc v0.4.3
   Downloaded serde_yaml v0.9.34+deprecated
   Downloaded serde_urlencoded v0.7.1
+  Downloaded windows v0.57.0
   Downloaded serde_spanned v1.1.1
   Downloaded serde_spanned v0.6.9
   Downloaded serde_fmt v1.1.0
   Downloaded serde_derive_internals v0.29.1
+  Downloaded serde_derive v1.0.228
+  Downloaded serde_core v1.0.228
   Downloaded serde-value v0.7.0
-  Downloaded zed-scap v0.0.8-zed
-  Downloaded ringbuf v0.4.8
-  Downloaded rgb v0.8.52
-  Downloaded rfd v0.17.2
-  Downloaded rfc6979 v0.4.0
-  Downloaded resolv-conf v0.7.6
-  Downloaded rend v0.5.4
-  Downloaded ref-cast-impl v1.0.25
-  Downloaded ref-cast v1.0.25
-  Downloaded quanta v0.12.6
-  Downloaded object v0.32.2
-  Downloaded num-bigint v0.4.6
+  Downloaded rustls-webpki v0.103.8
+  Downloaded reqwest v0.13.4
+  Downloaded regex v1.12.4
+  Downloaded rayon v1.12.0
+  Downloaded rand v0.9.4
+  Downloaded rand v0.8.5
+  Downloaded postage v0.5.0
+  Downloaded rcgen v0.13.2
   Downloaded rayon-core v1.13.0
-  Downloaded rand_core v0.9.3
-  Downloaded rand_core v0.6.4
-  Downloaded rand_chacha v0.9.0
-  Downloaded rand_chacha v0.3.1
-  Downloaded rancor v0.1.2
-  Downloaded quote v1.0.47
-  Downloaded quinn-udp v0.5.14
-  Downloaded quick-error v2.0.1
-  Downloaded pulldown-cmark-escape v0.11.0
-  Downloaded libc v0.2.186
-  Downloaded jpeg-decoder v0.3.2
-  Downloaded aws-lc-sys v0.38.0
-  Downloaded sentry-log v0.49.0
-  Downloaded sentry-contexts v0.49.0
-  Downloaded sentry-backtrace v0.49.0
-  Downloaded sentry v0.49.0
-  Downloaded semver v1.0.28
-  Downloaded self_cell v1.2.2
-  Downloaded protoc-bin-vendored-macos-aarch_64 v3.2.0
+  Downloaded raw-cpuid v11.6.0
   Downloaded prost-reflect v0.16.5
-  Downloaded miette v7.6.0
-  Downloaded lyon_tessellation v1.0.16
-  Downloaded libmimalloc-sys v0.1.49
-  Downloaded proc-macro2 v1.0.106
-  Downloaded proc-macro-error2 v2.0.1
-  Downloaded proc-macro-error-attr2 v2.0.0
-  Downloaded proc-macro-crate v3.5.0
-  Downloaded primeorder v0.13.6
-  Downloaded presser v0.3.1
-  Downloaded prefix-trie v0.7.0
-  Downloaded precomputed-hash v0.1.1
-  Downloaded ppv-lite86 v0.2.21
-  Downloaded powerfmt v0.2.0
-  Downloaded potential_utf v0.1.4
-  Downloaded postcard v1.1.3
-  Downloaded portable-atomic-util v0.2.5
-  Downloaded memchr v2.7.6
-  Downloaded libm v0.2.16
-  Downloaded kurbo v0.11.3
-  Downloaded itertools v0.14.0
-  Downloaded iri-string v0.7.9
-  Downloaded hyper v1.8.1
+  Downloaded portable-atomic v1.13.1
+  Downloaded snap v1.1.1
+  Downloaded smol_str v0.3.6
+  Downloaded smol_str v0.2.2
+  Downloaded quinn v0.11.9
+  Downloaded pulldown-cmark v0.13.4
+  Downloaded prettyplease v0.2.37
+  Downloaded libwebp-sys2 v0.1.11
+  Downloaded secrecy v0.10.3
   Downloaded sec1 v0.7.3
   Downloaded seahash v4.1.0
   Downloaded scraper v0.27.0
@@ -455,67 +397,110 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded schemars_derive v1.1.0
   Downloaded schannel v0.1.28
   Downloaded same-file v1.0.6
+  Downloaded logos v0.15.1
+  Downloaded sentry-log v0.49.0
+  Downloaded sentry-contexts v0.49.0
+  Downloaded sentry-backtrace v0.49.0
+  Downloaded semver v1.0.28
+  Downloaded petgraph v0.8.3
+  Downloaded pelite v0.10.0
+  Downloaded naga v29.0.1
   Downloaded ryu v1.0.20
   Downloaded rustversion v1.0.22
   Downloaded rustls-platform-verifier v0.6.2
   Downloaded rustls-pki-types v1.13.1
+  Downloaded rustls-pemfile v2.2.0
+  Downloaded rustls-native-certs v0.8.2
+  Downloaded zed-scap v0.0.8-zed
+  Downloaded rusticata-macros v4.1.0
+  Downloaded rustc-hash v2.1.1
+  Downloaded rustc-hash v1.1.0
+  Downloaded rustc-demangle v0.1.27
   Downloaded rust-i18n-support v3.1.5
-  Downloaded rust-i18n v3.1.5
+  Downloaded rust-i18n-macro v3.1.5
   Downloaded rust-embed-utils v8.9.0
   Downloaded rust-embed-impl v8.9.0
   Downloaded roxmltree v0.20.0
   Downloaded rkyv_derive v0.8.17
-  Downloaded portable-atomic v1.13.1
-  Downloaded png v0.18.1
-  Downloaded png v0.17.16
-  Downloaded phf_macros v0.13.1
-  Downloaded pem-rfc7468 v1.0.0
-  Downloaded pem-rfc7468 v0.7.0
-  Downloaded pem v3.0.6
-  Downloaded pelite-macros v0.1.1
-  Downloaded p384 v0.13.1
-  Downloaded keyring v3.6.3
-  Downloaded itertools v0.11.0
-  Downloaded icu_locale_core v2.1.1
-  Downloaded icu_collections v2.1.1
-  Downloaded hyper-util v0.1.18
-  Downloaded hickory-proto v0.25.2
+  Downloaded rfd v0.17.2
+  Downloaded rend v0.5.4
   Downloaded rcgen v0.12.1
   Downloaded raw-window-handle v0.6.2
+  Downloaded png v0.18.1
+  Downloaded png v0.17.16
+  Downloaded p384 v0.13.1
+  Downloaded object v0.32.2
+  Downloaded nix v0.29.0
+  Downloaded libc v0.2.186
+  Downloaded jpeg-decoder v0.3.2
+  Downloaded rust-i18n v3.1.5
+  Downloaded ringbuf v0.4.8
+  Downloaded rgb v0.8.52
+  Downloaded rfc6979 v0.4.0
+  Downloaded resolv-conf v0.7.6
+  Downloaded ref-cast-impl v1.0.25
+  Downloaded ref-cast v1.0.25
   Downloaded rangemap v1.7.1
   Downloaded rand_core v0.10.0
-  Downloaded ptr_meta_derive v0.3.1
-  Downloaded ptr_meta v0.3.1
+  Downloaded rand_core v0.9.3
+  Downloaded rand_core v0.6.4
+  Downloaded rand_chacha v0.9.0
+  Downloaded rand_chacha v0.3.1
+  Downloaded rancor v0.1.2
+  Downloaded quote v1.0.47
+  Downloaded quinn-udp v0.5.14
+  Downloaded quanta v0.12.6
   Downloaded psm v0.1.28
   Downloaded protox-parse v0.9.0
+  Downloaded protox v0.9.1
+  Downloaded prost-types v0.14.3
+  Downloaded prost-build v0.14.3
+  Downloaded num-bigint v0.4.6
+  Downloaded ntapi v0.4.1
+  Downloaded nom v7.1.3
+  Downloaded moxcms v0.7.10
+  Downloaded moka v0.12.13
+  Downloaded lyon_tessellation v1.0.16
+  Downloaded pulldown-cmark-escape v0.11.0
+  Downloaded ptr_meta_derive v0.3.1
+  Downloaded ptr_meta v0.3.1
   Downloaded protoc-bin-vendored v3.2.0
   Downloaded prost-wkt-types v0.7.1
   Downloaded prost-wkt-build v0.7.1
-  Downloaded prost-types v0.14.3
+  Downloaded prost-wkt v0.7.1
   Downloaded prost-reflect-derive v0.16.1
+  Downloaded prost-reflect-build v0.16.0
   Downloaded prost-derive v0.14.3
-  Downloaded prost-build v0.14.3
   Downloaded prost v0.14.3
   Downloaded profiling-procmacros v1.0.17
-  Downloaded phf_generator v0.13.1
-  Downloaded phf_codegen v0.13.1
-  Downloaded phf v0.13.1
-  Downloaded percent-encoding v2.3.2
-  Downloaded naga v29.0.1
-  Downloaded moxcms v0.7.10
-  Downloaded hickory-resolver v0.25.2
-  Downloaded heapless v0.9.2
-  Downloaded hashbrown v0.17.1
-  Downloaded hashbrown v0.16.1
-  Downloaded hashbrown v0.15.5
-  Downloaded hashbrown v0.14.5
-  Downloaded harfrust v0.5.2
-  Downloaded h2 v0.4.12
-  Downloaded prost-wkt v0.7.1
-  Downloaded prost-reflect-build v0.16.0
+  Downloaded profiling v1.0.17
+  Downloaded proc-macro2 v1.0.106
+  Downloaded proc-macro-error2 v2.0.1
+  Downloaded proc-macro-error-attr2 v2.0.0
+  Downloaded proc-macro-crate v3.5.0
+  Downloaded primeorder v0.13.6
+  Downloaded presser v0.3.1
+  Downloaded precomputed-hash v0.1.1
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded powerfmt v0.2.0
+  Downloaded potential_utf v0.1.4
+  Downloaded postcard v1.1.3
+  Downloaded portable-atomic-util v0.2.5
   Downloaded polyval v0.6.2
+  Downloaded poly1305 v0.8.0
   Downloaded pollster v0.4.0
   Downloaded pollster v0.2.5
+  Downloaded mio v1.2.0
+  Downloaded miniz_oxide v0.8.9
+  Downloaded minimal-lexical v0.2.1
+  Downloaded miette v7.6.0
+  Downloaded memchr v2.7.6
+  Downloaded lofty v0.23.2
+  Downloaded libmimalloc-sys v0.1.49
+  Downloaded image v0.25.9
+  Downloaded icu_properties_data v2.1.1
+  Downloaded hyper-util v0.1.18
+  Downloaded harfrust v0.5.2
   Downloaded polling v3.11.0
   Downloaded pnet_packet v0.35.0
   Downloaded pnet_macros_support v0.35.0
@@ -530,20 +515,28 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded pin-project v1.1.10
   Downloaded pico-args v0.5.0
   Downloaded phf_shared v0.13.1
-  Downloaded nom v7.1.3
-  Downloaded nix v0.29.0
-  Downloaded moka v0.12.13
-  Downloaded mio v1.2.0
-  Downloaded miniz_oxide v0.8.9
-  Downloaded minimal-lexical v0.2.1
-  Downloaded logos v0.15.1
-  Downloaded lofty v0.23.2
-  Downloaded interceptor v0.17.2
+  Downloaded phf_macros v0.13.1
+  Downloaded phf_codegen v0.13.1
+  Downloaded phf v0.13.1
+  Downloaded libm v0.2.16
+  Downloaded kurbo v0.11.3
+  Downloaded itertools v0.14.0
+  Downloaded itertools v0.11.0
+  Downloaded iri-string v0.7.9
+  Downloaded indexmap v2.14.0
   Downloaded image-webp v0.2.4
-  Downloaded image v0.25.9
   Downloaded idna v1.1.0
-  Downloaded icu_properties_data v2.1.1
   Downloaded icu_normalizer_data v2.1.1
+  Downloaded icu_normalizer v2.1.1
+  Downloaded icu_locale_core v2.1.1
+  Downloaded icu_collections v2.1.1
+  Downloaded heapless v0.9.2
+  Downloaded hashbrown v0.17.1
+  Downloaded hashbrown v0.16.1
+  Downloaded hashbrown v0.15.5
+  Downloaded hashbrown v0.14.5
+  Downloaded h2 v0.4.12
+  Downloaded pbjson-build v0.9.0
   Downloaded pbjson v0.9.0
   Downloaded paste v1.0.15
   Downloaded parking_lot_core v0.9.12
@@ -552,9 +545,20 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded p256 v0.13.2
   Downloaded os_info v3.15.0
   Downloaded ordered_hash_map v0.5.0
-  Downloaded ordered-float v2.10.1
-  Downloaded option-ext v0.2.0
-  Downloaded opaque-debug v0.3.1
+  Downloaded keyring v3.6.3
+  Downloaded interceptor v0.17.2
+  Downloaded hyper v1.8.1
+  Downloaded http v1.4.0
+  Downloaded html5ever v0.39.0
+  Downloaded hkdf v0.12.4
+  Downloaded hickory-resolver v0.25.2
+  Downloaded hickory-proto v0.25.2
+  Downloaded futures-util v0.3.32
+  Downloaded cosmic-text v0.19.0
+  Downloaded pem-rfc7468 v1.0.0
+  Downloaded pem-rfc7468 v0.7.0
+  Downloaded pem v3.0.6
+  Downloaded pelite-macros v0.1.1
   Downloaded once_cell_polyfill v1.70.2
   Downloaded once_cell v1.21.4
   Downloaded oid-registry v0.7.1
@@ -564,11 +568,11 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded num-rational v0.4.2
   Downloaded num-integer v0.1.46
   Downloaded num-conv v0.2.0
+  Downloaded nu-ansi-term v0.50.3
   Downloaded notify-types v2.1.0
   Downloaded notify v8.2.0
-  Downloaded indexmap v2.14.0
-  Downloaded icu_normalizer v2.1.1
-  Downloaded cosmic-text v0.19.0
+  Downloaded normpath v1.5.0
+  Downloaded nonempty v0.7.0
   Downloaded no-std-net v0.6.0
   Downloaded no-std-compat v0.4.1
   Downloaded new_debug_unreachable v1.0.6
@@ -576,53 +580,29 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded netdev v0.31.0
   Downloaded natpmp v0.5.0
   Downloaded native-tls v0.2.18
+  Downloaded munge_macro v0.4.7
+  Downloaded option-ext v0.2.0
+  Downloaded opaque-debug v0.3.1
   Downloaded mime_guess v2.0.5
   Downloaded mime v0.3.17
   Downloaded mimalloc v0.1.52
   Downloaded miette-derive v7.6.0
-  Downloaded memoffset v0.9.1
   Downloaded memmap2 v0.9.9
   Downloaded md5 v0.8.0
   Downloaded md5 v0.7.0
   Downloaded md-5 v0.10.6
+  Downloaded windows v0.62.2
   Downloaded matchit v0.8.6
   Downloaded matchers v0.2.0
   Downloaded markup5ever v0.39.0
   Downloaded managed v0.8.0
   Downloaded machine-uid v0.5.4
   Downloaded mac v0.1.1
-  Downloaded windows v0.62.2
   Downloaded lyon_path v1.0.16
   Downloaded lyon_geom v1.0.18
   Downloaded lyon_algorithms v1.0.16
-  Downloaded hkdf v0.12.4
-  Downloaded encoding_rs v0.8.35
-  Downloaded nonempty v0.7.0
-  Downloaded munge_macro v0.4.7
-  Downloaded munge v0.4.7
-  Downloaded multimap v0.10.1
-  Downloaded linked-hash-map v0.5.6
-  Downloaded link-section v0.2.0
-  Downloaded linebender_resource_handle v0.1.1
-  Downloaded libloading v0.8.9
-  Downloaded lazy_static v1.5.0
-  Downloaded kv-log-macro v1.0.7
-  Downloaded jobserver v0.1.34
-  Downloaded itoa v1.0.15
-  Downloaded is_terminal_polyfill v1.70.2
-  Downloaded ipnetwork v0.20.0
-  Downloaded hyper-rustls v0.27.7
-  Downloaded hybrid-array v0.4.10
-  Downloaded httparse v1.10.1
-  Downloaded http-body-util v0.1.3
-  Downloaded http v1.4.0
-  Downloaded html5ever v0.39.0
-  Downloaded futures-util v0.3.32
-  Downloaded flume v0.12.0
-  Downloaded flate2 v1.1.9
-  Downloaded curve25519-dalek v4.1.3
+  Downloaded lyon v1.0.16
   Downloaded lru-slab v0.1.2
-  Downloaded logos-derive v0.16.1
   Downloaded logos-derive v0.15.1
   Downloaded logos-codegen v0.16.1
   Downloaded logos-codegen v0.15.1
@@ -631,6 +611,21 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded lofty_attr v0.12.0
   Downloaded lock_api v0.4.14
   Downloaded litemap v0.8.1
+  Downloaded linked-hash-map v0.5.6
+  Downloaded link-section v0.2.0
+  Downloaded linebender_resource_handle v0.1.1
+  Downloaded fontdb v0.23.0
+  Downloaded flate2 v1.1.9
+  Downloaded multimap v0.10.1
+  Downloaded memoffset v0.9.1
+  Downloaded logos-derive v0.16.1
+  Downloaded libloading v0.8.9
+  Downloaded lazy_static v1.5.0
+  Downloaded kv-log-macro v1.0.7
+  Downloaded jobserver v0.1.34
+  Downloaded itoa v1.0.15
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded ipnetwork v0.20.0
   Downloaded ipnet v2.11.0
   Downloaded ipconfig v0.3.2
   Downloaded inventory v0.3.21
@@ -644,112 +639,128 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded icu_provider v2.1.1
   Downloaded icu_properties v2.1.1
   Downloaded hyper-tls v0.6.0
+  Downloaded hyper-rustls v0.27.7
+  Downloaded half v2.7.1
+  Downloaded gpui_util v0.2.2
+  Downloaded flume v0.12.0
+  Downloaded encoding_rs v0.8.35
   Downloaded humantime-serde v1.1.1
   Downloaded humantime v2.3.0
   Downloaded httpdate v1.0.3
+  Downloaded httparse v1.10.1
+  Downloaded http-body-util v0.1.3
   Downloaded http-body v1.0.1
+  Downloaded hostname v0.4.2
+  Downloaded home v0.5.12
+  Downloaded hmac v0.12.1
+  Downloaded hexf-parse v0.2.1
   Downloaded hex v0.4.3
+  Downloaded heck v0.5.0
   Downloaded hash32 v0.3.1
-  Downloaded half v2.7.1
   Downloaded guarden-macros v0.2.0
   Downloaded guarden v0.2.0
   Downloaded group v0.13.0
   Downloaded grid v1.0.1
   Downloaded gpui_util_macros v0.2.2
-  Downloaded gpui_util v0.2.2
-  Downloaded fontdb v0.23.0
-  Downloaded cpal v0.17.3
-  Downloaded brotli v8.0.2
-  Downloaded ash v0.38.0+1.3.281
-  Downloaded home v0.5.12
-  Downloaded hmac v0.12.1
-  Downloaded hexf-parse v0.2.1
-  Downloaded heck v0.5.0
   Downloaded gpui_sum_tree v0.2.2
-  Downloaded gpui-router-macros v0.3.0
-  Downloaded gif v0.14.0
-  Downloaded euclid v0.22.14
-  Downloaded encoding-index-tradchinese v1.20141219.5
-  Downloaded encoding-index-simpchinese v1.20141219.5
-  Downloaded encoding-index-korean v1.20141219.5
-  Downloaded encoding v0.2.33
-  Downloaded derive_more-impl v2.1.1
-  Downloaded derive_more v2.1.1
-  Downloaded derivative v2.2.0
-  Downloaded der v0.8.0
-  Downloaded der v0.7.10
-  Downloaded darling_core v0.20.11
-  Downloaded cssparser v0.37.0
-  Downloaded crypto-bigint v0.5.5
-  Downloaded crossbeam-utils v0.8.21
-  Downloaded crossbeam-epoch v0.9.18
-  Downloaded const-oid v0.10.2
-  Downloaded clap_builder v4.5.60
-  Downloaded chrono v0.4.45
-  Downloaded ccm v0.5.0
-  Downloaded bstr v1.12.1
-  Downloaded brotli-decompressor v5.0.0
-  Downloaded aws-lc-rs v1.16.1
-  Downloaded async-std v1.13.2
-  Downloaded aho-corasick v1.1.4
-  Downloaded gpui_http_client v0.2.2
-  Downloaded gpui-macros v0.2.2
-  Downloaded globset v0.4.18
+  Downloaded gpui_semantic_version v0.2.2
+  Downloaded gpui_refineable v0.2.2
+  Downloaded gpui_perf v0.2.2
   Downloaded glob v0.3.3
   Downloaded git-version-macro v0.3.9
+  Downloaded gif v0.14.0
   Downloaded ghash v0.5.1
   Downloaded getrandom v0.4.1
   Downloaded getrandom v0.3.4
   Downloaded getrandom v0.2.16
   Downloaded getopts v0.2.24
-  Downloaded generic-array v0.14.7
-  Downloaded futures-lite v2.6.1
-  Downloaded futures-lite v1.13.0
-  Downloaded futures-executor v0.3.32
-  Downloaded futures-channel v0.3.32
-  Downloaded futures v0.3.32
-  Downloaded futf v0.1.5
-  Downloaded fs_extra v1.3.0
-  Downloaded encoding-index-japanese v1.20141219.5
-  Downloaded elliptic-curve v0.13.8
-  Downloaded displaydoc v0.2.5
-  Downloaded derive_more v0.99.20
-  Downloaded derive_builder v0.20.2
-  Downloaded der-parser v9.0.0
-  Downloaded data-encoding v2.10.0
-  Downloaded crossbeam-channel v0.5.15
-  Downloaded aes-gcm v0.10.3
-  Downloaded gpui_refineable v0.2.2
-  Downloaded gpui_derive_refineable v0.2.2
-  Downloaded gpui_collections v0.2.2
-  Downloaded globwalk v0.8.1
-  Downloaded git-version v0.3.9
   Downloaded gethostname v0.5.0
+  Downloaded generic-array v0.14.7
   Downloaded futures-task v0.3.32
   Downloaded futures-sink v0.3.32
   Downloaded futures-macro v0.3.32
+  Downloaded futures-lite v2.6.1
+  Downloaded futures-lite v1.13.0
   Downloaded futures-io v0.3.32
+  Downloaded futures-executor v0.3.32
   Downloaded futures-core v0.3.32
+  Downloaded brotli v8.0.2
+  Downloaded futures v0.3.32
+  Downloaded futf v0.1.5
   Downloaded font-types v0.11.3
   Downloaded font-types v0.10.1
   Downloaded foldhash v0.2.0
   Downloaded foldhash v0.1.5
-  Downloaded float_next_after v1.0.0
   Downloaded fixedbitset v0.5.7
+  Downloaded encoding-index-tradchinese v1.20141219.5
+  Downloaded encoding-index-simpchinese v1.20141219.5
+  Downloaded encoding-index-korean v1.20141219.5
+  Downloaded encoding-index-japanese v1.20141219.5
+  Downloaded encoding v0.2.33
+  Downloaded darling_core v0.20.11
+  Downloaded curve25519-dalek v4.1.3
+  Downloaded bstr v1.12.1
+  Downloaded ash v0.38.0+1.3.281
+  Downloaded gpui_collections v0.2.2
+  Downloaded gpui-router-macros v0.3.0
+  Downloaded fs_extra v1.3.0
+  Downloaded forwarded-header-value v0.1.1
+  Downloaded form_urlencoded v1.2.2
+  Downloaded fnv v1.0.7
+  Downloaded float_next_after v1.0.0
+  Downloaded float-cmp v0.9.0
+  Downloaded euclid v0.22.14
+  Downloaded elliptic-curve v0.13.8
+  Downloaded derive_more-impl v2.1.1
+  Downloaded derive_more v2.1.1
+  Downloaded derive_more v0.99.20
+  Downloaded derivative v2.2.0
+  Downloaded der-parser v9.0.0
+  Downloaded der v0.8.0
+  Downloaded der v0.7.10
+  Downloaded defmt v1.0.1
+  Downloaded darling v0.20.11
+  Downloaded cssparser v0.37.0
+  Downloaded crypto-bigint v0.5.5
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded crossbeam-channel v0.5.15
+  Downloaded cpal v0.17.3
+  Downloaded clap_builder v4.5.60
+  Downloaded chrono v0.4.45
+  Downloaded ccm v0.5.0
+  Downloaded brotli-decompressor v5.0.0
+  Downloaded aws-lc-rs v1.16.1
+  Downloaded async-std v1.13.2
+  Downloaded gpui-macros v0.2.2
+  Downloaded globwalk v0.8.1
+  Downloaded futures-channel v0.3.32
+  Downloaded find-msvc-tools v0.1.5
+  Downloaded filetime v0.2.26
+  Downloaded ff v0.13.1
+  Downloaded fdeflate v0.3.7
   Downloaded event-listener v5.4.1
   Downloaded etagere v0.3.0
+  Downloaded embedded-io v0.6.1
+  Downloaded ego-tree v0.11.0
+  Downloaded ecdsa v0.16.9
+  Downloaded dtoa v1.0.11
+  Downloaded displaydoc v0.2.5
   Downloaded digest v0.11.2
+  Downloaded digest v0.10.7
   Downloaded derive_builder_core v0.20.2
+  Downloaded derive_builder v0.20.2
+  Downloaded deranged v0.5.5
   Downloaded delegate v0.13.5
   Downloaded defmt-macros v1.0.1
-  Downloaded defmt v1.0.1
-  Downloaded dashmap v6.1.0
-  Downloaded darling v0.20.11
+  Downloaded deflate64 v0.1.10
+  Downloaded data-url v0.3.2
+  Downloaded data-encoding v2.10.0
+  Downloaded darling_macro v0.20.11
+  Downloaded curve25519-dalek-derive v0.1.1
   Downloaded ctr v0.9.2
-  Downloaded csscolorparser v0.8.3
-  Downloaded crossbeam-queue v0.3.12
-  Downloaded convert_case v0.10.0
-  Downloaded const-oid v0.9.6
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded crc32fast v1.5.0
   Downloaded chacha20poly1305 v0.10.1
   Downloaded cc v1.2.48
   Downloaded bytes v1.12.0
@@ -758,150 +769,139 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
   Downloaded backtrace v0.3.76
   Downloaded attohttpc v0.30.1
   Downloaded async_zip v0.0.17
-  Downloaded aes v0.8.4
-  Downloaded form_urlencoded v1.2.2
-  Downloaded fnv v1.0.7
-  Downloaded float-cmp v0.9.0
-  Downloaded find-msvc-tools v0.1.5
-  Downloaded filetime v0.2.26
-  Downloaded fdeflate v0.3.7
-  Downloaded erased-serde v0.4.9
-  Downloaded dtoa v1.0.11
-  Downloaded dirs-sys v0.4.1
-  Downloaded deranged v0.5.5
-  Downloaded deflate64 v0.1.10
-  Downloaded data-url v0.3.2
-  Downloaded darling_macro v0.20.11
-  Downloaded cursor-icon v1.2.0
-  Downloaded ctor v0.10.0
-  Downloaded crypto-common v0.2.1
-  Downloaded core_maths v0.1.1
-  Downloaded codespan-reporting v0.13.1
-  Downloaded clap v4.5.60
-  Downloaded bytemuck v1.25.0
-  Downloaded bytecheck v0.8.2
-  Downloaded bon v3.9.3
-  Downloaded blake2 v0.10.6
-  Downloaded bitflags v2.13.1
-  Downloaded base64ct v1.8.3
-  Downloaded base64 v0.22.1
-  Downloaded async-trait v0.1.89
-  Downloaded async-fs v2.2.0
   Downloaded async-compression v0.4.34
   Downloaded asn1-rs v0.6.2
-  Downloaded anyhow v1.0.103
-  Downloaded anstyle-parse v0.2.7
-  Downloaded allocator-api2 v0.2.21
-  Downloaded fastrand v2.3.0
+  Downloaded arc-swap v1.7.1
+  Downloaded aho-corasick v1.1.4
+  Downloaded aes-gcm v0.10.3
+  Downloaded aes v0.8.4
   Downloaded fastrand v1.9.0
+  Downloaded event-listener-strategy v0.5.4
   Downloaded errno v0.3.14
-  Downloaded equivalent v1.0.2
+  Downloaded erased-serde v0.4.9
+  Downloaded enum-as-inner v0.6.1
   Downloaded encoding_index_tests v0.1.4
-  Downloaded embedded-io v0.6.1
-  Downloaded ecdsa v0.16.9
+  Downloaded encoding-index-singlebyte v1.20141219.5
+  Downloaded embedded-io v0.4.0
+  Downloaded either v1.15.0
+  Downloaded dyn-clone v1.0.20
   Downloaded dunce v1.0.5
   Downloaded dtor-proc-macro v0.0.12
   Downloaded dtor v0.7.0
+  Downloaded dirs-sys v0.4.1
+  Downloaded dirs-sys v0.3.7
+  Downloaded dirs v4.0.0
+  Downloaded derive_pod v0.1.2
+  Downloaded defmt-parser v1.0.0
+  Downloaded dashmap v6.1.0
+  Downloaded ctor-proc-macro v0.0.12
+  Downloaded ctor v0.10.0
+  Downloaded cssparser-macros v0.7.0
+  Downloaded csscolorparser v0.8.3
+  Downloaded critical-section v1.2.0
+  Downloaded const-oid v0.10.2
+  Downloaded const-oid v0.9.6
+  Downloaded codespan-reporting v0.13.1
+  Downloaded clap_derive v4.5.55
+  Downloaded clap v4.5.60
+  Downloaded cidr v0.3.2
+  Downloaded chacha20 v0.10.0
+  Downloaded bytemuck v1.25.0
+  Downloaded bon v3.9.3
+  Downloaded blake2 v0.10.6
+  Downloaded bitflags v2.13.1
+  Downloaded async-task v4.7.1
+  Downloaded async-lock v3.4.2
+  Downloaded async-io v2.6.0
+  Downloaded async-channel v2.5.0
+  Downloaded ash-window v0.13.0
+  Downloaded ariadne v0.5.1
+  Downloaded equivalent v1.0.2
   Downloaded dtoa-short v0.3.5
   Downloaded dpi v0.1.2
-  Downloaded dirs-sys v0.3.7
   Downloaded dirs v5.0.1
-  Downloaded dirs v4.0.0
-  Downloaded digest v0.10.7
-  Downloaded defmt-parser v1.0.0
+  Downloaded derive_builder_macro v0.20.2
   Downloaded defmt v0.3.100
   Downloaded debugid v0.8.0
   Downloaded dataview v1.0.2
-  Downloaded crypto-common v0.1.7
-  Downloaded cpufeatures v0.2.17
+  Downloaded cty v0.2.2
+  Downloaded crossbeam-queue v0.3.12
+  Downloaded crc-catalog v2.4.0
+  Downloaded crc v3.4.0
+  Downloaded cpufeatures v0.3.0
+  Downloaded core_maths v0.1.1
+  Downloaded convert_case v0.10.0
+  Downloaded concurrent-queue v2.5.0
+  Downloaded compression-codecs v0.4.33
   Downloaded cmake v0.1.57
-  Downloaded clap_derive v4.5.55
-  Downloaded cidr v0.3.2
+  Downloaded cipher v0.4.4
   Downloaded chacha20 v0.9.1
+  Downloaded byteorder v1.5.0
   Downloaded blocking v1.6.2
   Downloaded bit-vec v0.9.1
-  Downloaded async-task v4.7.1
-  Downloaded async-global-executor v2.4.1
+  Downloaded bit-set v0.9.1
+  Downloaded beef v0.5.2
+  Downloaded base64ct v1.8.3
+  Downloaded base64 v0.22.1
+  Downloaded async-trait v0.1.89
+  Downloaded async-process v2.5.0
   Downloaded async-executor v1.13.3
-  Downloaded anstyle-wincon v3.0.11
-  Downloaded event-listener v2.5.3
-  Downloaded ctor-proc-macro v0.0.12
-  Downloaded cssparser-macros v0.7.0
-  Downloaded cpufeatures v0.3.0
+  Downloaded arrayvec v0.7.6
+  Downloaded arrayref v0.3.9
+  Downloaded anyhow v1.0.103
+  Downloaded anstyle-parse v0.2.7
+  Downloaded anstyle v1.0.13
+  Downloaded anstream v0.6.21
+  Downloaded allocator-api2 v0.2.21
+  Downloaded dasp_sample v0.11.0
+  Downloaded cursor-icon v1.2.0
+  Downloaded crypto-common v0.2.1
+  Downloaded crypto-common v0.1.7
+  Downloaded cpufeatures v0.2.17
   Downloaded convert_case v0.4.0
+  Downloaded compression-core v0.4.31
+  Downloaded colorchoice v1.0.4
   Downloaded color_quant v1.1.0
-  Downloaded clap_lex v1.0.0
   Downloaded cfg_aliases v0.2.1
   Downloaded cfg-if v1.0.4
   Downloaded cbc v0.1.2
   Downloaded bytemuck_derive v1.10.2
-  Downloaded block-padding v0.3.3
-  Downloaded block-buffer v0.12.0
-  Downloaded bit-set v0.9.1
-  Downloaded beef v0.5.2
-  Downloaded base16ct v0.2.0
-  Downloaded auto_impl v1.3.0
-  Downloaded atomic_refcell v0.1.13
-  Downloaded atomic-waker v1.1.2
-  Downloaded async-stream v0.3.6
-  Downloaded async-ringbuf v0.3.5
-  Downloaded async-recursion v1.1.1
-  Downloaded asn1-rs-impl v0.2.0
-  Downloaded arc-swap v1.7.1
-  Downloaded anstyle-query v1.1.5
-  Downloaded anstyle v1.0.13
-  Downloaded encoding-index-singlebyte v1.20141219.5
-  Downloaded embedded-io v0.4.0
-  Downloaded either v1.15.0
-  Downloaded ego-tree v0.11.0
-  Downloaded dyn-clone v1.0.20
-  Downloaded derive_pod v0.1.2
-  Downloaded derive_builder_macro v0.20.2
-  Downloaded dasp_sample v0.11.0
-  Downloaded curve25519-dalek-derive v0.1.1
-  Downloaded cty v0.2.2
-  Downloaded critical-section v1.2.0
-  Downloaded crc v3.4.0
-  Downloaded concurrent-queue v2.5.0
-  Downloaded compression-codecs v0.4.33
-  Downloaded colorchoice v1.0.4
-  Downloaded cobs v0.3.0
-  Downloaded cipher v0.4.4
-  Downloaded byteorder-lite v0.1.0
-  Downloaded byteorder v1.5.0
   Downloaded bytecodec v0.4.15
-  Downloaded bytecheck_derive v0.8.2
-  Downloaded block-buffer v0.10.4
+  Downloaded bytecheck v0.8.2
+  Downloaded block-buffer v0.12.0
   Downloaded bitflags v1.3.2
   Downloaded base62 v2.2.3
-  Downloaded autocfg v1.5.0
+  Downloaded auto_impl v1.3.0
+  Downloaded atomic_refcell v0.1.13
   Downloaded atomic-shim v0.2.0
   Downloaded atomic v0.5.3
-  Downloaded async-stream-impl v0.3.6
-  Downloaded async-io v2.6.0
-  Downloaded arrayvec v0.7.6
-  Downloaded arrayref v0.3.9
-  Downloaded anstream v0.6.21
-  Downloaded alloc-no-stdlib v2.0.4
-  Downloaded crossbeam-deque v0.8.6
-  Downloaded crossbeam v0.8.4
-  Downloaded crc32fast v1.5.0
-  Downloaded crc-catalog v2.4.0
-  Downloaded compression-core v0.4.31
-  Downloaded async-process v2.5.0
   Downloaded async-net v2.0.0
-  Downloaded async-lock v3.4.2
-  Downloaded async-channel v2.5.0
+  Downloaded async-fs v2.2.0
+  Downloaded ar_archive_writer v0.2.0
+  Downloaded anstyle-wincon v3.0.11
+  Downloaded cobs v0.3.0
+  Downloaded byteorder-lite v0.1.0
+  Downloaded bytecheck_derive v0.8.2
+  Downloaded block-padding v0.3.3
+  Downloaded block-buffer v0.10.4
+  Downloaded base16ct v0.2.0
+  Downloaded atomic-waker v1.1.2
+  Downloaded async-stream-impl v0.3.6
+  Downloaded async-ringbuf v0.3.5
+  Downloaded async-global-executor v2.4.1
+  Downloaded async-channel v1.9.0
   Downloaded asn1-rs-derive v0.5.1
   Downloaded alloc-stdlib v0.2.2
+  Downloaded alloc-no-stdlib v2.0.4
   Downloaded aead v0.5.2
-  Downloaded ash-window v0.13.0
-  Downloaded ariadne v0.5.1
-  Downloaded ar_archive_writer v0.2.0
   Downloaded adler2 v2.0.1
+  Downloaded autocfg v1.5.0
+  Downloaded async-recursion v1.1.1
+  Downloaded asn1-rs-impl v0.2.0
+  Downloaded anstyle-query v1.1.5
    Compiling proc-macro2 v1.0.106
-   Compiling quote v1.0.47
    Compiling unicode-ident v1.0.22
+   Compiling quote v1.0.47
    Compiling serde_core v1.0.228
     Checking cfg-if v1.0.4
     Checking windows-link v0.2.1
@@ -914,23 +914,23 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking memchr v2.7.6
     Checking pin-project-lite v0.2.16
    Compiling find-msvc-tools v0.1.5
-   Compiling shlex v1.3.0
    Compiling jobserver v0.1.34
-   Compiling syn v2.0.111
+   Compiling shlex v1.3.0
    Compiling cc v1.2.48
+   Compiling syn v2.0.111
    Compiling autocfg v1.5.0
     Checking getrandom v0.2.16
    Compiling serde v1.0.228
-    Checking serde_fmt v1.1.0
    Compiling libm v0.2.16
+    Checking serde_fmt v1.1.0
     Checking scopeguard v1.2.0
-    Checking value-bag-serde1 v1.12.0
    Compiling portable-atomic v1.13.1
-    Checking value-bag v1.12.0
     Checking lock_api v0.4.14
-    Checking log v0.4.29
+    Checking value-bag-serde1 v1.12.0
+    Checking value-bag v1.12.0
    Compiling parking_lot_core v0.9.12
     Checking bytes v1.12.0
+    Checking log v0.4.29
    Compiling typenum v1.19.0
     Checking parking_lot v0.12.5
     Checking futures-core v0.3.32
@@ -955,6 +955,7 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
    Compiling regex-syntax v0.8.11
     Checking indexmap v2.14.0
     Checking futures-sink v0.3.32
+    Checking const-oid v0.9.6
    Compiling serde_derive v1.0.228
    Compiling zeroize_derive v1.4.2
    Compiling tokio-macros v2.7.0
@@ -963,32 +964,31 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
    Compiling zerocopy-derive v0.8.39
     Checking crypto-common v0.1.7
    Compiling displaydoc v0.2.5
-    Checking mio v1.2.0
     Checking socket2 v0.6.3
+    Checking mio v1.2.0
    Compiling zerofrom-derive v0.1.6
    Compiling yoke-derive v0.8.1
-    Checking const-oid v0.9.6
     Checking tokio v1.52.3
-    Checking futures-channel v0.3.32
    Compiling futures-macro v0.3.32
-   Compiling zmij v1.0.21
+    Checking futures-channel v0.3.32
     Checking zerofrom v0.1.6
     Checking futures-task v0.3.32
     Checking yoke v0.8.1
-   Compiling zerovec-derive v0.11.2
+   Compiling zmij v1.0.21
    Compiling bytemuck_derive v1.10.2
+   Compiling zerovec-derive v0.11.2
    Compiling aho-corasick v1.1.4
     Checking futures-util v0.3.32
    Compiling thiserror v1.0.69
-    Checking bytemuck v1.25.0
     Checking zerovec v0.11.5
+    Checking bytemuck v1.25.0
    Compiling regex-automata v0.4.13
    Compiling thiserror-impl v1.0.69
     Checking lazy_static v1.5.0
     Checking ipnet v2.11.0
     Checking block-buffer v0.10.4
-   Compiling anyhow v1.0.103
    Compiling winapi v0.3.9
+   Compiling anyhow v1.0.103
     Checking digest v0.10.7
     Checking tinystr v0.8.2
    Compiling ring v0.17.14
@@ -998,11 +998,11 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking icu_locale_core v2.1.1
     Checking potential_utf v0.1.4
     Checking zerotrie v0.2.3
-   Compiling icu_normalizer_data v2.1.1
    Compiling icu_properties_data v2.1.1
-    Checking percent-encoding v2.3.2
     Checking atomic-waker v1.1.2
+   Compiling icu_normalizer_data v2.1.1
     Checking arrayvec v0.7.6
+    Checking percent-encoding v2.3.2
     Checking icu_provider v2.1.1
     Checking icu_collections v2.1.1
     Checking ppv-lite86 v0.2.21
@@ -1011,55 +1011,55 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking base64 v0.22.1
     Checking cpufeatures v0.2.17
     Checking untrusted v0.9.0
-    Checking icu_normalizer v2.1.1
     Checking icu_properties v2.1.1
-   Compiling getrandom v0.4.1
+    Checking icu_normalizer v2.1.1
     Checking rand_core v0.10.0
     Checking parking v2.2.1
+   Compiling getrandom v0.4.1
     Checking rand_core v0.9.3
     Checking form_urlencoded v1.2.2
     Checking concurrent-queue v2.5.0
     Checking utf8_iter v1.0.4
-   Compiling crc32fast v1.5.0
    Compiling serde_json v1.0.150
+   Compiling crc32fast v1.5.0
     Checking simd-adler32 v0.3.7
    Compiling libc v0.2.186
-    Checking rand_chacha v0.9.0
     Checking idna_adapter v1.2.1
+    Checking rand_chacha v0.9.0
     Checking idna v1.1.0
     Checking tracing-core v0.1.36
    Compiling cmake v0.1.57
-   Compiling heck v0.5.0
-   Compiling windows_x86_64_msvc v0.52.6
-   Compiling cfg_aliases v0.2.1
-   Compiling fastrand v2.3.0
    Compiling dunce v1.0.5
-   Compiling fs_extra v1.3.0
-   Compiling semver v1.0.28
+   Compiling fastrand v2.3.0
+   Compiling windows_x86_64_msvc v0.52.6
     Checking adler2 v2.0.1
-    Checking url v2.5.8
+   Compiling heck v0.5.0
+   Compiling semver v1.0.28
+   Compiling fs_extra v1.3.0
+   Compiling cfg_aliases v0.2.1
     Checking miniz_oxide v0.8.9
+    Checking url v2.5.8
    Compiling rustc_version v0.4.1
    Compiling aws-lc-sys v0.38.0
     Checking rand v0.9.4
    Compiling zstd-sys v2.0.16+zstd.1.5.7
     Checking rustls-pki-types v1.13.1
    Compiling tracing-attributes v0.1.31
-   Compiling either v1.15.0
     Checking cpufeatures v0.3.0
+   Compiling either v1.15.0
     Checking flate2 v1.1.9
    Compiling fnv v1.0.7
     Checking windows-targets v0.52.6
     Checking chacha20 v0.10.0
     Checking tokio-util v0.7.17
    Compiling aws-lc-rs v1.16.1
-    Checking tracing v0.1.44
     Checking rand v0.10.2
+    Checking tracing v0.1.44
     Checking event-listener v5.4.1
    Compiling winapi-util v0.1.11
     Checking event-listener-strategy v0.5.4
-    Checking crossbeam-epoch v0.9.18
    Compiling same-file v1.0.6
+    Checking crossbeam-epoch v0.9.18
    Compiling bstr v1.12.1
     Checking http v1.4.0
    Compiling siphasher v1.0.1
@@ -1067,53 +1067,53 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
    Compiling globset v0.4.18
    Compiling walkdir v2.5.0
    Compiling itertools v0.14.0
-   Compiling async-trait v0.1.89
    Compiling windows-interface v0.59.3
    Compiling windows-implement v0.60.2
+   Compiling async-trait v0.1.89
    Compiling rustls v0.23.35
+    Checking windows-core v0.62.2
    Compiling prost-derive v0.14.3
-   Compiling num-conv v0.2.0
     Checking sha1_smol v1.0.1
     Checking powerfmt v0.2.0
    Compiling time-core v0.1.8
-    Checking windows-core v0.62.2
+   Compiling num-conv v0.2.0
     Checking deranged v0.5.5
-   Compiling time-macros v0.2.27
     Checking uuid v1.23.4
+   Compiling time-macros v0.2.27
     Checking windows-sys v0.52.0
    Compiling uncased v0.9.10
     Checking encoding_rs v0.8.35
    Compiling httparse v1.10.1
-    Checking time v0.3.47
     Checking http-body v1.0.1
+    Checking time v0.3.47
     Checking crossbeam-deque v0.8.6
     Checking futures-lite v2.6.1
     Checking windows-threading v0.2.1
     Checking pin-utils v0.1.0
     Checking windows-future v0.3.2
-    Checking windows-numerics v0.3.1
     Checking windows-collections v0.3.2
+    Checking windows-numerics v0.3.1
     Checking async-lock v3.4.2
     Checking sha2 v0.10.9
    Compiling regex v1.12.4
     Checking futures-executor v0.3.32
     Checking block-padding v0.3.3
-    Checking byteorder v1.5.0
-    Checking try-lock v0.2.5
     Checking tower-service v0.3.3
     Checking ryu v1.0.20
-    Checking h2 v0.4.12
+    Checking byteorder v1.5.0
+    Checking try-lock v0.2.5
     Checking want v0.3.1
+    Checking h2 v0.4.12
     Checking inout v0.1.4
     Checking futures v0.3.32
     Checking windows v0.62.2
    Compiling phf_shared v0.13.1
     Checking windows-registry v0.6.1
-   Compiling windows_x86_64_msvc v0.53.1
-    Checking async-task v4.7.1
-    Checking alloc-no-stdlib v2.0.4
-    Checking new_debug_unreachable v1.0.6
    Compiling rustix v1.1.4
+    Checking async-task v4.7.1
+    Checking new_debug_unreachable v1.0.6
+    Checking alloc-no-stdlib v2.0.4
+   Compiling windows_x86_64_msvc v0.53.1
     Checking alloc-stdlib v0.2.2
    Compiling prost v0.14.3
    Compiling phf_generator v0.13.1
@@ -1127,8 +1127,8 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking tinyvec_macros v0.1.1
     Checking unicase v2.8.1
     Checking tinyvec v1.10.0
-    Checking blocking v1.6.2
     Checking hyper-util v0.1.18
+    Checking blocking v1.6.2
    Compiling prost-types v0.14.3
     Checking brotli-decompressor v5.0.0
     Checking http-body-util v0.1.3
@@ -1141,93 +1141,90 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking brotli v8.0.2
     Checking windows-targets v0.53.5
     Checking universal-hash v0.5.1
+    Checking compression-core v0.4.31
+    Checking allocator-api2 v0.2.21
     Checking base64ct v1.8.3
     Checking opaque-debug v0.3.1
-    Checking allocator-api2 v0.2.21
     Checking deflate64 v0.1.10
-    Checking compression-core v0.4.31
     Checking pem-rfc7468 v0.7.0
    Compiling logos-codegen v0.16.1
     Checking fdeflate v0.3.7
     Checking symphonia-core v0.5.5
    Compiling miette-derive v7.6.0
    Compiling slotmap v1.0.7
-   Compiling unicode-segmentation v1.13.3
-   Compiling rayon-core v1.13.0
-   Compiling foldhash v0.1.5
    Compiling unicode-width v0.1.11
-   Compiling ash v0.38.0+1.3.281
     Checking utf-8 v0.7.6
-   Compiling miette v7.6.0
+   Compiling foldhash v0.1.5
+   Compiling ash v0.38.0+1.3.281
+   Compiling rayon-core v1.13.0
+   Compiling unicode-segmentation v1.13.3
    Compiling hashbrown v0.15.5
-   Compiling convert_case v0.10.0
    Compiling logos-derive v0.16.1
+   Compiling convert_case v0.10.0
+   Compiling miette v7.6.0
     Checking windows-targets v0.48.5
     Checking der v0.7.10
     Checking async-executor v1.13.3
    Compiling logos-codegen v0.15.1
     Checking aead v0.5.2
     Checking euclid v0.22.14
-   Compiling prost-reflect-derive v0.16.1
    Compiling pin-project-internal v1.1.10
+   Compiling prost-reflect-derive v0.16.1
    Compiling object v0.32.2
     Checking sync_wrapper v1.0.2
     Checking libloading v0.8.9
-   Compiling fixedbitset v0.5.7
-    Checking crc-catalog v2.4.0
    Compiling unicode-xid v0.2.6
     Checking data-encoding v2.10.0
-    Checking rustc-hash v2.1.1
-   Compiling vcpkg v0.2.15
-    Checking tower-layer v0.3.3
     Checking unicode-width v0.2.2
+   Compiling fixedbitset v0.5.7
+    Checking crc-catalog v2.4.0
+   Compiling vcpkg v0.2.15
+    Checking rustc-hash v2.1.1
+    Checking tower-layer v0.3.3
     Checking tower v0.5.2
-   Compiling derive_more-impl v2.1.1
-    Checking pin-project v1.1.10
-   Compiling ar_archive_writer v0.2.0
     Checking crc v3.4.0
    Compiling petgraph v0.8.3
+    Checking pin-project v1.1.10
+   Compiling ar_archive_writer v0.2.0
+   Compiling derive_more-impl v2.1.1
     Checking spki v0.7.3
    Compiling tempfile v3.27.0
-   Compiling logos v0.16.1
    Compiling ignore v0.4.25
     Checking windows-sys v0.48.0
+   Compiling logos v0.16.1
     Checking polyval v0.6.2
     Checking windows-sys v0.60.2
     Checking async-process v2.5.0
-    Checking rustls-native-certs v0.8.2
     Checking ttf-parser v0.25.1
+    Checking rustls-native-certs v0.8.2
     Checking ctr v0.9.2
     Checking rustls-pemfile v2.2.0
    Compiling libmimalloc-sys v0.1.49
-   Compiling ident_case v1.0.1
-   Compiling beef v0.5.2
+   Compiling strsim v0.11.1
+   Compiling syn v1.0.109
    Compiling winnow v1.0.3
+    Checking inventory v0.3.21
    Compiling multimap v0.10.1
+    Checking mime v0.3.17
     Checking raw-window-handle v0.6.2
+    Checking arc-swap v1.7.1
+    Checking float-cmp v0.9.0
+   Compiling beef v0.5.2
    Compiling ref-cast v1.0.25
     Checking windows-link v0.1.3
-    Checking mime v0.3.17
-    Checking float-cmp v0.9.0
     Checking minimal-lexical v0.2.1
-   Compiling strsim v0.11.1
-    Checking arc-swap v1.7.1
-    Checking inventory v0.3.21
-   Compiling syn v1.0.109
-   Compiling mime_guess v2.0.5
+   Compiling ident_case v1.0.1
     Checking nom v7.1.3
    Compiling darling_core v0.20.11
-    Checking strict-num v0.1.1
-   Compiling globwalk v0.8.1
    Compiling toml_parser v1.1.2+spec-1.1.0
+    Checking strict-num v0.1.1
    Compiling prost-build v0.14.3
+   Compiling globwalk v0.8.1
+   Compiling mime_guess v2.0.5
     Checking ghash v0.5.1
     Checking rayon v1.12.0
-    Checking zstd v0.13.3
-    Checking compression-codecs v0.4.33
-    Checking async-compression v0.4.34
-    Checking derive_more v2.1.1
    Compiling prost-reflect v0.16.5
+    Checking derive_more v2.1.1
     Checking pkcs8 v0.10.2
    Compiling psm v0.1.28
    Compiling rust-embed-utils v8.9.0
@@ -1237,8 +1234,11 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking aes v0.8.4
    Compiling phf_codegen v0.13.1
     Checking socket2 v0.5.10
+    Checking zstd v0.13.3
     Checking serde_urlencoded v0.7.1
+    Checking compression-codecs v0.4.33
    Compiling serde_spanned v0.6.9
+    Checking async-compression v0.4.34
    Compiling toml_datetime v0.6.11
    Compiling curve25519-dalek v4.1.3
    Compiling naga v29.0.1
@@ -1253,37 +1253,37 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
    Compiling serde_derive_internals v0.29.1
     Checking ff v0.13.1
     Checking presser v0.3.1
-    Checking memmap2 v0.9.9
-   Compiling toml_write v0.1.2
-    Checking color_quant v1.1.0
     Checking zune-core v0.5.0
-    Checking simdutf8 v0.1.5
-   Compiling bit-vec v0.9.1
-    Checking base16ct v0.2.0
-    Checking unicode-script v0.5.8
-   Compiling foldhash v0.2.0
     Checking event-listener v2.5.3
-    Checking quick-error v2.0.1
     Checking mac v0.1.1
-   Compiling serde_json_lenient v0.2.4
-    Checking byteorder-lite v0.1.0
-    Checking weezl v0.1.12
     Checking arrayref v0.3.9
+    Checking byteorder-lite v0.1.0
+    Checking base16ct v0.2.0
+   Compiling serde_json_lenient v0.2.4
+    Checking color_quant v1.1.0
+   Compiling bit-vec v0.9.1
+   Compiling foldhash v0.2.0
+    Checking simdutf8 v0.1.5
+    Checking weezl v0.1.12
+    Checking unicode-script v0.5.8
+    Checking quick-error v2.0.1
    Compiling winnow v0.7.14
-    Checking image-webp v0.2.4
-    Checking gif v0.14.0
-    Checking tiny-skia-path v0.11.4
-    Checking futf v0.1.5
-    Checking async-channel v1.9.0
+   Compiling toml_write v0.1.2
+    Checking memmap2 v0.9.9
     Checking moxcms v0.7.10
+    Checking fontdb v0.23.0
+    Checking gif v0.14.0
+    Checking image-webp v0.2.4
    Compiling hashbrown v0.16.1
    Compiling bit-set v0.9.1
-    Checking sec1 v0.7.3
    Compiling schemars_derive v1.1.0
-    Checking zune-jpeg v0.5.5
+    Checking sec1 v0.7.3
    Compiling toml_edit v0.22.27
-    Checking fontdb v0.23.0
    Compiling codespan-reporting v0.13.1
+    Checking tiny-skia-path v0.11.4
+    Checking futf v0.1.5
+    Checking zune-jpeg v0.5.5
+    Checking async-channel v1.9.0
     Checking group v0.13.0
     Checking num-bigint v0.4.6
     Checking read-fonts v0.35.0
@@ -1309,44 +1309,44 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking smol_str v0.2.2
     Checking home v0.5.12
     Checking crypto-bigint v0.5.5
-   Compiling curve25519-dalek-derive v0.1.1
-   Compiling asn1-rs-derive v0.5.1
-   Compiling ptr_meta_derive v0.3.1
    Compiling asn1-rs-impl v0.2.0
+   Compiling asn1-rs-derive v0.5.1
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling ptr_meta_derive v0.3.1
     Checking kv-log-macro v1.0.7
    Compiling stacker v0.1.22
    Compiling proc-macro-error-attr2 v2.0.0
-    Checking sys-locale v0.3.2
     Checking dyn-clone v1.0.20
-    Checking unicode-ccc v0.4.0
-   Compiling rustc-hash v1.1.0
-   Compiling hexf-parse v0.2.1
-    Checking winsafe v0.0.19
-    Checking unicode-bidi-mirroring v0.4.0
-    Checking unicode-bidi v0.3.18
     Checking fastrand v1.9.0
+    Checking winsafe v0.0.19
     Checking waker-fn v1.2.0
+   Compiling hexf-parse v0.2.1
+   Compiling rustc-hash v1.1.0
     Checking encoding_index_tests v0.1.4
     Checking unicode-properties v0.1.4
-    Checking futures-lite v1.13.0
+    Checking unicode-bidi v0.3.18
+    Checking unicode-bidi-mirroring v0.4.0
+    Checking unicode-ccc v0.4.0
+    Checking sys-locale v0.3.2
     Checking rustybuzz v0.20.1
+    Checking futures-lite v1.13.0
     Checking which v6.0.3
-   Compiling gpui_collections v0.2.2
-   Compiling proc-macro-error2 v2.0.1
     Checking schemars v1.1.0
-    Checking asn1-rs v0.6.2
+   Compiling proc-macro-error2 v2.0.1
+   Compiling gpui_collections v0.2.2
     Checking ptr_meta v0.3.1
     Checking async-std v1.13.2
+    Checking asn1-rs v0.6.2
     Checking elliptic-curve v0.13.8
     Checking svgtypes v0.15.3
     Checking phf v0.13.1
     Checking dirs v4.0.0
     Checking rust-embed v8.9.0
-    Checking smol v2.0.2
     Checking image v0.25.9
+    Checking smol v2.0.2
     Checking windows-registry v0.4.0
-    Checking skrifa v0.37.0
    Compiling darling v0.20.11
+    Checking skrifa v0.37.0
    Compiling logos v0.15.1
    Compiling toml v0.8.23
     Checking tendril v0.4.3
@@ -1362,30 +1362,30 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
    Compiling winit v0.30.13
     Checking pem v3.0.6
     Checking spirv v0.4.0+sdk-1.4.341.0
+    Checking gpu-allocator v0.28.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\gpu-allocator)
     Checking crossbeam-channel v0.5.15
     Checking simplecss v0.2.2
-    Checking cty v0.2.2
-    Checking take-until v0.2.0
-    Checking zeno v0.3.3
    Compiling convert_case v0.4.0
-    Checking gpu-allocator v0.28.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\gpu-allocator)
-    Checking pico-args v0.5.0
-    Checking yazi v0.2.1
    Compiling dtor-proc-macro v0.0.12
-    Checking float_next_after v1.0.0
     Checking gfx-memory v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-memory)
-    Checking unicode-vo v0.1.0
-    Checking imagesize v0.13.0
-    Checking data-url v0.3.2
-    Checking roxmltree v0.20.0
-   Compiling oid-registry v0.7.1
+    Checking take-until v0.2.0
     Checking xmlwriter v0.1.0
+    Checking zeno v0.3.3
+    Checking roxmltree v0.20.0
+    Checking float_next_after v1.0.0
+    Checking pico-args v0.5.0
+    Checking data-url v0.3.2
+    Checking cty v0.2.2
+    Checking unicode-vo v0.1.0
+   Compiling oid-registry v0.7.1
     Checking hex v0.4.3
-    Checking dtor v0.7.0
-    Checking gpui_util v0.2.2
+    Checking imagesize v0.13.0
+    Checking yazi v0.2.1
     Checking usvg v0.45.1
+    Checking gpui_util v0.2.2
     Checking swash v0.2.6
     Checking lyon_tessellation v1.0.16
+    Checking dtor v0.7.0
    Compiling derive_more v0.99.20
     Checking tiny-skia v0.11.4
     Checking chacha20poly1305 v0.10.1
@@ -1393,11 +1393,11 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
    Compiling gpui v0.2.2 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui)
    Compiling protox-parse v0.9.0
     Checking rancor v0.1.2
-   Compiling stacksafe-macro v1.0.1
    Compiling gpui_perf v0.2.2
+   Compiling stacksafe-macro v1.0.1
    Compiling trackable_derive v1.0.0
-    Checking skrifa v0.40.0
     Checking harfrust v0.5.2
+    Checking skrifa v0.40.0
     Checking lyon_algorithms v1.0.16
     Checking symphonia-utils-xiph v0.5.5
     Checking ash-window v0.13.0
@@ -1407,64 +1407,64 @@ warning: D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launche
     Checking signature v2.2.0
     Checking rgb v0.8.52
    Compiling profiling-procmacros v1.0.17
-   Compiling bytecheck_derive v0.8.2
    Compiling gpui_derive_refineable v0.2.2
+   Compiling bytecheck_derive v0.8.2
     Checking spin v0.9.8
    Compiling syn v3.0.3
     Checking cursor-icon v1.2.0
-    Checking once_cell_polyfill v1.70.2
-    Checking grid v1.0.1
-   Compiling native-tls v0.2.18
-    Checking dpi v0.1.2
-    Checking anstyle v1.0.13
-    Checking unicode-linebreak v0.1.5
-   Compiling ipconfig v0.3.2
-    Checking utf8parse v0.2.2
-   Compiling rustversion v1.0.22
-   Compiling unsafe-libyaml v0.2.11
-    Checking smol_str v0.3.6
-   Compiling derive_pod v0.1.2
    Compiling ctor-proc-macro v0.0.12
-    Checking linebender_resource_handle v0.1.1
-    Checking rangemap v1.7.1
-    Checking precomputed-hash v0.1.1
-    Checking self_cell v1.2.2
-    Checking pollster v0.2.5
-    Checking static_assertions v1.1.0
-    Checking widestring v1.2.1
-    Checking link-section v0.2.0
     Checking atomic v0.5.3
+    Checking anstyle v1.0.13
+    Checking link-section v0.2.0
+    Checking pollster v0.2.5
+    Checking precomputed-hash v0.1.1
    Compiling typetag v0.2.23
-    Checking postage v0.5.0
-    Checking ctor v0.10.0
+    Checking dpi v0.1.2
+    Checking smol_str v0.3.6
+   Compiling ipconfig v0.3.2
+   Compiling rustversion v1.0.22
+    Checking unicode-linebreak v0.1.5
+   Compiling derive_pod v0.1.2
+    Checking utf8parse v0.2.2
+    Checking widestring v1.2.1
+    Checking once_cell_polyfill v1.70.2
+    Checking static_assertions v1.1.0
+   Compiling unsafe-libyaml v0.2.11
+    Checking grid v1.0.1
+    Checking linebender_resource_handle v0.1.1
+    Checking self_cell v1.2.2
+    Checking rangemap v1.7.1
+   Compiling native-tls v0.2.18
     Checking cosmic-text v0.19.0
+    Checking taffy v0.11.0
    Compiling typetag-impl v0.2.23
    Compiling serde_yaml v0.9.34+deprecated
-   Compiling triomphe v0.1.15
-    Checking anstyle-parse v0.2.7
+    Checking postage v0.5.0
     Checking anstyle-wincon v3.0.11
-    Checking taffy v0.11.0
+    Checking anstyle-parse v0.2.7
+   Compiling triomphe v0.1.15
+    Checking ctor v0.10.0
     Checking strum v0.28.0
-    Checking gpui_refineable v0.2.2
     Checking flume v0.12.0
+    Checking gpui_refineable v0.2.2
     Checking bytecheck v0.8.2
     Checking profiling v1.0.17
-    Checking resvg v0.45.1
     Checking gfx-shader v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-shader)
+    Checking resvg v0.45.1
     Checking ecdsa v0.16.9
    Compiling web_atoms v0.2.3
     Checking gfx-vulkan v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-vulkan)
     Checking lyon v1.0.16
     Checking trackable v1.3.0
+    Checking stacksafe v1.0.1
    Compiling gpui_util_macros v0.2.2
    Compiling protox v0.9.1
-    Checking stacksafe v1.0.1
 crates\nova-gfx\gfx-vulkan\src\device.rs:1130:8: warning: methods `render_steps_and_present` and `render_steps_to_texture` are never used
-    Checking gfx-dx12 v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-dx12)
 warning: `gfx-vulkan` (lib) generated 1 warning
-    Checking x25519-dalek v2.0.1
+    Checking gfx-dx12 v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nova-gfx\gfx-dx12)
     Checking primeorder v0.13.6
     Checking der-parser v9.0.0
+    Checking x25519-dalek v2.0.1
    Compiling toml_edit v0.25.12+spec-1.1.0
     Checking gpui_sum_tree v0.2.2
    Compiling prost-wkt-build v0.7.1
@@ -1482,44 +1482,44 @@ warning: `gfx-vulkan` (lib) generated 1 warning
     Checking cobs v0.3.0
     Checking anstyle-query v1.1.5
    Compiling munge_macro v0.4.7
-   Compiling substring v1.4.5
    Compiling memoffset v0.9.1
-   Compiling protoc-bin-vendored-linux-aarch_64 v3.2.0
+   Compiling substring v1.4.5
    Compiling protoc-bin-vendored-linux-s390_64 v3.2.0
-    Checking option-ext v0.2.0
-   Compiling protoc-bin-vendored-win32 v3.2.0
-    Checking num_cpus v1.17.0
-   Compiling protoc-bin-vendored-linux-ppcle_64 v3.2.0
-    Checking colorchoice v1.0.4
     Checking linked-hash-map v0.5.6
-   Compiling protoc-bin-vendored-macos-x86_64 v3.2.0
-   Compiling ntapi v0.4.1
+    Checking num_cpus v1.17.0
    Compiling heapless v0.9.2
-   Compiling snap v1.1.1
    Compiling base62 v2.2.3
-    Checking is_terminal_polyfill v1.70.2
-    Checking jpeg-decoder v0.3.2
-    Checking pollster v0.4.0
     Checking no-std-net v0.6.0
-   Compiling protoc-bin-vendored-linux-x86_32 v3.2.0
-   Compiling protoc-bin-vendored-linux-x86_64 v3.2.0
    Compiling paste v1.0.15
+   Compiling protoc-bin-vendored-macos-x86_64 v3.2.0
+    Checking colorchoice v1.0.4
+   Compiling protoc-bin-vendored-linux-aarch_64 v3.2.0
     Checking seahash v4.1.0
+    Checking jpeg-decoder v0.3.2
+   Compiling protoc-bin-vendored-win32 v3.2.0
     Checking tagptr v0.2.0
+    Checking pollster v0.4.0
+    Checking option-ext v0.2.0
+   Compiling protoc-bin-vendored-linux-ppcle_64 v3.2.0
+    Checking is_terminal_polyfill v1.70.2
+   Compiling protoc-bin-vendored-linux-x86_32 v3.2.0
    Compiling protoc-bin-vendored-macos-aarch_64 v3.2.0
+   Compiling protoc-bin-vendored-linux-x86_64 v3.2.0
+   Compiling ntapi v0.4.1
+   Compiling snap v1.1.1
    Compiling protoc-bin-vendored v3.2.0
-    Checking moka v0.12.13
-    Checking pnet_base v0.35.0
-   Compiling rust-i18n-support v3.1.5
     Checking anstream v0.6.21
     Checking dirs-sys v0.4.1
+    Checking moka v0.12.13
+   Compiling rust-i18n-support v3.1.5
+    Checking pnet_base v0.35.0
     Checking munge v0.4.7
     Checking postcard v1.1.3
     Checking stun v0.17.2
     Checking hickory-proto v0.25.2
     Checking sentry-types v0.49.0
-   Compiling prost-wkt-types v0.7.1
    Compiling proc-macro-crate v3.5.0
+   Compiling prost-wkt-types v0.7.1
     Checking x509-parser v0.16.0
     Checking trackable v0.2.24
     Checking rend v0.5.4
@@ -1538,110 +1538,110 @@ warning: `gfx-vulkan` (lib) generated 1 warning
     Checking ordered-float v2.10.1
    Compiling rkyv_derive v0.8.17
     Checking hybrid-array v0.4.10
-    Checking dtoa v1.0.11
-   Compiling glob v0.3.3
-   Compiling indoc v2.0.7
     Checking clap_lex v1.0.0
+   Compiling indoc v2.0.7
+    Checking dtoa v1.0.11
    Compiling pelite-macros v0.1.1
+   Compiling smoltcp v0.12.0 (https://github.com/smoltcp-rs/smoltcp.git?rev=0a926767a68bc88d5512afefa7529c5ecdade4ea#0a926767)
+   Compiling glob v0.3.3
+    Checking xml-rs v0.8.28
     Checking resolv-conf v0.7.6
    Compiling network-interface v2.0.5
-    Checking xml-rs v0.8.28
-   Compiling smoltcp v0.12.0 (https://github.com/smoltcp-rs/smoltcp.git?rev=0a926767a68bc88d5512afefa7529c5ecdade4ea#0a926767)
-    Checking xmltree v0.10.3
     Checking clap_builder v4.5.60
-    Checking hickory-resolver v0.25.2
-   Compiling easytier v2.6.4 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\easytier)
-    Checking rkyv v0.8.17
+    Checking xmltree v0.10.3
    Compiling rust-i18n-macro v3.1.5
-    Checking prost-wkt v0.7.1
+    Checking hickory-resolver v0.25.2
+    Checking rkyv v0.8.17
+   Compiling easytier v2.6.4 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\easytier)
     Checking dtoa-short v0.3.5
+    Checking prost-wkt v0.7.1
     Checking serde-value v0.7.0
     Checking rand v0.8.5
     Checking webrtc-srtp v0.17.2
    Compiling derive_builder_macro v0.20.2
    Compiling bon-macros v3.9.3
-    Checking sentry-core v0.49.0
     Checking tokio-native-tls v0.3.1
-    Checking rcgen v0.13.2
+    Checking sentry-core v0.49.0
     Checking bytecodec v0.4.15
-   Compiling guarden-macros v0.2.0
+    Checking rcgen v0.13.2
     Checking rustls-webpki v0.103.8
+   Compiling guarden-macros v0.2.0
     Checking turn v0.17.2
-    Checking dirs v5.0.1
     Checking pnet_macros_support v0.35.0
+    Checking dirs v5.0.1
     Checking webpki-roots v0.26.11
-    Checking p256 v0.13.2
     Checking p384 v0.13.1
+    Checking p256 v0.13.2
    Compiling dataview v1.0.2
-    Checking encoding-index-korean v1.20141219.5
     Checking encoding-index-singlebyte v1.20141219.5
     Checking encoding-index-tradchinese v1.20141219.5
+    Checking encoding-index-korean v1.20141219.5
     Checking encoding-index-japanese v1.20141219.5
     Checking encoding-index-simpchinese v1.20141219.5
     Checking webrtc-mdns v0.17.2
    Compiling selectors v0.38.0
+    Checking tokio-rustls v0.26.4
     Checking webrtc-sctp v0.17.2
+    Checking hyper-rustls v0.27.7
     Checking ccm v0.5.0
     Checking tendril v0.5.0
+    Checking zed-reqwest v0.12.15-zed
     Checking cbc v0.1.2
-    Checking tokio-rustls v0.26.4
     Checking netdev v0.31.0
    Compiling pnet_macros v0.35.0
     Checking matchers v0.2.0
-    Checking hyper-rustls v0.27.7
-    Checking webpki v0.22.4
     Checking attohttpc v0.30.1
-    Checking zed-reqwest v0.12.15-zed
+    Checking webpki v0.22.4
    Compiling toml v0.5.11
    Compiling sentry-contexts v0.49.0
    Compiling strum_macros v0.27.2
+    Checking gpui_http_client v0.2.2
    Compiling clap_derive v4.5.55
     Checking tracing-log v0.2.0
     Checking blake2 v0.10.6
-    Checking gpui_http_client v0.2.2
     Checking sharded-slab v0.1.7
     Checking cidr v0.3.2
     Checking nu-ansi-term v0.50.3
    Compiling zerocopy-derive v0.7.35
-   Compiling cssparser-macros v0.7.0
-   Compiling git-version-macro v0.3.9
    Compiling async-stream-impl v0.3.6
+   Compiling git-version-macro v0.3.9
+   Compiling cssparser-macros v0.7.0
    Compiling serde_spanned v1.1.1
     Checking raw-cpuid v11.6.0
     Checking ringbuf v0.4.8
     Checking thread_local v1.1.9
-    Checking nonempty v0.7.0
-   Compiling toml_writer v1.1.1+spec-1.1.0
     Checking extended v0.1.0
-   Compiling tinywasm-parser v0.10.0
-    Checking rustc-demangle v0.1.27
     Checking md5 v0.7.0
-    Checking humantime v2.3.0
-    Checking hashbrown v0.14.5
     Checking iri-string v0.7.9
-   Compiling no-std-compat v0.4.1
-    Checking yansi v1.0.1
-   Compiling cpal v0.17.3
     Checking managed v0.8.0
-    Checking ariadne v0.5.1
-   Compiling pelite v0.10.0
-    Checking quanta v0.12.6
-    Checking dashmap v6.1.0
+    Checking yansi v1.0.1
+    Checking humantime v2.3.0
+   Compiling tinywasm-parser v0.10.0
+    Checking hashbrown v0.14.5
+   Compiling toml_writer v1.1.1+spec-1.1.0
+   Compiling cpal v0.17.3
+    Checking nonempty v0.7.0
+   Compiling no-std-compat v0.4.1
+    Checking rustc-demangle v0.1.27
     Checking tower-http v0.6.8
-    Checking humantime-serde v1.1.1
+    Checking quanta v0.12.6
     Checking backtrace v0.3.76
-    Checking stun_codec v0.3.5
-   Compiling toml v1.1.2+spec-1.1.0
-    Checking symphonia-format-riff v0.5.5
-    Checking async-stream v0.3.6
+   Compiling pelite v0.10.0
     Checking forwarded-header-value v0.1.1
-    Checking async-ringbuf v0.3.5
+    Checking dashmap v6.1.0
+   Compiling toml v1.1.2+spec-1.1.0
+    Checking humantime-serde v1.1.1
+    Checking ariadne v0.5.1
+    Checking stun_codec v0.3.5
+    Checking symphonia-format-riff v0.5.5
     Checking tracing-subscriber v0.3.23
     Checking strum v0.27.2
-    Checking clap v4.5.60
-    Checking git-version v0.3.9
-    Checking zerocopy v0.7.35
+    Checking async-ringbuf v0.3.5
     Checking cssparser v0.37.0
+    Checking clap v4.5.60
+    Checking zerocopy v0.7.35
+    Checking git-version v0.3.9
+    Checking async-stream v0.3.6
     Checking prefix-trie v0.7.0
    Compiling winres v0.1.12
     Checking pnet_packet v0.35.0
@@ -1649,14 +1649,10 @@ warning: `gfx-vulkan` (lib) generated 1 warning
     Checking igd-next v0.17.1
     Checking http_req v0.13.1 (https://github.com/EasyTier/http_req.git#b10aa9fc)
     Checking natpmp v0.5.0
-    Checking tokio-websockets v0.13.2 (https://github.com/EasyTier/tokio-websockets#dc9771c7)
     Checking markup5ever v0.39.0
     Checking dtls v0.17.2 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\dtls)
     Checking webrtc-ice v0.17.2 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\webrtc-ice)
-    Checking rustls-platform-verifier v0.6.2
-    Checking encoding v0.2.33
-    Checking bon v3.9.3
-    Checking bedrock-leveldb v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-leveldb)
+    Checking tokio-websockets v0.13.2 (https://github.com/EasyTier/tokio-websockets#dc9771c7)
 crates\gpui\src\assets\decode\webp.rs:63:19: warning: usage of an `unsafe` block
 crates\gpui\src\assets\decode\webp.rs:71:22: warning: usage of an `unsafe` block
 crates\gpui\src\assets\decode\webp.rs:76:26: warning: usage of an `unsafe` block
@@ -1858,30 +1854,34 @@ crates\gpui\src\platform\windows\window.rs:589:1: warning: implementation of an 
 crates\gpui\src\platform\windows\window.rs:628:1: warning: implementation of an `unsafe` trait
 crates\gpui\src\platform\windows\window.rs:633:12: warning: usage of an `unsafe` block
 crates\gpui\src\window.rs:141:16: warning: unused import: `titlebar::rasterize_platform_title`
+    Checking bon v3.9.3
+    Checking rustls-platform-verifier v0.6.2
+    Checking encoding v0.2.33
+    Checking bedrock-leveldb v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-leveldb)
     Checking shellexpand v3.1.1
     Checking sdp v0.17.2
     Checking guarden v0.2.0
     Checking hyper-tls v0.6.0
-    Checking interceptor v0.17.2
     Checking derive_builder v0.20.2
+    Checking interceptor v0.17.2
     Checking block-buffer v0.12.0
     Checking crypto-common v0.2.1
     Checking tinywasm-types v0.10.0
     Checking ordered_hash_map v0.5.0
     Checking webrtc-media v0.17.2
     Checking windows-service v0.7.0
-    Checking symphonia-bundle-flac v0.5.5
-    Checking symphonia-format-ogg v0.5.5
     Checking symphonia-format-isomp4 v0.5.5
     Checking symphonia-codec-vorbis v0.5.5
+    Checking symphonia-format-ogg v0.5.5
+    Checking symphonia-bundle-flac v0.5.5
     Checking crossbeam v0.8.4
     Checking rcgen v0.12.1
    Compiling derivative v2.2.0
     Checking symphonia-bundle-mp3 v0.5.5
     Checking winreg v0.52.0
     Checking getopts v0.2.24
-    Checking symphonia-codec-aac v0.5.5
     Checking symphonia-codec-pcm v0.5.5
+    Checking symphonia-codec-aac v0.5.5
    Compiling bedrock-render v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-render)
     Checking machine-uid v0.5.4
     Checking tokio-stream v0.1.18
@@ -1891,39 +1891,34 @@ crates\gpui\src\window.rs:141:16: warning: unused import: `titlebar::rasterize_p
     Checking pbjson v0.9.0
     Checking os_info v3.15.0
     Checking ipnetwork v0.20.0
-   Compiling delegate v0.13.5
    Compiling auto_impl v1.3.0
    Compiling async-recursion v1.1.1
+   Compiling delegate v0.13.5
     Checking servo_arc v0.4.3
     Checking wasmparser v0.254.0
     Checking hostname v0.4.2
-    Checking atomic_refcell v0.1.13
-    Checking version-compare v0.2.1
-    Checking const-oid v0.10.2
-    Checking atomic-shim v0.2.0
     Checking wildmatch v2.6.1
-    Checking timedmap v1.0.1
-   Compiling rfd v0.17.2
     Checking xxhash-rust v0.8.16
     Checking dasp_sample v0.11.0
+    Checking timedmap v1.0.1
    Compiling pulldown-cmark v0.13.4
-    Checking bedrock-world v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-world)
+    Checking atomic-shim v0.2.0
+    Checking atomic_refcell v0.1.13
+    Checking const-oid v0.10.2
+   Compiling rfd v0.17.2
+    Checking version-compare v0.2.1
+    Checking digest v0.11.2
    Compiling bmcbl v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher)
 build.rs:283:16: warning: usage of an `unsafe` block
-    Checking digest v0.11.2
+    Checking bedrock-world v0.5.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bedrock-world)
 crates\gpui\src\assets\render_image\streaming.rs:71:17: warning: value assigned to `skipped_frames` is never read
     Checking symphonia v0.5.5
     Checking webrtc v0.17.2 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\webrtc)
     Checking reqwest v0.13.4
-    Checking html5ever v0.39.0
 warning: `bmcbl` (build script) generated 1 warning
+    Checking html5ever v0.39.0
     Checking sentry-backtrace v0.49.0
     Checking sysinfo v0.38.0
-   Compiling bmcbl_plugin_macros v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bmcbl-plugin-macros)
-    Checking num-rational v0.4.2
-    Checking ogg_pager v0.7.1
-    Checking raknet v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\raknet\raknet)
-   Compiling gpui_hooks_macros v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui-hooks-macros)
 crates\gpui\src\animation\transition.rs:213:15: warning: function `resolve_driver` is never used
 crates\gpui\src\assets\bitmap_pool.rs:158:15: warning: function `release_bitmap_buffer` is never used
 crates\gpui\src\platform\frame.rs:150:5: warning: variants `Reduced` and `Disabled` are never constructed
@@ -1961,33 +1956,38 @@ crates\gpui\src\window\titlebar.rs:5:7: warning: constant `PLATFORM_TITLE_MASK_P
 crates\gpui\src\window\titlebar.rs:7:19: warning: struct `PlatformTitleMask` is never constructed
 crates\gpui\src\window\titlebar.rs:13:8: warning: struct `RasterizedTitleGlyph` is never constructed
 crates\gpui\src\window\titlebar.rs:19:15: warning: function `rasterize_platform_title` is never used
-   Compiling gpui-router-macros v0.3.0
+   Compiling bmcbl_plugin_macros v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bmcbl-plugin-macros)
 crates\gpui\src\app\state.rs:497:14: warning: this lint expectation is unfulfilled
+    Checking num-rational v0.4.2
+    Checking ogg_pager v0.7.1
+    Checking raknet v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\raknet\raknet)
    Compiling lofty_attr v0.12.0
-    Checking notify-types v2.1.0
-    Checking httpdate v1.0.3
-    Checking ego-tree v0.11.0
 warning: `gpui` (lib) generated 240 warnings (run `cargo fix --lib -p gpui` to apply 7 suggestions)
-    Checking matchit v0.8.6
+   Compiling gpui_hooks_macros v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui-hooks-macros)
+   Compiling gpui-router-macros v0.3.0
+    Checking notify-types v2.1.0
     Checking pulldown-cmark-escape v0.11.0
+    Checking httpdate v1.0.3
     Checking typed-path v0.12.3
     Checking xml v1.2.0
-    Checking lofty v0.23.2
-    Checking xmltree v0.12.0
+    Checking ego-tree v0.11.0
+    Checking matchit v0.8.6
+    Checking gpui_hooks v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui-hooks)
     Checking gpui-router v0.3.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\vendor\gpui-router)
     Checking zip v9.0.0-pre2
+    Checking xmltree v0.12.0
     Checking scraper v0.27.0
-    Checking nethernet v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nethernet)
-    Checking gpui_tokio v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui_tokio)
-    Checking gpui_hooks v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui-hooks)
     Checking notify v8.2.0
+    Checking lofty v0.23.2
+    Checking nethernet v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\nethernet)
     Checking bmcbl_plugin_api v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\bmcbl-plugin-api)
-    Checking raknet-tokio v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\raknet\raknet-tokio)
-    Checking rodio v0.22.2
 crates\bmcbl-plugin-api\src\lib.rs:2509:17: warning: usage of an `unsafe` block
+    Checking raknet-tokio v0.2.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\raknet\raknet-tokio)
+    Checking gpui_tokio v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\gpui_tokio)
+    Checking rodio v0.22.2
+warning: `bmcbl_plugin_api` (lib) generated 1 warning
     Checking tinywasm v0.10.0
     Checking sha2 v0.11.0
-warning: `bmcbl_plugin_api` (lib) generated 1 warning
     Checking sysinfo v0.39.5
     Checking mc-motd v0.1.0 (https://github.com/BE-Community-Dev/mc-motd.git?branch=main#4e2cd739)
     Checking mimalloc v0.1.52
@@ -1996,8 +1996,8 @@ warning: `bmcbl_plugin_api` (lib) generated 1 warning
     Checking keyring v3.6.3
     Checking winreg v0.56.0
     Checking secrecy v0.10.3
-    Checking md5 v0.8.0
     Checking base64 v0.23.0
+    Checking md5 v0.8.0
     Checking easytier-bmcbl v0.1.0 (D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\crates\easytier-bmcbl)
 src\app.rs:177:5: warning: usage of an `unsafe` block
 src\config\config.rs:13:54: warning: unused import: `default_proton_gdk_source`
@@ -2132,6 +2132,7 @@ src\utils\system_info.rs:117:5: warning: usage of an `unsafe` block
 src\ui\window\map_viewer\view.rs:134:13: warning: variable does not need to be mutable
 src\downloads\md5.rs:30:22: warning: use of deprecated method `md5::Context::compute`: Use `finalize`.
 src\ui\window\map_viewer\interactions.rs:3896:48: warning: use of deprecated method `futures::futures_channel::mpsc::UnboundedReceiver::<T>::try_next`: please use `try_recv` instead
+src\ui\window\map_viewer\players.rs:1553:40: error[E0308]: mismatched types: expected `&str`, found `String`
 src\ui\window\map_viewer\tile_render.rs:35:33: warning: use of deprecated method `futures::futures_channel::mpsc::UnboundedReceiver::<T>::try_next`: please use `try_recv` instead
 src\core\online\online.rs:8:24: warning: unused import: `ConfigRpc`
 src\ui\overlays\update.rs:18:26: warning: unused import: `StatefulInteractiveElement`
@@ -2264,7 +2265,6 @@ src\ui\window\import\view.rs:1695:5: warning: unused variable: `view`: help: if 
 src\ui\window\import\view.rs:2558:5: warning: unused variable: `view`: help: if this is intentional, prefix it with an underscore: `_view`
 src\ui\window\level_dat\view.rs:429:17: warning: unused variable: `colors`: help: if this is intentional, prefix it with an underscore: `_colors`
 src\ui\window\map_viewer\menus.rs:11:9: warning: unused variable: `chunk`: help: if this is intentional, prefix it with an underscore: `_chunk`
-src\ui\window\map_viewer\players.rs:1555:33: error[E0505]: cannot move out of `path` because it is borrowed: move out of `path` occurs here
 src\ui\window\map_viewer\tile_render_core.rs:849:9: warning: variable does not need to be mutable
 warning: `bmcbl` (lib) generated 266 warnings
 error: could not compile `bmcbl` (lib) due to 1 previous error; 266 warnings emitted
