@@ -940,6 +940,7 @@ impl MapViewerWindowView {
         });
         let icon_size = (metrics.slot_size * 0.72).clamp(20.0, 38.0);
         div()
+            .id(("player-item-slot", kind.nbt_key(), slot))
             .relative()
             .w(px(metrics.slot_size))
             .h(px(metrics.slot_size))
