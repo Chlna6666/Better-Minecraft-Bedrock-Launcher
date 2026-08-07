@@ -1,0 +1,422 @@
+
+===== Install Rust 1.95 =====
+info: syncing channel updates for 1.95.0-x86_64-pc-windows-msvc
+info: latest update on 2026-04-16 for version 1.95.0 (59807616e 2026-04-14)
+info: downloading 3 components
+
+  1.95.0-x86_64-pc-windows-msvc installed - rustc 1.95.0 (59807616e 2026-04-14)
+
+
+===== Install rustfmt =====
+info: downloading component rustfmt
+
+===== Select Rust 1.95 =====
+info: using existing install for 1.95.0-x86_64-pc-windows-msvc
+
+info: default toolchain set to 1.95.0-x86_64-pc-windows-msvc
+  1.95.0-x86_64-pc-windows-msvc unchanged - rustc 1.95.0 (59807616e 2026-04-14)
+
+
+===== Format check =====
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:131:
+             Self::AddItem { .. } => "玩家物品：添加物品".to_string(),
+             Self::DeleteItem { .. } => "玩家物品：删除物品".to_string(),
+             Self::DuplicateItem { .. } => "玩家物品：复制物品".to_string(),
+[31m-            Self::AdjustCount { .. } | Self::SetCount { .. } => {
+[0m[31m-                "玩家物品：修改数量".to_string()
+[0m[31m-            }
+[0m[32m+            Self::AdjustCount { .. } | Self::SetCount { .. } => "玩家物品：修改数量".to_string(),
+[0m             Self::AdjustDamage { .. } | Self::SetDamage { .. } => {
+                 "玩家物品：修改 Damage".to_string()
+             }
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:140:
+             Self::SetCustomName { .. } => "玩家物品：修改自定义名称".to_string(),
+             Self::SetLore { .. } => "玩家物品：修改 Lore".to_string(),
+[31m-            Self::AddEnchant { .. }
+[0m[31m-            | Self::AdjustEnchant { .. }
+[0m[31m-            | Self::RemoveEnchant { .. } => "玩家物品：修改附魔".to_string(),
+[0m[32m+            Self::AddEnchant { .. } | Self::AdjustEnchant { .. } | Self::RemoveEnchant { .. } => {
+[0m[32m+                "玩家物品：修改附魔".to_string()
+[0m[32m+            }
+[0m         }
+     }
+ }
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:222:
+                                         });
+                                     }
+                                 }
+[31m-                                rows.push((
+[0m[31m-                                    rank,
+[0m[31m-                                    raw_label,
+[0m[31m-                                    PlayerSummary { id, label },
+[0m[31m-                                ));
+[0m[32m+                                rows.push((rank, raw_label, PlayerSummary { id, label }));
+[0m                             }
+                             Err(_) => {
+                                 rows.push((
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:276:
+                 this.players.loading = false;
+                 match result {
+                     Ok(result) => {
+[31m-                        let selected_still_exists = this.players.selected.as_ref().is_some_and(|id| {
+[0m[31m-                            result.players.iter().any(|player| &player.id == id)
+[0m[31m-                        });
+[0m[32m+                        let selected_still_exists =
+[0m[32m+                            this.players.selected.as_ref().is_some_and(|id| {
+[0m[32m+                                result.players.iter().any(|player| &player.id == id)
+[0m[32m+                            });
+[0m                         this.players.players = result.players;
+                         if !selected_still_exists {
+                             this.players.selected =
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:288:
+                         this.markers_generation = this.markers_generation.saturating_add(1);
+                         this.last_synced_canvas_snapshot_key = None;
+ 
+[31m-                        let visible_marker_count = this
+[0m[31m-                            .markers
+[0m[31m-                            .get(&this.dimension)
+[0m[31m-                            .map_or(0, Vec::len);
+[0m[32m+                        let visible_marker_count =
+[0m[32m+                            this.markers.get(&this.dimension).map_or(0, Vec::len);
+[0m                         this.status = SharedString::from(format!(
+                             "玩家列表已加载 · {} 条记录 · 当前维度 {} 个地图标记",
+                             this.players.players.len(),
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:455:
+     pub(super) fn add_player_item_from_clipboard(&mut self, cx: &mut Context<Self>) {
+         let text = clipboard_text(cx);
+         let Some(name) = parse_item_id(&text) else {
+[31m-            self.status = SharedString::from(
+[0m[31m-                "剪贴板中没有有效物品 ID；示例：minecraft:diamond_sword",
+[0m[31m-            );
+[0m[32m+            self.status =
+[0m[32m+                SharedString::from("剪贴板中没有有效物品 ID；示例：minecraft:diamond_sword");
+[0m             cx.notify();
+             return;
+         };
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:528:
+     ) {
+         let text = clipboard_text(cx);
+         let Some((id, level)) = parse_enchant_spec(&text) else {
+[31m-            self.status = SharedString::from(
+[0m[31m-                "剪贴板附魔格式无效；使用 `id:等级`，例如 `9:32767`（锋利）",
+[0m[31m-            );
+[0m[32m+            self.status =
+[0m[32m+                SharedString::from("剪贴板附魔格式无效；使用 `id:等级`，例如 `9:32767`（锋利）");
+[0m             cx.notify();
+             return;
+         };
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:671:
+                     options.read_only = false;
+                     let world = BedrockWorld::open_blocking(&world_path, options)
+                         .map_err(|error| error.to_string())?;
+[31m-                    let history_capture =
+[0m[31m-                        capture_player_history(&world_path, &id, edit.label());
+[0m[32m+                    let history_capture = capture_player_history(&world_path, &id, edit.label());
+[0m                     let mut data = world
+                         .get_player_blocking(&id)
+                         .map_err(|error| error.to_string())?
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1204:
+             value,
+         } => {
+             let item = inventory_item_mut(root, *kind, *list_index)?;
+[31m-            item_compound_mut(item)?
+[0m[31m-                .insert("Count".to_string(), NbtTag::Byte((*value).max(1)));
+[0m[32m+            item_compound_mut(item)?.insert("Count".to_string(), NbtTag::Byte((*value).max(1)));
+[0m         }
+         PlayerItemMutation::AdjustDamage {
+             kind,
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1226:
+             value,
+         } => {
+             let item = inventory_item_mut(root, *kind, *list_index)?;
+[31m-            item_compound_mut(item)?
+[0m[31m-                .insert("Damage".to_string(), NbtTag::Short(*value));
+[0m[32m+            item_compound_mut(item)?.insert("Damage".to_string(), NbtTag::Short(*value));
+[0m         }
+         PlayerItemMutation::SetCustomName {
+             kind,
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1265:
+             let user_tag = nested_compound_mut(compound, "tag");
+             let enchantments = nested_list_mut(user_tag, "ench");
+             if let Some(existing) = enchantments.iter_mut().find(|value| {
+[31m-                nbt_compound(value)
+[0m[31m-                    .and_then(|compound| nbt_i32_any(compound.get("id")))
+[0m[32m+                nbt_compound(value).and_then(|compound| nbt_i32_any(compound.get("id")))
+[0m                     == Some(i32::from(*id))
+             }) {
+                 let existing = item_compound_mut(existing)?;
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1313:
+     Ok(())
+ }
+ 
+[31m-fn player_root_mut(
+[0m[31m-    tag: &mut NbtTag,
+[0m[31m-) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
+[0m[32m+fn player_root_mut(tag: &mut NbtTag) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
+[0m     match tag {
+         NbtTag::Compound(root) => Ok(root),
+         _ => Err("玩家 NBT 根节点不是 Compound".to_string()),
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1347:
+         .ok_or_else(|| "物品索引已失效，请刷新玩家数据".to_string())
+ }
+ 
+[31m-fn item_compound_mut(
+[0m[31m-    tag: &mut NbtTag,
+[0m[31m-) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
+[0m[32m+fn item_compound_mut(tag: &mut NbtTag) -> Result<&mut indexmap::IndexMap<String, NbtTag>, String> {
+[0m     match tag {
+         NbtTag::Compound(compound) => Ok(compound),
+         _ => Err("物品 NBT 不是 Compound".to_string()),
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1361:
+     key: &str,
+ ) -> &'a mut indexmap::IndexMap<String, NbtTag> {
+     if !matches!(parent.get(key), Some(NbtTag::Compound(_))) {
+[31m-        parent.insert(
+[0m[31m-            key.to_string(),
+[0m[31m-            NbtTag::Compound(indexmap::IndexMap::new()),
+[0m[31m-        );
+[0m[32m+        parent.insert(key.to_string(), NbtTag::Compound(indexmap::IndexMap::new()));
+[0m     }
+     match parent.get_mut(key) {
+         Some(NbtTag::Compound(compound)) => compound,
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1409:
+             return false;
+         };
+         let value_slot = nbt_i32_any(compound.get("Slot"));
+[31m-        let empty = nbt_string_any(compound.get("Name"))
+[0m[31m-            .is_none_or(|name| name.trim().is_empty());
+[0m[32m+        let empty = nbt_string_any(compound.get("Name")).is_none_or(|name| name.trim().is_empty());
+[0m         empty && value_slot == Some(slot)
+     }) {
+         items[index] = item;
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1469:
+         .split_whitespace()
+         .next()?
+         .trim_matches(|character: char| {
+[31m-            matches!(character, '"' | '\'' | '`' | ',' | ';' | '[' | ']' | '{' | '}')
+[0m[32m+            matches!(
+[0m[32m+                character,
+[0m[32m+                '"' | '\'' | '`' | ',' | ';' | '[' | ']' | '{' | '}'
+[0m[32m+            )
+[0m         });
+     if token.is_empty()
+         || !token
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1528:
+     let item_texture_json = vanilla_root.join("textures").join("item_texture.json");
+     if let Ok(bytes) = fs::read(&item_texture_json)
+         && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+[31m-        && let Some(texture_data) = value.get("texture_data").and_then(|value| value.as_object())
+[0m[32m+        && let Some(texture_data) = value
+[0m[32m+            .get("texture_data")
+[0m[32m+            .and_then(|value| value.as_object())
+[0m     {
+         for (key, entry) in texture_data {
+             let Some(texture) = texture_reference(entry) else {
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1539:
+                 continue;
+             }
+             let id = normalize_item_id(key);
+[31m-            by_id.entry(id.clone()).or_insert_with(|| PlayerItemTexture {
+[0m[31m-                id: SharedString::from(id),
+[0m[31m-                label: SharedString::from(key.replace('_', " ")),
+[0m[31m-                path: Arc::<Path>::from(path.into_boxed_path()),
+[0m[31m-            });
+[0m[32m+            by_id
+[0m[32m+                .entry(id.clone())
+[0m[32m+                .or_insert_with(|| PlayerItemTexture {
+[0m[32m+                    id: SharedString::from(id),
+[0m[32m+                    label: SharedString::from(key.replace('_', " ")),
+[0m[32m+                    path: Arc::<Path>::from(path.into_boxed_path()),
+[0m[32m+                });
+[0m         }
+     }
+ 
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\players.rs:1564:
+                 continue;
+             }
+             let id = normalize_item_id(stem);
+[31m-            by_id.entry(id.clone()).or_insert_with(|| PlayerItemTexture {
+[0m[31m-                id: SharedString::from(id),
+[0m[31m-                label: SharedString::from(stem.replace('_', " ")),
+[0m[31m-                path: Arc::<Path>::from(path.into_boxed_path()),
+[0m[31m-            });
+[0m[32m+            by_id
+[0m[32m+                .entry(id.clone())
+[0m[32m+                .or_insert_with(|| PlayerItemTexture {
+[0m[32m+                    id: SharedString::from(id),
+[0m[32m+                    label: SharedString::from(stem.replace('_', " ")),
+[0m[32m+                    path: Arc::<Path>::from(path.into_boxed_path()),
+[0m[32m+                });
+[0m         }
+     }
+ 
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:181:
+                                 a: 0.48,
+                                 ..colors.surface_hover
+                             })
+[31m-                            .child(
+[0m[31m-                                img("images/map/entity/player.png")
+[0m[31m-                                    .w(px(34.0))
+[0m[31m-                                    .h(px(34.0)),
+[0m[31m-                            ),
+[0m[32m+                            .child(img("images/map/entity/player.png").w(px(34.0)).h(px(34.0))),
+[0m                     )
+                     .child(
+                         div()
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:283:
+                                 a: 0.52,
+                                 ..colors.surface_hover
+                             })
+[31m-                            .child(
+[0m[31m-                                img("images/map/entity/player.png")
+[0m[31m-                                    .w(px(42.0))
+[0m[31m-                                    .h(px(42.0)),
+[0m[31m-                            ),
+[0m[32m+                            .child(img("images/map/entity/player.png").w(px(42.0)).h(px(42.0))),
+[0m                     )
+                     .child(
+                         div()
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:307:
+                     .when(self.players.saving, |this| {
+                         this.child(status_badge(colors, "正在写入..."))
+                     })
+[31m-                    .child(
+[0m[31m-                        toolbar_button(colors, "高级 NBT 文本").on_mouse_down(
+[0m[31m-                            MouseButton::Left,
+[0m[31m-                            cx.listener(|this, _event, _window, cx| {
+[0m[31m-                                this.open_selected_player_in_editor(cx)
+[0m[31m-                            }),
+[0m[31m-                        ),
+[0m[31m-                    ),
+[0m[32m+                    .child(toolbar_button(colors, "高级 NBT 文本").on_mouse_down(
+[0m[32m+                        MouseButton::Left,
+[0m[32m+                        cx.listener(|this, _event, _window, cx| {
+[0m[32m+                            this.open_selected_player_in_editor(cx)
+[0m[32m+                        }),
+[0m[32m+                    )),
+[0m             )
+             .child(self.render_player_quick_actions(colors, cx))
+             .child(player_detail_grid(colors, detail))
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:344:
+                             .text_color(colors.text_secondary)
+                             .child("物品"),
+                     )
+[31m-                    .child(status_badge(colors, format!("{} 个有效物品", entries.len())))
+[0m[32m+                    .child(status_badge(
+[0m[32m+                        colors,
+[0m[32m+                        format!("{} 个有效物品", entries.len()),
+[0m[32m+                    ))
+[0m                     .child(div().flex_1())
+                     .child(
+                         div()
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:595:
+                             )
+                         }),
+                     ))
+[31m-                    .child(
+[0m[31m-                        danger_button(colors, "删除").on_mouse_down(
+[0m[31m-                            MouseButton::Left,
+[0m[31m-                            cx.listener(move |this, _event, _window, cx| {
+[0m[31m-                                this.run_player_item_mutation(
+[0m[31m-                                    PlayerItemMutation::DeleteItem { kind, list_index },
+[0m[31m-                                    cx,
+[0m[31m-                                )
+[0m[31m-                            }),
+[0m[31m-                        ),
+[0m[31m-                    ),
+[0m[32m+                    .child(danger_button(colors, "删除").on_mouse_down(
+[0m[32m+                        MouseButton::Left,
+[0m[32m+                        cx.listener(move |this, _event, _window, cx| {
+[0m[32m+                            this.run_player_item_mutation(
+[0m[32m+                                PlayerItemMutation::DeleteItem { kind, list_index },
+[0m[32m+                                cx,
+[0m[32m+                            )
+[0m[32m+                        }),
+[0m[32m+                    )),
+[0m             )
+             .child(
+                 div()
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:613:
+                     .flex_wrap()
+                     .items_center()
+                     .gap(px(5.0))
+[31m-                    .child(player_item_action_button(colors, "名称 ← 剪贴板").on_mouse_down(
+[0m[31m-                        MouseButton::Left,
+[0m[31m-                        cx.listener(move |this, _event, _window, cx| {
+[0m[31m-                            this.set_player_item_name_from_clipboard(kind, list_index, cx)
+[0m[31m-                        }),
+[0m[31m-                    ))
+[0m[31m-                    .child(player_item_action_button(colors, "Lore ← 剪贴板").on_mouse_down(
+[0m[31m-                        MouseButton::Left,
+[0m[31m-                        cx.listener(move |this, _event, _window, cx| {
+[0m[31m-                            this.set_player_item_lore_from_clipboard(kind, list_index, cx)
+[0m[31m-                        }),
+[0m[31m-                    ))
+[0m[32m+                    .child(
+[0m[32m+                        player_item_action_button(colors, "名称 ← 剪贴板").on_mouse_down(
+[0m[32m+                            MouseButton::Left,
+[0m[32m+                            cx.listener(move |this, _event, _window, cx| {
+[0m[32m+                                this.set_player_item_name_from_clipboard(kind, list_index, cx)
+[0m[32m+                            }),
+[0m[32m+                        ),
+[0m[32m+                    )
+[0m[32m+                    .child(
+[0m[32m+                        player_item_action_button(colors, "Lore ← 剪贴板").on_mouse_down(
+[0m[32m+                            MouseButton::Left,
+[0m[32m+                            cx.listener(move |this, _event, _window, cx| {
+[0m[32m+                                this.set_player_item_lore_from_clipboard(kind, list_index, cx)
+[0m[32m+                            }),
+[0m[32m+                        ),
+[0m[32m+                    )
+[0m                     .when(lore_count > 0, |this| {
+                         this.child(status_badge(colors, format!("Lore {lore_count} 行")))
+                     })
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:632:
+                         this.child(status_badge(colors, "含 tag"))
+                     }),
+             )
+[31m-            .child(self.render_player_enchant_editor(
+[0m[31m-                colors,
+[0m[31m-                kind,
+[0m[31m-                list_index,
+[0m[31m-                &enchantments,
+[0m[31m-                cx,
+[0m[31m-            ))
+[0m[32m+            .child(self.render_player_enchant_editor(colors, kind, list_index, &enchantments, cx))
+[0m     }
+ 
+     fn render_player_enchant_editor(
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:737:
+                             )
+                         }),
+                     ))
+[31m-                    .child(player_item_action_button(colors, "id:等级 ← 剪贴板").on_mouse_down(
+[0m[31m-                        MouseButton::Left,
+[0m[31m-                        cx.listener(move |this, _event, _window, cx| {
+[0m[31m-                            this.add_player_item_enchant_from_clipboard(kind, list_index, cx)
+[0m[31m-                        }),
+[0m[31m-                    )),
+[0m[32m+                    .child(
+[0m[32m+                        player_item_action_button(colors, "id:等级 ← 剪贴板").on_mouse_down(
+[0m[32m+                            MouseButton::Left,
+[0m[32m+                            cx.listener(move |this, _event, _window, cx| {
+[0m[32m+                                this.add_player_item_enchant_from_clipboard(kind, list_index, cx)
+[0m[32m+                            }),
+[0m[32m+                        ),
+[0m[32m+                    ),
+[0m             )
+             .children(enchantments.iter().map(|enchantment| {
+                 let enchant_index = enchantment.list_index;
+Diff in \\?\D:\a\Better-Minecraft-Bedrock-Launcher\Better-Minecraft-Bedrock-Launcher\src\ui\window\map_viewer\player_panel.rs:812:
+                         .pl(px(4.0))
+                         .text_size(px(10.0))
+                         .text_color(colors.text_muted)
+[31m-                        .child("无附魔。高级值可直接粘贴，例如 `9:32767`；NBT Short 范围内均允许。"),
+[0m[32m+                        .child(
+[0m[32m+                            "无附魔。高级值可直接粘贴，例如 `9:32767`；NBT Short 范围内均允许。",
+[0m[32m+                        ),
+[0m                 )
+             })
+     }
+
+FAILED: Format check failed with exit code 1
