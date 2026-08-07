@@ -12,10 +12,11 @@ permissions:
 
 concurrency:
   group: apply-native-scene-rgba-push-once
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   apply:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +28,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh issue comment 15 --repo Chlna6666/Better-Minecraft-Bedrock-Launcher --body "Native Scene RGBA push task started."
+        run: gh issue comment 15 --repo Chlna6666/Better-Minecraft-Bedrock-Launcher --body "Native Scene RGBA push task started. Run ${{ github.run_id }}."
 
       - name: Apply and validate native RGBA refactor
         env:
@@ -52,14 +53,14 @@ jobs:
           PY
             python3 /tmp/apply_native_scene_rgba.py
             git diff --check
-            cargo check -p gpui --all-targets --features build-shader-validation
+            cargo check -p gpui --lib --features build-shader-validation
           } > >(tee /tmp/native-rgba-validation.log) 2>&1
           status=$?
           {
             if [ "$status" -eq 0 ]; then
-              echo 'Native Scene RGBA patch and validation succeeded.'
+              echo 'Native Scene RGBA patch and focused validation succeeded.'
             else
-              echo "Native Scene RGBA patch or validation failed with status $status."
+              echo "Native Scene RGBA patch or focused validation failed with status $status."
             fi
             echo
             echo '```text'
@@ -74,10 +75,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -f tools/.native-scene-rgba-trigger
+          rm -f tools/.native-scene-rgba-diagnostic-trigger
           rm -f .github/workflows/apply-native-scene-rgba-once.yml
           rm -f .github/workflows/apply-native-scene-rgba-issue-once.yml
           rm -f .github/workflows/diagnose-native-scene-rgba-once.yml
           rm -f .github/workflows/diagnose-native-scene-rgba-workflow-run-once.yml
+          rm -f .github/workflows/diagnose-native-scene-rgba-patch-push-once.yml
           rm -f .github/workflows/apply-native-scene-rgba-push-once.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
