@@ -1,0 +1,56 @@
+name: Diagnose native scene RGBA patch from push
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - tools/.native-scene-rgba-diagnostic-trigger
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Apply patch and report immediately
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set +e
+          {
+            set -euo pipefail
+            python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/apply-native-scene-rgba-once.yml').read_text(encoding='utf-8')
+          start_marker = "          python3 - <<'PY'\n"
+          end_marker = "\n          PY\n\n      - name: Validate Rust and shader changes"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          Path('/tmp/apply_native_scene_rgba.py').write_text(
+              textwrap.dedent(workflow[start:end]), encoding='utf-8'
+          )
+          PY
+            python3 /tmp/apply_native_scene_rgba.py
+            git diff --check
+            git diff --stat
+          } > >(tee /tmp/native-rgba-patch-diagnostic.log) 2>&1
+          status=$?
+          {
+            echo "Patch diagnostic exit status: $status"
+            echo
+            echo '```text'
+            cat /tmp/native-rgba-patch-diagnostic.log
+            echo '```'
+          } > /tmp/native-rgba-patch-diagnostic.md
+          gh issue comment 15 --repo Chlna6666/Better-Minecraft-Bedrock-Launcher --body-file /tmp/native-rgba-patch-diagnostic.md
+          exit 0
