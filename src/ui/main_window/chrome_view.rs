@@ -67,9 +67,15 @@ fn ratio_bucket(value: f32) -> u16 {
 fn build_music_render_signature(cx: &App) -> MusicRenderSignature {
     let route = crate::ui::navigation::current_route(cx);
     let now = Instant::now();
+    let inline_expanded = cx.read_global(
+        |topbar: &crate::ui::main_window::chrome::AppChromeState, _cx| {
+            topbar.music_inline_target_expanded()
+        },
+    );
 
     cx.read_global(|music: &MusicState, _cx| {
         let include_live_progress = route == crate::ui::navigation::AppRoute::Home
+            || inline_expanded
             || music.snapshot.expanded
             || music.drag_target().is_some();
 
@@ -636,12 +642,15 @@ impl AppChromeView {
                 nav.set_labels_target_immediate(show_labels_target);
             });
         }
-        let music_inline_target = music_available && window_width_px >= 760.0;
-        if music_inline_target_expanded != music_inline_target {
+
+        // 布局只负责在空间不足或音乐不可用时强制收起。
+        // 宽窗口不再自动展开，默认保持左侧停靠态，展开完全交给用户交互。
+        let music_inline_can_expand = music_available && window_width_px >= 760.0;
+        if music_inline_target_expanded && !music_inline_can_expand {
             layout_target_changed = true;
             cx.update_global(
                 |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
-                    topbar.set_music_inline_expanded(music_inline_target, now);
+                    topbar.set_music_inline_expanded(false, now);
                 },
             );
         }
