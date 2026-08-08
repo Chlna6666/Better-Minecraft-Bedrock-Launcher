@@ -469,6 +469,34 @@ impl MusicState {
         self.set_playback_snapshot(snapshot);
     }
 
+    #[cfg(target_os = "windows")]
+    fn schedule_inline_collapse_after_popup(delay: Duration, cx: &mut App) {
+        cx.spawn(async move |cx| {
+            gpui::Timer::after(delay).await;
+            cx.update(|cx| {
+                let now = Instant::now();
+                let should_collapse = {
+                    let music = cx.global::<MusicState>();
+                    !music.expanded_target_open()
+                        && !music.popup_animating(now)
+                        && music.expanded_factor(now) <= 0.001
+                };
+                if !should_collapse {
+                    return;
+                }
+
+                cx.update_global(
+                    |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
+                        topbar.set_music_inline_expanded(false, now);
+                    },
+                );
+                cx.refresh_windows();
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     pub fn set_expanded(&mut self, expanded: bool, now: Instant, cx: &mut App) {
         let factor = self.expanded_factor(now);
         let fully_at_target = if expanded {
@@ -497,6 +525,14 @@ impl MusicState {
         };
         self.snapshot.expanded = expanded;
         self.refresh_no_cover(now, cx);
+
+        #[cfg(target_os = "windows")]
+        if !expanded {
+            // 先让 110ms 的弹窗淡出完整结束，再多留一帧余量后收回胶囊。
+            // 延迟任务执行时重新确认关闭目标，快速重新打开弹窗会自动取消本次收回。
+            let collapse_delay = self.expanded_duration + Duration::from_millis(24);
+            Self::schedule_inline_collapse_after_popup(collapse_delay, cx);
+        }
     }
 
     pub fn expanded_target_open(&self) -> bool {
