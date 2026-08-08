@@ -11,7 +11,9 @@ mod error;
 mod palette;
 mod renderer;
 
-pub use bedrock_world::ExactChunkSelection;
+pub use bedrock_world::{
+    BedrockWorld, ChunkData, ChunkLoadOptions, ExactChunkSelection, SlimeChunkBounds,
+};
 pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
 pub use exact_selection::{
