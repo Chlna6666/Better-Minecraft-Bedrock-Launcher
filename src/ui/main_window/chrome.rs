@@ -1,7 +1,7 @@
 use super::TopbarRenderState;
 use crate::core::bedrock_auth::{AuthPhase, AuthSnapshot, XboxProfile};
 #[cfg(target_os = "windows")]
-use crate::ui::animation::{SpringValue, apple_spring, spring_snappy};
+use crate::ui::animation::{SpringValue, apple_spring};
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::bedrock_auth::BedrockAuthState;
@@ -27,7 +27,7 @@ impl Default for AppChromeState {
         Self {
             titlebar_gesture: crate::ui::window::chrome::TitlebarGestureState::default(),
             #[cfg(target_os = "windows")]
-            music_inline: SpringValue::new(0.0).with_spring(apple_spring(0.38, 0.66)),
+            music_inline: SpringValue::new(0.0).with_spring(apple_spring(0.28, 1.0)),
             #[cfg(target_os = "windows")]
             music_inline_target_expanded: false,
         }
@@ -44,17 +44,27 @@ impl AppChromeState {
         }
 
         self.music_inline_target_expanded = expanded;
+        // 胶囊外框属于布局几何，必须使用临界阻尼避免越过目标后再次回摆。
+        // “Q 感”由内部内容的错峰进入承担，而不是让 36→220px 的外框发生反向运动。
         let spring = if expanded {
-            apple_spring(0.38, 0.66)
+            apple_spring(0.28, 1.0)
         } else {
-            spring_snappy()
+            apple_spring(0.24, 1.0)
         };
         self.music_inline
             .retarget_with_spring(if expanded { 1.0 } else { 0.0 }, spring, now);
     }
 
     pub(crate) fn music_inline_factor(&self, now: Instant) -> f32 {
-        self.music_inline.value(now).clamp(-0.06, 1.12)
+        let value = self.music_inline.value(now);
+        // 端点吸附用来消除亚像素尾差，不再允许 overshoot/undershoot 进入布局。
+        if self.music_inline_target_expanded && value >= 0.998 {
+            1.0
+        } else if !self.music_inline_target_expanded && value <= 0.002 {
+            0.0
+        } else {
+            value.clamp(0.0, 1.0)
+        }
     }
 
     pub(crate) fn music_inline_animating(&self, now: Instant) -> bool {
@@ -715,7 +725,7 @@ fn auth_panel(
             panel.child(account_list(
                 &snapshot,
                 pending_delete_account_id.as_deref(),
-                text,
+                colors_text_placeholder(),
                 muted,
                 accent,
                 border,
@@ -723,6 +733,10 @@ fn auth_panel(
         })
         .child(body)
         .into_any_element()
+}
+
+fn colors_text_placeholder() -> Hsla {
+    rgb(0x000000).into()
 }
 
 pub(super) fn render_app_chrome(
