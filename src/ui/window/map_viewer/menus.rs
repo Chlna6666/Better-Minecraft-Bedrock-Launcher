@@ -172,11 +172,11 @@ impl MapViewerWindowView {
             vec![
                 ContextMenuEntry::item(ContextMenuItem::new("统计当前选区").on_click({
                     let entity = cx.entity();
-                    move |cx| entity.update(cx, |this, cx| this.query_selection_stats(cx))
+                    move |cx| entity.update(cx, |this, cx| this.query_selection_stats_exact(cx))
                 })),
                 ContextMenuEntry::item(ContextMenuItem::new("导出选中区块 OBJ").on_click({
                     let entity = cx.entity();
-                    move |cx| entity.update(cx, |this, cx| this.export_selection_as_obj(cx))
+                    move |cx| entity.update(cx, |this, cx| this.export_selection_as_obj_exact(cx))
                 })),
                 ContextMenuEntry::item(ContextMenuItem::new("导出跨地图区域包").on_click({
                     let entity = cx.entity();
@@ -195,7 +195,7 @@ impl MapViewerWindowView {
                     move |cx| {
                         entity.update(cx, |this, cx| {
                             this.show_right_preview_3d_panel(cx);
-                            this.refresh_preview_3d(cx);
+                            this.refresh_preview_3d_exact(cx);
                         })
                     }
                 })),
@@ -751,7 +751,7 @@ impl MapViewerWindowView {
                         move |cx| {
                             entity.update(cx, |this, cx| {
                                 this.close_top_more();
-                                this.query_selection_stats(cx);
+                                this.query_selection_stats_exact(cx);
                             })
                         }
                     })),
