@@ -9,6 +9,7 @@ mod error;
 mod palette;
 mod renderer;
 
+pub use bedrock_world::ExactChunkSelection;
 pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
 pub use palette::{PaletteImportReport, RenderPalette, RgbaColor};
