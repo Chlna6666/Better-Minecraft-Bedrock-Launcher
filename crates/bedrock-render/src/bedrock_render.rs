@@ -5,6 +5,8 @@
 //! benchmark support for map tooling.
 
 pub mod editor;
+/// Exact non-rectangular selection planning and chunk loading for render consumers.
+pub mod exact_selection;
 mod error;
 mod palette;
 mod renderer;
@@ -12,6 +14,9 @@ mod renderer;
 pub use bedrock_world::ExactChunkSelection;
 pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
+pub use exact_selection::{
+    ExactChunkRenderData, ExactChunkRenderPlan, load_exact_chunk_render_data_blocking,
+};
 pub use palette::{PaletteImportReport, RenderPalette, RgbaColor};
 #[cfg(feature = "async")]
 pub use renderer::validate_chunk_fingerprints_async;
