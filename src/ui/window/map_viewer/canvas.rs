@@ -11,7 +11,7 @@ use super::selection::{
     ChunkSelection, ExistingSelectionTarget, SelectionResizeHandle, SelectionScreenBounds,
     chunk_from_block, exact_selection_chunks, existing_selection_target,
     selection_chunks_are_rectangular, selection_contains_chunk,
-    set_additive_right_selection_requested,
+    set_right_selection_modifier_requested,
 };
 use super::state::MIN_CENTER_HEIGHT;
 use super::tile_state::{MapRenderRange, PaintTile, RegionManager, TileLoadState};
@@ -778,7 +778,10 @@ fn render_interaction_layer(
             MouseButton::Right,
             cx.listener(move |_this, event: &MouseDownEvent, window, cx| {
                 focus_for_right_down.focus(window);
-                set_additive_right_selection_requested(event.modifiers.control);
+                set_right_selection_modifier_requested(
+                    event.modifiers.control,
+                    event.modifiers.alt,
+                );
                 cx.emit(MapCanvasAction::BeginRightSelection(event.position));
                 cx.stop_propagation();
             }),
