@@ -2,6 +2,7 @@ mod actions;
 mod bottom_panel;
 mod canvas;
 mod editor;
+mod exact_selection_ops;
 mod helpers;
 mod history_panel;
 mod import_preview;
