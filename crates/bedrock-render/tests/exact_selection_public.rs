@@ -26,7 +26,7 @@ fn exact_selection_api_is_public_and_preserves_holes() {
     assert_eq!(
         plan.rectangle_cover()
             .iter()
-            .map(bedrock_world::SlimeChunkBounds::chunk_count)
+            .map(|bounds| bounds.chunk_count())
             .sum::<usize>(),
         plan.chunk_count()
     );
