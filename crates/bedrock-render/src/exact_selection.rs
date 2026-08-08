@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(
             plan.rectangle_cover()
                 .iter()
-                .map(SlimeChunkBounds::chunk_count)
+                .map(|bounds| bounds.chunk_count())
                 .sum::<usize>(),
             4
         );
