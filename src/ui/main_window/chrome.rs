@@ -725,7 +725,7 @@ fn auth_panel(
             panel.child(account_list(
                 &snapshot,
                 pending_delete_account_id.as_deref(),
-                colors_text_placeholder(),
+                text,
                 muted,
                 accent,
                 border,
@@ -733,10 +733,6 @@ fn auth_panel(
         })
         .child(body)
         .into_any_element()
-}
-
-fn colors_text_placeholder() -> Hsla {
-    rgb(0x000000).into()
 }
 
 pub(super) fn render_app_chrome(
