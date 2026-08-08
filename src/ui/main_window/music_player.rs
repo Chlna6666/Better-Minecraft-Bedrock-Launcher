@@ -157,7 +157,6 @@ pub fn mini_capsule_width_for_factor(available: bool, factor: f32) -> Pixels {
     }
 
     // 外框几何严格限制在目标区间，Spring 的 overshoot 不再改变实际宽度。
-    // 这样保留弹簧响应速度，但消除右边缘到位后再次回缩造成的“点击抖动”。
     let factor = factor.clamp(0.0, 1.0);
     px(MINI_CAPSULE_COLLAPSED_WIDTH
         + (MINI_CAPSULE_EXPANDED_WIDTH - MINI_CAPSULE_COLLAPSED_WIDTH) * factor)
@@ -181,8 +180,6 @@ pub fn render_music_player(
     popup_bg: Hsla,
     muted_bg: Hsla,
 ) -> MusicPlayerRender {
-    // 所有可见几何只使用 0..1 的单调目标区间。Spring 内部可以继续结算，
-    // 但不会再把 overshoot/undershoot 映射到胶囊的位置、宽度或纵向位移。
     let inline_k = inline_factor.clamp(0.0, 1.0);
     let inline_width = mini_capsule_width_for_factor(snapshot.available, inline_k);
     if !snapshot.available {
@@ -196,14 +193,14 @@ pub fn render_music_player(
     let inline_fully_open = inline_k >= 0.985;
     let can_inline_expand = window_width / px(1.0) >= MINI_INLINE_EXPAND_MIN_WINDOW_WIDTH;
 
-    // 默认停靠时精确隐藏胶囊的一半。这里只做单向连续位移，不再叠加纵向抬升。
+    // 默认停靠时精确隐藏胶囊的一半；位置和宽度都只做单向连续变化。
     let edge_dock_k = 1.0 - inline_k;
     let edge_visible_width = MINI_CAPSULE_COLLAPSED_WIDTH * 0.5;
     let edge_shift = px(
         (FLOATING_INSET + MINI_CAPSULE_COLLAPSED_WIDTH - edge_visible_width) * edge_dock_k,
     );
 
-    // Q 感留在内容分层进入节奏，不让外框做反向几何运动。
+    // Q 感留在内容分层进入节奏，不让外框反向回摆。
     let content_k = ((inline_k - 0.12) / 0.88).clamp(0.0, 1.0);
     let title_k = ((inline_k - 0.18) / 0.82).clamp(0.0, 1.0);
     let controls_k = ((inline_k - 0.30) / 0.70).clamp(0.0, 1.0);
@@ -379,11 +376,14 @@ pub fn render_music_player(
                 .into_any_element()
         });
 
-    let inline = div()
-        .relative()
-        .left(-edge_shift)
-        .w(inline_width)
-        .h(px(MINI_CAPSULE_HEIGHT))
+    // 把胶囊主体和 0.8px 进度轨拆成同级层。
+    // 主体自己裁切内容；外层只负责最终圆角裁切，因此进度轨能覆盖边框最外侧，而不会被主体 overflow 截掉。
+    let inline_capsule = div()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .w_full()
+        .h_full()
         .rounded(px(MINI_CAPSULE_HEIGHT / 2.0))
         .overflow_hidden()
         .bg(capsule_bg)
@@ -396,7 +396,6 @@ pub fn render_music_player(
             cx.stop_propagation();
             let now = Instant::now();
 
-            // 第一次点击只拉出完整胶囊；动画未完全稳定前继续点击也不会误开大卡片。
             if can_inline_expand && !inline_fully_open {
                 cx.update_global(
                     |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
@@ -460,16 +459,24 @@ pub fn render_music_player(
                         .left(mini_button_offset)
                         .child(inline_play_button),
                 ),
-        )
+        );
+
+    let inline = div()
+        .relative()
+        .left(-edge_shift)
+        .w(inline_width)
+        .h(px(MINI_CAPSULE_HEIGHT))
+        .rounded(px(MINI_CAPSULE_HEIGHT / 2.0))
+        .overflow_hidden()
+        .child(inline_capsule)
         .child(
-            // GPUI 的绝对定位以边框内侧为基准；向下补 1px，让 0.8px 轨道覆盖到底边外轮廓。
+            // 最后一层直接覆盖在 36px 外框的 y=35.2..36.0 区间，视觉上与最外底边重合。
             div()
                 .absolute()
                 .left(px(0.0))
                 .right(px(0.0))
-                .bottom(px(-1.0))
+                .bottom(px(0.0))
                 .h(px(MINI_PROGRESS_TRACK_HEIGHT))
-                .overflow_hidden()
                 .opacity(mini_progress_opacity)
                 .bg(muted_bg.opacity(0.66))
                 .child(
@@ -936,7 +943,6 @@ pub fn render_music_player(
     };
 
     // 创建 backdrop：展开时覆盖外部区域，点击只关闭完整卡片，保留完整胶囊。
-    // 这样卡片淡出与胶囊回收不再同时发生，消除视频中最明显的“回收抖动”。
     let backdrop = if popup_visible {
         Some(
             div()
