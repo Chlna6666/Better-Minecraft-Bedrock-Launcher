@@ -1,16 +1,26 @@
 use bedrock_render::{ChunkPos, Dimension};
-use bedrock_world::SlimeChunkBounds;
+use bedrock_world::{SlimeChunkBounds, rasterize_chunk_line};
 use gpui::{Pixels, Point, px};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-static ADDITIVE_RIGHT_SELECTION_REQUESTED: AtomicBool = AtomicBool::new(false);
+static RIGHT_SELECTION_MODIFIER_REQUESTED: AtomicU8 = AtomicU8::new(0);
 static NEXT_ADVANCED_SELECTION_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_ADVANCED_SELECTION_TOKEN: AtomicU32 = AtomicU32::new(1);
 static ADVANCED_SELECTION_REGISTRY: OnceLock<Mutex<AdvancedSelectionRegistry>> = OnceLock::new();
 const MAX_RETAINED_ADVANCED_SELECTIONS: usize = 4096;
 const ADVANCED_SELECTION_TOKEN_MASK: u32 = 0x7fff_ffff;
+const RIGHT_SELECTION_MODE_NONE: u8 = 0;
+const RIGHT_SELECTION_MODE_ADD_RECTANGLE: u8 = 1;
+const RIGHT_SELECTION_MODE_PAINT: u8 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RightSelectionModifierMode {
+    None,
+    AddRectangle,
+    Paint,
+}
 
 #[derive(Clone, Debug)]
 struct AdvancedSelectionState {
@@ -89,12 +99,27 @@ fn trim_advanced_selection_registry(registry: &mut AdvancedSelectionRegistry) {
     }
 }
 
-pub(super) fn set_additive_right_selection_requested(additive: bool) {
-    ADDITIVE_RIGHT_SELECTION_REQUESTED.store(additive, Ordering::Release);
+/// Records the right-button selection modifier for the next pointer-down action.
+///
+/// Ctrl keeps the original rectangular stretch-and-union interaction. Alt uses
+/// a chunk-grid paint stroke. Alt takes precedence when both modifiers are held.
+pub(super) fn set_right_selection_modifier_requested(control: bool, alt: bool) {
+    let mode = if alt {
+        RIGHT_SELECTION_MODE_PAINT
+    } else if control {
+        RIGHT_SELECTION_MODE_ADD_RECTANGLE
+    } else {
+        RIGHT_SELECTION_MODE_NONE
+    };
+    RIGHT_SELECTION_MODIFIER_REQUESTED.store(mode, Ordering::Release);
 }
 
-fn take_additive_right_selection_requested() -> bool {
-    ADDITIVE_RIGHT_SELECTION_REQUESTED.swap(false, Ordering::AcqRel)
+fn take_right_selection_modifier_requested() -> RightSelectionModifierMode {
+    match RIGHT_SELECTION_MODIFIER_REQUESTED.swap(RIGHT_SELECTION_MODE_NONE, Ordering::AcqRel) {
+        RIGHT_SELECTION_MODE_ADD_RECTANGLE => RightSelectionModifierMode::AddRectangle,
+        RIGHT_SELECTION_MODE_PAINT => RightSelectionModifierMode::Paint,
+        _ => RightSelectionModifierMode::None,
+    }
 }
 
 fn remove_advanced_selection_state(selection: ChunkSelection) {
@@ -157,46 +182,6 @@ fn normalize_chunk_set(chunks: impl IntoIterator<Item = ChunkPos>) -> Vec<ChunkP
         .filter(|chunk| seen.insert(*chunk))
         .collect::<Vec<_>>();
     chunks.sort_unstable_by_key(|chunk| (chunk.z, chunk.x));
-    chunks
-}
-
-fn rasterize_chunk_line(start: ChunkPos, end: ChunkPos) -> Vec<ChunkPos> {
-    if start.dimension != end.dimension {
-        return vec![end];
-    }
-
-    let mut x = i64::from(start.x);
-    let mut z = i64::from(start.z);
-    let end_x = i64::from(end.x);
-    let end_z = i64::from(end.z);
-    let dx = (end_x - x).abs();
-    let dz = -(end_z - z).abs();
-    let step_x = if x < end_x { 1 } else { -1 };
-    let step_z = if z < end_z { 1 } else { -1 };
-    let mut error = dx + dz;
-    let mut chunks = Vec::with_capacity(
-        usize::try_from(dx.max(-dz).saturating_add(1)).unwrap_or(usize::MAX),
-    );
-
-    loop {
-        chunks.push(ChunkPos {
-            x: x as i32,
-            z: z as i32,
-            dimension: start.dimension,
-        });
-        if x == end_x && z == end_z {
-            break;
-        }
-        let doubled_error = error.saturating_mul(2);
-        if doubled_error >= dz {
-            error = error.saturating_add(dz);
-            x = x.saturating_add(step_x);
-        }
-        if doubled_error <= dx {
-            error = error.saturating_add(dx);
-            z = z.saturating_add(step_z);
-        }
-    }
     chunks
 }
 
@@ -295,7 +280,34 @@ fn apply_advanced_chunks(
     selection
 }
 
-fn apply_additive_drag(session_id: u64, current_chunk: ChunkPos) -> ChunkSelection {
+/// Ctrl + right-drag: preview one stretching rectangle and union it with the
+/// selection that existed when the drag began. Moving the pointer back shrinks
+/// the current rectangle again; intermediate pointer positions are not painted.
+fn apply_rectangular_additive_drag(
+    session_id: u64,
+    start_chunk: ChunkPos,
+    current_chunk: ChunkPos,
+) -> ChunkSelection {
+    let addition = ChunkSelection::rectangular(start_chunk, current_chunk);
+    let base_chunks = advanced_selection_registry()
+        .lock()
+        .ok()
+        .and_then(|registry| {
+            registry
+                .sessions
+                .get(&session_id)
+                .map(|state| state.base_chunks.clone())
+        });
+    let Some(base_chunks) = base_chunks else {
+        return addition;
+    };
+    let merged = merged_selection_chunks(base_chunks.as_ref(), addition);
+    apply_advanced_chunks(session_id, merged, addition)
+}
+
+/// Alt + right-drag: accumulate the exact chunk-grid path. Missed pointer events
+/// are filled by the public bedrock-world Bresenham helper.
+fn apply_paint_drag(session_id: u64, current_chunk: ChunkPos) -> ChunkSelection {
     let fallback = ChunkSelection::rectangular(current_chunk, current_chunk);
     let snapshot = advanced_selection_registry()
         .lock()
@@ -309,12 +321,9 @@ fn apply_additive_drag(session_id: u64, current_chunk: ChunkPos) -> ChunkSelecti
         return fallback;
     };
     let segment_start = previous_chunk.unwrap_or(current_chunk);
-    let merged = normalize_chunk_set(
-        current_chunks
-            .iter()
-            .copied()
-            .chain(rasterize_chunk_line(segment_start, current_chunk)),
-    );
+    let stroke = rasterize_chunk_line(segment_start, current_chunk)
+        .unwrap_or_else(|_| vec![current_chunk]);
+    let merged = normalize_chunk_set(current_chunks.iter().copied().chain(stroke));
     apply_advanced_chunks(session_id, merged, fallback)
 }
 
@@ -487,9 +496,16 @@ pub(super) struct RightSelectionDrag {
 
 impl RightSelectionDrag {
     pub(super) fn new(start_position: Point<Pixels>, start_chunk: ChunkPos) -> Self {
-        if take_additive_right_selection_requested() {
-            let session_id = begin_additive_selection(None);
-            return Self::additive(start_position, start_chunk, session_id);
+        match take_right_selection_modifier_requested() {
+            RightSelectionModifierMode::AddRectangle => {
+                let session_id = begin_additive_selection(None);
+                return Self::add_rectangle(start_position, start_chunk, session_id);
+            }
+            RightSelectionModifierMode::Paint => {
+                let session_id = begin_additive_selection(None);
+                return Self::paint(start_position, start_chunk, session_id);
+            }
+            RightSelectionModifierMode::None => {}
         }
         Self::with_intent(
             start_position,
@@ -500,13 +516,28 @@ impl RightSelectionDrag {
         )
     }
 
-    fn additive(start_position: Point<Pixels>, start_chunk: ChunkPos, session_id: u64) -> Self {
-        let _ = apply_additive_drag(session_id, start_chunk);
+    fn add_rectangle(
+        start_position: Point<Pixels>,
+        start_chunk: ChunkPos,
+        session_id: u64,
+    ) -> Self {
+        let _ = apply_rectangular_additive_drag(session_id, start_chunk, start_chunk);
         Self::with_intent(
             start_position,
             start_chunk,
             SelectionPointerButton::Right,
-            RightSelectionIntent::AddSelection,
+            RightSelectionIntent::AddRectangleSelection,
+            Some(session_id),
+        )
+    }
+
+    fn paint(start_position: Point<Pixels>, start_chunk: ChunkPos, session_id: u64) -> Self {
+        let _ = apply_paint_drag(session_id, start_chunk);
+        Self::with_intent(
+            start_position,
+            start_chunk,
+            SelectionPointerButton::Right,
+            RightSelectionIntent::PaintSelection,
             Some(session_id),
         )
     }
@@ -518,9 +549,18 @@ impl RightSelectionDrag {
         target: ExistingSelectionTarget,
         button: SelectionPointerButton,
     ) -> Self {
-        if button == SelectionPointerButton::Right && take_additive_right_selection_requested() {
-            let session_id = begin_additive_selection(Some(selection));
-            return Self::additive(start_position, start_chunk, session_id);
+        if button == SelectionPointerButton::Right {
+            match take_right_selection_modifier_requested() {
+                RightSelectionModifierMode::AddRectangle => {
+                    let session_id = begin_additive_selection(Some(selection));
+                    return Self::add_rectangle(start_position, start_chunk, session_id);
+                }
+                RightSelectionModifierMode::Paint => {
+                    let session_id = begin_additive_selection(Some(selection));
+                    return Self::paint(start_position, start_chunk, session_id);
+                }
+                RightSelectionModifierMode::None => {}
+            }
         }
 
         let exact_chunks = exact_selection_chunks(selection);
@@ -588,9 +628,19 @@ impl RightSelectionDrag {
             RightSelectionIntent::NewSelection => {
                 ChunkSelection::rectangular(self.start_chunk, self.current_chunk)
             }
-            RightSelectionIntent::AddSelection => self.advanced_session_id.map_or_else(
+            RightSelectionIntent::AddRectangleSelection => self.advanced_session_id.map_or_else(
+                || ChunkSelection::rectangular(self.start_chunk, self.current_chunk),
+                |session_id| {
+                    apply_rectangular_additive_drag(
+                        session_id,
+                        self.start_chunk,
+                        self.current_chunk,
+                    )
+                },
+            ),
+            RightSelectionIntent::PaintSelection => self.advanced_session_id.map_or_else(
                 || ChunkSelection::rectangular(self.current_chunk, self.current_chunk),
-                |session_id| apply_additive_drag(session_id, self.current_chunk),
+                |session_id| apply_paint_drag(session_id, self.current_chunk),
             ),
             RightSelectionIntent::Resize { selection, handle } => {
                 resize_chunk_selection(selection, handle, self.current_chunk)
@@ -627,7 +677,8 @@ impl RightSelectionDrag {
         matches!(
             self.intent,
             RightSelectionIntent::NewSelection
-                | RightSelectionIntent::AddSelection
+                | RightSelectionIntent::AddRectangleSelection
+                | RightSelectionIntent::PaintSelection
                 | RightSelectionIntent::Move(_)
                 | RightSelectionIntent::MoveExact(_)
                 | RightSelectionIntent::Resize { .. }
@@ -644,7 +695,8 @@ pub(super) enum SelectionPointerButton {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum RightSelectionIntent {
     NewSelection,
-    AddSelection,
+    AddRectangleSelection,
+    PaintSelection,
     Move(ChunkSelection),
     MoveExact(ChunkSelection),
     OpenMenu(ChunkSelection),
@@ -695,7 +747,9 @@ pub(super) fn right_selection_release_action(
         RightSelectionIntent::NewSelection => {
             RightSelectionReleaseAction::ApplySelectionAndOpenMenu
         }
-        RightSelectionIntent::AddSelection => RightSelectionReleaseAction::ApplySelection,
+        RightSelectionIntent::AddRectangleSelection | RightSelectionIntent::PaintSelection => {
+            RightSelectionReleaseAction::ApplySelection
+        }
     }
 }
 
@@ -919,29 +973,60 @@ mod tests {
     }
 
     #[test]
-    fn additive_selection_keeps_non_rectangular_exact_chunks() {
-        let horizontal = selection(chunk(-1, 0), chunk(1, 0));
-        let session_id = begin_additive_selection(Some(horizontal));
-        let mut drag = RightSelectionDrag::additive(Point::default(), chunk(0, -1), session_id);
-        let _ = drag.selection();
-        drag.current_chunk = chunk(0, 1);
-        let bounds = drag.selection();
-        let exact = exact_selection_chunks(bounds).expect("exact selection chunks");
+    fn ctrl_additive_drag_stretches_rectangle_instead_of_painting_path() {
+        let session_id = begin_additive_selection(None);
+        let mut drag = RightSelectionDrag::add_rectangle(Point::default(), chunk(0, 0), session_id);
+        drag.current_chunk = chunk(2, 0);
+        let first = drag.selection();
+        assert_eq!(first.chunk_count(), 3);
 
-        assert_eq!(exact.len(), 5);
-        assert_eq!(bounds.chunk_count(), 5);
-        assert!(!selection_chunks_are_rectangular(bounds, Some(&exact)));
-        assert!(selection_contains_chunk(bounds, Some(&exact), chunk(0, 0)));
-        assert!(!selection_contains_chunk(bounds, Some(&exact), chunk(1, 1)));
-        assert_ne!(bounds.start.dimension, bounds.end.dimension);
-        assert_eq!(bounds.bounds().dimension, Dimension::Overworld);
+        drag.current_chunk = chunk(2, 2);
+        let stretched = drag.selection();
+        let exact = exact_selection_chunks(stretched).expect("exact selection chunks");
+        assert_eq!(exact.len(), 9);
+        assert_eq!(stretched.bounds().chunk_count(), 9);
+        assert!(exact.contains(&chunk(1, 1)));
     }
 
     #[test]
-    fn additive_drag_follows_path_without_filling_bounding_box() {
+    fn ctrl_additive_rectangle_can_build_l_shape() {
+        let horizontal = selection(chunk(0, 0), chunk(2, 0));
+        let session_id = begin_additive_selection(Some(horizontal));
+        let mut drag = RightSelectionDrag::add_rectangle(Point::default(), chunk(0, 0), session_id);
+        drag.current_chunk = chunk(0, 2);
+        let combined = drag.selection();
+        let exact = exact_selection_chunks(combined).expect("exact selection chunks");
+
+        assert_eq!(exact.len(), 5);
+        assert_eq!(combined.bounds().chunk_count(), 9);
+        assert!(exact.contains(&chunk(2, 0)));
+        assert!(exact.contains(&chunk(0, 2)));
+        assert!(!exact.contains(&chunk(1, 1)));
+    }
+
+    #[test]
+    fn ctrl_rectangle_preview_can_shrink_back() {
+        let base = selection(chunk(-2, 0), chunk(-1, 0));
+        let session_id = begin_additive_selection(Some(base));
+        let mut drag = RightSelectionDrag::add_rectangle(Point::default(), chunk(0, 0), session_id);
+        drag.current_chunk = chunk(3, 2);
+        let expanded = drag.selection();
+        assert!(expanded.chunk_count() > 4);
+
+        drag.current_chunk = chunk(1, 0);
+        let shrunk = drag.selection();
+        let exact = exact_selection_chunks(shrunk).expect("exact selection chunks");
+        assert_eq!(exact.len(), 4);
+        assert!(exact.contains(&chunk(-2, 0)));
+        assert!(exact.contains(&chunk(-1, 0)));
+        assert!(exact.contains(&chunk(0, 0)));
+        assert!(exact.contains(&chunk(1, 0)));
+    }
+
+    #[test]
+    fn alt_paint_drag_follows_path_without_filling_bounding_box() {
         let session_id = begin_additive_selection(None);
-        let mut drag = RightSelectionDrag::additive(Point::default(), chunk(0, 0), session_id);
-        let _ = drag.selection();
+        let mut drag = RightSelectionDrag::paint(Point::default(), chunk(0, 0), session_id);
         drag.current_chunk = chunk(2, 0);
         let _ = drag.selection();
         drag.current_chunk = chunk(2, 2);
@@ -963,7 +1048,7 @@ mod tests {
     fn additive_selection_preserves_base_before_pointer_moves() {
         let base = selection(chunk(-1, 0), chunk(1, 0));
         let session_id = begin_additive_selection(Some(base));
-        let drag = RightSelectionDrag::additive(Point::default(), chunk(0, 0), session_id);
+        let drag = RightSelectionDrag::add_rectangle(Point::default(), chunk(0, 0), session_id);
         let inherited = drag.selection();
         let exact = exact_selection_chunks(inherited).expect("inherited exact chunks");
 
@@ -975,9 +1060,11 @@ mod tests {
     fn irregular_selection_move_keeps_shape() {
         let horizontal = selection(chunk(-1, 0), chunk(1, 0));
         let add_session_id = begin_additive_selection(Some(horizontal));
-        let mut add =
-            RightSelectionDrag::additive(Point::default(), chunk(0, -1), add_session_id);
-        let _ = add.selection();
+        let mut add = RightSelectionDrag::add_rectangle(
+            Point::default(),
+            chunk(0, -1),
+            add_session_id,
+        );
         add.current_chunk = chunk(0, 1);
         let selection = add.selection();
         let exact = exact_selection_chunks(selection).expect("exact selection chunks");
@@ -1008,15 +1095,15 @@ mod tests {
     fn independent_sessions_use_distinct_selection_tokens() {
         let first_session =
             begin_additive_selection(Some(selection(chunk(0, 0), chunk(0, 0))));
-        let mut first = RightSelectionDrag::additive(Point::default(), chunk(1, 0), first_session);
-        let _ = first.selection();
+        let mut first =
+            RightSelectionDrag::add_rectangle(Point::default(), chunk(1, 0), first_session);
         first.current_chunk = chunk(1, 1);
         let first_selection = first.selection();
 
         let second_session =
             begin_additive_selection(Some(selection(chunk(0, 0), chunk(0, 0))));
-        let mut second = RightSelectionDrag::additive(Point::default(), chunk(1, 0), second_session);
-        let _ = second.selection();
+        let mut second =
+            RightSelectionDrag::add_rectangle(Point::default(), chunk(1, 0), second_session);
         second.current_chunk = chunk(1, 1);
         let second_selection = second.selection();
 
@@ -1030,8 +1117,7 @@ mod tests {
     fn selection_identity_changes_when_shape_changes_inside_same_bounds() {
         let base = selection(chunk(-1, 0), chunk(1, 0));
         let session_id = begin_additive_selection(Some(base));
-        let mut drag = RightSelectionDrag::additive(Point::default(), chunk(0, -1), session_id);
-        let _ = drag.selection();
+        let mut drag = RightSelectionDrag::paint(Point::default(), chunk(0, -1), session_id);
         drag.current_chunk = chunk(0, 1);
         let cross = drag.selection();
         drag.current_chunk = chunk(1, 1);
@@ -1055,11 +1141,22 @@ mod tests {
     }
 
     #[test]
-    fn additive_right_selection_does_not_open_context_menu() {
-        let session_id = begin_additive_selection(None);
-        let drag = RightSelectionDrag::additive(Point::default(), chunk(0, 0), session_id);
+    fn modifier_selection_modes_do_not_open_context_menu() {
+        let rectangle_session = begin_additive_selection(None);
+        let rectangle = RightSelectionDrag::add_rectangle(
+            Point::default(),
+            chunk(0, 0),
+            rectangle_session,
+        );
         assert_eq!(
-            right_selection_release_action(drag.button, drag.intent, drag.moved),
+            right_selection_release_action(rectangle.button, rectangle.intent, rectangle.moved),
+            RightSelectionReleaseAction::ApplySelection
+        );
+
+        let paint_session = begin_additive_selection(None);
+        let paint = RightSelectionDrag::paint(Point::default(), chunk(0, 0), paint_session);
+        assert_eq!(
+            right_selection_release_action(paint.button, paint.intent, paint.moved),
             RightSelectionReleaseAction::ApplySelection
         );
     }
