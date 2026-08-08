@@ -86,15 +86,17 @@ impl ExactChunkSelection {
         self.chunks.contains(&chunk)
     }
 
-    /// Iterates the selected chunks in stable sorted order.
+    /// Iterates the selected chunks in the set's stable key order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = ChunkPos> + '_ {
         self.chunks.iter().copied()
     }
 
-    /// Returns the selected chunks as a stable sorted vector.
+    /// Returns the selected chunks in stable row-major `z, x` order.
     #[must_use]
     pub fn to_vec(&self) -> Vec<ChunkPos> {
-        self.iter().collect()
+        let mut chunks = self.iter().collect::<Vec<_>>();
+        chunks.sort_unstable_by_key(|chunk| (chunk.z, chunk.x));
+        chunks
     }
 
     /// Returns the minimal bounding rectangle around the exact selection.
@@ -446,9 +448,24 @@ mod tests {
             selection
                 .rectangle_cover()
                 .iter()
-                .map(SlimeChunkBounds::chunk_count)
+                .map(|bounds| bounds.chunk_count())
                 .sum::<usize>(),
             4
+        );
+    }
+
+    #[test]
+    fn exact_selection_to_vec_is_row_major() {
+        let selection = ExactChunkSelection::new([
+            chunk(2, 0),
+            chunk(0, 1),
+            chunk(1, 0),
+            chunk(0, 0),
+        ])
+        .expect("exact selection");
+        assert_eq!(
+            selection.to_vec(),
+            vec![chunk(0, 0), chunk(1, 0), chunk(2, 0), chunk(0, 1)]
         );
     }
 
