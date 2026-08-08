@@ -47,10 +47,10 @@ const MINI_CAPSULE_SIDE_PAD: f32 = 10.0;
 const MINI_CAPSULE_COMPACT_PAD: f32 = 4.0;
 const MINI_COVER_SIZE: f32 = 20.0;
 const MINI_PLAY_BUTTON_SIZE: f32 = 24.0;
-const MINI_DOCK_BUTTON_SIZE: f32 = 20.0;
 const MINI_BODY_SAFE_RIGHT_INSET: f32 = 4.0;
-const MINI_EDGE_PEEK_WIDTH: f32 = 28.0;
 const MINI_INLINE_EXPAND_MIN_WINDOW_WIDTH: f32 = 760.0;
+const MINI_PROGRESS_TRACK_HEIGHT: f32 = 3.0;
+const MINI_PROGRESS_BOTTOM: f32 = 3.0;
 const FLOATING_INSET: f32 = 18.0;
 const FLOATING_POPUP_GAP: f32 = 10.0;
 
@@ -158,7 +158,8 @@ pub fn mini_capsule_width_for_factor(available: bool, factor: f32) -> Pixels {
         return px(0.0);
     }
 
-    let factor = factor.clamp(0.0, 1.06);
+    // SpringValue 本身允许 overshoot。这里保留少量过冲，避免把 Q 弹动画截成线性伸缩。
+    let factor = factor.clamp(0.0, 1.07);
     px(MINI_CAPSULE_COLLAPSED_WIDTH
         + (MINI_CAPSULE_EXPANDED_WIDTH - MINI_CAPSULE_COLLAPSED_WIDTH) * factor)
 }
@@ -181,8 +182,8 @@ pub fn render_music_player(
     popup_bg: Hsla,
     muted_bg: Hsla,
 ) -> MusicPlayerRender {
-    let inline_visual_factor = inline_factor.clamp(0.0, 1.06);
-    let inline_width = mini_capsule_width_for_factor(snapshot.available, inline_visual_factor);
+    let inline_motion_factor = inline_factor.clamp(-0.06, 1.12);
+    let inline_width = mini_capsule_width_for_factor(snapshot.available, inline_motion_factor);
     if !snapshot.available {
         return MusicPlayerRender {
             inline: div().w(px(0.0)).h(px(0.0)).into_any_element(),
@@ -191,34 +192,39 @@ pub fn render_music_player(
         };
     }
 
-    let inline_k_raw = inline_visual_factor.clamp(0.0, 1.0);
-    // 在收起/展开端点做吸附，避免浮点尾差让“圆形态”残留半截内容。
-    let inline_k = if inline_k_raw <= 0.04 {
+    let inline_k_raw = inline_motion_factor.clamp(0.0, 1.0);
+    // 在端点吸附布局状态，但宽度仍使用上面的原始 Spring overshoot。
+    let inline_k = if inline_k_raw <= 0.035 {
         0.0
     } else if inline_k_raw >= 0.995 {
         1.0
     } else {
         inline_k_raw
     };
-    // 内容显隐使用独立进度，延后到胶囊明显拉开后再出现，防止按钮溢出。
-    let content_k = ((inline_k - 0.12) / 0.88).clamp(0.0, 1.0);
     let compact = inline_k <= 0.12;
+    let inline_fully_open = inline_k >= 0.985;
     let can_inline_expand = window_width / px(1.0) >= MINI_INLINE_EXPAND_MIN_WINDOW_WIDTH;
-    // 收起时不只是缩成圆点，同时向左侧窗口边缘停靠，只保留一小段可点击区域。
-    // 该位移直接复用现有 SpringValue 的 inline_k，不新增常驻动画任务。
+
+    // 默认停靠时精确隐藏胶囊的一半：父定位在 18px，子元素左移 36px，最终只露出 18px。
     let edge_dock_k = (1.0 - inline_k).clamp(0.0, 1.0);
+    let edge_visible_width = MINI_CAPSULE_COLLAPSED_WIDTH * 0.5;
     let edge_shift = px(
-        (FLOATING_INSET + MINI_CAPSULE_COLLAPSED_WIDTH - MINI_EDGE_PEEK_WIDTH) * edge_dock_k,
+        (FLOATING_INSET + MINI_CAPSULE_COLLAPSED_WIDTH - edge_visible_width) * edge_dock_k,
     );
-    let edge_hint_opacity = ((edge_dock_k - 0.28) / 0.72).clamp(0.0, 1.0);
-    let mini_text_opacity = content_k;
+
+    // 让现有 SpringValue 的弹性真正可见：过渡中轻微上浮，过冲时再补一小段回弹位移。
+    let transition_lift = (4.0 * inline_k * (1.0 - inline_k)).clamp(0.0, 1.0);
+    let overshoot_k = ((inline_motion_factor - 1.0) / 0.12).clamp(0.0, 1.0);
+    let inline_lift = px(-(2.25 * transition_lift + 2.75 * overshoot_k));
+
+    // 内容分层进入：标题先出现，按钮随后，进度条最后出现。
+    let content_k = ((inline_k - 0.12) / 0.88).clamp(0.0, 1.0);
+    let title_k = ((inline_k - 0.18) / 0.82).clamp(0.0, 1.0);
+    let controls_k = ((inline_k - 0.30) / 0.70).clamp(0.0, 1.0);
+    let progress_reveal_k = ((inline_k - 0.44) / 0.56).clamp(0.0, 1.0);
     let mini_outer_gap = px(MINI_CAPSULE_EXPANDED_GAP * content_k);
     let mini_side_pad =
         MINI_CAPSULE_COMPACT_PAD + (MINI_CAPSULE_SIDE_PAD - MINI_CAPSULE_COMPACT_PAD) * inline_k;
-    // Use the real expanded inline layout budget:
-    // [left pad] + [cover] + [outer gap] + [body] + [right pad] = expanded width.
-    // This avoids the play button overflowing when side paddings differ between
-    // collapsed and expanded states.
     let mini_body_full_width = (MINI_CAPSULE_EXPANDED_WIDTH
         - MINI_CAPSULE_SIDE_PAD * 2.0
         - MINI_COVER_SIZE
@@ -226,16 +232,13 @@ pub fn render_music_player(
         - MINI_BODY_SAFE_RIGHT_INSET)
         .max(0.0);
     let mini_body_width = px(mini_body_full_width * content_k);
-    let mini_body_offset = px(14.0 * (1.0 - content_k));
-    let mini_label_max_width = (mini_body_full_width
-        - MINI_CAPSULE_EXPANDED_GAP * 2.0
-        - MINI_PLAY_BUTTON_SIZE
-        - MINI_DOCK_BUTTON_SIZE)
-        .max(0.0);
+    let mini_body_offset = px(16.0 * (1.0 - content_k));
+    let mini_label_max_width =
+        (mini_body_full_width - MINI_CAPSULE_EXPANDED_GAP - MINI_PLAY_BUTTON_SIZE).max(0.0);
     let mini_label_space = px(mini_label_max_width);
-    let mini_label_offset = px(-10.0 * (1.0 - content_k));
-    let mini_button_opacity = (0.15 + content_k * 0.85).clamp(0.0, 1.0);
-    let mini_button_offset = px(8.0 * (1.0 - content_k));
+    let mini_label_offset = px(-10.0 * (1.0 - title_k));
+    let mini_button_opacity = (0.12 + controls_k * 0.88).clamp(0.0, 1.0);
+    let mini_button_offset = px(9.0 * (1.0 - controls_k));
     let progress_ratio = displayed_progress_ratio.clamp(0.0, 1.0);
     let volume_ratio = displayed_volume_ratio.clamp(0.0, 1.0);
     let preview_current_seconds = if snapshot.total_seconds <= 0.0 {
@@ -273,6 +276,11 @@ pub fn render_music_player(
         ),
         size(px(VOLUME_TRACK_WIDTH), px(VOLUME_HIT_HEIGHT)),
     );
+    let mini_progress_track_width =
+        (MINI_CAPSULE_EXPANDED_WIDTH - MINI_CAPSULE_SIDE_PAD * 2.0).max(0.0);
+    let mini_progress_fill_width = mini_progress_track_width * progress_ratio;
+    // 打开完整卡片后稍微淡化胶囊进度，避免两条进度轨同时抢视觉层级。
+    let mini_progress_opacity = progress_reveal_k * (1.0 - popup_opacity * 0.72);
 
     let render_cover = || {
         snapshot
@@ -364,45 +372,6 @@ pub fn render_music_player(
             .text_color(rgb(0x111111)),
         );
 
-    let inline_dock_button = div()
-        .w(px(MINI_DOCK_BUTTON_SIZE))
-        .h(px(MINI_PLAY_BUTTON_SIZE))
-        .rounded_full()
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .opacity(mini_button_opacity)
-        .bg(muted_bg.opacity(0.52))
-        .border_1()
-        .border_color(border_color.opacity(0.12))
-        .occlude()
-        .window_control_area(WindowControlArea::Client)
-        .hover(|style| style.bg(text_color.opacity(0.10)))
-        .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| {
-            cx.stop_propagation();
-            let now = Instant::now();
-            cx.update_global(|music: &mut MusicState, cx: &mut App| {
-                if music.expanded_target_open()
-                    || music.popup_animating(now)
-                    || music.expanded_factor(now) > 0.001
-                {
-                    music.set_expanded(false, now, cx);
-                }
-            });
-            cx.update_global(
-                |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
-                    topbar.set_music_inline_expanded(false, now);
-                },
-            );
-        })
-        .child(
-            icon_path(lucide_icons::icon_chevron_left())
-                .size(px(11.0))
-                .text_color(text_color.opacity(0.86)),
-        );
-
     let inline_cover_content = snapshot
         .cover_render_image
         .clone()
@@ -433,6 +402,7 @@ pub fn render_music_player(
     let inline = div()
         .relative()
         .left(-edge_shift)
+        .top(inline_lift)
         .w(inline_width)
         .h(px(MINI_CAPSULE_HEIGHT))
         .rounded(if compact { px(18.0) } else { px(20.0) })
@@ -445,7 +415,11 @@ pub fn render_music_player(
         .overflow_hidden()
         .bg(capsule_bg)
         .border_1()
-        .border_color(border_color)
+        .border_color(if snapshot.is_playing && inline_k > 0.70 {
+            accent.opacity(0.30)
+        } else {
+            border_color
+        })
         .cursor_pointer()
         .occlude()
         .window_control_area(WindowControlArea::Client)
@@ -453,9 +427,8 @@ pub fn render_music_player(
             cx.stop_propagation();
             let now = Instant::now();
 
-            // 宽窗口下，左侧停靠态的第一次点击只负责“拉出”播放器；
-            // 第二次点击完整胶囊才打开详情，避免边缘小触点直接弹出大面板。
-            if compact && can_inline_expand {
+            // 第一次点击只拉出完整胶囊；动画未完全稳定前继续点击也不会误开大卡片。
+            if can_inline_expand && !inline_fully_open {
                 cx.update_global(
                     |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
                         topbar.set_music_inline_expanded(true, now);
@@ -465,41 +438,22 @@ pub fn render_music_player(
             }
 
             cx.update_global(|music: &mut MusicState, cx| {
-                let popup_visible = music.snapshot.expanded
+                let popup_is_open = music.snapshot.expanded
                     || music.popup_animating(now)
                     || music.expanded_factor(now) > 0.001;
-                music.set_expanded(!popup_visible, now, cx);
+                music.set_expanded(!popup_is_open, now, cx);
             });
+
+            // 完整卡片关闭时同步收回胶囊，形成“半停靠 → 胶囊 → 卡片 → 半停靠”的闭环。
+            if popup_visible {
+                cx.update_global(
+                    |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
+                        topbar.set_music_inline_expanded(false, now);
+                    },
+                );
+            }
         })
-        .child(
-            div()
-                .relative()
-                .flex_none()
-                .child(inline_cover(inline_cover_content))
-                .child(
-                    div()
-                        .absolute()
-                        .right(px(-7.0))
-                        .top(px(4.0))
-                        .w(px(11.0))
-                        .h(px(12.0))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .opacity(edge_hint_opacity)
-                        .bg(if snapshot.is_playing {
-                            accent.opacity(0.22)
-                        } else {
-                            capsule_bg.opacity(0.94)
-                        })
-                        .child(
-                            icon_path(lucide_icons::icon_chevron_right())
-                                .size(px(9.0))
-                                .text_color(text_color.opacity(0.86)),
-                        ),
-                ),
-        )
+        .child(inline_cover(inline_cover_content))
         .child(
             div()
                 .w(mini_body_width)
@@ -523,7 +477,7 @@ pub fn render_music_player(
                                     div()
                                         .relative()
                                         .left(mini_label_offset)
-                                        .opacity(mini_text_opacity)
+                                        .opacity(title_k)
                                         .child(clipped_text(
                                             snapshot.title.clone(),
                                             mini_label_space,
@@ -531,7 +485,7 @@ pub fn render_music_player(
                                             16.0,
                                             text_color,
                                             FontWeight::SEMIBOLD,
-                                            mini_text_opacity,
+                                            title_k,
                                         )),
                                 ),
                         )
@@ -540,13 +494,26 @@ pub fn render_music_player(
                                 .relative()
                                 .left(mini_button_offset)
                                 .child(inline_play_button),
-                        )
-                        .child(
-                            div()
-                                .relative()
-                                .left(mini_button_offset)
-                                .child(inline_dock_button),
                         ),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(MINI_CAPSULE_SIDE_PAD))
+                .bottom(px(MINI_PROGRESS_BOTTOM))
+                .w(px(mini_progress_track_width))
+                .h(px(MINI_PROGRESS_TRACK_HEIGHT))
+                .rounded_full()
+                .overflow_hidden()
+                .opacity(mini_progress_opacity)
+                .bg(muted_bg.opacity(0.72))
+                .child(
+                    div()
+                        .h_full()
+                        .w(px(mini_progress_fill_width))
+                        .rounded_full()
+                        .bg(accent.opacity(0.96)),
                 ),
         )
         .into_any_element();
@@ -1036,6 +1003,11 @@ pub fn render_music_player(
                             music.set_expanded(false, now, cx);
                         }
                     });
+                    cx.update_global(
+                        |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
+                            topbar.set_music_inline_expanded(false, now);
+                        },
+                    );
                 })
                 .into_any_element(),
         )
