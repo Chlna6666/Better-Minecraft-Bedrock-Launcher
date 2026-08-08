@@ -156,9 +156,9 @@ pub fn mini_capsule_width_for_factor(available: bool, factor: f32) -> Pixels {
         return px(0.0);
     }
 
-    // 只让右边缘承载 Spring overshoot；左侧停靠位移使用下方的单调 clamped factor。
-    // 这样仍有 Q 弹，但不会让整个胶囊左右来回抖。
-    let factor = factor.clamp(0.0, 1.07);
+    // 外框几何严格限制在目标区间，Spring 的 overshoot 不再改变实际宽度。
+    // 这样保留弹簧响应速度，但消除右边缘到位后再次回缩造成的“点击抖动”。
+    let factor = factor.clamp(0.0, 1.0);
     px(MINI_CAPSULE_COLLAPSED_WIDTH
         + (MINI_CAPSULE_EXPANDED_WIDTH - MINI_CAPSULE_COLLAPSED_WIDTH) * factor)
 }
@@ -181,8 +181,10 @@ pub fn render_music_player(
     popup_bg: Hsla,
     muted_bg: Hsla,
 ) -> MusicPlayerRender {
-    let inline_motion_factor = inline_factor.clamp(-0.06, 1.12);
-    let inline_width = mini_capsule_width_for_factor(snapshot.available, inline_motion_factor);
+    // 所有可见几何只使用 0..1 的单调目标区间。Spring 内部可以继续结算，
+    // 但不会再把 overshoot/undershoot 映射到胶囊的位置、宽度或纵向位移。
+    let inline_k = inline_factor.clamp(0.0, 1.0);
+    let inline_width = mini_capsule_width_for_factor(snapshot.available, inline_k);
     if !snapshot.available {
         return MusicPlayerRender {
             inline: div().w(px(0.0)).h(px(0.0)).into_any_element(),
@@ -191,27 +193,17 @@ pub fn render_music_player(
         };
     }
 
-    // 所有水平布局都使用连续 factor；不在动画途中切换 justify/padding/radius 布局模式。
-    // 之前 compact 阈值跨越时 Flex 会重新排版，封面与正文同时跳位，是展开“抖一下”的主要来源。
-    let inline_k = inline_motion_factor.clamp(0.0, 1.0);
     let inline_fully_open = inline_k >= 0.985;
     let can_inline_expand = window_width / px(1.0) >= MINI_INLINE_EXPAND_MIN_WINDOW_WIDTH;
 
-    // 默认停靠时精确隐藏胶囊的一半：父定位在 18px，子元素左移 36px，最终只露出 18px。
-    // Spring 超调不参与左边缘位移，因此左锚点稳定；弹性只发生在右边缘。
+    // 默认停靠时精确隐藏胶囊的一半。这里只做单向连续位移，不再叠加纵向抬升。
     let edge_dock_k = 1.0 - inline_k;
     let edge_visible_width = MINI_CAPSULE_COLLAPSED_WIDTH * 0.5;
     let edge_shift = px(
         (FLOATING_INSET + MINI_CAPSULE_COLLAPSED_WIDTH - edge_visible_width) * edge_dock_k,
     );
 
-    // 保留轻微的垂直 Q 弹，不参与水平布局计算。
-    let transition_lift = (4.0 * inline_k * (1.0 - inline_k)).clamp(0.0, 1.0);
-    let overshoot_k = ((inline_motion_factor - 1.0) / 0.12).clamp(0.0, 1.0);
-    let inline_lift = px(-(2.0 * transition_lift + 2.25 * overshoot_k));
-
-    // 子内容固定在最终位置，仅做透明度和小幅位移；外层 overflow 负责自然裁切。
-    // 这样胶囊变宽时不会触发 Flex 宽度重算/重新居中。
+    // Q 感留在内容分层进入节奏，不让外框做反向几何运动。
     let content_k = ((inline_k - 0.12) / 0.88).clamp(0.0, 1.0);
     let title_k = ((inline_k - 0.18) / 0.82).clamp(0.0, 1.0);
     let controls_k = ((inline_k - 0.30) / 0.70).clamp(0.0, 1.0);
@@ -268,7 +260,6 @@ pub fn render_music_player(
         size(px(VOLUME_TRACK_WIDTH), px(VOLUME_HIT_HEIGHT)),
     );
     let mini_progress_fill_width = (inline_width / px(1.0)) * progress_ratio;
-    // 打开完整卡片后稍微淡化胶囊进度，避免两条进度轨同时抢视觉层级。
     let mini_progress_opacity = progress_reveal_k * (1.0 - popup_opacity * 0.72);
 
     let render_cover = || {
@@ -391,7 +382,6 @@ pub fn render_music_player(
     let inline = div()
         .relative()
         .left(-edge_shift)
-        .top(inline_lift)
         .w(inline_width)
         .h(px(MINI_CAPSULE_HEIGHT))
         .rounded(px(MINI_CAPSULE_HEIGHT / 2.0))
@@ -422,15 +412,6 @@ pub fn render_music_player(
                     || music.expanded_factor(now) > 0.001;
                 music.set_expanded(!popup_is_open, now, cx);
             });
-
-            // 完整卡片关闭时同步收回胶囊，形成“半停靠 → 胶囊 → 卡片 → 半停靠”的闭环。
-            if popup_visible {
-                cx.update_global(
-                    |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
-                        topbar.set_music_inline_expanded(false, now);
-                    },
-                );
-            }
         })
         .child(
             div()
@@ -481,12 +462,12 @@ pub fn render_music_player(
                 ),
         )
         .child(
-            // 0.8px 进度轨直接贴胶囊外轮廓底边，不留 inset，不再形成第二条“内部组件”。
+            // GPUI 的绝对定位以边框内侧为基准；向下补 1px，让 0.8px 轨道覆盖到底边外轮廓。
             div()
                 .absolute()
                 .left(px(0.0))
                 .right(px(0.0))
-                .bottom(px(0.0))
+                .bottom(px(-1.0))
                 .h(px(MINI_PROGRESS_TRACK_HEIGHT))
                 .overflow_hidden()
                 .opacity(mini_progress_opacity)
@@ -954,7 +935,8 @@ pub fn render_music_player(
         None
     };
 
-    // 创建 backdrop：展开时覆盖外部区域，点击关闭弹窗
+    // 创建 backdrop：展开时覆盖外部区域，点击只关闭完整卡片，保留完整胶囊。
+    // 这样卡片淡出与胶囊回收不再同时发生，消除视频中最明显的“回收抖动”。
     let backdrop = if popup_visible {
         Some(
             div()
@@ -985,11 +967,6 @@ pub fn render_music_player(
                             music.set_expanded(false, now, cx);
                         }
                     });
-                    cx.update_global(
-                        |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
-                            topbar.set_music_inline_expanded(false, now);
-                        },
-                    );
                 })
                 .into_any_element(),
         )
