@@ -86,7 +86,7 @@ impl MapViewerWindowView {
                                 .child(toolbar_button(colors, "加载/刷新").on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
-                                        this.refresh_preview_3d(cx)
+                                        this.refresh_preview_3d_exact(cx)
                                     }),
                                 ))
                                 .child(toolbar_button(colors, "重置视角").on_mouse_down(
