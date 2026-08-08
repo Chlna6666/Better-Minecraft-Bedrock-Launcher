@@ -475,11 +475,11 @@ impl RightSelectionDrag {
         }
 
         let exact_chunks = exact_selection_chunks(selection);
-        let irregular = exact_chunks
-            .as_deref()
+        let exact_chunk_slice = exact_chunks.as_ref().map(|chunks| chunks.as_slice());
+        let irregular = exact_chunk_slice
             .is_some_and(|chunks| !selection_chunks_are_rectangular(selection, Some(chunks)));
         let target = if irregular {
-            if selection_contains_chunk(selection, exact_chunks.as_deref(), start_chunk) {
+            if selection_contains_chunk(selection, exact_chunk_slice, start_chunk) {
                 ExistingSelectionTarget::Inside
             } else {
                 ExistingSelectionTarget::Outside
@@ -627,35 +627,31 @@ pub(super) fn right_selection_release_action(
 ) -> RightSelectionReleaseAction {
     match intent {
         RightSelectionIntent::Cancel(_) => RightSelectionReleaseAction::CancelSelection,
-        RightSelectionIntent::Move(_) | RightSelectionIntent::MoveExact(_) if !moved => {
-            RightSelectionReleaseAction::KeepSelection
+        RightSelectionIntent::Move(_) | RightSelectionIntent::MoveExact(_) => {
+            if moved {
+                RightSelectionReleaseAction::ApplySelection
+            } else {
+                RightSelectionReleaseAction::KeepSelection
+            }
         }
-        RightSelectionIntent::Resize { .. }
-            if button == SelectionPointerButton::Left && !moved =>
-        {
-            RightSelectionReleaseAction::KeepSelection
+        RightSelectionIntent::Resize { .. } => {
+            if moved {
+                RightSelectionReleaseAction::ApplySelection
+            } else {
+                RightSelectionReleaseAction::KeepSelection
+            }
         }
-        RightSelectionIntent::Move(_)
-        | RightSelectionIntent::MoveExact(_)
-        | RightSelectionIntent::Resize { .. }
-            if moved =>
-        {
-            RightSelectionReleaseAction::ApplySelection
-        }
-        RightSelectionIntent::OpenMenu(_)
-            if button == SelectionPointerButton::Right && !moved =>
-        {
-            RightSelectionReleaseAction::OpenMenu
-        }
-        RightSelectionIntent::OpenMenu(_) if moved => {
-            RightSelectionReleaseAction::KeepSelection
+        RightSelectionIntent::OpenMenu(_) => {
+            if button == SelectionPointerButton::Right && !moved {
+                RightSelectionReleaseAction::OpenMenu
+            } else {
+                RightSelectionReleaseAction::KeepSelection
+            }
         }
         RightSelectionIntent::NewSelection => {
             RightSelectionReleaseAction::ApplySelectionAndOpenMenu
         }
         RightSelectionIntent::AddSelection => RightSelectionReleaseAction::ApplySelection,
-        RightSelectionIntent::OpenMenu(_) => RightSelectionReleaseAction::KeepSelection,
-        RightSelectionIntent::Resize { .. } => RightSelectionReleaseAction::KeepSelection,
     }
 }
 
