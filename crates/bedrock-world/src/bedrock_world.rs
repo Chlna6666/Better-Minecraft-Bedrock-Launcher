@@ -53,6 +53,8 @@ pub mod parsed;
 pub mod player;
 /// Professional map query helpers and guarded world edits.
 pub mod query;
+/// Exact non-rectangular selection query helpers.
+pub mod selection_query;
 /// Storage abstraction and LevelDB backend adapters.
 pub mod storage;
 /// Terrain surface role helpers shared by chunk decoding and render sampling.
@@ -106,6 +108,7 @@ pub use query::{
     query_region_overlays_blocking, query_region_overlays_blocking_with_control,
     query_selection_stats_blocking, query_slime_chunk_windows, write_chunk_record_nbt_blocking,
 };
+pub use selection_query::query_selection_stats_chunks_blocking;
 pub use storage::{
     MemoryStorage, POCKET_CHUNKS_DAT_TERRAIN_VALUE_LEN, PartitionedWorldStorage,
     PocketChunksDatStorage, StorageBatch, StorageCachePolicy, StorageCancelFlag, StorageEntry,
