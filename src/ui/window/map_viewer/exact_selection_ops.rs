@@ -8,7 +8,8 @@ use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
 use crate::ui::state::launcher::LauncherState;
 use crate::ui::state::local_versions::LocalVersionsState;
 use bedrock_block_model::BlockModelRepository;
-use bedrock_world::query_selection_stats_chunks_blocking;
+use bedrock_render::ExactChunkRenderPlan;
+use bedrock_world::{ExactChunkSelection, query_selection_stats_exact_blocking};
 use std::collections::BTreeSet;
 
 impl MapViewerWindowView {
@@ -21,24 +22,26 @@ impl MapViewerWindowView {
             return;
         };
         let chunks = selection.chunks();
-        if chunks.is_empty() {
-            self.status = SharedString::from("当前选区没有区块");
+        let Ok(exact_selection) = ExactChunkSelection::new(chunks.clone()) else {
+            self.status = SharedString::from("当前选区没有有效区块");
             cx.notify();
             return;
-        }
+        };
 
         let options = self.professional_overlay_query_options();
         let generation = self.metadata_generation;
         let world_path = self.world_path.clone();
         let query_budget = self.map_query_budget.clone();
         self.professional.selection_stats = None;
-        self.status = SharedString::from(format!("正在统计精确选区 · {} chunks...", chunks.len()));
+        self.status = SharedString::from(format!(
+            "正在统计精确选区 · {} chunks...",
+            exact_selection.len()
+        ));
         cx.notify();
 
-        let requested_chunks = chunks.clone();
+        let requested_chunks = exact_selection.to_vec();
         cx.spawn(async move |handle, cx| {
             let _query_permit = query_budget.acquire().await;
-            let chunks_for_query = requested_chunks.clone();
             let result = cx
                 .background_spawn(async move {
                     let world = BedrockWorld::open_blocking(
@@ -46,12 +49,8 @@ impl MapViewerWindowView {
                         bedrock_world::OpenOptions::default(),
                     )
                     .map_err(|error| error.to_string())?;
-                    query_selection_stats_chunks_blocking(
-                        &world,
-                        chunks_for_query,
-                        options,
-                    )
-                    .map_err(|error| error.to_string())
+                    query_selection_stats_exact_blocking(&world, &exact_selection, options)
+                        .map_err(|error| error.to_string())
                 })
                 .await;
             let Some(view) = handle.upgrade() else {
@@ -85,7 +84,7 @@ impl MapViewerWindowView {
     }
 
     /// Loads the 3D preview from the exact selected chunks. The selection is
-    /// decomposed into fully-selected rectangles; holes are never queried.
+    /// decomposed by the public render plan; holes are never queried.
     pub(super) fn refresh_preview_3d_exact(&mut self, cx: &mut Context<Self>) {
         self.preview_3d.source = Preview3dSource::Selection;
         let Some(selection) = self.professional.selection else {
@@ -94,16 +93,16 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
-        let chunks = selection.chunks();
-        if chunks.is_empty() {
+        let Ok(exact_selection) = ExactChunkSelection::new(selection.chunks()) else {
             self.clear_preview_3d_resources(false);
             self.status = SharedString::from("当前选区没有可加载的 chunk");
             cx.notify();
             return;
-        }
-        let signature = Preview3dSelectionSignature {
-            bounds: selection.bounds(),
         };
+        let signature = Preview3dSelectionSignature {
+            bounds: exact_selection.bounds(),
+        };
+        let chunk_count = exact_selection.len();
 
         self.preview_3d.generation = self.preview_3d.generation.saturating_add(1);
         let generation = self.preview_3d.generation;
@@ -115,7 +114,7 @@ impl MapViewerWindowView {
         let preview_cancel_for_owner = preview_cancel.clone();
         self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
             "准备精确选区",
-            format!("{} chunks", chunks.len()),
+            format!("{chunk_count} chunks"),
         ));
         self.preview_3d.signature = Some(signature);
         self.preview_3d.mesh = None;
@@ -124,7 +123,9 @@ impl MapViewerWindowView {
         self.preview_3d.reset_view_and_model();
         self.preview_3d.render_in_flight = true;
         self.preview_3d.cancel = Some(preview_cancel);
-        self.status = SharedString::from(format!("正在加载精确 3D 预览 · {} chunks...", chunks.len()));
+        self.status = SharedString::from(format!(
+            "正在加载精确 3D 预览 · {chunk_count} chunks..."
+        ));
         cx.notify();
 
         let world_path = self.world_path.clone();
@@ -136,7 +137,7 @@ impl MapViewerWindowView {
             let load_task = cx.background_spawn(async move {
                 let result = load_preview_3d_mesh_exact_blocking_incremental(
                     &world_path,
-                    chunks,
+                    exact_selection,
                     Some(preview_cancel_for_load),
                     {
                         let event_sender = event_sender.clone();
@@ -204,13 +205,12 @@ impl MapViewerWindowView {
             cx.notify();
             return;
         };
-        let chunks = selection.chunks();
-        if chunks.is_empty() {
+        let Ok(exact_selection) = ExactChunkSelection::new(selection.chunks()) else {
             self.status = SharedString::from("没有可导出的 chunk");
             cx.notify();
             return;
-        }
-        let bounds = selection.bounds();
+        };
+        let bounds = exact_selection.bounds();
         let default_file_name = format!(
             "chunk-selection-{}-{}-{}-{}.obj",
             bounds.min_chunk_x, bounds.min_chunk_z, bounds.max_chunk_x, bounds.max_chunk_z
@@ -225,7 +225,7 @@ impl MapViewerWindowView {
         let world_path = self.world_path.clone();
         let package_paths = exact_preview_3d_resource_package_paths(&world_path, cx);
         let query_budget = self.map_query_budget.clone();
-        let chunk_count = chunks.len();
+        let chunk_count = exact_selection.len();
         self.context_menu = None;
         self.status = SharedString::from(format!("正在导出精确选区 OBJ · {chunk_count} chunks..."));
         cx.notify();
@@ -257,7 +257,7 @@ impl MapViewerWindowView {
                     .map_err(|error| format!("加载方块模型资源失败：{error}"))?;
                     let mesh = load_preview_3d_mesh_exact_blocking_incremental_with_block_models(
                         &world_path,
-                        chunks,
+                        exact_selection,
                         Some(block_models),
                         None,
                         |_mesh, _status| {},
@@ -306,33 +306,34 @@ impl MapViewerWindowView {
 
 pub(super) fn load_preview_3d_mesh_exact_blocking_incremental(
     world_path: &Path,
-    chunks: Vec<ChunkPos>,
+    selection: ExactChunkSelection,
     cancel: Option<CancelFlag>,
     update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
-    load_preview_3d_mesh_exact_impl(world_path, chunks, None, cancel, update)
+    load_preview_3d_mesh_exact_impl(world_path, selection, None, cancel, update)
 }
 
 pub(super) fn load_preview_3d_mesh_exact_blocking_incremental_with_block_models(
     world_path: &Path,
-    chunks: Vec<ChunkPos>,
+    selection: ExactChunkSelection,
     block_models: Option<Arc<BlockModelRepository>>,
     cancel: Option<CancelFlag>,
     update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
-    load_preview_3d_mesh_exact_impl(world_path, chunks, block_models, cancel, update)
+    load_preview_3d_mesh_exact_impl(world_path, selection, block_models, cancel, update)
 }
 
 fn load_preview_3d_mesh_exact_impl(
     world_path: &Path,
-    chunks: Vec<ChunkPos>,
+    selection: ExactChunkSelection,
     block_models: Option<Arc<BlockModelRepository>>,
     cancel: Option<CancelFlag>,
     mut update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
-    let chunks = normalize_exact_chunks(chunks)?;
-    let rectangles = exact_chunk_rectangles(&chunks)?;
-    let total_chunks = chunks.len();
+    let plan = ExactChunkRenderPlan::new(selection);
+    let chunks = plan.positions().to_vec();
+    let rectangles = plan.rectangle_cover().to_vec();
+    let total_chunks = plan.chunk_count();
     let total_rectangles = rectangles.len();
     let mut parts = Vec::with_capacity(total_rectangles);
     let mut completed_chunks = 0usize;
@@ -376,66 +377,6 @@ fn load_preview_3d_mesh_exact_impl(
     }
 
     Ok(merge_exact_preview_meshes(&parts, &chunks))
-}
-
-fn normalize_exact_chunks(chunks: Vec<ChunkPos>) -> Result<Vec<ChunkPos>, String> {
-    let chunks = chunks.into_iter().collect::<BTreeSet<_>>();
-    let Some(first) = chunks.first().copied() else {
-        return Err("精确选区为空".to_string());
-    };
-    if chunks
-        .iter()
-        .any(|chunk| chunk.dimension != first.dimension)
-    {
-        return Err("精确选区不能跨维度".to_string());
-    }
-    Ok(chunks.into_iter().collect())
-}
-
-/// Greedy exact cover. Every generated rectangle is fully contained in the
-/// selection, therefore invoking the legacy rectangle loader cannot fill holes.
-fn exact_chunk_rectangles(chunks: &[ChunkPos]) -> Result<Vec<SlimeChunkBounds>, String> {
-    let Some(first) = chunks.first().copied() else {
-        return Err("精确选区为空".to_string());
-    };
-    let dimension = first.dimension;
-    let mut remaining = chunks
-        .iter()
-        .map(|chunk| (chunk.z, chunk.x))
-        .collect::<BTreeSet<_>>();
-    let mut rectangles = Vec::new();
-
-    while let Some(&(start_z, start_x)) = remaining.first() {
-        let mut max_x = start_x;
-        while max_x < i32::MAX && remaining.contains(&(start_z, max_x.saturating_add(1))) {
-            max_x = max_x.saturating_add(1);
-        }
-
-        let mut max_z = start_z;
-        while max_z < i32::MAX {
-            let next_z = max_z.saturating_add(1);
-            if (start_x..=max_x).all(|x| remaining.contains(&(next_z, x))) {
-                max_z = next_z;
-            } else {
-                break;
-            }
-        }
-
-        for z in start_z..=max_z {
-            for x in start_x..=max_x {
-                remaining.remove(&(z, x));
-            }
-        }
-        rectangles.push(SlimeChunkBounds {
-            dimension,
-            min_chunk_x: start_x,
-            max_chunk_x: max_x,
-            min_chunk_z: start_z,
-            max_chunk_z: max_z,
-        });
-    }
-
-    Ok(rectangles)
 }
 
 fn merge_exact_preview_meshes(parts: &[Preview3dMesh], chunks: &[ChunkPos]) -> Preview3dMesh {
@@ -536,10 +477,17 @@ mod tests {
     }
 
     #[test]
-    fn rectangle_cover_never_fills_l_shape_hole() {
-        let chunks = vec![chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(0, 2)];
-        let rectangles = exact_chunk_rectangles(&chunks).expect("rectangles");
-        let covered = rectangles
+    fn public_render_plan_never_fills_l_shape_hole() {
+        let selection = ExactChunkSelection::new([
+            chunk(0, 0),
+            chunk(1, 0),
+            chunk(0, 1),
+            chunk(0, 2),
+        ])
+        .expect("selection");
+        let plan = ExactChunkRenderPlan::new(selection);
+        let covered = plan
+            .rectangle_cover()
             .iter()
             .flat_map(|bounds| {
                 (bounds.min_chunk_z..=bounds.max_chunk_z).flat_map(move |z| {
@@ -548,15 +496,22 @@ mod tests {
             })
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(covered.len(), chunks.len());
+        assert_eq!(covered.len(), plan.chunk_count());
         assert!(!covered.contains(&(1, 1)));
         assert!(!covered.contains(&(1, 2)));
     }
 
     #[test]
-    fn rectangle_cover_preserves_disconnected_chunks() {
-        let chunks = vec![chunk(0, 0), chunk(4, 0), chunk(4, 1)];
-        let rectangles = exact_chunk_rectangles(&chunks).expect("rectangles");
-        assert_eq!(rectangles.iter().map(SlimeChunkBounds::chunk_count).sum::<usize>(), 3);
+    fn public_render_plan_preserves_disconnected_chunks() {
+        let selection = ExactChunkSelection::new([chunk(0, 0), chunk(4, 0), chunk(4, 1)])
+            .expect("selection");
+        let plan = ExactChunkRenderPlan::new(selection);
+        assert_eq!(
+            plan.rectangle_cover()
+                .iter()
+                .map(SlimeChunkBounds::chunk_count)
+                .sum::<usize>(),
+            3
+        );
     }
 }
