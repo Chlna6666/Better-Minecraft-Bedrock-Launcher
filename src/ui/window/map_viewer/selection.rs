@@ -501,6 +501,7 @@ impl RightSelectionDrag {
     }
 
     fn additive(start_position: Point<Pixels>, start_chunk: ChunkPos, session_id: u64) -> Self {
+        let _ = apply_additive_drag(session_id, start_chunk);
         Self::with_intent(
             start_position,
             start_chunk,
