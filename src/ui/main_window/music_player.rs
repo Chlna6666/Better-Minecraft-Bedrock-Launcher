@@ -44,13 +44,11 @@ const MINI_CAPSULE_EXPANDED_WIDTH: f32 = 220.0;
 const MINI_CAPSULE_HEIGHT: f32 = 36.0;
 const MINI_CAPSULE_EXPANDED_GAP: f32 = 8.0;
 const MINI_CAPSULE_SIDE_PAD: f32 = 10.0;
-const MINI_CAPSULE_COMPACT_PAD: f32 = 4.0;
 const MINI_COVER_SIZE: f32 = 20.0;
 const MINI_PLAY_BUTTON_SIZE: f32 = 24.0;
 const MINI_BODY_SAFE_RIGHT_INSET: f32 = 4.0;
 const MINI_INLINE_EXPAND_MIN_WINDOW_WIDTH: f32 = 760.0;
-const MINI_PROGRESS_TRACK_HEIGHT: f32 = 3.0;
-const MINI_PROGRESS_BOTTOM: f32 = 3.0;
+const MINI_PROGRESS_TRACK_HEIGHT: f32 = 0.8;
 const FLOATING_INSET: f32 = 18.0;
 const FLOATING_POPUP_GAP: f32 = 10.0;
 
@@ -158,7 +156,8 @@ pub fn mini_capsule_width_for_factor(available: bool, factor: f32) -> Pixels {
         return px(0.0);
     }
 
-    // SpringValue 本身允许 overshoot。这里保留少量过冲，避免把 Q 弹动画截成线性伸缩。
+    // 只让右边缘承载 Spring overshoot；左侧停靠位移使用下方的单调 clamped factor。
+    // 这样仍有 Q 弹，但不会让整个胶囊左右来回抖。
     let factor = factor.clamp(0.0, 1.07);
     px(MINI_CAPSULE_COLLAPSED_WIDTH
         + (MINI_CAPSULE_EXPANDED_WIDTH - MINI_CAPSULE_COLLAPSED_WIDTH) * factor)
@@ -192,53 +191,45 @@ pub fn render_music_player(
         };
     }
 
-    let inline_k_raw = inline_motion_factor.clamp(0.0, 1.0);
-    // 在端点吸附布局状态，但宽度仍使用上面的原始 Spring overshoot。
-    let inline_k = if inline_k_raw <= 0.035 {
-        0.0
-    } else if inline_k_raw >= 0.995 {
-        1.0
-    } else {
-        inline_k_raw
-    };
-    let compact = inline_k <= 0.12;
+    // 所有水平布局都使用连续 factor；不在动画途中切换 justify/padding/radius 布局模式。
+    // 之前 compact 阈值跨越时 Flex 会重新排版，封面与正文同时跳位，是展开“抖一下”的主要来源。
+    let inline_k = inline_motion_factor.clamp(0.0, 1.0);
     let inline_fully_open = inline_k >= 0.985;
     let can_inline_expand = window_width / px(1.0) >= MINI_INLINE_EXPAND_MIN_WINDOW_WIDTH;
 
     // 默认停靠时精确隐藏胶囊的一半：父定位在 18px，子元素左移 36px，最终只露出 18px。
-    let edge_dock_k = (1.0 - inline_k).clamp(0.0, 1.0);
+    // Spring 超调不参与左边缘位移，因此左锚点稳定；弹性只发生在右边缘。
+    let edge_dock_k = 1.0 - inline_k;
     let edge_visible_width = MINI_CAPSULE_COLLAPSED_WIDTH * 0.5;
     let edge_shift = px(
         (FLOATING_INSET + MINI_CAPSULE_COLLAPSED_WIDTH - edge_visible_width) * edge_dock_k,
     );
 
-    // 让现有 SpringValue 的弹性真正可见：过渡中轻微上浮，过冲时再补一小段回弹位移。
+    // 保留轻微的垂直 Q 弹，不参与水平布局计算。
     let transition_lift = (4.0 * inline_k * (1.0 - inline_k)).clamp(0.0, 1.0);
     let overshoot_k = ((inline_motion_factor - 1.0) / 0.12).clamp(0.0, 1.0);
-    let inline_lift = px(-(2.25 * transition_lift + 2.75 * overshoot_k));
+    let inline_lift = px(-(2.0 * transition_lift + 2.25 * overshoot_k));
 
-    // 内容分层进入：标题先出现，按钮随后，进度条最后出现。
+    // 子内容固定在最终位置，仅做透明度和小幅位移；外层 overflow 负责自然裁切。
+    // 这样胶囊变宽时不会触发 Flex 宽度重算/重新居中。
     let content_k = ((inline_k - 0.12) / 0.88).clamp(0.0, 1.0);
     let title_k = ((inline_k - 0.18) / 0.82).clamp(0.0, 1.0);
     let controls_k = ((inline_k - 0.30) / 0.70).clamp(0.0, 1.0);
     let progress_reveal_k = ((inline_k - 0.44) / 0.56).clamp(0.0, 1.0);
-    let mini_outer_gap = px(MINI_CAPSULE_EXPANDED_GAP * content_k);
-    let mini_side_pad =
-        MINI_CAPSULE_COMPACT_PAD + (MINI_CAPSULE_SIDE_PAD - MINI_CAPSULE_COMPACT_PAD) * inline_k;
     let mini_body_full_width = (MINI_CAPSULE_EXPANDED_WIDTH
         - MINI_CAPSULE_SIDE_PAD * 2.0
         - MINI_COVER_SIZE
         - MINI_CAPSULE_EXPANDED_GAP
         - MINI_BODY_SAFE_RIGHT_INSET)
         .max(0.0);
-    let mini_body_width = px(mini_body_full_width * content_k);
-    let mini_body_offset = px(16.0 * (1.0 - content_k));
+    let mini_body_left = MINI_CAPSULE_SIDE_PAD + MINI_COVER_SIZE + MINI_CAPSULE_EXPANDED_GAP;
+    let mini_body_offset = 12.0 * (1.0 - content_k);
     let mini_label_max_width =
         (mini_body_full_width - MINI_CAPSULE_EXPANDED_GAP - MINI_PLAY_BUTTON_SIZE).max(0.0);
     let mini_label_space = px(mini_label_max_width);
-    let mini_label_offset = px(-10.0 * (1.0 - title_k));
+    let mini_label_offset = px(-8.0 * (1.0 - title_k));
     let mini_button_opacity = (0.12 + controls_k * 0.88).clamp(0.0, 1.0);
-    let mini_button_offset = px(9.0 * (1.0 - controls_k));
+    let mini_button_offset = px(7.0 * (1.0 - controls_k));
     let progress_ratio = displayed_progress_ratio.clamp(0.0, 1.0);
     let volume_ratio = displayed_volume_ratio.clamp(0.0, 1.0);
     let preview_current_seconds = if snapshot.total_seconds <= 0.0 {
@@ -276,9 +267,7 @@ pub fn render_music_player(
         ),
         size(px(VOLUME_TRACK_WIDTH), px(VOLUME_HIT_HEIGHT)),
     );
-    let mini_progress_track_width =
-        (MINI_CAPSULE_EXPANDED_WIDTH - MINI_CAPSULE_SIDE_PAD * 2.0).max(0.0);
-    let mini_progress_fill_width = mini_progress_track_width * progress_ratio;
+    let mini_progress_fill_width = (inline_width / px(1.0)) * progress_ratio;
     // 打开完整卡片后稍微淡化胶囊进度，避免两条进度轨同时抢视觉层级。
     let mini_progress_opacity = progress_reveal_k * (1.0 - popup_opacity * 0.72);
 
@@ -405,21 +394,11 @@ pub fn render_music_player(
         .top(inline_lift)
         .w(inline_width)
         .h(px(MINI_CAPSULE_HEIGHT))
-        .rounded(if compact { px(18.0) } else { px(20.0) })
-        .px(px(mini_side_pad))
-        .py(px(4.0))
-        .flex()
-        .items_center()
-        .when(compact, |this: Div| this.justify_center())
-        .gap(mini_outer_gap)
+        .rounded(px(MINI_CAPSULE_HEIGHT / 2.0))
         .overflow_hidden()
         .bg(capsule_bg)
         .border_1()
-        .border_color(if snapshot.is_playing && inline_k > 0.70 {
-            accent.opacity(0.30)
-        } else {
-            border_color
-        })
+        .border_color(border_color)
         .cursor_pointer()
         .occlude()
         .window_control_area(WindowControlArea::Client)
@@ -453,67 +432,70 @@ pub fn render_music_player(
                 );
             }
         })
-        .child(inline_cover(inline_cover_content))
-        .child(
-            div()
-                .w(mini_body_width)
-                .min_w(px(0.0))
-                .overflow_hidden()
-                .opacity(content_k)
-                .child(
-                    div()
-                        .relative()
-                        .left(mini_body_offset)
-                        .w(px(mini_body_full_width))
-                        .flex()
-                        .items_center()
-                        .gap(px(MINI_CAPSULE_EXPANDED_GAP))
-                        .child(
-                            div()
-                                .w(mini_label_space)
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .child(
-                                    div()
-                                        .relative()
-                                        .left(mini_label_offset)
-                                        .opacity(title_k)
-                                        .child(clipped_text(
-                                            snapshot.title.clone(),
-                                            mini_label_space,
-                                            12.0,
-                                            16.0,
-                                            text_color,
-                                            FontWeight::SEMIBOLD,
-                                            title_k,
-                                        )),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .relative()
-                                .left(mini_button_offset)
-                                .child(inline_play_button),
-                        ),
-                ),
-        )
         .child(
             div()
                 .absolute()
                 .left(px(MINI_CAPSULE_SIDE_PAD))
-                .bottom(px(MINI_PROGRESS_BOTTOM))
-                .w(px(mini_progress_track_width))
+                .top(px((MINI_CAPSULE_HEIGHT - MINI_COVER_SIZE) / 2.0))
+                .w(px(MINI_COVER_SIZE))
+                .h(px(MINI_COVER_SIZE))
+                .child(inline_cover(inline_cover_content)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(mini_body_left + mini_body_offset))
+                .top(px((MINI_CAPSULE_HEIGHT - MINI_PLAY_BUTTON_SIZE) / 2.0))
+                .w(px(mini_body_full_width))
+                .h(px(MINI_PLAY_BUTTON_SIZE))
+                .opacity(content_k)
+                .flex()
+                .items_center()
+                .gap(px(MINI_CAPSULE_EXPANDED_GAP))
+                .child(
+                    div()
+                        .w(mini_label_space)
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .relative()
+                                .left(mini_label_offset)
+                                .opacity(title_k)
+                                .child(clipped_text(
+                                    snapshot.title.clone(),
+                                    mini_label_space,
+                                    12.0,
+                                    16.0,
+                                    text_color,
+                                    FontWeight::SEMIBOLD,
+                                    title_k,
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .left(mini_button_offset)
+                        .child(inline_play_button),
+                ),
+        )
+        .child(
+            // 0.8px 进度轨直接贴胶囊外轮廓底边，不留 inset，不再形成第二条“内部组件”。
+            div()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
                 .h(px(MINI_PROGRESS_TRACK_HEIGHT))
-                .rounded_full()
                 .overflow_hidden()
                 .opacity(mini_progress_opacity)
-                .bg(muted_bg.opacity(0.72))
+                .bg(muted_bg.opacity(0.66))
                 .child(
                     div()
                         .h_full()
                         .w(px(mini_progress_fill_width))
-                        .rounded_full()
-                        .bg(accent.opacity(0.96)),
+                        .bg(accent.opacity(0.94)),
                 ),
         )
         .into_any_element();
