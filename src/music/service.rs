@@ -93,14 +93,17 @@ impl MusicController {
         self.current_index = index.min(self.tracks.len().saturating_sub(1));
     }
 
-    pub fn scan_library_tracks() -> Result<Vec<MusicTrack>> {
-        library::scan_library_tracks()
+    pub fn scan_library_tracks(
+        audio_decoders: &[crate::plugins::runtime::PluginAudioDecoder],
+    ) -> Result<Vec<MusicTrack>> {
+        library::scan_library_tracks(audio_decoders)
     }
 
     fn library_matches(&self, tracks: &[MusicTrack]) -> bool {
         self.tracks.len() == tracks.len()
             && self.tracks.iter().zip(tracks).all(|(left, right)| {
                 left.path == right.path
+                    && left.cover_path == right.cover_path
                     && left.title == right.title
                     && left.artist == right.artist
                     && left.cover_key == right.cover_key
@@ -184,7 +187,7 @@ impl MusicController {
             anyhow::bail!("no track selected")
         };
 
-        let track_path = track.path.clone();
+        let track_path = track.playback_path.clone();
         let file = File::open(track_path.as_ref())
             .with_context(|| format!("failed to open track: {}", track_path.display()))?;
         let decoder =
@@ -326,6 +329,27 @@ impl MusicController {
             position_seconds = self.last_position.as_secs_f32(),
             "music: playback paused and sink released"
         );
+    }
+
+    pub fn pause(&mut self) {
+        if self.paused {
+            return;
+        }
+        if let Some(sink) = &self.sink {
+            self.last_position = sink.get_pos();
+        }
+        self.release_sink();
+        self.paused = true;
+    }
+
+    pub fn resume(&mut self) {
+        if !self.paused || self.tracks.is_empty() {
+            return;
+        }
+        if let Err(error) = self.recreate_sink(false) {
+            error!(%error, "music: failed to resume playback");
+            self.last_error = Some(error.to_string());
+        }
     }
 
     pub fn play_next(&mut self) {

@@ -20,13 +20,22 @@ struct NavigationPalette {
 }
 
 pub(super) fn render_sidebar(colors: &ThemeColors, active: ToolsTab) -> Div {
-    let items = [ToolNavigationItem {
-        id: "tools-online",
-        tab: ToolsTab::Online,
-        label: "联机大厅",
-        description: "创建或加入 EasyTier 房间",
-        icon: lucide_icons::icon_users(),
-    }];
+    let items = [
+        ToolNavigationItem {
+            id: "tools-online",
+            tab: ToolsTab::Online,
+            label: "联机大厅",
+            description: "创建或加入 EasyTier 房间",
+            icon: lucide_icons::icon_users(),
+        },
+        ToolNavigationItem {
+            id: "tools-ncm-converter",
+            tab: ToolsTab::NcmConverter,
+            label: "NCM 转换",
+            description: "选择本地文件并解析导出",
+            icon: lucide_icons::icon_download(),
+        },
+    ];
 
     crate::ui::components::page_shell::split_sidebar_panel(colors)
         .p(px(14.))

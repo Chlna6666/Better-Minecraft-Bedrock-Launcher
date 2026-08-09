@@ -97,7 +97,10 @@ impl MusicController {
                 continue;
             }
             items.push(CoverPreloadItem::new(
-                track.path.as_ref().clone(),
+                track.cover_path.as_ref().map_or_else(
+                    || track.playback_path.as_ref().clone(),
+                    |path| path.as_ref().clone(),
+                ),
                 cover_cache_key,
             ));
         }
@@ -106,10 +109,11 @@ impl MusicController {
     pub fn current_cover_request(&self) -> Option<CoverDecodeRequest> {
         let track = self.tracks.get(self.current_index)?;
         let cover_cache_key = track.cover_key?;
+        let cover_path = track.cover_path.as_ref()?.as_ref();
         if self
             .current_cover_path
             .as_ref()
-            .is_some_and(|path| path == track.path.as_ref())
+            .is_some_and(|path| path == cover_path)
             && self.current_cover_cache_key == Some(cover_cache_key)
         {
             return None;
@@ -117,7 +121,7 @@ impl MusicController {
 
         Some(CoverDecodeRequest {
             generation: self.generation,
-            track_path: track.path.as_ref().clone(),
+            track_path: cover_path.clone(),
             cover_cache_key: Some(cover_cache_key),
         })
     }
@@ -134,7 +138,12 @@ impl MusicController {
         let Some(current_track) = self.tracks.get(self.current_index) else {
             return false;
         };
-        if current_track.path.as_ref() != &request.track_path {
+        if current_track
+            .cover_path
+            .as_deref()
+            .map(|path| path.as_path())
+            != Some(request.track_path.as_path())
+        {
             return false;
         }
 

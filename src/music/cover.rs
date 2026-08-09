@@ -120,6 +120,10 @@ pub fn decode_cover_thumbnail(track_path: &Path) -> Option<DecodedCoverImage> {
         .as_ref()
         .and_then(|tagged_file| decode_tagged_file_cover_thumbnail(tagged_file, started))
         .or_else(|| decode_raw_id3v2_apic_thumbnail(track_path, started))
+        .or_else(|| {
+            let bytes = std::fs::read(track_path).ok()?;
+            decode_image_thumbnail(&bytes, bytes.len(), started)
+        })
 }
 
 fn decode_raw_id3v2_apic_thumbnail(
@@ -387,6 +391,23 @@ mod tests {
         tag.extend_from_slice(&frame);
 
         let decoded = decode_id3v2_apic_thumbnail_from_bytes(&tag, Instant::now());
+
+        assert_eq!(decoded.map(|image| image.source_byte_len), Some(png.len()));
+    }
+
+    #[test]
+    fn decode_cover_thumbnail_accepts_standalone_image() {
+        let png = [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let file = tempfile::NamedTempFile::new().expect("temporary cover should be created");
+        std::fs::write(file.path(), png).expect("temporary cover should be written");
+
+        let decoded = decode_cover_thumbnail(file.path());
 
         assert_eq!(decoded.map(|image| image.source_byte_len), Some(png.len()));
     }

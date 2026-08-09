@@ -3,11 +3,12 @@ use crate::music::{
     MusicPlaybackSnapshot, MusicTrack,
 };
 use crate::ui::animation::{ease_out_cubic, raw_progress};
-use gpui::{App, Global, RenderImage};
+use gpui::{App, BorrowAppContext, Global, RenderImage};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
+pub(crate) use super::music_loader::request_library_reload;
 pub use super::music_loader::spawn_library_load;
 use super::music_types::render_image_from_decoded_cover;
 pub use super::music_types::{MusicDragTarget, MusicSnapshot};
@@ -78,7 +79,42 @@ enum PersistMusicState {
     WhenChanged,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TemporaryMusicPause {
+    resume: bool,
+}
+
 impl MusicState {
+    pub(crate) fn pause_temporarily(&mut self, cx: &mut App) -> TemporaryMusicPause {
+        let token = TemporaryMusicPause {
+            resume: self.snapshot.is_playing,
+        };
+        if token.resume {
+            self.spawn_controller_update(
+                "temporarily pause music",
+                PersistMusicState::No,
+                cx,
+                MusicController::pause,
+            );
+        }
+        token
+    }
+
+    pub(crate) fn resume_after_temporary_pause(
+        &mut self,
+        token: TemporaryMusicPause,
+        cx: &mut App,
+    ) {
+        if token.resume {
+            self.spawn_controller_update(
+                "resume temporarily paused music",
+                PersistMusicState::No,
+                cx,
+                MusicController::resume,
+            );
+        }
+    }
+
     pub fn install_tracks_with_config(
         &mut self,
         tracks: Vec<MusicTrack>,
@@ -93,6 +129,15 @@ impl MusicState {
             move |controller| {
                 controller.install_tracks_with_config(tracks, &config);
             },
+        );
+    }
+
+    pub fn replace_library_tracks(&mut self, tracks: Vec<MusicTrack>, cx: &mut App) {
+        self.spawn_controller_update(
+            "replace music library tracks",
+            PersistMusicState::No,
+            cx,
+            move |controller| controller.install_tracks(tracks),
         );
     }
 
@@ -485,11 +530,9 @@ impl MusicState {
                     return;
                 }
 
-                cx.update_global(
-                    |topbar: &mut crate::ui::main_window::chrome::AppChromeState, _cx| {
-                        topbar.set_music_inline_expanded(false, now);
-                    },
-                );
+                cx.update_global(|topbar: &mut crate::ui::main_window::AppChromeState, _cx| {
+                    topbar.set_music_inline_expanded(false, now);
+                });
                 cx.refresh_windows();
             })?;
             Ok::<(), anyhow::Error>(())

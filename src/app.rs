@@ -337,6 +337,8 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     cx.default_global::<crate::ui::state::diagnostics::DiagnosticsState>();
     #[cfg(target_os = "windows")]
     cx.default_global::<crate::ui::state::music::MusicState>();
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    cx.default_global::<crate::ui::state::sound_effect::SoundEffectState>();
     cx.default_global::<crate::ui::state::bedrock_auth::BedrockAuthState>();
     cx.default_global::<crate::ui::main_window::AppChromeState>();
     cx.default_global::<crate::ui::components::toast::ToastState>();

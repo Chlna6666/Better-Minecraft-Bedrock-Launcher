@@ -196,9 +196,8 @@ pub fn render_music_player(
     // 默认停靠时精确隐藏胶囊的一半；位置和宽度都只做单向连续变化。
     let edge_dock_k = 1.0 - inline_k;
     let edge_visible_width = MINI_CAPSULE_COLLAPSED_WIDTH * 0.5;
-    let edge_shift = px(
-        (FLOATING_INSET + MINI_CAPSULE_COLLAPSED_WIDTH - edge_visible_width) * edge_dock_k,
-    );
+    let edge_shift =
+        px((FLOATING_INSET + MINI_CAPSULE_COLLAPSED_WIDTH - edge_visible_width) * edge_dock_k);
 
     // Q 感留在内容分层进入节奏，不让外框反向回摆。
     let content_k = ((inline_k - 0.12) / 0.88).clamp(0.0, 1.0);

@@ -13,6 +13,8 @@ mod launch;
 mod music;
 mod plugins;
 mod result;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod sound_effect;
 mod startup;
 mod tasks;
 mod ui;

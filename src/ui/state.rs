@@ -17,5 +17,7 @@ mod music_loader;
 mod music_types;
 pub mod navigation;
 pub mod quit;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub(crate) mod sound_effect;
 pub mod theme;
 pub mod update;

@@ -32,10 +32,12 @@ mod chrome_view;
 #[path = "main_window/chrome_view_linux.rs"]
 mod chrome_view;
 mod controls;
+mod easter_egg;
 #[cfg(target_os = "windows")]
 mod music_player;
 mod page_loading;
 mod page_registry;
+mod quit;
 mod route_effects;
 mod support;
 mod update_flow;
@@ -198,7 +200,7 @@ struct MainWindowRenderModel {
     window_height: Pixels,
     update_render_state: UpdateRenderState,
     agreement_render_state: AgreementRenderState,
-    close_k: f32,
+    quit_progress: f32,
     quit_animating: bool,
     show_update_modal: bool,
     update_modal_visible: bool,
@@ -266,6 +268,7 @@ pub struct MainWindowView {
     last_toast_had_content: bool,
     last_minecraft_termination_dialog:
         crate::ui::views::tools::state::MinecraftTerminationDialogState,
+    easter_egg: easter_egg::EasterEggState,
 }
 
 impl MainWindowView {
@@ -388,7 +391,9 @@ impl MainWindowView {
         let window_width = window_bounds.size.width;
         let window_height = window_bounds.size.height;
         let agreement_render_state = self.read_agreement_render_state(cx);
-        let close_k = cx.global::<crate::ui::state::quit::QuitState>().factor(now);
+        let quit_progress = cx
+            .global::<crate::ui::state::quit::QuitState>()
+            .progress(now);
         let quit_animating = cx
             .global::<crate::ui::state::quit::QuitState>()
             .is_animating(now);
@@ -444,7 +449,7 @@ impl MainWindowView {
             window_height,
             update_render_state,
             agreement_render_state,
-            close_k,
+            quit_progress,
             quit_animating,
             show_update_modal,
             update_modal_visible,
@@ -528,11 +533,15 @@ impl MainWindowView {
                     .into_any_element(),
             );
 
-        let close_k = model.close_k.clamp(0.0, 1.0);
-        if close_k > 0.0 {
+        let quit_progress = model.quit_progress.clamp(0.0, 1.0);
+        if quit_progress > 0.0 {
+            let visual = quit::visual_state(quit_progress);
             root = root
-                .opacity(1.0 - close_k)
-                .top(px(close_k.powf(1.25) * 10.0));
+                .opacity(visual.opacity)
+                .scale(visual.scale)
+                .top(visual.offset_y)
+                .rounded(px(18.0))
+                .overflow_hidden();
         }
 
         root = root.child(page);
@@ -1727,6 +1736,7 @@ impl Render for MainWindowView {
 
         let page = self.render_active_page(&model.route, model.route_transition_direction);
         let root = self.compose_root(&model, page, window, cx);
+        let root = self.compose_easter_egg(root, &model, window, cx);
 
         let render_elapsed = render_started.elapsed();
         if render_elapsed >= Duration::from_millis(16) {
@@ -1767,6 +1777,11 @@ impl Render for MainWindowView {
 mod tests {
     use super::background_animation_suppressed;
     use crate::ui::navigation::{AppRoute, RouteTarget};
+
+    #[test]
+    fn c4_easter_egg_logic() {
+        super::easter_egg::verify_easter_egg_logic();
+    }
 
     #[test]
     fn non_home_route_does_not_suppress_background_animation() {

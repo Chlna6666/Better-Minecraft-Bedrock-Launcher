@@ -5,7 +5,6 @@ use crate::ui::animation::{SpringValue, apple_spring};
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::navigation::{self, AppRoute, RouteTarget};
 use crate::ui::state::bedrock_auth::BedrockAuthState;
-use crate::ui::state::quit::QuitState;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::{DarkColors, LightColors, lerp_theme_colors};
@@ -963,20 +962,9 @@ pub(super) fn render_app_chrome(
         .child(
             icon_button("window-close-linux", lucide_icons::icon_x()).on_mouse_down(
                 MouseButton::Left,
-                |_, _, cx| {
+                |_, window, cx| {
                     cx.stop_propagation();
-                    let now = Instant::now();
-                    let (started, duration) = cx.update_global(|state: &mut QuitState, _cx| {
-                        (state.request_quit(now), state.duration())
-                    });
-                    if started {
-                        cx.spawn(async move |cx| -> gpui::Result<()> {
-                            cx.background_executor().timer(duration).await;
-                            cx.update(|cx| cx.quit())?;
-                            Ok(())
-                        })
-                        .detach_and_log_err(cx);
-                    }
+                    super::quit::request(window, cx);
                 },
             ),
         );
