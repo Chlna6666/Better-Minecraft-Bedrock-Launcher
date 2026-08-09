@@ -1,0 +1,37 @@
+name: Harden legacy UWP isolation once
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - tools/harden-legacy-uwp-bloader-isolation.py
+      - .github/workflows/harden-legacy-uwp-isolation-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-hardening:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/verify-legacy-uwp-1.18.30-isolation-clean
+          fetch-depth: 0
+      - name: Apply strict isolation
+        shell: pwsh
+        run: |
+          python tools/harden-legacy-uwp-bloader-isolation.py
+          rustfmt --edition 2024 src/core/minecraft/launcher/task.rs
+          git diff --check
+      - name: Commit hardened source and remove temporary CI files
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          Remove-Item -Force tools/harden-legacy-uwp-bloader-isolation.py
+          Remove-Item -Force .github/workflows/harden-legacy-uwp-isolation-once.yml
+          git add -A
+          git commit -m "fix(launcher): enforce strict no-BLoader UWP isolation"
+          git push origin HEAD:ci/verify-legacy-uwp-1.18.30-isolation-clean
