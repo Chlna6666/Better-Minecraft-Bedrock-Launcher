@@ -12,12 +12,10 @@ cargo bench --bench render --all-features
 ```
 
 快速套件覆盖代表性的 tile 渲染、chunk bake 和小批量渲染。完整 web-map 导出比较慢，
-需要显式开启：
+默认由 `RUN_FULL_BENCHMARKS = false` 关闭；运行前把 `benches/render.rs` 中该常量改为 `true`：
 
 ```powershell
-$env:BEDROCK_RENDER_FULL_BENCH='1'
 cargo bench --bench render --all-features
-Remove-Item Env:\BEDROCK_RENDER_FULL_BENCH
 ```
 
 ## 缓存与验证对比
@@ -75,13 +73,12 @@ v0.2.0 editor 门面还会输出：
 
 ## GPU 对比套件
 
-GPU 对比是 opt-in 的，因为它依赖本机驱动、适配器和后台负载。Windows 专业对比
+GPU 对比是 opt-in 的，因为它依赖本机驱动、适配器和后台负载。运行前把
+`benches/render.rs` 中的 `RUN_GPU_COMPARISON_REPORTS` 改为 `true`；Windows 专业对比
 应该至少覆盖 `CPU`、`Auto`、`DX11` 和 `Vulkan` 四个路径：
 
 ```powershell
-$env:BEDROCK_RENDER_GPU_BENCH='1'
 cargo bench --bench render --features "gpu-dx11 gpu-vulkan" -- --noplot __machine_report_only__
-Remove-Item Env:\BEDROCK_RENDER_GPU_BENCH
 ```
 
 如果需要同时验证 DX12 crate 编译，可单独在 `bedrock-render` 仓库运行
@@ -241,13 +238,12 @@ The v0.2.0 editor facade reports are emitted alongside the render reports:
 ## GPU Comparison Suite
 
 GPU comparison is opt-in because it depends on local drivers, adapters, and
-background load. On Windows, professional comparisons should cover `CPU`,
-`Auto`, `DX11`, and `Vulkan`:
+background load. Set `RUN_GPU_COMPARISON_REPORTS` to `true` in
+`benches/render.rs` first. On Windows, professional comparisons should cover
+`CPU`, `Auto`, `DX11`, and `Vulkan`:
 
 ```powershell
-$env:BEDROCK_RENDER_GPU_BENCH='1'
 cargo bench --bench render --features "gpu-dx11 gpu-vulkan" -- --noplot __machine_report_only__
-Remove-Item Env:\BEDROCK_RENDER_GPU_BENCH
 ```
 
 If DX12 crate compilation needs to be verified, run
@@ -311,12 +307,11 @@ When collecting local numbers, record:
 ## Full Export Suite
 
 Full web-map export benchmarks are intentionally opt-in because each sample can
-take multiple seconds and can be dominated by disk throughput:
+take multiple seconds and can be dominated by disk throughput. Set
+`RUN_FULL_BENCHMARKS` to `true` in `benches/render.rs` first:
 
 ```powershell
-$env:BEDROCK_RENDER_FULL_BENCH='1'
 cargo bench --bench render --all-features
-Remove-Item Env:\BEDROCK_RENDER_FULL_BENCH
 ```
 
 ## Latest Local Baseline

@@ -134,8 +134,11 @@ fn emit_machine_readable_report_with_options(
     );
 }
 
+const RUN_GPU_COMPARISON_REPORTS: bool = false;
+const RUN_FULL_BENCHMARKS: bool = false;
+
 fn emit_gpu_comparison_reports(renderer: &MapRenderer<impl bedrock_world::WorldStorageHandle>) {
-    if std::env::var_os("BEDROCK_RENDER_GPU_BENCH").is_none() {
+    if !RUN_GPU_COMPARISON_REPORTS {
         return;
     }
     for (label, backend, gpu_backend) in [
@@ -514,7 +517,7 @@ fn render_benches(c: &mut Criterion) {
         },
     );
 
-    if std::env::var_os("BEDROCK_RENDER_FULL_BENCH").is_none() {
+    if !RUN_FULL_BENCHMARKS {
         return;
     }
 

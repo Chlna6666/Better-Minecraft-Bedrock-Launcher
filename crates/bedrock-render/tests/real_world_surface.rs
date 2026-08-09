@@ -11,13 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[test]
-#[ignore = "requires BEDROCK_RENDER_REAL_WORLD to point at the failing local world"]
+#[ignore = "requires tests/fixtures/bedrock-world to contain the failing local world"]
 fn real_world_exact_surface_finds_secondary_storage_surface()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(world_path) = std::env::var_os("BEDROCK_RENDER_REAL_WORLD").map(PathBuf::from) else {
-        eprintln!("BEDROCK_RENDER_REAL_WORLD is not set; skipping real-world smoke test");
-        return Ok(());
-    };
+    let world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let world = Arc::new(BedrockWorld::open_blocking(
         &world_path,
         OpenOptions::default(),
@@ -83,13 +80,10 @@ fn real_world_exact_surface_finds_secondary_storage_surface()
 }
 
 #[test]
-#[ignore = "requires BEDROCK_RENDER_REAL_WORLD to point at the failing local world"]
+#[ignore = "requires tests/fixtures/bedrock-world to contain the failing local world"]
 fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(world_path) = std::env::var_os("BEDROCK_RENDER_REAL_WORLD").map(PathBuf::from) else {
-        eprintln!("BEDROCK_RENDER_REAL_WORLD is not set; skipping real-world regression test");
-        return Ok(());
-    };
+    let world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let world = BedrockWorld::open_blocking(&world_path, OpenOptions::default())?;
 
     for (block_x, block_z) in [(340_i32, 36_i32), (360_i32, 67_i32)] {
@@ -147,13 +141,10 @@ fn real_world_zero_bit_top_subchunks_parse_and_sample_above_stone()
 }
 
 #[test]
-#[ignore = "requires BEDROCK_RENDER_REAL_WORLD to point at the failing local world"]
+#[ignore = "requires tests/fixtures/bedrock-world to contain the failing local world"]
 fn real_world_cobblestone_slab_aliases_render_consistently()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(world_path) = std::env::var_os("BEDROCK_RENDER_REAL_WORLD").map(PathBuf::from) else {
-        eprintln!("BEDROCK_RENDER_REAL_WORLD is not set; skipping slab alias regression test");
-        return Ok(());
-    };
+    let world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let world = Arc::new(BedrockWorld::open_blocking(
         &world_path,
         OpenOptions::default(),

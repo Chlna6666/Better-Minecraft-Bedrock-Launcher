@@ -514,12 +514,10 @@ cargo bench --bench render --all-features
 ```
 
 默认 benchmark 套件覆盖瓦片渲染、chunk bake、小批量渲染和 v0.2.0 editor 门面扫描。完整 web-map 导出 benchmark
-需要显式开启：
+默认关闭；运行前先把 `benches/render.rs` 中的 `RUN_FULL_BENCHMARKS` 改为 `true`：
 
 ```text
-$env:BEDROCK_RENDER_FULL_BENCH='1'
 cargo bench --bench render --all-features
-Remove-Item Env:\BEDROCK_RENDER_FULL_BENCH
 ```
 
 如果只需要固定字段的机器可读报告，而不是完整 Criterion 采样，可以使用一个不匹配任何

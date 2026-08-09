@@ -67,12 +67,11 @@ default render groups contain more than one tile when multiple cache misses are
 available, and that `world_worker_threads` rises above one unless
 `RenderThreadingOptions::Single` is explicitly selected.
 
-Manual GPU performance comparison should use:
+After setting `RUN_GPU_COMPARISON_REPORTS` to `true` in `benches/render.rs`,
+manual GPU performance comparison should use:
 
 ```powershell
-$env:BEDROCK_RENDER_GPU_BENCH='1'
 cargo bench --bench render --features "gpu-dx11 gpu-vulkan" -- --noplot __machine_report_only__
-Remove-Item Env:\BEDROCK_RENDER_GPU_BENCH
 ```
 
 Record the raw `bedrock_render_report` lines in the issue/PR. A machine is only

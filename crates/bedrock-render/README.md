@@ -585,12 +585,10 @@ cargo bench --bench render --all-features
 
 The default benchmark suite measures tile rendering, chunk baking, small batch
 behavior, and v0.2.0 editor facade scans. Full web-map export benchmarks are
-opt-in:
+opt-in; set `RUN_FULL_BENCHMARKS` to `true` in `benches/render.rs` first:
 
 ```text
-$env:BEDROCK_RENDER_FULL_BENCH='1'
 cargo bench --bench render --all-features
-Remove-Item Env:\BEDROCK_RENDER_FULL_BENCH
 ```
 
 More details are in [docs/API.md](docs/API.md), [docs/TESTING.md](docs/TESTING.md),
