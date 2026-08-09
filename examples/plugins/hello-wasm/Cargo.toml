@@ -34,7 +34,6 @@ config_default = "config/default.toml"
 config_schema = "config/schema.toml"
 
 [package.metadata.bmcbl-plugin.limits]
-memory_mb = 64
 max_storage_bytes = 1048576
 
 [lints.rust]

@@ -42,7 +42,6 @@ allow = [
 allow = ["assets/"]
 
 [package.metadata.bmcbl-plugin.limits]
-memory_mb = 64
 max_http_bytes = 524288
 
 [lints.rust]
