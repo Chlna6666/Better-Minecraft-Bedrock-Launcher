@@ -2,6 +2,7 @@ use crate::core::levilamina::{LeviLaminaModEntry, mod_matches_loader_version};
 use crate::ui::components::button::{Button, IconButton};
 use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::scroll::ScrollableElement as _;
+use crate::ui::components::toast;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
 use gpui::prelude::FluentBuilder as _;
@@ -572,16 +573,7 @@ fn render_mod_card(colors: &ThemeColors, mod_entry: &LeviLaminaModEntry, idx: us
                         .text_color(colors.accent)
                         .on_click(move |_ev, _window, cx| {
                             let m = mod_clone_for_detail.clone();
-                            let first_ver = m
-                                .client_versions
-                                .first()
-                                .cloned()
-                                .unwrap_or_else(|| "".to_string());
-                            cx.update_global(|s: &mut DownloadPageState, _cx| {
-                                s.levilauncher_selected_mod = Some(m);
-                                s.levilauncher_selected_version = SharedString::from(first_ver);
-                                s.levilauncher_modal_open = true;
-                            });
+                            super::mod_install::open_modal(m, cx);
                         }),
                 ),
         )
@@ -665,16 +657,31 @@ pub(super) fn render_detail_modal_content(
     let mod_updated = mod_entry.updated_at.clone();
     let mod_stars = mod_entry.stargazer_count;
 
-    let versions = mod_entry.client_versions.clone();
-    let selected_ver = cx.read_global(|state: &DownloadPageState, _cx| {
-        state.levilauncher_selected_version.to_string()
+    let (targets, targets_loading, selected_target_path, selected_ver, install_busy, install_error) =
+        cx.read_global(|state: &DownloadPageState, _cx| {
+            (
+                state.levilauncher_install_targets.clone(),
+                state.levilauncher_install_targets_loading,
+                state.levilauncher_install_target_path.clone(),
+                state.levilauncher_selected_version.to_string(),
+                state.levilauncher_install_busy,
+                state.levilauncher_install_error.clone(),
+            )
+        });
+    let selected_target_index = selected_target_path
+        .as_ref()
+        .and_then(|path| targets.iter().position(|target| &target.path == path))
+        .unwrap_or(0);
+    let selected_target = targets.get(selected_target_index);
+    let versions = selected_target.map_or_else(Vec::new, |target| {
+        super::mod_install::compatible_releases(mod_entry, target.loader_version.as_ref())
     });
-
-    let current_ver = if selected_ver.is_empty() {
-        versions.first().cloned().unwrap_or_default()
-    } else {
-        selected_ver.clone()
-    };
+    let current_ver = versions
+        .iter()
+        .find(|version| **version == selected_ver)
+        .cloned()
+        .or_else(|| versions.first().cloned())
+        .unwrap_or_default();
 
     let deps = mod_entry
         .version_dependencies
@@ -695,10 +702,16 @@ pub(super) fn render_detail_modal_content(
         "mod-modal-version-dropdown",
         colors,
         px(180.),
-        SharedString::from(current_ver.clone()),
+        if targets_loading {
+            SharedString::from("正在检查...")
+        } else if current_ver.is_empty() {
+            SharedString::from("无兼容版本")
+        } else {
+            SharedString::from(current_ver.clone())
+        },
         version_options,
         selected_version_index,
-        true,
+        !versions.is_empty() && !install_busy,
         move |ix, _window, cx| {
             if let Some(ver) = versions_for_closure.get(ix) {
                 let ver_str = ver.clone();
@@ -712,7 +725,51 @@ pub(super) fn render_detail_modal_content(
     .rounded(px(crate::ui::theme::tokens::radius::SM))
     .into_any_element();
 
-    let lip_cmd = format!("lip install {}@{}", mod_id, current_ver);
+    let target_label = selected_target.map_or_else(
+        || {
+            SharedString::from(if targets_loading {
+                "正在检查 LeviLamina 实例..."
+            } else {
+                "没有已安装且兼容的 LeviLamina 实例"
+            })
+        },
+        |target| target.label.clone(),
+    );
+    let target_options = targets
+        .iter()
+        .map(|target| DropdownOption::from(target.label.clone()))
+        .collect::<Vec<_>>();
+    let targets_for_dropdown = targets.clone();
+    let mod_for_target = mod_entry.clone();
+    let target_select = Dropdown::new(
+        "mod-modal-target-dropdown",
+        colors,
+        px(260.),
+        target_label,
+        target_options,
+        selected_target_index,
+        !targets_loading && !targets.is_empty() && !install_busy,
+        move |index, _window, cx| {
+            if let Some(target) = targets_for_dropdown.get(index) {
+                let selected_version = super::mod_install::compatible_releases(
+                    &mod_for_target,
+                    target.loader_version.as_ref(),
+                )
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    state.levilauncher_install_target_path = Some(target.path.clone());
+                    state.levilauncher_install_target_version = target.game_version.clone();
+                    state.levilauncher_selected_version = SharedString::from(selected_version);
+                    state.levilauncher_install_error = None;
+                });
+            }
+        },
+    )
+    .with_height(px(32.))
+    .rounded(px(crate::ui::theme::tokens::radius::SM))
+    .into_any_element();
 
     let header = div()
         .w_full()
@@ -874,15 +931,24 @@ pub(super) fn render_detail_modal_content(
         )
         .child(
             div()
-                .p(px(12.))
-                .rounded(px(crate::ui::theme::tokens::radius::MD))
-                .bg(Hsla {
-                    a: 0.08,
-                    ..colors.danger
-                })
-                .text_size(px(12.))
-                .text_color(colors.danger)
-                .child("当前仅支持显示 LeviLamina 模组信息，暂不支持在启动器内安装。"),
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_primary)
+                        .child("安装到游戏版本"),
+                )
+                .child(target_select)
+                .children(install_error.map(|error| {
+                    div()
+                        .text_size(px(12.))
+                        .text_color(colors.danger)
+                        .child(error)
+                        .into_any_element()
+                })),
         )
         .child(
             div()
@@ -897,40 +963,12 @@ pub(super) fn render_detail_modal_content(
                         .child("该版本依赖项:"),
                 )
                 .child(render_dependencies_list(colors, &deps)),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(colors.text_muted)
-                        .child("LIP 参考指令（需使用 LIP 工具执行）:"),
-                )
-                .child(
-                    div()
-                        .p(px(10.))
-                        .rounded(px(crate::ui::theme::tokens::radius::SM))
-                        .bg(Hsla {
-                            a: 0.08,
-                            ..colors.settings_card_bg
-                        })
-                        .border_1()
-                        .border_color(Hsla {
-                            a: 0.1,
-                            ..colors.border
-                        })
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(colors.accent)
-                        .child(lip_cmd.clone()),
-                ),
         );
 
-    let lip_cmd_copy = lip_cmd;
+    let install_mod_id = mod_id;
+    let install_mod_version = current_ver.clone();
+    let can_install =
+        !install_busy && !targets_loading && !targets.is_empty() && !current_ver.is_empty();
     let footer = div()
         .px(px(20.))
         .py(px(14.))
@@ -963,16 +1001,17 @@ pub(super) fn render_detail_modal_content(
                 }),
         )
         .child(
-            Button::new("mod-modal-copy-lip")
-                .label("复制 LIP 参考指令")
+            Button::new("mod-modal-install")
+                .label(if install_busy {
+                    "正在安装..."
+                } else {
+                    "安装"
+                })
                 .bg(colors.accent)
                 .text_color(colors.btn_primary_text)
+                .opacity(if can_install { 1.0 } else { 0.5 })
                 .on_click(move |_ev, _window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(lip_cmd_copy.clone()));
-                    cx.update_global(|s: &mut DownloadPageState, _cx| {
-                        s.levilauncher_modal_open = false;
-                        s.levilauncher_selected_mod = None;
-                    });
+                    start_mod_install(cx, install_mod_id.clone(), install_mod_version.clone());
                 }),
         );
 
@@ -989,6 +1028,73 @@ pub(super) fn render_detail_modal_content(
         .child(header)
         .child(body)
         .child(footer)
+}
+
+fn start_mod_install(cx: &mut App, package_id: String, version: String) {
+    if version.trim().is_empty() {
+        toast::error(cx, SharedString::from("当前实例没有可用的 Mod 版本"));
+        return;
+    }
+    let target = cx.read_global(|state: &DownloadPageState, _cx| {
+        state
+            .levilauncher_install_target_path
+            .clone()
+            .map(|path| (path, state.levilauncher_install_target_version.to_string()))
+    });
+    let Some((game_directory, game_version)) = target else {
+        toast::error(cx, SharedString::from("请先选择已安装的游戏版本"));
+        return;
+    };
+    cx.update_global(|state: &mut DownloadPageState, _cx| {
+        state.levilauncher_install_busy = true;
+        state.levilauncher_install_error = None;
+    });
+    let request = crate::core::levilamina::LeviLaminaInstallRequest::Mod {
+        game_directory: std::path::PathBuf::from(game_directory.as_ref()),
+        game_version,
+        package_id,
+        version,
+    };
+    let handle = match crate::core::levilamina::start_install(request) {
+        Ok(handle) => handle,
+        Err(error) => {
+            cx.update_global(|state: &mut DownloadPageState, _cx| {
+                state.levilauncher_install_busy = false;
+                state.levilauncher_install_error = Some(SharedString::from(error));
+            });
+            return;
+        }
+    };
+    let mut updates = handle.updates;
+    cx.spawn(async move |cx| {
+        loop {
+            let stage = updates.borrow_and_update().stage.clone();
+            match stage {
+                crate::core::levilamina::LeviLaminaInstallStage::Completed { message } => {
+                    cx.update_global(|state: &mut DownloadPageState, cx| {
+                        state.levilauncher_install_busy = false;
+                        state.levilauncher_modal_open = false;
+                        state.levilauncher_selected_mod = None;
+                        toast::success(cx, SharedString::from(message.to_string()));
+                    })?;
+                    return Ok::<(), anyhow::Error>(());
+                }
+                crate::core::levilamina::LeviLaminaInstallStage::Failed { message } => {
+                    cx.update_global(|state: &mut DownloadPageState, _cx| {
+                        state.levilauncher_install_busy = false;
+                        state.levilauncher_install_error =
+                            Some(SharedString::from(message.to_string()));
+                    })?;
+                    return Ok(());
+                }
+                _ => {}
+            }
+            if updates.changed().await.is_err() {
+                return Ok(());
+            }
+        }
+    })
+    .detach_and_log_err(cx);
 }
 
 fn render_dependencies_list(

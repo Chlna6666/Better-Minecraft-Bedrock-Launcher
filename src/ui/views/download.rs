@@ -7,10 +7,12 @@ use gpui::*;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::warn;
 
 mod common;
 pub(crate) mod curseforge;
 mod game;
+mod mod_install;
 mod mods;
 pub mod state;
 mod toolbar;
@@ -40,6 +42,7 @@ struct GamePanelObserveSignature {
     last_package_id: SharedString,
     search_query: SharedString,
     channel_filter: state::DownloadChannelFilter,
+    loader_filter: state::DownloadLoaderFilter,
     page_index: usize,
     page_size: usize,
     local_file_count: usize,
@@ -47,6 +50,8 @@ struct GamePanelObserveSignature {
     operation_count: usize,
     task_snapshot_count: usize,
     task_snapshot_sequence: u64,
+    levilamina_support_loaded: bool,
+    levilamina_supported_game_count: usize,
 }
 
 fn build_game_panel_observe_signature(state: &DownloadPageState) -> GamePanelObserveSignature {
@@ -70,6 +75,7 @@ fn build_game_panel_observe_signature(state: &DownloadPageState) -> GamePanelObs
             .unwrap_or_else(|| SharedString::from("")),
         search_query: state.search_query.clone(),
         channel_filter: state.channel_filter,
+        loader_filter: state.loader_filter,
         page_index: state.page_index,
         page_size: state.page_size,
         local_file_count: state.local_files.len(),
@@ -82,6 +88,8 @@ fn build_game_panel_observe_signature(state: &DownloadPageState) -> GamePanelObs
             .map(|snapshot| snapshot.sequence)
             .max()
             .unwrap_or_default(),
+        levilamina_support_loaded: state.levilamina_support_loaded,
+        levilamina_supported_game_count: state.levilamina_support.versions.len(),
     }
 }
 
@@ -97,6 +105,7 @@ type ModPanelObserveSignature = (
     bool,
     SharedString,
     Option<String>,
+    (SharedString, bool, bool, usize, SharedString),
 );
 
 fn build_mod_panel_observe_signature(state: &DownloadPageState) -> ModPanelObserveSignature {
@@ -115,6 +124,19 @@ fn build_mod_panel_observe_signature(state: &DownloadPageState) -> ModPanelObser
             .levilauncher_selected_mod
             .as_ref()
             .map(|m| m.package_id.clone()),
+        (
+            state
+                .levilauncher_install_target_path
+                .clone()
+                .unwrap_or_else(|| SharedString::from("")),
+            state.levilauncher_install_busy,
+            state.levilauncher_install_targets_loading,
+            state.levilauncher_install_targets.len(),
+            state
+                .levilauncher_install_error
+                .clone()
+                .unwrap_or_else(|| SharedString::from("")),
+        ),
     )
 }
 
@@ -271,6 +293,7 @@ pub struct DownloadPageView {
 
 impl DownloadPageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        ensure_levilamina_support_loaded(cx);
         let (
             last_observed_tab,
             last_observed_curseforge_toolbar_signature,
@@ -599,6 +622,8 @@ pub fn dismiss_game_dialog(cx: &mut App) {
         state.game_dialog_cdn_error = None;
         state.game_dialog_cdn_results.clear();
         state.game_dialog_selected_cdn_base = None;
+        state.game_dialog_install_levilamina = false;
+        state.game_dialog_selected_levilamina_version = SharedString::from("");
     });
 }
 
@@ -617,6 +642,9 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
             cdn_results,
             selected_cdn_base,
             cdn_expanded,
+            loader_versions,
+            install_levilamina,
+            selected_levilamina_version,
         ) = cx.read_global(|state: &DownloadPageState, _cx| {
             (
                 state.game_dialog.clone(),
@@ -626,6 +654,17 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
                 state.game_dialog_cdn_results.clone(),
                 state.game_dialog_selected_cdn_base.clone(),
                 state.game_dialog_cdn_expanded,
+                state
+                    .game_dialog
+                    .as_ref()
+                    .map(|dialog| {
+                        state
+                            .levilamina_support
+                            .loader_versions(dialog.version.as_ref())
+                    })
+                    .unwrap_or_default(),
+                state.game_dialog_install_levilamina,
+                state.game_dialog_selected_levilamina_version.clone(),
             )
         });
 
@@ -641,6 +680,9 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
                         cdn_results,
                         selected_cdn_base,
                         cdn_expanded,
+                        loader_versions,
+                        install_levilamina,
+                        selected_levilamina_version,
                     ),
                     hsla(0.0, 0.0, 0.0, 0.28),
                     Rc::new(dismiss_game_dialog),
@@ -714,6 +756,47 @@ pub fn ensure_levilauncher_loaded(cx: &mut App) {
                 }
             }
         });
+    })
+    .detach();
+}
+
+pub fn ensure_levilamina_support_loaded(cx: &mut App) {
+    let (loaded, loading) = cx.read_global(|state: &DownloadPageState, _cx| {
+        (
+            state.levilamina_support_loaded,
+            state.levilamina_support_loading,
+        )
+    });
+    if loaded || loading {
+        return;
+    }
+
+    cx.update_global(|state: &mut DownloadPageState, _cx| {
+        state.levilamina_support_loading = true;
+        state.levilamina_support_error = None;
+    });
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
+        crate::core::levilamina::fetch_support_database()
+            .await
+            .map_err(anyhow::Error::msg)
+    });
+    cx.spawn(async move |cx| {
+        let result = load_task.await;
+        if let Err(error) = cx.update_global(|state: &mut DownloadPageState, _cx| {
+            state.levilamina_support_loading = false;
+            match result {
+                Ok(database) => {
+                    state.levilamina_support_loaded = true;
+                    state.levilamina_support = database;
+                }
+                Err(error) => {
+                    state.levilamina_support_loaded = false;
+                    state.levilamina_support_error = Some(SharedString::from(error.to_string()));
+                }
+            }
+        }) {
+            warn!(%error, "LeviLamina 支持数据库加载完成后 UI 已释放");
+        }
     })
     .detach();
 }

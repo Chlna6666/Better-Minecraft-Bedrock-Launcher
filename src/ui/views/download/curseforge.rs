@@ -18,7 +18,6 @@ use gpui_hooks::{hook_element, hook_render};
 use lucide_gpui::icons as lucide_icons;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::env;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -62,7 +61,7 @@ const CURSEFORGE_DETAIL_IMAGE_BYTES_PER_ITEM: usize = 512 * 1024;
 const CURSEFORGE_DETAIL_SCROLL_ACCELERATION: f32 = 1.65;
 
 pub(crate) fn should_render_curseforge_result_images() -> bool {
-    env::var_os("BMCBL_DISABLE_CURSEFORGE_RESULT_IMAGES").is_none()
+    true
 }
 
 pub(crate) fn should_use_gpui_direct_result_images() -> bool {
@@ -74,11 +73,11 @@ pub(crate) fn should_mount_curseforge_result_images() -> bool {
 }
 
 pub(crate) fn should_render_curseforge_sidebar() -> bool {
-    env::var_os("BMCBL_CURSEFORGE_NO_SIDEBAR").is_none()
+    true
 }
 
 pub(crate) fn should_mount_curseforge_sidebar_images() -> bool {
-    env::var_os("BMCBL_CURSEFORGE_SIDEBAR_PLACEHOLDER_ONLY").is_none()
+    true
 }
 
 pub(crate) fn should_use_gpui_direct_sidebar_images() -> bool {
@@ -86,7 +85,7 @@ pub(crate) fn should_use_gpui_direct_sidebar_images() -> bool {
 }
 
 pub(crate) fn should_animate_curseforge_result_cards() -> bool {
-    env::var_os("BMCBL_CURSEFORGE_RESULT_STATIC").is_none()
+    true
 }
 
 fn curseforge_sidebar_image_cache_config() -> BoundedImageCacheConfig {

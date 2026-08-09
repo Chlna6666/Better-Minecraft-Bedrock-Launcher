@@ -38,6 +38,13 @@ pub enum DownloadChannelFilter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DownloadLoaderFilter {
+    All,
+    Vanilla,
+    LeviLamina,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameDialogKind {
     ConfirmDownload,
     LocalActions,
@@ -82,6 +89,14 @@ pub struct DownloadOperation {
     pub file_name: SharedString,
     pub download_task_id: Option<SharedString>,
     pub extract_task_id: Option<SharedString>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LeviLaminaModInstallTarget {
+    pub(crate) path: SharedString,
+    pub(crate) game_version: SharedString,
+    pub(crate) loader_version: SharedString,
+    pub(crate) label: SharedString,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +166,7 @@ pub struct DownloadPageState {
     pub search_input: Option<Entity<InputState>>,
     pub search_query: SharedString,
     pub channel_filter: DownloadChannelFilter,
+    pub loader_filter: DownloadLoaderFilter,
     pub page_index: usize,
     pub page_size: usize,
     pub page_jump_input: Option<Entity<InputState>>,
@@ -163,6 +179,12 @@ pub struct DownloadPageState {
     pub game_dialog_cdn_results: Vec<GameDialogCdnResult>,
     pub game_dialog_selected_cdn_base: Option<SharedString>,
     pub game_dialog_cdn_expanded: bool,
+    pub game_dialog_install_levilamina: bool,
+    pub game_dialog_selected_levilamina_version: SharedString,
+    pub levilamina_support_loaded: bool,
+    pub levilamina_support_loading: bool,
+    pub levilamina_support_error: Option<SharedString>,
+    pub levilamina_support: crate::core::levilamina::LeviLaminaSupportDatabase,
     pub game_rows_scroll: ScrollHandle,
     pub curseforge_sidebar_scroll: ScrollHandle,
     pub curseforge_results_scroll: ScrollHandle,
@@ -240,6 +262,13 @@ pub struct DownloadPageState {
     pub levilauncher_modal_open: bool,
     pub levilauncher_selected_mod: Option<crate::core::levilamina::LeviLaminaModEntry>,
     pub levilauncher_selected_version: SharedString,
+    pub levilauncher_install_target_path: Option<SharedString>,
+    pub levilauncher_install_target_version: SharedString,
+    pub levilauncher_install_targets: Vec<LeviLaminaModInstallTarget>,
+    pub levilauncher_install_targets_loading: bool,
+    pub levilauncher_install_targets_request_id: u64,
+    pub levilauncher_install_busy: bool,
+    pub levilauncher_install_error: Option<SharedString>,
     pub tab_anim_at: Option<Instant>,
     pub tab_anim_from: DownloadTab,
 }
@@ -265,6 +294,7 @@ impl Default for DownloadPageState {
             search_input: None,
             search_query: SharedString::from(""),
             channel_filter: DownloadChannelFilter::Release,
+            loader_filter: DownloadLoaderFilter::All,
             page_index: 0,
             page_size: 10,
             page_jump_input: None,
@@ -277,6 +307,12 @@ impl Default for DownloadPageState {
             game_dialog_cdn_results: Vec::new(),
             game_dialog_selected_cdn_base: None,
             game_dialog_cdn_expanded: false,
+            game_dialog_install_levilamina: false,
+            game_dialog_selected_levilamina_version: SharedString::from(""),
+            levilamina_support_loaded: false,
+            levilamina_support_loading: false,
+            levilamina_support_error: None,
+            levilamina_support: crate::core::levilamina::LeviLaminaSupportDatabase::default(),
             game_rows_scroll: ScrollHandle::new(),
             curseforge_sidebar_scroll: ScrollHandle::new(),
             curseforge_results_scroll: ScrollHandle::new(),
@@ -354,6 +390,13 @@ impl Default for DownloadPageState {
             levilauncher_modal_open: false,
             levilauncher_selected_mod: None,
             levilauncher_selected_version: SharedString::from(""),
+            levilauncher_install_target_path: None,
+            levilauncher_install_target_version: SharedString::from(""),
+            levilauncher_install_targets: Vec::new(),
+            levilauncher_install_targets_loading: false,
+            levilauncher_install_targets_request_id: 0,
+            levilauncher_install_busy: false,
+            levilauncher_install_error: None,
             tab_anim_at: None,
             tab_anim_from: DownloadTab::Game,
         }
@@ -464,6 +507,8 @@ impl DownloadPageState {
         self.game_dialog_cdn_results.clear();
         self.game_dialog_selected_cdn_base = None;
         self.game_dialog_cdn_expanded = false;
+        self.game_dialog_install_levilamina = false;
+        self.game_dialog_selected_levilamina_version = SharedString::from("");
         self.game_rows_scroll.set_offset(point(px(0.), px(0.)));
     }
 

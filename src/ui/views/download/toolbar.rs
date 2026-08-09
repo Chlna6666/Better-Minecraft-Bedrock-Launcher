@@ -3,7 +3,9 @@ use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::Input;
 use crate::ui::theme::colors::ThemeColors;
-use crate::ui::views::download::state::{DownloadChannelFilter, DownloadPageState, DownloadTab};
+use crate::ui::views::download::state::{
+    DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, DownloadTab,
+};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
@@ -356,6 +358,47 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
         div().into_any_element()
     };
 
+    let loader_filter: AnyElement = if tab == DownloadTab::Game {
+        let (label, selected_index) = match state.loader_filter {
+            DownloadLoaderFilter::All => (SharedString::from("全部"), 0usize),
+            DownloadLoaderFilter::Vanilla => (SharedString::from("原版"), 1usize),
+            DownloadLoaderFilter::LeviLamina => (SharedString::from("LeviLamina"), 2usize),
+        };
+        Dropdown::new(
+            "download-loader-filter",
+            colors,
+            px(132.),
+            label,
+            vec![
+                DropdownOption::from("全部"),
+                DropdownOption::from("原版"),
+                DropdownOption::from("LeviLamina"),
+            ],
+            selected_index,
+            state.levilamina_support_loaded || state.loader_filter == DownloadLoaderFilter::All,
+            move |index, _window, cx| {
+                let filter = match index {
+                    1 => DownloadLoaderFilter::Vanilla,
+                    2 => DownloadLoaderFilter::LeviLamina,
+                    _ => DownloadLoaderFilter::All,
+                };
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    if state.loader_filter == filter {
+                        return;
+                    }
+                    state.loader_filter = filter;
+                    state.page_index = 0;
+                    state.game_rows_scroll.set_offset(point(px(0.), px(0.)));
+                });
+            },
+        )
+        .with_height(px(32.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+
     let refresh = IconButton::new("download-refresh", lucide_icons::icon_refresh_cw())
         .icon_color(colors.text_secondary)
         .w(px(32.))
@@ -410,6 +453,7 @@ fn render_toolbar_controls(colors: &ThemeColors, state: &DownloadPageState) -> D
     match tab {
         DownloadTab::Game => {
             row = row
+                .child(loader_filter)
                 .child(channel_filter)
                 .child(icon_btn(
                     "download-import",

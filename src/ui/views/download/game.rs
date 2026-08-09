@@ -1,5 +1,6 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::animation::repeating_linear_motion;
+use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::scroll::ScrollableElement;
@@ -7,7 +8,8 @@ use crate::ui::components::toast;
 use crate::ui::components::virtual_list::compute_virtual_list_plan;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{
-    DownloadChannelFilter, DownloadPageState, GameDialogCdnResult, GameDialogKind, GameDialogState,
+    DownloadChannelFilter, DownloadLoaderFilter, DownloadPageState, GameDialogCdnResult,
+    GameDialogKind, GameDialogState,
 };
 use crate::ui::views::download::{
     DownloadTab, GamePanelObserveSignature, build_game_panel_observe_signature,
@@ -51,6 +53,7 @@ struct GameVisibleRowProps {
     local_path: Option<SharedString>,
     active_task_running: bool,
     active_snapshot: Option<Arc<TaskSnapshot>>,
+    levilamina_supported: bool,
 }
 
 type GamePanelRenderSignature = (
@@ -59,6 +62,8 @@ type GamePanelRenderSignature = (
     SharedString,
     SharedString,
     DownloadChannelFilter,
+    DownloadLoaderFilter,
+    usize,
     usize,
     usize,
 );
@@ -81,6 +86,8 @@ struct GameDialogObserveSignature {
     dialog_cdn_result_count: usize,
     selected_cdn_base: SharedString,
     dialog_cdn_expanded: bool,
+    install_levilamina: bool,
+    selected_levilamina_version: SharedString,
 }
 
 impl DownloadGamePanelView {
@@ -154,6 +161,8 @@ fn build_game_dialog_observe_signature(state: &DownloadPageState) -> GameDialogO
             .clone()
             .unwrap_or_else(|| SharedString::from("")),
         dialog_cdn_expanded: state.game_dialog_cdn_expanded,
+        install_levilamina: state.game_dialog_install_levilamina,
+        selected_levilamina_version: state.game_dialog_selected_levilamina_version.clone(),
     }
 }
 
@@ -196,8 +205,10 @@ fn build_game_panel_render_signature(state: &DownloadPageState) -> GamePanelRend
             .unwrap_or_else(|| SharedString::from("")),
         state.search_query.clone(),
         state.channel_filter,
+        state.loader_filter,
         state.page_index,
         state.page_size,
+        state.levilamina_support.versions.len(),
     )
 }
 
@@ -214,7 +225,15 @@ fn rebuild_game_panel_render_cache(
             DownloadChannelFilter::Beta => version.version_type == 1,
             DownloadChannelFilter::Preview => version.version_type >= 2,
         };
-        if !channel_matches {
+        let loader_supported = state
+            .levilamina_support
+            .supports_game(version.version.as_ref());
+        let loader_matches = match state.loader_filter {
+            DownloadLoaderFilter::All => true,
+            DownloadLoaderFilter::Vanilla => !loader_supported,
+            DownloadLoaderFilter::LeviLamina => loader_supported,
+        };
+        if !channel_matches || !loader_matches {
             return false;
         }
         if trimmed_query.is_empty() {
@@ -684,6 +703,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 local_path,
                 active_task_running,
                 active_snapshot,
+                levilamina_supported: state.levilamina_support.supports_game(row.version.as_ref()),
             }
         })
         .collect::<Vec<_>>();
@@ -718,6 +738,7 @@ pub(super) fn render_game_panel(window: &mut Window, cx: &mut App, colors: &Them
                 row.local_path.clone(),
                 row.active_task_running,
                 row.active_snapshot.clone(),
+                row.levilamina_supported,
             ))
             .child(div().h(px(12.)));
     }
@@ -1032,6 +1053,7 @@ fn render_version_row(
     local_path: Option<SharedString>,
     active_task_running: bool,
     active_task: Option<Arc<TaskSnapshot>>,
+    levilamina_supported: bool,
 ) -> AnyElement {
     let channel_bg = if channel == "正式" {
         colors.badge_stable_bg
@@ -1119,7 +1141,7 @@ fn render_version_row(
             ..colors.border
         })
         .hover(move |s| s.bg(card_hover_bg))
-        .active(|s| s.scale(0.97))
+        .active(|s| s.opacity(0.92))
         .flex()
         .items_center()
         .child(
@@ -1207,6 +1229,17 @@ fn render_version_row(
                                             ..colors.stat_blue_bg
                                         },
                                         colors.stat_blue_text,
+                                    )
+                                    .into_any_element()
+                                }))
+                                .children(levilamina_supported.then(|| {
+                                    meta_tag(
+                                        "支持 LeviLamina",
+                                        Hsla {
+                                            a: 0.10,
+                                            ..colors.stat_green_text
+                                        },
+                                        colors.stat_green_text,
                                     )
                                     .into_any_element()
                                 })),
@@ -1337,6 +1370,14 @@ fn open_game_dialog(window: &mut Window, cx: &mut App, dialog: GameDialogState) 
         state.game_dialog_cdn_error = None;
         state.game_dialog_cdn_results.clear();
         state.game_dialog_selected_cdn_base = selected_cdn_base;
+        state.game_dialog_install_levilamina = false;
+        state.game_dialog_selected_levilamina_version = state
+            .levilamina_support
+            .loader_versions(dialog.version.as_ref())
+            .into_iter()
+            .next()
+            .map(SharedString::from)
+            .unwrap_or_else(|| SharedString::from(""));
     });
     if is_confirm_download {
         let folder_input = cx.new(|cx| {
@@ -1369,6 +1410,8 @@ fn close_game_dialog(cx: &mut App) {
         state.game_dialog_cdn_error = None;
         state.game_dialog_cdn_results.clear();
         state.game_dialog_selected_cdn_base = None;
+        state.game_dialog_install_levilamina = false;
+        state.game_dialog_selected_levilamina_version = SharedString::from("");
     });
 }
 
@@ -1555,6 +1598,7 @@ fn start_game_operation(
     force_download: bool,
     install_folder_override: Option<SharedString>,
     selected_cdn_base: Option<SharedString>,
+    levilamina_version: Option<String>,
 ) {
     let package_id = dialog.package_id.clone();
     let file_name = sanitize_game_file_name(
@@ -1575,6 +1619,7 @@ fn start_game_operation(
         install_folder.as_ref(),
         force_download,
         selected_cdn_base.as_deref().map(|value| &**value),
+        levilamina_version,
     ) {
         Ok(request) => request,
         Err(error) => {
@@ -1616,6 +1661,7 @@ fn build_game_install_request(
     install_folder: &str,
     force_download: bool,
     selected_cdn_base: Option<&str>,
+    levilamina_version: Option<String>,
 ) -> Result<crate::core::minecraft::install::GameInstallRequest, String> {
     use crate::core::minecraft::install::{GameInstallRequest, GamePackageSource};
 
@@ -1647,6 +1693,7 @@ fn build_game_install_request(
         install_folder: install_folder.to_string(),
         md5: dialog.md5.as_ref().map(ToString::to_string),
         force_download,
+        levilamina_version,
         source,
     })
 }
@@ -1685,6 +1732,7 @@ fn apply_game_install_snapshot(
             apply_operation_task_snapshot(&package_key, task_id, false, cx);
             false
         }
+        GameInstallStage::InstallingLeviLamina { .. } => false,
         GameInstallStage::Completed { local_path } => {
             finish_game_install_operation(
                 &package_key,
@@ -2214,6 +2262,9 @@ pub(super) fn render_game_dialog(
     cdn_results: Vec<GameDialogCdnResult>,
     selected_cdn_base: Option<SharedString>,
     cdn_expanded: bool,
+    loader_versions: Vec<String>,
+    install_levilamina: bool,
+    selected_levilamina_version: SharedString,
 ) -> Div {
     if matches!(dialog.kind, GameDialogKind::LocalActions) {
         return render_local_actions_dialog(colors, dialog);
@@ -2289,6 +2340,155 @@ pub(super) fn render_game_dialog(
                     .child("这不会删除已安装的游戏目录，只会移除当前下载好的本地包。"),
             )
             .into_any_element()
+    });
+
+    let levilamina_panel = (matches!(dialog.kind, GameDialogKind::ConfirmDownload)
+        && !loader_versions.is_empty())
+    .then(|| {
+        let version_options = loader_versions
+            .iter()
+            .cloned()
+            .map(SharedString::from)
+            .map(DropdownOption::from)
+            .collect::<Vec<_>>();
+        let selected_index = loader_versions
+            .iter()
+            .position(|version| version == selected_levilamina_version.as_ref())
+            .unwrap_or(0);
+        let selected_label = loader_versions
+            .get(selected_index)
+            .cloned()
+            .map(SharedString::from)
+            .unwrap_or_else(|| SharedString::from("无可用版本"));
+        let selectable_versions = loader_versions.clone();
+        let version_select = Dropdown::new(
+            "game-dialog-levilamina-version",
+            colors,
+            px(180.),
+            selected_label,
+            version_options,
+            selected_index,
+            install_levilamina,
+            move |index, _window, cx| {
+                let Some(version) = selectable_versions.get(index) else {
+                    return;
+                };
+                cx.update_global(|state: &mut DownloadPageState, _cx| {
+                    state.game_dialog_selected_levilamina_version =
+                        SharedString::from(version.clone());
+                });
+            },
+        )
+        .with_height(px(34.))
+        .rounded(px(crate::ui::theme::tokens::radius::SM));
+
+        div()
+            .id("game-dialog-install-levilamina")
+            .w_full()
+            .p(px(14.))
+            .rounded(px(crate::ui::theme::tokens::radius::SM))
+            .border_1()
+            .border_color(if install_levilamina {
+                Hsla {
+                    a: 0.42,
+                    ..colors.accent
+                }
+            } else {
+                Hsla {
+                    a: 0.14,
+                    ..colors.border
+                }
+            })
+            .bg(Hsla {
+                a: if install_levilamina { 0.10 } else { 0.03 },
+                ..colors.accent
+            })
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(14.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(colors.text_primary)
+                                    .child("同时安装 LeviLamina"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(colors.text_secondary)
+                                    .child(format!(
+                                        "支持此游戏版本，可选择 {} 个加载器版本",
+                                        loader_versions.len()
+                                    )),
+                            ),
+                    )
+                    .when(install_levilamina, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(colors.text_secondary)
+                                        .child("LeviLamina 版本"),
+                                )
+                                .child(version_select),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .id("game-dialog-toggle-levilamina")
+                    .px(px(10.))
+                    .py(px(5.))
+                    .rounded(px(crate::ui::theme::tokens::radius::FULL))
+                    .bg(if install_levilamina {
+                        colors.accent
+                    } else {
+                        Hsla {
+                            a: 0.10,
+                            ..colors.text_secondary
+                        }
+                    })
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if install_levilamina {
+                        colors.btn_primary_text
+                    } else {
+                        colors.text_secondary
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.opacity(0.86))
+                    .active(|style| style.scale(0.96))
+                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                        cx.update_global(|state: &mut DownloadPageState, _cx| {
+                            state.game_dialog_install_levilamina =
+                                !state.game_dialog_install_levilamina;
+                        });
+                    })
+                    .child(if install_levilamina {
+                        "已选择"
+                    } else {
+                        "不安装"
+                    }),
+            )
     });
 
     let cdn_panel = (dialog.is_gdk
@@ -2658,6 +2858,7 @@ pub(super) fn render_game_dialog(
                 .gap(px(14.))
                 .children(folder_name_editor.map(IntoElement::into_any_element))
                 .children(delete_notice)
+                .children(levilamina_panel.map(IntoElement::into_any_element))
                 .children(cdn_panel.map(IntoElement::into_any_element))
                 .children(dialog.local_path.clone().map(|path| {
                     div()
@@ -2697,6 +2898,16 @@ pub(super) fn render_game_dialog(
                         let selected_cdn_base = cx.read_global(|state: &DownloadPageState, _cx| {
                             state.game_dialog_selected_cdn_base.clone()
                         });
+                        let levilamina_version =
+                            cx.read_global(|state: &DownloadPageState, _cx| {
+                                let selected =
+                                    state.game_dialog_selected_levilamina_version.as_ref();
+                                (state.game_dialog_install_levilamina
+                                    && state
+                                        .levilamina_support
+                                        .supports_loader(dialog.version.as_ref(), selected))
+                                .then(|| selected.to_owned())
+                            });
                         let force_download =
                             cx.update_global(|state: &mut DownloadPageState, _cx| {
                                 state
@@ -2710,6 +2921,7 @@ pub(super) fn render_game_dialog(
                             force_download,
                             folder_name_override,
                             selected_cdn_base,
+                            levilamina_version,
                         )
                     }
                 },
