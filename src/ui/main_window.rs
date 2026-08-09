@@ -37,7 +37,6 @@ mod easter_egg;
 mod music_player;
 mod page_loading;
 mod page_registry;
-mod quit;
 mod route_effects;
 mod support;
 mod update_flow;
@@ -200,8 +199,6 @@ struct MainWindowRenderModel {
     window_height: Pixels,
     update_render_state: UpdateRenderState,
     agreement_render_state: AgreementRenderState,
-    quit_progress: f32,
-    quit_animating: bool,
     show_update_modal: bool,
     update_modal_visible: bool,
     update_modal_animating: bool,
@@ -391,12 +388,6 @@ impl MainWindowView {
         let window_width = window_bounds.size.width;
         let window_height = window_bounds.size.height;
         let agreement_render_state = self.read_agreement_render_state(cx);
-        let quit_progress = cx
-            .global::<crate::ui::state::quit::QuitState>()
-            .progress(now);
-        let quit_animating = cx
-            .global::<crate::ui::state::quit::QuitState>()
-            .is_animating(now);
         let (show_update_modal, update_modal_visible, update_modal_animating) = {
             let update_state: &UpdateState = cx.global::<UpdateState>();
             (
@@ -449,8 +440,6 @@ impl MainWindowView {
             window_height,
             update_render_state,
             agreement_render_state,
-            quit_progress,
-            quit_animating,
             show_update_modal,
             update_modal_visible,
             update_modal_animating,
@@ -532,17 +521,6 @@ impl MainWindowView {
                     .critical()
                     .into_any_element(),
             );
-
-        let quit_progress = model.quit_progress.clamp(0.0, 1.0);
-        if quit_progress > 0.0 {
-            let visual = quit::visual_state(quit_progress);
-            root = root
-                .opacity(visual.opacity)
-                .scale(visual.scale)
-                .top(visual.offset_y)
-                .rounded(px(18.0))
-                .overflow_hidden();
-        }
 
         root = root.child(page);
         if let Some(chrome_view) = &self.chrome_view {
@@ -1395,12 +1373,29 @@ impl MainWindowView {
             "preview" => crate::ui::views::download::state::DownloadChannelFilter::Preview,
             _ => crate::ui::views::download::state::DownloadChannelFilter::All,
         };
+        let initial_loader_filter = prefs
+            .as_ref()
+            .map(|prefs| prefs.loader_filter.as_str())
+            .filter(|filter| !filter.is_empty())
+            .unwrap_or_else(|| {
+                prefs
+                    .as_ref()
+                    .is_some_and(|prefs| prefs.channel_filter == "loader_supported")
+                    .then_some("levilamina")
+                    .unwrap_or("all")
+            });
+        let initial_loader_filter = match initial_loader_filter {
+            "vanilla" => crate::ui::views::download::state::DownloadLoaderFilter::Vanilla,
+            "levilamina" => crate::ui::views::download::state::DownloadLoaderFilter::LeviLamina,
+            _ => crate::ui::views::download::state::DownloadLoaderFilter::All,
+        };
 
         // Create search input and channel select once and keep subscriptions alive in MainWindowView.
         let search_input = cx.update_global(
             |s: &mut crate::ui::views::download::state::DownloadPageState, cx| {
                 s.page_size = initial_page_size;
                 s.channel_filter = initial_filter;
+                s.loader_filter = initial_loader_filter;
                 s.search_query = SharedString::from("");
                 s.page_index = 0;
 
@@ -1625,9 +1620,14 @@ impl MainWindowView {
             }
         }
 
-        let (search_query, channel_filter, page_size) = cx.read_global(
+        let (search_query, channel_filter, loader_filter, page_size) = cx.read_global(
             |s: &crate::ui::views::download::state::DownloadPageState, _cx| {
-                (s.search_query.to_string(), s.channel_filter, s.page_size)
+                (
+                    s.search_query.to_string(),
+                    s.channel_filter,
+                    s.loader_filter,
+                    s.page_size,
+                )
             },
         );
 
@@ -1638,10 +1638,17 @@ impl MainWindowView {
             crate::ui::views::download::state::DownloadChannelFilter::Preview => "preview",
         }
         .to_string();
+        let loader_filter = match loader_filter {
+            crate::ui::views::download::state::DownloadLoaderFilter::All => "all",
+            crate::ui::views::download::state::DownloadLoaderFilter::Vanilla => "vanilla",
+            crate::ui::views::download::state::DownloadLoaderFilter::LeviLamina => "levilamina",
+        }
+        .to_string();
 
         let prefs = crate::core::ui_prefs::DownloadUiPrefs {
             search_query,
             channel_filter: filter_str,
+            loader_filter,
             page_size,
         };
 
@@ -1716,7 +1723,6 @@ impl Render for MainWindowView {
             #[cfg(target_os = "windows")]
             self.ensure_music_library_load_started(cx);
         }
-        request_animation_frame_if(window, model.quit_animating);
         request_animation_frame_if(window, model.update_modal_animating);
         {
             let launcher_state = cx.global::<LauncherState>();
@@ -1745,7 +1751,6 @@ impl Render for MainWindowView {
                 elapsed_ms = render_elapsed.as_millis(),
                 width = model.window_width_px,
                 height = model.window_height / px(1.),
-                quit_animating = model.quit_animating,
                 update_modal_animating = model.update_modal_animating,
                 update_state_changed,
                 "main window render slow"
@@ -1756,7 +1761,6 @@ impl Render for MainWindowView {
                 elapsed_ms = render_elapsed.as_millis(),
                 width = model.window_width_px,
                 height = model.window_height / px(1.),
-                quit_animating = model.quit_animating,
                 update_modal_animating = model.update_modal_animating,
                 update_state_changed,
                 "main window render"

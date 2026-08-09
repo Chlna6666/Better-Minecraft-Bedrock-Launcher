@@ -964,7 +964,7 @@ pub(super) fn render_app_chrome(
                 MouseButton::Left,
                 |_, window, cx| {
                     cx.stop_propagation();
-                    super::quit::request(window, cx);
+                    window.remove_window();
                 },
             ),
         );

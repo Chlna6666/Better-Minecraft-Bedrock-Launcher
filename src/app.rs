@@ -330,7 +330,6 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
         },
     );
     cx.default_global::<crate::ui::views::settings::state::SettingsPageState>();
-    cx.default_global::<crate::ui::state::quit::QuitState>();
     cx.default_global::<crate::ui::state::theme::ThemeState>();
     cx.default_global::<crate::ui::state::update::UpdateState>();
     cx.default_global::<crate::ui::state::agreement::AgreementState>();

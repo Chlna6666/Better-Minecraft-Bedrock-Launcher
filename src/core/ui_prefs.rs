@@ -10,6 +10,8 @@ use std::path::PathBuf;
 pub struct DownloadUiPrefs {
     pub search_query: String,
     pub channel_filter: String,
+    #[serde(default)]
+    pub loader_filter: String,
     pub page_size: usize,
 }
 

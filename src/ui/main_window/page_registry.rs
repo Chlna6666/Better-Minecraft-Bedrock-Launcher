@@ -160,16 +160,6 @@ impl MainWindowView {
                 cx.notify();
             }),
         );
-        self._reactor_subscriptions
-            .push(
-                cx.observe_global::<crate::ui::state::quit::QuitState>(|_this, cx| {
-                    let now = Instant::now();
-                    let state = cx.global::<crate::ui::state::quit::QuitState>();
-                    if state.is_animating(now) || state.progress(now) > 0.0 {
-                        cx.notify();
-                    }
-                }),
-            );
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::state::diagnostics::DiagnosticsState>(|this, cx| {
                 let state = cx.global::<crate::ui::state::diagnostics::DiagnosticsState>();
@@ -684,7 +674,6 @@ impl MainWindowView {
 
         this.install_reactors(cx);
         this.install_window_observers(window, cx);
-        quit::install_window_close_interceptor(window, cx);
         this.install_easter_egg_interceptor(window, cx);
 
         if cx.global::<AgreementState>().is_visible() {

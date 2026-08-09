@@ -28,6 +28,7 @@ pub struct ManagedModInfo {
     pub folder_path: PathBuf,
     pub enabled: bool,
     pub mod_type: String,
+    pub version: Option<String>,
     pub inject_delay_ms: u64,
 }
 
@@ -37,6 +38,8 @@ struct ModManifest {
     entry: String,
     #[serde(rename = "type")]
     mod_type: String,
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default)]
     inject_delay_ms: Option<u64>,
 }
@@ -188,6 +191,9 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
             enabled,
             name: manifest.name,
             mod_type: manifest.mod_type,
+            version: manifest
+                .version
+                .filter(|version| !version.trim().is_empty()),
             inject_delay_ms: manifest.inject_delay_ms.unwrap_or(0),
         });
     }
