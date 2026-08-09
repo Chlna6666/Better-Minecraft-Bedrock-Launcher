@@ -1,0 +1,93 @@
+name: Bundle BLoader 0.2.22 once
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    if: github.head_ref == 'ci/bundle-bloader-0.2.22'
+    runs-on: windows-2025
+    steps:
+      - name: Checkout trigger branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Reset product tree to current master
+        shell: pwsh
+        run: |
+          git fetch origin master
+          git reset --hard origin/master
+          $expected = "da580ab3ef284c0fe548a96d14d10694a3a689fc"
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $expected) {
+            throw "BMCBL master moved: expected $expected, got $actual"
+          }
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Validate exact BLoader 0.2.22 source and build DLL
+        shell: pwsh
+        run: |
+          $src = "D:\a\BLoader\BLoader"
+          if (Test-Path $src) { Remove-Item $src -Recurse -Force }
+          New-Item -ItemType Directory -Path (Split-Path $src) -Force | Out-Null
+          git clone https://github.com/Chlna6666/BLoader.git $src
+          Push-Location $src
+          git checkout --detach ddcab9b5efc640904fcd2c5e816158a8f09e51f7
+          $sourceCommit = (git rev-parse HEAD).Trim()
+          if ($sourceCommit -ne "ddcab9b5efc640904fcd2c5e816158a8f09e51f7") {
+            throw "Unexpected BLoader source commit: $sourceCommit"
+          }
+          $versionLine = Select-String -Path Cargo.toml -Pattern '^version = "0\.2\.22"$' | Select-Object -First 1
+          if (-not $versionLine) { throw "BLoader Cargo.toml is not version 0.2.22" }
+          cargo test --lib --target x86_64-pc-windows-msvc
+          cargo build --release --lib --target x86_64-pc-windows-msvc
+          $dll = Join-Path $src "target\x86_64-pc-windows-msvc\release\BLoader.dll"
+          if (-not (Test-Path $dll)) { throw "BLoader.dll was not produced" }
+          $size = (Get-Item $dll).Length
+          if ($size -lt 65536) { throw "BLoader.dll unexpectedly small: $size" }
+          $dumpbin = (Get-Command dumpbin.exe -ErrorAction SilentlyContinue).Source
+          if (-not $dumpbin) {
+            $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Filter dumpbin.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $dumpbin) { throw "dumpbin.exe not found" }
+          $exports = & $dumpbin /exports $dll | Out-String
+          foreach ($name in @("DllMain", "bl_i18n_current_locale", "bl_register_d3d12_render_callback")) {
+            if ($exports -notmatch [regex]::Escape($name)) { throw "Missing export: $name" }
+          }
+          $hash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Validated BLoader source=$sourceCommit version=0.2.22 size=$size SHA256=$hash"
+          Pop-Location
+          Copy-Item $dll "assets\bin\BLoader.dll" -Force
+
+      - name: Verify bundled copy
+        shell: pwsh
+        run: |
+          $dll = "assets\bin\BLoader.dll"
+          $size = (Get-Item $dll).Length
+          $hash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($size -lt 65536) { throw "Bundled BLoader.dll unexpectedly small: $size" }
+          Write-Host "Bundled BLoader.dll size=$size SHA256=$hash"
+
+      - name: Commit clean binary-only result
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/bin/BLoader.dll
+          $changed = @(git diff --cached --name-only)
+          if ($changed.Count -ne 1 -or $changed[0] -ne "assets/bin/BLoader.dll") {
+            throw "Unexpected staged files: $($changed -join ', ')"
+          }
+          git commit -m "chore: bundle BLoader 0.2.22"
+          git push --force origin HEAD:refs/heads/ci/bundle-bloader-0.2.22-result
