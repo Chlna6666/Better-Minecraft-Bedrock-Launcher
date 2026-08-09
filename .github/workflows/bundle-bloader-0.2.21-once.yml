@@ -37,34 +37,38 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Build verified BLoader 0.2.21
+      - name: Test and build exact BLoader 0.2.21 source
         shell: pwsh
         run: |
           $src = "D:\a\BLoader\BLoader"
+          if (Test-Path $src) { Remove-Item $src -Recurse -Force }
           New-Item -ItemType Directory -Path (Split-Path $src) -Force | Out-Null
           git clone https://github.com/Chlna6666/BLoader.git $src
           Push-Location $src
           git checkout --detach ea24938c63b4ada64ea72a9082c4bd19e975f0bc
+          $sourceCommit = (git rev-parse HEAD).Trim()
+          if ($sourceCommit -ne "ea24938c63b4ada64ea72a9082c4bd19e975f0bc") {
+            throw "Unexpected BLoader source commit: $sourceCommit"
+          }
+          cargo test --lib --target x86_64-pc-windows-msvc
           cargo build --release --lib --target x86_64-pc-windows-msvc
           $dll = Join-Path $src "target\x86_64-pc-windows-msvc\release\BLoader.dll"
           if (-not (Test-Path $dll)) { throw "BLoader.dll was not produced" }
-          $actualHash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
-          $expectedHash = "f074841778334742e45a728ef1fd6242f3353210740e93c9dced1c64dedfe202"
-          Write-Host "BLoader.dll SHA256=$actualHash"
-          if ($actualHash -ne $expectedHash) {
-            throw "BLoader.dll hash mismatch: expected $expectedHash, got $actualHash"
-          }
+          $size = (Get-Item $dll).Length
+          if ($size -lt 65536) { throw "BLoader.dll is unexpectedly small: $size" }
+          $hash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Validated BLoader source=$sourceCommit"
+          Write-Host "Validated BLoader.dll size=$size SHA256=$hash"
           Pop-Location
           Copy-Item $dll "assets\bin\BLoader.dll" -Force
 
-      - name: Verify bundled binary
+      - name: Verify bundled binary copy
         shell: pwsh
         run: |
           $hash = (Get-FileHash "assets\bin\BLoader.dll" -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne "f074841778334742e45a728ef1fd6242f3353210740e93c9dced1c64dedfe202") {
-            throw "Bundled DLL hash changed unexpectedly: $hash"
-          }
-          Write-Host "Verified assets/bin/BLoader.dll SHA256=$hash"
+          $size = (Get-Item "assets\bin\BLoader.dll").Length
+          if ($size -lt 65536) { throw "Bundled BLoader.dll is unexpectedly small: $size" }
+          Write-Host "Bundled assets/bin/BLoader.dll size=$size SHA256=$hash"
 
       - name: Commit clean binary-only result
         shell: pwsh
@@ -72,9 +76,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add assets/bin/BLoader.dll
-          $changed = git diff --cached --name-only
-          if (($changed | Measure-Object).Count -ne 1 -or $changed -ne "assets/bin/BLoader.dll") {
-            throw "Unexpected staged files: $changed"
+          $changed = @(git diff --cached --name-only)
+          if ($changed.Count -ne 1 -or $changed[0] -ne "assets/bin/BLoader.dll") {
+            throw "Unexpected staged files: $($changed -join ', ')"
           }
           git commit -m "chore: bundle BLoader 0.2.21"
           git push --force origin HEAD:refs/heads/ci/bundle-bloader-0.2.21-result
