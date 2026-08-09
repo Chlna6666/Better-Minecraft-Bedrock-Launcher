@@ -368,6 +368,13 @@ mod tests {
 }
 
 #[derive(Clone, Debug)]
+pub struct ManagedModLoader {
+    pub id: SharedString,
+    pub name: SharedString,
+    pub version: SharedString,
+}
+
+#[derive(Clone, Debug)]
 pub struct ManagedVersionEntry {
     pub folder: SharedString,
     pub name: SharedString,
@@ -376,6 +383,7 @@ pub struct ManagedVersionEntry {
     pub path: SharedString,
     pub kind: SharedString,
     pub icon_path: Option<SharedString>,
+    pub mod_loaders: Arc<[ManagedModLoader]>,
 }
 
 impl ManagedVersionEntry {

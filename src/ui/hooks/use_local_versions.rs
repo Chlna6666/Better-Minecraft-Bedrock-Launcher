@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
 use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
 use crate::ui::state::local_versions::LocalVersionsState;
-use crate::ui::views::manage::state::{ManagePageState, ManagedVersionEntry};
+use crate::ui::views::manage::state::{ManagePageState, ManagedModLoader, ManagedVersionEntry};
 
 static NEXT_LOCAL_VERSION_REFRESH_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -79,6 +79,17 @@ fn managed_versions_from_local_versions(state: &LocalVersionsSnapshot) -> Vec<Ma
                 .custom_icon_path
                 .as_ref()
                 .map(|icon_path| SharedString::from(icon_path.clone())),
+            mod_loaders: Arc::from(
+                version
+                    .mod_loaders
+                    .iter()
+                    .map(|loader| ManagedModLoader {
+                        id: SharedString::from(loader.id.clone()),
+                        name: SharedString::from(loader.name.clone()),
+                        version: SharedString::from(loader.version.clone()),
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         })
         .collect()
 }

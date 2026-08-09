@@ -216,7 +216,10 @@ impl ManagePageView {
         state: &ManagePageState,
         cx: &mut Context<Self>,
     ) -> Div {
-        if self.version_list_cache.refresh(state) {
+        if matches!(
+            self.version_list_cache.refresh(state),
+            VersionListRefresh::QueryChanged
+        ) {
             self.version_scroll_handle.set_offset(point(px(0.), px(0.)));
         }
         let filtered_version_indices = self.version_list_cache.filtered_indices();
@@ -237,6 +240,7 @@ impl ManagePageView {
             .iter()
             .filter_map(|&index| state.versions.get(index))
             .collect::<Vec<_>>();
+        let version_scroll_handle_for_event = self.version_scroll_handle.clone();
         crate::ui::components::page_shell::split_sidebar_panel(colors)
             .p(px(10.))
             .flex()
@@ -292,6 +296,14 @@ impl ManagePageView {
                     .min_h(px(0.))
                     .overflow_y_scrollbar()
                     .track_scroll(&self.version_scroll_handle)
+                    .on_scroll_wheel(move |event, window, cx| {
+                        clamp_scroll_at_edges(
+                            &version_scroll_handle_for_event,
+                            event,
+                            window,
+                            cx,
+                        );
+                    })
                     .flex()
                     .flex_col()
                     .when(state.loading && state.versions.is_empty(), |this| {
@@ -491,6 +503,15 @@ impl ManagePageView {
                                                                     .font_weight(FontWeight::BOLD)
                                                                     .text_color(badge_fg)
                                                                     .child(version_badge),
+                                                            )
+                                                            .children(
+                                                                version.mod_loaders.iter().map(
+                                                                    |loader| {
+                                                                        render_mod_loader_badge(
+                                                                            colors, loader, true,
+                                                                        )
+                                                                    },
+                                                                ),
                                                             ),
                                                     ),
                                             ),

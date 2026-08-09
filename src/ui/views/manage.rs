@@ -26,7 +26,7 @@ use crate::ui::views::manage::common::{
 use crate::ui::views::manage::state::{
     ManageAssetEntry, ManageAssetSortKey, ManageGdkUser, ManagePackSubtype, ManagePageState,
     ManageScreenshotEntry, ManageServerEntry, ManageServerMotdStatus, ManageServerMotdTarget,
-    ManageTab, ManageVersionConfig, ManagedInstanceRevision, ManagedVersionEntry,
+    ManageTab, ManageVersionConfig, ManagedInstanceRevision, ManagedModLoader, ManagedVersionEntry,
 };
 use crate::utils::file_picker::{
     pick_file_path_with_filter, pick_file_path_with_filter_for_window, pick_file_paths_with_filter,

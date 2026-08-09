@@ -722,19 +722,21 @@ async fn load_map_assets(
 }
 
 fn manage_asset_from_mod(managed_mod: ManagedModInfo) -> ManageAssetEntry {
-    let detail = if managed_mod.mod_type == "hot-inject" {
-        SharedString::from(format!(
-            "{} · {} ms",
-            managed_mod.mod_type, managed_mod.inject_delay_ms
-        ))
-    } else {
-        SharedString::from(managed_mod.mod_type.clone())
-    };
+    let mut detail = managed_mod
+        .version
+        .filter(|version| !version.trim().is_empty())
+        .map(|version| format!("v{version}"))
+        .into_iter()
+        .collect::<Vec<_>>();
+    if managed_mod.mod_type == "hot-inject" {
+        detail.push(format!("{} ms", managed_mod.inject_delay_ms));
+    }
+    let detail = (!detail.is_empty()).then(|| SharedString::from(detail.join(" · ")));
     ManageAssetEntry {
         key: SharedString::from(format!("mod:{}", managed_mod.folder_name)),
         folder_name: SharedString::from(managed_mod.folder_name),
         display_name: SharedString::from(managed_mod.name),
-        detail: Some(detail),
+        detail,
         description: None,
         file_path: SharedString::from(managed_mod.file_path.to_string_lossy().into_owned()),
         open_path: SharedString::from(managed_mod.folder_path.to_string_lossy().into_owned()),

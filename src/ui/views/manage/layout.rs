@@ -36,6 +36,12 @@ pub(super) fn render_version_header(
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(version_type_color)
                 .child(version_type_label),
+        )
+        .children(
+            version
+                .mod_loaders
+                .iter()
+                .map(|loader| render_mod_loader_badge(colors, loader, false)),
         );
 
     let mut status_badges = div().flex().items_center().gap(px(8.)).flex_wrap();
@@ -110,6 +116,31 @@ pub(super) fn render_version_header(
     }
 
     header
+}
+
+pub(super) fn render_mod_loader_badge(
+    colors: &ThemeColors,
+    loader: &ManagedModLoader,
+    compact: bool,
+) -> Div {
+    div()
+        .max_w(px(if compact { 118. } else { 180. }))
+        .px(px(if compact { 5. } else { 8. }))
+        .py(px(if compact { 1. } else { 3. }))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .bg(Hsla {
+            a: 0.12,
+            ..colors.accent
+        })
+        .text_size(px(if compact { 9. } else { 11. }))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(colors.accent)
+        .overflow_hidden()
+        .text_ellipsis()
+        .child(SharedString::from(format!(
+            "{} {}",
+            loader.name, loader.version
+        )))
 }
 
 pub(super) fn render_tab_bar(

@@ -135,7 +135,7 @@ pub(super) fn selected_asset_folder_names(state: &ManagePageState) -> Vec<String
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct VersionListSignature {
-    versions_ptr: usize,
+    versions_revision: u64,
     versions_len: usize,
     query: SharedString,
 }
@@ -143,7 +143,7 @@ pub(super) struct VersionListSignature {
 impl VersionListSignature {
     pub(super) fn from_state(state: &ManagePageState) -> Self {
         Self {
-            versions_ptr: state.versions.as_ref().as_ptr() as usize,
+            versions_revision: state.versions_revision,
             versions_len: state.versions.len(),
             query: SharedString::from(state.search_query.trim().to_string()),
         }
@@ -156,16 +156,30 @@ pub(super) struct VersionListRenderCache {
     filtered_indices: Vec<usize>,
 }
 
+pub(super) enum VersionListRefresh {
+    Unchanged,
+    ContentChanged,
+    QueryChanged,
+}
+
 impl VersionListRenderCache {
-    pub(super) fn refresh(&mut self, state: &ManagePageState) -> bool {
+    pub(super) fn refresh(&mut self, state: &ManagePageState) -> VersionListRefresh {
         let signature = VersionListSignature::from_state(state);
         if self.signature.as_ref() == Some(&signature) {
-            return false;
+            return VersionListRefresh::Unchanged;
         }
 
+        let query_changed = self
+            .signature
+            .as_ref()
+            .is_some_and(|previous| previous.query != signature.query);
         self.filtered_indices = build_filtered_version_indices(state, &signature);
         self.signature = Some(signature);
-        true
+        if query_changed {
+            VersionListRefresh::QueryChanged
+        } else {
+            VersionListRefresh::ContentChanged
+        }
     }
 
     pub(super) fn filtered_indices(&self) -> &[usize] {
