@@ -1,0 +1,56 @@
+name: Sync BLoader 0.2.29 full-debug once
+
+on:
+  push:
+    branches: [ci/sync-bloader-0.2.29-full-debug]
+    paths:
+      - .github/workflows/sync-bloader-029-full-debug.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build exact BLoader source
+        shell: pwsh
+        run: |
+          git clone https://github.com/Chlna6666/BLoader.git "$env:RUNNER_TEMP\BLoader"
+          Set-Location "$env:RUNNER_TEMP\BLoader"
+          git checkout 82e49ed61ac20c751635dbf3358e05cf9be53c23
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          if ($version -ne '0.2.29') { throw "unexpected BLoader version: $version" }
+          cargo test --lib --target x86_64-pc-windows-msvc
+          cargo build --release --lib --target x86_64-pc-windows-msvc
+          $dll = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\BLoader.dll'
+          if (!(Test-Path $dll)) { throw 'BLoader.dll missing' }
+          $exports = & dumpbin /exports $dll | Out-String
+          foreach ($name in @('DllMain','bl_i18n_current_locale','bl_register_d3d12_render_callback')) {
+            if ($exports -notmatch [regex]::Escape($name)) { throw "missing export: $name" }
+          }
+          $hash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Built BLoader.dll SHA256=$hash"
+          Copy-Item $dll "$env:GITHUB_WORKSPACE\assets\bin\BLoader.dll" -Force
+      - name: Commit binary-only result
+        shell: pwsh
+        run: |
+          Set-Location $env:GITHUB_WORKSPACE
+          git rm .github/workflows/sync-bloader-029-full-debug.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/bin/BLoader.dll
+          $changed = @(git diff --cached --name-only)
+          if ($changed.Count -ne 2 -or $changed -notcontains 'assets/bin/BLoader.dll' -or $changed -notcontains '.github/workflows/sync-bloader-029-full-debug.yml') {
+            throw "unexpected staged files: $($changed -join ', ')"
+          }
+          git commit -m 'chore: embed BLoader 0.2.29 full-file debug build'
+          git push origin HEAD:ci/sync-bloader-0.2.29-full-debug
