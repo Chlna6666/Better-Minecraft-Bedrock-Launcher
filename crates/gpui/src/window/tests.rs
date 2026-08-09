@@ -451,6 +451,19 @@ fn pure_window_move_does_not_dirty_window(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn set_window_origin_updates_test_window_without_resizing(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let original_size = window.bounds().size;
+        let origin = point(px(96.), px(128.));
+
+        assert!(window.set_window_origin(origin));
+        assert_eq!(window.bounds().origin, origin);
+        assert_eq!(window.bounds().size, original_size);
+    });
+}
+
+#[gpui::test]
 fn content_bounds_change_still_dirties_window(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

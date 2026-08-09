@@ -116,8 +116,8 @@ mod platform {
             Dxgi::{
                 Common::{
                     DXGI_ALPHA_MODE, DXGI_ALPHA_MODE_IGNORE, DXGI_ALPHA_MODE_PREMULTIPLIED,
-                    DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_UNKNOWN,
-                    DXGI_SAMPLE_DESC,
+                    DXGI_ALPHA_MODE_STRAIGHT, DXGI_ALPHA_MODE_UNSPECIFIED,
+                    DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_PRESENT,
@@ -327,7 +327,10 @@ mod platform {
             hwnd: HWND,
             config: SurfaceConfig,
         ) -> Result<Dx12Swapchain> {
-            let uses_composition = config.alpha_mode == CompositeAlphaMode::Premultiplied;
+            let uses_composition = matches!(
+                config.alpha_mode,
+                CompositeAlphaMode::Premultiplied | CompositeAlphaMode::Postmultiplied
+            );
             // Frame-latency waitable objects let the frame loop block before recording
             // instead of stalling inside Present once the queue is full.
             let mut creation_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32;
@@ -445,16 +448,24 @@ mod platform {
                 )
             }
             .map_err(|error| GfxError::Backend(error.to_string()))?;
-            // SAFETY: The D3D12 device backs the swapchain content used by this composition tree.
+            // SAFETY: This visual only hosts an external swapchain. Passing no rendering device
+            // avoids treating ID3D12Device as the IDXGIDevice required for DComp-owned surfaces.
             let composition_device: IDCompositionDesktopDevice =
-                unsafe { DCompositionCreateDevice2(&self.device) }
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                unsafe { DCompositionCreateDevice2(None::<&windows::core::IUnknown>) }.map_err(
+                    |error| GfxError::Backend(format!("DCompositionCreateDevice2 failed: {error}")),
+                )?;
             // SAFETY: The HWND belongs to the surface and remains live while the swapchain exists.
             let composition_target = unsafe { composition_device.CreateTargetForHwnd(hwnd, true) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| {
+                    GfxError::Backend(format!(
+                        "IDCompositionDesktopDevice::CreateTargetForHwnd failed: {error}"
+                    ))
+                })?;
             // SAFETY: The composition device is valid and owns the visual it creates.
-            let composition_visual = unsafe { composition_device.CreateVisual() }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            let composition_visual =
+                unsafe { composition_device.CreateVisual() }.map_err(|error| {
+                    GfxError::Backend(format!("IDCompositionDevice::CreateVisual failed: {error}"))
+                })?;
             // SAFETY: The visual, target, and swapchain are live; Commit applies the root tree.
             unsafe {
                 composition_visual
@@ -462,15 +473,17 @@ mod platform {
                         DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
                     )
                     .map_err(|error| GfxError::Backend(error.to_string()))?;
-                composition_visual
-                    .SetContent(&swapchain)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                composition_visual.SetContent(&swapchain).map_err(|error| {
+                    GfxError::Backend(format!("IDCompositionVisual::SetContent failed: {error}"))
+                })?;
                 composition_target
                     .SetRoot(&composition_visual)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
-                composition_device
-                    .Commit()
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| {
+                        GfxError::Backend(format!("IDCompositionTarget::SetRoot failed: {error}"))
+                    })?;
+                composition_device.Commit().map_err(|error| {
+                    GfxError::Backend(format!("IDCompositionDevice::Commit failed: {error}"))
+                })?;
             }
             Ok((
                 swapchain,
@@ -509,9 +522,10 @@ mod platform {
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
-                    CompositeAlphaMode::Auto | CompositeAlphaMode::Premultiplied => {
-                        DXGI_ALPHA_MODE_UNSPECIFIED
-                    }
+                    CompositeAlphaMode::Auto
+                    | CompositeAlphaMode::Premultiplied
+                    | CompositeAlphaMode::Postmultiplied
+                    | CompositeAlphaMode::Inherit => DXGI_ALPHA_MODE_UNSPECIFIED,
                 },
                 Flags: creation_flags,
             };
@@ -3959,6 +3973,8 @@ mod platform {
             CompositeAlphaMode::Auto => DXGI_ALPHA_MODE_UNSPECIFIED,
             CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
             CompositeAlphaMode::Premultiplied => DXGI_ALPHA_MODE_PREMULTIPLIED,
+            CompositeAlphaMode::Postmultiplied => DXGI_ALPHA_MODE_STRAIGHT,
+            CompositeAlphaMode::Inherit => DXGI_ALPHA_MODE_UNSPECIFIED,
         }
     }
 

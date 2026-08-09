@@ -73,6 +73,16 @@ impl Window {
         self.platform_window.resize(size);
     }
 
+    /// Requests that the window move to `origin` in the same global coordinate
+    /// space returned by [`Window::bounds`].
+    ///
+    /// Returns `true` when the platform accepted the request. Some platforms,
+    /// including Wayland and headless environments, do not support positioning
+    /// top-level windows and return `false`.
+    pub fn set_window_origin(&mut self, origin: Point<Pixels>) -> bool {
+        self.platform_window.set_window_origin(origin)
+    }
+
     /// Return the `WindowBounds` to indicate that how a window should be opened
     /// after it has been closed
     pub fn window_bounds(&self) -> WindowBounds {

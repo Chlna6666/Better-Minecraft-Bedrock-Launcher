@@ -67,11 +67,11 @@ fn should_use_transparent_background(params: &WindowParams) -> bool {
 fn should_use_no_redirection_bitmap(
     disable_direct_composition: bool,
     transparent_background: bool,
-    renderer_backend_candidates: &[RendererBackend],
+    resolved_backend: RendererBackend,
 ) -> bool {
     !disable_direct_composition
         && transparent_background
-        && renderer_backend_candidates.contains(&RendererBackend::NovaDx12)
+        && resolved_backend == RendererBackend::NovaDx12
 }
 
 fn renderer_backend_candidates(
@@ -767,7 +767,7 @@ impl WindowsWindow {
             .with_no_redirection_bitmap(should_use_no_redirection_bitmap(
                 disable_direct_composition,
                 transparent_background,
-                &renderer_backend_candidates,
+                renderer_backend,
             ));
         if !use_native_decorations {
             attributes = attributes.with_undecorated_shadow(true);
@@ -1056,6 +1056,16 @@ impl PlatformWindow for WindowsWindow {
 
     fn resize(&mut self, size: Size<Pixels>) {
         request_window_inner_size(self.window(), size);
+    }
+
+    fn set_window_origin(&mut self, origin: Point<Pixels>) -> bool {
+        let scale_factor = f64::from(self.0.state.borrow().scale_factor.get());
+        self.window()
+            .set_outer_position(winit::dpi::PhysicalPosition::new(
+                f64::from(origin.x.0) * scale_factor,
+                f64::from(origin.y.0) * scale_factor,
+            ));
+        true
     }
 
     fn scale_factor(&self) -> f32 {
@@ -1534,36 +1544,26 @@ mod tests {
     }
 
     #[test]
-    fn no_redirection_bitmap_is_enabled_for_dx12_transparent_candidates() {
+    fn no_redirection_bitmap_is_enabled_only_for_resolved_dx12_transparent_windows() {
         assert!(should_use_no_redirection_bitmap(
             false,
             true,
-            &[RendererBackend::NovaDx12]
+            RendererBackend::NovaDx12,
         ));
         assert!(!should_use_no_redirection_bitmap(
             true,
             true,
-            &[RendererBackend::NovaDx12]
+            RendererBackend::NovaDx12,
         ));
         assert!(!should_use_no_redirection_bitmap(
             false,
             false,
-            &[RendererBackend::NovaDx12]
+            RendererBackend::NovaDx12,
         ));
         assert!(!should_use_no_redirection_bitmap(
             false,
             true,
-            &[RendererBackend::NovaVulkan]
-        ));
-        assert!(should_use_no_redirection_bitmap(
-            false,
-            true,
-            &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan]
-        ));
-        assert!(should_use_no_redirection_bitmap(
-            false,
-            true,
-            &[RendererBackend::NovaVulkan, RendererBackend::NovaDx12]
+            RendererBackend::NovaVulkan,
         ));
     }
 

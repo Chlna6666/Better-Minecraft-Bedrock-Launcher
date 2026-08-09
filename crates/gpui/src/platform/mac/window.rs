@@ -983,6 +983,31 @@ impl PlatformWindow for MacWindow {
             .detach();
     }
 
+    fn set_window_origin(&mut self, origin: Point<Pixels>) -> bool {
+        let this = self.0.lock();
+        let window = this.native_window;
+        let screen = unsafe { NSWindow::screen(window) };
+        if screen == nil {
+            return false;
+        }
+        let screen_frame = unsafe { NSScreen::frame(screen) };
+        let window_height = unsafe { NSWindow::frame(window) }.size.height;
+        let native_origin = NSPoint {
+            x: screen_frame.origin.x + f64::from(origin.x.0),
+            y: screen_frame.origin.y + screen_frame.size.height
+                - f64::from(origin.y.0)
+                - window_height,
+        };
+        this.executor
+            .spawn(async move {
+                unsafe {
+                    window.setFrameOrigin_(native_origin);
+                }
+            })
+            .detach();
+        true
+    }
+
     fn merge_all_windows(&self) {
         let native_window = self.0.lock().native_window;
         unsafe extern "C" fn merge_windows_async(context: *mut std::ffi::c_void) {

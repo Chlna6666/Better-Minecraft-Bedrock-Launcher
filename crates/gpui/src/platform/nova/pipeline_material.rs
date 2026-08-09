@@ -31,8 +31,8 @@ where
         })
         .context("creating nova custom GPU mesh 3D fragment shader module")?;
 
-    let opaque_or_cutout = fragment_entry_point.ends_with("_opaque")
-        || fragment_entry_point.ends_with("_cutout");
+    let opaque_or_cutout =
+        fragment_entry_point.ends_with("_opaque") || fragment_entry_point.ends_with("_cutout");
     let blend_mode = if opaque_or_cutout {
         BlendMode::Replace
     } else {
@@ -44,7 +44,11 @@ where
             &RenderPipelineDescriptor {
                 label: Some(format!(
                     "{label} custom GPU mesh 3D {} pipeline",
-                    if opaque_or_cutout { "opaque" } else { "transparent" }
+                    if opaque_or_cutout {
+                        "opaque"
+                    } else {
+                        "transparent"
+                    }
                 )),
                 vertex_shader,
                 vertex_entry_point: vertex_entry_point.to_string(),

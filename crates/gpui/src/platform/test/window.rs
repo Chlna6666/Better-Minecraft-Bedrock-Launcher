@@ -198,6 +198,11 @@ impl PlatformWindow for TestWindow {
         lock.bounds.size = size;
     }
 
+    fn set_window_origin(&mut self, origin: Point<Pixels>) -> bool {
+        self.0.lock().bounds.origin = origin;
+        true
+    }
+
     fn scale_factor(&self) -> f32 {
         2.0
     }

@@ -264,6 +264,30 @@ impl VulkanDevice {
         Ok(surface)
     }
 
+    /// Resolves a requested surface alpha mode against Vulkan surface capabilities.
+    ///
+    /// A premultiplied request represents a transparent surface and may resolve to
+    /// postmultiplied alpha when that is the compositor's only transparent mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when the surface handle is invalid, capabilities cannot be
+    /// queried, or no compatible alpha mode is supported.
+    pub fn resolve_surface_alpha_mode(
+        &self,
+        surface_id: SurfaceId,
+        requested: CompositeAlphaMode,
+    ) -> Result<CompositeAlphaMode> {
+        let surface = self.surfaces.get(surface_id)?.surface;
+        // SAFETY: The physical device and surface were created from this Vulkan instance.
+        let capabilities = unsafe {
+            self.surface_loader
+                .get_physical_device_surface_capabilities(self.physical_device, surface)
+        }
+        .map_err(VulkanError::from)?;
+        choose_composite_alpha_mode(capabilities.supported_composite_alpha, requested)
+    }
+
     /// Creates or replaces a swapchain for a surface.
     ///
     /// # Errors
@@ -1680,10 +1704,10 @@ impl VulkanDevice {
             } else {
                 (vk::SharingMode::CONCURRENT, &queue_family_indices[..])
             };
-        let alpha_mode = choose_composite_alpha(
+        let alpha_mode = choose_composite_alpha_mode(
             support.capabilities.supported_composite_alpha,
             config.alpha_mode,
-        );
+        )?;
         let create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(image_count)
@@ -1695,7 +1719,7 @@ impl VulkanDevice {
             .image_sharing_mode(sharing_mode)
             .queue_family_indices(queue_family_indices)
             .pre_transform(support.capabilities.current_transform)
-            .composite_alpha(alpha_mode)
+            .composite_alpha(composite_alpha_to_vulkan(alpha_mode))
             .present_mode(present_mode)
             .clipped(true)
             .old_swapchain(old_swapchain);
@@ -3129,25 +3153,44 @@ fn choose_present_mode(modes: &[vk::PresentModeKHR], preferred: PresentMode) -> 
     }
 }
 
-fn choose_composite_alpha(
+fn choose_composite_alpha_mode(
     supported: vk::CompositeAlphaFlagsKHR,
     preferred: CompositeAlphaMode,
-) -> vk::CompositeAlphaFlagsKHR {
-    let candidates: &[vk::CompositeAlphaFlagsKHR] = match preferred {
+) -> Result<CompositeAlphaMode> {
+    let candidates: &[CompositeAlphaMode] = match preferred {
         CompositeAlphaMode::Auto => &[
-            vk::CompositeAlphaFlagsKHR::OPAQUE,
-            vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
-            vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
-            vk::CompositeAlphaFlagsKHR::INHERIT,
+            CompositeAlphaMode::Opaque,
+            CompositeAlphaMode::Premultiplied,
+            CompositeAlphaMode::Postmultiplied,
+            CompositeAlphaMode::Inherit,
         ],
-        CompositeAlphaMode::Opaque => &[vk::CompositeAlphaFlagsKHR::OPAQUE],
-        CompositeAlphaMode::Premultiplied => &[vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED],
+        CompositeAlphaMode::Opaque => &[CompositeAlphaMode::Opaque],
+        CompositeAlphaMode::Premultiplied => &[
+            CompositeAlphaMode::Premultiplied,
+            CompositeAlphaMode::Postmultiplied,
+            CompositeAlphaMode::Inherit,
+        ],
+        CompositeAlphaMode::Postmultiplied => &[CompositeAlphaMode::Postmultiplied],
+        CompositeAlphaMode::Inherit => &[CompositeAlphaMode::Inherit],
     };
     candidates
         .iter()
         .copied()
-        .find(|candidate| supported.contains(*candidate))
-        .unwrap_or(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .find(|candidate| supported.contains(composite_alpha_to_vulkan(*candidate)))
+        .ok_or_else(|| {
+            GfxError::Unavailable(format!(
+                "Vulkan surface does not support requested composite alpha mode {preferred:?}; supported flags: {supported:?}"
+            ))
+        })
+}
+
+fn composite_alpha_to_vulkan(mode: CompositeAlphaMode) -> vk::CompositeAlphaFlagsKHR {
+    match mode {
+        CompositeAlphaMode::Auto | CompositeAlphaMode::Opaque => vk::CompositeAlphaFlagsKHR::OPAQUE,
+        CompositeAlphaMode::Premultiplied => vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
+        CompositeAlphaMode::Postmultiplied => vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
+        CompositeAlphaMode::Inherit => vk::CompositeAlphaFlagsKHR::INHERIT,
+    }
 }
 
 fn choose_extent(
@@ -4092,6 +4135,53 @@ mod tests {
         let mode = choose_present_mode(&[vk::PresentModeKHR::FIFO], PresentMode::Mailbox);
 
         assert_eq!(mode, vk::PresentModeKHR::FIFO);
+    }
+
+    #[test]
+    fn transparent_alpha_prefers_premultiplied() {
+        let supported = vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED
+            | vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED;
+
+        assert_eq!(
+            choose_composite_alpha_mode(supported, CompositeAlphaMode::Premultiplied)
+                .expect("a transparent alpha mode should be selected"),
+            CompositeAlphaMode::Premultiplied
+        );
+    }
+
+    #[test]
+    fn transparent_alpha_falls_back_to_postmultiplied() {
+        assert_eq!(
+            choose_composite_alpha_mode(
+                vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
+                CompositeAlphaMode::Premultiplied,
+            )
+            .expect("postmultiplied alpha should preserve transparency"),
+            CompositeAlphaMode::Postmultiplied
+        );
+    }
+
+    #[test]
+    fn transparent_alpha_does_not_fall_back_to_opaque() {
+        let error = choose_composite_alpha_mode(
+            vk::CompositeAlphaFlagsKHR::OPAQUE,
+            CompositeAlphaMode::Premultiplied,
+        )
+        .expect_err("opaque alpha must not satisfy a transparent request");
+
+        assert!(error.to_string().contains("does not support requested"));
+    }
+
+    #[test]
+    fn transparent_alpha_accepts_native_window_system_compositing() {
+        assert_eq!(
+            choose_composite_alpha_mode(
+                vk::CompositeAlphaFlagsKHR::INHERIT,
+                CompositeAlphaMode::Premultiplied,
+            )
+            .expect("native compositing should preserve transparency"),
+            CompositeAlphaMode::Inherit
+        );
     }
 
     #[test]

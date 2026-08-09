@@ -1025,6 +1025,14 @@ fn auto_surface_alpha_uses_straight_output_like_gpu() {
 }
 
 #[test]
+fn inherited_transparent_surface_uses_premultiplied_output() {
+    let alpha = NovaSurfaceAlphaState::new(CompositeAlphaMode::Inherit);
+    assert_eq!(alpha.swapchain_mode, CompositeAlphaMode::Inherit);
+    assert_eq!(alpha.output_mode, NovaSurfaceOutputMode::Premultiplied);
+    assert!(alpha.outputs_premultiplied_alpha());
+}
+
+#[test]
 fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
     let scene = backdrop_blur_scene(Some(crate::Hsla {
         h: 0.0,

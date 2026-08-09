@@ -198,7 +198,16 @@ impl NovaRenderer {
 
     pub(crate) fn update_transparency(&mut self, is_transparent: bool) {
         let previous_alpha = self.surface_alpha;
-        let next_alpha = self.alpha_state_for_current_backend_transparency(is_transparent);
+        let next_alpha = match self.alpha_state_for_current_backend_transparency(is_transparent) {
+            Ok(alpha) => alpha,
+            Err(error) => {
+                log::warn!(
+                    "failed to resolve nova-gfx surface alpha mode: backend={} error={error:#}",
+                    self.backend.label(),
+                );
+                return;
+            }
+        };
         if self.surface_alpha == next_alpha {
             return;
         }
@@ -235,17 +244,20 @@ impl NovaRenderer {
     fn alpha_state_for_current_backend_transparency(
         &self,
         is_transparent: bool,
-    ) -> NovaSurfaceAlphaState {
-        let backend = match self.backend {
+    ) -> Result<NovaSurfaceAlphaState> {
+        let requested = Self::alpha_state_for_window_transparency(is_transparent);
+        match &self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(_) => RendererBackend::NovaDx12,
+            NovaBackend::Dx12(_) => Ok(requested),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(_) => RendererBackend::NovaMetal,
+            NovaBackend::Metal(_) => Ok(requested),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            NovaBackend::Vulkan(_) => RendererBackend::NovaVulkan,
+            NovaBackend::Vulkan(device) => Ok(NovaSurfaceAlphaState::new(
+                device.resolve_surface_alpha_mode(self.surface, requested.swapchain_mode)?,
+            )),
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
@@ -254,11 +266,8 @@ impl NovaRenderer {
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
                 )
             )))]
-            NovaBackend::Unavailable => {
-                return NovaSurfaceAlphaState::for_window_transparency(is_transparent);
-            }
-        };
-        Self::alpha_state_for_window_transparency_on_backend(backend, is_transparent)
+            NovaBackend::Unavailable => Ok(requested),
+        }
     }
 
     fn reconfigure_surface_alpha(&mut self, alpha: NovaSurfaceAlphaState) -> Result<()> {

@@ -79,11 +79,7 @@ impl SurfaceMeshPageAllocator {
         }
     }
 
-    fn reserve(
-        &mut self,
-        vertex_count: usize,
-        index_byte_count: usize,
-    ) -> Option<(usize, usize)> {
+    fn reserve(&mut self, vertex_count: usize, index_byte_count: usize) -> Option<(usize, usize)> {
         let vertex_offset = allocate_best_fit(&mut self.free_vertices, vertex_count, 1)?;
         let Some(index_byte_offset) =
             allocate_best_fit(&mut self.free_index_bytes, index_byte_count, 4)
@@ -178,7 +174,11 @@ impl SurfaceMeshPageAllocator {
         }
     }
 
-    fn evict_unused(&mut self, current: &FxHashSet<GpuMesh3dId>, aggressive: bool) -> Vec<GpuMesh3dId> {
+    fn evict_unused(
+        &mut self,
+        current: &FxHashSet<GpuMesh3dId>,
+        aggressive: bool,
+    ) -> Vec<GpuMesh3dId> {
         let epoch = self.epoch;
         let mut candidates = self
             .allocations
@@ -237,7 +237,11 @@ impl SurfaceMeshPageAllocator {
     }
 
     fn largest_free_vertex_span(&self) -> usize {
-        self.free_vertices.iter().map(|span| span.len).max().unwrap_or(0)
+        self.free_vertices
+            .iter()
+            .map(|span| span.len)
+            .max()
+            .unwrap_or(0)
     }
 
     fn largest_free_index_span(&self) -> usize {
@@ -323,12 +327,15 @@ fn insert_free_span(spans: &mut Vec<MeshFreeSpan>, span: MeshFreeSpan) {
 
 fn index_uses_u16(mesh: &GpuMesh3d) -> bool {
     mesh.vertices.len() <= usize::from(u16::MAX)
-        && mesh.indices.iter().all(|index| *index <= u32::from(u16::MAX))
+        && mesh
+            .indices
+            .iter()
+            .all(|index| *index <= u32::from(u16::MAX))
 }
 
 fn packed_index_offset(index_byte_offset: usize, uses_u16: bool) -> Result<u32> {
-    let offset = u32::try_from(index_byte_offset)
-        .context("custom 3D mesh index byte offset exceeds u32")?;
+    let offset =
+        u32::try_from(index_byte_offset).context("custom 3D mesh index byte offset exceeds u32")?;
     if offset & INDEX_FORMAT_U16_FLAG != 0 {
         anyhow::bail!("custom 3D mesh index byte offset exceeds packed offset range");
     }
@@ -436,12 +443,8 @@ impl NovaRenderer {
         };
         self.custom_mesh_3d_vertex_cursor = allocator_snapshot.0;
         self.custom_mesh_3d_index_cursor = allocator_snapshot.1 / PACKED_CUSTOM_MESH_3D_INDEX_BYTES;
-        let fragmented_vertex_count = allocator_snapshot
-            .2
-            .saturating_sub(allocator_snapshot.4);
-        let fragmented_index_bytes = allocator_snapshot
-            .3
-            .saturating_sub(allocator_snapshot.5);
+        let fragmented_vertex_count = allocator_snapshot.2.saturating_sub(allocator_snapshot.4);
+        let fragmented_index_bytes = allocator_snapshot.3.saturating_sub(allocator_snapshot.5);
         log::debug!(
             "nova custom 3D mesh paged cache: surface={surface_key}, current_meshes={}, cached_meshes={}, uploaded_bytes={}, used_vertices={}, used_index_bytes={}, free_vertices={}, free_index_bytes={}, largest_free_vertex_span={}, largest_free_index_span={}, fragmented_vertex_count={fragmented_vertex_count}, fragmented_index_bytes={fragmented_index_bytes}, retired_allocations={}, evictions={}, compactions={}",
             current_meshes.len(),
@@ -539,14 +542,10 @@ impl NovaRenderer {
             };
         }
 
-        let (vertex_offset, index_byte_offset) = reservation
-            .context("custom 3D mesh paged cache capacity exceeded by current frame")?;
-        let upload_result = self.upload_custom_mesh_3d_to_cache(
-            mesh,
-            vertex_offset,
-            index_byte_offset,
-            uses_u16,
-        );
+        let (vertex_offset, index_byte_offset) =
+            reservation.context("custom 3D mesh paged cache capacity exceeded by current frame")?;
+        let upload_result =
+            self.upload_custom_mesh_3d_to_cache(mesh, vertex_offset, index_byte_offset, uses_u16);
         if let Err(error) = upload_result {
             surface_mesh_allocators()
                 .lock()
@@ -580,12 +579,7 @@ impl NovaRenderer {
             .or_default()
             .reserve(mesh.vertices.len(), index_byte_count)
             .context("custom 3D mesh compaction capacity exceeded")?;
-        self.upload_custom_mesh_3d_to_cache(
-            mesh,
-            reservation.0,
-            reservation.1,
-            uses_u16,
-        )
+        self.upload_custom_mesh_3d_to_cache(mesh, reservation.0, reservation.1, uses_u16)
     }
 
     pub(super) fn custom_mesh_3d_cache_entry(
@@ -691,8 +685,7 @@ impl NovaRenderer {
             }
         }
 
-        let vertex_byte_offset =
-            (vertex_offset * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64;
+        let vertex_byte_offset = (vertex_offset * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64;
         let vertex_buffer = self.custom_mesh_3d_vertices_buffer;
         let index_buffer = self.custom_mesh_3d_indices_buffer;
         let upload_result: Result<()> = match &mut self.backend {

@@ -20,17 +20,17 @@ mod atlas;
 mod atlas_resources;
 mod backend;
 mod diagnostics;
-#[path = "nova/draw.rs"]
-mod draw_legacy;
 #[path = "nova/draw_paged.rs"]
 mod draw;
+#[path = "nova/draw.rs"]
+mod draw_legacy;
 mod frame_upload;
 mod limits;
 mod nova_renderer;
-#[path = "nova/pipeline.rs"]
-mod pipeline_legacy;
 #[path = "nova/pipeline_material.rs"]
 mod pipeline;
+#[path = "nova/pipeline.rs"]
+mod pipeline_legacy;
 mod prelude;
 mod rendering_parameters;
 mod resource_bindings;

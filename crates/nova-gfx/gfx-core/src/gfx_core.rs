@@ -510,6 +510,10 @@ pub enum CompositeAlphaMode {
     Opaque,
     /// Premultiplied alpha.
     Premultiplied,
+    /// Straight alpha, multiplied by the compositor after presentation.
+    Postmultiplied,
+    /// Inherit alpha compositing behavior from the native window system.
+    Inherit,
 }
 
 /// Native surface descriptor.

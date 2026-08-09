@@ -11,7 +11,7 @@ struct WindowContent {
 }
 
 impl Render for WindowContent {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let window_bounds = window.bounds();
 
         div()
@@ -21,7 +21,15 @@ impl Render for WindowContent {
             .size_full()
             .items_center()
             .text_color(rgb(0xffffff))
+            .on_click(cx.listener(|view, _, window, cx| {
+                let next_origin = view.bounds.origin + point(px(12.), px(12.));
+                if window.set_window_origin(next_origin) {
+                    view.bounds.origin = next_origin;
+                    cx.notify();
+                }
+            }))
             .child(self.text.clone())
+            .child("Click to move 12 px diagonally when supported")
             .child(
                 div()
                     .flex()

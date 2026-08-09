@@ -390,13 +390,12 @@ fn plugin_memory_summary(report: &PluginMemoryReport) -> String {
 
 fn plugin_memory_line(plugin: &PluginMemorySnapshot) -> String {
     format!(
-        "{} ({}) total={} wasm={} ({}/{} pages) render={} entries/{} http={} entries/{} body + {} errors logs={} entries/{} enabled={} loaded={}",
+        "{} ({}) total={} wasm={} ({} pages) render={} entries/{} http={} entries/{} body + {} errors logs={} entries/{} enabled={} loaded={}",
         plugin.name,
         plugin.plugin_id,
         bytes_to_human(plugin.total_estimated_bytes as u64),
         bytes_to_human(plugin.wasm_linear_bytes as u64),
         plugin.wasm_page_count,
-        plugin.wasm_limit_bytes / (64 * 1024),
         plugin.render_cache_entries,
         bytes_to_human(plugin.render_cache_bytes as u64),
         plugin.http_cache_entries,

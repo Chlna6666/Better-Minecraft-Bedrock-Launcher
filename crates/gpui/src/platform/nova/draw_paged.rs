@@ -7,8 +7,8 @@ const INDEX_OFFSET_MASK: u32 = !INDEX_FORMAT_U16_FLAG;
 pub(super) use super::draw_legacy::{
     NovaBackdropBlurRenderPass, NovaDrawStepMode, apply_scissor_to_steps,
     backdrop_blur_render_passes_for_targets_into, partial_scissor_for_plan,
-    path_mask_draw_steps_for_upload, path_mask_draw_steps_for_upload_into,
-    scaled_pixels_ceil_u32, scaled_pixels_floor_u32,
+    path_mask_draw_steps_for_upload, path_mask_draw_steps_for_upload_into, scaled_pixels_ceil_u32,
+    scaled_pixels_floor_u32,
 };
 
 fn custom_mesh_3d_index_byte_offset(entry: NovaMeshCacheEntry) -> u32 {
@@ -129,7 +129,9 @@ pub(super) fn draw_steps_for_upload_into(
 fn record_custom_mesh_3d_draw_profile(steps: &[RenderStepDescriptor]) {
     static PROFILE_FRAME: AtomicU64 = AtomicU64::new(0);
 
-    let frame = PROFILE_FRAME.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    let frame = PROFILE_FRAME
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
     let mut indexed_draws = 0usize;
     let mut uint16_draws = 0usize;
     let mut uint32_draws = 0usize;
@@ -143,8 +145,9 @@ fn record_custom_mesh_3d_draw_profile(steps: &[RenderStepDescriptor]) {
             continue;
         };
         indexed_draws = indexed_draws.saturating_add(1);
-        submitted_indices = submitted_indices
-            .saturating_add(u64::from(step.index_count).saturating_mul(u64::from(step.instance_count)));
+        submitted_indices = submitted_indices.saturating_add(
+            u64::from(step.index_count).saturating_mul(u64::from(step.instance_count)),
+        );
         submitted_instances = submitted_instances.saturating_add(u64::from(step.instance_count));
         pipelines.insert(step.pipeline);
         index_pages.insert((

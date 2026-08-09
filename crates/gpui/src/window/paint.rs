@@ -267,7 +267,11 @@ impl Window {
             pad: 0,
             bounds: self.visual_bounds(bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
-            color: style.color.unwrap_or_default().opacity(element_opacity).into(),
+            color: style
+                .color
+                .unwrap_or_default()
+                .opacity(element_opacity)
+                .into(),
             thickness: style.thickness.scale(scale_factor * visual_scale),
             wavy: if style.wavy { 1 } else { 0 },
         });

@@ -22,9 +22,11 @@ pub(super) fn clear_color() -> ClearColor {
 }
 
 impl NovaSurfaceAlphaState {
-    #[cfg(test)]
     pub(super) fn new(swapchain_mode: CompositeAlphaMode) -> Self {
-        let output_mode = if matches!(swapchain_mode, CompositeAlphaMode::Premultiplied) {
+        let output_mode = if matches!(
+            swapchain_mode,
+            CompositeAlphaMode::Premultiplied | CompositeAlphaMode::Inherit
+        ) {
             NovaSurfaceOutputMode::Premultiplied
         } else {
             NovaSurfaceOutputMode::Straight

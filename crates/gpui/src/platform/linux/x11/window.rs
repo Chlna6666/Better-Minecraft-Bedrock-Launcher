@@ -455,12 +455,13 @@ impl X11WindowState {
 
         let visual_set = find_visuals(xcb, x_screen_index);
 
-        let visual = match visual_set.transparent {
-            Some(visual) => visual,
-            None => {
-                log::warn!("Unable to find a transparent visual",);
-                visual_set.inherit
-            }
+        let transparent = params.window_background != WindowBackgroundAppearance::Opaque;
+        let visual = if transparent {
+            visual_set
+                .transparent
+                .ok_or_else(|| anyhow!("X11 display does not provide an alpha-capable visual"))?
+        } else {
+            visual_set.opaque.unwrap_or(visual_set.inherit)
         };
         log::info!("Using {:?}", visual);
 
@@ -710,7 +711,7 @@ impl X11WindowState {
                     renderer_options,
                     crate::GpuSubmissionMode::Deferred,
                     query_render_extent(xcb, x_window)?,
-                    params.window_background != WindowBackgroundAppearance::Opaque,
+                    transparent,
                 )?
             };
 
@@ -1266,6 +1267,27 @@ impl PlatformWindow for X11Window {
         .log_err();
         xcb_flush(&self.0.xcb);
         state.renderer.resize(size).log_err();
+    }
+
+    fn set_window_origin(&mut self, origin: Point<Pixels>) -> bool {
+        let scale_factor = self.0.state.borrow().scale_factor;
+        let origin = origin.to_device_pixels(scale_factor);
+        let result = check_reply(
+            || {
+                format!(
+                    "X11 ConfigureWindow failed. x: {}, y: {}",
+                    origin.x.0, origin.y.0
+                )
+            },
+            self.0.xcb.configure_window(
+                self.0.x_window,
+                &xproto::ConfigureWindowAux::new()
+                    .x(origin.x.0)
+                    .y(origin.y.0),
+            ),
+        );
+        xcb_flush(&self.0.xcb);
+        result.log_err().is_some()
     }
 
     fn scale_factor(&self) -> f32 {

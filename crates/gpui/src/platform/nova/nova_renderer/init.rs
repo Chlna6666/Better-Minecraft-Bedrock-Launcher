@@ -338,6 +338,15 @@ impl NovaRenderer {
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova Vulkan surface")?;
+                let surface_alpha = NovaSurfaceAlphaState::new(
+                    device
+                        .resolve_surface_alpha_mode(surface, surface_alpha.swapchain_mode)
+                        .context("resolving nova Vulkan surface alpha mode")?,
+                );
+                let surface_config = SurfaceConfig {
+                    alpha_mode: surface_alpha.swapchain_mode,
+                    ..surface_config
+                };
                 let swapchain = device
                     .create_swapchain(surface, surface_config)
                     .context("creating nova Vulkan swapchain")?;
