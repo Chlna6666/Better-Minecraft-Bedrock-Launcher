@@ -366,8 +366,35 @@ fn is_win32_version(version: &str) -> bool {
     compare_versions(version, "1.21.12000.21") != Ordering::Less
 }
 
+fn requires_legacy_uwp_bloader_isolation(version: &str) -> bool {
+    let parsed = parse_version_to_vec_simple(version);
+    let Some(&build) = parsed.get(2) else {
+        return false;
+    };
+    parsed.get(0) == Some(&1)
+        && parsed.get(1) == Some(&18)
+        && (build == 30 || (3000..3100).contains(&build))
+}
+
 pub fn embedded_dll_version_string() -> Option<String> {
     Some(bloader::embedded_version_string().to_string())
+}
+
+#[cfg(test)]
+mod legacy_uwp_bloader_isolation_tests {
+    use super::requires_legacy_uwp_bloader_isolation;
+
+    #[test]
+    fn isolates_only_minecraft_1_18_30_family() {
+        assert!(requires_legacy_uwp_bloader_isolation("1.18.30.4"));
+        assert!(requires_legacy_uwp_bloader_isolation("1.18.30.0"));
+        assert!(requires_legacy_uwp_bloader_isolation("1.18.3004.0"));
+        assert!(requires_legacy_uwp_bloader_isolation("1.18.3099.0"));
+        assert!(!requires_legacy_uwp_bloader_isolation("1.18.31.0"));
+        assert!(!requires_legacy_uwp_bloader_isolation("1.18.3100.0"));
+        assert!(!requires_legacy_uwp_bloader_isolation("1.19.0.0"));
+        assert!(!requires_legacy_uwp_bloader_isolation("1.21.12000.21"));
+    }
 }
 
 async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u32>, String> {
@@ -405,6 +432,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         .await
         .map_err(|error| format!("Manifest 解析失败: {error}"))?;
     let is_win32 = is_win32_version(&identity_version);
+    let legacy_uwp_bloader_isolation =
+        !is_win32 && requires_legacy_uwp_bloader_isolation(&identity_version);
     info!(
         task_id = %task_id,
         identity_name = %identity_name,
@@ -522,18 +551,42 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         )?;
         remove_legacy_preloader_config(exe_dir);
 
-        if let Err(error) = ensure_backup(&exe_path) {
-            warn!("无法创建 EXE 备份，将继续使用自标记还原机制: {error}");
-        }
-
-        if is_file_patched(&exe_path) {
-            append_log(task_id, "检测到 PE 已包含补丁标记，跳过修补".to_string());
+        if legacy_uwp_bloader_isolation {
+            if is_file_patched(&exe_path) {
+                remove_readonly(&exe_path);
+                restore_original_pe(&exe_path)
+                    .map_err(|error| format!("1.18.30 隔离模式还原原始 PE 失败: {error}"))?;
+            }
+            if is_file_patched(&exe_path) {
+                return Err(
+                    "1.18.30 隔离模式无法移除 BLoader 静态 PE 导入；已中止启动以避免无效 A/B 测试"
+                        .to_string(),
+                );
+            }
+            append_log(
+                task_id,
+                "1.18.30 兼容性隔离：已恢复原始 PE，本次不会静态加载 BLoader.dll".to_string(),
+            );
+            info!(
+                task_id = %task_id,
+                version = %identity_version,
+                exe_path = %exe_path.display(),
+                "legacy UWP isolation active: BLoader static import disabled"
+            );
         } else {
-            let _ = restore_original_pe(&exe_path);
-            remove_readonly(&exe_path);
-            inject_dll_import(&exe_path, injector_name, None)
-                .map_err(|error| format!("PE 修改失败: {error}"))?;
-            append_log(task_id, "静态注入环境已部署".to_string());
+            if let Err(error) = ensure_backup(&exe_path) {
+                warn!("无法创建 EXE 备份，将继续使用自标记还原机制: {error}");
+            }
+
+            if is_file_patched(&exe_path) {
+                append_log(task_id, "检测到 PE 已包含补丁标记，跳过修补".to_string());
+            } else {
+                let _ = restore_original_pe(&exe_path);
+                remove_readonly(&exe_path);
+                inject_dll_import(&exe_path, injector_name, None)
+                    .map_err(|error| format!("PE 修改失败: {error}"))?;
+                append_log(task_id, "静态注入环境已部署".to_string());
+            }
         }
     }
     advance_step(task_id, "patching", "启动环境准备完成".to_string());
@@ -715,7 +768,13 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                 .await
                 .ok_or("启动超时".to_string())?,
         };
-        if !version_config.disable_mod_loading {
+        if legacy_uwp_bloader_isolation {
+            append_log(
+                task_id,
+                "1.18.30 兼容性隔离：本次同时禁用全部 Mod 注入，确保测试进程完全不加载 BLoader"
+                    .to_string(),
+            );
+        } else if !version_config.disable_mod_loading {
             let log_task_id = task_id.to_string();
             handle_delayed_injection(
                 pid,
