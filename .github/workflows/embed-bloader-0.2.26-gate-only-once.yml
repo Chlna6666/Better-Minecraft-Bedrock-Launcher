@@ -1,0 +1,47 @@
+name: Embed BLoader 0.2.26 gate-only once
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/embed-bloader-0.2.26-gate-only-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  embed:
+    runs-on: windows-2025
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download verified BLoader artifact
+        shell: pwsh
+        run: |
+          gh api repos/Chlna6666/BLoader/actions/artifacts/9040483219/zip > bloader-artifact.zip
+          Expand-Archive -Path bloader-artifact.zip -DestinationPath bloader-artifact -Force
+          $dll = Get-ChildItem bloader-artifact -Recurse -Filter BLoader.dll | Select-Object -First 1
+          if (-not $dll) { throw 'BLoader.dll not found in artifact' }
+          $hash = (Get-FileHash $dll.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'efc58d86a33144123c4dfd9f8617a547f33d46e3dd1f099501860560e405a5d4') {
+            throw "Unexpected BLoader.dll SHA256: $hash"
+          }
+          $version = $dll.VersionInfo.FileVersion
+          if (-not $version.StartsWith('0.2.26')) { throw "Unexpected BLoader version: $version" }
+          Copy-Item $dll.FullName assets/bin/BLoader.dll -Force
+          Write-Host "Embedded BLoader.dll version=$version sha256=$hash"
+
+      - name: Commit binary-only product update and remove workflow
+        shell: pwsh
+        run: |
+          Remove-Item '.github/workflows/embed-bloader-0.2.26-gate-only-once.yml' -Force
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/bin/BLoader.dll .github/workflows/embed-bloader-0.2.26-gate-only-once.yml
+          git diff --cached --check
+          git commit -m 'chore: embed BLoader 0.2.26 gate-only diagnostic'
+          git push origin HEAD:master
