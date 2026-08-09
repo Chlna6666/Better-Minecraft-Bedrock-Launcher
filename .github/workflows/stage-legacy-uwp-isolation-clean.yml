@@ -1,0 +1,83 @@
+name: Stage clean legacy UWP isolation
+
+on:
+  push:
+    branches:
+      - ci/stage-legacy-uwp-isolation-clean
+    paths:
+      - .github/workflows/stage-legacy-uwp-isolation-clean.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-stage:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/stage-legacy-uwp-isolation-clean
+          fetch-depth: 0
+
+      - name: Preserve patch and reset product tree to master
+        shell: pwsh
+        run: |
+          Copy-Item tools/apply-legacy-uwp-bloader-isolation.py "$env:RUNNER_TEMP/apply-legacy-uwp-bloader-isolation.py"
+          git fetch origin master
+          git reset --hard origin/master
+          New-Item -ItemType Directory -Force tools | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/apply-legacy-uwp-bloader-isolation.py" tools/apply-legacy-uwp-bloader-isolation.py
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: clean-legacy-uwp-isolation-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            legacy-uwp-isolation-${{ runner.os }}-rust-1.95-
+            bmcb-${{ runner.os }}-rust-1.95-
+
+      - name: Install Rust 1.95
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup component add rustfmt --toolchain 1.95.0
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+
+      - name: Apply product patch
+        shell: pwsh
+        run: python tools/apply-legacy-uwp-bloader-isolation.py
+
+      - name: Format and diff check
+        shell: pwsh
+        run: |
+          rustfmt --edition 2024 src/core/minecraft/launcher/task.rs
+          git diff --check
+
+      - name: Verify 1.18.30 isolation unit test
+        shell: pwsh
+        run: cargo test -p bmcbl legacy_uwp_bloader_isolation_tests --lib --message-format short
+
+      - name: Cargo check
+        shell: pwsh
+        run: cargo check -p bmcbl --lib --message-format short
+
+      - name: Create clean product commit
+        shell: pwsh
+        run: |
+          Remove-Item -Force tools/apply-legacy-uwp-bloader-isolation.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/core/minecraft/launcher/task.rs
+          if ((git status --porcelain | Measure-Object -Line).Lines -ne 1) {
+            Write-Error "Unexpected staged/working-tree files before product commit"
+            git status --short
+            exit 1
+          }
+          git commit -m "fix(launcher): isolate BLoader from Minecraft 1.18.30 UWP"
+          git push origin HEAD:refs/heads/ci/verify-legacy-uwp-1.18.30-isolation-clean
