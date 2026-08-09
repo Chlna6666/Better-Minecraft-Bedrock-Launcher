@@ -4915,11 +4915,9 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
 }
 
 #[::core::prelude::v1::test]
-#[ignore = "requires BMCBL_REAL_WORLD and reads an installed Bedrock world"]
+#[ignore = "requires tests/fixtures/bedrock-world to contain an installed Bedrock world"]
 fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
-    let source_world_path = std::env::var_os("BMCBL_REAL_WORLD")
-        .map(PathBuf::from)
-        .expect("BMCBL_REAL_WORLD must point to a Bedrock world root");
+    let source_world_path = PathBuf::from("tests/fixtures/bedrock-world");
     let source_editor = MapWorldEditor::open_with_options(
         &source_world_path,
         bedrock_world::OpenOptions {

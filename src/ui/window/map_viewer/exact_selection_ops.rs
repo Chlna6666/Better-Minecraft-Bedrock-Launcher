@@ -474,7 +474,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn public_render_plan_never_fills_l_shape_hole() {
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(0, 2)])
@@ -495,7 +495,7 @@ mod tests {
         assert!(!covered.contains(&(1, 2)));
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn public_render_plan_preserves_disconnected_chunks() {
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(4, 0), chunk(4, 1)]).expect("selection");
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(
             plan.rectangle_cover()
                 .iter()
-                .map(SlimeChunkBounds::chunk_count)
+                .map(|bounds| bounds.chunk_count())
                 .sum::<usize>(),
             3
         );

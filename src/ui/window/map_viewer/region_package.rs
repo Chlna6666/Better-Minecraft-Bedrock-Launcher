@@ -389,11 +389,9 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    #[ignore = "requires BMCBL_TEST_WORLD to point to a local Bedrock world"]
+    #[ignore = "requires tests/fixtures/bedrock-world to contain a local Bedrock world"]
     fn real_world_region_export_round_trips_without_writing_source_world() {
-        let world_path = std::env::var_os("BMCBL_TEST_WORLD")
-            .map(PathBuf::from)
-            .expect("BMCBL_TEST_WORLD must point to a Bedrock world");
+        let world_path = PathBuf::from("tests/fixtures/bedrock-world");
         let chunks = (319..=326)
             .flat_map(|z| {
                 (124..=132).map(move |x| ChunkPos {

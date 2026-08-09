@@ -1319,51 +1319,15 @@ pub(super) fn interactive_render_options(
 }
 
 pub(super) fn map_render_batch_tiles() -> usize {
-    map_env_usize("BMCBL_MAP_RENDER_BATCH_TILES", RENDER_UI_BATCH_TILES).max(1)
+    RENDER_UI_BATCH_TILES
 }
 
 pub(super) fn map_concurrent_render_batches() -> usize {
-    map_env_usize(
-        "BMCBL_MAP_CONCURRENT_RENDER_BATCHES",
-        MAX_CONCURRENT_RENDER_BATCHES,
-    )
-    .clamp(1, 4)
+    MAX_CONCURRENT_RENDER_BATCHES
 }
 
 pub(super) fn map_viewer_prefetch_radius() -> i32 {
-    i32::try_from(map_env_usize(
-        "BMCBL_MAP_PREFETCH_RADIUS",
-        usize::try_from(PREFETCH_RADIUS.max(0)).unwrap_or(1),
-    ))
-    .unwrap_or(PREFETCH_RADIUS)
-    .clamp(0, RETAIN_RADIUS.max(0))
-}
-
-pub(super) fn map_env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| parse_size_value(&value))
-        .unwrap_or(default)
-}
-
-pub(super) fn parse_size_value(value: &str) -> Option<usize> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let split_at = trimmed
-        .find(|ch: char| !ch.is_ascii_digit())
-        .unwrap_or(trimmed.len());
-    let (number, suffix) = trimmed.split_at(split_at);
-    let base = number.parse::<usize>().ok()?;
-    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" | "kib" => 1024,
-        "m" | "mb" | "mib" => 1024 * 1024,
-        "g" | "gb" | "gib" => 1024 * 1024 * 1024,
-        _ => return None,
-    };
-    base.checked_mul(multiplier)
+    PREFETCH_RADIUS.clamp(0, RETAIN_RADIUS.max(0))
 }
 
 pub(super) fn web_relief_surface_options() -> SurfaceRenderOptions {

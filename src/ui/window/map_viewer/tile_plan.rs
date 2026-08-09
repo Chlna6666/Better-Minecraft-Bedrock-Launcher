@@ -142,7 +142,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn visible_tile_plan_is_globally_center_first_across_old_cluster_edges() {
         let bounds = TileBounds {
             min_x: -5,
@@ -164,7 +164,7 @@ mod tests {
         }));
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn visible_tile_plan_handles_center_outside_bounds() {
         let bounds = TileBounds {
             min_x: 10,
