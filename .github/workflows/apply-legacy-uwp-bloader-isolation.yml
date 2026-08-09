@@ -1,0 +1,73 @@
+name: Apply legacy UWP BLoader isolation once
+
+on:
+  push:
+    branches:
+      - ci/legacy-uwp-1.18.30-no-bloader
+    paths:
+      - tools/apply-legacy-uwp-bloader-isolation.py
+      - .github/workflows/apply-legacy-uwp-bloader-isolation.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: legacy-uwp-bloader-isolation-once
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/legacy-uwp-1.18.30-no-bloader
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: legacy-uwp-isolation-${{ runner.os }}-rust-1.95-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            legacy-uwp-isolation-${{ runner.os }}-rust-1.95-
+            bmcb-${{ runner.os }}-rust-1.95-
+
+      - name: Install Rust 1.95
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup component add rustfmt --toolchain 1.95.0
+          rustup default 1.95.0
+
+      - name: Apply isolation patch
+        shell: pwsh
+        run: python tools/apply-legacy-uwp-bloader-isolation.py
+
+      - name: Format and diff check
+        shell: pwsh
+        run: |
+          rustfmt --edition 2024 src/core/minecraft/launcher/task.rs
+          git diff --check
+
+      - name: Verify isolation test
+        shell: pwsh
+        run: cargo test -p bmcbl legacy_uwp_bloader_isolation_tests --lib --message-format short
+
+      - name: Cargo check
+        shell: pwsh
+        run: cargo check -p bmcbl --lib --message-format short
+
+      - name: Commit validated product result
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          Remove-Item -Force tools/apply-legacy-uwp-bloader-isolation.py
+          Remove-Item -Force .github/workflows/apply-legacy-uwp-bloader-isolation.yml
+          git add -A
+          git commit -m "fix(launcher): isolate BLoader from Minecraft 1.18.30 UWP"
+          git push origin HEAD:ci/legacy-uwp-1.18.30-no-bloader
