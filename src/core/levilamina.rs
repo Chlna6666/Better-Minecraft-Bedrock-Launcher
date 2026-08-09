@@ -2,6 +2,23 @@ use crate::http::proxy::get_client_for_proxy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+mod archive;
+mod install;
+mod installation_state;
+mod lip;
+mod planner;
+mod support;
+
+pub use install::{
+    LeviLaminaInstallHandle, LeviLaminaInstallRequest, LeviLaminaInstallSnapshot,
+    LeviLaminaInstallStage, LeviLaminaInstallation, inspect_installation, install_loader,
+    start_install, start_uninstall,
+};
+pub use support::{
+    LeviLaminaSupportDatabase, cached_support_database, fetch_support_database,
+    loader_versions_for_game,
+};
+
 const LEVILAUNCHER_INDEX_URL: &str = "https://lipr.levimc.org/levilauncher.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -274,53 +291,37 @@ pub fn mod_matches_loader_version(
         return true;
     }
 
-    let target_prefix = target_loader_version
-        .split('.')
-        .take(2)
-        .collect::<Vec<&str>>()
-        .join(".");
+    mod_entry
+        .client_versions
+        .iter()
+        .any(|release| mod_release_supports_loader(mod_entry, release, target_loader_version))
+}
 
-    for (ver, deps) in &mod_entry.version_dependencies {
-        for (dep_key, dep_req) in deps {
-            let key_match = if target_loader == "全部"
-                || target_loader == "全部加载器"
-                || target_loader.is_empty()
-            {
-                dep_key.contains("LeviLamina")
-            } else {
-                dep_key
-                    .to_lowercase()
-                    .contains(&target_loader.to_lowercase())
-                    || dep_key.contains("LeviLamina")
-            };
-
-            if key_match {
-                if dep_req.contains(&target_prefix)
-                    || dep_req.contains(target_loader_version)
-                    || dep_req == "*"
-                {
-                    return true;
-                }
-                if target_loader_version.starts_with("26.10") && dep_req.contains("26.10") {
-                    return true;
-                }
-                if target_loader_version.starts_with("26.20") && dep_req.contains("26.20") {
-                    return true;
-                }
-                if target_loader_version.starts_with("1.9") && dep_req.contains("1.9") {
-                    return true;
-                }
-                if target_loader_version.starts_with("1.8") && dep_req.contains("1.8") {
-                    return true;
-                }
-            }
-        }
-        if ver.starts_with(&target_prefix) {
-            return true;
-        }
+#[must_use]
+pub fn mod_release_supports_loader(
+    mod_entry: &LeviLaminaModEntry,
+    release: &str,
+    loader_version: &str,
+) -> bool {
+    if !mod_entry
+        .client_versions
+        .iter()
+        .any(|version| version == release)
+    {
+        return false;
     }
-
-    false
+    mod_entry
+        .version_dependencies
+        .get(release)
+        .into_iter()
+        .flat_map(std::collections::HashMap::iter)
+        .filter(|(package_id, _)| {
+            package_id
+                .split_once('#')
+                .map_or(package_id.as_str(), |(path, _)| path)
+                .eq_ignore_ascii_case("github.com/LiteLDev/LeviLamina")
+        })
+        .all(|(_, requirement)| lip::version_matches(loader_version, requirement))
 }
 
 #[cfg(test)]
@@ -372,6 +373,37 @@ mod tests {
             &mod_entry,
             "LeviLamina",
             "1.8.0"
+        ));
+    }
+
+    #[test]
+    fn mod_release_checks_levilamina_dependency_range() {
+        let mut version_dependencies = HashMap::new();
+        version_dependencies.insert(
+            "26.20.0".to_string(),
+            HashMap::from([(
+                "github.com/LiteLDev/LeviLamina#client".to_string(),
+                ">=26.20.0 <26.30.0".to_string(),
+            )]),
+        );
+        let mod_entry = LeviLaminaModEntry {
+            package_id: "github.com/example/mod".to_string(),
+            name: "Example".to_string(),
+            description: String::new(),
+            avatar_url: String::new(),
+            stargazer_count: 0,
+            updated_at: String::new(),
+            tags: vec!["type:client".to_string()],
+            client_versions: vec!["26.20.0".to_string()],
+            all_versions: vec!["26.20.0".to_string()],
+            version_dependencies,
+        };
+
+        assert!(mod_release_supports_loader(
+            &mod_entry, "26.20.0", "26.20.7"
+        ));
+        assert!(!mod_release_supports_loader(
+            &mod_entry, "26.20.0", "26.50.0"
         ));
     }
 }

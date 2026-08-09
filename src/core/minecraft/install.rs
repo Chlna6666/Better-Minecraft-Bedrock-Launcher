@@ -22,6 +22,7 @@ pub struct GameInstallRequest {
     pub install_folder: String,
     pub md5: Option<String>,
     pub force_download: bool,
+    pub levilamina_version: Option<String>,
     pub source: GamePackageSource,
 }
 
@@ -30,6 +31,7 @@ pub enum GameInstallStage {
     Preparing,
     Downloading { task_id: Arc<str> },
     Extracting { task_id: Arc<str> },
+    InstallingLeviLamina { version: Arc<str> },
     Completed { local_path: Arc<str> },
     Failed { message: Arc<str> },
 }
@@ -132,6 +134,22 @@ async fn run_game_install(
 
     let extract_snapshot = task_manager::wait_for_task_terminal(&extract_task_id).await?;
     require_completed(&extract_snapshot, "安装")?;
+    if let Some(loader_version) = &request.levilamina_version {
+        publish_stage(
+            updates,
+            GameInstallStage::InstallingLeviLamina {
+                version: Arc::from(loader_version.as_str()),
+            },
+        );
+        let game_directory =
+            crate::utils::file_ops::bmcbl_subdir("versions").join(&request.install_folder);
+        crate::core::levilamina::install_loader(
+            game_directory,
+            request.version_label.clone(),
+            loader_version.clone(),
+        )
+        .await?;
+    }
     info!(
         operation_id,
         extract_task_id, "game install workflow completed"

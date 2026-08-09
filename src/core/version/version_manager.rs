@@ -185,6 +185,9 @@ fn read_appx_version_entry(entry: DirEntry, root: &Path) -> Option<LaunchVersion
         kind: Arc::<str>::from(kind),
         custom_icon_path: crate::core::version::icons::custom_version_icon_path(&path)
             .map(|icon_path| Arc::<str>::from(icon_path.to_string_lossy().into_owned())),
+        mod_loaders: Arc::from(
+            crate::core::minecraft::mod_loaders::detect_installed_mod_loaders(&path),
+        ),
     })
 }
 

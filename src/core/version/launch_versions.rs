@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use crate::core::minecraft::mod_loaders::InstalledModLoader;
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LaunchVersionEntry {
     pub(crate) folder: Arc<str>,
@@ -10,6 +12,7 @@ pub(crate) struct LaunchVersionEntry {
     pub(crate) path: Arc<str>,
     pub(crate) kind: Arc<str>,
     pub(crate) custom_icon_path: Option<Arc<str>>,
+    pub(crate) mod_loaders: Arc<[InstalledModLoader]>,
 }
 
 fn next_version_number(version: &str, cursor: &mut usize) -> Option<u64> {

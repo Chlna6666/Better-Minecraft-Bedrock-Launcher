@@ -12,6 +12,7 @@ pub mod key_patcher;
 pub mod launcher;
 pub mod map;
 pub mod map_info_cache;
+pub(crate) mod mod_loaders;
 pub mod mod_manager;
 #[cfg(target_os = "windows")]
 pub mod mouse_lock;

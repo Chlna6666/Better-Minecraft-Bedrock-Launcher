@@ -13,6 +13,7 @@ use gpui::*;
 use std::rc::Rc;
 
 mod icon;
+mod levilamina;
 
 const HOTKEY_OPTIONS: [&str; 5] = ["ALT", "CTRL", "SHIFT", "LWIN", "RWIN"];
 
@@ -22,6 +23,12 @@ pub struct VersionSettingsModalState {
     pub config: ManageVersionConfig,
     pub icon_source_path: Option<SharedString>,
     pub saving: bool,
+    pub levilamina_loading: bool,
+    pub levilamina_busy: bool,
+    pub levilamina_error: Option<SharedString>,
+    pub levilamina_versions: Vec<SharedString>,
+    pub selected_levilamina_version: SharedString,
+    pub levilamina_installation: crate::core::levilamina::LeviLaminaInstallation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,6 +104,7 @@ pub fn render(
                                 i18n,
                                 view_handle.clone(),
                             ))
+                            .child(levilamina::render_card(state, colors, view_handle.clone()))
                             .child(render_toggle_card(
                                 "settings-debug-console",
                                 colors,
