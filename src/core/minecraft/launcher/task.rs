@@ -463,6 +463,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
     let mut startup_mods_relative_paths = Vec::new();
     let mut delayed_mods = Vec::new();
     if request.auto_start
+        && !legacy_uwp_bloader_isolation
         && !version_config.disable_mod_loading
         && let Ok(mods) = load_mods_config(&mods_dir).await
     {
@@ -510,46 +511,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             "已定位游戏可执行文件"
         );
         let exe_dir = exe_path.parent().ok_or("无效的游戏目录".to_string())?;
-        let local_data_root = exe_dir.join(BLOADER_DEFAULT_REDIRECTION_ROOT);
-        if !local_data_root.exists() {
-            fs::create_dir_all(&local_data_root)
-                .map_err(|error| format!("创建重定向目录失败: {error}"))?;
-        }
-        let _ = grant_all_application_packages_access(&local_data_root);
-
         let injector_name = "BLoader.dll";
         let injector_target_path = exe_dir.join(injector_name);
-        let mut need_update = true;
-        if injector_target_path.exists() {
-            remove_readonly(&injector_target_path);
-            if let Ok(disk_bytes) = fs::read(&injector_target_path) {
-                need_update = bloader::version_string(&disk_bytes).as_deref()
-                    != Some(bloader::embedded_version_string());
-            }
-        }
-
-        if need_update {
-            let injector_bytes = bloader::bytes()?;
-            ensure_file_in_dir(exe_dir, injector_name, injector_bytes)?;
-        }
-
-        let file_redirections =
-            version_config.effective_file_redirections(Path::new(package_folder));
-        if !file_redirections.is_empty() {
-            append_log(
-                task_id,
-                format!("已配置 {} 条文件重定向", file_redirections.len()),
-            );
-        }
-
-        let _ = write_bloader_config(
-            exe_dir,
-            version_config.disable_mod_loading,
-            version_config.enable_redirection,
-            json!(file_redirections),
-            json!(startup_mods_relative_paths),
-        )?;
-        remove_legacy_preloader_config(exe_dir);
 
         if legacy_uwp_bloader_isolation {
             if is_file_patched(&exe_path) {
@@ -563,17 +526,74 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                         .to_string(),
                 );
             }
+
+            if injector_target_path.exists() {
+                remove_readonly(&injector_target_path);
+                fs::remove_file(&injector_target_path).map_err(|error| {
+                    format!(
+                        "1.18.30 隔离模式无法删除 {}: {error}",
+                        injector_target_path.display()
+                    )
+                })?;
+            }
+            if injector_target_path.exists() {
+                return Err(format!(
+                    "1.18.30 隔离模式仍检测到 {}；已中止启动",
+                    injector_target_path.display()
+                ));
+            }
+
             append_log(
                 task_id,
-                "1.18.30 兼容性隔离：已恢复原始 PE，本次不会静态加载 BLoader.dll".to_string(),
+                "1.18.30 兼容性隔离：原始 PE 已恢复，BLoader.dll 已移除，本次不会加载 BLoader 或任何 Mod"
+                    .to_string(),
             );
             info!(
                 task_id = %task_id,
                 version = %identity_version,
                 exe_path = %exe_path.display(),
-                "legacy UWP isolation active: BLoader static import disabled"
+                "legacy UWP isolation active: original PE restored and BLoader binary removed"
             );
         } else {
+            let local_data_root = exe_dir.join(BLOADER_DEFAULT_REDIRECTION_ROOT);
+            if !local_data_root.exists() {
+                fs::create_dir_all(&local_data_root)
+                    .map_err(|error| format!("创建重定向目录失败: {error}"))?;
+            }
+            let _ = grant_all_application_packages_access(&local_data_root);
+
+            let mut need_update = true;
+            if injector_target_path.exists() {
+                remove_readonly(&injector_target_path);
+                if let Ok(disk_bytes) = fs::read(&injector_target_path) {
+                    need_update = bloader::version_string(&disk_bytes).as_deref()
+                        != Some(bloader::embedded_version_string());
+                }
+            }
+
+            if need_update {
+                let injector_bytes = bloader::bytes()?;
+                ensure_file_in_dir(exe_dir, injector_name, injector_bytes)?;
+            }
+
+            let file_redirections =
+                version_config.effective_file_redirections(Path::new(package_folder));
+            if !file_redirections.is_empty() {
+                append_log(
+                    task_id,
+                    format!("已配置 {} 条文件重定向", file_redirections.len()),
+                );
+            }
+
+            let _ = write_bloader_config(
+                exe_dir,
+                version_config.disable_mod_loading,
+                version_config.enable_redirection,
+                json!(file_redirections),
+                json!(startup_mods_relative_paths),
+            )?;
+            remove_legacy_preloader_config(exe_dir);
+
             if let Err(error) = ensure_backup(&exe_path) {
                 warn!("无法创建 EXE 备份，将继续使用自标记还原机制: {error}");
             }
