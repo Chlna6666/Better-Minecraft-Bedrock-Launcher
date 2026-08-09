@@ -4,12 +4,16 @@ on:
   push:
     branches:
       - ci/bundle-bloader-0.2.21
+  pull_request:
+    branches:
+      - master
 
 permissions:
   contents: write
 
 jobs:
   bundle:
+    if: github.event_name == 'push' || github.head_ref == 'ci/bundle-bloader-0.2.21'
     runs-on: windows-2025
     steps:
       - name: Checkout trigger branch
