@@ -1,10 +1,10 @@
 name: Sync BLoader 0.2.29 once
 
 on:
-  push:
+  pull_request:
     branches: [master]
     paths:
-      - .github/workflows/sync-bloader-029-once.yml
+      - .ci-sync-bloader-029
 
 permissions:
   contents: write
@@ -15,6 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: master
           fetch-depth: 0
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
