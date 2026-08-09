@@ -11,7 +11,8 @@ use bmcbl_plugin_api as abi;
 use gpui::{App, BorrowAppContext, ClipboardItem, Global, Hsla, SharedString};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{
@@ -21,10 +22,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tinywasm::engine::{Config as TinyConfig, FuelPolicy, MemoryBackend, StackConfig};
-use tinywasm::types::{MemoryArch, MemoryType, WasmType, WasmValue};
+use tinywasm::types::{MemoryArch, WasmType, WasmValue};
 use tinywasm::{
-    Engine, FuncContext, Function, HostFunction, Imports, LinearMemory, Module, ModuleInstance,
-    PagedMemory, Store,
+    Engine, FuncContext, Function, HostFunction, Imports, Module, ModuleInstance, Store,
 };
 use tracing::{debug, error, info, warn};
 
@@ -32,7 +32,6 @@ pub const INIT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const RENDER_WARN_THRESHOLD: Duration = Duration::from_millis(16);
 pub const RENDER_TIMEOUT: Duration = Duration::from_millis(100);
 pub const EVENT_TIMEOUT: Duration = Duration::from_millis(50);
-pub const PLUGIN_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const HOST_BUFFER_MAX_BYTES: usize = 1024 * 1024;
 const ABI_MESSAGE_MAX_BYTES: usize = 1024 * 1024;
 const ABI_IMPORT_MODULE: &str = abi::HOST_MODULE;
@@ -46,10 +45,14 @@ const ABI_EXPORT_HANDLE_EVENT: &str = "bmcbl_handle_event";
 const ABI_EXPORT_RENDER_PAGE: &str = "bmcbl_render_page";
 const ABI_EXPORT_RENDER_INJECTION: &str = "bmcbl_render_injection";
 const ABI_EXPORT_SHUTDOWN: &str = "bmcbl_shutdown";
+const ABI_EXPORT_DECODE_AUDIO: &str = "bmcbl_decode_audio";
 const INIT_FUEL_BUDGET: u32 = 1_000_000;
 const RENDER_FUEL_BUDGET: u32 = 500_000;
 const EVENT_FUEL_BUDGET: u32 = 500_000;
 const SHUTDOWN_FUEL_BUDGET: u32 = 250_000;
+const AUDIO_DECODE_FUEL_BUDGET: u32 = 1_000_000;
+const AUDIO_DECODE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const AUDIO_CHUNK_MAX_BYTES: usize = abi::MAX_AUDIO_CHUNK_BYTES;
 const HTTP_DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const HTTP_MAX_BYTES: usize = 512 * 1024;
@@ -101,7 +104,6 @@ pub struct PluginPermissionStatus {
 
 #[derive(Clone, Debug)]
 pub struct PluginLimitStatus {
-    pub memory_mb: u32,
     pub max_http_bytes: u64,
     pub max_resource_bytes: u64,
     pub max_storage_bytes: u64,
@@ -121,6 +123,7 @@ pub struct PluginInstance {
     pub pages: Vec<PluginPageRegistration>,
     pub injections: Vec<PluginInjectionRegistration>,
     pub subscriptions: BTreeSet<String>,
+    pub audio_decoders: Vec<abi::AudioDecoderRegistration>,
     pub translations: BTreeMap<String, BTreeMap<String, String>>,
     pub state: PluginLoadState,
     pub enabled: bool,
@@ -284,6 +287,16 @@ struct HostState {
     clipboard_text: Option<String>,
     effects: Vec<HostEffect>,
     next_window_id: u64,
+    audio_io: Option<AudioIo>,
+}
+
+#[derive(Debug)]
+struct AudioIo {
+    source: File,
+    output: File,
+    output_written: u64,
+    output_limit: u64,
+    cover: Vec<u8>,
 }
 
 struct PluginExecution {
@@ -297,7 +310,30 @@ struct PluginExecution {
     render_page: Function,
     render_injection: Function,
     shutdown: Function,
+    decode_audio: Option<Function>,
     host_state: Rc<RefCell<HostState>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginAudioDecoder {
+    pub plugin_id: String,
+    pub registration: abi::AudioDecoderRegistration,
+    manifest: PluginManifest,
+    cache_dir: PathBuf,
+    package_cache_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginAudioCover {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginAudioDecodeResponse {
+    pub format_extension: String,
+    pub metadata: abi::AudioTrackMetadata,
+    pub cover: Option<PluginAudioCover>,
 }
 
 pub struct PluginRegistry {
@@ -345,7 +381,6 @@ pub struct PluginMemorySnapshot {
     pub loaded: bool,
     pub wasm_linear_bytes: usize,
     pub wasm_page_count: usize,
-    pub wasm_limit_bytes: usize,
     pub render_cache_entries: usize,
     pub render_cache_bytes: usize,
     pub http_cache_entries: usize,
@@ -455,7 +490,6 @@ impl PluginRegistry {
                         external_allow: instance.manifest.permissions.external_allow.clone(),
                     },
                     limits: PluginLimitStatus {
-                        memory_mb: instance.manifest.limits.memory_mb,
                         max_http_bytes: instance.manifest.limits.max_http_bytes,
                         max_resource_bytes: instance.manifest.limits.max_resource_bytes,
                         max_storage_bytes: instance.manifest.limits.max_storage_bytes,
@@ -468,6 +502,27 @@ impl PluginRegistry {
                     icon_path: instance.manifest.icon_path().filter(|path| path.exists()),
                     root_dir: instance.manifest.root_dir.clone(),
                 }
+            })
+            .collect()
+    }
+
+    pub fn audio_decoders(&mut self) -> Vec<PluginAudioDecoder> {
+        self.ensure_plugins_with_capability(PluginCapability::MusicDecoder);
+        self.plugins
+            .values()
+            .filter(|instance| instance.enabled && instance.runtime.is_some())
+            .flat_map(|instance| {
+                instance
+                    .audio_decoders
+                    .iter()
+                    .cloned()
+                    .map(|registration| PluginAudioDecoder {
+                        plugin_id: instance.manifest.id.clone(),
+                        registration,
+                        manifest: instance.manifest.clone(),
+                        cache_dir: self.cache_dir.clone(),
+                        package_cache_dir: self.package_cache_dir.clone(),
+                    })
             })
             .collect()
     }
@@ -506,7 +561,6 @@ impl PluginRegistry {
                     loaded: matches!(instance.state, PluginLoadState::Loaded { .. }),
                     wasm_linear_bytes: wasm.linear_bytes,
                     wasm_page_count: wasm.page_count,
-                    wasm_limit_bytes: PLUGIN_MEMORY_LIMIT_BYTES,
                     render_cache_entries: render_cache.entries,
                     render_cache_bytes: render_cache.estimated_bytes,
                     http_cache_entries: http_cache.entries,
@@ -699,8 +753,7 @@ impl PluginRegistry {
             plugin.manifest.permissions.external_allow
         ));
         output.push_str(&format!(
-            "Limits memory={}MB http={} resource={} storage={}\n",
-            plugin.manifest.limits.memory_mb,
+            "Limits http={} resource={} storage={}\n",
             plugin.manifest.limits.max_http_bytes,
             plugin.manifest.limits.max_resource_bytes,
             plugin.manifest.limits.max_storage_bytes
@@ -868,7 +921,7 @@ impl PluginRegistry {
             .with_context(|| format!("create wasm cache {}", self.cache_dir.display()))?;
         let config = TinyConfig::new()
             .with_fuel_policy(FuelPolicy::Weighted)
-            .with_memory_backend(plugin_memory_backend())
+            .with_memory_backend(MemoryBackend::vec())
             .with_call_stack(StackConfig::fixed(256))
             .with_value_stack(StackConfig::dynamic(1024, 16 * 1024))
             .with_trap_on_oom(true);
@@ -934,6 +987,7 @@ impl PluginRegistry {
                 pages,
                 injections: Vec::new(),
                 subscriptions: BTreeSet::new(),
+                audio_decoders: Vec::new(),
                 translations: load_plugin_translations(&manifest),
                 state: PluginLoadState::Unloaded,
                 enabled,
@@ -1011,6 +1065,7 @@ impl PluginRegistry {
         let mut pages = Vec::new();
         let mut injections = Vec::new();
         let mut subscriptions = BTreeSet::new();
+        let mut audio_decoders = Vec::new();
 
         for registration in registrations {
             match bootstrap_registration_from_abi(&manifest.id, registration)? {
@@ -1046,6 +1101,10 @@ impl PluginRegistry {
                     manifest.require_capability(PluginCapability::EventGlobal)?;
                     subscriptions.insert(event);
                 }
+                BootstrapRegistration::AudioDecoder(registration) => {
+                    manifest.require_capability(PluginCapability::MusicDecoder)?;
+                    audio_decoders.push(registration);
+                }
             }
         }
 
@@ -1069,6 +1128,7 @@ impl PluginRegistry {
             pages,
             injections,
             subscriptions,
+            audio_decoders,
             translations,
             state: PluginLoadState::Loaded {
                 generation: self.generation.saturating_add(1),
@@ -1214,7 +1274,10 @@ impl PluginRegistry {
             let module = tinywasm::parse_bytes(&wasm).map_err(|error| {
                 anyhow!("parse plugin wasm {} failed: {error}", wasm_path.display())
             })?;
-            validate_module_abi(&module, manifest.limits.memory_mb)?;
+            validate_module_abi(
+                &module,
+                manifest.has_capability(&PluginCapability::MusicDecoder),
+            )?;
             self.module_cache.insert(wasm_hash, module.clone());
             module
         };
@@ -1244,6 +1307,15 @@ impl PluginRegistry {
         let render_injection =
             entry_function_export(&instance, &store, ABI_EXPORT_RENDER_INJECTION)?;
         let shutdown = entry_function_export(&instance, &store, ABI_EXPORT_SHUTDOWN)?;
+        let decode_audio = if manifest.has_capability(&PluginCapability::MusicDecoder) {
+            Some(entry_function_export(
+                &instance,
+                &store,
+                ABI_EXPORT_DECODE_AUDIO,
+            )?)
+        } else {
+            None
+        };
 
         Ok(PluginExecution {
             store,
@@ -1256,6 +1328,7 @@ impl PluginRegistry {
             render_page,
             render_injection,
             shutdown,
+            decode_audio,
             host_state,
         })
     }
@@ -1686,6 +1759,7 @@ impl HostState {
             clipboard_text: None,
             effects: Vec::new(),
             next_window_id: 1,
+            audio_io: None,
         }
     }
 
@@ -1744,6 +1818,12 @@ impl PluginExecution {
                 (self.render_injection.clone(), encode_request(&request)?)
             }
             EntryCall::Shutdown(reason) => (self.shutdown.clone(), encode_request(&reason)?),
+            EntryCall::DecodeAudio(request) => (
+                self.decode_audio
+                    .clone()
+                    .ok_or_else(|| anyhow!("plugin does not export {ABI_EXPORT_DECODE_AUDIO}"))?,
+                encode_request(&request)?,
+            ),
         };
 
         if request_bytes.len() > ABI_MESSAGE_MAX_BYTES {
@@ -1848,6 +1928,93 @@ enum EntryCall {
     RenderPage(abi::PageRenderRequest),
     RenderInjection(abi::InjectionRequest),
     Shutdown(abi::ShutdownReason),
+    DecodeAudio(abi::AudioDecodeRequest),
+}
+
+impl PluginAudioDecoder {
+    pub fn supports_extension(&self, extension: &str) -> bool {
+        self.registration
+            .extensions
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+    }
+
+    pub fn decode_to_path(
+        &self,
+        source_path: &Path,
+        output_path: &Path,
+    ) -> Result<PluginAudioDecodeResponse> {
+        let plugins_dir = self
+            .manifest
+            .root_dir
+            .parent()
+            .unwrap_or(&self.manifest.root_dir)
+            .to_path_buf();
+        let mut registry = PluginRegistry::new(
+            plugins_dir,
+            self.cache_dir.clone(),
+            self.package_cache_dir.clone(),
+        );
+        let mut execution = registry.instantiate_plugin(&self.manifest)?;
+        let source = File::open(source_path)
+            .with_context(|| format!("open audio source {}", source_path.display()))?;
+        let output = File::create(output_path)
+            .with_context(|| format!("create audio output {}", output_path.display()))?;
+        let output_limit = source.metadata().context("read audio source length")?.len();
+        execution.host_state.borrow_mut().audio_io = Some(AudioIo {
+            source,
+            output,
+            output_written: 0,
+            output_limit,
+            cover: Vec::new(),
+        });
+
+        let context = abi::PluginContext {
+            plugin_id: self.plugin_id.clone(),
+            api_version: self.manifest.api_version.clone(),
+        };
+        execution.call_entry::<Vec<abi::Registration>>(
+            EntryCall::Init(context),
+            INIT_FUEL_BUDGET,
+            INIT_TIMEOUT,
+        )?;
+        let response: abi::AudioDecodeResponse = execution.call_entry(
+            EntryCall::DecodeAudio(abi::AudioDecodeRequest {
+                decoder_id: self.registration.decoder_id.clone(),
+                source_name: source_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("unknown.ncm")
+                    .to_string(),
+            }),
+            AUDIO_DECODE_FUEL_BUDGET,
+            AUDIO_DECODE_TIMEOUT,
+        )?;
+        let streamed_cover =
+            if let Some(mut audio_io) = execution.host_state.borrow_mut().audio_io.take() {
+                audio_io
+                    .output
+                    .flush()
+                    .context("flush decoded audio output")?;
+                audio_io.cover
+            } else {
+                Vec::new()
+            };
+        let cover = match (response.cover, streamed_cover.is_empty()) {
+            (Some(metadata), false) => Some(PluginAudioCover {
+                mime_type: metadata.mime_type,
+                bytes: streamed_cover,
+            }),
+            (None, true) => None,
+            (Some(_), true) => bail!("plugin declared a cover without streaming its bytes"),
+            (None, false) => bail!("plugin streamed cover bytes without declaring cover metadata"),
+        };
+        Ok(PluginAudioDecodeResponse {
+            format_extension: response.format_extension,
+            metadata: response.metadata,
+            cover,
+        })
+    }
 }
 
 fn entry_function_export(instance: &ModuleInstance, store: &Store, name: &str) -> Result<Function> {
@@ -1949,7 +2116,7 @@ fn encode_request<T: serde::Serialize>(request: &T) -> Result<Vec<u8>> {
     postcard::to_allocvec(request).map_err(|error| anyhow!("encode plugin request failed: {error}"))
 }
 
-fn validate_module_abi(module: &Module, memory_limit_mb: u32) -> Result<()> {
+fn validate_module_abi(module: &Module, requires_audio_decoder: bool) -> Result<()> {
     let imports = module.imports().collect::<Vec<_>>();
     if imports.len() != 1 {
         bail!("plugin must import exactly one host function");
@@ -1990,18 +2157,6 @@ fn validate_module_abi(module: &Module, memory_limit_mb: u32) -> Result<()> {
     if memory_type.arch() != MemoryArch::I32 {
         bail!("plugin memory must use 32-bit addressing");
     }
-    let initial_bytes = memory_type
-        .page_count_initial()
-        .checked_mul(memory_type.page_size())
-        .unwrap_or(u64::MAX);
-    let memory_limit_bytes = u64::from(memory_limit_mb).saturating_mul(1024 * 1024);
-    if initial_bytes > memory_limit_bytes {
-        bail!(
-            "plugin initial memory must be <= {} bytes",
-            memory_limit_bytes
-        );
-    }
-
     let exports = module.exports().collect::<Vec<_>>();
     for required in [
         ABI_EXPORT_MEMORY,
@@ -2017,75 +2172,19 @@ fn validate_module_abi(module: &Module, memory_limit_mb: u32) -> Result<()> {
             bail!("plugin missing required export {required}");
         }
     }
+    if requires_audio_decoder
+        && !exports
+            .iter()
+            .any(|export| export.name == ABI_EXPORT_DECODE_AUDIO)
+    {
+        bail!("plugin missing required export {ABI_EXPORT_DECODE_AUDIO}");
+    }
 
     Ok(())
 }
 
 fn is_supported_host_import(module: &str, name: &str) -> bool {
     name == ABI_IMPORT_NAME && (module == ABI_IMPORT_MODULE || module == ABI_LEGACY_IMPORT_MODULE)
-}
-
-fn plugin_memory_backend() -> MemoryBackend {
-    MemoryBackend::custom(|memory_type| {
-        let max_pages = plugin_memory_page_limit(&memory_type)?;
-        let page_size = usize::try_from(memory_type.page_size()).map_err(|_| {
-            tinywasm::Error::Other("plugin memory page size does not fit usize".into())
-        })?;
-        let max_len = usize::try_from(max_pages.saturating_mul(memory_type.page_size()))
-            .map_err(|_| tinywasm::Error::Other("plugin memory limit does not fit usize".into()))?;
-        let initial_len = usize::try_from(memory_type.initial_size()).map_err(|_| {
-            tinywasm::Error::Other("plugin initial memory does not fit usize".into())
-        })?;
-        let inner = PagedMemory::try_new(initial_len, 64 * 1024).map_err(tinywasm::Error::Trap)?;
-        Ok(LimitedPluginMemory {
-            inner,
-            max_len,
-            page_size,
-        })
-    })
-}
-
-fn plugin_memory_page_limit(memory_type: &MemoryType) -> tinywasm::Result<u64> {
-    let page_size = memory_type.page_size();
-    if page_size == 0 {
-        return Err(tinywasm::Error::Other(
-            "plugin memory page size must be greater than zero".into(),
-        ));
-    }
-    let host_page_limit = (PLUGIN_MEMORY_LIMIT_BYTES as u64) / page_size;
-    if host_page_limit == 0 {
-        return Err(tinywasm::Error::Other(
-            "plugin memory page size exceeds host memory limit".into(),
-        ));
-    }
-    Ok(memory_type.page_count_max().min(host_page_limit))
-}
-
-struct LimitedPluginMemory {
-    inner: PagedMemory,
-    max_len: usize,
-    page_size: usize,
-}
-
-impl LinearMemory for LimitedPluginMemory {
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    fn grow_to(&mut self, new_len: usize) -> std::result::Result<(), tinywasm::Trap> {
-        if new_len > self.max_len || new_len % self.page_size != 0 {
-            return Err(tinywasm::Trap::OutOfMemory);
-        }
-        self.inner.grow_to(new_len)
-    }
-
-    fn read(&self, addr: usize, dst: &mut [u8]) -> usize {
-        self.inner.read(addr, dst)
-    }
-
-    fn write(&mut self, addr: usize, src: &[u8]) -> usize {
-        self.inner.write(addr, src)
-    }
 }
 
 fn host_imports(store: &mut Store, host_state: Rc<RefCell<HostState>>) -> Imports {
@@ -2468,6 +2567,99 @@ fn handle_host_request(
         }
         (code, abi::HostRequest::ThemeSnapshot) if code == abi::HostOp::ThemeSnapshot.code() => {
             Ok(abi::HostResponse::ThemeSnapshot(state.theme_snapshot))
+        }
+        (code, abi::HostRequest::AudioSourceRead { max_bytes })
+            if code == abi::HostOp::AudioSourceRead.code() =>
+        {
+            state.require_capability(PluginCapability::MusicDecoder)?;
+            let max_bytes = usize::try_from(max_bytes)
+                .unwrap_or(AUDIO_CHUNK_MAX_BYTES)
+                .clamp(1, AUDIO_CHUNK_MAX_BYTES);
+            let audio_io = state.audio_io.as_mut().ok_or_else(|| abi::HostError {
+                code: "audio-session-missing".to_string(),
+                message: "audio source read is only available during decode_audio".to_string(),
+            })?;
+            let mut bytes = vec![0_u8; max_bytes];
+            let read = audio_io
+                .source
+                .read(&mut bytes)
+                .map_err(|error| abi::HostError {
+                    code: "audio-source-read-failed".to_string(),
+                    message: error.to_string(),
+                })?;
+            bytes.truncate(read);
+            Ok(abi::HostResponse::Bytes(bytes))
+        }
+        (code, abi::HostRequest::AudioOutputWrite { bytes })
+            if code == abi::HostOp::AudioOutputWrite.code() =>
+        {
+            state.require_capability(PluginCapability::MusicDecoder)?;
+            if bytes.len() > AUDIO_CHUNK_MAX_BYTES {
+                return Err(abi::HostError {
+                    code: "audio-output-chunk-too-large".to_string(),
+                    message: format!("audio output chunk exceeds {AUDIO_CHUNK_MAX_BYTES} bytes"),
+                });
+            }
+            let audio_io = state.audio_io.as_mut().ok_or_else(|| abi::HostError {
+                code: "audio-session-missing".to_string(),
+                message: "audio output is only available during decode_audio".to_string(),
+            })?;
+            let next_written = audio_io
+                .output_written
+                .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+                .ok_or_else(|| abi::HostError {
+                    code: "audio-output-too-large".to_string(),
+                    message: "audio output length overflow".to_string(),
+                })?;
+            if next_written > audio_io.output_limit {
+                return Err(abi::HostError {
+                    code: "audio-output-too-large".to_string(),
+                    message: format!(
+                        "audio output exceeds source-derived limit of {} bytes",
+                        audio_io.output_limit
+                    ),
+                });
+            }
+            audio_io
+                .output
+                .write_all(&bytes)
+                .map_err(|error| abi::HostError {
+                    code: "audio-output-write-failed".to_string(),
+                    message: error.to_string(),
+                })?;
+            audio_io.output_written = next_written;
+            Ok(abi::HostResponse::Unit)
+        }
+        (code, abi::HostRequest::AudioCoverWrite { bytes })
+            if code == abi::HostOp::AudioCoverWrite.code() =>
+        {
+            state.require_capability(PluginCapability::MusicDecoder)?;
+            if bytes.len() > AUDIO_CHUNK_MAX_BYTES {
+                return Err(abi::HostError {
+                    code: "audio-cover-chunk-too-large".to_string(),
+                    message: format!("audio cover chunk exceeds {AUDIO_CHUNK_MAX_BYTES} bytes"),
+                });
+            }
+            let audio_io = state.audio_io.as_mut().ok_or_else(|| abi::HostError {
+                code: "audio-session-missing".to_string(),
+                message: "audio cover output is only available during decode_audio".to_string(),
+            })?;
+            let next_len = audio_io
+                .cover
+                .len()
+                .checked_add(bytes.len())
+                .ok_or_else(|| abi::HostError {
+                    code: "audio-cover-too-large".to_string(),
+                    message: "audio cover length overflow".to_string(),
+                })?;
+            if next_len > abi::MAX_AUDIO_COVER_BYTES {
+                return Err(abi::HostError {
+                    code: "audio-cover-too-large".to_string(),
+                    message: format!("audio cover exceeds {} bytes", abi::MAX_AUDIO_COVER_BYTES),
+                });
+            }
+            audio_io.cover.extend_from_slice(&bytes);
+            Ok(abi::HostResponse::Unit)
         }
         (_code, _request) => Err(abi::HostError {
             code: "invalid-host-operation".to_string(),
@@ -3144,6 +3336,7 @@ enum BootstrapRegistration {
     Subscription {
         event: String,
     },
+    AudioDecoder(abi::AudioDecoderRegistration),
 }
 
 fn bootstrap_registration_from_abi(
@@ -3173,6 +3366,12 @@ fn bootstrap_registration_from_abi(
             Ok(BootstrapRegistration::Subscription {
                 event: subscription.event,
             })
+        }
+        abi::Registration::AudioDecoder(registration) => {
+            if registration.decoder_id.trim().is_empty() || registration.extensions.is_empty() {
+                bail!("plugin {plugin_id} registered an invalid audio decoder");
+            }
+            Ok(BootstrapRegistration::AudioDecoder(registration))
         }
     }
 }
@@ -3448,6 +3647,7 @@ fn spawn_initial_reload(cx: &mut App) {
                     registry.last_error = Some(SharedString::from(error_message));
                 }
             });
+            crate::ui::state::music::request_library_reload(cx);
             cx.refresh_windows();
         })?;
         Ok::<(), anyhow::Error>(())
@@ -3467,6 +3667,7 @@ pub fn reload_all(cx: &mut App) {
             registry.set_theme_snapshot(theme_snapshot);
         }
     });
+    crate::ui::state::music::request_library_reload(cx);
 }
 
 pub fn ensure_manifest_index(cx: &mut App) {

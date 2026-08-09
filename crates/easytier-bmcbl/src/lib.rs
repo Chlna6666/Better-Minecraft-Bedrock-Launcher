@@ -9,9 +9,7 @@ pub mod instance_manager {
     use std::ops::Deref;
     use std::path::PathBuf;
 
-    use easytier_core::common::config::{
-        ConfigFileControl, ConfigLoader as _, TomlConfigLoader,
-    };
+    use easytier_core::common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader};
     use easytier_core::proto::common::CompressionAlgoPb;
 
     const MIN_WORKER_THREADS: usize = 4;

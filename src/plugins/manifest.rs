@@ -7,17 +7,15 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Entry};
 use tracing::warn;
 
-pub const CURRENT_API_VERSION: &str = "0.4";
+pub const CURRENT_API_VERSION: &str = "0.5";
 pub const PLUGIN_MANIFEST_FILE: &str = "plugin.toml";
 pub const DEFAULT_ENTRY: &str = "plugin.wasm";
 pub const PLUGIN_PACKAGE_EXTENSION: &str = "bmcblx";
 pub const PLUGIN_USER_CONFIG_FILE: &str = "config.toml";
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
-pub const DEFAULT_MEMORY_LIMIT_MB: u32 = 64;
 pub const DEFAULT_HTTP_LIMIT_BYTES: u64 = 512 * 1024;
 pub const DEFAULT_RESOURCE_LIMIT_BYTES: u64 = 1024 * 1024;
 pub const DEFAULT_STORAGE_LIMIT_BYTES: u64 = 1024 * 1024;
-pub const HARD_MEMORY_LIMIT_MB: u32 = 64;
 pub const HARD_HTTP_LIMIT_BYTES: u64 = 1024 * 1024;
 pub const HARD_RESOURCE_LIMIT_BYTES: u64 = 4 * 1024 * 1024;
 pub const HARD_STORAGE_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
@@ -40,6 +38,7 @@ pub enum PluginCapability {
     TaskProgress,
     ConfigRead,
     ConfigWrite,
+    MusicDecoder,
 }
 
 impl PluginCapability {
@@ -59,6 +58,7 @@ impl PluginCapability {
             "task.progress" => Some(Self::TaskProgress),
             "config.read" => Some(Self::ConfigRead),
             "config.write" => Some(Self::ConfigWrite),
+            "music.decoder" => Some(Self::MusicDecoder),
             _ => None,
         }
     }
@@ -79,6 +79,7 @@ impl PluginCapability {
             Self::TaskProgress => "task.progress",
             Self::ConfigRead => "config.read",
             Self::ConfigWrite => "config.write",
+            Self::MusicDecoder => "music.decoder",
         }
     }
 }
@@ -157,8 +158,6 @@ struct RawAllowList {
 #[derive(Clone, Debug, Default, Deserialize)]
 struct RawPluginLimits {
     #[serde(default)]
-    memory_mb: Option<u32>,
-    #[serde(default)]
     max_http_bytes: Option<u64>,
     #[serde(default)]
     max_resource_bytes: Option<u64>,
@@ -175,7 +174,6 @@ pub struct PluginPermissions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginLimits {
-    pub memory_mb: u32,
     pub max_http_bytes: u64,
     pub max_resource_bytes: u64,
     pub max_storage_bytes: u64,
@@ -184,7 +182,6 @@ pub struct PluginLimits {
 impl Default for PluginLimits {
     fn default() -> Self {
         Self {
-            memory_mb: DEFAULT_MEMORY_LIMIT_MB,
             max_http_bytes: DEFAULT_HTTP_LIMIT_BYTES,
             max_resource_bytes: DEFAULT_RESOURCE_LIMIT_BYTES,
             max_storage_bytes: DEFAULT_STORAGE_LIMIT_BYTES,
@@ -437,10 +434,6 @@ fn plugin_permissions_from_raw(raw: RawPluginPermissions) -> Result<PluginPermis
 
 fn plugin_limits_from_raw(raw: RawPluginLimits) -> PluginLimits {
     PluginLimits {
-        memory_mb: raw
-            .memory_mb
-            .unwrap_or(DEFAULT_MEMORY_LIMIT_MB)
-            .clamp(1, HARD_MEMORY_LIMIT_MB),
         max_http_bytes: raw
             .max_http_bytes
             .unwrap_or(DEFAULT_HTTP_LIMIT_BYTES)
@@ -1325,7 +1318,6 @@ allow = ["assets/", "README.md"]
 allow = ["https://example.com/docs/"]
 
 [limits]
-memory_mb = 256
 max_http_bytes = 99999999
 max_resource_bytes = 2048
 max_storage_bytes = 4096
@@ -1344,7 +1336,6 @@ max_storage_bytes = 4096
                 .expect("resource should be allowed"),
             PathBuf::from("hello").join("assets/item.txt")
         );
-        assert_eq!(manifest.limits.memory_mb, HARD_MEMORY_LIMIT_MB);
         assert_eq!(manifest.limits.max_http_bytes, HARD_HTTP_LIMIT_BYTES);
         assert_eq!(manifest.limits.max_resource_bytes, 2048);
         assert_eq!(manifest.limits.max_storage_bytes, 4096);

@@ -12,11 +12,14 @@ pub use bmcbl_plugin_macros::{bmcbl_plugin, plugin_metadata};
 #[cfg(feature = "pack")]
 pub mod pack;
 
-pub const API_VERSION: &str = "0.4";
+pub const API_VERSION: &str = "0.5";
 pub const HOST_MODULE: &str = "bmcbl";
 pub const HOST_CALL_NAME: &str = "bmcbl_host_call";
 pub const DEFAULT_HOST_BUFFER_CAPACITY: usize = 256;
 pub const MAX_HOST_BUFFER_CAPACITY: usize = 1024 * 1024;
+pub const MAX_AUDIO_CHUNK_BYTES: usize = 64 * 1024;
+pub const MAX_AUDIO_COVER_BYTES: usize = 768 * 1024;
+const HOST_RESPONSE_ENVELOPE_BYTES: usize = 16;
 
 const OP_LOG: i32 = 0;
 const OP_SHOW_TOAST: i32 = 1;
@@ -48,6 +51,9 @@ const OP_CREATE_TASK: i32 = 26;
 const OP_UPDATE_TASK: i32 = 27;
 const OP_FINISH_TASK: i32 = 28;
 const OP_APP_INFO: i32 = 29;
+const OP_AUDIO_SOURCE_READ: i32 = 30;
+const OP_AUDIO_OUTPUT_WRITE: i32 = 31;
+const OP_AUDIO_COVER_WRITE: i32 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
@@ -82,6 +88,9 @@ pub enum HostOp {
     UpdateTask = OP_UPDATE_TASK,
     FinishTask = OP_FINISH_TASK,
     AppInfo = OP_APP_INFO,
+    AudioSourceRead = OP_AUDIO_SOURCE_READ,
+    AudioOutputWrite = OP_AUDIO_OUTPUT_WRITE,
+    AudioCoverWrite = OP_AUDIO_COVER_WRITE,
 }
 
 impl HostOp {
@@ -515,6 +524,40 @@ pub enum Registration {
     Page(PageRegistration),
     Injection(InjectionRegistration),
     Subscription(EventSubscription),
+    AudioDecoder(AudioDecoderRegistration),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioDecoderRegistration {
+    pub decoder_id: String,
+    pub extensions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioDecodeRequest {
+    pub decoder_id: String,
+    pub source_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioTrackMetadata {
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub bitrate: Option<u64>,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioCoverMetadata {
+    pub mime_type: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioDecodeResponse {
+    pub format_extension: String,
+    pub metadata: AudioTrackMetadata,
+    pub cover: Option<AudioCoverMetadata>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -893,6 +936,15 @@ pub enum HostRequest {
         request: TaskFinishRequest,
     },
     AppInfo,
+    AudioSourceRead {
+        max_bytes: u32,
+    },
+    AudioOutputWrite {
+        bytes: Vec<u8>,
+    },
+    AudioCoverWrite {
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -926,6 +978,13 @@ pub trait Plugin {
 
     fn render_injection(_request: InjectionRequest) -> PluginResult<Option<ViewTree>> {
         Ok(None)
+    }
+
+    fn decode_audio(_request: AudioDecodeRequest) -> PluginResult<AudioDecodeResponse> {
+        Err(PluginError::new(
+            "unsupported",
+            "plugin does not provide an audio decoder",
+        ))
     }
 
     fn shutdown(_reason: ShutdownReason) -> PluginResult<()> {
@@ -1066,6 +1125,12 @@ impl Registrations {
             .push(Registration::Subscription(EventSubscription {
                 event: event.into(),
             }));
+        self
+    }
+
+    #[must_use]
+    pub fn audio_decoder(mut self, registration: AudioDecoderRegistration) -> Self {
+        self.items.push(Registration::AudioDecoder(registration));
         self
     }
 
@@ -2323,6 +2388,41 @@ pub fn app_info() -> PluginResult<AppInfo> {
     }
 }
 
+pub fn audio_source_read(max_bytes: u32) -> PluginResult<Vec<u8>> {
+    let max_bytes = max_bytes.min(MAX_AUDIO_CHUNK_BYTES as u32);
+    match host_call(
+        HostOp::AudioSourceRead,
+        &HostRequest::AudioSourceRead { max_bytes },
+    )? {
+        HostResponse::Bytes(bytes) => Ok(bytes),
+        other => unexpected_host_response(other, "audio-source-read"),
+    }
+}
+
+pub fn audio_output_write(bytes: &[u8]) -> PluginResult<()> {
+    for chunk in bytes.chunks(MAX_AUDIO_CHUNK_BYTES) {
+        host_call_unit(
+            HostOp::AudioOutputWrite,
+            &HostRequest::AudioOutputWrite {
+                bytes: chunk.to_vec(),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+pub fn audio_cover_write(bytes: &[u8]) -> PluginResult<()> {
+    for chunk in bytes.chunks(MAX_AUDIO_CHUNK_BYTES) {
+        host_call_unit(
+            HostOp::AudioCoverWrite,
+            &HostRequest::AudioCoverWrite {
+                bytes: chunk.to_vec(),
+            },
+        )?;
+    }
+    Ok(())
+}
+
 pub fn theme_snapshot() -> PluginResult<ThemeSnapshot> {
     match host_call(HostOp::ThemeSnapshot, &HostRequest::ThemeSnapshot)? {
         HostResponse::ThemeSnapshot(snapshot) => Ok(snapshot),
@@ -2394,7 +2494,7 @@ fn host_call(op: HostOp, request: &HostRequest) -> PluginResult<HostResponse> {
             format!("encode host request failed: {error}"),
         )
     })?;
-    let mut response = vec![0_u8; DEFAULT_HOST_BUFFER_CAPACITY];
+    let mut response = vec![0_u8; initial_host_response_capacity(request)];
 
     loop {
         let written = unsafe_host_call(
@@ -2438,6 +2538,17 @@ fn host_call(op: HostOp, request: &HostRequest) -> PluginResult<HostResponse> {
                 )
             })?;
         return response_value.map_err(plugin_error_from_host_error);
+    }
+}
+
+fn initial_host_response_capacity(request: &HostRequest) -> usize {
+    match request {
+        HostRequest::AudioSourceRead { max_bytes } => usize::try_from(*max_bytes)
+            .unwrap_or(MAX_AUDIO_CHUNK_BYTES)
+            .min(MAX_AUDIO_CHUNK_BYTES)
+            .saturating_add(HOST_RESPONSE_ENVELOPE_BYTES)
+            .clamp(DEFAULT_HOST_BUFFER_CAPACITY, MAX_HOST_BUFFER_CAPACITY),
+        _ => DEFAULT_HOST_BUFFER_CAPACITY,
     }
 }
 
@@ -2598,6 +2709,18 @@ macro_rules! export_plugin {
 
         #[cfg(target_arch = "wasm32")]
         #[unsafe(no_mangle)]
+        pub extern "C" fn bmcbl_decode_audio(ptr: u32, len: u32) -> u64 {
+            let request = match $crate::decode_request::<$crate::AudioDecodeRequest>(ptr, len) {
+                Ok(request) => request,
+                Err(error) => {
+                    return $crate::encode_plugin_result::<$crate::AudioDecodeResponse>(Err(error));
+                }
+            };
+            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::decode_audio(request))
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_shutdown(ptr: u32, len: u32) -> u64 {
             let reason = match $crate::decode_request::<$crate::ShutdownReason>(ptr, len) {
                 Ok(reason) => reason,
@@ -2683,6 +2806,15 @@ macro_rules! registrations {
     (subscribe $event:expr; $($rest:tt)*) => {
         $crate::Registrations::new()
             .subscribe($event)
+            .extend($crate::registrations!($($rest)*))
+            .finish()
+    };
+    (audio_decoder $decoder_id:expr, extensions = [$($extension:expr),+ $(,)?]; $($rest:tt)*) => {
+        $crate::Registrations::new()
+            .audio_decoder($crate::AudioDecoderRegistration {
+                decoder_id: $decoder_id.into(),
+                extensions: vec![$($extension.into()),+],
+            })
             .extend($crate::registrations!($($rest)*))
             .finish()
     };
@@ -2784,21 +2916,23 @@ macro_rules! invalidate {
 
 pub mod prelude {
     pub use crate::{
-        AbiResult, Align, CompactBehavior, Container, EventSubscription, HostEvent, HostEventKind,
-        HttpCacheState, HttpTextResponse, I18nArg, ImageFit, ImageOptions, Injection,
-        InjectionLayout, InjectionRegistration, InjectionRequest, InjectionSlot, LogLevel, Modal,
-        ModalRequest, Nav, Page, PageRegistration, PageRenderRequest, Plugin, PluginContext,
-        PluginError, PluginMetadata, PluginResult, Registration, Registrations, SelectOption,
-        ShutdownReason, StorageEntry, TaskCreateRequest, TaskFinishRequest, TaskUpdateRequest,
-        TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot, ThemeToken, ToastKind, View, ViewNode,
-        ViewStyle, ViewTree, ViewTreeBuilder, Window, app_info, badge, badge_with_style,
-        bmcbl_plugin, button, button_with_value, card, checkbox, config_read, config_write,
-        create_task, current_locale, current_unix_ms, default_style, emit_event, finish_task,
-        http_get_text, icon, image, image_with_options, image_with_style, invalidate,
-        invalidate_all, invalidate_injection, invalidate_page, is_dark_mode, link,
-        link_with_tooltip, log, log_debug, log_error, log_info, log_warn, navigate, navigate_page,
-        navigate_path, open_external_url, open_modal, open_window, option, plugin_actions,
-        plugin_error, plugin_metadata, progress, read_clipboard_text, read_config,
+        AbiResult, Align, AudioCoverMetadata, AudioDecodeRequest, AudioDecodeResponse,
+        AudioDecoderRegistration, AudioTrackMetadata, CompactBehavior, Container,
+        EventSubscription, HostEvent, HostEventKind, HttpCacheState, HttpTextResponse, I18nArg,
+        ImageFit, ImageOptions, Injection, InjectionLayout, InjectionRegistration,
+        InjectionRequest, InjectionSlot, LogLevel, Modal, ModalRequest, Nav, Page,
+        PageRegistration, PageRenderRequest, Plugin, PluginContext, PluginError, PluginMetadata,
+        PluginResult, Registration, Registrations, SelectOption, ShutdownReason, StorageEntry,
+        TaskCreateRequest, TaskFinishRequest, TaskUpdateRequest, TextSizeToken, ThemeColor,
+        ThemeMode, ThemeSnapshot, ThemeToken, ToastKind, View, ViewNode, ViewStyle, ViewTree,
+        ViewTreeBuilder, Window, app_info, audio_cover_write, audio_output_write,
+        audio_source_read, badge, badge_with_style, bmcbl_plugin, button, button_with_value, card,
+        checkbox, config_read, config_write, create_task, current_locale, current_unix_ms,
+        default_style, emit_event, finish_task, http_get_text, icon, image, image_with_options,
+        image_with_style, invalidate, invalidate_all, invalidate_injection, invalidate_page,
+        is_dark_mode, link, link_with_tooltip, log, log_debug, log_error, log_info, log_warn,
+        navigate, navigate_page, navigate_path, open_external_url, open_modal, open_window, option,
+        plugin_actions, plugin_error, plugin_metadata, progress, read_clipboard_text, read_config,
         read_resource_bytes, read_resource_text, registrations, section, select, session_get,
         session_set, show_toast, spacer, storage_delete, storage_get, storage_list, storage_set,
         text, theme_accent, theme_snapshot, title, toast, toggle, tr, tr_arg, tr_args, update_task,
@@ -2819,6 +2953,59 @@ mod tests {
             .finish();
 
         assert_eq!(registrations.len(), 3);
+    }
+
+    #[test]
+    fn registrations_builder_outputs_audio_decoder() {
+        let registrations = Registrations::new()
+            .audio_decoder(AudioDecoderRegistration {
+                decoder_id: "ncm".to_string(),
+                extensions: vec!["ncm".to_string()],
+            })
+            .finish();
+
+        assert!(matches!(
+            registrations.as_slice(),
+            [Registration::AudioDecoder(AudioDecoderRegistration { decoder_id, extensions })]
+                if decoder_id == "ncm" && extensions == &["ncm"]
+        ));
+    }
+
+    #[test]
+    fn audio_read_initial_buffer_avoids_consuming_capacity_retry() {
+        let request = HostRequest::AudioSourceRead {
+            max_bytes: MAX_AUDIO_CHUNK_BYTES as u32,
+        };
+        let encoded = postcard::to_allocvec(&Ok::<HostResponse, HostError>(HostResponse::Bytes(
+            vec![0; MAX_AUDIO_CHUNK_BYTES],
+        )))
+        .expect("audio response should encode");
+
+        assert!(initial_host_response_capacity(&request) >= encoded.len());
+    }
+
+    #[test]
+    fn audio_decode_response_roundtrips_cover_metadata() {
+        let response = AudioDecodeResponse {
+            format_extension: "flac".to_string(),
+            metadata: AudioTrackMetadata {
+                title: "Track".to_string(),
+                artists: vec!["Artist".to_string()],
+                album: "Album".to_string(),
+                bitrate: Some(320_000),
+                duration_ms: Some(180_000),
+            },
+            cover: Some(AudioCoverMetadata {
+                mime_type: "image/jpeg".to_string(),
+            }),
+        };
+
+        let encoded = postcard::to_allocvec(&response).expect("audio response should encode");
+        let decoded = postcard::from_bytes::<AudioDecodeResponse>(&encoded)
+            .expect("audio response should decode");
+
+        assert_eq!(decoded, response);
+        assert!(encoded.len() < DEFAULT_HOST_BUFFER_CAPACITY);
     }
 
     #[test]

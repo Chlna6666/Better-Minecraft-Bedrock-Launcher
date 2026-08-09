@@ -165,7 +165,7 @@ impl MainWindowView {
                 cx.observe_global::<crate::ui::state::quit::QuitState>(|_this, cx| {
                     let now = Instant::now();
                     let state = cx.global::<crate::ui::state::quit::QuitState>();
-                    if state.is_animating(now) || state.factor(now) > 0.0 {
+                    if state.is_animating(now) || state.progress(now) > 0.0 {
                         cx.notify();
                     }
                 }),
@@ -679,10 +679,13 @@ impl MainWindowView {
                 .global::<crate::ui::views::tools::state::ToolsPageState>()
                 .minecraft_termination_dialog
                 .clone(),
+            easter_egg: easter_egg::EasterEggState::default(),
         };
 
         this.install_reactors(cx);
         this.install_window_observers(window, cx);
+        quit::install_window_close_interceptor(window, cx);
+        this.install_easter_egg_interceptor(window, cx);
 
         if cx.global::<AgreementState>().is_visible() {
             Self::cache_agreement_document(cx);

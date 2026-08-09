@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-pub const API_VERSION: &str = "0.4";
+pub const API_VERSION: &str = "0.5";
 pub const PLUGIN_MANIFEST_FILE: &str = "plugin.toml";
 pub const PLUGIN_WASM_FILE: &str = "plugin.wasm";
 pub const PLUGIN_PACKAGE_EXTENSION: &str = "bmcblx";
@@ -114,8 +114,6 @@ struct BmcblPluginAllowList {
 
 #[derive(Debug, Default, Deserialize)]
 struct BmcblPluginLimits {
-    #[serde(default)]
-    memory_mb: Option<u32>,
     #[serde(default)]
     max_http_bytes: Option<u64>,
     #[serde(default)]
@@ -1202,9 +1200,6 @@ fn manifest_allowlist_section(section: &str, values: &[String]) -> String {
 
 fn manifest_limits_section(limits: &BmcblPluginLimits) -> String {
     let mut lines = Vec::new();
-    if let Some(value) = limits.memory_mb {
-        lines.push(format!("memory_mb = {value}"));
-    }
     if let Some(value) = limits.max_http_bytes {
         lines.push(format!("max_http_bytes = {value}"));
     }
@@ -1350,7 +1345,6 @@ mod tests {
                             external: BmcblPluginAllowList::default(),
                         },
                         limits: BmcblPluginLimits {
-                            memory_mb: Some(32),
                             max_http_bytes: Some(524288),
                             max_resource_bytes: Some(4096),
                             max_storage_bytes: None,
@@ -1387,7 +1381,6 @@ mod tests {
         assert!(manifest.contains("[permissions.resource]"));
         assert!(manifest.contains("allow = [\"assets/\"]"));
         assert!(manifest.contains("[limits]"));
-        assert!(manifest.contains("memory_mb = 32"));
         assert!(manifest.contains("max_http_bytes = 524288"));
         assert!(manifest.contains("package_hash = \"sha256:abc123\""));
     }

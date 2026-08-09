@@ -53,7 +53,9 @@ pub fn accept_current_agreement() -> io::Result<()> {
         accepted_version: CURRENT_AGREEMENT_VERSION,
     })
     .map_err(|error| {
-        io::Error::other(format!("Failed to serialize agreement version config: {error}"))
+        io::Error::other(format!(
+            "Failed to serialize agreement version config: {error}"
+        ))
     })?;
 
     fs::write(get_agreement_config_file_path(), content)

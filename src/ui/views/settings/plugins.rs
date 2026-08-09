@@ -1097,7 +1097,6 @@ fn plugin_permissions_panel(colors: &ThemeColors, status: &PluginStatus) -> AnyE
         ),
     ];
     let limit_rows = [
-        ("Memory", format!("{} MB", status.limits.memory_mb)),
         (
             "HTTP body",
             format!("{} bytes", status.limits.max_http_bytes),

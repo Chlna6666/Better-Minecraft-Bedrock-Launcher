@@ -190,10 +190,9 @@ pub fn render_user_agreement_modal(
                 });
 
                 if let Err(error) = crate::tasks::runtime::spawn_io(async {
-                    let result = crate::tasks::runtime::run_io_blocking(
-                        agreement::accept_current_agreement,
-                    )
-                    .await;
+                    let result =
+                        crate::tasks::runtime::run_io_blocking(agreement::accept_current_agreement)
+                            .await;
 
                     match result {
                         Ok(Ok(())) => {}
