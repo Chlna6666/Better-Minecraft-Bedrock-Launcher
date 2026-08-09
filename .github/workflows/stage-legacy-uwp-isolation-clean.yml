@@ -6,9 +6,19 @@ on:
       - ci/stage-legacy-uwp-isolation-clean
     paths:
       - .github/workflows/stage-legacy-uwp-isolation-clean.yml
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/stage-legacy-uwp-isolation-clean.yml
+      - tools/apply-legacy-uwp-bloader-isolation.py
 
 permissions:
   contents: write
+
+concurrency:
+  group: stage-clean-legacy-uwp-isolation
+  cancel-in-progress: true
 
 jobs:
   validate-and-stage:
@@ -80,4 +90,4 @@ jobs:
             exit 1
           }
           git commit -m "fix(launcher): isolate BLoader from Minecraft 1.18.30 UWP"
-          git push origin HEAD:refs/heads/ci/verify-legacy-uwp-1.18.30-isolation-clean
+          git push --force-with-lease origin HEAD:refs/heads/ci/verify-legacy-uwp-1.18.30-isolation-clean
