@@ -7,6 +7,12 @@ on:
     paths:
       - tools/apply-legacy-uwp-bloader-isolation.py
       - .github/workflows/apply-legacy-uwp-bloader-isolation.yml
+  pull_request:
+    branches:
+      - master
+    paths:
+      - tools/apply-legacy-uwp-bloader-isolation.py
+      - .github/workflows/apply-legacy-uwp-bloader-isolation.yml
 
 permissions:
   contents: write
@@ -62,6 +68,7 @@ jobs:
         run: cargo check -p bmcbl --lib --message-format short
 
       - name: Commit validated product result
+        if: github.event_name == 'push'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
