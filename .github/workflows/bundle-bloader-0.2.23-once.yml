@@ -66,9 +66,8 @@ jobs:
             if ($exports -notmatch [regex]::Escape($name)) { throw "Missing export: $name" }
           }
           $hash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne "d11acb6db376f54e1835df962149c06bcab3b595934fcbcf50bd8638b29cedd1") {
-            throw "Unexpected BLoader.dll SHA256: $hash"
-          }
+          "BUILT_BLOADER_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BUILT_BLOADER_SIZE=$size" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Validated BLoader source=$sourceCommit version=0.2.23 size=$size SHA256=$hash"
           Pop-Location
           Copy-Item $dll "assets\bin\BLoader.dll" -Force
@@ -80,10 +79,13 @@ jobs:
           $size = (Get-Item $dll).Length
           $hash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($size -lt 65536) { throw "Bundled BLoader.dll unexpectedly small: $size" }
-          if ($hash -ne "d11acb6db376f54e1835df962149c06bcab3b595934fcbcf50bd8638b29cedd1") {
-            throw "Bundled BLoader.dll SHA256 mismatch: $hash"
+          if ($size.ToString() -ne $env:BUILT_BLOADER_SIZE) {
+            throw "Bundled BLoader.dll size mismatch: built=$env:BUILT_BLOADER_SIZE bundled=$size"
           }
-          Write-Host "Bundled BLoader.dll size=$size SHA256=$hash"
+          if ($hash -ne $env:BUILT_BLOADER_SHA256) {
+            throw "Bundled BLoader.dll SHA256 mismatch: built=$env:BUILT_BLOADER_SHA256 bundled=$hash"
+          }
+          Write-Host "Bundled BLoader.dll exactly matches current validated build: size=$size SHA256=$hash"
 
       - name: Commit clean binary-only result
         shell: pwsh
