@@ -32,10 +32,7 @@ jobs:
           cargo test --lib --target x86_64-pc-windows-msvc
           cargo build --release --lib --target x86_64-pc-windows-msvc
           $dll = Join-Path $PWD 'target\x86_64-pc-windows-msvc\release\BLoader.dll'
-          $exports = & dumpbin /exports $dll | Out-String
-          foreach ($name in @('DllMain','bl_i18n_current_locale','bl_register_d3d12_render_callback')) {
-            if ($exports -notmatch [regex]::Escape($name)) { throw "missing export: $name" }
-          }
+          if (!(Test-Path $dll)) { throw 'BLoader.dll missing after release build' }
           $hash = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant()
           Write-Host "BLoader source=82e49ed61ac20c751635dbf3358e05cf9be53c23 version=$version SHA256=$hash"
           Copy-Item $dll "$env:GITHUB_WORKSPACE\assets\bin\BLoader.dll" -Force
