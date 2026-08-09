@@ -115,13 +115,9 @@ mod tests {
 
     #[test]
     fn render_plan_keeps_exact_membership() {
-        let selection = ExactChunkSelection::new([
-            chunk(0, 0),
-            chunk(1, 0),
-            chunk(0, 1),
-            chunk(4, 4),
-        ])
-        .expect("selection");
+        let selection =
+            ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(4, 4)])
+                .expect("selection");
         let plan = ExactChunkRenderPlan::new(selection);
 
         assert_eq!(plan.chunk_count(), 4);

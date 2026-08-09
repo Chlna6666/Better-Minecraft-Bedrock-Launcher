@@ -500,7 +500,9 @@ impl MapViewerWindowView {
                     .gap(px(6.0))
                     .child(toolbar_button(colors, "统计选区").on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| this.query_selection_stats_exact(cx)),
+                        cx.listener(|this, _event, _window, cx| {
+                            this.query_selection_stats_exact(cx)
+                        }),
                     ))
                     .child(toolbar_button(colors, "清除选区").on_mouse_down(
                         MouseButton::Left,

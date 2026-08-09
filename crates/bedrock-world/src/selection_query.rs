@@ -252,9 +252,8 @@ pub fn rasterize_chunk_line(start: ChunkPos, end: ChunkPos) -> Result<Vec<ChunkP
     let step_x = if x < end_x { 1 } else { -1 };
     let step_z = if z < end_z { 1 } else { -1 };
     let mut error = dx + dz;
-    let mut chunks = Vec::with_capacity(
-        usize::try_from(dx.max(-dz).saturating_add(1)).unwrap_or(usize::MAX),
-    );
+    let mut chunks =
+        Vec::with_capacity(usize::try_from(dx.max(-dz).saturating_add(1)).unwrap_or(usize::MAX));
 
     loop {
         chunks.push(ChunkPos {
@@ -299,7 +298,10 @@ where
         bounds: Some(selection.bounds()),
         chunk_count: selection.len(),
         slime_chunks: if options.include_slime {
-            selection.iter().filter(|position| is_slime_chunk(*position)).count()
+            selection
+                .iter()
+                .filter(|position| is_slime_chunk(*position))
+                .count()
         } else {
             0
         },
@@ -432,13 +434,9 @@ mod tests {
 
     #[test]
     fn exact_selection_keeps_holes_and_disconnected_chunks() {
-        let selection = ExactChunkSelection::new([
-            chunk(0, 0),
-            chunk(1, 0),
-            chunk(0, 1),
-            chunk(4, 4),
-        ])
-        .expect("exact selection");
+        let selection =
+            ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(4, 4)])
+                .expect("exact selection");
 
         assert_eq!(selection.len(), 4);
         assert!(selection.contains(chunk(0, 1)));
@@ -456,13 +454,9 @@ mod tests {
 
     #[test]
     fn exact_selection_to_vec_is_row_major() {
-        let selection = ExactChunkSelection::new([
-            chunk(2, 0),
-            chunk(0, 1),
-            chunk(1, 0),
-            chunk(0, 0),
-        ])
-        .expect("exact selection");
+        let selection =
+            ExactChunkSelection::new([chunk(2, 0), chunk(0, 1), chunk(1, 0), chunk(0, 0)])
+                .expect("exact selection");
         assert_eq!(
             selection.to_vec(),
             vec![chunk(0, 0), chunk(1, 0), chunk(2, 0), chunk(0, 1)]
@@ -481,8 +475,8 @@ mod tests {
     fn exact_stats_do_not_fill_bounding_rectangle() {
         let storage = Arc::new(MemoryStorage::default()) as Arc<dyn crate::WorldStorage>;
         let world = BedrockWorld::from_storage("memory", storage, OpenOptions::default());
-        let selection = ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)])
-            .expect("exact selection");
+        let selection =
+            ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)]).expect("exact selection");
         let stats = query_selection_stats_exact_blocking(
             &world,
             &selection,

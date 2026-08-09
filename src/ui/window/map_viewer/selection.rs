@@ -73,8 +73,7 @@ fn next_advanced_selection_token_for_dimension(
     logical_dimension: Dimension,
 ) -> u32 {
     loop {
-        let token = NEXT_ADVANCED_SELECTION_TOKEN
-            .fetch_add(1, Ordering::Relaxed)
+        let token = NEXT_ADVANCED_SELECTION_TOKEN.fetch_add(1, Ordering::Relaxed)
             & ADVANCED_SELECTION_TOKEN_MASK;
         if registry.token_sessions.contains_key(&token) {
             continue;
@@ -321,8 +320,8 @@ fn apply_paint_drag(session_id: u64, current_chunk: ChunkPos) -> ChunkSelection 
         return fallback;
     };
     let segment_start = previous_chunk.unwrap_or(current_chunk);
-    let stroke = rasterize_chunk_line(segment_start, current_chunk)
-        .unwrap_or_else(|_| vec![current_chunk]);
+    let stroke =
+        rasterize_chunk_line(segment_start, current_chunk).unwrap_or_else(|_| vec![current_chunk]);
     let merged = normalize_chunk_set(current_chunks.iter().copied().chain(stroke));
     apply_advanced_chunks(session_id, merged, fallback)
 }
@@ -583,9 +582,7 @@ impl RightSelectionDrag {
                     (RightSelectionIntent::MoveExact(selection), session_id)
                 }
                 SelectionPointerButton::Left => (RightSelectionIntent::Move(selection), None),
-                SelectionPointerButton::Right => {
-                    (RightSelectionIntent::OpenMenu(selection), None)
-                }
+                SelectionPointerButton::Right => (RightSelectionIntent::OpenMenu(selection), None),
             },
             ExistingSelectionTarget::Outside => {
                 remove_advanced_selection_state(selection);
@@ -1060,11 +1057,8 @@ mod tests {
     fn irregular_selection_move_keeps_shape() {
         let horizontal = selection(chunk(-1, 0), chunk(1, 0));
         let add_session_id = begin_additive_selection(Some(horizontal));
-        let mut add = RightSelectionDrag::add_rectangle(
-            Point::default(),
-            chunk(0, -1),
-            add_session_id,
-        );
+        let mut add =
+            RightSelectionDrag::add_rectangle(Point::default(), chunk(0, -1), add_session_id);
         add.current_chunk = chunk(0, 1);
         let selection = add.selection();
         let exact = exact_selection_chunks(selection).expect("exact selection chunks");
@@ -1077,7 +1071,8 @@ mod tests {
             Some(move_session_id),
         );
         let zero_delta = drag.selection();
-        let zero_delta_chunks = exact_selection_chunks(zero_delta).expect("zero delta exact chunks");
+        let zero_delta_chunks =
+            exact_selection_chunks(zero_delta).expect("zero delta exact chunks");
         assert_eq!(zero_delta_chunks.len(), 5);
 
         drag.current_chunk = chunk(2, 3);
@@ -1093,15 +1088,13 @@ mod tests {
 
     #[test]
     fn independent_sessions_use_distinct_selection_tokens() {
-        let first_session =
-            begin_additive_selection(Some(selection(chunk(0, 0), chunk(0, 0))));
+        let first_session = begin_additive_selection(Some(selection(chunk(0, 0), chunk(0, 0))));
         let mut first =
             RightSelectionDrag::add_rectangle(Point::default(), chunk(1, 0), first_session);
         first.current_chunk = chunk(1, 1);
         let first_selection = first.selection();
 
-        let second_session =
-            begin_additive_selection(Some(selection(chunk(0, 0), chunk(0, 0))));
+        let second_session = begin_additive_selection(Some(selection(chunk(0, 0), chunk(0, 0))));
         let mut second =
             RightSelectionDrag::add_rectangle(Point::default(), chunk(1, 0), second_session);
         second.current_chunk = chunk(1, 1);
@@ -1143,11 +1136,8 @@ mod tests {
     #[test]
     fn modifier_selection_modes_do_not_open_context_menu() {
         let rectangle_session = begin_additive_selection(None);
-        let rectangle = RightSelectionDrag::add_rectangle(
-            Point::default(),
-            chunk(0, 0),
-            rectangle_session,
-        );
+        let rectangle =
+            RightSelectionDrag::add_rectangle(Point::default(), chunk(0, 0), rectangle_session);
         assert_eq!(
             right_selection_release_action(rectangle.button, rectangle.intent, rectangle.moved),
             RightSelectionReleaseAction::ApplySelection

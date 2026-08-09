@@ -5,9 +5,9 @@
 //! benchmark support for map tooling.
 
 pub mod editor;
+mod error;
 /// Exact non-rectangular selection planning and chunk loading for render consumers.
 pub mod exact_selection;
-mod error;
 mod palette;
 mod renderer;
 

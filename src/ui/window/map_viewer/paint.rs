@@ -225,9 +225,9 @@ pub(super) fn draw_professional_overlay_canvas(
 
     if let Some(selection) = selection {
         let exact_chunks = exact_selection_chunks(selection);
-        let irregular = exact_chunks.as_deref().is_some_and(|chunks| {
-            !selection_chunks_are_rectangular(selection, Some(chunks))
-        });
+        let irregular = exact_chunks
+            .as_deref()
+            .is_some_and(|chunks| !selection_chunks_are_rectangular(selection, Some(chunks)));
         if irregular {
             if let Some(exact_chunks) = exact_chunks.as_deref() {
                 paint_exact_chunk_selection(
@@ -399,24 +399,14 @@ fn paint_exact_chunk_selection(
         ..colors.accent
     };
     for chunk in &selected {
-        let left = screen_x_for_block(
-            bounds,
-            viewport,
-            layout,
-            chunk.x.saturating_mul(16),
-        );
+        let left = screen_x_for_block(bounds, viewport, layout, chunk.x.saturating_mul(16));
         let right = screen_x_for_block(
             bounds,
             viewport,
             layout,
             chunk.x.saturating_add(1).saturating_mul(16),
         );
-        let top = screen_y_for_block(
-            bounds,
-            viewport,
-            layout,
-            chunk.z.saturating_mul(16),
-        );
+        let top = screen_y_for_block(bounds, viewport, layout, chunk.z.saturating_mul(16));
         let bottom = screen_y_for_block(
             bounds,
             viewport,

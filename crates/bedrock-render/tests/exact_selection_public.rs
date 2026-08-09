@@ -10,13 +10,8 @@ fn chunk(x: i32, z: i32) -> ChunkPos {
 
 #[test]
 fn exact_selection_api_is_public_and_preserves_holes() {
-    let selection = ExactChunkSelection::new([
-        chunk(0, 0),
-        chunk(1, 0),
-        chunk(0, 1),
-        chunk(6, 2),
-    ])
-    .expect("public exact selection");
+    let selection = ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(6, 2)])
+        .expect("public exact selection");
     let plan = ExactChunkRenderPlan::new(selection);
 
     assert_eq!(plan.chunk_count(), 4);

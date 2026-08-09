@@ -123,9 +123,7 @@ impl MapViewerWindowView {
         self.preview_3d.reset_view_and_model();
         self.preview_3d.render_in_flight = true;
         self.preview_3d.cancel = Some(preview_cancel);
-        self.status = SharedString::from(format!(
-            "正在加载精确 3D 预览 · {chunk_count} chunks..."
-        ));
+        self.status = SharedString::from(format!("正在加载精确 3D 预览 · {chunk_count} chunks..."));
         cx.notify();
 
         let world_path = self.world_path.clone();
@@ -478,13 +476,9 @@ mod tests {
 
     #[test]
     fn public_render_plan_never_fills_l_shape_hole() {
-        let selection = ExactChunkSelection::new([
-            chunk(0, 0),
-            chunk(1, 0),
-            chunk(0, 1),
-            chunk(0, 2),
-        ])
-        .expect("selection");
+        let selection =
+            ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(0, 2)])
+                .expect("selection");
         let plan = ExactChunkRenderPlan::new(selection);
         let covered = plan
             .rectangle_cover()
@@ -503,8 +497,8 @@ mod tests {
 
     #[test]
     fn public_render_plan_preserves_disconnected_chunks() {
-        let selection = ExactChunkSelection::new([chunk(0, 0), chunk(4, 0), chunk(4, 1)])
-            .expect("selection");
+        let selection =
+            ExactChunkSelection::new([chunk(0, 0), chunk(4, 0), chunk(4, 1)]).expect("selection");
         let plan = ExactChunkRenderPlan::new(selection);
         assert_eq!(
             plan.rectangle_cover()
