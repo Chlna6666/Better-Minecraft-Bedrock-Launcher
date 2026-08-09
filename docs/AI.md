@@ -53,6 +53,20 @@ separate from BMCBL product behavior.
   backgrounds, main-window chrome, and startup services belong in application
   startup or UI code.
 
+### Configuration And Logging Rules
+
+- Do not add environment-variable switches for log levels, debug traces,
+  renderer selection, rendering parameters, diagnostics, profiling, or test
+  behavior. Use the existing static debug filter, typed configuration, CLI
+  arguments, or explicit API parameters.
+- BMCBL and GPUI logs must flow through the application logging bridge and use
+  debug-level records for diagnostic detail; do not introduce `RUST_LOG`,
+  `GPUI_*`, `ZED_*`, or `BMCBL_*` runtime overrides.
+- Environment variables are allowed only at integration boundaries where the
+  operating system, compiler/build system, or an external child process
+  defines the contract. They must not become a second BMCBL configuration
+  system.
+
 ### Async And State Rules
 
 Before changing runtime, task, download, archive, long-running core work, or
@@ -164,6 +178,16 @@ GPUI 框架改动与 BMCBL 产品行为分离。
   框架代码。
 - renderer preference、嵌入字体、默认背景、主窗口 chrome、启动服务等应用默认值
   属于应用启动或 UI 代码。
+
+### 配置与日志规则
+
+- 不得为日志级别、debug trace、renderer 选择、渲染参数、诊断、性能分析或测试行为
+  新增环境变量开关；应使用现有静态 debug filter、类型化配置、命令行参数或显式 API
+  参数。
+- BMCBL 与 GPUI 的日志必须通过应用日志桥接进入统一日志系统，诊断细节使用 debug
+  级别；不得重新引入 `RUST_LOG`、`GPUI_*`、`ZED_*` 或 `BMCBL_*` 的运行时覆盖。
+- 只有操作系统、编译/构建系统或外部子进程定义协议的集成边界可以使用环境变量；环境
+  变量不能成为第二套 BMCBL 配置系统。
 
 ### 异步与状态规则
 

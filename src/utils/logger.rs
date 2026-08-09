@@ -358,6 +358,10 @@ pub fn init_logging(
         eprintln!("Latest log path was already initialized");
     }
 
+    if let Err(error) = tracing_log::LogTracer::init() {
+        eprintln!("Failed to bridge GPUI log records into tracing: {error}");
+    }
+
     let log_writer = match ManagedLogWriter::initialize(&logs_dir, log_management) {
         Ok(writer) => writer,
         Err(error) => {

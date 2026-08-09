@@ -46,7 +46,7 @@ macro_rules! __log__ {
 
 __log__!(const LOG_TARGET = "CORE");
 
-fn parse_env_filter(default_level: Option<LevelFilter>) -> Result<EnvFilter, anyhow::Error> {
+fn parse_static_filter(default_level: Option<LevelFilter>) -> Result<EnvFilter, anyhow::Error> {
     let directive = match default_level {
         Some(level) => level.into(),
         None => format!("{LOG_TARGET}=info").parse()?,
@@ -54,23 +54,12 @@ fn parse_env_filter(default_level: Option<LevelFilter>) -> Result<EnvFilter, any
 
     EnvFilter::builder()
         .with_default_directive(directive)
-        .from_env()
-        .with_context(|| "failed to create env filter")
-}
-
-fn parse_static_filter(level: LevelFilter) -> Result<EnvFilter, anyhow::Error> {
-    EnvFilter::builder()
-        .with_default_directive(level.into())
         .parse("")
         .with_context(|| "failed to create static filter")
 }
 
 fn parse_file_filter(level: LevelFilter) -> Result<EnvFilter, anyhow::Error> {
-    if matches!(level, LevelFilter::OFF) {
-        parse_static_filter(level)
-    } else {
-        parse_env_filter(Some(level))
-    }
+    parse_static_filter(Some(level))
 }
 
 fn is_log(meta: &Metadata) -> bool {
@@ -133,7 +122,7 @@ fn console_layers(default_level: Option<LevelFilter>) -> anyhow::Result<Vec<BoxL
     }
 
     let (console_filter, _) =
-        tracing_subscriber::reload::Layer::new(parse_env_filter(default_level)?);
+        tracing_subscriber::reload::Layer::new(parse_static_filter(default_level)?);
 
     let (stdout, stderr) = cfg_select! {
         test => {{
@@ -280,36 +269,6 @@ mod tests {
     use super::*;
     use crate::common::config::FileLoggerConfig;
 
-    const RUST_LOG: &str = "RUST_LOG";
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var_os(key);
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        fn unset(key: &'static str) -> Self {
-            let previous = std::env::var_os(key);
-            unsafe { std::env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
-
     #[ctor::ctor]
     fn init() {
         let _ = Registry::default()
@@ -326,9 +285,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn default_file_logger_level_filters_info_with_reload() {
-        let _guard = EnvVarGuard::set(RUST_LOG, "info");
         let temp_dir = tempfile::tempdir().unwrap();
         let log_file_name = "default-off-test.log".to_string();
         let log_path = temp_dir.path().join(&log_file_name);
@@ -356,22 +313,20 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn file_logger_level_uses_env_filter_when_enabled() {
-        let _guard = EnvVarGuard::set(RUST_LOG, "debug");
+    fn file_logger_level_uses_configured_level() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_file_name = "env-filter-test.log".to_string();
         let log_path = temp_dir.path().join(&log_file_name);
 
         let cfg = FileLoggerConfig {
-            level: Some(LevelFilter::INFO.to_string()),
+            level: Some(LevelFilter::DEBUG.to_string()),
             file: Some(log_file_name),
             dir: Some(temp_dir.path().to_string_lossy().to_string()),
             ..Default::default()
         };
 
         let (layers, _sender) = file_layers(cfg, true).unwrap();
-        let marker = "file-logger-env-filter-marker";
+        let marker = "file-logger-configured-level-marker";
         let subscriber = Registry::default().with(layers);
 
         tracing::subscriber::with_default(subscriber, || {
@@ -382,14 +337,12 @@ mod tests {
         let content = std::fs::read_to_string(&log_path).unwrap_or_default();
         assert!(
             content.contains(marker),
-            "enabled file logger should use RUST_LOG directives"
+            "enabled file logger should use its configured level"
         );
     }
 
     #[test]
-    #[serial_test::serial]
-    fn file_logger_reload_uses_env_filter_when_enabled() {
-        let _guard = EnvVarGuard::set(RUST_LOG, "debug");
+    fn file_logger_reload_uses_configured_level() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_file_name = "reload-env-filter-test.log".to_string();
         let log_path = temp_dir.path().join(&log_file_name);
@@ -402,11 +355,11 @@ mod tests {
 
         let (layers, sender) = file_layers(cfg, true).unwrap();
         let sender = sender.expect("reload=true should return a sender");
-        let marker = "file-logger-reload-env-filter-marker";
+        let marker = "file-logger-reload-configured-level-marker";
         let subscriber = Registry::default().with(layers);
 
         tracing::subscriber::with_default(subscriber, || {
-            sender.send(LevelFilter::INFO.to_string()).unwrap();
+            sender.send(LevelFilter::DEBUG.to_string()).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(300));
 
             tracing::debug!(target: LOG_TARGET, "{}", marker);
@@ -416,14 +369,12 @@ mod tests {
         let content = std::fs::read_to_string(&log_path).unwrap_or_default();
         assert!(
             content.contains(marker),
-            "file logger enabled by reload should use RUST_LOG directives"
+            "file logger should use its reloaded configured level"
         );
     }
 
     #[test]
-    #[serial_test::serial]
-    fn file_logger_reload_off_ignores_env_filter() {
-        let _guard = EnvVarGuard::set(RUST_LOG, "info");
+    fn file_logger_reload_off_disables_logging() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_file_name = "reload-off-test.log".to_string();
         let log_path = temp_dir.path().join(&log_file_name);
@@ -451,14 +402,12 @@ mod tests {
         let content = std::fs::read_to_string(&log_path).unwrap_or_default();
         assert!(
             !content.contains(marker),
-            "disabled file logger should ignore RUST_LOG directives"
+            "disabled file logger should suppress records"
         );
     }
 
     #[test]
-    #[serial_test::serial]
     fn test_logger_reload() {
-        let _guard = EnvVarGuard::unset(RUST_LOG);
         let temp_dir = tempfile::tempdir().unwrap();
         let log_file_name = "reload-test.log".to_string();
         let log_path = temp_dir.path().join(&log_file_name);

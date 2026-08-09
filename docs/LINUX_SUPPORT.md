@@ -21,7 +21,7 @@ Linux 现在运行与 Windows 共用的 `lib`、`startup`、`app` 和 GPUI 主�
 
 Linux 构建在父模块层跳过 UWP/AppX 注册、AUMID 启动、注册表、Windows 开发者模式、Win32 注入和 Windows 依赖安装代码。AppX 清单与 PE 解析工具仍作为通用的下载/版本扫描能力编译，但不编译其 WinRT 包查询函数。
 
-已实现第一版 Linux 游戏启动任务：优先读取 `BMCBL_PROTON_RUNNER`，然后检测 Steam 兼容工具、`proton` 和 `wine`；为每个实例建立独立 XDG prefix，只向游戏子进程注入 Proton/Wine 环境，并把 stdout、stderr 和启动错误接入现有任务系统。
+已实现第一版 Linux 游戏启动任务：优先读取 BMCBL 设置中的 runner，然后检测 Steam 兼容工具、`proton` 和 `wine`；为每个实例建立独立 XDG prefix，只向游戏子进程注入 Proton/Wine 环境，并把 stdout、stderr 和启动错误接入现有任务系统。
 
 root 主进程会在创建 GPUI 之前被拒绝。系统依赖检测、安装计划预览和 Polkit helper 仍是后续工作；当前未找到 runner 时会在启动任务中显示可操作错误，不会静默失败。
 
@@ -94,7 +94,9 @@ $XDG_STATE_HOME/bmcbl/diagnostics/
 `BMCBL` 目录。旧版 Linux 的 `~/.local/share/bmcbl/config/settings.toml`
 会在新配置不存在时复制到 XDG 配置目录，原文件保留作为回退。
 
-环境变量按单个子进程设置，不修改 BMCBL 全局环境：
+启动器 runner 只从 BMCBL 持久化配置和自动发现结果读取，不使用
+`BMCBL_PROTON_RUNNER` 或 `BMCBL_PROTON_GDK_RUNNER` 环境变量。游戏子进程仍会按
+Proton/UMU 协议设置自己的环境：
 
 - `STEAM_COMPAT_DATA_PATH` 指向实例独立 prefix；
 - `STEAM_COMPAT_CLIENT_INSTALL_PATH` 来自用户配置或已检测的 Steam 路径；

@@ -1479,7 +1479,7 @@ mod tests {
     #[ignore = "requires live PaperConnect room and network access"]
     async fn udp_forward_diagnostic() {
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+            .with_max_level(tracing::Level::DEBUG)
             .with_test_writer()
             .try_init();
         crate::tasks::runtime::initialize_app_runtime().expect("initialize application runtime");
@@ -1628,19 +1628,12 @@ mod tests {
     #[ignore = "requires live PaperConnect room and network access"]
     async fn join_room_reproduction() {
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,easytier=debug")),
-            )
+            .with_max_level(tracing::Level::DEBUG)
             .with_test_writer()
             .try_init();
         crate::tasks::runtime::initialize_app_runtime().expect("initialize application runtime");
 
-        let expect_discovery_port_occupied =
-            std::env::var_os("BMCBL_TEST_EXPECT_7551_OCCUPIED").is_some();
-        let room_code = std::env::var("BMCBL_TEST_ROOM_CODE")
-            .unwrap_or_else(|_| "P/NPR4-E6J4-DYAG-VZH2".to_string());
-        let room = paperconnect_parse_room_code(room_code)
+        let room = paperconnect_parse_room_code("P/NPR4-E6J4-DYAG-VZH2".to_string())
             .await
             .expect("room code should parse");
         eprintln!("[repro] network_name={}", room.network_name);
@@ -1706,14 +1699,6 @@ mod tests {
         eprintln!("[repro] stop result: {stop:?}");
 
         probe.expect("guest should discover the PaperConnect host");
-        if expect_discovery_port_occupied {
-            assert_eq!(
-                joined,
-                Ok(super::PaperConnectClientState::DiscoveryPortOccupied),
-                "Minecraft 占用 7551 时必须保留 EasyTier 房间并拒绝创建模拟代理"
-            );
-            return;
-        }
         joined.expect("guest transport should connect to the host tunnel");
     }
 

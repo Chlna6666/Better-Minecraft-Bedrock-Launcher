@@ -26,44 +26,6 @@ function Format-Bytes([double]$Bytes) {
     return "{0:N0} B" -f $Bytes
 }
 
-function Add-ProcessRegionSummaryLines([object]$Report, [System.Collections.Generic.List[string]]$Summary) {
-    if (-not $Report.process_regions) {
-        return
-    }
-
-    $largestRegions = @($Report.process_regions.largest_regions | Select-Object -First 8)
-    if ($largestRegions.Count -eq 0) {
-        return
-    }
-
-    $Summary.Add("")
-    $Summary.Add("## Process Regions")
-    $Summary.Add("")
-    foreach ($region in $largestRegions) {
-        $line = "- {0} @ 0x{1:X} [{2} / {3} / {4}]" -f `
-            (Format-Bytes $region.region_size), `
-            ([uint64]$region.base_address), `
-            $region.state, `
-            $region.kind, `
-            $region.protection
-        $Summary.Add($line)
-    }
-
-    $privateSummary = @($Report.process_regions.summary | Where-Object {
-        $_.state -eq "MEM_COMMIT" -and $_.kind -eq "MEM_PRIVATE"
-    } | Sort-Object reserved_bytes -Descending | Select-Object -First 5)
-    if ($privateSummary.Count -gt 0) {
-        $Summary.Add("")
-        $Summary.Add("### Committed Private Buckets")
-        $Summary.Add("")
-        foreach ($bucket in $privateSummary) {
-            $Summary.Add(
-                "- $(Format-Bytes $bucket.reserved_bytes) across $($bucket.region_count) regions [$($bucket.protection)]"
-            )
-        }
-    }
-}
-
 function Try-GetCounterSamples([string[]]$Counters) {
     try {
         return (Get-Counter -Counter $Counters -ErrorAction Stop).CounterSamples
@@ -194,8 +156,6 @@ $etlPath = Join-Path $OutDir "$artifactPrefix-startup-$timestamp.etl"
 $profileTxt = Join-Path $OutDir "$artifactPrefix-startup-$timestamp-xperf-profile.txt"
 $symbolProfileTxt = Join-Path $OutDir "$artifactPrefix-startup-$timestamp-xperf-profile-symbols.txt"
 $processTxt = Join-Path $OutDir "$artifactPrefix-startup-$timestamp-xperf-process.txt"
-$gpuiJson = Join-Path $OutDir "$artifactPrefix-startup-$timestamp-gpui.json"
-
 $wprStarted = $false
 if (-not $SkipWpr) {
     Stop-WprIfRunning
@@ -208,13 +168,7 @@ $startInfo = @{
     WorkingDirectory = Split-Path -Parent $ExePath
     PassThru = $true
 }
-$oldStartupReportPath = $env:GPUI_STARTUP_REPORT_PATH
-try {
-    $env:GPUI_STARTUP_REPORT_PATH = $gpuiJson
-    $process = Start-Process @startInfo
-} finally {
-    $env:GPUI_STARTUP_REPORT_PATH = $oldStartupReportPath
-}
+$process = Start-Process @startInfo
 $ProcessId = $process.Id
 
 $logicalProcessors = [Environment]::ProcessorCount
@@ -333,7 +287,6 @@ $summary = @(
     "- ETL: ``$etlPath``",
     "- xperf CPU profile: ``$profileTxt``",
     "- xperf symbol profile: ``$symbolProfileTxt``",
-    "- GPUI startup report: ``$gpuiJson``",
     "",
     "## Peaks",
     "",
@@ -352,23 +305,12 @@ $summary = @(
     "- Use the CSV for process CPU, memory, and GPU time-series peaks."
 )
 
-if (Test-Path $gpuiJson) {
-    $gpuiReport = Get-Content -LiteralPath $gpuiJson -Raw | ConvertFrom-Json
-    Add-ProcessRegionSummaryLines -Report $gpuiReport -Summary $summary
-    $summary += ""
-    $summary += "## GPUI Startup Report"
-    $summary += ""
-    $summary += '```json'
-    $summary += $gpuiReport | ConvertTo-Json -Depth 8
-    $summary += '```'
-}
 $summary | Set-Content -Encoding UTF8 -Path $summaryMd
 
 [pscustomobject]@{
     Summary = $summaryMd
     Samples = $sampleCsv
     Etl = $etlPath
-    GpuiStartupReport = $gpuiJson
     XperfProfile = $profileTxt
     XperfSymbolProfile = $symbolProfileTxt
     XperfProcess = $processTxt

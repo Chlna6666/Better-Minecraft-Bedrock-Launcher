@@ -84,7 +84,6 @@ BMCBL-owned startup choices:
 
 GPUI-owned generic behavior:
 
-- parsing `GPUI_RENDERER` overrides;
 - backend default selection per platform;
 - renderer options and frame policy model;
 - window frame scheduling;
@@ -317,9 +316,9 @@ Renderer startup is configured with `RendererOptions`:
 - macOS: Nova Metal;
 - otherwise: `Auto`.
 
-`GPUI_RENDERER` can override the configured backend. Accepted values include
-`auto`, `vulkan`, `nova-vulkan`, `dx12`, `nova-dx12`, `metal`,
-`nova-metal`, and `headless`.
+The configured backend is the only renderer selection input. Applications must
+pass it through `RendererOptions` or `new_with_renderer_backend`; GPUI does not
+read an environment-variable override.
 
 ## nova-gfx Renderer
 
@@ -452,8 +451,6 @@ Useful diagnostics include:
   counts, layout metrics, scene metrics, image cache state, atlas usage, and
   renderer backend details;
 - renderer startup logs for selected backend and first-frame data;
-- `GPUI_NOVA_RENDER_DIAGNOSTICS=1` for every-frame nova diagnostics;
-- `GPUI_RENDERER=...` for backend override;
 - frame budget warnings from `window/frame_lifecycle.rs`;
 - upload metrics for frame buffers, atlas pages, and custom mesh buffers.
 

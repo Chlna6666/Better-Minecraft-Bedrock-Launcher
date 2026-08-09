@@ -1134,13 +1134,6 @@ fn proton_gdk_install_directory_name(source: ProtonGdkSource, release_name: &str
 }
 
 pub(crate) fn resolve_runner() -> Result<Runner, String> {
-    if let Some(executable) = env::var_os("BMCBL_PROTON_GDK_RUNNER")
-        .or_else(|| env::var_os("BMCBL_PROTON_RUNNER"))
-        .map(PathBuf::from)
-    {
-        return runner_from_explicit_path(executable);
-    }
-
     if let Ok(config) = crate::config::config::read_config()
         && !config.launcher.proton_gdk_runner.trim().is_empty()
     {
@@ -1161,7 +1154,7 @@ pub(crate) fn resolve_runner() -> Result<Runner, String> {
         });
     }
 
-    Err("未找到 Proton-GDK。请安装兼容的 GDK-Proton，或用 BMCBL_PROTON_GDK_RUNNER 指定 proton 可执行文件".to_string())
+    Err("未找到 Proton-GDK。请安装兼容的 GDK-Proton，或在 BMCBL 设置中选择 runner".to_string())
 }
 
 pub(crate) fn installed_proton_gdk_runners() -> Vec<InstalledProtonGdkRunner> {
@@ -1630,7 +1623,7 @@ fn parse_os_release(contents: &str) -> OsRelease {
 fn runner_from_explicit_path(executable: PathBuf) -> Result<Runner, String> {
     if !is_executable_file(&executable) {
         return Err(format!(
-            "BMCBL_PROTON_RUNNER 指向的文件不存在或不可执行：{}",
+            "配置的 Proton runner 文件不存在或不可执行：{}",
             executable.display()
         ));
     }
@@ -1646,7 +1639,7 @@ fn runner_from_explicit_path(executable: PathBuf) -> Result<Runner, String> {
     } else if file_name.contains("wine") {
         RunnerKind::Wine
     } else {
-        return Err("BMCBL_PROTON_RUNNER 必须指向 proton、umu-run 或 wine 可执行文件".to_string());
+        return Err("配置的 Proton runner 必须指向 proton、umu-run 或 wine 可执行文件".to_string());
     };
     Ok(Runner {
         executable,

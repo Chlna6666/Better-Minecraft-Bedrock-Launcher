@@ -31,14 +31,6 @@ const PRE_RELEASE_GUID_STR: &str = "1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9";
 include!(concat!(env!("OUT_DIR"), "/secrets.rs"));
 
 fn get_release_key_bytes() -> Option<Vec<u8>> {
-    if let Ok(hex_str) = std::env::var("GDK_RELEASE_KEY") {
-        if let Ok(bytes) = hex::decode(&hex_str) {
-            return Some(bytes);
-        }
-    }
-
-    // 2. 编译时注入 (来自 build.rs 生成的 secrets.rs)
-    // RELEASE_KEY_HEX 可能是本地读取的硬编码值，也可能是 CI 的 option_env! 结果
     if let Some(hex_str) = RELEASE_KEY_HEX {
         if let Ok(bytes) = hex::decode(hex_str) {
             return Some(bytes);
@@ -60,12 +52,6 @@ fn get_release_key_bytes() -> Option<Vec<u8>> {
 }
 
 fn get_pre_release_key_bytes() -> Option<Vec<u8>> {
-    if let Ok(hex_str) = std::env::var("GDK_PREVIEW_KEY") {
-        if let Ok(bytes) = hex::decode(&hex_str) {
-            return Some(bytes);
-        }
-    }
-
     if let Some(hex_str) = PREVIEW_KEY_HEX {
         if let Ok(bytes) = hex::decode(hex_str) {
             return Some(bytes);

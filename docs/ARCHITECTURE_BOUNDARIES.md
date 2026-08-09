@@ -226,6 +226,19 @@ policy, or background selection, keep it in application code. If an application
 change requires a reusable framework capability, add the smallest generic
 framework API and wire the BMCBL default from `src/app.rs`.
 
+## Configuration And Logging Boundary
+
+Runtime configuration is explicit. BMCBL and GPUI must not read environment
+variables for logging levels, debug traces, renderer selection, renderer tuning,
+diagnostics, profiling, or test behavior. Use static debug filters, persisted
+typed configuration, CLI arguments, or explicit API parameters instead.
+
+Environment variables remain valid only when they are owned by an integration
+boundary: operating-system discovery, Cargo/compiler build metadata, CI/tooling,
+or an external child-process protocol. Such values must not be promoted into a
+second application configuration mechanism, and new project-owned overrides
+require an explicit architecture review.
+
 ## Validation Scope
 
 Documentation-only changes should at minimum verify paths and links. Code or

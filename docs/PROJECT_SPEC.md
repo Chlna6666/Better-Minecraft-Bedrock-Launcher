@@ -98,8 +98,8 @@ logic implemented as ordinary Rust modules rather than WebView commands.
 
 BMCBL configures GPUI through `RendererOptions` in `src/app.rs`.
 
-- The configured renderer backend is parsed from launcher configuration and can
-  still be overridden by `GPUI_RENDERER`.
+- The configured renderer backend is parsed from launcher configuration and is
+  passed directly to GPUI without an environment-variable override.
 - BMCBL currently prefers high-performance GPU selection for the app.
 - Image pipeline budgets are product choices and are configured from the
   application bootstrap.
