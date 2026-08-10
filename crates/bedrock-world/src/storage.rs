@@ -916,7 +916,10 @@ pub mod backend {
                 } else {
                     bedrock_leveldb::NativeCacheOptions::default()
                 },
-                write_buffer_size: 4 * 1024 * 1024,
+                // Ordinary map edits stay WAL-backed. The current native flush path is an
+                // explicit full-state rewrite, so an automatic 4 MiB flush would turn a
+                // small edit into one table as large as the complete world database.
+                write_buffer_size: 0,
             };
             let db = bedrock_leveldb::Db::open(path, options).map_err(map_leveldb_error)?;
             Ok(Self { db: Arc::new(db) })
