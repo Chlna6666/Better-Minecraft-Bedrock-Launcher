@@ -9,17 +9,15 @@ impl MapViewerWindowView {
             let avatars = cx
                 .background_spawn(async move { load_generated_entity_avatars_rgba() })
                 .await;
+            let decoded_count = avatars.len();
             let Some(view) = handle.upgrade() else {
                 return Ok(());
             };
             view.update(cx, move |this, cx| {
-                let mut changed = false;
+                let mut installed_count = 0usize;
+                let mut avatar_pool = (*this.professional.entity_avatar_pool).clone();
                 for (identifier, width, height, pixels) in avatars {
-                    if this
-                        .professional
-                        .entity_avatar_pool
-                        .contains_key(&identifier)
-                    {
+                    if avatar_pool.contains_key(&identifier) {
                         continue;
                     }
                     match RenderImage::from_raw_pixels(
@@ -29,10 +27,8 @@ impl MapViewerWindowView {
                         pixels,
                     ) {
                         Ok(image) => {
-                            this.professional
-                                .entity_avatar_pool
-                                .insert(identifier, Arc::new(image));
-                            changed = true;
+                            avatar_pool.insert(identifier, Arc::new(image));
+                            installed_count = installed_count.saturating_add(1);
                         }
                         Err(error) => {
                             tracing::debug!(
@@ -42,21 +38,24 @@ impl MapViewerWindowView {
                         }
                     }
                 }
-                if changed {
-                    this.sync_entity_avatar_overlay_snapshot(cx);
-                }
+                let pool_count = avatar_pool.len();
+                this.professional.entity_avatar_pool = Arc::new(avatar_pool);
+                tracing::debug!(
+                    decoded_count,
+                    installed_count,
+                    pool_count,
+                    "entity avatar pool preload completed"
+                );
+                this.sync_entity_avatar_overlay_snapshot(cx);
             })?;
             Ok::<(), anyhow::Error>(())
         })
-        .detach();
+        .detach_and_log_err(cx);
     }
 
     fn sync_entity_avatar_overlay_snapshot(&mut self, cx: &mut Context<Self>) {
-        if let Some(current) = self.professional.overlay_paint.as_ref() {
-            let mut updated = (**current).clone();
-            updated.bind_entity_avatars(&self.professional.entity_avatar_pool);
-            self.professional.overlay_paint = Some(Arc::new(updated));
-        }
+        self.last_synced_canvas_snapshot_key = None;
+        self.last_synced_tile_layer_snapshot_key = None;
         let colors = self.theme_colors(cx);
         if self.viewport_interaction_active() {
             self.sync_interaction_tile_layer_snapshot(colors, cx);
@@ -104,9 +103,7 @@ impl MapViewerWindowView {
             let changed = self.professional.overlay_bounds != Some(bounds)
                 || self.professional.overlay_paint.is_none();
             if changed {
-                let mut overlay = (*cached).clone();
-                overlay.bind_entity_avatars(&self.professional.entity_avatar_pool);
-                self.professional.overlay_paint = Some(Arc::new(overlay));
+                self.professional.overlay_paint = Some(Arc::new((*cached).clone()));
             }
             self.professional.overlay_bounds = Some(bounds);
             self.professional.overlay_complete = true;
@@ -218,25 +215,30 @@ impl MapViewerWindowView {
                     ) {
                         return;
                     }
+                    let mut overlay_replaced = false;
                     if let Ok((map_info, villages)) = cached_result {
                         if map_info.cached_tile_count > 0 || !villages.is_empty() {
                             this.professional.overlay_bounds = Some(bounds);
                             // Cached tiles are an immediate preview only. The following full
                             // stage validates source fingerprints and fills every missing/stale tile.
                             this.professional.overlay_complete = false;
-                            let mut overlay = ProfessionalOverlayPaintCache::from_map_info_snapshot(
+                            let overlay = ProfessionalOverlayPaintCache::from_map_info_snapshot(
                                 &map_info, &villages,
                             );
-                            overlay.bind_entity_avatars(&this.professional.entity_avatar_pool);
                             let overlay = Arc::new(overlay);
                             this.professional.overlay_paint = Some(overlay);
+                            overlay_replaced = true;
                             this.status = SharedString::from(format!(
                                 "已显示实体/叠加缓存 {}/{} · 正在校验并补齐当前区域",
                                 map_info.cached_tile_count, map_info.requested_tile_count
                             ));
                         }
                     }
-                    cx.notify();
+                    if overlay_replaced {
+                        this.sync_professional_render_snapshot(cx);
+                    } else {
+                        cx.notify();
+                    }
                 })?;
             }
 
@@ -290,17 +292,18 @@ impl MapViewerWindowView {
                 }
                 this.professional.overlay_loading = false;
                 this.professional.overlay_cancel = None;
+                let mut overlay_replaced = false;
                 match full_result {
                     Ok((map_info, villages)) => {
                         this.professional.overlay_bounds = Some(bounds);
                         this.professional.overlay_complete = true;
-                        let mut overlay = ProfessionalOverlayPaintCache::from_map_info_snapshot(
+                        let overlay = ProfessionalOverlayPaintCache::from_map_info_snapshot(
                             &map_info, &villages,
                         );
-                        overlay.bind_entity_avatars(&this.professional.entity_avatar_pool);
                         let overlay = Arc::new(overlay);
                         this.map_query_budget.cache(cache_key, Arc::clone(&overlay));
                         this.professional.overlay_paint = Some(overlay);
+                        overlay_replaced = true;
                         this.professional.overlays = None;
                         this.status = SharedString::from(format!(
                             "实体/叠加区域已完整 · 实体 {} · 无坐标跳过 {} · 缓存 {}/{} · 重建 {}",
@@ -324,7 +327,11 @@ impl MapViewerWindowView {
                     this.professional.pending_overlay_refresh = false;
                     this.refresh_professional_overlays(cx);
                 }
-                cx.notify();
+                if overlay_replaced {
+                    this.sync_professional_render_snapshot(cx);
+                } else {
+                    cx.notify();
+                }
             })?;
             Ok::<(), anyhow::Error>(())
         })

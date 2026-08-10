@@ -1081,7 +1081,7 @@ pub(super) struct ProfessionalQueryState {
     /// True only after the current overlay scope was validated against LevelDB.
     /// A fast disk-cache preview is intentionally provisional.
     pub(super) overlay_complete: bool,
-    pub(super) entity_avatar_pool: BTreeMap<String, Arc<RenderImage>>,
+    pub(super) entity_avatar_pool: Arc<BTreeMap<String, Arc<RenderImage>>>,
     pub(super) overlay_loading: bool,
     pub(super) overlay_generation: u64,
     pub(super) overlay_cancel: Option<CancelFlag>,
@@ -1120,6 +1120,16 @@ pub(super) struct ProfessionalQueryState {
     pub(super) last_chunk_transfer_finished_at: Option<Instant>,
     pub(super) edit_loading: bool,
     pub(super) edit_generation: u64,
+}
+
+impl ProfessionalQueryState {
+    pub(super) fn reset_for_dimension_change(&mut self) {
+        let entity_avatar_pool = self.entity_avatar_pool.clone();
+        *self = Self {
+            entity_avatar_pool,
+            ..Self::default()
+        };
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1173,7 +1183,7 @@ impl PlayerQuickEdit {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ProfessionalOverlayPaintCache {
-    pub(super) entity_avatars: BTreeMap<String, Arc<RenderImage>>,
+    pub(super) entity_cache_summary: EntityCacheSummary,
     pub(super) hardcoded_spawn_rects: Vec<BlockOverlayRect>,
     pub(super) village_rects: Vec<ChunkOverlayRect>,
     pub(super) entity_points: Vec<EntityOverlayPoint>,
@@ -1182,29 +1192,17 @@ pub(super) struct ProfessionalOverlayPaintCache {
 }
 
 impl ProfessionalOverlayPaintCache {
-    pub(super) fn bind_entity_avatars(&mut self, avatar_pool: &BTreeMap<String, Arc<RenderImage>>) {
-        self.entity_avatars = self
-            .entity_points
-            .iter()
-            .filter_map(|point| {
-                let identifier = point.identifier.as_ref()?;
-                let avatar_key = normalize_entity_avatar_key(identifier)?;
-                avatar_pool
-                    .get(&avatar_key)
-                    .or_else(|| {
-                        entity_avatar_alias(&avatar_key).and_then(|alias| avatar_pool.get(alias))
-                    })
-                    .map(|image| (identifier.clone(), image.clone()))
-            })
-            .collect();
-    }
-
     pub(super) fn from_map_info_snapshot(
         snapshot: &MapInfoOverlaySnapshot,
         villages: &[VillageOverlay],
     ) -> Self {
         let mut cache = Self {
-            entity_avatars: BTreeMap::new(),
+            entity_cache_summary: EntityCacheSummary {
+                cached_tile_count: snapshot.cached_tile_count,
+                rebuilt_tile_count: snapshot.rebuilt_tile_count,
+                requested_tile_count: snapshot.requested_tile_count,
+                source_fingerprints_validated: snapshot.source_fingerprints_validated,
+            },
             hardcoded_spawn_rects: snapshot
                 .hardcoded_spawn_areas
                 .iter()
@@ -1237,7 +1235,7 @@ impl ProfessionalOverlayPaintCache {
                 })
                 .collect(),
         };
-        for entity in &snapshot.entities {
+        for (entity_index, entity) in snapshot.entities.iter().enumerate() {
             cache.entity_points.push(EntityOverlayPoint {
                 block_x: entity.block_x,
                 block_y: entity.block_y,
@@ -1249,6 +1247,15 @@ impl ProfessionalOverlayPaintCache {
                 },
                 unique_id: entity.unique_id,
                 identifier: entity.identifier.clone(),
+                avatar_key: entity
+                    .identifier
+                    .as_deref()
+                    .and_then(normalize_entity_avatar_key),
+                cache_status: snapshot
+                    .entity_cache_statuses
+                    .get(entity_index)
+                    .copied()
+                    .unwrap_or_default(),
             });
         }
         for entity in &snapshot.block_entities {
@@ -1263,7 +1270,7 @@ impl ProfessionalOverlayPaintCache {
     pub(super) fn from_query(query: &RegionOverlayQuery) -> Self {
         let mut pending_tick_chunks = BTreeMap::<(i32, i32), usize>::new();
         let mut cache = Self {
-            entity_avatars: BTreeMap::new(),
+            entity_cache_summary: EntityCacheSummary::default(),
             hardcoded_spawn_rects: query
                 .hardcoded_spawn_areas
                 .iter()
@@ -1297,6 +1304,11 @@ impl ProfessionalOverlayPaintCache {
                 source_chunk: entity.chunk,
                 unique_id: entity.unique_id,
                 identifier: entity.identifier.clone(),
+                avatar_key: entity
+                    .identifier
+                    .as_deref()
+                    .and_then(normalize_entity_avatar_key),
+                cache_status: MapInfoEntityCacheStatus::DirectQuery,
             });
         }
         for block_entity in &query.block_entities {
@@ -1323,17 +1335,69 @@ impl ProfessionalOverlayPaintCache {
 }
 
 pub(super) fn normalize_entity_avatar_key(identifier: &str) -> Option<String> {
-    let identifier = identifier.trim();
+    let identifier = identifier.trim().trim_start_matches('+');
     if identifier.is_empty() {
         return None;
     }
+    let identifier = identifier.split(['<', '[']).next().unwrap_or(identifier);
+    let identifier = identifier.strip_suffix(".name").unwrap_or(identifier);
     let identifier = identifier.rsplit(':').next().unwrap_or(identifier);
-    let identifier = identifier
-        .strip_prefix("entity.")
-        .unwrap_or(identifier)
-        .strip_prefix("minecraft_")
-        .unwrap_or(identifier);
+    let identifier = identifier.strip_prefix("entity.").unwrap_or(identifier);
+    let identifier = identifier.strip_prefix("minecraft.").unwrap_or(identifier);
+    let identifier = identifier.strip_prefix("minecraft_").unwrap_or(identifier);
     Some(identifier.to_ascii_lowercase().replace('-', "_"))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct EntityCacheSummary {
+    pub(super) cached_tile_count: usize,
+    pub(super) rebuilt_tile_count: usize,
+    pub(super) requested_tile_count: usize,
+    pub(super) source_fingerprints_validated: bool,
+}
+
+pub(super) const fn entity_cache_status_label(status: MapInfoEntityCacheStatus) -> &'static str {
+    match status {
+        MapInfoEntityCacheStatus::UnvalidatedCacheHit => "缓存预览（未校验）",
+        MapInfoEntityCacheStatus::ValidatedCacheHit => "缓存命中（源指纹有效）",
+        MapInfoEntityCacheStatus::Rebuilt => "缓存失效后实时重建",
+        MapInfoEntityCacheStatus::DirectQuery => "直接读取 LevelDB",
+        MapInfoEntityCacheStatus::Unknown => "来源未知",
+    }
+}
+
+pub(super) const fn entity_cache_short_label(status: MapInfoEntityCacheStatus) -> &'static str {
+    match status {
+        MapInfoEntityCacheStatus::UnvalidatedCacheHit => "cache:preview",
+        MapInfoEntityCacheStatus::ValidatedCacheHit => "cache:hit",
+        MapInfoEntityCacheStatus::Rebuilt => "cache:rebuilt",
+        MapInfoEntityCacheStatus::DirectQuery => "db:direct",
+        MapInfoEntityCacheStatus::Unknown => "cache:unknown",
+    }
+}
+
+pub(super) const fn entity_cache_freshness_label(status: MapInfoEntityCacheStatus) -> &'static str {
+    match status {
+        MapInfoEntityCacheStatus::UnvalidatedCacheHit => "快速缓存预览，后台待校验源指纹",
+        MapInfoEntityCacheStatus::ValidatedCacheHit | MapInfoEntityCacheStatus::Rebuilt => {
+            "无固定 TTL，每次按 LevelDB 源指纹判定时效"
+        }
+        MapInfoEntityCacheStatus::DirectQuery => "实时读取，不经过持久实体缓存",
+        MapInfoEntityCacheStatus::Unknown => "缓存时效未知",
+    }
+}
+
+pub(super) fn entity_avatar_key_in_pool<T>(
+    identifier: &str,
+    avatar_pool: &BTreeMap<String, T>,
+) -> Option<String> {
+    let avatar_key = normalize_entity_avatar_key(identifier)?;
+    if avatar_pool.contains_key(&avatar_key) {
+        return Some(avatar_key);
+    }
+    entity_avatar_alias(&avatar_key)
+        .filter(|alias| avatar_pool.contains_key(*alias))
+        .map(ToString::to_string)
 }
 
 fn entity_avatar_alias(identifier: &str) -> Option<&'static str> {
@@ -1372,6 +1436,8 @@ pub(super) struct EntityContextTarget {
     pub(super) unique_id: Option<i64>,
     pub(super) identifier: Option<String>,
     pub(super) position: [f32; 3],
+    pub(super) cache_status: MapInfoEntityCacheStatus,
+    pub(super) cache_summary: EntityCacheSummary,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1382,6 +1448,8 @@ pub(super) struct EntityOverlayPoint {
     pub(super) source_chunk: ChunkPos,
     pub(super) unique_id: Option<i64>,
     pub(super) identifier: Option<String>,
+    pub(super) avatar_key: Option<String>,
+    pub(super) cache_status: MapInfoEntityCacheStatus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1577,6 +1645,7 @@ pub(super) struct MapCanvasSnapshotKey {
     pub(super) tile_generation: u64,
     pub(super) overlay_generation: u64,
     pub(super) overlay_paint_ptr: Option<usize>,
+    pub(super) entity_avatar_pool_ptr: usize,
     pub(super) slime_runs_ptr: Option<usize>,
     pub(super) selection: Option<ChunkSelection>,
     pub(super) paste_preview: Option<PastePreview>,

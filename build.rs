@@ -6,6 +6,9 @@ use std::process::Command;
 
 use pelite::pe64::{Pe, PeFile};
 
+#[path = "build/entity_avatar.rs"]
+mod entity_avatar;
+
 type LocaleTable = Vec<(String, String)>;
 
 const CIK_MIN_BYTES: usize = 0x30;
@@ -905,6 +908,7 @@ fn main() {
     compile_windows_resources();
 
     generate_asset_bundles_rs();
+    entity_avatar::generate();
     generate_embedded_bloader();
     generate_i18n_tables_rs();
     generate_dependency_metadata_rs();

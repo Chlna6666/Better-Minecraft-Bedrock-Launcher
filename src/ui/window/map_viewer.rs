@@ -2,6 +2,8 @@ mod actions;
 mod bottom_panel;
 mod canvas;
 mod editor;
+#[cfg(debug_assertions)]
+mod entity_debug_paint;
 mod exact_selection_ops;
 mod helpers;
 mod history_panel;

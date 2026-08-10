@@ -70,6 +70,7 @@ pub(super) fn draw_professional_overlay_canvas(
     dimension: Dimension,
     overlays: OverlayOptions,
     overlay_paint: Option<&ProfessionalOverlayPaintCache>,
+    entity_avatar_pool: &BTreeMap<String, Arc<RenderImage>>,
     slime_runs: Option<&SlimeOverlayRunCache>,
     selection: Option<ChunkSelection>,
     paste_preview: Option<&PastePreview>,
@@ -149,9 +150,9 @@ pub(super) fn draw_professional_overlay_canvas(
                 // avatar: transparent pixels (for example shulker.png) otherwise expose the
                 // orange square and make a valid icon look like the fallback marker.
                 let avatar = point
-                    .identifier
+                    .avatar_key
                     .as_ref()
-                    .and_then(|id| overlay_paint.entity_avatars.get(id));
+                    .and_then(|key| entity_avatar_pool.get(key));
                 if avatar.is_none() || avatar_requests.len() >= MAX_ENTITY_AVATAR_REQUESTS {
                     paint_point_marker(
                         bounds,
@@ -824,7 +825,7 @@ pub(super) fn paint_point_marker(
     );
 }
 
-fn overlay_marker_screen_x(
+pub(super) fn overlay_marker_screen_x(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,
@@ -844,7 +845,7 @@ fn overlay_marker_screen_x(
         )
 }
 
-fn overlay_marker_screen_y(
+pub(super) fn overlay_marker_screen_y(
     bounds: Bounds<Pixels>,
     viewport: MapViewport,
     layout: RenderLayout,

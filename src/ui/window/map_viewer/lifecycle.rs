@@ -1023,6 +1023,7 @@ impl MapViewerWindowView {
             dragging: self.viewport_interaction_active(),
             tiles: self.canvas_tile_snapshot.clone(),
             overlay_paint: self.professional.overlay_paint.clone(),
+            entity_avatar_pool: self.professional.entity_avatar_pool.clone(),
             slime_runs: self.professional.slime_overlay_runs.clone(),
             selection: self.professional.selection,
             paste_preview: self.professional.paste_preview.clone(),
@@ -1060,6 +1061,7 @@ impl MapViewerWindowView {
                 .overlay_paint
                 .as_ref()
                 .map(|cache| Arc::as_ptr(cache) as usize),
+            entity_avatar_pool_ptr: Arc::as_ptr(&self.professional.entity_avatar_pool) as usize,
             slime_runs_ptr: self
                 .professional
                 .slime_overlay_runs

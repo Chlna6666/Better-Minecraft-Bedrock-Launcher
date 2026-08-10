@@ -1,3 +1,5 @@
+#[cfg(debug_assertions)]
+use super::entity_debug_paint::{EntityDebugPaintContext, paint_missing_entity_avatar_labels};
 use super::map_history::{
     MapHistoryChunkVisual, MapHistoryChunkVisualKind, MapHistoryVisualFilter,
     MapHistoryVisualization,
@@ -22,6 +24,7 @@ use super::viewport::{
 };
 use crate::ui::theme::colors::ThemeColors;
 use bedrock_render::RenderLayout;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static MAP_TILE_PAINT_RESOURCES_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -87,6 +90,7 @@ pub(super) struct MapCanvasSnapshot {
     pub(super) dragging: bool,
     pub(super) tiles: Arc<TilePaintSnapshot>,
     pub(super) overlay_paint: Option<Arc<ProfessionalOverlayPaintCache>>,
+    pub(super) entity_avatar_pool: Arc<BTreeMap<String, Arc<RenderImage>>>,
     pub(super) slime_runs: Option<Arc<SlimeOverlayRunCache>>,
     pub(super) selection: Option<ChunkSelection>,
     pub(super) paste_preview: Option<PastePreview>,
@@ -487,6 +491,7 @@ struct OverlayLayerSnapshot {
     dimension: Dimension,
     overlays: OverlayOptions,
     overlay_paint: Option<Arc<ProfessionalOverlayPaintCache>>,
+    entity_avatar_pool: Arc<BTreeMap<String, Arc<RenderImage>>>,
     slime_runs: Option<Arc<SlimeOverlayRunCache>>,
     selection: Option<ChunkSelection>,
     paste_preview: Option<PastePreview>,
@@ -498,6 +503,7 @@ struct OverlayLayerSnapshot {
     history_visualization_filter: MapHistoryVisualFilter,
     history_visualization_ptr: usize,
     overlay_paint_ptr: Option<usize>,
+    entity_avatar_pool_ptr: usize,
     slime_runs_ptr: Option<usize>,
     colors: ThemeColors,
 }
@@ -510,6 +516,7 @@ impl OverlayLayerSnapshot {
             dimension: snapshot.dimension,
             overlays: snapshot.overlays,
             overlay_paint: snapshot.overlay_paint.clone(),
+            entity_avatar_pool: snapshot.entity_avatar_pool.clone(),
             slime_runs: snapshot.slime_runs.clone(),
             selection: snapshot.selection,
             paste_preview: snapshot.paste_preview.clone(),
@@ -521,6 +528,7 @@ impl OverlayLayerSnapshot {
             history_visualization_filter: snapshot.history_visualization_filter,
             history_visualization_ptr: Arc::as_ptr(&snapshot.history_visualization) as usize,
             overlay_paint_ptr: arc_option_ptr(&snapshot.overlay_paint),
+            entity_avatar_pool_ptr: Arc::as_ptr(&snapshot.entity_avatar_pool) as usize,
             slime_runs_ptr: arc_option_ptr(&snapshot.slime_runs),
             colors: snapshot.colors,
         }
@@ -539,6 +547,7 @@ impl OverlayLayerSnapshot {
             && self.history_visualization_filter == other.history_visualization_filter
             && self.history_visualization_ptr == other.history_visualization_ptr
             && self.overlay_paint_ptr == other.overlay_paint_ptr
+            && self.entity_avatar_pool_ptr == other.entity_avatar_pool_ptr
             && self.slime_runs_ptr == other.slime_runs_ptr
             && self.colors == other.colors
     }
@@ -1344,6 +1353,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     let dimension = snapshot.dimension;
     let overlays = snapshot.overlays;
     let overlay_paint = snapshot.overlay_paint.clone();
+    let entity_avatar_pool = snapshot.entity_avatar_pool.clone();
     let slime_runs = snapshot.slime_runs.clone();
     let selection = snapshot.selection;
     let paste_preview = snapshot.paste_preview.clone();
@@ -1356,7 +1366,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     div().absolute().inset_0().child(
         canvas(
             move |bounds, _window, _cx| bounds,
-            move |bounds, _prepaint, window, _cx| {
+            move |bounds, _prepaint, window, cx| {
                 draw_professional_overlay_canvas(
                     bounds,
                     viewport,
@@ -1364,6 +1374,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                     dimension,
                     overlays,
                     overlay_paint.as_deref(),
+                    &entity_avatar_pool,
                     slime_runs.as_deref(),
                     selection,
                     paste_preview.as_ref(),
@@ -1372,6 +1383,20 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                     colors,
                     window,
                 );
+                #[cfg(debug_assertions)]
+                if let Some(overlay_paint) = overlay_paint.as_deref() {
+                    paint_missing_entity_avatar_labels(
+                        EntityDebugPaintContext {
+                            bounds,
+                            viewport,
+                            layout,
+                            overlay_paint,
+                            entity_avatar_pool: &entity_avatar_pool,
+                        },
+                        window,
+                        cx,
+                    );
+                }
                 if history_visualization_enabled {
                     draw_history_visualization_overlay(
                         bounds,

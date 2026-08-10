@@ -266,6 +266,47 @@ impl MapViewerWindowView {
                 unique_id,
             });
             let mut entries = Vec::new();
+            #[cfg(debug_assertions)]
+            {
+                let normalized_key = actor
+                    .identifier
+                    .as_deref()
+                    .and_then(normalize_entity_avatar_key);
+                let resolved_key = actor.identifier.as_deref().and_then(|identifier| {
+                    entity_avatar_key_in_pool(identifier, &self.professional.entity_avatar_pool)
+                });
+                let avatar_status = if let Some(key) = resolved_key {
+                    format!("已匹配头像 {key}.png")
+                } else if actor.identifier.is_none() {
+                    "NBT 缺少实体 ID（橙色降级点）".to_string()
+                } else if self.professional.entity_avatar_pool.is_empty() {
+                    "头像池尚未加载（橙色降级点）".to_string()
+                } else {
+                    "未匹配头像资源（橙色降级点）".to_string()
+                };
+                let cache_status = entity_cache_status_label(actor.cache_status);
+                let freshness = entity_cache_freshness_label(actor.cache_status);
+                entries.push(ContextMenuEntry::item(
+                    ContextMenuItem::new("DEBUG 实体解析信息")
+                        .description(format!(
+                            "{avatar_status} · 原始 ID {:?} · 规范键 {} · UID {:?} · Pos [{:.3}, {:.3}, {:.3}] · 来源 chunk [{}, {}, {:?}] · 实体数据 {cache_status} · 缓存瓦片 {}/{} · 重建 {} · 指纹已校验 {} · 时效策略：{freshness}",
+                            actor.identifier.as_deref(),
+                            normalized_key.as_deref().unwrap_or("<none>"),
+                            actor.unique_id,
+                            actor.position[0],
+                            actor.position[1],
+                            actor.position[2],
+                            actor.source_chunk.x,
+                            actor.source_chunk.z,
+                            actor.source_chunk.dimension,
+                            actor.cache_summary.cached_tile_count,
+                            actor.cache_summary.requested_tile_count,
+                            actor.cache_summary.rebuilt_tile_count,
+                            actor.cache_summary.source_fingerprints_validated,
+                        ))
+                        .disabled(true),
+                ));
+            }
             if let Some(target) = edit_target.clone() {
                 let entity = cx.entity();
                 entries.push(ContextMenuEntry::item(

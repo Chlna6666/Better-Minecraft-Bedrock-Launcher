@@ -88,7 +88,7 @@ impl MapViewerWindowView {
         self.context_menu = None;
         self.cancel_professional_overlay_query();
         self.cancel_slime_window_candidate_query();
-        self.professional = ProfessionalQueryState::default();
+        self.professional.reset_for_dimension_change();
         self.replace_paste_preview_images(Vec::new(), cx);
         self.set_professional_detail(None, cx);
         self.db_tree = DbTreeState::default();
@@ -1758,6 +1758,8 @@ impl MapViewerWindowView {
                 unique_id: entity.unique_id,
                 identifier: entity.identifier.clone(),
                 position: [entity.block_x, entity.block_y, entity.block_z],
+                cache_status: entity.cache_status,
+                cache_summary: paint.entity_cache_summary,
             })
     }
 

@@ -103,11 +103,29 @@ pub struct MapInfoTilePayload {
     pub hardcoded_spawn_areas: Vec<MapInfoBlockRect>,
 }
 
+/// Describes how an entity entered a map-information snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MapInfoEntityCacheStatus {
+    /// The entity came from the fast persistent-cache preview before validation.
+    UnvalidatedCacheHit,
+    /// The entity came from a cache tile whose LevelDB source fingerprint matched.
+    ValidatedCacheHit,
+    /// The owning cache tile was rebuilt from current LevelDB records.
+    Rebuilt,
+    /// The entity came from a direct query that does not use map-information tiles.
+    DirectQuery,
+    /// No cache provenance was available.
+    #[default]
+    Unknown,
+}
+
 /// Aggregated payloads for a visible set of tiles.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapInfoOverlaySnapshot {
     /// Entity markers from all requested tiles.
     pub entities: Vec<MapInfoEntity>,
+    /// Cache provenance aligned by index with [`Self::entities`].
+    pub entity_cache_statuses: Vec<MapInfoEntityCacheStatus>,
     /// Parsed entity roots omitted only because they had no usable Pos value.
     pub skipped_entity_count: usize,
     /// Block-entity markers from all requested tiles.
@@ -122,6 +140,8 @@ pub struct MapInfoOverlaySnapshot {
     pub rebuilt_tile_count: usize,
     /// Number of map-information tiles requested for this snapshot.
     pub requested_tile_count: usize,
+    /// Whether cache hits were validated against current LevelDB source fingerprints.
+    pub source_fingerprints_validated: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -186,7 +206,7 @@ pub fn load_map_info_tiles_blocking(
         match cache.load_tile(*key, entry.payload_hash) {
             Ok(payload) => {
                 cached_tile_count = cached_tile_count.saturating_add(1);
-                payloads.insert(*key, payload);
+                payloads.insert(*key, (payload, MapInfoEntityCacheStatus::ValidatedCacheHit));
             }
             Err(error) => {
                 tracing::debug!(?error, ?key, "rebuilding invalid map information tile");
@@ -214,7 +234,7 @@ pub fn load_map_info_tiles_blocking(
                     source_hash,
                 },
             );
-            payloads.insert(*key, payload);
+            payloads.insert(*key, (payload, MapInfoEntityCacheStatus::Rebuilt));
         }
         cache.store_index(&index)?;
     }
@@ -224,6 +244,7 @@ pub fn load_map_info_tiles_blocking(
         cached_tile_count,
         rebuild_keys.len(),
         requested_tile_count,
+        true,
     ))
 }
 
@@ -337,7 +358,10 @@ pub fn load_cached_map_info_tiles_blocking(
         };
         match cache.load_tile(key, entry.payload_hash) {
             Ok(payload) => {
-                payloads.insert(key, payload);
+                payloads.insert(
+                    key,
+                    (payload, MapInfoEntityCacheStatus::UnvalidatedCacheHit),
+                );
             }
             Err(error) => {
                 tracing::debug!(?error, ?key, "skipping invalid cached map information tile");
@@ -350,6 +374,7 @@ pub fn load_cached_map_info_tiles_blocking(
         cached_tile_count,
         0,
         requested_tile_count,
+        false,
     ))
 }
 
@@ -461,21 +486,26 @@ impl MapInfoTilePayload {
 
 impl MapInfoOverlaySnapshot {
     fn from_payloads(
-        payloads: impl IntoIterator<Item = MapInfoTilePayload>,
+        payloads: impl IntoIterator<Item = (MapInfoTilePayload, MapInfoEntityCacheStatus)>,
         cached_tile_count: usize,
         rebuilt_tile_count: usize,
         requested_tile_count: usize,
+        source_fingerprints_validated: bool,
     ) -> Self {
         let mut snapshot = Self {
             cached_tile_count,
             rebuilt_tile_count,
             requested_tile_count,
+            source_fingerprints_validated,
             ..Self::default()
         };
-        for payload in payloads {
+        for (payload, cache_status) in payloads {
             snapshot.skipped_entity_count = snapshot
                 .skipped_entity_count
                 .saturating_add(payload.skipped_entity_count as usize);
+            snapshot
+                .entity_cache_statuses
+                .extend(std::iter::repeat_n(cache_status, payload.entities.len()));
             snapshot.entities.extend(payload.entities);
             snapshot.block_entities.extend(payload.block_entities);
             snapshot
@@ -741,5 +771,50 @@ mod tests {
         assert_eq!(map_info_query_worker_count(9, 8), 2);
         assert_eq!(map_info_query_worker_count(64, 2), 2);
         assert_eq!(map_info_query_worker_count(128, 32), 4);
+    }
+
+    #[test]
+    fn overlay_snapshot_preserves_entity_cache_provenance() {
+        let entity = MapInfoEntity {
+            block_x: 1.0,
+            block_y: 2.0,
+            block_z: 3.0,
+            source_chunk_x: 0,
+            source_chunk_z: 0,
+            dimension_id: 0,
+            unique_id: Some(7),
+            identifier: Some("minecraft:item".to_string()),
+        };
+        let snapshot = MapInfoOverlaySnapshot::from_payloads(
+            [
+                (
+                    MapInfoTilePayload {
+                        entities: vec![entity.clone()],
+                        ..MapInfoTilePayload::default()
+                    },
+                    MapInfoEntityCacheStatus::ValidatedCacheHit,
+                ),
+                (
+                    MapInfoTilePayload {
+                        entities: vec![entity],
+                        ..MapInfoTilePayload::default()
+                    },
+                    MapInfoEntityCacheStatus::Rebuilt,
+                ),
+            ],
+            1,
+            1,
+            2,
+            true,
+        );
+
+        assert_eq!(
+            snapshot.entity_cache_statuses,
+            [
+                MapInfoEntityCacheStatus::ValidatedCacheHit,
+                MapInfoEntityCacheStatus::Rebuilt,
+            ]
+        );
+        assert!(snapshot.source_fingerprints_validated);
     }
 }

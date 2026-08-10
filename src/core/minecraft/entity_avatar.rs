@@ -2,7 +2,7 @@ use anyhow::Context;
 use image::ImageReader;
 use std::io::Cursor;
 
-const GENERATED_ICON_PREFIX: &str = "images/map/entity/";
+include!(concat!(env!("OUT_DIR"), "/entity_avatar_assets.rs"));
 
 /// Decodes the entity sprites embedded by `build.rs` into GPUI-ready RGBA data.
 ///
@@ -11,16 +11,13 @@ const GENERATED_ICON_PREFIX: &str = "images/map/entity/";
 /// cannot leave stale avatar files behind and the first map view uses one
 /// deterministic catalog for every world.
 pub(crate) fn load_generated_entity_avatars_rgba() -> Vec<(String, u32, u32, Vec<u8>)> {
-    let mut avatars = Vec::new();
-    for path in crate::assets::asset_source::list_image_assets()
-        .into_iter()
-        .filter(|path| path.starts_with(GENERATED_ICON_PREFIX) && path.ends_with(".png"))
-    {
-        let Some(bytes) = crate::assets::asset_source::load_image_asset(path.as_ref())
+    let mut avatars = Vec::with_capacity(ENTITY_AVATAR_ASSETS.len());
+    for &(identifier, path) in ENTITY_AVATAR_ASSETS {
+        let Some(bytes) = crate::assets::asset_source::load_image_asset(path)
             .ok()
             .flatten()
         else {
-            tracing::debug!(path = %path, "embedded entity avatar is missing");
+            tracing::debug!(identifier, path, "embedded entity avatar is missing");
             continue;
         };
         let image = match ImageReader::new(Cursor::new(bytes.as_ref()))
@@ -30,15 +27,14 @@ pub(crate) fn load_generated_entity_avatars_rgba() -> Vec<(String, u32, u32, Vec
         {
             Ok(image) => image.into_rgba8(),
             Err(error) => {
-                tracing::debug!(?error, path = %path, "failed to decode embedded entity avatar");
+                tracing::debug!(
+                    ?error,
+                    identifier,
+                    path,
+                    "failed to decode embedded entity avatar"
+                );
                 continue;
             }
-        };
-        let Some(identifier) = path
-            .strip_prefix(GENERATED_ICON_PREFIX)
-            .and_then(|name| name.strip_suffix(".png"))
-        else {
-            continue;
         };
         let (width, height) = image.dimensions();
         avatars.push((identifier.to_string(), width, height, image.into_raw()));
@@ -54,31 +50,18 @@ mod tests {
     #[test]
     fn generated_entity_avatar_catalog_is_decodable() {
         let avatars = load_generated_entity_avatars_rgba();
-
-        for expected in [
-            "sheep",
-            "pufferfish",
-            "tropicalfish",
-            "glow_squid",
-            "slime",
-            "silverfish",
-            "shulker",
-            "magma_cube",
-            "witch",
-            "villager",
-            "villager_v2",
-            "zombie_villager",
-            "snowball",
-            "balloon",
-            "armor_stand",
-        ] {
-            assert!(
-                avatars
-                    .iter()
-                    .any(|(identifier, ..)| identifier == expected),
-                "missing generated entity avatar: {expected}"
-            );
-        }
+        let actual_identifiers = avatars
+            .iter()
+            .map(|(identifier, ..)| identifier.as_str())
+            .collect::<Vec<_>>();
+        let expected_identifiers = ENTITY_AVATAR_ASSETS
+            .iter()
+            .map(|(identifier, _)| *identifier)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual_identifiers, expected_identifiers,
+            "every manifest entity avatar must be embedded and decodable"
+        );
         assert!(avatars.iter().all(|(_, width, height, pixels)| {
             *width > 0
                 && *height > 0

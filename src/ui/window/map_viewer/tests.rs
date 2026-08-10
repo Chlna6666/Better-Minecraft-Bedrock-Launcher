@@ -2001,7 +2001,51 @@ fn entity_avatar_keys_accept_namespaced_identifiers() {
         normalize_entity_avatar_key("minecraft:shulker"),
         Some("shulker".to_string())
     );
+    assert_eq!(
+        normalize_entity_avatar_key("minecraft:item"),
+        Some("item".to_string())
+    );
+    assert_eq!(
+        normalize_entity_avatar_key("minecraft:falling_block"),
+        Some("falling_block".to_string())
+    );
+    assert_eq!(
+        normalize_entity_avatar_key("entity.minecraft.warden.name"),
+        Some("warden".to_string())
+    );
+    assert_eq!(
+        normalize_entity_avatar_key("+minecraft:shulker<minecraft:shulker>"),
+        Some("shulker".to_string())
+    );
+    let avatar_pool = BTreeMap::from([("warden".to_string(), ()), ("shulker".to_string(), ())]);
+    assert_eq!(
+        entity_avatar_key_in_pool("minecraft:warden", &avatar_pool),
+        Some("warden".to_string())
+    );
+    assert_eq!(
+        entity_avatar_key_in_pool("minecraft:shulker", &avatar_pool),
+        Some("shulker".to_string())
+    );
     assert_eq!(normalize_entity_avatar_key("  "), None);
+}
+
+#[::core::prelude::v1::test]
+fn dimension_change_resets_queries_without_discarding_entity_avatars() {
+    let avatar_pool = Arc::new(BTreeMap::new());
+    let mut state = ProfessionalQueryState {
+        entity_avatar_pool: avatar_pool.clone(),
+        overlay_loading: true,
+        overlay_generation: 17,
+        pending_overlay_refresh: true,
+        ..ProfessionalQueryState::default()
+    };
+
+    state.reset_for_dimension_change();
+
+    assert!(Arc::ptr_eq(&state.entity_avatar_pool, &avatar_pool));
+    assert!(!state.overlay_loading);
+    assert_eq!(state.overlay_generation, 0);
+    assert!(!state.pending_overlay_refresh);
 }
 
 #[::core::prelude::v1::test]

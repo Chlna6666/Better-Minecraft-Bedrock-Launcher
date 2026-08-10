@@ -21,6 +21,7 @@ from entity_icon_generator.geometry import (
     texture_file,
 )
 from entity_icon_generator.renderers.dispatcher import dispatch_render_portrait
+from entity_icon_generator.renderers.dynamic_entity import render_dynamic_entity_icon
 from entity_icon_generator.texture import write_icon
 
 ICON_SIZE_OVERRIDES = {
@@ -161,6 +162,16 @@ def generate(resource_packs: list[Path], output: Path) -> dict[str, str]:
     manifest: dict[str, str] = {}
     resource_packs = [path for path in resource_packs if path.is_dir()]
     manifest.update(entity_head_assets(resource_packs, output))
+
+    for identifier in ("falling_block", "item"):
+        if identifier in manifest:
+            continue
+        icon = render_dynamic_entity_icon(identifier, resource_packs)
+        if icon is None:
+            continue
+        output_path = output / f"{identifier}.png"
+        write_icon(icon, output_path)
+        manifest[identifier] = output_path.name
 
     models = geometry_index(resource_packs)
     # Entities without their own client definition still render from their

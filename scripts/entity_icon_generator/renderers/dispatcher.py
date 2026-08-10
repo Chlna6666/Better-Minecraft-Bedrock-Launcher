@@ -20,6 +20,7 @@ from entity_icon_generator.renderers.model import render_model_3d
 from entity_icon_generator.renderers.parrot import render_parrot
 from entity_icon_generator.renderers.rabbit import render_rabbit
 from entity_icon_generator.renderers.sheep import render_sheep
+from entity_icon_generator.renderers.shulker_bullet import render_shulker_bullet
 from entity_icon_generator.renderers.side_body import render_side_body_2d
 from entity_icon_generator.renderers.side_face import render_side_face_2d
 from entity_icon_generator.renderers.slime import render_slime
@@ -27,6 +28,7 @@ from entity_icon_generator.renderers.standard import (
     render_front_body_profile,
     render_head,
 )
+from entity_icon_generator.renderers.sulfur_cube import render_sulfur_cube
 from entity_icon_generator.renderers.tropicalfish import tropicalfish_texture
 from entity_icon_generator.renderers.villager import (
     VILLAGER_FAMILY_ENTITIES,
@@ -36,7 +38,24 @@ from entity_icon_generator.renderers.wolf import render_wolf
 from entity_icon_generator.texture import normalize_entity_texture
 
 MODEL_RENDER_3D = {
+    "arrow": ("east", {"body"}, None, 0.5, {"body"}, None, False),
     "armor_stand": ("north", None, None, 0.5, None, None, False),
+    "bee": (
+        "north",
+        None,
+        None,
+        0.5,
+        {
+            "stinger",
+            "rightwing_bone",
+            "leftwing_bone",
+            "leg_front",
+            "leg_mid",
+            "leg_back",
+        },
+        None,
+        False,
+    ),
     "egg": ("north", None, None, 0.5, None, None, False),
     "skull": ("north", None, None, 0.5, None, None, False),
     "snowball": ("north", None, None, 0.5, None, None, False),
@@ -81,6 +100,7 @@ MODEL_RENDER_3D = {
         True,
     ),
     "evocation_fang": ("east", None, None, 0.5, None, None, False),
+    "fireworks_rocket": ("east", {"body"}, None, 0.5, {"body"}, None, False),
     "ghast": ("north", {"body"}, None, 0.5, None, None, False),
     "guardian": (
         "north",
@@ -123,6 +143,16 @@ MODEL_RENDER_3D = {
     "happy_ghast": ("north", {"body"}, None, 0.5, None, None, False),
     "nautilus": ("east", None, None, 0.5, None, None, False),
     "zombie_nautilus": ("east", None, None, 0.5, None, None, False),
+}
+
+MODEL_RENDER_ROTATIONS = {
+    "fireworks_rocket": -90,
+}
+
+FULL_FRONT_SPRITES = {
+    "dragon_fireball",
+    "ender_pearl",
+    "small_fireball",
 }
 
 
@@ -308,10 +338,19 @@ def dispatch_render_portrait(
         colored.putalpha(sprite.getchannel("A"))
         return colored
 
+    if identifier in FULL_FRONT_SPRITES:
+        return texture
+
+    if identifier == "sulfur_cube":
+        return render_sulfur_cube(texture, geometry, resource_packs)
+
+    if identifier == "shulker_bullet":
+        return render_shulker_bullet(texture, geometry)
+
     # Assembled 3D model projection for models with bone rotations/hierarchy.
     if identifier in MODEL_RENDER_3D:
         view, bone_filter, focus_bones, focus_ratio, double_sided, front, pad_square = MODEL_RENDER_3D[identifier]
-        return render_model_3d(
+        result = render_model_3d(
             texture,
             geometry,
             view=view,
@@ -322,6 +361,10 @@ def dispatch_render_portrait(
             front_bones=front,
             pad_square=pad_square,
         )
+        rotation = MODEL_RENDER_ROTATIONS.get(identifier)
+        if result is not None and rotation is not None:
+            return result.rotate(rotation, expand=True)
+        return result
 
     # Standalone Variant: Armadillo
     if identifier == "armadillo":

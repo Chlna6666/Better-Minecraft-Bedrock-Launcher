@@ -58,7 +58,7 @@ pub(super) use super::tool_stripe::{MapToolStripeSnapshot, MapToolStripeView};
 pub(super) use super::top_bar::{MapTopBarSnapshot, MapTopBarView};
 pub(super) use crate::core::minecraft::entity_avatar::load_generated_entity_avatars_rgba;
 pub(super) use crate::core::minecraft::map_info_cache::{
-    MapInfoOverlaySnapshot, invalidate_map_info_tiles_for_chunks,
+    MapInfoEntityCacheStatus, MapInfoOverlaySnapshot, invalidate_map_info_tiles_for_chunks,
     load_cached_map_info_tiles_blocking, load_map_info_tiles_blocking,
 };
 pub(super) use crate::tasks::task_manager::{self, TaskSnapshot};
