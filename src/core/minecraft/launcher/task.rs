@@ -3,6 +3,7 @@ use super::bloader;
 use crate::config::config::read_config;
 use crate::core::inject::inject::{
     grant_all_application_packages_access, inject_existing_process, launch_win32_with_injection,
+    terminal_host_launch_metadata,
 };
 use crate::core::inject::pe::{
     ensure_backup, inject_dll_import, is_file_patched, restore_original_pe,
@@ -670,54 +671,67 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
             "准备启动 Win32 版本"
         );
 
-        let pid = if version_config.enable_debug_console {
+        // Windows Terminal is only a console owner. The original BMCBL process
+        // remains the sole Minecraft launcher and XUser credential owner.
+        let terminal_host = if version_config.enable_debug_console {
             append_log(
                 task_id,
-                "调试控制台已启用：正在创建 Windows Terminal，并由终端 Host 启动 Minecraft".to_string(),
+                "调试控制台已启用：正在建立 Windows Terminal；Minecraft 与 XUser 仍由当前 BMCBL 进程启动".to_string(),
             );
-            match crate::core::windows_terminal::launch_minecraft(
-                exe_path,
-                final_launch_args.as_deref(),
-            )
-            .await?
-            {
-                Some(result) => {
-                    launch_gamertag = result.gamertag;
-                    append_log(
-                        task_id,
-                        format!("Windows Terminal 已建立，Minecraft PID {}", result.pid),
-                    );
-                    result.pid
-                }
-                None => {
-                    append_log(
-                        task_id,
-                        "Windows Terminal 不可用，回退到系统独立控制台".to_string(),
-                    );
-                    let (secure_launch_metadata, gamertag) =
-                        prepare_direct_win32_auth(task_id).await?;
-                    launch_gamertag = gamertag;
-                    launch_win32_with_injection(
-                        exe_path,
-                        final_launch_args.as_deref(),
-                        Vec::new(),
-                        secure_launch_metadata,
-                        true,
-                        Some(log_callback.clone()),
-                    )
-                    .await
-                    .map_err(|error| format!("启动失败: {error:?}"))?
-                }
-            }
+            crate::core::windows_terminal::start_host().await?
         } else {
-            let (secure_launch_metadata, gamertag) = prepare_direct_win32_auth(task_id).await?;
-            launch_gamertag = gamertag;
-            launch_win32_with_injection(
+            None
+        };
+
+        let (mut secure_launch_metadata, gamertag) = prepare_direct_win32_auth(task_id).await?;
+        launch_gamertag = gamertag;
+
+        let pid = if let Some(host) = terminal_host {
+            let host_pid = host.host_pid;
+            if let Some(metadata) = terminal_host_launch_metadata(host_pid) {
+                secure_launch_metadata
+                    .get_or_insert_with(Vec::new)
+                    .push(metadata);
+            }
+
+            let pid = launch_win32_with_injection(
                 exe_path,
                 final_launch_args.as_deref(),
                 Vec::new(),
                 secure_launch_metadata,
                 false,
+                Some(log_callback.clone()),
+            )
+            .await
+            .map_err(|error| format!("启动失败: {error:?}"))?;
+
+            match host.bind_minecraft(pid) {
+                Ok(()) => append_log(
+                    task_id,
+                    format!("Windows Terminal 已绑定 Minecraft PID {pid}"),
+                ),
+                Err(error) => {
+                    warn!(task_id = %task_id, pid, error = %error, "Windows Terminal Host 绑定 Minecraft 失败");
+                    append_log(
+                        task_id,
+                        format!("Windows Terminal Host 绑定失败，BLoader 将自行回退控制台：{error}"),
+                    );
+                }
+            }
+            pid
+        } else {
+            if version_config.enable_debug_console {
+                append_log(
+                    task_id,
+                    "Windows Terminal 不可用，回退到系统独立控制台".to_string(),
+                );
+            }
+            launch_win32_with_injection(
+                exe_path,
+                final_launch_args.as_deref(),
+                Vec::new(),
+                secure_launch_metadata,
+                version_config.enable_debug_console,
                 Some(log_callback.clone()),
             )
             .await
