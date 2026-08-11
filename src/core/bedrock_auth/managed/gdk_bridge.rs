@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_LAUNCH_PREAUTH_SIZE: usize = 256 * 1024;
 const MIN_USER_TOKEN_REMAINING_SECONDS: u64 = 30;
+const AUTH_MODE: &str = "hybrid-native-or-bmcbl-token-v1";
 // Process-local metadata key used only between BMCBL modules. This key and its
 // opaque value are consumed before CreateProcessW and are never added to the
 // Minecraft child-process environment.
@@ -46,10 +47,13 @@ impl Drop for PreparedLaunchAuth {
 
 /// Produces the Windows BLoader launch credential envelope.
 ///
-/// BMCBL owns Microsoft refresh credentials and obtains the Xbox user token
-/// (XASU UToken). Device/title credentials, final XSTS tokens and HTTP request
-/// signatures intentionally do not cross this process boundary; the Microsoft
-/// Gaming Runtime remains responsible for those pieces inside Minecraft.
+/// Two routes are carried in one process-scoped, read-once payload:
+/// - same-account: BLoader delegates token/signature acquisition to the
+///   Microsoft Gaming Runtime and ignores the fallback credentials;
+/// - cross-account: until a verified pre-XSTS UToken injection boundary is
+///   available in the Microsoft runtime, BLoader may use BMCBL's already
+///   authenticated service XSTS tokens and PoP signing key as a compatibility
+///   fallback. The MSA refresh token never crosses into Minecraft.
 pub(super) fn prepare(
     profile_id: &str,
     gamertag: &str,
@@ -65,14 +69,18 @@ pub(super) fn prepare(
         return Err("Xbox 用户身份为空".to_string());
     }
 
-    let source: Value = serde_json::from_slice(device_json)
+    let mut payload: Value = serde_json::from_slice(device_json)
         .map_err(|_| "GDK 预认证数据不是有效 JSON".to_string())?;
-    let user_token = source
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "GDK 预认证数据必须是 JSON object".to_string())?;
+
+    let user_token = object
         .get("user_token")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "GDK 预认证数据缺少原始 Xbox UToken".to_string())?;
-    let user_token_expiry_epoch = source
+    let user_token_expiry_epoch = object
         .get("user_token_expiry_epoch")
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<u64>().ok())
@@ -85,19 +93,54 @@ pub(super) fn prepare(
         return Err("Xbox UToken 已过期或即将过期".to_string());
     }
 
-    let payload = json!({
-        "auth_mode": "official-runtime-user-token",
-        "xbl_xuid": profile_id,
-        "xbl_gamertag": gamertag,
-        "xbl_age_group": source.get("xbl_age_group").cloned().unwrap_or(Value::Null),
-        "xbl_privileges": source.get("xbl_privileges").cloned().unwrap_or(Value::Null),
-        "user_token": user_token,
-        "user_token_expiry_epoch": user_token_expiry_epoch.to_string(),
-    });
+    // The fallback route requires the same fields used by the previously
+    // working BLoader pre-auth token provider. Validate them before launching
+    // so a cross-account game never degrades into an identity-only session.
+    for key in [
+        "ecc_private_blob_b64",
+        "xbl_token",
+        "xbl_uhs",
+        "xbl_token_expiry_epoch",
+        "sisu_token",
+        "sisu_uhs",
+        "sisu_expiry_epoch",
+        "mp_token",
+        "mp_uhs",
+        "mp_expiry_epoch",
+        "realms_token",
+        "realms_uhs",
+        "realms_expiry_epoch",
+    ] {
+        if object
+            .get(key)
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.is_empty())
+        {
+            return Err(format!("GDK 预认证数据缺少跨账号回退字段：{key}"));
+        }
+    }
+
+    object.insert("auth_mode".to_string(), Value::String(AUTH_MODE.to_string()));
+    object.insert("xbl_xuid".to_string(), Value::String(profile_id.to_string()));
+    object.insert(
+        "xbl_gamertag".to_string(),
+        Value::String(gamertag.to_string()),
+    );
+    object.insert(
+        "user_token_expiry_epoch".to_string(),
+        Value::String(user_token_expiry_epoch.to_string()),
+    );
+    // Keep an explicit marker so diagnostics can distinguish the compatibility
+    // route without exposing any token material.
+    object.insert(
+        "cross_account_fallback".to_string(),
+        json!("bmcbl-preauth-v1"),
+    );
+
     let payload = serde_json::to_vec(&payload)
-        .map_err(|error| format!("编码 Xbox UToken 启动载荷失败：{error}"))?;
+        .map_err(|error| format!("编码 Xbox 混合启动载荷失败：{error}"))?;
     if payload.len() > MAX_LAUNCH_PREAUTH_SIZE {
-        return Err("Xbox UToken 启动载荷超过安全传输上限".to_string());
+        return Err("Xbox 混合启动载荷超过安全传输上限".to_string());
     }
 
     Ok(PreparedLaunchAuth {
