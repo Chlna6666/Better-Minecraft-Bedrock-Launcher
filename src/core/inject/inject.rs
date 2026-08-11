@@ -2,7 +2,7 @@
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::ffi::{OsStr, c_void};
+use std::ffi::{OsStr, OsString, c_void};
 use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -23,14 +23,16 @@ use windows::Win32::System::Memory::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAllocEx, VirtualFreeEx,
 };
 use windows::Win32::System::Threading::{
-    CREATE_NEW_CONSOLE, CREATE_SUSPENDED, CreateProcessW, CreateRemoteThread, INFINITE,
-    PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    CREATE_NEW_CONSOLE, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+    CreateRemoteThread, INFINITE, PROCESS_INFORMATION, ResumeThread, STARTUPINFOW,
+    TerminateProcess, WaitForSingleObject,
 };
 use windows::core::{PCSTR, PWSTR};
 
 pub type InjectProgressCb = Arc<dyn Fn(String) + Send + Sync>;
 
 const INTERNAL_SESSION_KEY: &str = "BMCBL_XGAMERUNTIME_PREAUTH";
+const TERMINAL_HOST_PID_KEY: &str = "BMCBL_TERMINAL_HOST_PID";
 const PIPE_MAGIC: &[u8; 8] = b"BMCBLXU1";
 const PIPE_VERSION: u32 = 1;
 const PIPE_HEADER_SIZE: usize = 80;
@@ -156,6 +158,10 @@ pub fn register_xuser_launch_payload(payload: Vec<u8>) -> String {
     handle
 }
 
+pub fn terminal_host_launch_metadata(host_pid: u32) -> Option<(String, String)> {
+    (host_pid != 0).then(|| (TERMINAL_HOST_PID_KEY.to_string(), host_pid.to_string()))
+}
+
 fn take_registered_xuser_payload(handle: &str) -> Option<Vec<u8>> {
     if handle.is_empty() {
         return None;
@@ -166,6 +172,48 @@ fn take_registered_xuser_payload(handle: &str) -> Option<Vec<u8>> {
         .ok()?
         .remove(handle)
         .map(SensitivePayload::into_inner)
+}
+
+fn take_launch_metadata(
+    metadata: Option<Vec<(String, String)>>,
+) -> (Option<Vec<u8>>, Option<u32>) {
+    let mut xuser_payload = None;
+    let mut terminal_host_pid = None;
+    for (key, value) in metadata.unwrap_or_default() {
+        if key == INTERNAL_SESSION_KEY {
+            xuser_payload = take_registered_xuser_payload(&value);
+        } else if key == TERMINAL_HOST_PID_KEY {
+            terminal_host_pid = value.parse::<u32>().ok().filter(|pid| *pid != 0);
+        }
+    }
+    (xuser_payload, terminal_host_pid)
+}
+
+fn build_child_environment(terminal_host_pid: Option<u32>) -> Option<Vec<u16>> {
+    let host_pid = terminal_host_pid?;
+    let mut entries = std::env::vars_os()
+        .filter(|(key, _)| !key.to_string_lossy().eq_ignore_ascii_case(TERMINAL_HOST_PID_KEY))
+        .collect::<Vec<(OsString, OsString)>>();
+    entries.push((
+        OsString::from(TERMINAL_HOST_PID_KEY),
+        OsString::from(host_pid.to_string()),
+    ));
+    entries.sort_by(|left, right| {
+        left.0
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .cmp(&right.0.to_string_lossy().to_ascii_lowercase())
+    });
+
+    let mut block = Vec::new();
+    for (key, value) in entries {
+        block.extend(key.as_os_str().encode_wide());
+        block.push('=' as u16);
+        block.extend(value.as_os_str().encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    Some(block)
 }
 
 pub fn grant_all_application_packages_access(path: &Path) -> anyhow::Result<()> {
@@ -198,12 +246,7 @@ pub async fn launch_win32_with_injection(
     let exe_path_owned = exe_path.to_string();
     let args_owned = args.map(ToOwned::to_owned);
     let callback = on_progress.clone();
-    let xuser_payload = launch_metadata.and_then(|metadata| {
-        metadata
-            .into_iter()
-            .find(|(key, _)| key == INTERNAL_SESSION_KEY)
-            .and_then(|(_, handle)| take_registered_xuser_payload(&handle))
-    });
+    let (xuser_payload, terminal_host_pid) = take_launch_metadata(launch_metadata);
 
     crate::tasks::runtime::run_io_blocking(move || -> Result<u32> {
         unsafe {
@@ -229,6 +272,14 @@ pub async fn launch_win32_with_injection(
                 log("启动标志: CREATE_NEW_CONSOLE (请求独立终端窗口)");
             }
 
+            let child_environment = build_child_environment(terminal_host_pid);
+            if let Some(host_pid) = terminal_host_pid {
+                creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+                log(&format!(
+                    "Windows Terminal Host 已绑定到目标启动环境 PID: {host_pid}"
+                ));
+            }
+
             let mut command_line = format!("\"{}\"", exe_path_owned);
             if let Some(arguments) = &args_owned {
                 command_line.push(' ');
@@ -238,6 +289,9 @@ pub async fn launch_win32_with_injection(
                 .encode_wide()
                 .chain(Some(0))
                 .collect();
+            let environment_ptr = child_environment
+                .as_ref()
+                .map(|block| block.as_ptr().cast::<c_void>());
 
             CreateProcessW(
                 None,
@@ -246,7 +300,7 @@ pub async fn launch_win32_with_injection(
                 None,
                 false,
                 creation_flags,
-                None,
+                environment_ptr,
                 None,
                 &startup_info,
                 &mut process_info,
