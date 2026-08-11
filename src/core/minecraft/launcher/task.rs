@@ -212,6 +212,7 @@ fn ensure_file_in_dir(dir: &Path, filename: &str, content: &[u8]) -> Result<Path
 fn write_bloader_config(
     dir: &Path,
     disable_mod_loading: bool,
+    enable_debug_console: bool,
     enable_redirection: bool,
     file_redirections: Value,
     mods: Value,
@@ -226,6 +227,10 @@ fn write_bloader_config(
     config.insert(
         "disable_mod_loading".to_string(),
         json!(disable_mod_loading),
+    );
+    config.insert(
+        "enable_debug_console".to_string(),
+        json!(enable_debug_console),
     );
     config.insert("enable_redirection".to_string(), json!(enable_redirection));
     config.insert(
@@ -394,6 +399,8 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         display_name = %request.display_name,
         version = %request.version,
         package_folder,
+        auto_start = request.auto_start,
+        has_launch_args = request.launch_args.is_some(),
         "进入游戏启动主流程"
     );
 
@@ -516,6 +523,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         let _ = write_bloader_config(
             exe_dir,
             version_config.disable_mod_loading,
+            version_config.enable_debug_console,
             version_config.enable_redirection,
             json!(file_redirections),
             json!(startup_mods_relative_paths),
@@ -658,13 +666,24 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         let log_callback = Arc::new(move |message: String| {
             append_log(&log_task_id, message);
         });
-        info!(task_id = %task_id, exe_path, "准备启动 Win32 版本");
+        if version_config.enable_debug_console {
+            append_log(
+                task_id,
+                "调试控制台已启用：Win32 Minecraft 将请求独立系统终端；Windows Terminal 为默认终端时将由其承载".to_string(),
+            );
+        }
+        info!(
+            task_id = %task_id,
+            exe_path,
+            debug_console = version_config.enable_debug_console,
+            "准备启动 Win32 版本"
+        );
         let pid = launch_win32_with_injection(
             exe_path,
             final_launch_args.as_deref(),
             Vec::new(),
             secure_launch_metadata,
-            false,
+            version_config.enable_debug_console,
             Some(log_callback.clone()),
         )
         .await
