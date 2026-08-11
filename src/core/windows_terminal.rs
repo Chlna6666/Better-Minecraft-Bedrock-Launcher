@@ -88,6 +88,11 @@ fn cleanup_exchange_files(request: &Path, response: &Path) {
     let _ = fs::remove_file(response);
 }
 
+fn cmd_quote(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('%', "%%");
+    format!("\"{text}\"")
+}
+
 /// Starts BMCBL's lightweight terminal-host mode inside a brand-new Windows
 /// Terminal window. No Xbox credential is passed through argv or the exchange
 /// JSON: the host process prepares the account from BMCBL's normal secure store.
@@ -107,6 +112,18 @@ pub(crate) async fn launch_minecraft(
     fs::write(&request_path, request_bytes)
         .map_err(|error| format!("写入 Windows Terminal 启动请求失败: {error}"))?;
 
+    // Keep a real console process as the Windows Terminal command. The release
+    // BMCBL binary uses the WINDOWS subsystem, so cmd.exe + start /wait /b
+    // guarantees that the hidden helper can AttachConsole(ATTACH_PARENT_PROCESS)
+    // to the same WT/ConPTY session and that the tab remains alive until the
+    // helper exits after Minecraft terminates.
+    let host_command = format!(
+        "start \"\" /wait /b {} {} {} {}",
+        cmd_quote(&current_exe),
+        TERMINAL_HOST_FLAG,
+        cmd_quote(&request_path),
+        cmd_quote(&response_path),
+    );
     let spawn_result = Command::new("wt.exe")
         .arg("-w")
         .arg("-1")
@@ -114,10 +131,11 @@ pub(crate) async fn launch_minecraft(
         .arg("--title")
         .arg("Minecraft BLoader Console")
         .arg("--suppressApplicationTitle")
-        .arg(&current_exe)
-        .arg(TERMINAL_HOST_FLAG)
-        .arg(&request_path)
-        .arg(&response_path)
+        .arg("cmd.exe")
+        .arg("/d")
+        .arg("/s")
+        .arg("/c")
+        .arg(host_command)
         .spawn();
 
     if let Err(error) = spawn_result {
@@ -184,7 +202,7 @@ pub(crate) fn run_host_from_args() -> Result<bool, String> {
     let Some(flag) = args.next() else {
         return Ok(false);
     };
-    if flag != TERMINAL_HOST_FLAG {
+    if flag.to_string_lossy() != TERMINAL_HOST_FLAG {
         return Ok(false);
     }
 
