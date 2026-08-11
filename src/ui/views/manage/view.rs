@@ -250,13 +250,20 @@ impl ManagePageView {
                 || div().h(px(32.)).w_full().into_any_element(),
                 |input| {
                     div()
+                        .w_full()
+                        .min_w(px(0.))
                         .flex()
                         .items_center()
-                        .justify_between()
                         .gap(px(10.))
-                        .child(render_toolbar_search_input(input, colors, px(150.)))
                         .child(
                             div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(render_toolbar_search_input(input, colors)),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
                                 .flex()
                                 .items_center()
                                 .gap(px(10.))
@@ -426,11 +433,15 @@ impl ManagePageView {
                                     })
                                     .child(
                                         div()
+                                            .w_full()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
                                             .flex()
                                             .gap(px(10.))
                                             .items_center()
                                             .child(
                                                 div()
+                                                    .flex_none()
                                                     .w(px(46.))
                                                     .h(px(46.))
                                                     .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -479,12 +490,16 @@ impl ManagePageView {
                                                     )
                                                     .child(
                                                         div()
+                                                            .w_full()
+                                                            .min_w(px(0.))
                                                             .flex()
                                                             .items_center()
                                                             .gap(px(6.))
                                                             .overflow_hidden()
                                                             .child(
                                                                 div()
+                                                                    .flex_1()
+                                                                    .min_w(px(0.))
                                                                     .text_size(px(11.))
                                                                     .text_color(
                                                                         colors.text_secondary,
@@ -495,6 +510,7 @@ impl ManagePageView {
                                                             )
                                                             .child(
                                                                 div()
+                                                                    .flex_none()
                                                                     .px(px(5.))
                                                                     .py(px(1.))
                                                                     .rounded(px(crate::ui::theme::tokens::radius::XS))
@@ -504,14 +520,28 @@ impl ManagePageView {
                                                                     .text_color(badge_fg)
                                                                     .child(version_badge),
                                                             )
-                                                            .children(
-                                                                version.mod_loaders.iter().map(
-                                                                    |loader| {
-                                                                        render_mod_loader_badge(
-                                                                            colors, loader, true,
-                                                                        )
-                                                                    },
-                                                                ),
+                                                            .when(
+                                                                !version.mod_loaders.is_empty(),
+                                                                |this| {
+                                                                    this.child(
+                                                                        div()
+                                                                            .flex_1()
+                                                                            .min_w(px(0.))
+                                                                            .overflow_hidden()
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap(px(4.))
+                                                                            .children(
+                                                                                version.mod_loaders.iter().map(
+                                                                                    |loader| {
+                                                                                        render_mod_loader_badge(
+                                                                                            colors, loader, true,
+                                                                                        )
+                                                                                    },
+                                                                                ),
+                                                                            ),
+                                                                    )
+                                                                },
                                                             ),
                                                     ),
                                             ),
@@ -807,7 +837,12 @@ impl ManagePageView {
                                         .map_or_else(
                                             || div().w(px(144.)).h(px(32.)).into_any_element(),
                                             |input| {
-                                                render_toolbar_search_input(input, colors, px(144.))
+                                                div()
+                                                    .w(px(144.))
+                                                    .child(render_toolbar_search_input(
+                                                        input, colors,
+                                                    ))
+                                                    .into_any_element()
                                             },
                                         ),
                                     )

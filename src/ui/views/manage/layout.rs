@@ -124,6 +124,7 @@ pub(super) fn render_mod_loader_badge(
     compact: bool,
 ) -> Div {
     div()
+        .min_w(px(0.))
         .max_w(px(if compact { 118. } else { 180. }))
         .px(px(if compact { 5. } else { 8. }))
         .py(px(if compact { 1. } else { 3. }))
@@ -276,7 +277,6 @@ pub(super) fn render_pack_subtype_switch(
 pub(super) fn render_toolbar_search_input(
     input: &Entity<InputState>,
     colors: &ThemeColors,
-    width: Pixels,
 ) -> AnyElement {
     let dark_mode = colors.bg.l < 0.5;
     let shell_background = colors.settings_field_bg;
@@ -288,11 +288,10 @@ pub(super) fn render_toolbar_search_input(
         a: if dark_mode { 0.72 } else { 0.86 },
         ..colors.text_muted
     };
-    let width_px: f32 = width.into();
-
     div()
         .id("manage-search-input-wrapper")
-        .w(width)
+        .w_full()
+        .min_w(px(0.))
         .h(px(32.))
         .px(px(10.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
@@ -316,7 +315,7 @@ pub(super) fn render_toolbar_search_input(
                 .focus_bordered(false)
                 .cleanable(true)
                 .h_full()
-                .w(px(width_px - 20.0))
+                .w_full()
                 .prefix(
                     svg()
                         .path(lucide_icons::icon_search())
