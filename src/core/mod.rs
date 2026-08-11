@@ -14,4 +14,6 @@ pub mod sponsors;
 pub(crate) mod system_xbox_user;
 pub mod ui_prefs;
 pub mod version;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_terminal;
 pub(crate) mod xbox_avatar_cache;
