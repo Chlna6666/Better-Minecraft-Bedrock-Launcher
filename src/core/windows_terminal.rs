@@ -5,18 +5,14 @@ use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use uuid::Uuid;
 use windows::Win32::System::Console::GetConsoleWindow;
 
-use crate::core::inject::inject::launch_win32_with_injection;
-
 const TERMINAL_HOST_FLAG: &str = "--bmcbl-terminal-host";
-const TERMINAL_HOST_PID_ENV: &str = "BMCBL_TERMINAL_HOST_PID";
 const TERMINAL_START_TIMEOUT: Duration = Duration::from_secs(5);
-const TERMINAL_LAUNCH_TIMEOUT: Duration = Duration::from_secs(90);
+const TERMINAL_BIND_TIMEOUT: Duration = Duration::from_secs(90);
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
@@ -41,23 +37,59 @@ unsafe extern "system" {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct TerminalLaunchRequest {
-    exe_path: String,
-    args: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct TerminalHostResponse {
     state: String,
-    pid: Option<u32>,
-    gamertag: Option<String>,
+    host_pid: Option<u32>,
     error: Option<String>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct TerminalLaunchResult {
-    pub(crate) pid: u32,
-    pub(crate) gamertag: Option<String>,
+#[derive(Debug, Serialize, Deserialize)]
+struct TerminalHostCommand {
+    minecraft_pid: Option<u32>,
+    cancel: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct TerminalHostHandle {
+    pub(crate) host_pid: u32,
+    command_path: PathBuf,
+    armed: bool,
+}
+
+impl TerminalHostHandle {
+    /// Hands the Minecraft PID to the terminal helper after the original BMCBL
+    /// process has completed its secure suspended launch. The helper then stays
+    /// alive until Minecraft exits, keeping the Windows Terminal tab alive.
+    pub(crate) fn bind_minecraft(mut self, minecraft_pid: u32) -> Result<(), String> {
+        if minecraft_pid == 0 {
+            return Err("Windows Terminal Host 收到无效 Minecraft PID".to_string());
+        }
+        let command = TerminalHostCommand {
+            minecraft_pid: Some(minecraft_pid),
+            cancel: false,
+        };
+        let bytes = serde_json::to_vec(&command)
+            .map_err(|error| format!("序列化 Windows Terminal Host 绑定请求失败: {error}"))?;
+        fs::write(&self.command_path, bytes)
+            .map_err(|error| format!("写入 Windows Terminal Host 绑定请求失败: {error}"))?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalHostHandle {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let command = TerminalHostCommand {
+            minecraft_pid: None,
+            cancel: true,
+        };
+        if let Ok(bytes) = serde_json::to_vec(&command) {
+            let _ = fs::write(&self.command_path, bytes);
+        }
+    }
 }
 
 fn host_paths() -> Result<(PathBuf, PathBuf), String> {
@@ -66,7 +98,7 @@ fn host_paths() -> Result<(PathBuf, PathBuf), String> {
         .map_err(|error| format!("创建 Windows Terminal 启动交换目录失败: {error}"))?;
     let nonce = Uuid::new_v4().simple().to_string();
     Ok((
-        dir.join(format!("request-{nonce}.json")),
+        dir.join(format!("command-{nonce}.json")),
         dir.join(format!("response-{nonce}.json")),
     ))
 }
@@ -83,8 +115,8 @@ fn read_response(path: &Path) -> Option<TerminalHostResponse> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn cleanup_exchange_files(request: &Path, response: &Path) {
-    let _ = fs::remove_file(request);
+fn cleanup_exchange_files(command: &Path, response: &Path) {
+    let _ = fs::remove_file(command);
     let _ = fs::remove_file(response);
 }
 
@@ -93,35 +125,23 @@ fn cmd_quote(path: &Path) -> String {
     format!("\"{text}\"")
 }
 
-/// Starts BMCBL's lightweight terminal-host mode inside a brand-new Windows
-/// Terminal window. No Xbox credential is passed through argv or the exchange
-/// JSON: the host process prepares the account from BMCBL's normal secure store.
-pub(crate) async fn launch_minecraft(
-    exe_path: &str,
-    args: Option<&str>,
-) -> Result<Option<TerminalLaunchResult>, String> {
+/// Creates only a Windows Terminal console host. Minecraft and Xbox auth remain
+/// owned by the original BMCBL GUI process so the process-local XUser payload
+/// registry and the one-shot authenticated pipe keep exactly their old trust
+/// boundary.
+pub(crate) async fn start_host() -> Result<Option<TerminalHostHandle>, String> {
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("无法定位 BMCBL.exe: {error}"))?;
-    let (request_path, response_path) = host_paths()?;
-    let request = TerminalLaunchRequest {
-        exe_path: exe_path.to_string(),
-        args: args.map(ToOwned::to_owned),
-    };
-    let request_bytes = serde_json::to_vec(&request)
-        .map_err(|error| format!("序列化 Windows Terminal 启动请求失败: {error}"))?;
-    fs::write(&request_path, request_bytes)
-        .map_err(|error| format!("写入 Windows Terminal 启动请求失败: {error}"))?;
+    let (command_path, response_path) = host_paths()?;
 
-    // Keep a real console process as the Windows Terminal command. The release
-    // BMCBL binary uses the WINDOWS subsystem, so cmd.exe + start /wait /b
-    // guarantees that the hidden helper can AttachConsole(ATTACH_PARENT_PROCESS)
-    // to the same WT/ConPTY session and that the tab remains alive until the
-    // helper exits after Minecraft terminates.
+    // BMCBL.exe is a WINDOWS-subsystem binary in release builds. Keep cmd.exe as
+    // the real console process in the WT tab; the lightweight BMCBL helper then
+    // AttachConsole(ATTACH_PARENT_PROCESS) to that same ConPTY session.
     let host_command = format!(
         "start \"\" /wait /b {} {} {} {}",
         cmd_quote(&current_exe),
         TERMINAL_HOST_FLAG,
-        cmd_quote(&request_path),
+        cmd_quote(&command_path),
         cmd_quote(&response_path),
     );
     let spawn_result = Command::new("wt.exe")
@@ -139,53 +159,48 @@ pub(crate) async fn launch_minecraft(
         .spawn();
 
     if let Err(error) = spawn_result {
-        cleanup_exchange_files(&request_path, &response_path);
+        cleanup_exchange_files(&command_path, &response_path);
         tracing::warn!(?error, "无法启动 Windows Terminal，将回退到系统控制台");
         return Ok(None);
     }
 
     let started = Instant::now();
-    let mut host_ready = false;
     loop {
         if let Some(response) = read_response(&response_path) {
             match response.state.as_str() {
-                "ready" => host_ready = true,
-                "launched" => {
-                    let pid = response
-                        .pid
-                        .ok_or_else(|| "Windows Terminal Host 未返回 Minecraft PID".to_string())?;
-                    let result = TerminalLaunchResult {
-                        pid,
-                        gamertag: response.gamertag,
-                    };
-                    cleanup_exchange_files(&request_path, &response_path);
-                    return Ok(Some(result));
+                "ready" => {
+                    let host_pid = response
+                        .host_pid
+                        .filter(|pid| *pid != 0)
+                        .ok_or_else(|| "Windows Terminal Host 未返回有效 PID".to_string())?;
+                    let _ = fs::remove_file(&response_path);
+                    return Ok(Some(TerminalHostHandle {
+                        host_pid,
+                        command_path,
+                        armed: true,
+                    }));
                 }
                 "error" => {
                     let message = response
                         .error
-                        .unwrap_or_else(|| "Windows Terminal Host 启动失败".to_string());
-                    cleanup_exchange_files(&request_path, &response_path);
-                    if host_ready {
-                        return Err(message);
-                    }
-                    tracing::warn!(error = %message, "Windows Terminal Host 未进入启动阶段，将回退到系统控制台");
+                        .unwrap_or_else(|| "Windows Terminal Host 初始化失败".to_string());
+                    cleanup_exchange_files(&command_path, &response_path);
+                    tracing::warn!(error = %message, "Windows Terminal Host 初始化失败，将回退到系统控制台");
                     return Ok(None);
                 }
                 _ => {}
             }
         }
 
-        let timeout = if host_ready {
-            TERMINAL_LAUNCH_TIMEOUT
-        } else {
-            TERMINAL_START_TIMEOUT
-        };
-        if started.elapsed() >= timeout {
-            cleanup_exchange_files(&request_path, &response_path);
-            if host_ready {
-                return Err("Windows Terminal 已建立，但 Minecraft 启动等待超时".to_string());
+        if started.elapsed() >= TERMINAL_START_TIMEOUT {
+            let cancel = TerminalHostCommand {
+                minecraft_pid: None,
+                cancel: true,
+            };
+            if let Ok(bytes) = serde_json::to_vec(&cancel) {
+                let _ = fs::write(&command_path, bytes);
             }
+            let _ = fs::remove_file(&response_path);
             tracing::warn!("Windows Terminal Host 握手超时，将回退到系统控制台");
             return Ok(None);
         }
@@ -193,9 +208,9 @@ pub(crate) async fn launch_minecraft(
     }
 }
 
-/// Runs before the normal GPUI startup when BMCBL.exe is invoked by wt.exe.
-/// The helper owns no UI and stays alive until Minecraft exits so the Terminal
-/// tab remains open for BLoader/Mod output.
+/// Runs before normal GPUI startup. This helper owns only the terminal session;
+/// it never initializes the BMCBL runtime, reads Xbox credentials, registers an
+/// XUser payload, or creates Minecraft.
 pub(crate) fn run_host_from_args() -> Result<bool, String> {
     let mut args = std::env::args_os();
     let _program = args.next();
@@ -206,10 +221,10 @@ pub(crate) fn run_host_from_args() -> Result<bool, String> {
         return Ok(false);
     }
 
-    let request_path = args
+    let command_path = args
         .next()
         .map(PathBuf::from)
-        .ok_or_else(|| "Windows Terminal Host 缺少 request 路径".to_string())?;
+        .ok_or_else(|| "Windows Terminal Host 缺少 command 路径".to_string())?;
     let response_path = args
         .next()
         .map(PathBuf::from)
@@ -225,8 +240,7 @@ pub(crate) fn run_host_from_args() -> Result<bool, String> {
             &response_path,
             &TerminalHostResponse {
                 state: "error".to_string(),
-                pid: None,
-                gamertag: None,
+                host_pid: None,
                 error: Some("BMCBL Host 未附加到 Windows Terminal 控制台".to_string()),
             },
         );
@@ -234,118 +248,40 @@ pub(crate) fn run_host_from_args() -> Result<bool, String> {
     }
 
     let host_pid = unsafe { get_current_process_id_raw() };
-    // This process has not initialized GPUI or worker threads yet. The variable
-    // contains only a process id; credentials remain in BMCBL's secure store.
-    unsafe {
-        std::env::set_var(TERMINAL_HOST_PID_ENV, host_pid.to_string());
-    }
-
     write_response(
         &response_path,
         &TerminalHostResponse {
             state: "ready".to_string(),
-            pid: None,
-            gamertag: None,
+            host_pid: Some(host_pid),
             error: None,
         },
     )?;
 
-    let request_bytes = match fs::read(&request_path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let message = format!("读取 Windows Terminal 启动请求失败: {error}");
-            let _ = write_response(
-                &response_path,
-                &TerminalHostResponse {
-                    state: "error".to_string(),
-                    pid: None,
-                    gamertag: None,
-                    error: Some(message),
-                },
-            );
-            return Ok(true);
-        }
-    };
-    let _ = fs::remove_file(&request_path);
-    let request: TerminalLaunchRequest = match serde_json::from_slice(&request_bytes) {
-        Ok(request) => request,
-        Err(error) => {
-            let message = format!("解析 Windows Terminal 启动请求失败: {error}");
-            let _ = write_response(
-                &response_path,
-                &TerminalHostResponse {
-                    state: "error".to_string(),
-                    pid: None,
-                    gamertag: None,
-                    error: Some(message),
-                },
-            );
-            return Ok(true);
-        }
-    };
-
-    let runtime = crate::tasks::runtime::initialize_app_runtime()
-        .map_err(|error| format!("初始化 Windows Terminal Host 运行时失败: {error}"))?;
-    let launch_result = runtime.block_on(async {
-        let auth = crate::core::bedrock_auth::prepare_launch_windows().await?;
-        let gamertag = auth.as_ref().map(|auth| auth.gamertag.clone());
-        let secure_launch_metadata = if let Some(auth) = &auth {
-            let metadata = auth.take_secure_launch_metadata();
-            if metadata.is_empty() {
-                return Err("无法登记 BLoader XUser 一次性安全会话".to_string());
+    // Wait only for the original BMCBL process to bind a Minecraft PID. No
+    // authentication material crosses this helper boundary.
+    let started = Instant::now();
+    let minecraft_pid = loop {
+        if let Ok(bytes) = fs::read(&command_path)
+            && let Ok(command) = serde_json::from_slice::<TerminalHostCommand>(&bytes)
+        {
+            let _ = fs::remove_file(&command_path);
+            if command.cancel {
+                let _ = fs::remove_file(&response_path);
+                return Ok(true);
             }
-            Some(metadata)
-        } else {
-            None
-        };
-
-        let callback: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|message| {
-            tracing::debug!(target: "windows-terminal-host", %message);
-        });
-        let pid = launch_win32_with_injection(
-            &request.exe_path,
-            request.args.as_deref(),
-            Vec::new(),
-            secure_launch_metadata,
-            false,
-            Some(callback),
-        )
-        .await
-        .map_err(|error| format!("Windows Terminal Host 启动 Minecraft 失败: {error:?}"))?;
-        Ok::<_, String>((pid, gamertag))
-    });
-
-    let (pid, gamertag) = match launch_result {
-        Ok(result) => result,
-        Err(error) => {
-            let _ = write_response(
-                &response_path,
-                &TerminalHostResponse {
-                    state: "error".to_string(),
-                    pid: None,
-                    gamertag: None,
-                    error: Some(error),
-                },
-            );
+            if let Some(pid) = command.minecraft_pid.filter(|pid| *pid != 0) {
+                break pid;
+            }
+        }
+        if started.elapsed() >= TERMINAL_BIND_TIMEOUT {
+            let _ = fs::remove_file(&response_path);
             return Ok(true);
         }
+        std::thread::sleep(TERMINAL_POLL_INTERVAL);
     };
 
-    write_response(
-        &response_path,
-        &TerminalHostResponse {
-            state: "launched".to_string(),
-            pid: Some(pid),
-            gamertag,
-            error: None,
-        },
-    )?;
-
-    // Keep the Windows Terminal command process alive for the full Minecraft
-    // lifetime. BLoader attaches to this process' console using the inherited
-    // BMCBL_TERMINAL_HOST_PID marker before its PreLoader chain begins.
     unsafe {
-        let process = open_process_raw(SYNCHRONIZE_ACCESS, 0, pid);
+        let process = open_process_raw(SYNCHRONIZE_ACCESS, 0, minecraft_pid);
         if !process.is_null() {
             let _ = wait_for_single_object_raw(process, INFINITE_WAIT);
             let _ = close_handle_raw(process);
