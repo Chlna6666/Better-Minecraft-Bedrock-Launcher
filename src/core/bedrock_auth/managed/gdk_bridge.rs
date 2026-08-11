@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_LAUNCH_PREAUTH_SIZE: usize = 256 * 1024;
 const MIN_USER_TOKEN_REMAINING_SECONDS: u64 = 30;
-const AUTH_MODE: &str = "official-runtime-user-token-v3";
+const AUTH_MODE: &str = "official-runtime-user-token-v4";
 // Process-local metadata key used only between BMCBL modules. This key and its
 // opaque value are consumed before CreateProcessW and are never added to the
 // Minecraft child-process environment.
@@ -49,9 +49,10 @@ impl Drop for PreparedLaunchAuth {
 ///
 /// BMCBL owns Microsoft refresh credentials and performs the user login. The
 /// Minecraft process receives only the selected user's raw Xbox XASU UToken
-/// plus public XUser metadata. DeviceToken, TitleToken, final XSTS, Microsoft
-/// access/refresh tokens and HTTP request signing keys intentionally do not
-/// cross this boundary; those remain Microsoft Gaming Runtime responsibilities.
+/// plus public XUser metadata. `native_system_xuid_hint` is also public metadata
+/// and exists only to gate an optional same-account silent native XUser add.
+/// DeviceToken, TitleToken, final XSTS, Microsoft access/refresh tokens and HTTP
+/// request signing keys intentionally do not cross this boundary.
 pub(super) fn prepare(
     profile_id: &str,
     gamertag: &str,
@@ -87,6 +88,23 @@ pub(super) fn prepare(
         return Err("Xbox UToken 已过期或即将过期".to_string());
     }
 
+    // Lightweight local-state lookup only. It does not call Gaming Runtime,
+    // WAM or gamer-picture APIs and never triggers Xbox sign-in UI.
+    let native_system_xuid_hint = crate::core::system_xbox_user::probe_default_user_xuid();
+    let native_identity_relation = native_system_xuid_hint.map_or("none", |native_xuid| {
+        if native_xuid.to_string() == profile_id {
+            "same"
+        } else {
+            "different"
+        }
+    });
+    tracing::debug!(
+        custom_xuid = %profile_id,
+        native_system_xuid_hint = ?native_system_xuid_hint,
+        relation = native_identity_relation,
+        "已生成 BLoader native XUser 安全路由提示"
+    );
+
     let payload = json!({
         "auth_mode": AUTH_MODE,
         "xbl_xuid": profile_id,
@@ -95,6 +113,7 @@ pub(super) fn prepare(
         "xbl_privileges": source.get("xbl_privileges").cloned().unwrap_or(Value::Null),
         "user_token": user_token,
         "user_token_expiry_epoch": user_token_expiry_epoch.to_string(),
+        "native_system_xuid_hint": native_system_xuid_hint.map(|value| value.to_string()),
     });
     let payload = serde_json::to_vec(&payload)
         .map_err(|error| format!("编码 Xbox UToken 启动载荷失败：{error}"))?;
