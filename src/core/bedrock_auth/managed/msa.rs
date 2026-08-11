@@ -1,23 +1,13 @@
 use super::AuthError;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const CLIENT_ID: &str = "00000000402b5328";
 const SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
 const DEVICE_CODE_ENDPOINT: &str = "https://login.live.com/oauth20_connect.srf";
 const TOKEN_ENDPOINT: &str = "https://login.live.com/oauth20_token.srf";
 const REMOTE_CONNECT_ENDPOINT: &str = "https://login.live.com/oauth20_remoteconnect.srf";
-const DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS: u64 = 3600;
-const MIN_ACCESS_TOKEN_REMAINING_SECONDS: u64 = 30;
-
-struct CachedAccessToken {
-    token: SecretString,
-    expires_at_epoch: u64,
-}
-
-static CURRENT_ACCESS_TOKEN: OnceLock<Mutex<Option<CachedAccessToken>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub(super) struct DeviceCode {
@@ -49,7 +39,6 @@ struct DeviceCodeResponse {
 struct TokenResponse {
     access_token: Option<String>,
     refresh_token: Option<String>,
-    expires_in: Option<u64>,
     error: Option<String>,
     error_description: Option<String>,
 }
@@ -61,36 +50,6 @@ pub(super) fn client() -> Result<reqwest::Client, AuthError> {
         .https_only(true)
         .build()
         .map_err(AuthError::Http)
-}
-
-/// Executes `operation` while borrowing the latest short-lived Microsoft
-/// access token. The refresh token never enters this cache and is never exposed
-/// to BLoader. The access token is only made available while it still has a
-/// small validity margin.
-pub(super) fn with_current_access_token<T>(
-    operation: impl FnOnce(&str, u64) -> T,
-) -> Option<T> {
-    let cache = CURRENT_ACCESS_TOKEN.get_or_init(|| Mutex::new(None));
-    let guard = cache.lock().ok()?;
-    let cached = guard.as_ref()?;
-    let now = now_epoch();
-    if cached.expires_at_epoch <= now.saturating_add(MIN_ACCESS_TOKEN_REMAINING_SECONDS) {
-        return None;
-    }
-    Some(operation(
-        cached.token.expose_secret(),
-        cached.expires_at_epoch,
-    ))
-}
-
-fn cache_access_token(token: &SecretString, expires_at_epoch: u64) {
-    let cache = CURRENT_ACCESS_TOKEN.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some(CachedAccessToken {
-            token: SecretString::from(token.expose_secret().to_string()),
-            expires_at_epoch,
-        });
-    }
 }
 
 pub(super) async fn request_device_code(client: &reqwest::Client) -> Result<DeviceCode, AuthError> {
@@ -206,25 +165,10 @@ fn token_from_response(payload: TokenResponse) -> Result<MsaToken, AuthError> {
         .refresh_token
         .filter(|token| !token.is_empty())
         .ok_or_else(|| AuthError::InvalidResponse("缺少 Microsoft refresh token"))?;
-    let access_token = SecretString::from(access_token);
-    let expires_at_epoch = now_epoch().saturating_add(
-        payload
-            .expires_in
-            .unwrap_or(DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS)
-            .max(60),
-    );
-    cache_access_token(&access_token, expires_at_epoch);
     Ok(MsaToken {
-        access_token,
+        access_token: SecretString::from(access_token),
         refresh_token: SecretString::from(refresh_token),
     })
-}
-
-fn now_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn remote_connect_url(user_code: &str) -> String {
