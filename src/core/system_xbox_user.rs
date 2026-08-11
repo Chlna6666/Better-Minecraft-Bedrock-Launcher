@@ -35,6 +35,19 @@ pub(crate) enum SystemXboxUserProbe {
     Unavailable { reason: String },
 }
 
+/// Returns only the locally cached Windows Xbox XUID without touching WAM,
+/// gamer-picture APIs or Gaming Runtime. This is intentionally a non-secret
+/// routing hint: BLoader still verifies any native handle returned by Microsoft
+/// before it can be used for the same-account fast path.
+pub(crate) fn probe_default_user_xuid() -> Option<u64> {
+    for path in xbox_profile_candidates() {
+        if let Ok(Some(user)) = read_profile_file(&path) {
+            return Some(user.xuid);
+        }
+    }
+    read_registry_profile().ok().flatten().map(|user| user.xuid)
+}
+
 pub(crate) fn probe_default_user() -> SystemXboxUserProbe {
     let mut diagnostics = Vec::new();
 
