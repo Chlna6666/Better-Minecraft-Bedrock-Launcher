@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_LAUNCH_PREAUTH_SIZE: usize = 256 * 1024;
 const MIN_USER_TOKEN_REMAINING_SECONDS: u64 = 30;
-const AUTH_MODE: &str = "official-runtime-user-token-v2";
+const AUTH_MODE: &str = "official-runtime-user-token-v3";
 // Process-local metadata key used only between BMCBL modules. This key and its
 // opaque value are consumed before CreateProcessW and are never added to the
 // Minecraft child-process environment.
@@ -47,11 +47,11 @@ impl Drop for PreparedLaunchAuth {
 
 /// Produces the Windows BLoader launch credential envelope.
 ///
-/// BMCBL retains the refresh token. The game process receives only the selected
-/// user's Xbox XASU UToken plus the currently valid, short-lived MSA access
-/// token used to bootstrap the Microsoft Runtime user-credential path. Final
-/// DeviceToken, TitleToken, XSTS and request Signature are deliberately absent:
-/// those remain Microsoft Gaming Runtime responsibilities.
+/// BMCBL owns Microsoft refresh credentials and performs the user login. The
+/// Minecraft process receives only the selected user's raw Xbox XASU UToken
+/// plus public XUser metadata. DeviceToken, TitleToken, final XSTS, Microsoft
+/// access/refresh tokens and HTTP request signing keys intentionally do not
+/// cross this boundary; those remain Microsoft Gaming Runtime responsibilities.
 pub(super) fn prepare(
     profile_id: &str,
     gamertag: &str,
@@ -87,28 +87,19 @@ pub(super) fn prepare(
         return Err("Xbox UToken 已过期或即将过期".to_string());
     }
 
-    let payload = super::msa::with_current_access_token(|msa_access_token, msa_expires_at| {
-        json!({
-            "auth_mode": AUTH_MODE,
-            "xbl_xuid": profile_id,
-            "xbl_gamertag": gamertag,
-            "xbl_age_group": source.get("xbl_age_group").cloned().unwrap_or(Value::Null),
-            "xbl_privileges": source.get("xbl_privileges").cloned().unwrap_or(Value::Null),
-            "user_token": user_token,
-            "user_token_expiry_epoch": user_token_expiry_epoch.to_string(),
-            "msa_access_token": msa_access_token,
-            "msa_access_token_expiry_epoch": msa_expires_at.to_string(),
-        })
-    })
-    .ok_or_else(|| {
-        "Microsoft access token 不可用或已过期；请刷新 BMCBL Xbox 登录后再启动游戏"
-            .to_string()
-    })?;
-
+    let payload = json!({
+        "auth_mode": AUTH_MODE,
+        "xbl_xuid": profile_id,
+        "xbl_gamertag": gamertag,
+        "xbl_age_group": source.get("xbl_age_group").cloned().unwrap_or(Value::Null),
+        "xbl_privileges": source.get("xbl_privileges").cloned().unwrap_or(Value::Null),
+        "user_token": user_token,
+        "user_token_expiry_epoch": user_token_expiry_epoch.to_string(),
+    });
     let payload = serde_json::to_vec(&payload)
-        .map_err(|error| format!("编码 Xbox 原生 Runtime 凭据载荷失败：{error}"))?;
+        .map_err(|error| format!("编码 Xbox UToken 启动载荷失败：{error}"))?;
     if payload.len() > MAX_LAUNCH_PREAUTH_SIZE {
-        return Err("Xbox 原生 Runtime 凭据载荷超过安全传输上限".to_string());
+        return Err("Xbox UToken 启动载荷超过安全传输上限".to_string());
     }
 
     Ok(PreparedLaunchAuth {
