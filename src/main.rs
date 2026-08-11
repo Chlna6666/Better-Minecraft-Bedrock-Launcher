@@ -7,6 +7,11 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    if bmcbl::run_windows_terminal_host_if_requested()? {
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     refuse_root_gui()?;
 
