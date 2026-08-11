@@ -503,9 +503,10 @@ impl Window {
 
     /// Schedules a delayed moderate memory trim after this window loses focus.
     ///
-    /// Trimming decoded images and GPU scratch immediately on deactivation forces a full
-    /// redecode and atlas re-upload when the user quickly returns to the window, so the trim
-    /// only runs once the window has stayed inactive for [`Self::DEACTIVATION_TRIM_DELAY`].
+    /// Reclaiming idle image and GPU scratch state on every transient deactivation causes
+    /// unnecessary churn, so the trim only runs once the window has stayed inactive for
+    /// [`Self::DEACTIVATION_TRIM_DELAY`]. The moderate trim preserves images retained by the
+    /// current frame so restoring a hidden window never waits for them to decode again.
     /// Becoming active again drops the pending task, which cancels it. Aggressive trims driven
     /// by system memory pressure are unaffected by this path.
     pub(crate) fn schedule_deactivation_memory_trim(&mut self) {
@@ -539,10 +540,7 @@ impl Window {
 
     /// Hints the platform renderer backing this window to release idle GPUI resources.
     pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
-        if matches!(
-            level,
-            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
-        ) {
+        if releases_resident_image_element_bitmaps(level) {
             self.rendered_frame.release_image_element_bitmaps();
             self.next_frame.release_image_element_bitmaps();
         }
@@ -560,10 +558,27 @@ impl Window {
     }
 }
 
+fn releases_resident_image_element_bitmaps(level: GpuiMemoryTrimLevel) -> bool {
+    matches!(level, GpuiMemoryTrimLevel::Aggressive)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::source_crop_axis;
-    use crate::px;
+    use super::{releases_resident_image_element_bitmaps, source_crop_axis};
+    use crate::{GpuiMemoryTrimLevel, px};
+
+    #[test]
+    fn only_aggressive_trim_releases_resident_image_element_bitmaps() {
+        assert!(!releases_resident_image_element_bitmaps(
+            GpuiMemoryTrimLevel::Light
+        ));
+        assert!(!releases_resident_image_element_bitmaps(
+            GpuiMemoryTrimLevel::Moderate
+        ));
+        assert!(releases_resident_image_element_bitmaps(
+            GpuiMemoryTrimLevel::Aggressive
+        ));
+    }
 
     #[test]
     fn source_crop_axis_selects_the_visible_center_of_a_cover_image() {
