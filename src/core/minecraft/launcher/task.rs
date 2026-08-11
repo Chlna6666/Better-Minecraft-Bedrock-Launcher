@@ -375,6 +375,44 @@ pub fn embedded_dll_version_string() -> Option<String> {
     Some(bloader::embedded_version_string().to_string())
 }
 
+async fn prepare_direct_win32_auth(
+    task_id: &str,
+) -> Result<(Option<Vec<(String, String)>>, Option<String>), String> {
+    let launch_auth = crate::core::bedrock_auth::prepare_launch_windows().await?;
+    let launch_gamertag = launch_auth.as_ref().map(|auth| auth.gamertag.clone());
+    let Some(auth) = launch_auth.as_ref() else {
+        append_task_log(
+            task_id,
+            "未检测到有效 Xbox 会话；不会创建 BLoader XUser 安全管道，游戏将使用微软官方登录",
+        );
+        info!(
+            task_id = %task_id,
+            "未检测到有效 Xbox 会话；BLoader 不会接管 QueryApiImpl，游戏将使用微软官方 XUser 登录"
+        );
+        return Ok((None, None));
+    };
+
+    append_task_log(
+        task_id,
+        format!("已准备 BLoader XUser 安全会话：{}", auth.gamertag),
+    );
+    info!(
+        task_id = %task_id,
+        gamertag = %auth.gamertag,
+        "检测到有效的 Xbox 会话，将通过 BMCBL 一次性安全管道传递给 BLoader"
+    );
+    let metadata = auth.take_secure_launch_metadata();
+    if metadata.is_empty() {
+        return Err("无法登记 BLoader XUser 一次性安全会话".to_string());
+    }
+    debug!(
+        task_id = %task_id,
+        gamertag = %auth.gamertag,
+        "Xbox 会话已登记到 BMCBL 进程内存；将在获取 Minecraft PID 后创建一次性安全管道"
+    );
+    Ok((Some(metadata), launch_gamertag))
+}
+
 async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u32>, String> {
     let control = task_control(task_id);
     check_cancelled(task_id)?;
@@ -399,8 +437,6 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         display_name = %request.display_name,
         version = %request.version,
         package_folder,
-        auto_start = request.auto_start,
-        has_launch_args = request.launch_args.is_some(),
         "进入游戏启动主流程"
     );
 
@@ -608,47 +644,6 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         return Ok(None);
     }
 
-    let mut secure_launch_metadata = None;
-    let launch_auth = if is_win32 {
-        crate::core::bedrock_auth::prepare_launch_windows().await?
-    } else {
-        None
-    };
-    let launch_gamertag = launch_auth.as_ref().map(|auth| auth.gamertag.clone());
-
-    if is_win32 {
-        if let Some(auth) = &launch_auth {
-            append_task_log(
-                task_id,
-                format!("已准备 BLoader XUser 安全会话：{}", auth.gamertag),
-            );
-            info!(
-                task_id = %task_id,
-                gamertag = %auth.gamertag,
-                "检测到有效的 Xbox 会话，将通过 BMCBL 一次性安全管道传递给 BLoader"
-            );
-            let metadata = auth.take_secure_launch_metadata();
-            if metadata.is_empty() {
-                return Err("无法登记 BLoader XUser 一次性安全会话".to_string());
-            }
-            debug!(
-                task_id = %task_id,
-                gamertag = %auth.gamertag,
-                "Xbox 会话已登记到 BMCBL 进程内存；将在获取 Minecraft PID 后创建一次性安全管道"
-            );
-            secure_launch_metadata = Some(metadata);
-        } else {
-            append_task_log(
-                task_id,
-                "未检测到有效 Xbox 会话；不会创建 BLoader XUser 安全管道，游戏将使用微软官方登录",
-            );
-            info!(
-                task_id = %task_id,
-                "未检测到有效 Xbox 会话；BLoader 不会接管 QueryApiImpl，游戏将使用微软官方 XUser 登录"
-            );
-        }
-    }
-
     if !is_win32 && game_cfg.uwp_minimize_fix {
         if let Ok(Some((_, _, package_name))) = get_package_info(&identity_to_aumid(&identity_name))
         {
@@ -656,6 +651,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         }
     }
 
+    let mut launch_gamertag: Option<String> = None;
     let pid = if is_win32 {
         let exe_path = find_game_executable(package_folder, &identity_name)
             .ok_or("未找到游戏 EXE".to_string())?;
@@ -666,28 +662,67 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         let log_callback = Arc::new(move |message: String| {
             append_log(&log_task_id, message);
         });
-        if version_config.enable_debug_console {
-            append_log(
-                task_id,
-                "调试控制台已启用：Win32 Minecraft 将请求独立系统终端；Windows Terminal 为默认终端时将由其承载".to_string(),
-            );
-        }
+
         info!(
             task_id = %task_id,
             exe_path,
             debug_console = version_config.enable_debug_console,
             "准备启动 Win32 版本"
         );
-        let pid = launch_win32_with_injection(
-            exe_path,
-            final_launch_args.as_deref(),
-            Vec::new(),
-            secure_launch_metadata,
-            version_config.enable_debug_console,
-            Some(log_callback.clone()),
-        )
-        .await
-        .map_err(|error| format!("启动失败: {error:?}"))?;
+
+        let pid = if version_config.enable_debug_console {
+            append_log(
+                task_id,
+                "调试控制台已启用：正在创建 Windows Terminal，并由终端 Host 启动 Minecraft".to_string(),
+            );
+            match crate::core::windows_terminal::launch_minecraft(
+                exe_path,
+                final_launch_args.as_deref(),
+            )
+            .await?
+            {
+                Some(result) => {
+                    launch_gamertag = result.gamertag;
+                    append_log(
+                        task_id,
+                        format!("Windows Terminal 已建立，Minecraft PID {}", result.pid),
+                    );
+                    result.pid
+                }
+                None => {
+                    append_log(
+                        task_id,
+                        "Windows Terminal 不可用，回退到系统独立控制台".to_string(),
+                    );
+                    let (secure_launch_metadata, gamertag) =
+                        prepare_direct_win32_auth(task_id).await?;
+                    launch_gamertag = gamertag;
+                    launch_win32_with_injection(
+                        exe_path,
+                        final_launch_args.as_deref(),
+                        Vec::new(),
+                        secure_launch_metadata,
+                        true,
+                        Some(log_callback.clone()),
+                    )
+                    .await
+                    .map_err(|error| format!("启动失败: {error:?}"))?
+                }
+            }
+        } else {
+            let (secure_launch_metadata, gamertag) = prepare_direct_win32_auth(task_id).await?;
+            launch_gamertag = gamertag;
+            launch_win32_with_injection(
+                exe_path,
+                final_launch_args.as_deref(),
+                Vec::new(),
+                secure_launch_metadata,
+                false,
+                Some(log_callback.clone()),
+            )
+            .await
+            .map_err(|error| format!("启动失败: {error:?}"))?
+        };
 
         if let Some(gamertag) = launch_gamertag.as_deref() {
             append_task_log(
