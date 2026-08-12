@@ -1,5 +1,7 @@
 use super::*;
 
+const PRESENT_COLOR_BYTES_PER_PIXEL: usize = 4;
+
 #[derive(Clone, Copy)]
 struct FrameBufferTargets {
     global: BufferId,
@@ -343,8 +345,37 @@ impl NovaBackend {
 }
 
 impl NovaRenderer {
+    fn drawable_pixels(&self) -> usize {
+        (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
+    }
+
+    fn retained_copy_estimated_bytes(&self) -> usize {
+        self.drawable_pixels()
+            .saturating_mul(PRESENT_COLOR_BYTES_PER_PIXEL)
+            .saturating_mul(2)
+    }
+
+    fn backdrop_blur_pixel_metrics(&self, enabled: bool) -> (usize, [usize; 6]) {
+        if !enabled {
+            return (0, [0; 6]);
+        }
+        let source_pixels = self.drawable_pixels();
+        let downsample = usize::from(self.frame_upload.backdrop_blur_downsample());
+        let active_levels = self.frame_upload.backdrop_blur_levels();
+        let mut level_pixels = [0; 6];
+        for (level, pixels) in level_pixels.iter_mut().enumerate().take(active_levels) {
+            let factor = downsample.saturating_mul(1_usize << level);
+            let width = (self.current_size.width as usize / factor).max(1);
+            let height = (self.current_size.height as usize / factor).max(1);
+            *pixels = width.saturating_mul(height);
+        }
+        (source_pixels, level_pixels)
+    }
+
     pub(super) fn present_retained_cache_only(&mut self) -> Result<()> {
         self.prepare_for_frame_submission()?;
+        crate::diagnostics::performance_metrics::record_frame_upload_breakdown(Default::default());
+        crate::diagnostics::performance_metrics::record_backdrop_blur_primitive_count(0);
         self.prepare_present_copy_steps(true);
         crate::diagnostics::performance_metrics::record_gpu_pass_metrics(0, 1, 0);
         let depth_attachment = self.depth_attachment();
@@ -362,6 +393,11 @@ impl NovaRenderer {
         };
         self.backend
             .present_retained_cache(descriptor, &self.draw_step_scratch.present_copy_steps)?;
+        crate::diagnostics::performance_metrics::record_retained_present(
+            self.drawable_pixels(),
+            self.retained_copy_estimated_bytes(),
+        );
+        crate::diagnostics::performance_metrics::record_backdrop_blur_frame(0, [0; 6]);
         crate::diagnostics::performance_metrics::record_present();
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         Ok(())
@@ -421,6 +457,12 @@ impl NovaRenderer {
         );
         let unsupported = upload.unsupported_batches;
         let uploaded_bytes = self.frame_upload.uploaded_bytes();
+        crate::diagnostics::performance_metrics::record_frame_upload_breakdown(
+            self.frame_upload.upload_breakdown(),
+        );
+        crate::diagnostics::performance_metrics::record_backdrop_blur_primitive_count(
+            upload.backdrop_blur_count as usize,
+        );
         if self.diagnostics.should_warn_unsupported(unsupported) {
             log::warn!(
                 concat!(
@@ -840,6 +882,20 @@ impl NovaRenderer {
             );
         }
         render_result?;
+        if use_retained_present {
+            crate::diagnostics::performance_metrics::record_retained_present(
+                self.drawable_pixels(),
+                self.retained_copy_estimated_bytes(),
+            );
+        } else {
+            crate::diagnostics::performance_metrics::record_direct_present();
+        }
+        let (blur_source_pixels, blur_level_pixels) =
+            self.backdrop_blur_pixel_metrics(has_backdrop_blurs);
+        crate::diagnostics::performance_metrics::record_backdrop_blur_frame(
+            blur_source_pixels,
+            blur_level_pixels,
+        );
         self.present_cache_valid = use_retained_present;
         crate::diagnostics::performance_metrics::record_present();
         if self.diagnostics.should_warn_slow_frame(frame_elapsed_ms) {

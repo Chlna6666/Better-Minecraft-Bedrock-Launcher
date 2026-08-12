@@ -1056,6 +1056,7 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
     assert_eq!(summary.unsupported_batches.backdrop_blurs, 0);
     assert_eq!(summary.unsupported_batches.backdrop_blur_tint_fallbacks, 0);
     assert_eq!(summary.quad_count, 0);
+    assert_eq!(summary.backdrop_blur_count, 1);
     assert_eq!(upload.quads.len(), 0);
     assert_eq!(upload.backdrop_blur_passes.len(), BACKDROP_BLUR_PASS_BYTES);
     assert_eq!(upload.backdrop_blurs.len(), PACKED_BACKDROP_BLUR_BYTES);
@@ -1063,6 +1064,13 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
         upload.batches.as_slice(),
         [NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 }]
     ));
+    let breakdown = upload.upload_breakdown();
+    assert_eq!(breakdown.encoded_primitives, 1);
+    assert_eq!(breakdown.encoded_batches, 1);
+    assert_eq!(
+        breakdown.backdrop_blur_bytes,
+        BACKDROP_BLUR_PASS_BYTES + PACKED_BACKDROP_BLUR_BYTES
+    );
 }
 
 #[test]

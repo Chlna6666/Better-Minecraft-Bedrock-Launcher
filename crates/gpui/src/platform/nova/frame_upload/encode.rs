@@ -334,6 +334,8 @@ impl NovaFrameUpload {
                     if count > 0 {
                         self.batches
                             .push(NovaUploadedBatch::BackdropBlurs { first, count });
+                        summary.backdrop_blur_count =
+                            summary.backdrop_blur_count.saturating_add(count);
                     }
                 }
                 PreparedSceneBatch::GpuMeshes3d(group) => {

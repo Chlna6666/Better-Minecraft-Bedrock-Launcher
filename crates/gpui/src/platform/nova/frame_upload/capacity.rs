@@ -98,6 +98,51 @@ impl NovaFrameUpload {
             .saturating_add(self.animation_values.len())
             .saturating_add(self.custom_mesh_3d_parameters.len())
     }
+
+    pub(in crate::platform::nova) fn upload_breakdown(
+        &self,
+    ) -> crate::diagnostics::performance_metrics::FrameUploadBreakdown {
+        crate::diagnostics::performance_metrics::FrameUploadBreakdown {
+            encoded_primitives: self.encoded_primitive_count(),
+            encoded_batches: self.batches.len(),
+            quad_bytes: self.quads.len(),
+            shadow_bytes: self.shadows.len(),
+            path_bytes: self
+                .path_rasterization_vertices
+                .len()
+                .saturating_add(self.path_sprites.len()),
+            mono_sprite_bytes: self.mono_sprites.len(),
+            poly_sprite_bytes: self.poly_sprites.len(),
+            underline_bytes: self.underlines.len(),
+            backdrop_blur_bytes: self
+                .backdrop_blur_passes
+                .len()
+                .saturating_add(self.backdrop_blurs.len()),
+            animation_bytes: self
+                .animation_bindings
+                .len()
+                .saturating_add(self.animation_values.len()),
+            custom_mesh_parameter_bytes: self.custom_mesh_3d_parameters.len(),
+        }
+    }
+
+    fn encoded_primitive_count(&self) -> usize {
+        [
+            packed_item_count(&self.quads, PACKED_QUAD_BYTES),
+            packed_item_count(&self.shadows, PACKED_SHADOW_BYTES),
+            packed_item_count(&self.path_sprites, PACKED_PATH_SPRITE_BYTES),
+            packed_item_count(&self.mono_sprites, PACKED_MONO_SPRITE_BYTES),
+            packed_item_count(&self.poly_sprites, PACKED_POLY_SPRITE_BYTES),
+            packed_item_count(&self.underlines, PACKED_UNDERLINE_BYTES),
+            packed_item_count(&self.backdrop_blurs, PACKED_BACKDROP_BLUR_BYTES),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
+    }
+}
+
+fn packed_item_count(bytes: &[u8], stride: usize) -> usize {
+    bytes.len().checked_div(stride).unwrap_or(0)
 }
 
 fn trim_upload_vec<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {

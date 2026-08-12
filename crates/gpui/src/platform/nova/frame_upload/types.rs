@@ -76,6 +76,7 @@ pub(in crate::platform::nova) struct FrameUploadSummary {
     pub(in crate::platform::nova) mono_sprite_count: u32,
     pub(in crate::platform::nova) poly_sprite_count: u32,
     pub(in crate::platform::nova) underline_count: u32,
+    pub(in crate::platform::nova) backdrop_blur_count: u32,
     pub(in crate::platform::nova) unsupported_batches: UnsupportedBatchSummary,
 }
 
