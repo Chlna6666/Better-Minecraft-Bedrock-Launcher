@@ -812,6 +812,17 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         }
     }
     publish_startup_output.store(false, Ordering::Release);
+    let session = crate::core::version::game_info::GameSession::start(
+        PathBuf::from(request.package_folder.as_ref()),
+        process_id,
+    )
+    .await
+    .map_err(|error| {
+        append_task_log(task_id, format!("记录游戏启动统计失败：{error}"));
+        error
+    })
+    .ok()
+    .flatten();
     spawn_process_monitor(
         task_id.to_string(),
         child,
@@ -819,6 +830,7 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
         stderr_pump,
         recent_output,
         launch_auth,
+        session,
     );
     update_progress(task_id, 1, Some(LAUNCH_TOTAL_STEPS), Some("launching"));
     update_progress(task_id, 0, Some(LAUNCH_TOTAL_STEPS), Some("running_game"));
@@ -2056,11 +2068,27 @@ fn spawn_process_monitor(
     stderr_pump: Option<tokio::task::JoinHandle<()>>,
     recent_output: Arc<Mutex<VecDeque<String>>>,
     _launch_auth: Option<crate::core::bedrock_auth::PreparedLaunchAuth>,
+    mut session: Option<crate::core::version::game_info::GameSession>,
 ) {
     let task_id_for_monitor = task_id.clone();
     if let Err(error) = crate::tasks::runtime::spawn_io(async move {
         let task_id = task_id_for_monitor;
-        match child.wait().await {
+        let mut checkpoint = tokio::time::interval(Duration::from_secs(5 * 60));
+        checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        checkpoint.tick().await;
+        let process_status = loop {
+            tokio::select! {
+                status = child.wait() => break status,
+                _ = checkpoint.tick() => {
+                    if let Some(session) = session.as_mut()
+                        && let Err(error) = session.checkpoint().await
+                    {
+                        append_task_log(&task_id, format!("定时保存游戏时间失败：{error}"));
+                    }
+                }
+            }
+        };
+        match process_status {
             Ok(status) => {
                 finish_output_pumps(&task_id, stdout_pump, stderr_pump).await;
                 if !status.success() {
@@ -2079,6 +2107,11 @@ fn spawn_process_monitor(
                 warn!(task_id, %error, "failed to wait for compatibility runner process");
             }
         };
+        if let Some(session) = session
+            && let Err(error) = session.finish().await
+        {
+            append_task_log(&task_id, format!("保存游戏时间失败：{error}"));
+        }
     }) {
         warn!(task_id, %error, "failed to schedule compatibility process monitor");
     }

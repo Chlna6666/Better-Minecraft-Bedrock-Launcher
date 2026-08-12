@@ -18,7 +18,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    CREATE_NO_WINDOW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    CREATE_NO_WINDOW, INFINITE, OpenProcess, PROCESS_ACCESS_RIGHTS,
+    PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::{
     ACTIVATEOPTIONS, ApplicationActivationManager, IApplicationActivationManager,
@@ -160,6 +161,23 @@ pub async fn wait_for_uwp_pid(target_exe: &str, package_family_name: &str) -> Op
     }
 
     None
+}
+
+pub async fn wait_for_process_exit(process_id: u32) -> Result<(), String> {
+    crate::tasks::runtime::run_io_blocking(move || unsafe {
+        const SYNCHRONIZE_ACCESS: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+        let process = OpenProcess(SYNCHRONIZE_ACCESS, false, process_id)
+            .map_err(|error| format!("无法打开游戏进程 {process_id}：{error}"))?;
+        let wait_result = WaitForSingleObject(process, INFINITE);
+        CloseHandle(process)
+            .map_err(|error| format!("无法关闭游戏进程句柄 {process_id}：{error}"))?;
+        if wait_result == windows::Win32::Foundation::WAIT_FAILED {
+            return Err(format!("等待游戏进程 {process_id} 退出失败"));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("等待游戏进程任务失败：{error}"))?
 }
 
 // =================================================================================

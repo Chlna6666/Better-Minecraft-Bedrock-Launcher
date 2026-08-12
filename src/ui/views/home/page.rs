@@ -1,6 +1,4 @@
-use crate::core::version::launch_versions::{
-    LaunchVersionEntry, sort_launch_versions, sort_versions_by_launch_counts,
-};
+use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
 use crate::plugins::events::{
     CompactBehavior, InjectionLayout, InjectionSlot, PluginInjectionRegistration,
 };
@@ -12,7 +10,7 @@ use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::hooks::use_launcher::{LaunchVersionDescriptor, start_launcher};
 use crate::ui::hooks::use_local_versions::{
     LocalVersionsSnapshot, launch_version_icon_path, read_local_versions_snapshot,
-    use_local_versions,
+    use_local_versions, version_channel_label,
 };
 use crate::ui::navigation::{AppRoute, set_route};
 use crate::ui::state::i18n::I18n;
@@ -23,7 +21,6 @@ use gpui::*;
 use gpui_hooks::{hook_element, hook_render};
 use lucide_gpui::icons as lucide_icons;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::time::Instant;
 
 const TITLEBAR_TOP_OFFSET_PX: f32 = 0.0;
@@ -68,11 +65,7 @@ pub(crate) struct HomePageView {
     versions_loading: bool,
     versions_error: Option<SharedString>,
     versions: Vec<LaunchVersionEntry>,
-    launch_counts: HashMap<SharedString, u32>,
-    /// launch_counts 每次变更时递增，用于跳过未变化时的整表克隆与重排。
-    launch_counts_generation: u64,
     applied_versions_revision: Option<u64>,
-    applied_launch_counts_generation: u64,
     selected_folder: Option<SharedString>,
     dropdown_open: bool,
     /// 下拉展开进度弹簧：展开 Q 弹、收起干脆，中途切换目标不跳变。
@@ -87,9 +80,7 @@ pub(crate) struct HomePageView {
 
 impl HomePageView {
     fn apply_local_versions_snapshot(&mut self, snapshot: &LocalVersionsSnapshot) {
-        if self.applied_versions_revision == Some(snapshot.revision)
-            && self.applied_launch_counts_generation == self.launch_counts_generation
-        {
+        if self.applied_versions_revision == Some(snapshot.revision) {
             // 版本列表与启动次数都未变化时只同步轻量状态，跳过整表克隆与重排。
             self.versions_loading = snapshot.loading;
             self.versions_error = snapshot.error.clone();
@@ -100,13 +91,9 @@ impl HomePageView {
         }
 
         self.applied_versions_revision = Some(snapshot.revision);
-        self.applied_launch_counts_generation = self.launch_counts_generation;
         self.versions_loading = snapshot.loading;
         self.versions_error = snapshot.error.clone();
         self.versions = snapshot.versions.iter().cloned().collect();
-        sort_versions_by_launch_counts(&mut self.versions, |folder| {
-            self.launch_counts.get(folder).copied().unwrap_or(0)
-        });
 
         if let Some(selected) = self.selected_folder.clone() {
             let exists = self
@@ -158,10 +145,7 @@ impl HomePageView {
             versions_loading,
             versions_error,
             versions,
-            launch_counts: HashMap::new(),
-            launch_counts_generation: 0,
             applied_versions_revision: None,
-            applied_launch_counts_generation: 0,
             selected_folder,
             dropdown_open: false,
             dropdown_spring: SpringValue::new(0.0).with_spring(spring_bouncy()),
@@ -369,6 +353,13 @@ impl HomePageView {
         };
         let icon =
             launch_version_icon_path(version.custom_icon_path.as_deref(), version.name.as_ref());
+        let is_preview = version.name.contains("Preview") || version.name.contains("Beta");
+        let channel_label = version_channel_label(cx.global::<I18n>(), version.name.as_ref());
+        let channel_color = if is_preview {
+            theme_colors.danger
+        } else {
+            theme_colors.accent
+        };
 
         div()
             .id(SharedString::from(format!("home-version-item-{index}")))
@@ -438,6 +429,20 @@ impl HomePageView {
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(kind_fg)
                                     .child(kind_label_text),
+                            )
+                            .child(
+                                div()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(crate::ui::theme::tokens::radius::XS))
+                                    .bg(Hsla {
+                                        a: 0.14,
+                                        ..channel_color
+                                    })
+                                    .text_size(px(10.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(channel_color)
+                                    .child(channel_label),
                             ),
                     ),
             )
@@ -541,22 +546,13 @@ impl HomePageView {
             .active(|style| style.scale(0.985).opacity(0.9))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
+                cx.listener(move |_this, _event, _window, cx| {
                     if let Some(version) = selected_version.clone() {
                         let _ = start_launcher(version, cx);
                     } else {
                         set_route(cx, AppRoute::Download);
                     }
 
-                    if let Some(selected) = this.selected_folder.clone() {
-                        let next = this.launch_counts.get(&selected).copied().unwrap_or(0) + 1;
-                        this.launch_counts.insert(selected, next);
-                        this.launch_counts_generation =
-                            this.launch_counts_generation.wrapping_add(1);
-                        sort_versions_by_launch_counts(&mut this.versions, |folder| {
-                            this.launch_counts.get(folder).copied().unwrap_or(0)
-                        });
-                    }
                     cx.notify();
                 }),
             )

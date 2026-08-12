@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::core::minecraft::paths::{BuildType, Edition, GamePathOptions, get_game_root};
 use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
+use crate::ui::state::i18n::I18n;
 use crate::ui::state::local_versions::LocalVersionsState;
 use crate::ui::views::manage::state::{ManagePageState, ManagedModLoader, ManagedVersionEntry};
 
@@ -54,6 +55,27 @@ pub fn launch_version_icon_path(custom_icon_path: Option<&str>, name: &str) -> L
     })
 }
 
+pub fn game_info_summary(
+    info: &crate::core::version::game_info::GameInfo,
+    i18n: &I18n,
+) -> SharedString {
+    let duration = if info.total_play_time >= 3_600 {
+        let hours = format!("{:.1}", info.total_play_time as f64 / 3_600.0);
+        i18n.t_args("game_info.hours", crate::i18n_args![("hours", &hours)])
+    } else {
+        let minutes = (info.total_play_time / 60).to_string();
+        i18n.t_args(
+            "game_info.minutes",
+            crate::i18n_args![("minutes", &minutes)],
+        )
+    };
+    let sessions = info.total_sessions.to_string();
+    i18n.t_args(
+        "game_info.summary",
+        crate::i18n_args![("sessions", &sessions), ("duration", &duration)],
+    )
+}
+
 pub fn read_local_versions_snapshot(cx: &App) -> LocalVersionsSnapshot {
     cx.read_global(|state: &LocalVersionsState, _cx| LocalVersionsSnapshot {
         revision: state.snapshot_revision,
@@ -90,6 +112,7 @@ fn managed_versions_from_local_versions(state: &LocalVersionsSnapshot) -> Vec<Ma
                     })
                     .collect::<Vec<_>>(),
             ),
+            game_info: version.game_info.clone(),
         })
         .collect()
 }
@@ -353,6 +376,16 @@ pub fn version_edition(version: &LaunchVersionEntry) -> Edition {
         Edition::Preview
     } else {
         Edition::Release
+    }
+}
+
+pub fn version_channel_label(i18n: &I18n, name: &str) -> SharedString {
+    if name.contains("Beta") {
+        i18n.t("common.beta")
+    } else if name.contains("Preview") {
+        i18n.t("common.preview")
+    } else {
+        i18n.t("common.release")
     }
 }
 

@@ -188,6 +188,7 @@ fn read_appx_version_entry(entry: DirEntry, root: &Path) -> Option<LaunchVersion
         mod_loaders: Arc::from(
             crate::core::minecraft::mod_loaders::detect_installed_mod_loaders(&path),
         ),
+        game_info: Default::default(),
     })
 }
 

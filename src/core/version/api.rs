@@ -1,18 +1,35 @@
 use anyhow::{Context as _, Result};
 use std::fs;
+use std::path::Path;
 use std::time::Instant;
 use tracing::{debug, error};
 
-use crate::core::version::launch_versions::LaunchVersionEntry;
+use crate::core::version::launch_versions::{LaunchVersionEntry, sort_launch_versions};
 use crate::core::version::version_manager::get_appx_version_list_blocking;
 use crate::utils::file_ops;
 
 pub async fn get_version_list() -> Result<Vec<LaunchVersionEntry>> {
     let path = file_ops::bmcbl_subdir("versions");
     anyhow::ensure!(path.as_os_str().len() > 0, "invalid versions folder path");
-    crate::tasks::runtime::run_cpu(move || get_appx_version_list_blocking(&path))
+    let versions = crate::tasks::runtime::run_cpu(move || get_appx_version_list_blocking(&path))
         .await
-        .map_err(anyhow::Error::msg)?
+        .map_err(anyhow::Error::msg)??;
+    crate::tasks::runtime::run_io_blocking(move || {
+        let mut versions = versions;
+        for version in &mut versions {
+            match crate::core::version::game_info::load_game_info(Path::new(version.path.as_ref())) {
+                Ok(game_info) => version.game_info = game_info,
+                Err(error) => {
+                    tracing::warn!(folder = %version.folder, %error, "failed to load game statistics");
+                }
+            }
+        }
+        sort_launch_versions(&mut versions);
+        Ok::<_, String>(versions)
+    })
+    .await
+    .map_err(anyhow::Error::msg)?
+    .map_err(anyhow::Error::msg)
 }
 
 pub async fn delete_version(folder_name: &str) -> Result<()> {

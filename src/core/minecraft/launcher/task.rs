@@ -11,7 +11,9 @@ use crate::core::inject::pe::{
 use crate::core::minecraft::appx::register::register_appx_package_async;
 use crate::core::minecraft::appx::remove::remove_package;
 use crate::core::minecraft::appx::utils::{get_manifest_identity, get_package_info};
-use crate::core::minecraft::launcher::start::{launch_uwp_command_only, wait_for_uwp_pid};
+use crate::core::minecraft::launcher::start::{
+    launch_uwp_command_only, wait_for_process_exit, wait_for_uwp_pid,
+};
 use crate::core::minecraft::mod_manager::load_mods_config;
 use crate::core::minecraft::mouse_lock::start_window_monitor;
 use crate::core::minecraft::uwp_minimize_fix::enable_debugging_for_package;
@@ -36,6 +38,7 @@ use windows::core::HSTRING;
 use crate::utils::file_ops;
 
 const LAUNCH_TOTAL_STEPS: u64 = 5;
+const GAME_INFO_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BLOADER_DEFAULT_REDIRECTION_ROOT: &str = "Minecraft Bedrock";
 const LAUNCHER_TASK_STAGE_LABELS: [(&str, &str); 5] = [
     ("parsing", "解析中"),
@@ -112,6 +115,48 @@ pub fn start_launch_task(request: LaunchRequest) -> String {
         let result = launch_game(&request, &task_id_for_task).await;
         match result {
             Ok(Some(pid)) => {
+                let session = crate::core::version::game_info::GameSession::start(
+                    PathBuf::from(request.package_folder.as_ref()),
+                    pid,
+                )
+                .await;
+                let session = match session {
+                    Ok(session) => session,
+                    Err(error) => {
+                        append_log(&task_id_for_task, format!("记录游戏启动统计失败：{error}"));
+                        None
+                    }
+                };
+                if let Some(mut session) = session {
+                    let monitor_task_id = task_id_for_task.clone();
+                    if let Err(error) = crate::tasks::runtime::spawn_io(async move {
+                        let process_exit = wait_for_process_exit(pid);
+                        tokio::pin!(process_exit);
+                        let mut checkpoint = tokio::time::interval(GAME_INFO_CHECKPOINT_INTERVAL);
+                        checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        checkpoint.tick().await;
+                        loop {
+                            tokio::select! {
+                                result = &mut process_exit => {
+                                    if let Err(error) = result {
+                                        append_log(&monitor_task_id, format!("等待游戏退出失败：{error}"));
+                                    }
+                                    break;
+                                }
+                                _ = checkpoint.tick() => {
+                                    if let Err(error) = session.checkpoint().await {
+                                        append_log(&monitor_task_id, format!("定时保存游戏时间失败：{error}"));
+                                    }
+                                }
+                            }
+                        }
+                        if let Err(error) = session.finish().await {
+                            append_log(&monitor_task_id, format!("保存游戏时间失败：{error}"));
+                        }
+                    }) {
+                        append_log(&task_id_for_task, format!("无法调度游戏时间统计：{error}"));
+                    }
+                }
                 info!(
                     task_id = %task_id_for_task,
                     pid,
@@ -714,7 +759,9 @@ async fn launch_game(request: &LaunchRequest, task_id: &str) -> Result<Option<u3
                     warn!(task_id = %task_id, pid, error = %error, "Windows Terminal Host 绑定 Minecraft 失败");
                     append_log(
                         task_id,
-                        format!("Windows Terminal Host 绑定失败，BLoader 将自行回退控制台：{error}"),
+                        format!(
+                            "Windows Terminal Host 绑定失败，BLoader 将自行回退控制台：{error}"
+                        ),
                     );
                 }
             }

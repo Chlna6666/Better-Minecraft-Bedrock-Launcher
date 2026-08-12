@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use crate::core::minecraft::mod_loaders::InstalledModLoader;
+use crate::core::version::game_info::GameInfo;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LaunchVersionEntry {
@@ -13,6 +14,7 @@ pub(crate) struct LaunchVersionEntry {
     pub(crate) kind: Arc<str>,
     pub(crate) custom_icon_path: Option<Arc<str>>,
     pub(crate) mod_loaders: Arc<[InstalledModLoader]>,
+    pub(crate) game_info: GameInfo,
 }
 
 fn next_version_number(version: &str, cursor: &mut usize) -> Option<u64> {
@@ -73,20 +75,47 @@ pub(crate) fn compare_versions_desc(left: &str, right: &str) -> Ordering {
 
 pub(crate) fn sort_launch_versions(versions: &mut [LaunchVersionEntry]) {
     versions.sort_by(|left, right| {
-        compare_versions_desc(left.version.as_ref(), right.version.as_ref())
+        right
+            .game_info
+            .total_sessions
+            .cmp(&left.game_info.total_sessions)
+            .then_with(|| compare_versions_desc(left.version.as_ref(), right.version.as_ref()))
+            .then_with(|| left.folder.cmp(&right.folder))
     });
 }
 
-pub(crate) fn sort_versions_by_launch_counts(
-    versions: &mut [LaunchVersionEntry],
-    launch_count_of: impl Fn(&str) -> u32,
-) {
-    versions.sort_by(|left, right| {
-        let left_count = launch_count_of(left.folder.as_ref());
-        let right_count = launch_count_of(right.folder.as_ref());
-        match right_count.cmp(&left_count) {
-            Ordering::Equal => compare_versions_desc(left.version.as_ref(), right.version.as_ref()),
-            other => other,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version(folder: &str, game_version: &str, sessions: u64) -> LaunchVersionEntry {
+        LaunchVersionEntry {
+            folder: Arc::from(folder),
+            name: Arc::from(folder),
+            version: Arc::from(game_version),
+            manifest_version: Arc::from(game_version),
+            path: Arc::from(folder),
+            kind: Arc::from("Release"),
+            custom_icon_path: None,
+            mod_loaders: Arc::from([]),
+            game_info: GameInfo {
+                total_sessions: sessions,
+                ..GameInfo::default()
+            },
         }
-    });
+    }
+
+    #[test]
+    fn sessions_take_priority_over_version() {
+        let mut versions = vec![version("new", "1.21.0", 1), version("old", "1.20.0", 3)];
+        sort_launch_versions(&mut versions);
+        assert_eq!(versions[0].folder.as_ref(), "old");
+    }
+
+    #[test]
+    fn zero_statistics_use_default_version_order() {
+        let mut versions = vec![version("old", "1.20.0", 0), version("new", "1.21.0", 0)];
+        sort_launch_versions(&mut versions);
+        assert_eq!(versions[0].folder.as_ref(), "new");
+    }
 }
