@@ -57,8 +57,10 @@ jobs:
         shell: pwsh
         run: ./scripts/check_gpui_layout.ps1
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
 
       - name: Prepare Windows native toolchain
         shell: pwsh
@@ -119,8 +121,10 @@ jobs:
       - name: Install Linux build and packaging dependencies
         run: ./scripts/setup-linux-release.sh
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust 1.95
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
 
       - name: Restore Cargo cache
         uses: actions/cache@v5
