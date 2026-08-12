@@ -7,6 +7,7 @@ use crate::ui::components::input::InputState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManageTab {
+    Statistics,
     Mod,
     ResourcePack,
     SkinPack,
@@ -384,6 +385,7 @@ pub struct ManagedVersionEntry {
     pub kind: SharedString,
     pub icon_path: Option<SharedString>,
     pub mod_loaders: Arc<[ManagedModLoader]>,
+    pub game_info: crate::core::version::game_info::GameInfo,
 }
 
 impl ManagedVersionEntry {

@@ -351,6 +351,17 @@ impl ManagePageView {
                             .is_some_and(|folder| folder == &version.folder);
                         let folder = version.folder.clone();
                         let version_badge = if version.is_gdk() { "GDK" } else { "UWP" };
+                        let is_preview = version.is_preview();
+                        let channel_label =
+                            crate::ui::hooks::use_local_versions::version_channel_label(
+                                cx.global::<I18n>(),
+                                version.name.as_ref(),
+                            );
+                        let channel_color = if is_preview {
+                            colors.danger
+                        } else {
+                            colors.accent
+                        };
                         let icon = launch_version_icon_path(
                             version
                                 .icon_path
@@ -481,12 +492,46 @@ impl ManagePageView {
                                                     .gap(px(2.))
                                                     .child(
                                                         div()
-                                                            .text_size(px(14.))
-                                                            .font_weight(FontWeight::BOLD)
-                                                            .text_color(colors.text_primary)
+                                                            .w_full()
+                                                            .min_w(px(0.))
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(6.))
                                                             .overflow_hidden()
-                                                            .text_ellipsis()
-                                                            .child(version.folder.clone()),
+                                                            .child(
+                                                                div()
+                                                                    .flex_1()
+                                                                    .min_w(px(0.))
+                                                                    .text_size(px(14.))
+                                                                    .font_weight(FontWeight::BOLD)
+                                                                    .text_color(colors.text_primary)
+                                                                    .overflow_hidden()
+                                                                    .text_ellipsis()
+                                                                    .child(version.folder.clone()),
+                                                            )
+                                                            .when(
+                                                                !version.mod_loaders.is_empty(),
+                                                                |this| {
+                                                                    this.child(
+                                                                        div()
+                                                                            .flex_none()
+                                                                            .max_w(px(118.))
+                                                                            .overflow_hidden()
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap(px(4.))
+                                                                            .children(
+                                                                                version.mod_loaders.iter().map(
+                                                                                    |loader| {
+                                                                                        render_mod_loader_badge(
+                                                                                            colors, loader, true,
+                                                                                        )
+                                                                                    },
+                                                                                ),
+                                                                            ),
+                                                                    )
+                                                                },
+                                                            ),
                                                     )
                                                     .child(
                                                         div()
@@ -520,28 +565,20 @@ impl ManagePageView {
                                                                     .text_color(badge_fg)
                                                                     .child(version_badge),
                                                             )
-                                                            .when(
-                                                                !version.mod_loaders.is_empty(),
-                                                                |this| {
-                                                                    this.child(
-                                                                        div()
-                                                                            .flex_1()
-                                                                            .min_w(px(0.))
-                                                                            .overflow_hidden()
-                                                                            .flex()
-                                                                            .items_center()
-                                                                            .gap(px(4.))
-                                                                            .children(
-                                                                                version.mod_loaders.iter().map(
-                                                                                    |loader| {
-                                                                                        render_mod_loader_badge(
-                                                                                            colors, loader, true,
-                                                                                        )
-                                                                                    },
-                                                                                ),
-                                                                            ),
-                                                                    )
-                                                                },
+                                                            .child(
+                                                                div()
+                                                                    .flex_none()
+                                                                    .px(px(5.))
+                                                                    .py(px(1.))
+                                                                    .rounded(px(crate::ui::theme::tokens::radius::XS))
+                                                                    .bg(Hsla {
+                                                                        a: 0.14,
+                                                                        ..channel_color
+                                                                    })
+                                                                    .text_size(px(9.))
+                                                                    .font_weight(FontWeight::BOLD)
+                                                                    .text_color(channel_color)
+                                                                    .child(channel_label),
                                                             ),
                                                     ),
                                             ),
@@ -626,6 +663,7 @@ impl ManagePageView {
         let filtered_screenshots = self.screenshot_list_cache.filtered_indices();
         let filtered_servers = self.server_list_cache.filtered_indices();
         let active_count = match state.tab {
+            ManageTab::Statistics => 0,
             ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
                 filtered_assets.len()
             }
@@ -662,12 +700,13 @@ impl ManagePageView {
             1.0
         };
         let tab_idx = |t: ManageTab| match t {
-            ManageTab::Mod => 0i32,
-            ManageTab::ResourcePack => 1i32,
-            ManageTab::SkinPack => 2i32,
-            ManageTab::Map => 3i32,
-            ManageTab::Screenshot => 4i32,
-            ManageTab::Server => 5i32,
+            ManageTab::Statistics => 0i32,
+            ManageTab::Mod => 1i32,
+            ManageTab::ResourcePack => 2i32,
+            ManageTab::SkinPack => 3i32,
+            ManageTab::Map => 4i32,
+            ManageTab::Screenshot => 5i32,
+            ManageTab::Server => 6i32,
         };
         let tab_from = self.tab_anim_from.unwrap_or(ManageTab::Mod);
         let slide_direction = (tab_idx(state.tab) - tab_idx(tab_from)).signum() as f32;
@@ -812,42 +851,51 @@ impl ManagePageView {
                             .items_center()
                             .justify_between()
                             .gap(px(12.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(10.))
-                                    .when(state.tab == ManageTab::ResourcePack, |this| {
-                                        this.child(render_pack_subtype_switch(colors, state, cx))
-                                    })
-                                    .when(should_render_gdk_dropdown(state, version), |this| {
-                                        this.child(render_gdk_dropdown(colors, state, cx))
-                                    })
-                                    .child(
-                                        match state.tab {
-                                            ManageTab::Mod
-                                            | ManageTab::ResourcePack
-                                            | ManageTab::SkinPack
-                                            | ManageTab::Map => self.asset_search_input.as_ref(),
-                                            ManageTab::Screenshot => {
-                                                self.screenshot_search_input.as_ref()
+                            .when(state.tab != ManageTab::Statistics, |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .when(state.tab == ManageTab::ResourcePack, |this| {
+                                            this.child(render_pack_subtype_switch(
+                                                colors, state, cx,
+                                            ))
+                                        })
+                                        .when(should_render_gdk_dropdown(state, version), |this| {
+                                            this.child(render_gdk_dropdown(colors, state, cx))
+                                        })
+                                        .child(
+                                            match state.tab {
+                                                ManageTab::Statistics => None,
+                                                ManageTab::Mod
+                                                | ManageTab::ResourcePack
+                                                | ManageTab::SkinPack
+                                                | ManageTab::Map => {
+                                                    self.asset_search_input.as_ref()
+                                                }
+                                                ManageTab::Screenshot => {
+                                                    self.screenshot_search_input.as_ref()
+                                                }
+                                                ManageTab::Server => {
+                                                    self.server_search_input.as_ref()
+                                                }
                                             }
-                                            ManageTab::Server => self.server_search_input.as_ref(),
-                                        }
-                                        .map_or_else(
-                                            || div().w(px(144.)).h(px(32.)).into_any_element(),
-                                            |input| {
-                                                div()
-                                                    .w(px(144.))
-                                                    .child(render_toolbar_search_input(
-                                                        input, colors,
-                                                    ))
-                                                    .into_any_element()
-                                            },
-                                        ),
-                                    )
-                                    .child(subtle_badge(colors, format!("{active_count} 项"))),
-                            )
+                                            .map_or_else(
+                                                || div().w(px(144.)).h(px(32.)).into_any_element(),
+                                                |input| {
+                                                    div()
+                                                        .w(px(144.))
+                                                        .child(render_toolbar_search_input(
+                                                            input, colors,
+                                                        ))
+                                                        .into_any_element()
+                                                },
+                                            ),
+                                        )
+                                        .child(subtle_badge(colors, format!("{active_count} 项"))),
+                                )
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -873,6 +921,9 @@ impl ManagePageView {
                                 .into_any_element()
                             } else {
                                 match state.tab {
+                                    ManageTab::Statistics => {
+                                        render_statistics_tab(colors, version, cx)
+                                    }
                                     ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => {
                                         render_asset_list(
                                             colors,

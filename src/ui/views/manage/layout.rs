@@ -43,7 +43,6 @@ pub(super) fn render_version_header(
                 .iter()
                 .map(|loader| render_mod_loader_badge(colors, loader, false)),
         );
-
     let mut status_badges = div().flex().items_center().gap(px(8.)).flex_wrap();
     let mut has_status_badges = false;
 
@@ -154,6 +153,20 @@ pub(super) fn render_tab_bar(
     UnderlineTabs::new(
         colors,
         vec![
+            TabItem::new(
+                "manage-tab-statistics",
+                "统计",
+                state.tab == ManageTab::Statistics,
+                {
+                    let view_handle = view_handle.clone();
+                    move |_window, cx| {
+                        let _ = view_handle.update(cx, |this, cx| {
+                            this.set_tab(ManageTab::Statistics, cx);
+                        });
+                    }
+                },
+            )
+            .icon(lucide_icons::icon_activity()),
             TabItem::new("manage-tab-mod", "Mod", state.tab == ManageTab::Mod, {
                 let view_handle = view_handle.clone();
                 move |_window, cx| {
@@ -521,6 +534,7 @@ pub(super) fn render_active_toolbar_actions(
     cx: &mut Context<ManagePageView>,
 ) -> Vec<AnyElement> {
     match state.tab {
+        ManageTab::Statistics => Vec::new(),
         ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
             vec![
                 render_sort_controls(colors, state, cx),

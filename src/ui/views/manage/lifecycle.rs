@@ -439,6 +439,7 @@ impl ManagePageView {
         }
 
         match tab {
+            ManageTab::Statistics => {}
             ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
                 let assets_signature = AssetsLoadSignature {
                     folder: selected_version.folder.clone(),
@@ -660,7 +661,10 @@ impl ManagePageView {
                     state.server_motd_request_id = state.server_motd_request_id.wrapping_add(1);
                 });
             }
-            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack => {}
+            ManageTab::Statistics
+            | ManageTab::Mod
+            | ManageTab::ResourcePack
+            | ManageTab::SkinPack => {}
         }
         cx.notify();
     }

@@ -142,7 +142,7 @@ impl ManagePageView {
             ManageTab::ResourcePack => ("Packs", &["mcpack", "mcaddon", "mctemplate", "zip"]),
             ManageTab::SkinPack => ("Skin Packs", &["mcpack", "mcaddon", "zip"]),
             ManageTab::Map => ("Maps", &["mcworld", "mctemplate", "zip"]),
-            ManageTab::Screenshot | ManageTab::Server => return,
+            ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => return,
         };
 
         window.defer(cx, move |_window, cx| {
@@ -184,7 +184,9 @@ impl ManagePageView {
                                 )
                             })
                         }
-                        ManageTab::Screenshot | ManageTab::Server => Ok(String::new()),
+                        ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => {
+                            Ok(String::new())
+                        }
                     }
                     .map_err(anyhow::Error::msg)
                 })
@@ -724,6 +726,7 @@ pub(super) fn render_asset_list(
             ManageTab::ResourcePack => ("没有资源包", "支持导入 mcpack、mcaddon、zip。"),
             ManageTab::SkinPack => ("没有皮肤包", "支持导入 mcpack、mcaddon、zip。"),
             ManageTab::Map => ("没有地图", "支持导入 mcworld、mctemplate、zip。"),
+            ManageTab::Statistics => ("没有统计", "游戏统计会显示在这里。"),
             ManageTab::Screenshot => ("没有截图", "游戏截图会显示在这里。"),
             ManageTab::Server => ("没有服务器", "添加服务器后会显示在这里。"),
         };

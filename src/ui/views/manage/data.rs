@@ -127,7 +127,7 @@ pub async fn load_assets(
         }
         ManageTab::SkinPack => load_skin_pack_assets(version, config, locale_code).await,
         ManageTab::Map => load_map_assets(version, config, selected_gdk_user).await,
-        ManageTab::Screenshot | ManageTab::Server => Ok(Vec::new()),
+        ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => Ok(Vec::new()),
     }
 }
 
@@ -152,7 +152,7 @@ pub async fn delete_assets(
                     ManagePackSubtype::Behavior => "behaviorPacks",
                 },
                 ManageTab::Mod => unreachable!(),
-                ManageTab::Screenshot | ManageTab::Server => unreachable!(),
+                ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => unreachable!(),
             };
 
             for folder_name in folder_names {
@@ -169,7 +169,7 @@ pub async fn delete_assets(
             }
             Ok(())
         }
-        ManageTab::Screenshot | ManageTab::Server => Ok(()),
+        ManageTab::Statistics | ManageTab::Screenshot | ManageTab::Server => Ok(()),
     }
 }
 

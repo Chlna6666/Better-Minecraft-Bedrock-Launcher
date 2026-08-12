@@ -177,7 +177,8 @@ impl ManagePageView {
                     state.asset_sort_key = ManageAssetSortKey::Date;
                     state.asset_sort_desc = true;
                 }
-                ManageTab::Mod
+                ManageTab::Statistics
+                | ManageTab::Mod
                 | ManageTab::ResourcePack
                 | ManageTab::SkinPack
                 | ManageTab::Server => {
