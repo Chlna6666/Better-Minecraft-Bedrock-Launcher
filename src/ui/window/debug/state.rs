@@ -61,6 +61,17 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_gpu_surface_alpha_mode: SharedString,
     pub gpui_gpu_surface_present_mode: SharedString,
     pub gpui_upload_bytes: usize,
+    pub gpui_encoded_scene_primitives: usize,
+    pub gpui_encoded_scene_batches: usize,
+    pub gpui_quad_upload_bytes: usize,
+    pub gpui_shadow_upload_bytes: usize,
+    pub gpui_path_upload_bytes: usize,
+    pub gpui_mono_sprite_upload_bytes: usize,
+    pub gpui_poly_sprite_upload_bytes: usize,
+    pub gpui_underline_upload_bytes: usize,
+    pub gpui_backdrop_blur_upload_bytes: usize,
+    pub gpui_animation_upload_bytes: usize,
+    pub gpui_custom_mesh_parameter_upload_bytes: usize,
     pub gpui_pod_upload_bytes: usize,
     pub gpui_mask_pass_count: usize,
     pub gpui_main_pass_count: usize,
@@ -68,6 +79,13 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_gpu_surface_reconfigure_count: usize,
     pub gpui_gpu_surface_error_count: usize,
     pub gpui_retained_present_count: usize,
+    pub gpui_direct_present_count: usize,
+    pub gpui_backdrop_blur_frame_count: usize,
+    pub gpui_retained_copy_pixels: usize,
+    pub gpui_retained_copy_estimated_bytes: usize,
+    pub gpui_backdrop_blur_source_pixels: usize,
+    pub gpui_backdrop_blur_target_pixels: usize,
+    pub gpui_backdrop_blur_level_pixels: [usize; 6],
     pub gpui_image_decode_compressed_bytes: usize,
     pub gpui_image_decode_decoded_bytes: usize,
     pub gpui_image_decode_frames: usize,
@@ -444,7 +462,7 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
     snapshot.gpui_image_cache_items = gpui_metrics.image_cache_items;
     snapshot.gpui_image_cache_bytes = gpui_metrics.image_cache_bytes;
     snapshot.gpui_atlas_textures = gpui_metrics.atlas_textures;
-    snapshot.gpui_backdrop_blur_primitives = 0;
+    snapshot.gpui_backdrop_blur_primitives = gpui_metrics.backdrop_blur_primitives;
     snapshot.gpui_draw_time_ms = duration_to_ms(gpui_metrics.last_draw_time);
     snapshot.gpui_prepared_command_count = gpui_metrics.prepared_command_count;
     snapshot.gpui_gpu_surface_format = SharedString::from(gpui_metrics.gpu_surface_format);
@@ -452,6 +470,18 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
     snapshot.gpui_gpu_surface_present_mode =
         SharedString::from(gpui_metrics.gpu_surface_present_mode);
     snapshot.gpui_upload_bytes = gpui_metrics.upload_bytes;
+    snapshot.gpui_encoded_scene_primitives = gpui_metrics.encoded_scene_primitives;
+    snapshot.gpui_encoded_scene_batches = gpui_metrics.encoded_scene_batches;
+    snapshot.gpui_quad_upload_bytes = gpui_metrics.quad_upload_bytes;
+    snapshot.gpui_shadow_upload_bytes = gpui_metrics.shadow_upload_bytes;
+    snapshot.gpui_path_upload_bytes = gpui_metrics.path_upload_bytes;
+    snapshot.gpui_mono_sprite_upload_bytes = gpui_metrics.mono_sprite_upload_bytes;
+    snapshot.gpui_poly_sprite_upload_bytes = gpui_metrics.poly_sprite_upload_bytes;
+    snapshot.gpui_underline_upload_bytes = gpui_metrics.underline_upload_bytes;
+    snapshot.gpui_backdrop_blur_upload_bytes = gpui_metrics.backdrop_blur_upload_bytes;
+    snapshot.gpui_animation_upload_bytes = gpui_metrics.animation_upload_bytes;
+    snapshot.gpui_custom_mesh_parameter_upload_bytes =
+        gpui_metrics.custom_mesh_parameter_upload_bytes;
     snapshot.gpui_pod_upload_bytes = gpui_metrics.pod_upload_bytes;
     snapshot.gpui_mask_pass_count = gpui_metrics.mask_pass_count;
     snapshot.gpui_main_pass_count = gpui_metrics.main_pass_count;
@@ -459,6 +489,13 @@ pub fn snapshot_runtime_metrics() -> DebugRuntimeSnapshot {
     snapshot.gpui_gpu_surface_reconfigure_count = gpui_metrics.gpu_surface_reconfigure_count;
     snapshot.gpui_gpu_surface_error_count = gpui_metrics.gpu_surface_error_count;
     snapshot.gpui_retained_present_count = gpui_metrics.retained_present_count;
+    snapshot.gpui_direct_present_count = gpui_metrics.direct_present_count;
+    snapshot.gpui_backdrop_blur_frame_count = gpui_metrics.backdrop_blur_frame_count;
+    snapshot.gpui_retained_copy_pixels = gpui_metrics.retained_copy_pixels;
+    snapshot.gpui_retained_copy_estimated_bytes = gpui_metrics.retained_copy_estimated_bytes;
+    snapshot.gpui_backdrop_blur_source_pixels = gpui_metrics.backdrop_blur_source_pixels;
+    snapshot.gpui_backdrop_blur_target_pixels = gpui_metrics.backdrop_blur_target_pixels;
+    snapshot.gpui_backdrop_blur_level_pixels = gpui_metrics.backdrop_blur_level_pixels;
     snapshot.gpui_image_decode_compressed_bytes = gpui_metrics.last_image_decode_compressed_bytes;
     snapshot.gpui_image_decode_decoded_bytes = gpui_metrics.last_image_decode_decoded_bytes;
     snapshot.gpui_image_decode_frames = gpui_metrics.last_image_decode_frames;
@@ -659,7 +696,10 @@ impl DebugState {
         self.inspector_history.clear();
     }
 
-    pub fn sync_inspector(&mut self, inspector: DebugInspectorSnapshot) {
+    pub fn sync_inspector(&mut self, inspector: DebugInspectorSnapshot) -> bool {
+        if self.inspector == inspector {
+            return false;
+        }
         let should_record = !inspector.selected_label.is_empty()
             && self
                 .inspector_history
@@ -676,5 +716,6 @@ impl DebugState {
             }
         }
         self.inspector = inspector;
+        true
     }
 }

@@ -2266,12 +2266,14 @@ impl Render for DebugView {
                                 (
                                     SharedString::from("帧计数"),
                                     SharedString::from(format!(
-                                        "request {} / draw {} / present {} / skip {} / retained {}",
+                                        "request {} / draw {} / present {} / skip {} / direct {} / retained {} / blur {}",
                                         runtime.gpui_frame_request_count,
                                         runtime.gpui_draw_count,
                                         runtime.gpui_present_count,
                                         runtime.gpui_skip_count,
-                                        runtime.gpui_retained_present_count
+                                        runtime.gpui_direct_present_count,
+                                        runtime.gpui_retained_present_count,
+                                        runtime.gpui_backdrop_blur_frame_count
                                     )),
                                 ),
                             ],
@@ -2498,6 +2500,37 @@ impl Render for DebugView {
                                     )),
                                 ),
                                 (
+                                    SharedString::from("Scene encode"),
+                                    SharedString::from(format!(
+                                        "{} primitives / {} batches / quad {} / shadow {} / path {}",
+                                        runtime.gpui_encoded_scene_primitives,
+                                        runtime.gpui_encoded_scene_batches,
+                                        bytes_to_human(runtime.gpui_quad_upload_bytes as u64),
+                                        bytes_to_human(runtime.gpui_shadow_upload_bytes as u64),
+                                        bytes_to_human(runtime.gpui_path_upload_bytes as u64)
+                                    )),
+                                ),
+                                (
+                                    SharedString::from("Scene upload"),
+                                    SharedString::from(format!(
+                                        "mono {} / poly {} / underline {} / blur {} / animation {} / mesh params {}",
+                                        bytes_to_human(
+                                            runtime.gpui_mono_sprite_upload_bytes as u64
+                                        ),
+                                        bytes_to_human(
+                                            runtime.gpui_poly_sprite_upload_bytes as u64
+                                        ),
+                                        bytes_to_human(runtime.gpui_underline_upload_bytes as u64),
+                                        bytes_to_human(
+                                            runtime.gpui_backdrop_blur_upload_bytes as u64
+                                        ),
+                                        bytes_to_human(runtime.gpui_animation_upload_bytes as u64),
+                                        bytes_to_human(
+                                            runtime.gpui_custom_mesh_parameter_upload_bytes as u64
+                                        )
+                                    )),
+                                ),
+                                (
                                     SharedString::from("Atlas"),
                                     SharedString::from(format!(
                                         "{} textures / upload {} / {} tiles / {:.2} ms / retained {}",
@@ -2583,6 +2616,25 @@ impl Render for DebugView {
                                         runtime.gpui_mask_pass_count,
                                         runtime.gpui_main_pass_count,
                                         runtime.gpui_composite_pass_count
+                                    )),
+                                ),
+                                (
+                                    SharedString::from("Retained copy"),
+                                    SharedString::from(format!(
+                                        "{} pixels / estimated {} read+write",
+                                        runtime.gpui_retained_copy_pixels,
+                                        bytes_to_human(
+                                            runtime.gpui_retained_copy_estimated_bytes as u64
+                                        )
+                                    )),
+                                ),
+                                (
+                                    SharedString::from("Blur pixels"),
+                                    SharedString::from(format!(
+                                        "source {} / targets {} / levels {:?}",
+                                        runtime.gpui_backdrop_blur_source_pixels,
+                                        runtime.gpui_backdrop_blur_target_pixels,
+                                        runtime.gpui_backdrop_blur_level_pixels
                                     )),
                                 ),
                                 (

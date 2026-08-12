@@ -130,13 +130,7 @@ pub fn configure_devtools(cx: &mut App) {
         });
 
         cx.set_inspector_renderer(Box::new(|inspector, window, cx| {
-            let active_id = inspector.active_element_id().cloned();
-            let snapshot = snapshot_active_div_state(active_id.as_ref(), window, cx);
-            cx.update_global(|debug: &mut DebugState, _cx| {
-                debug.sync_inspector(snapshot.clone());
-            });
             let _ = inspector.render_inspector_states(window, cx);
-            cx.refresh_windows();
             Empty.into_any_element()
         }));
     }

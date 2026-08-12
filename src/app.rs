@@ -221,6 +221,9 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         gpui_tokio::init_from_handle(cx, io_handle);
         configure_runtime(cx, &bootstrap.launch_mode);
         build_app_state(cx, &bootstrap);
+        if bootstrap.debug_enabled {
+            crate::utils::gpui_debug_log::start(cx);
+        }
         start_domain_event_bridges(cx);
         crate::plugins::runtime::init(cx);
 

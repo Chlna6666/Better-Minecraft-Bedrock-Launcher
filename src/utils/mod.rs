@@ -7,6 +7,7 @@ pub mod file_ops;
 pub mod file_picker;
 pub mod font_settings;
 pub mod format_bytes;
+pub(crate) mod gpui_debug_log;
 pub(crate) mod log_manager;
 pub mod logger;
 #[cfg(target_os = "windows")]
