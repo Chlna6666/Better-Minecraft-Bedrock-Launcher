@@ -3,7 +3,7 @@ use crate::ui::state::music::{MusicDragTarget, MusicSnapshot, MusicState};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use lucide_gpui::icons as lucide_icons;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn icon_path(path: &'static str) -> Svg {
     svg().path(path)
@@ -51,6 +51,7 @@ const MINI_INLINE_EXPAND_MIN_WINDOW_WIDTH: f32 = 760.0;
 const MINI_PROGRESS_TRACK_HEIGHT: f32 = 0.8;
 const FLOATING_INSET: f32 = 18.0;
 const FLOATING_POPUP_GAP: f32 = 10.0;
+const INLINE_COLLAPSE_DELAY: Duration = Duration::from_secs(2);
 
 pub(super) struct MusicPlayerPlacement {
     pub(super) inline_left: Pixels,
@@ -401,6 +402,9 @@ pub fn render_music_player(
                         topbar.set_music_inline_expanded(true, now);
                     },
                 );
+                cx.update_global(|music: &mut MusicState, cx| {
+                    music.schedule_inline_collapse(INLINE_COLLAPSE_DELAY, cx);
+                });
                 return;
             }
 

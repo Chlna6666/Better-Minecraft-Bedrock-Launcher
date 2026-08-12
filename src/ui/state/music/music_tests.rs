@@ -17,6 +17,8 @@ impl MusicState {
             expanded_started_at: None,
             expanded_duration: Duration::from_millis(180),
             expanded_target_open: false,
+            #[cfg(target_os = "windows")]
+            inline_collapse_generation: 0,
             drag_target: None,
             drag_progress_ratio: None,
             drag_volume_ratio: None,
@@ -47,6 +49,19 @@ fn decoded_cover_result_is_used_without_png_bytes() {
     state.apply_decoded_cover_if_current(&request, Some(decoded_cover), Instant::now());
 
     assert!(state.snapshot.cover_render_image.is_some());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn inline_collapse_ignores_stale_request_generation() {
+    let mut state = MusicState::from_controller_for_test(MusicController::new());
+    let generation = state.inline_collapse_generation;
+
+    assert!(state.should_collapse_inline(generation, Instant::now()));
+
+    state.cancel_inline_collapse();
+
+    assert!(!state.should_collapse_inline(generation, Instant::now()));
 }
 
 #[test]

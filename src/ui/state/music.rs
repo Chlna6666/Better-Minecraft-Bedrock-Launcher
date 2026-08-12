@@ -26,6 +26,8 @@ pub struct MusicState {
     expanded_started_at: Option<Instant>,
     expanded_duration: Duration,
     expanded_target_open: bool,
+    #[cfg(target_os = "windows")]
+    inline_collapse_generation: u64,
     drag_target: Option<MusicDragTarget>,
     drag_progress_ratio: Option<f32>,
     drag_volume_ratio: Option<f32>,
@@ -56,6 +58,8 @@ impl Default for MusicState {
             expanded_started_at: None,
             expanded_duration: Duration::from_millis(180),
             expanded_target_open: false,
+            #[cfg(target_os = "windows")]
+            inline_collapse_generation: 0,
             drag_target: None,
             drag_progress_ratio: None,
             drag_volume_ratio: None,
@@ -515,16 +519,29 @@ impl MusicState {
     }
 
     #[cfg(target_os = "windows")]
-    fn schedule_inline_collapse_after_popup(delay: Duration, cx: &mut App) {
+    pub(crate) fn cancel_inline_collapse(&mut self) {
+        self.inline_collapse_generation = self.inline_collapse_generation.wrapping_add(1);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn should_collapse_inline(&self, generation: u64, now: Instant) -> bool {
+        self.inline_collapse_generation == generation
+            && !self.expanded_target_open()
+            && !self.popup_animating(now)
+            && self.expanded_factor(now) <= 0.001
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn schedule_inline_collapse(&mut self, delay: Duration, cx: &mut App) {
+        self.cancel_inline_collapse();
+        let generation = self.inline_collapse_generation;
         cx.spawn(async move |cx| {
             gpui::Timer::after(delay).await;
             cx.update(|cx| {
                 let now = Instant::now();
                 let should_collapse = {
                     let music = cx.global::<MusicState>();
-                    !music.expanded_target_open()
-                        && !music.popup_animating(now)
-                        && music.expanded_factor(now) <= 0.001
+                    music.should_collapse_inline(generation, now)
                 };
                 if !should_collapse {
                     return;
@@ -566,6 +583,10 @@ impl MusicState {
         } else {
             Duration::from_millis(110)
         };
+        #[cfg(target_os = "windows")]
+        if expanded {
+            self.cancel_inline_collapse();
+        }
         self.snapshot.expanded = expanded;
         self.refresh_no_cover(now, cx);
 
@@ -574,7 +595,7 @@ impl MusicState {
             // 先让 110ms 的弹窗淡出完整结束，再多留一帧余量后收回胶囊。
             // 延迟任务执行时重新确认关闭目标，快速重新打开弹窗会自动取消本次收回。
             let collapse_delay = self.expanded_duration + Duration::from_millis(24);
-            Self::schedule_inline_collapse_after_popup(collapse_delay, cx);
+            self.schedule_inline_collapse(collapse_delay, cx);
         }
     }
 
