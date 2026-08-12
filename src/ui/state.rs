@@ -11,6 +11,13 @@ pub mod linux_runtime;
 pub mod local_versions;
 #[cfg(target_os = "windows")]
 pub mod music;
+#[cfg(not(target_os = "windows"))]
+pub mod music {
+    use gpui::App;
+
+    #[inline]
+    pub(crate) fn request_library_reload(_cx: &mut App) {}
+}
 #[cfg(target_os = "windows")]
 mod music_loader;
 #[cfg(target_os = "windows")]
