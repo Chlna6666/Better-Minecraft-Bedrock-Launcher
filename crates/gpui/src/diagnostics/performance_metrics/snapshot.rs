@@ -163,6 +163,33 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         gpu_surface_alpha_mode: gpu_surface_alpha_mode,
         gpu_surface_present_mode: gpu_surface_present_mode,
         upload_bytes: shared_metrics().upload_bytes.load(Ordering::Relaxed) as usize,
+        encoded_scene_primitives: shared_metrics()
+            .encoded_scene_primitives
+            .load(Ordering::Relaxed) as usize,
+        encoded_scene_batches: shared_metrics()
+            .encoded_scene_batches
+            .load(Ordering::Relaxed) as usize,
+        quad_upload_bytes: shared_metrics().quad_upload_bytes.load(Ordering::Relaxed) as usize,
+        shadow_upload_bytes: shared_metrics().shadow_upload_bytes.load(Ordering::Relaxed) as usize,
+        path_upload_bytes: shared_metrics().path_upload_bytes.load(Ordering::Relaxed) as usize,
+        mono_sprite_upload_bytes: shared_metrics()
+            .mono_sprite_upload_bytes
+            .load(Ordering::Relaxed) as usize,
+        poly_sprite_upload_bytes: shared_metrics()
+            .poly_sprite_upload_bytes
+            .load(Ordering::Relaxed) as usize,
+        underline_upload_bytes: shared_metrics()
+            .underline_upload_bytes
+            .load(Ordering::Relaxed) as usize,
+        backdrop_blur_upload_bytes: shared_metrics()
+            .backdrop_blur_upload_bytes
+            .load(Ordering::Relaxed) as usize,
+        animation_upload_bytes: shared_metrics()
+            .animation_upload_bytes
+            .load(Ordering::Relaxed) as usize,
+        custom_mesh_parameter_upload_bytes: shared_metrics()
+            .custom_mesh_parameter_upload_bytes
+            .load(Ordering::Relaxed) as usize,
         mask_pass_count: shared_metrics().mask_pass_count.load(Ordering::Relaxed) as usize,
         main_pass_count: shared_metrics().main_pass_count.load(Ordering::Relaxed) as usize,
         composite_pass_count: shared_metrics()
@@ -176,6 +203,30 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
             .load(Ordering::Relaxed) as usize,
         retained_present_count: shared_metrics()
             .retained_present_count
+            .load(Ordering::Relaxed) as usize,
+        direct_present_count: shared_metrics()
+            .direct_present_count
+            .load(Ordering::Relaxed) as usize,
+        backdrop_blur_frame_count: shared_metrics()
+            .backdrop_blur_frame_count
+            .load(Ordering::Relaxed) as usize,
+        retained_copy_pixels: shared_metrics()
+            .retained_copy_pixels
+            .load(Ordering::Relaxed) as usize,
+        retained_copy_estimated_bytes: shared_metrics()
+            .retained_copy_estimated_bytes
+            .load(Ordering::Relaxed) as usize,
+        backdrop_blur_source_pixels: shared_metrics()
+            .backdrop_blur_source_pixels
+            .load(Ordering::Relaxed) as usize,
+        backdrop_blur_target_pixels: shared_metrics()
+            .backdrop_blur_target_pixels
+            .load(Ordering::Relaxed) as usize,
+        backdrop_blur_level_pixels: std::array::from_fn(|index| {
+            shared_metrics().backdrop_blur_level_pixels[index].load(Ordering::Relaxed) as usize
+        }),
+        backdrop_blur_primitives: shared_metrics()
+            .backdrop_blur_primitives
             .load(Ordering::Relaxed) as usize,
         gpu_submission_wait_time: (gpu_submission_wait_micros > 0)
             .then(|| Duration::from_micros(gpu_submission_wait_micros)),

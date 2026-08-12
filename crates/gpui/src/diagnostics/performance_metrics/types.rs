@@ -31,6 +31,28 @@ pub struct PerformanceMetricsSnapshot {
     pub gpu_surface_present_mode: String,
     /// Bytes uploaded during the latest renderer submission.
     pub upload_bytes: usize,
+    /// Scene primitives encoded by the latest Nova renderer submission.
+    pub encoded_scene_primitives: usize,
+    /// Prepared scene batches encoded by the latest Nova renderer submission.
+    pub encoded_scene_batches: usize,
+    /// Bytes uploaded for quad instances by the latest Nova renderer submission.
+    pub quad_upload_bytes: usize,
+    /// Bytes uploaded for shadow instances by the latest Nova renderer submission.
+    pub shadow_upload_bytes: usize,
+    /// Bytes uploaded for path geometry and sprites by the latest Nova submission.
+    pub path_upload_bytes: usize,
+    /// Bytes uploaded for monochrome sprites by the latest Nova renderer submission.
+    pub mono_sprite_upload_bytes: usize,
+    /// Bytes uploaded for polychrome sprites by the latest Nova renderer submission.
+    pub poly_sprite_upload_bytes: usize,
+    /// Bytes uploaded for underline instances by the latest Nova renderer submission.
+    pub underline_upload_bytes: usize,
+    /// Bytes uploaded for backdrop blur descriptors by the latest Nova submission.
+    pub backdrop_blur_upload_bytes: usize,
+    /// Bytes uploaded for animation bindings and values by the latest Nova submission.
+    pub animation_upload_bytes: usize,
+    /// Bytes uploaded for custom mesh parameters by the latest Nova submission.
+    pub custom_mesh_parameter_upload_bytes: usize,
     /// Number of mask passes submitted by the latest reported frame.
     pub mask_pass_count: usize,
     /// Number of main 2D passes submitted by the latest reported frame.
@@ -41,8 +63,24 @@ pub struct PerformanceMetricsSnapshot {
     pub gpu_surface_reconfigure_count: usize,
     /// Number of GPU surface acquire/present errors observed by the latest active renderer.
     pub gpu_surface_error_count: usize,
-    /// Number of retained presents completed without rebuilding layout or paint.
+    /// Number of presents that sampled the retained full-window target since process start.
     pub retained_present_count: usize,
+    /// Number of frames presented directly to the swapchain since process start.
+    pub direct_present_count: usize,
+    /// Number of frames that submitted backdrop blur work since process start.
+    pub backdrop_blur_frame_count: usize,
+    /// Full-window pixels sampled by the latest retained present copy.
+    pub retained_copy_pixels: usize,
+    /// Estimated bytes read and written by the latest retained present copy.
+    pub retained_copy_estimated_bytes: usize,
+    /// Full drawable pixels captured by the latest backdrop blur source pass.
+    pub backdrop_blur_source_pixels: usize,
+    /// Aggregate pixels across active backdrop blur target levels in the latest frame.
+    pub backdrop_blur_target_pixels: usize,
+    /// Pixels in each active backdrop blur target level in the latest frame.
+    pub backdrop_blur_level_pixels: [usize; 6],
+    /// Backdrop blur primitives encoded by the latest renderer submission.
+    pub backdrop_blur_primitives: usize,
     /// Time spent waiting for a GPU submission during the latest blocking wait.
     pub gpu_submission_wait_time: Option<Duration>,
     /// Number of blocking waits for GPU submissions since process start.

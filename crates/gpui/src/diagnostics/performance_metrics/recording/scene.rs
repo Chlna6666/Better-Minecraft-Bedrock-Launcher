@@ -3,13 +3,6 @@ use std::sync::atomic::Ordering;
 use super::super::SceneFrameMetrics;
 use super::super::state::shared_metrics;
 
-/// Records a retained scene presentation that did not rebuild the scene.
-pub fn record_retained_scene_present() {
-    shared_metrics()
-        .retained_present_count
-        .fetch_add(1, Ordering::Relaxed);
-}
-
 /// Records platform atlas key removals.
 pub fn record_atlas_remove(count: usize) {
     shared_metrics()

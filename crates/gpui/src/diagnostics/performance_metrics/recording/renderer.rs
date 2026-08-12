@@ -39,8 +39,12 @@ pub fn record_prepared_command_count(count: usize) {
         .store(count as u64, Ordering::Relaxed);
 }
 
-/// Legacy compatibility shim retained during the renderer migration.
-pub fn record_backdrop_blur_primitive_count(_count: usize) {}
+/// Records backdrop blur primitives encoded by the latest renderer submission.
+pub fn record_backdrop_blur_primitive_count(count: usize) {
+    shared_metrics()
+        .backdrop_blur_primitives
+        .store(count as u64, Ordering::Relaxed);
+}
 
 /// Records estimated bytes retained by GPU resources.
 pub fn record_gpu_retained_bytes(bytes: usize) {
@@ -127,11 +131,48 @@ pub fn record_gpu_surface_metrics(
         .store(surface_error_count as u64, Ordering::Relaxed);
 }
 
-/// Records the number of retained presents that reused the retained target.
-pub fn record_retained_present_count(count: usize) {
-    shared_metrics()
+/// Records a direct swapchain present and clears retained-copy metrics for the latest frame.
+pub fn record_direct_present() {
+    let metrics = shared_metrics();
+    metrics.direct_present_count.fetch_add(1, Ordering::Relaxed);
+    metrics.retained_copy_pixels.store(0, Ordering::Relaxed);
+    metrics
+        .retained_copy_estimated_bytes
+        .store(0, Ordering::Relaxed);
+}
+
+/// Records a retained full-window texture present.
+pub fn record_retained_present(pixels: usize, estimated_bytes: usize) {
+    let metrics = shared_metrics();
+    metrics
         .retained_present_count
-        .store(count as u64, Ordering::Relaxed);
+        .fetch_add(1, Ordering::Relaxed);
+    metrics
+        .retained_copy_pixels
+        .store(pixels as u64, Ordering::Relaxed);
+    metrics
+        .retained_copy_estimated_bytes
+        .store(estimated_bytes as u64, Ordering::Relaxed);
+}
+
+/// Records backdrop blur work for the latest frame.
+pub fn record_backdrop_blur_frame(source_pixels: usize, level_pixels: [usize; 6]) {
+    let metrics = shared_metrics();
+    let target_pixels = level_pixels.iter().copied().sum::<usize>();
+    if source_pixels != 0 || target_pixels != 0 {
+        metrics
+            .backdrop_blur_frame_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    metrics
+        .backdrop_blur_source_pixels
+        .store(source_pixels as u64, Ordering::Relaxed);
+    metrics
+        .backdrop_blur_target_pixels
+        .store(target_pixels as u64, Ordering::Relaxed);
+    for (target, pixels) in metrics.backdrop_blur_level_pixels.iter().zip(level_pixels) {
+        target.store(pixels as u64, Ordering::Relaxed);
+    }
 }
 
 /// Records a blocking wait for a GPU submission.

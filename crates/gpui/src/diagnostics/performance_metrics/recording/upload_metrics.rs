@@ -4,6 +4,68 @@ use std::time::Duration;
 use super::super::AllocatorBucketMetricsSnapshot;
 use super::super::state::shared_metrics;
 
+/// Per-category Nova frame upload diagnostics.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FrameUploadBreakdown {
+    /// Number of encoded scene primitives.
+    pub encoded_primitives: usize,
+    /// Number of encoded prepared batches.
+    pub encoded_batches: usize,
+    /// Encoded quad bytes.
+    pub quad_bytes: usize,
+    /// Encoded shadow bytes.
+    pub shadow_bytes: usize,
+    /// Encoded path geometry and sprite bytes.
+    pub path_bytes: usize,
+    /// Encoded monochrome sprite bytes.
+    pub mono_sprite_bytes: usize,
+    /// Encoded polychrome sprite bytes.
+    pub poly_sprite_bytes: usize,
+    /// Encoded underline bytes.
+    pub underline_bytes: usize,
+    /// Encoded backdrop blur descriptor bytes.
+    pub backdrop_blur_bytes: usize,
+    /// Encoded animation binding and value bytes.
+    pub animation_bytes: usize,
+    /// Encoded custom mesh parameter bytes.
+    pub custom_mesh_parameter_bytes: usize,
+}
+
+/// Records per-category bytes encoded for the latest Nova frame submission.
+pub fn record_frame_upload_breakdown(breakdown: FrameUploadBreakdown) {
+    let metrics = shared_metrics();
+    for (target, value) in [
+        (
+            &metrics.encoded_scene_primitives,
+            breakdown.encoded_primitives,
+        ),
+        (&metrics.encoded_scene_batches, breakdown.encoded_batches),
+        (&metrics.quad_upload_bytes, breakdown.quad_bytes),
+        (&metrics.shadow_upload_bytes, breakdown.shadow_bytes),
+        (&metrics.path_upload_bytes, breakdown.path_bytes),
+        (
+            &metrics.mono_sprite_upload_bytes,
+            breakdown.mono_sprite_bytes,
+        ),
+        (
+            &metrics.poly_sprite_upload_bytes,
+            breakdown.poly_sprite_bytes,
+        ),
+        (&metrics.underline_upload_bytes, breakdown.underline_bytes),
+        (
+            &metrics.backdrop_blur_upload_bytes,
+            breakdown.backdrop_blur_bytes,
+        ),
+        (&metrics.animation_upload_bytes, breakdown.animation_bytes),
+        (
+            &metrics.custom_mesh_parameter_upload_bytes,
+            breakdown.custom_mesh_parameter_bytes,
+        ),
+    ] {
+        target.store(value as u64, Ordering::Relaxed);
+    }
+}
+
 /// Records atlas upload work completed by the active renderer.
 pub fn record_atlas_upload_metrics(bytes: usize, tiles: usize, duration: Duration) {
     let metrics = shared_metrics();

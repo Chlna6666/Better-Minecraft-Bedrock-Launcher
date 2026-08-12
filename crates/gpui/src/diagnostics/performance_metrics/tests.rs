@@ -101,6 +101,26 @@ fn records_extended_gpu_metrics() {
     record_upload_arena_metrics(65_536, 1_048_576, 768, 2048);
     record_gpu_cache_metrics(7, 1);
     record_gpu_pass_metrics(1, 2, 1);
+    record_frame_upload_breakdown(FrameUploadBreakdown {
+        encoded_primitives: 23,
+        encoded_batches: 7,
+        quad_bytes: 1920,
+        shadow_bytes: 208,
+        path_bytes: 512,
+        mono_sprite_bytes: 288,
+        poly_sprite_bytes: 384,
+        underline_bytes: 96,
+        backdrop_blur_bytes: 152,
+        animation_bytes: 160,
+        custom_mesh_parameter_bytes: 192,
+    });
+    let direct_before = before.direct_present_count;
+    let retained_before = before.retained_present_count;
+    let blur_before = before.backdrop_blur_frame_count;
+    record_direct_present();
+    record_retained_present(2_073_600, 16_588_800);
+    record_backdrop_blur_frame(2_073_600, [129_600, 32_400, 8_100, 0, 0, 0]);
+    record_backdrop_blur_primitive_count(2);
     record_gpu_submission_wait(Duration::from_millis(2));
     record_gpu_submission_wait(Duration::from_millis(9));
     record_gpu_surface_metrics("Bgra8Unorm", "PreMultiplied", "Mailbox", 3, 2);
@@ -118,6 +138,29 @@ fn records_extended_gpu_metrics() {
     assert_eq!(snapshot.atlas_upload_tiles, 3);
     assert_eq!(snapshot.atlas_upload_time, Some(Duration::from_micros(5)));
     assert_eq!(snapshot.upload_bytes, 1280);
+    assert_eq!(snapshot.encoded_scene_primitives, 23);
+    assert_eq!(snapshot.encoded_scene_batches, 7);
+    assert_eq!(snapshot.quad_upload_bytes, 1920);
+    assert_eq!(snapshot.shadow_upload_bytes, 208);
+    assert_eq!(snapshot.path_upload_bytes, 512);
+    assert_eq!(snapshot.mono_sprite_upload_bytes, 288);
+    assert_eq!(snapshot.poly_sprite_upload_bytes, 384);
+    assert_eq!(snapshot.underline_upload_bytes, 96);
+    assert_eq!(snapshot.backdrop_blur_upload_bytes, 152);
+    assert_eq!(snapshot.animation_upload_bytes, 160);
+    assert_eq!(snapshot.custom_mesh_parameter_upload_bytes, 192);
+    assert_eq!(snapshot.direct_present_count, direct_before + 1);
+    assert_eq!(snapshot.retained_present_count, retained_before + 1);
+    assert_eq!(snapshot.backdrop_blur_frame_count, blur_before + 1);
+    assert_eq!(snapshot.retained_copy_pixels, 2_073_600);
+    assert_eq!(snapshot.retained_copy_estimated_bytes, 16_588_800);
+    assert_eq!(snapshot.backdrop_blur_source_pixels, 2_073_600);
+    assert_eq!(snapshot.backdrop_blur_target_pixels, 170_100);
+    assert_eq!(
+        snapshot.backdrop_blur_level_pixels,
+        [129_600, 32_400, 8_100, 0, 0, 0]
+    );
+    assert_eq!(snapshot.backdrop_blur_primitives, 2);
     assert_eq!(snapshot.pod_upload_bytes, 640);
     assert_eq!(snapshot.bind_group_creations, 3);
     assert_eq!(snapshot.bind_group_cache_hits, 5);
