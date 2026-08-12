@@ -1,5 +1,5 @@
 use super::*;
-use crate::Rgba;
+use crate::{Rgba, SceneAnimationId};
 
 /// A rectangle to be rendered in the window at the given position and size.
 /// Passed as an argument [`Window::paint_quad`].
@@ -197,15 +197,28 @@ impl Window {
     /// where the circular arcs meet. This will not display well when combined with dashed borders.
     /// Use `Corners::clamp_radii_for_quad_size` if the radii should fit within the bounds.
     pub fn paint_quad(&mut self, quad: PaintQuad) {
+        self.paint_quad_with_animation(quad, None);
+    }
+
+    pub(crate) fn paint_quad_with_animation(
+        &mut self,
+        quad: PaintQuad,
+        animation_id: Option<SceneAnimationId>,
+    ) {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
         let content_mask = self.visual_content_mask();
         let visual_scale = self.visual_scale();
         let opacity = self.element_opacity();
+        let animation_id = animation_id.or_else(|| {
+            self.scene_animation.and_then(|(animation_id, property)| {
+                matches!(property, crate::TransitionProperty::Translation).then_some(animation_id)
+            })
+        });
         self.next_frame.scene.insert_primitive(Quad {
             order: 0,
-            animation_id: None,
+            animation_id,
             bounds: self.visual_bounds(quad.bounds).scale(scale_factor),
             content_mask: content_mask.scale(scale_factor),
             background: quad.background.opacity(opacity),

@@ -1,4 +1,5 @@
 use crate::{Bounds, ScaledPixels, SceneFrameMetrics};
+use collections::FxHashSet;
 
 use super::BoundsTree;
 use std::ops::Range;
@@ -173,6 +174,24 @@ impl Scene {
 
     pub(crate) fn push_animation_value(&mut self, value: SceneAnimationValue) {
         self.animation_values.push(value);
+    }
+
+    pub(crate) fn replace_animation_values(
+        &mut self,
+        values: impl IntoIterator<Item = SceneAnimationValue>,
+    ) {
+        self.animation_values.clear();
+        self.animation_values.extend(values);
+    }
+
+    pub(crate) fn animation_ids(&self) -> FxHashSet<SceneAnimationId> {
+        self.paint_operations
+            .iter()
+            .filter_map(|operation| match operation {
+                PaintOperation::Primitive(primitive) => primitive.animation_id(),
+                PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+            })
+            .collect()
     }
 
     fn order_for_primitive(&mut self, primitive: &Primitive) -> Option<DrawOrder> {

@@ -1,5 +1,6 @@
 use super::state::ElementVisualTransform;
 use super::*;
+use crate::SceneAnimationId;
 
 #[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
@@ -109,6 +110,18 @@ impl Window {
         color: Hsla,
         cx: &App,
     ) -> Result<()> {
+        self.paint_svg_animated(bounds, path, transformation, color, None, cx)
+    }
+
+    pub(crate) fn paint_svg_animated(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        path: SharedString,
+        transformation: TransformationMatrix,
+        color: Hsla,
+        animation_id: Option<SceneAnimationId>,
+        cx: &App,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
@@ -136,10 +149,19 @@ impl Window {
         let svg_bounds = self.visual_device_bounds(svg_bounds, scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
 
+        let animation_id = animation_id.or_else(|| {
+            self.scene_animation.and_then(|(animation_id, property)| {
+                matches!(
+                    property,
+                    crate::TransitionProperty::Rotation | crate::TransitionProperty::Translation
+                )
+                .then_some(animation_id)
+            })
+        });
         self.next_frame.scene.insert_primitive(MonochromeSprite {
             order: 0,
             pad: MonochromeSpriteSampling::Linear as u32,
-            animation_id: None,
+            animation_id,
             bounds: svg_bounds,
             content_mask,
             color: color.opacity(element_opacity).into(),

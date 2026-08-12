@@ -461,11 +461,18 @@ impl Window {
         let Some(driver) = self.animation_engine_frame_driver.take() else {
             return;
         };
+        if !self.active.get() || self.platform_window.is_minimized() {
+            self.animation_engine_frame_driver.set(Some(driver));
+            return;
+        }
 
         let tick = self
             .animation_engine
             .borrow_mut()
             .tick_driver(driver, self.animation_time());
+        self.rendered_frame
+            .scene
+            .replace_animation_values(tick.scene_values);
         let viewport = Bounds::new(Point::default(), self.viewport_size);
         if !tick.dirty_bounds.is_empty() {
             self.render_dirty_region = DirtyRegion::empty();
@@ -474,7 +481,9 @@ impl Window {
             self.record_animation_tick_dirty_bounds(bounds, viewport);
         }
         if tick.active_count > 0 && tick.has_gpu_or_paint {
-            self.request_animation_engine_frame(driver);
+            if self.active.get() && !self.platform_window.is_minimized() {
+                self.request_animation_engine_frame(driver);
+            }
         }
         if tick.has_layout {
             self.request_animation_frame();

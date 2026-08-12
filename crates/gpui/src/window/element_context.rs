@@ -161,6 +161,19 @@ impl Window {
         result
     }
 
+    pub(crate) fn with_scene_animation<R>(
+        &mut self,
+        animation_id: crate::SceneAnimationId,
+        property: crate::TransitionProperty,
+        paint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint();
+        let previous_animation = self.scene_animation.replace((animation_id, property));
+        let result = paint(self);
+        self.scene_animation = previous_animation;
+        result
+    }
+
     pub(crate) fn with_element_scale<R>(
         &mut self,
         bounds: Bounds<Pixels>,

@@ -267,14 +267,9 @@ pub fn request_animation_frame_until_active(window: &mut Window, deadline: Optio
 }
 
 fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
-    let duration = spec.duration.max(MIN_ANIMATION_DURATION);
-    let repeat_forever = matches!(spec.repeat, RepeatMode::Forever);
-    let easing = spec.easing;
-    let mut animation = Animation::new(duration).with_easing(move |t| easing.sample(t));
-    if repeat_forever {
-        animation = animation.repeat();
-    }
-    animation
+    let mut spec = spec;
+    spec.duration = spec.duration.max(MIN_ANIMATION_DURATION);
+    Animation::from_spec(spec)
 }
 
 #[cfg(test)]

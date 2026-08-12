@@ -104,6 +104,13 @@ impl Window {
     ) -> ArenaClearNeeded {
         self.finish_layout_and_text_frame();
         self.next_frame.finish(&mut self.rendered_frame);
+        let scene_animation_values = self
+            .animation_engine
+            .borrow()
+            .scene_values(self.animation_time());
+        self.next_frame
+            .scene
+            .replace_animation_values(scene_animation_values);
         self.prepare_render_plan_for_next_frame(
             previous_scene_was_empty || force_full_redraw || self.draw_was_degraded,
         );
@@ -120,6 +127,10 @@ impl Window {
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
+        let live_scene_animation_ids = self.rendered_frame.scene.animation_ids();
+        self.animation_engine
+            .borrow_mut()
+            .retain_scene_animations(&live_scene_animation_ids);
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
 

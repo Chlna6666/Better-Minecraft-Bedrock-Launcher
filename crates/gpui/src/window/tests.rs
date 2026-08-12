@@ -1288,6 +1288,70 @@ fn paint_animation_engine_frame_marks_precise_dirty_region(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppContext) {
+    let (_view, window) = cx.add_window_view(|_, _| PaintedTestView);
+    let dirty_bounds = Bounds::new(point(px(7.0), px(9.0)), size(px(16.0), px(18.0)));
+    let (test_window, animation_id, baseline_notify_invalidations) =
+        window.update(|window, _cx| {
+            let test_window = window.platform_window.as_test().unwrap().clone();
+            let baseline_notify_invalidations = window.test_dirty_frame_notify_invalidations();
+            let element_id = test_global_element_id("scene-animation-rotation");
+            let animation_id = window.start_scene_animation(
+                &element_id,
+                TransitionProperty::Rotation,
+                AnimationSpec::new(Duration::from_millis(100))
+                    .repeat(RepeatMode::Forever)
+                    .driver(AnimationDriver::Gpu),
+                dirty_bounds,
+                [0.0; 4],
+                [std::f32::consts::TAU, 0.0, 0.0, 0.0],
+            );
+            (test_window, animation_id, baseline_notify_invalidations)
+        });
+
+    test_window.simulate_request_frame(RequestFrameOptions {
+        require_presentation: true,
+        force_render: false,
+    });
+    window.run_until_parked();
+
+    window.update(|window, _cx| {
+        assert_eq!(
+            window.test_dirty_frame_notify_invalidations(),
+            baseline_notify_invalidations
+        );
+        assert_eq!(window.render_present_mode, PartialPresentMode::Partial);
+        assert_eq!(window.render_dirty_region.rect_count(), 1);
+        assert_eq!(window.rendered_frame.scene.animation_values.len(), 1);
+        assert_eq!(
+            window.rendered_frame.scene.animation_values[0].animation_id,
+            animation_id
+        );
+        assert_eq!(
+            window.rendered_frame.scene.animation_values[0].property,
+            TransitionProperty::Rotation
+        );
+    });
+}
+
+#[gpui::test]
+fn inactive_gpu_animation_does_not_request_platform_frames(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let baseline = test_window.requested_frame_count();
+        window.active.set(false);
+        window.request_animation_engine_frame(AnimationDriver::Gpu);
+
+        assert_eq!(test_window.requested_frame_count(), baseline);
+        assert_eq!(
+            window.animation_engine_frame_driver.get(),
+            Some(AnimationDriver::Gpu)
+        );
+    });
+}
+
+#[gpui::test]
 fn layout_animation_engine_frame_uses_view_animation_frame(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {

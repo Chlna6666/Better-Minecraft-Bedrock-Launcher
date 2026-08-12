@@ -4,9 +4,9 @@ use super::{
         AnimationParallel, AnimationSequence, AnimationSpec, AnimationStagger,
         ParallelTimelineSample, SequencedTimelineSample, StaggerTimelineSample, TimelineSample,
     },
-    transition::{TransitionProperty, resolve_driver_with_cpu_policy},
+    transition::{resolve_driver_with_cpu_policy, TransitionProperty},
 };
-use crate::{Bounds, GlobalElementId, Pixels};
+use crate::{Bounds, GlobalElementId, Pixels, SceneAnimationId, SceneAnimationValue};
 use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use std::{fmt, rc::Rc, time::Instant};
@@ -23,6 +23,14 @@ struct AnimationTimeline {
     started_at: Instant,
     driver: AnimationDriver,
     bounds: Option<Bounds<Pixels>>,
+    scene_animation: Option<SceneAnimation>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SceneAnimation {
+    id: SceneAnimationId,
+    from: [f32; 4],
+    to: [f32; 4],
 }
 
 /// Identifier for an animation group owned by an [`AnimationEngine`].
@@ -100,6 +108,7 @@ pub struct AnimationTick {
     pub has_layout: bool,
     /// Dirty visual bounds touched by sampled paint/GPU timelines.
     pub dirty_bounds: SmallVec<[Bounds<Pixels>; 4]>,
+    pub(crate) scene_values: SmallVec<[SceneAnimationValue; 4]>,
 }
 
 /// Per-window animation timeline engine.
@@ -177,6 +186,7 @@ impl AnimationEngine {
                 started_at,
                 driver,
                 bounds,
+                scene_animation: None,
             },
         );
         self.insert_driver_index(key, driver);
@@ -309,6 +319,76 @@ impl AnimationEngine {
         true
     }
 
+    pub(crate) fn bind_scene_animation(
+        &mut self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        id: SceneAnimationId,
+        from: [f32; 4],
+        to: [f32; 4],
+    ) -> bool {
+        let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
+            return false;
+        };
+        let Some(timeline) = self.timelines.get_mut(&AnimationTimelineKey {
+            element_id: indexed_element_id,
+            property,
+        }) else {
+            return false;
+        };
+        timeline.scene_animation = Some(SceneAnimation { id, from, to });
+        true
+    }
+
+    pub(crate) fn transition_driver(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+    ) -> Option<AnimationDriver> {
+        let indexed_element_id = self.indexed_element_id(element_id)?;
+        self.timelines
+            .get(&AnimationTimelineKey {
+                element_id: indexed_element_id.clone(),
+                property,
+            })
+            .map(|timeline| timeline.driver)
+    }
+
+    pub(crate) fn retain_scene_animations(&mut self, live_ids: &FxHashSet<SceneAnimationId>) {
+        let stale_keys = self
+            .timelines
+            .iter()
+            .filter_map(|(key, timeline)| {
+                timeline
+                    .scene_animation
+                    .is_some_and(|animation| !live_ids.contains(&animation.id))
+                    .then(|| key.clone())
+            })
+            .collect::<SmallVec<[_; 8]>>();
+        for key in stale_keys {
+            self.remove_timeline(&key);
+        }
+    }
+
+    pub(crate) fn scene_values(&self, now: Instant) -> SmallVec<[SceneAnimationValue; 4]> {
+        self.timelines
+            .iter()
+            .filter_map(|(key, timeline)| {
+                let animation = timeline.scene_animation?;
+                let sample = timeline
+                    .spec
+                    .sample_elapsed(now.saturating_duration_since(timeline.started_at));
+                Some(SceneAnimationValue {
+                    animation_id: animation.id,
+                    property: key.property,
+                    progress: sample.eased_progress,
+                    from: animation.from,
+                    to: animation.to,
+                })
+            })
+            .collect()
+    }
+
     /// Returns true when there are active timelines.
     pub fn has_active_timelines(&self) -> bool {
         !self.timelines.is_empty() || !self.group_timelines.is_empty()
@@ -364,6 +444,7 @@ impl AnimationEngine {
         let mut has_gpu_or_paint = false;
         let mut has_layout = false;
         let mut dirty_bounds = SmallVec::new();
+        let mut scene_values = SmallVec::new();
         for key in keys {
             let Some(timeline) = self.timelines.get(&key) else {
                 self.remove_driver_index(&key);
@@ -372,6 +453,16 @@ impl AnimationEngine {
             let sample = timeline
                 .spec
                 .sample_elapsed(now.saturating_duration_since(timeline.started_at));
+
+            if let Some(animation) = timeline.scene_animation {
+                scene_values.push(SceneAnimationValue {
+                    animation_id: animation.id,
+                    property: key.property,
+                    progress: sample.eased_progress,
+                    from: animation.from,
+                    to: animation.to,
+                });
+            }
 
             match timeline.driver {
                 AnimationDriver::Gpu | AnimationDriver::Paint | AnimationDriver::Auto => {
@@ -418,6 +509,7 @@ impl AnimationEngine {
             has_gpu_or_paint,
             has_layout,
             dirty_bounds,
+            scene_values,
         }
     }
 

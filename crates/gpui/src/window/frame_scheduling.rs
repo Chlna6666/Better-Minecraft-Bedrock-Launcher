@@ -1,4 +1,5 @@
 use super::*;
+use crate::{AnimationSpec, SceneAnimationId, TransitionProperty};
 
 impl Window {
     /// Schedules the given function to be run at the end of the current effect cycle, allowing entities
@@ -115,6 +116,9 @@ impl Window {
                 self.animation_engine_frame_driver.get(),
                 driver,
             )));
+        if !self.active.get() || self.platform_window.is_minimized() {
+            return;
+        }
         self.platform_window.request_frame(RequestFrameOptions {
             require_presentation: true,
             force_render: false,
@@ -187,6 +191,30 @@ impl Window {
         self.animation_engine
             .borrow_mut()
             .set_group_bounds(group_id, bounds)
+    }
+
+    pub(crate) fn start_scene_animation(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        spec: AnimationSpec,
+        bounds: Bounds<Pixels>,
+        from: [f32; 4],
+        to: [f32; 4],
+    ) -> SceneAnimationId {
+        let animation_id = SceneAnimationId(self.next_scene_animation_id.get());
+        self.next_scene_animation_id
+            .set(self.next_scene_animation_id.get().wrapping_add(1));
+        let mut engine = self.animation_engine.borrow_mut();
+        engine.start_transition(element_id, property, spec, self.animation_time());
+        engine.set_transition_bounds(element_id, property, bounds);
+        engine.bind_scene_animation(element_id, property, animation_id, from, to);
+        let driver = engine
+            .transition_driver(element_id, property)
+            .unwrap_or(crate::AnimationDriver::Paint);
+        drop(engine);
+        self.request_animation_engine_frame(driver);
+        animation_id
     }
 
     /// Notify the current view at or after the given deadline without requesting

@@ -1,13 +1,19 @@
-use std::{rc::Rc, time::Duration};
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use crate::{
-    AnimationDriver, AnyElement, App, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LegacyAnimationTimeline, LegacyAnimationTiming, Window,
+    AnimationDriver, AnimationSpec, AnyElement, App, Bounds, Element, ElementId, GlobalElementId,
+    InspectorElementId, IntoElement, LegacyAnimationTimeline, LegacyAnimationTiming, Pixels, Point,
+    Radians, RepeatMode, SceneAnimationId, TransitionProperty, Window,
     sample_legacy_easing_bounded,
 };
 
 pub use easing::*;
 use smallvec::SmallVec;
+
+const REPEATING_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(3);
 
 /// An animation that can be applied to an element.
 #[derive(Clone)]
@@ -19,22 +25,75 @@ pub struct Animation {
     /// A function that takes a delta between 0 and 1 and returns a new delta
     /// between 0 and 1 based on the given easing function.
     pub easing: Rc<dyn Fn(f32) -> f32>,
+    spec: AnimationSpec,
+    property: Option<AnimationProperty>,
+}
+
+/// A renderer-owned visual property animated by [`AnimationExt::with_animation`].
+///
+/// Declaring one of these properties lets GPUI select the GPU or paint driver
+/// without changing the `with_animation` API. Animations without a declared
+/// visual property retain the legacy layout-driven behavior.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimationProperty {
+    property: TransitionProperty,
+    from: [f32; 4],
+    to: [f32; 4],
+}
+
+impl AnimationProperty {
+    /// Animate a visual rotation around the element center.
+    pub fn rotation(from: impl Into<Radians>, to: impl Into<Radians>) -> Self {
+        Self {
+            property: TransitionProperty::Rotation,
+            from: [from.into().0, 0.0, 0.0, 0.0],
+            to: [to.into().0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Animate a visual translation without changing layout.
+    pub fn translation(from: Point<Pixels>, to: Point<Pixels>) -> Self {
+        Self {
+            property: TransitionProperty::Translation,
+            from: [from.x.0, from.y.0, 0.0, 0.0],
+            to: [to.x.0, to.y.0, 0.0, 0.0],
+        }
+    }
+
+    fn dirty_bounds(self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        match self.property {
+            TransitionProperty::Translation => {
+                translated_bounds(bounds, self.from).union(&translated_bounds(bounds, self.to))
+            }
+            TransitionProperty::Rotation => rotation_bounds(bounds),
+            _ => bounds,
+        }
+    }
 }
 
 impl Animation {
     /// Create a new animation with the given duration.
     /// By default the animation will only run once and will use a linear easing function.
     pub fn new(duration: Duration) -> Self {
+        Self::from_spec(AnimationSpec::new(duration))
+    }
+
+    /// Create an element animation from an engine timing specification.
+    pub fn from_spec(spec: AnimationSpec) -> Self {
+        let easing = spec.easing.clone();
         Self {
-            duration,
-            oneshot: true,
-            easing: Rc::new(linear),
+            duration: spec.duration,
+            oneshot: !matches!(spec.repeat, RepeatMode::Forever),
+            easing: Rc::new(move |progress| easing.sample(progress)),
+            spec,
+            property: None,
         }
     }
 
     /// Set the animation to loop when it finishes.
     pub fn repeat(mut self) -> Self {
         self.oneshot = false;
+        self.spec.repeat = RepeatMode::Forever;
         self
     }
 
@@ -42,8 +101,21 @@ impl Animation {
     /// The easing function will take a time delta between 0 and 1 and return a new delta
     /// between 0 and 1
     pub fn with_easing(mut self, easing: impl Fn(f32) -> f32 + 'static) -> Self {
-        self.easing = Rc::new(easing);
+        let easing = Rc::new(easing);
+        self.easing = easing.clone();
+        self.spec.easing = crate::Easing::Custom(easing);
         self
+    }
+
+    /// Declare a visual property that GPUI can animate without relayout.
+    pub fn with_property(mut self, property: AnimationProperty) -> Self {
+        self.property = Some(property);
+        self
+    }
+
+    fn scene_animation(&self) -> Option<(AnimationProperty, &AnimationSpec)> {
+        let property = self.property?;
+        (!matches!(self.spec.driver, AnimationDriver::Layout)).then_some((property, &self.spec))
     }
 }
 
@@ -115,6 +187,13 @@ impl<E: IntoElement + 'static> IntoElement for AnimationElement<E> {
 
 struct AnimationState(LegacyAnimationTimeline);
 
+#[derive(Clone, Debug, PartialEq)]
+struct SceneAnimationState {
+    animation_id: SceneAnimationId,
+    property: AnimationProperty,
+    spec: AnimationSpec,
+}
+
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = ();
@@ -137,6 +216,13 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         if self.animations.is_empty() {
             let mut element = self.element.take().expect("should only be called once");
             let mut element = element.into_any_element();
+            return (element.request_layout(window, cx), element);
+        }
+
+        if let Some((animation_index, progress)) = self.initial_scene_animation_sample() {
+            let element = self.element.take().expect("should only be called once");
+            let mut element =
+                (self.animator)(element, animation_index, progress).into_any_element();
             return (element.request_layout(window, cx), element);
         }
 
@@ -168,9 +254,11 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
             let element = self.element.take().expect("should only be called once");
             let mut element = (self.animator)(element, animation_ix, delta).into_any_element();
 
-            if !sample.done {
-                window.request_animation_engine_frame(AnimationDriver::Layout);
-            }
+            let repeats = self
+                .animations
+                .get(animation_ix)
+                .is_some_and(|animation| !animation.oneshot);
+            schedule_next_animation_frame(window, cx, now, sample.done, repeats);
 
             ((element.request_layout(window, cx), element), state)
         })
@@ -190,15 +278,181 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
     fn paint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: crate::Bounds<crate::Pixels>,
+        bounds: crate::Bounds<crate::Pixels>,
         element: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        element.paint(window, cx);
+        let Some((property, spec)) = self
+            .scene_animation()
+            .map(|(property, spec)| (property, spec.clone()))
+        else {
+            element.paint(window, cx);
+            return;
+        };
+        let global_id =
+            global_id.expect("AnimationElement always supplies an element id for state tracking");
+        let animation_id =
+            window.with_element_state(global_id, |state: Option<SceneAnimationState>, window| {
+                let state = match state {
+                    Some(state) if state.property == property && state.spec == spec => state,
+                    _ => SceneAnimationState {
+                        animation_id: window.start_scene_animation(
+                            global_id,
+                            property.property,
+                            spec.clone(),
+                            property.dirty_bounds(bounds),
+                            property.from,
+                            property.to,
+                        ),
+                        property,
+                        spec,
+                    },
+                };
+                (state.animation_id, state)
+            });
+        window.with_scene_animation(animation_id, property.property, |window| {
+            element.paint(window, cx)
+        });
+    }
+}
+
+impl<E> AnimationElement<E> {
+    fn scene_animation(&self) -> Option<(AnimationProperty, &AnimationSpec)> {
+        (self.animations.len() == 1)
+            .then(|| self.animations.first()?.scene_animation())
+            .flatten()
+    }
+
+    fn initial_scene_animation_sample(&self) -> Option<(usize, f32)> {
+        let (_, spec) = self.scene_animation()?;
+        Some((0, spec.sample_elapsed(Duration::ZERO).eased_progress))
+    }
+}
+
+fn translated_bounds(bounds: Bounds<Pixels>, translation: [f32; 4]) -> Bounds<Pixels> {
+    Bounds::new(
+        bounds.origin + Point::new(crate::px(translation[0]), crate::px(translation[1])),
+        bounds.size,
+    )
+}
+
+fn rotation_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    let radius = (bounds.size.width.0.mul_add(
+        bounds.size.width.0,
+        bounds.size.height.0 * bounds.size.height.0,
+    ))
+    .sqrt()
+        * 0.5;
+    Bounds::new(
+        Point::new(
+            bounds.center().x - crate::px(radius),
+            bounds.center().y - crate::px(radius),
+        ),
+        crate::size(crate::px(radius * 2.0), crate::px(radius * 2.0)),
+    )
+}
+
+fn schedule_next_animation_frame(
+    window: &Window,
+    cx: &App,
+    now: Instant,
+    done: bool,
+    repeats: bool,
+) {
+    match next_animation_frame_delay(done, repeats, window.is_window_active()) {
+        None => {}
+        Some(delay) if delay.is_zero() => {
+            window.request_animation_engine_frame(AnimationDriver::Layout);
+        }
+        Some(delay) => {
+            window.request_invalidation_at(now + delay, cx);
+        }
+    }
+}
+
+fn next_animation_frame_delay(done: bool, repeats: bool, window_active: bool) -> Option<Duration> {
+    if done || (repeats && !window_active) {
+        None
+    } else if repeats {
+        Some(REPEATING_ANIMATION_FRAME_INTERVAL)
+    } else {
+        Some(Duration::ZERO)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_rotation_uses_scene_animation_metadata() {
+        let animation = Animation::new(Duration::from_millis(900)).with_property(
+            AnimationProperty::rotation(crate::radians(0.0), crate::radians(1.0)),
+        );
+
+        let (property, spec) = animation.scene_animation().expect("scene animation");
+        assert_eq!(property.property, TransitionProperty::Rotation);
+        assert_eq!(property.from, [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(property.to, [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(spec.driver, AnimationDriver::Auto);
+    }
+
+    #[test]
+    fn declared_translation_expands_dirty_bounds_across_motion() {
+        let property = AnimationProperty::translation(
+            Point::new(crate::px(0.0), crate::px(0.0)),
+            Point::new(crate::px(40.0), crate::px(10.0)),
+        );
+        let bounds = Bounds::new(
+            Point::new(crate::px(5.0), crate::px(7.0)),
+            crate::size(crate::px(20.0), crate::px(30.0)),
+        );
+
+        assert_eq!(
+            property.dirty_bounds(bounds),
+            Bounds::new(
+                Point::new(crate::px(5.0), crate::px(7.0)),
+                crate::size(crate::px(60.0), crate::px(40.0)),
+            )
+        );
+    }
+
+    #[test]
+    fn explicit_layout_driver_keeps_legacy_animation_path() {
+        let animation = Animation::from_spec(
+            AnimationSpec::new(Duration::from_millis(100)).driver(AnimationDriver::Layout),
+        )
+        .with_property(AnimationProperty::rotation(
+            crate::radians(0.0),
+            crate::radians(1.0),
+        ));
+
+        assert!(animation.scene_animation().is_none());
+    }
+
+    #[test]
+    fn repeating_animation_uses_gpui_frame_cadence() {
+        assert_eq!(
+            next_animation_frame_delay(false, true, true),
+            Some(REPEATING_ANIMATION_FRAME_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn inactive_repeating_animation_stops_scheduling() {
+        assert_eq!(next_animation_frame_delay(false, true, false), None);
+    }
+
+    #[test]
+    fn finite_animation_keeps_immediate_frame_scheduling() {
+        assert_eq!(
+            next_animation_frame_delay(false, false, true),
+            Some(Duration::ZERO)
+        );
     }
 }
 
