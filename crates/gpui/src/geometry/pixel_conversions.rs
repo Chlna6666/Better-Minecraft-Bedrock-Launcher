@@ -1,4 +1,4 @@
-use super::{Bounds, DevicePixels, Pixels, ScaledPixels, Size, point, px, size};
+use super::{Bounds, DevicePixels, Pixels, Point, ScaledPixels, Size, point, px, size};
 
 impl Size<DevicePixels> {
     /// Converts the size from physical to logical pixels.
@@ -16,6 +16,16 @@ impl Size<Pixels> {
         size(
             DevicePixels((self.width.0 * scale_factor).round() as i32),
             DevicePixels((self.height.0 * scale_factor).round() as i32),
+        )
+    }
+}
+
+impl Point<Pixels> {
+    /// Converts the point from logical to physical pixels.
+    pub(crate) fn to_device_pixels(self, scale_factor: f32) -> Point<DevicePixels> {
+        point(
+            DevicePixels((self.x.0 * scale_factor).round() as i32),
+            DevicePixels((self.y.0 * scale_factor).round() as i32),
         )
     }
 }
@@ -67,10 +77,7 @@ impl Bounds<Pixels> {
     /// Convert the bounds from logical pixels to physical pixels
     pub fn to_device_pixels(self, factor: f32) -> Bounds<DevicePixels> {
         Bounds {
-            origin: point(
-                DevicePixels((self.origin.x.0 * factor).round() as i32),
-                DevicePixels((self.origin.y.0 * factor).round() as i32),
-            ),
+            origin: self.origin.to_device_pixels(factor),
             size: self.size.to_device_pixels(factor),
         }
     }
