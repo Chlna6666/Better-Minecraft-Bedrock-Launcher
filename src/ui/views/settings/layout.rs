@@ -11,8 +11,6 @@ pub(super) struct SettingsLayout {
     pub(super) content_max_width: Pixels,
     pub(super) plugin_max_width: Pixels,
     pub(super) scroll_tabs: bool,
-    pub(super) stack_plugins: bool,
-    pub(super) plugin_list_height: Pixels,
 }
 
 impl SettingsLayout {
@@ -54,12 +52,6 @@ impl SettingsLayout {
             content_max_width,
             plugin_max_width,
             scroll_tabs: width_px < 820.0,
-            stack_plugins: width_px < 980.0,
-            plugin_list_height: if width_px < 640.0 {
-                px(152.0)
-            } else {
-                px(176.0)
-            },
         }
     }
 }
