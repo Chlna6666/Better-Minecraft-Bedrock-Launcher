@@ -13,18 +13,14 @@ mod surface_lifecycle;
 pub(in crate::platform::nova) use present::partial_present_scissor;
 
 pub(super) fn nova_present_mode_for_backend(
-    backend: RendererBackend,
+    _backend: RendererBackend,
     renderer_options: &RendererOptions,
 ) -> gfx_core::PresentMode {
     match renderer_options.present_mode {
-        PresentModePreference::AutoVsync
-            if matches!(
-                backend,
-                RendererBackend::NovaDx12 | RendererBackend::NovaVulkan
-            ) =>
-        {
-            gfx_core::PresentMode::Mailbox
-        }
+        // AutoVsync must be paced by the display compositor. DX12 maps FIFO to
+        // Present(1, 0), and Vulkan requests FIFO from the surface, preventing
+        // event-driven animations from submitting frames as fast as the CPU/GPU
+        // can produce them. Explicit Mailbox/Immediate remain opt-in below.
         PresentModePreference::AutoVsync => gfx_core::PresentMode::Fifo,
         PresentModePreference::Mailbox => gfx_core::PresentMode::Mailbox,
         PresentModePreference::Immediate => gfx_core::PresentMode::Immediate,
