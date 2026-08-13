@@ -24,7 +24,9 @@ pub(super) fn render_settings_content(
     system_font_names: &[String],
     layout: &SettingsLayout,
 ) -> impl IntoElement {
-    let compact_plugins = layout.plugin_compact;
+    // 桌面插件管理始终保持 master-detail 左右结构。默认窗口仍有足够的详情宽度，
+    // 不应因为高度或中等窗口宽度切成上下堆叠，破坏桌面工作流的空间连续性。
+    let compact_plugins = false;
 
     if state.tab == SettingsTab::Plugins {
         let panel = animated_settings_panel(
@@ -56,7 +58,7 @@ pub(super) fn render_settings_content(
                             .h_full()
                             .min_w(px(0.))
                             .min_h(px(0.))
-                            .pb(if compact_plugins { px(6.) } else { px(10.) })
+                            .pb(px(10.))
                             .child(panel),
                     ),
             )
@@ -129,7 +131,12 @@ fn animated_settings_panel(
         SettingsTab::Plugins => "settings-content-plugins",
         SettingsTab::About => "settings-content-about",
     };
-    let translation = AnimationProperty::translation(point(px(14.), px(0.)), point(px(0.), px(0.)));
+
+    // AnimationProperty 走 GPU/paint 驱动时，animator 闭包只会用起始采样参与布局。
+    // 之前在闭包里写 opacity(0.58 + progress * 0.42)，因此整个页面会永久停在
+    // 0.58 alpha。这里只声明可合成的位移动画，让视觉属性由动画引擎连续采样。
+    let translation =
+        AnimationProperty::translation(point(px(10.), px(0.)), point(px(0.), px(0.)));
 
     div()
         .w_full()
@@ -138,8 +145,8 @@ fn animated_settings_panel(
         .child(panel)
         .with_animation(
             key,
-            spring_motion(spring_smooth(), Duration::from_millis(340)).with_property(translation),
-            |panel, progress| panel.opacity(0.58 + progress * 0.42),
+            spring_motion(spring_smooth(), Duration::from_millis(420)).with_property(translation),
+            |panel, _progress| panel,
         )
         .into_any_element()
 }
