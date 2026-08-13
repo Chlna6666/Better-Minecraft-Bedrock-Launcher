@@ -32,17 +32,6 @@ where
             sampler: shared_buffers.atlas_sampler,
         },
     )?;
-    let present_cache_target = create_present_cache_target(
-        device,
-        label,
-        NovaPresentCacheTargetDescriptor {
-            size: surface_config.size,
-            format: surface_config.format,
-            resource_set_layout: layouts.poly_resource_set_layout,
-            frame_buffers: frame_buffers.clone(),
-            sampler: shared_buffers.atlas_sampler,
-        },
-    )?;
     let atlas_resources = create_atlas_texture_resources(
         device,
         label,
@@ -80,11 +69,6 @@ where
                 .get(index)
                 .copied()
                 .context("missing path mask frame resource set")?,
-            present_cache_resource_set: present_cache_target
-                .resource_sets
-                .get(index)
-                .copied()
-                .context("missing present cache frame resource set")?,
             mono_sprite_resource_set: atlas_resources
                 .mono_resource_sets
                 .get(index)
@@ -143,7 +127,5 @@ where
         atlas_sampler: shared_buffers.atlas_sampler,
         path_texture: path_mask_target.texture,
         path_texture_view: path_mask_target.texture_view,
-        present_cache_texture: present_cache_target.texture,
-        present_cache_texture_view: present_cache_target.texture_view,
     })
 }

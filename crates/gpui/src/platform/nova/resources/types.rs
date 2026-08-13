@@ -7,7 +7,6 @@ pub(in crate::platform::nova) struct NovaFrameResources {
     pub(in crate::platform::nova) buffers: NovaFrameResourceBuffers,
     pub(in crate::platform::nova) resource_sets: NovaFrameResourceSets,
     pub(in crate::platform::nova) path_resource_set: ResourceSetId,
-    pub(in crate::platform::nova) present_cache_resource_set: ResourceSetId,
     pub(in crate::platform::nova) mono_sprite_resource_set: ResourceSetId,
     pub(in crate::platform::nova) poly_sprite_resource_set: ResourceSetId,
 }
@@ -33,6 +32,4 @@ pub(in crate::platform::nova) struct NovaRendererResources {
     pub(in crate::platform::nova) atlas_sampler: SamplerId,
     pub(in crate::platform::nova) path_texture: TextureId,
     pub(in crate::platform::nova) path_texture_view: TextureViewId,
-    pub(in crate::platform::nova) present_cache_texture: TextureId,
-    pub(in crate::platform::nova) present_cache_texture_view: TextureViewId,
 }

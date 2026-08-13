@@ -1,7 +1,5 @@
 use super::*;
 
-const PRESENT_COLOR_BYTES_PER_PIXEL: usize = 4;
-
 #[derive(Clone, Copy)]
 struct FrameBufferTargets {
     global: BufferId,
@@ -105,103 +103,6 @@ where
     Ok(())
 }
 
-pub(in crate::platform::nova) fn partial_present_scissor(
-    render_plan: FrameRenderPlan<'_>,
-    current_size: DrawableSize,
-    unsupported_batches: UnsupportedBatchSummary,
-    has_backdrop_blurs: bool,
-) -> Option<ScissorRect> {
-    if unsupported_batches.total() != 0 || has_backdrop_blurs {
-        return None;
-    }
-    partial_scissor_for_plan(render_plan, current_size)
-}
-
-fn present_cache_load_op(partial_scissor: Option<ScissorRect>) -> LoadOp<ClearColor> {
-    if partial_scissor.is_some() {
-        LoadOp::Load
-    } else {
-        LoadOp::Clear(clear_color())
-    }
-}
-
-fn write_present_copy_sprite_buffer<D>(
-    device: &mut D,
-    cache: &mut PresentCopySpriteUploadCache,
-    frame_resource_index: usize,
-    buffer: BufferId,
-    current_size: DrawableSize,
-) -> Result<()>
-where
-    D: BackendResources,
-{
-    let Some(cached_size) = cache.frame_sizes.get_mut(frame_resource_index) else {
-        anyhow::bail!(
-            "nova present-copy frame resource slot {frame_resource_index} is unavailable"
-        );
-    };
-    if *cached_size == Some(current_size) {
-        return Ok(());
-    }
-
-    cache.bytes.clear();
-    cache.bytes.reserve(PACKED_POLY_SPRITE_BYTES);
-    write_polychrome_sprite(&mut cache.bytes, &present_copy_sprite(current_size));
-    device.write_buffer(buffer, 0, &cache.bytes)?;
-    *cached_size = Some(current_size);
-    Ok(())
-}
-
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "drawable size comes from a validated swapchain extent and is clamped by gpui viewport limits"
-)]
-fn present_copy_sprite(current_size: DrawableSize) -> PolychromeSprite {
-    let width = current_size.width as i32;
-    let height = current_size.height as i32;
-    let bounds = Bounds {
-        origin: Point {
-            x: crate::ScaledPixels(0.0),
-            y: crate::ScaledPixels(0.0),
-        },
-        size: Size {
-            width: crate::ScaledPixels(current_size.width as f32),
-            height: crate::ScaledPixels(current_size.height as f32),
-        },
-    };
-    PolychromeSprite {
-        order: 0,
-        pad: 0,
-        grayscale: false,
-        opacity: 1.0,
-        animation_id: None,
-        bounds,
-        content_mask: crate::ContentMask {
-            bounds,
-            ..Default::default()
-        },
-        corner_radii: Default::default(),
-        tile: AtlasTile {
-            texture_id: AtlasTextureId {
-                index: 0,
-                kind: AtlasTextureKind::Bgra,
-            },
-            tile_id: crate::TileId(0),
-            padding: 0,
-            bounds: Bounds {
-                origin: Point {
-                    x: DevicePixels(0),
-                    y: DevicePixels(0),
-                },
-                size: Size {
-                    width: DevicePixels(width),
-                    height: DevicePixels(height),
-                },
-            },
-        },
-    }
-}
-
 struct MainPresentDescriptor<'a> {
     submission_mode: GpuSubmissionMode,
     async_capabilities: BackendAsyncCapabilities,
@@ -209,96 +110,18 @@ struct MainPresentDescriptor<'a> {
     frame_resource_index: usize,
     swapchain: SwapchainId,
     render_pass: RenderPassId,
-    present_cache_texture_view: TextureViewId,
-    present_copy_sprite_buffer: BufferId,
-    present_copy_sprite_upload_cache: &'a mut PresentCopySpriteUploadCache,
-    current_size: DrawableSize,
     depth_attachment: RenderPassDepthAttachment,
-    use_retained_present: bool,
-    present_cache_load_op: LoadOp<ClearColor>,
+    damage: Option<ScissorRect>,
 }
 
 fn render_main_and_present<D>(
     device: &mut D,
     descriptor: MainPresentDescriptor<'_>,
     draw_steps: &[RenderStepDescriptor],
-    present_copy_steps: &[RenderStepDescriptor],
 ) -> Result<()>
 where
     D: BackendPresentationCompat + BackendQueue + BackendResources,
 {
-    if descriptor.use_retained_present {
-        device.render_steps_to_texture(
-            descriptor.present_cache_texture_view,
-            descriptor.render_pass,
-            draw_steps,
-            descriptor.present_cache_load_op,
-            Some(descriptor.depth_attachment),
-        )?;
-        write_present_copy_sprite_buffer(
-            device,
-            descriptor.present_copy_sprite_upload_cache,
-            descriptor.frame_resource_index,
-            descriptor.present_copy_sprite_buffer,
-            descriptor.current_size,
-        )?;
-        NovaRenderer::submit_present_frame(
-            descriptor.submission_mode,
-            descriptor.async_capabilities,
-            descriptor.pending_submissions,
-            device,
-            descriptor.swapchain,
-            descriptor.render_pass,
-            present_copy_steps,
-            clear_color(),
-            Some(descriptor.depth_attachment),
-            descriptor.frame_resource_index,
-        )?;
-    } else {
-        NovaRenderer::submit_present_frame(
-            descriptor.submission_mode,
-            descriptor.async_capabilities,
-            descriptor.pending_submissions,
-            device,
-            descriptor.swapchain,
-            descriptor.render_pass,
-            draw_steps,
-            clear_color(),
-            Some(descriptor.depth_attachment),
-            descriptor.frame_resource_index,
-        )?;
-    }
-    Ok(())
-}
-
-struct RetainedPresentDescriptor<'a> {
-    submission_mode: GpuSubmissionMode,
-    async_capabilities: BackendAsyncCapabilities,
-    pending_submissions: &'a mut Vec<PendingSubmission>,
-    frame_resource_index: usize,
-    swapchain: SwapchainId,
-    render_pass: RenderPassId,
-    present_copy_sprite_buffer: BufferId,
-    present_copy_sprite_upload_cache: &'a mut PresentCopySpriteUploadCache,
-    current_size: DrawableSize,
-    depth_attachment: RenderPassDepthAttachment,
-}
-
-fn present_retained_cache<D>(
-    device: &mut D,
-    descriptor: RetainedPresentDescriptor<'_>,
-    present_copy_steps: &[RenderStepDescriptor],
-) -> Result<()>
-where
-    D: BackendPresentationCompat + BackendQueue + BackendResources,
-{
-    write_present_copy_sprite_buffer(
-        device,
-        descriptor.present_copy_sprite_upload_cache,
-        descriptor.frame_resource_index,
-        descriptor.present_copy_sprite_buffer,
-        descriptor.current_size,
-    )?;
     NovaRenderer::submit_present_frame(
         descriptor.submission_mode,
         descriptor.async_capabilities,
@@ -306,53 +129,17 @@ where
         device,
         descriptor.swapchain,
         descriptor.render_pass,
-        present_copy_steps,
+        draw_steps,
         clear_color(),
         Some(descriptor.depth_attachment),
         descriptor.frame_resource_index,
+        descriptor.damage,
     )
-}
-
-impl NovaBackend {
-    fn present_retained_cache(
-        &mut self,
-        descriptor: RetainedPresentDescriptor<'_>,
-        present_copy_steps: &[RenderStepDescriptor],
-    ) -> Result<()> {
-        match self {
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => present_retained_cache(device, descriptor, present_copy_steps),
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            Self::Metal(device) => present_retained_cache(device, descriptor, present_copy_steps),
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            Self::Vulkan(device) => present_retained_cache(device, descriptor, present_copy_steps),
-            #[cfg(not(any(
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
-                    feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            Self::Unavailable => {
-                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
-            }
-        }
-    }
 }
 
 impl NovaRenderer {
     fn drawable_pixels(&self) -> usize {
         (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
-    }
-
-    fn retained_copy_estimated_bytes(&self) -> usize {
-        self.drawable_pixels()
-            .saturating_mul(PRESENT_COLOR_BYTES_PER_PIXEL)
-            .saturating_mul(2)
     }
 
     fn backdrop_blur_pixel_metrics(&self, enabled: bool) -> (usize, [usize; 6]) {
@@ -372,41 +159,11 @@ impl NovaRenderer {
         (source_pixels, level_pixels)
     }
 
-    pub(super) fn present_retained_cache_only(&mut self) -> Result<()> {
-        self.prepare_for_frame_submission()?;
-        crate::diagnostics::performance_metrics::record_frame_upload_breakdown(Default::default());
-        crate::diagnostics::performance_metrics::record_backdrop_blur_primitive_count(0);
-        self.prepare_present_copy_steps(true);
-        crate::diagnostics::performance_metrics::record_gpu_pass_metrics(0, 1, 0);
-        let depth_attachment = self.depth_attachment();
-        let descriptor = RetainedPresentDescriptor {
-            submission_mode: self.presentation_submission_mode(),
-            async_capabilities: self.backend.async_capabilities(),
-            pending_submissions: &mut self.pending_submissions,
-            frame_resource_index: self.current_frame_resource_index,
-            swapchain: self.swapchain,
-            render_pass: self.render_pass,
-            present_copy_sprite_buffer: self.present_copy_sprite_buffer,
-            present_copy_sprite_upload_cache: &mut self.present_copy_sprite_upload_cache,
-            current_size: self.current_size,
-            depth_attachment,
-        };
-        self.backend
-            .present_retained_cache(descriptor, &self.draw_step_scratch.present_copy_steps)?;
-        crate::diagnostics::performance_metrics::record_retained_present(
-            self.drawable_pixels(),
-            self.retained_copy_estimated_bytes(),
-        );
-        crate::diagnostics::performance_metrics::record_backdrop_blur_frame(0, [0; 6]);
-        crate::diagnostics::performance_metrics::record_present();
-        self.submitted_frames = self.submitted_frames.saturating_add(1);
-        Ok(())
-    }
-
     pub(super) fn draw_present(
         &mut self,
         upload: FrameUploadSummary,
         render_plan: FrameRenderPlan<'_>,
+        backdrop_blur_quality: NovaBackdropBlurQuality,
     ) -> Result<()> {
         self.prepare_for_frame_submission()?;
         if self.atlas.has_pending_removals() {
@@ -418,38 +175,46 @@ impl NovaRenderer {
         let frame_started = Instant::now();
         let backend_label = self.backend.label();
         let async_capabilities = self.backend.async_capabilities();
+        let native_partial_presentation =
+            self.backend.supports_partial_presentation(self.swapchain);
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
-        let requested_partial_scissor = partial_present_scissor(
-            render_plan,
-            self.current_size,
-            upload.unsupported_batches,
-            has_backdrop_blurs,
-        );
-        let use_retained_present = requested_partial_scissor.is_some();
-        let partial_scissor = if self.present_cache_valid {
-            requested_partial_scissor
-        } else {
-            None
-        };
-        if partial_scissor.is_some() {
-            crate::diagnostics::performance_metrics::record_partial_redraw();
-        } else if render_plan.partial_present_mode == PartialPresentMode::Partial
-            && requested_partial_scissor.is_none()
-        {
-            crate::diagnostics::performance_metrics::record_full_redraw_fallback();
+        let atlas_content_generation = self.atlas.content_generation();
+        let backdrop_blur_refresh_required = has_backdrop_blurs
+            && (render_plan.backdrop_blur_refresh_required
+                || !self.backdrop_blur_cache_valid
+                || self.backdrop_blur_cache_atlas_generation != atlas_content_generation
+                || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality));
+        if backdrop_blur_refresh_required {
+            // Leave the cache invalid until the source and every filter level have been submitted.
+            // If any backend call fails, the next frame must rebuild instead of sampling stale data.
+            self.backdrop_blur_cache_valid = false;
         }
-        self.prepare_draw_steps(partial_scissor);
-        self.prepare_present_copy_steps(use_retained_present);
+        let present_damage = (native_partial_presentation
+            && upload.unsupported_batches.total() == 0)
+            .then(|| partial_scissor_for_plan(render_plan, self.current_size))
+            .flatten();
+        if present_damage.is_some() {
+            crate::diagnostics::performance_metrics::record_partial_redraw();
+        } else {
+            if render_plan.partial_present_mode == PartialPresentMode::Partial {
+                crate::diagnostics::performance_metrics::record_full_redraw_fallback();
+            }
+        }
+        self.prepare_draw_steps();
         self.prepare_path_mask_draw_steps();
         self.prepare_backdrop_blur_source_steps(has_backdrop_blurs);
         self.prepare_backdrop_blur_passes(has_backdrop_blurs);
         let draw_step_count = self.draw_step_scratch.draw_steps.len();
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
         let mask_pass_count = usize::from(path_mask_step_count != 0);
-        let main_pass_count = 1 + usize::from(use_retained_present);
-        let composite_pass_count = usize::from(has_backdrop_blurs)
-            .saturating_add(self.draw_step_scratch.backdrop_blur_passes.len());
+        let main_pass_count = 1;
+        let mut backdrop_blur_refreshed = backdrop_blur_refresh_required;
+        let composite_pass_count = if backdrop_blur_refresh_required {
+            1usize.saturating_add(self.draw_step_scratch.backdrop_blur_passes.len())
+        } else {
+            0
+        };
         crate::diagnostics::performance_metrics::record_gpu_pass_metrics(
             mask_pass_count,
             main_pass_count,
@@ -457,6 +222,7 @@ impl NovaRenderer {
         );
         let unsupported = upload.unsupported_batches;
         let uploaded_bytes = self.frame_upload.uploaded_bytes();
+        let mapped_upload_bytes = self.frame_upload.mapped_upload_bytes(has_backdrop_blurs);
         crate::diagnostics::performance_metrics::record_frame_upload_breakdown(
             self.frame_upload.upload_breakdown(),
         );
@@ -486,8 +252,10 @@ impl NovaRenderer {
                     "path_vertices={} mono_sprites={} poly_sprites={} underlines={} ",
                     "draw_steps={} path_mask_steps={} gpu_passes={} upload_bytes={} ",
                     "async_submission={} async_wait={} async_presentation={} ",
-                    "partial_presentation={} retained_partial_present={} ",
-                    "present_cache_valid={} threading={:?}"
+                    "async_partial_presentation={} native_partial_presentation={} ",
+                    "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
+                    "dirty_area={} blur_cache_refresh={} animation_bindings={} ",
+                    "animation_values={} threading={:?}"
                 ),
                 backend_label,
                 self.surface_alpha.swapchain_mode,
@@ -510,8 +278,15 @@ impl NovaRenderer {
                 async_capabilities.async_wait,
                 async_capabilities.async_presentation,
                 async_capabilities.partial_presentation,
-                use_retained_present,
-                self.present_cache_valid,
+                native_partial_presentation,
+                present_damage,
+                render_plan.partial_present_mode,
+                render_plan.dirty_region.is_full(),
+                render_plan.dirty_region.rect_count(),
+                render_plan.dirty_region.area(),
+                backdrop_blur_refresh_required,
+                upload.animation_binding_count,
+                upload.animation_value_count,
                 async_capabilities.threading_mode,
             );
         } else {
@@ -552,7 +327,8 @@ impl NovaRenderer {
         let mesh_upload_bytes = self.custom_mesh_3d_uploaded_bytes_this_frame;
         let mesh_retained_bytes = self.custom_mesh_3d_retained_bytes();
         let mesh_buffer_count = self.custom_mesh_3d_buffer_count();
-        let retained_cache_load_op = present_cache_load_op(partial_scissor);
+        let atlas_texture_region_count;
+        let atlas_texture_upload_bytes;
         let render_result: Result<()> = match &mut self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
@@ -578,6 +354,8 @@ impl NovaRenderer {
                         })
                 })?;
                 let atlas_upload_elapsed_ms = atlas_started.elapsed().as_millis();
+                atlas_texture_region_count = atlas_stats.upload_count;
+                atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
                     self.frame_upload.uploaded_bytes(),
                     mesh_upload_bytes,
@@ -595,7 +373,12 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                if let Some(source_texture_view) = backdrop_blur_source_texture_view {
+                let refresh_backdrop_blur =
+                    backdrop_blur_refresh_required || atlas_stats.upload_count != 0;
+                backdrop_blur_refreshed = refresh_backdrop_blur;
+                if refresh_backdrop_blur
+                    && let Some(source_texture_view) = backdrop_blur_source_texture_view
+                {
                     device.render_steps_to_texture(
                         source_texture_view,
                         self.render_pass,
@@ -624,17 +407,10 @@ impl NovaRenderer {
                         frame_resource_index: self.current_frame_resource_index,
                         swapchain: self.swapchain,
                         render_pass: self.render_pass,
-                        present_cache_texture_view: self.present_cache_texture_view,
-                        present_copy_sprite_buffer: self.present_copy_sprite_buffer,
-                        present_copy_sprite_upload_cache: &mut self
-                            .present_copy_sprite_upload_cache,
-                        current_size: self.current_size,
                         depth_attachment,
-                        use_retained_present,
-                        present_cache_load_op: retained_cache_load_op,
+                        damage: present_damage,
                     },
                     &self.draw_step_scratch.draw_steps,
-                    &self.draw_step_scratch.present_copy_steps,
                 )?;
                 let present_elapsed_ms = present_started.elapsed().as_millis();
                 let total_elapsed_ms = frame_started.elapsed().as_millis();
@@ -679,6 +455,8 @@ impl NovaRenderer {
                             )
                         })
                 })?;
+                atlas_texture_region_count = atlas_stats.upload_count;
+                atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
                     self.frame_upload.uploaded_bytes(),
                     mesh_upload_bytes,
@@ -695,7 +473,12 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                if let Some(source_texture_view) = backdrop_blur_source_texture_view {
+                let refresh_backdrop_blur =
+                    backdrop_blur_refresh_required || atlas_stats.upload_count != 0;
+                backdrop_blur_refreshed = refresh_backdrop_blur;
+                if refresh_backdrop_blur
+                    && let Some(source_texture_view) = backdrop_blur_source_texture_view
+                {
                     device.render_steps_to_texture(
                         source_texture_view,
                         self.render_pass,
@@ -722,17 +505,10 @@ impl NovaRenderer {
                         frame_resource_index: self.current_frame_resource_index,
                         swapchain: self.swapchain,
                         render_pass: self.render_pass,
-                        present_cache_texture_view: self.present_cache_texture_view,
-                        present_copy_sprite_buffer: self.present_copy_sprite_buffer,
-                        present_copy_sprite_upload_cache: &mut self
-                            .present_copy_sprite_upload_cache,
-                        current_size: self.current_size,
                         depth_attachment,
-                        use_retained_present,
-                        present_cache_load_op: retained_cache_load_op,
+                        damage: present_damage,
                     },
                     &self.draw_step_scratch.draw_steps,
-                    &self.draw_step_scratch.present_copy_steps,
                 )?;
                 Ok(())
             }
@@ -763,6 +539,8 @@ impl NovaRenderer {
                         })
                 })?;
                 let atlas_upload_elapsed_ms = atlas_started.elapsed().as_millis();
+                atlas_texture_region_count = atlas_stats.upload_count;
+                atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
                     self.frame_upload.uploaded_bytes(),
                     mesh_upload_bytes,
@@ -780,7 +558,12 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                if let Some(source_texture_view) = backdrop_blur_source_texture_view {
+                let refresh_backdrop_blur =
+                    backdrop_blur_refresh_required || atlas_stats.upload_count != 0;
+                backdrop_blur_refreshed = refresh_backdrop_blur;
+                if refresh_backdrop_blur
+                    && let Some(source_texture_view) = backdrop_blur_source_texture_view
+                {
                     device.render_steps_to_texture(
                         source_texture_view,
                         self.render_pass,
@@ -809,17 +592,10 @@ impl NovaRenderer {
                         frame_resource_index: self.current_frame_resource_index,
                         swapchain: self.swapchain,
                         render_pass: self.render_pass,
-                        present_cache_texture_view: self.present_cache_texture_view,
-                        present_copy_sprite_buffer: self.present_copy_sprite_buffer,
-                        present_copy_sprite_upload_cache: &mut self
-                            .present_copy_sprite_upload_cache,
-                        current_size: self.current_size,
                         depth_attachment,
-                        use_retained_present,
-                        present_cache_load_op: retained_cache_load_op,
+                        damage: present_damage,
                     },
                     &self.draw_step_scratch.draw_steps,
-                    &self.draw_step_scratch.present_copy_steps,
                 )?;
                 let present_elapsed_ms = present_started.elapsed().as_millis();
                 let total_elapsed_ms = frame_started.elapsed().as_millis();
@@ -882,22 +658,52 @@ impl NovaRenderer {
             );
         }
         render_result?;
-        if use_retained_present {
-            crate::diagnostics::performance_metrics::record_retained_present(
-                self.drawable_pixels(),
-                self.retained_copy_estimated_bytes(),
-            );
+        if has_backdrop_blurs {
+            self.backdrop_blur_cache_valid = true;
+            self.backdrop_blur_cache_atlas_generation = atlas_content_generation;
+            self.backdrop_blur_cache_quality = Some(backdrop_blur_quality);
         } else {
-            crate::diagnostics::performance_metrics::record_direct_present();
+            self.invalidate_backdrop_blur_cache();
         }
+        self.swapchain_warmup_frames = self.swapchain_warmup_frames.saturating_sub(1);
+        crate::diagnostics::performance_metrics::record_direct_present();
         let (blur_source_pixels, blur_level_pixels) =
-            self.backdrop_blur_pixel_metrics(has_backdrop_blurs);
+            self.backdrop_blur_pixel_metrics(backdrop_blur_refreshed);
         crate::diagnostics::performance_metrics::record_backdrop_blur_frame(
             blur_source_pixels,
             blur_level_pixels,
         );
-        self.present_cache_valid = use_retained_present;
         crate::diagnostics::performance_metrics::record_present();
+        if self.diagnostics.should_log_frame_details() {
+            let blur_render_passes = if backdrop_blur_refreshed {
+                1usize.saturating_add(self.draw_step_scratch.backdrop_blur_passes.len())
+            } else {
+                0
+            };
+            log::warn!(
+                concat!(
+                    "nova-gfx copy attribution: backend={} frame={} ",
+                    "explicit_copy_source=atlas_texture_upload atlas_texture_regions={} ",
+                    "atlas_texture_bytes={} mapped_frame_upload_bytes={} ",
+                    "mapped_frame_upload_is_gpu_copy=false retained_present_copy_regions=0 ",
+                    "path_mask_render_passes={} blur_render_passes={} main_render_passes=1 ",
+                    "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
+                    "dirty_area={}"
+                ),
+                backend_label,
+                self.submitted_frames.saturating_add(1),
+                atlas_texture_region_count,
+                atlas_texture_upload_bytes,
+                mapped_upload_bytes.saturating_add(mesh_upload_bytes),
+                mask_pass_count,
+                blur_render_passes,
+                present_damage,
+                render_plan.partial_present_mode,
+                render_plan.dirty_region.is_full(),
+                render_plan.dirty_region.rect_count(),
+                render_plan.dirty_region.area(),
+            );
+        }
         if self.diagnostics.should_warn_slow_frame(frame_elapsed_ms) {
             log::warn!(
                 concat!(

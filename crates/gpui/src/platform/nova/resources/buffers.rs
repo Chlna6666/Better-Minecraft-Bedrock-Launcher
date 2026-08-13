@@ -12,7 +12,6 @@ pub(in crate::platform::nova) struct NovaFrameResourceBuffers {
     pub(in crate::platform::nova) path_sprite_buffer: BufferId,
     pub(in crate::platform::nova) mono_sprite_buffer: BufferId,
     pub(in crate::platform::nova) poly_sprite_buffer: BufferId,
-    pub(in crate::platform::nova) present_copy_sprite_buffer: BufferId,
     pub(in crate::platform::nova) underline_buffer: BufferId,
     pub(in crate::platform::nova) backdrop_blur_pass_buffer: BufferId,
     pub(in crate::platform::nova) backdrop_blur_buffer: BufferId,
@@ -152,12 +151,6 @@ where
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
-    let present_copy_sprite_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} present copy sprite")),
-        size: PACKED_POLY_SPRITE_BYTES as u64,
-        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
-        memory_location: MemoryLocation::CpuToGpu,
-    })?;
     let underline_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} underlines")),
         size: (MAX_UNDERLINES * PACKED_UNDERLINE_BYTES) as u64,
@@ -204,7 +197,6 @@ where
         path_sprite_buffer,
         mono_sprite_buffer,
         poly_sprite_buffer,
-        present_copy_sprite_buffer,
         underline_buffer,
         backdrop_blur_pass_buffer,
         backdrop_blur_buffer,

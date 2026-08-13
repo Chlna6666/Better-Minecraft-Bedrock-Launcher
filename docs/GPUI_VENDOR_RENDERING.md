@@ -331,7 +331,7 @@ Major modules:
 | `nova_renderer.rs` | Renderer state, draw entry point, retained resources, memory trim, and backend-independent orchestration. |
 | `nova_renderer/init.rs` | Device, surface, swapchain, resource, and pipeline initialization. |
 | `nova_renderer/draw_steps.rs` | Conversion from frame upload data to render step descriptors. |
-| `nova_renderer/present.rs` | Buffer upload, atlas upload, offscreen passes, retained present cache, and swapchain submission. |
+| `nova_renderer/present.rs` | Buffer upload, atlas upload, offscreen passes, direct swapchain rendering, and submission. |
 | `nova_renderer/submission.rs` | GPU submission and pending submission handling. |
 | `nova_renderer/surface_lifecycle.rs` | Resize and surface lifecycle behavior. |
 | `nova_renderer/custom_mesh_pipeline.rs` | Custom 3D mesh pipeline management. |
@@ -361,16 +361,14 @@ Major modules:
 2. Syncs atlas textures.
 3. Ensures custom 3D mesh cache resources.
 4. Determines partial present scissor eligibility.
-5. Builds draw steps, present-copy steps, path mask steps, and backdrop blur
-   source steps.
+5. Builds draw steps, path mask steps, and backdrop blur source steps.
 6. Records GPU pass metrics.
 7. Uploads frame buffers.
 8. Uploads pending atlas pages.
-9. Runs offscreen path-mask and backdrop blur passes when required.
-10. Renders the main scene either directly to the swapchain or to the retained
-    present cache.
+9. Runs offscreen path-mask passes and refreshes backdrop blur only when its source changed.
+10. Renders the main scene directly to the swapchain.
 11. Presents the frame through the swapchain.
-12. Records diagnostics and marks the retained present cache valid when used.
+12. Records diagnostics.
 
 ## Frame Upload Buckets
 
@@ -403,25 +401,34 @@ The nova path may run these GPU passes:
 | Backdrop source pass | Captures source content for blur sampling. |
 | Backdrop blur passes | Builds downsampled and blurred textures for backdrop blur primitives. |
 | Main pass | Draws quads, shadows, paths, sprites, text, underlines, custom mesh content, and composited blur. |
-| Present-copy pass | Copies retained present cache output to the swapchain when partial redraw is used. |
+Nova keeps every rotating back buffer coherent by rendering directly to the
+swapchain. It does not allocate a full-size retained present texture and does
+not run a second full-screen present-copy pass.
 
-When partial present is supported, GPUI can redraw only the dirty scissor region
-into a retained present cache and then copy the complete retained frame for
-presentation. When partial present is unsafe or unsupported, the renderer
-falls back to full redraw.
+When the active backend exposes native presentation damage, Nova forwards
+GPUI's unioned dirty region as presentation metadata without scissoring the main
+render pass. DX12 uses `Present1` dirty rectangles for DirectComposition
+`FLIP_SEQUENTIAL` swapchains. Vulkan uses `VK_KHR_incremental_present` when the
+device advertises it. Unsupported swapchains keep the same direct-render path
+and perform a regular full present.
+
+Backdrop blur remains a source, downsample, blur, upsample, and composite render
+pipeline. Those render-target passes are distinct from texture upload copies.
+GPUI conservatively expands source damage across the complete multi-level
+Dual-Kawase sampling footprint before passing the region to native presentation.
+Nova retains the filtered blur pyramid across frames. A titlebar or list animation
+painted above the first blur primitive reuses that pyramid; source scene changes,
+blur parameter or quality changes, atlas pixel uploads, resize, alpha-mode changes,
+and target recreation invalidate it. This preserves the same blur shader and
+quality while avoiding repeated source/downsample/upsample passes for unrelated
+foreground animation.
 
 ## Presentation-Only Frames
 
-`present_framebuffer_only()` is used when GPUI needs to present existing content
-without rebuilding layout or paint.
-
-Fast path:
-
-- if the retained present cache is valid and no full redraw is required,
-  `NovaRenderer::present_retained_cache_only()` submits only the present-copy
-  steps;
-- otherwise GPUI encodes the current retained scene with a full redraw and
-  presents it safely.
+`present_framebuffer_only()` is used when GPUI needs presentation without a new
+layout or paint pass. Nova re-encodes the retained scene and presents it through
+the direct swapchain path because it no longer keeps a second full-size present
+cache.
 
 This path is important for event-driven rendering because it allows GPU output
 or platform presentation to happen without forcing a CPU scene rebuild.
@@ -434,7 +441,6 @@ GPUI keeps renderer resources across frames:
 - sprite atlas textures;
 - frame upload buffers;
 - draw step scratch buffers;
-- present cache texture;
 - backdrop blur targets;
 - custom mesh pipeline and mesh buffers;
 - text layout and glyph atlas state.
@@ -463,7 +469,7 @@ Framework-level changes are appropriate when they affect generic GPUI behavior:
 
 - frame coalescing;
 - renderer option parsing;
-- dirty region or retained present logic;
+- dirty region or presentation logic;
 - generic image pipeline behavior;
 - generic element, layout, text, scene, or platform behavior;
 - nova-gfx backend integration.

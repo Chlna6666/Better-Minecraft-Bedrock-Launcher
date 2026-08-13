@@ -99,6 +99,16 @@ impl NovaFrameUpload {
             .saturating_add(self.custom_mesh_3d_parameters.len())
     }
 
+    pub(in crate::platform::nova) fn mapped_upload_bytes(&self, has_backdrop_blurs: bool) -> usize {
+        let mut bytes = self.uploaded_bytes();
+        if !has_backdrop_blurs {
+            bytes = bytes
+                .saturating_sub(self.backdrop_blur_passes.len())
+                .saturating_sub(self.backdrop_blurs.len());
+        }
+        bytes
+    }
+
     pub(in crate::platform::nova) fn upload_breakdown(
         &self,
     ) -> crate::diagnostics::performance_metrics::FrameUploadBreakdown {

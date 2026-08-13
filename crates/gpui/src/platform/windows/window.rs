@@ -29,7 +29,8 @@ use windows::{
 };
 
 use crate::diagnostics::performance_metrics::{
-    record_frame_request, record_renderer_backend, record_window_request_redraw,
+    record_frame_request, record_gpu_adapter_diagnostics, record_renderer_backend,
+    record_window_request_redraw,
 };
 use crate::platform::windows::with_dll_library;
 use crate::platform::winit::{
@@ -80,12 +81,13 @@ fn renderer_backend_candidates(
     transparent: bool,
 ) -> Vec<RendererBackend> {
     let mut candidates = vec![resolved_backend];
-    let should_try_fallbacks = renderer_options.backend == RendererBackend::Auto
-        || (transparent
-            && matches!(
-                renderer_options.backend,
-                RendererBackend::NovaDx12 | RendererBackend::NovaVulkan
-            ));
+    let should_try_fallbacks = renderer_options.adapter_name.is_none()
+        && (renderer_options.backend == RendererBackend::Auto
+            || (transparent
+                && matches!(
+                    renderer_options.backend,
+                    RendererBackend::NovaDx12 | RendererBackend::NovaVulkan
+                )));
     if should_try_fallbacks {
         for backend in super::platform::windows_auto_renderer_backend_order() {
             if !candidates.contains(backend) {
@@ -266,13 +268,10 @@ impl WindowsWindow {
         if !self.0.queue_frame_request(options) {
             return;
         }
-
-        // Keep frame delivery in the native event queue. On Windows, redraw work runs after
-        // higher-priority input and window messages, so a continuously animating view cannot
-        // monopolize the foreground executor. The frame watchdog remains the fallback when a
-        // requested redraw is not delivered.
         record_window_request_redraw(self.0.handle.window_id().data().as_ffi());
-        self.window().request_redraw();
+        if !self.0.vsync_scheduler.request_frame() {
+            self.window().request_redraw();
+        }
     }
 
     fn request_first_presentable_frame(&self) {
@@ -391,6 +390,7 @@ impl WindowsRenderer {
                         gpu_specs.is_software_emulated
                     );
                     record_renderer_backend(candidate);
+                    record_gpu_adapter_diagnostics(&gpu_specs.device_name, &gpu_specs.driver_name);
                     let _ = (disable_direct_composition, window_id);
                     return Ok(Self::Nova(renderer));
                 }
@@ -650,6 +650,7 @@ pub(crate) struct WindowsWindowInner {
     renderer_atlas: NovaRendererAtlas,
     presentation_state: Cell<WindowsWindowPresentationState>,
     pending_resize: Cell<Option<PendingWindowsResize>>,
+    vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
     pub(crate) renderer_resize_retry_pending: Cell<bool>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
@@ -728,6 +729,7 @@ impl WindowsWindow {
             disable_direct_composition,
             renderer_backend,
             renderer_options,
+            vsync_scheduler,
         } = creation_info;
         let title = params
             .titlebar
@@ -845,6 +847,7 @@ impl WindowsWindow {
             renderer_atlas,
             presentation_state: Cell::new(presentation_state),
             pending_resize: Cell::new(None),
+            vsync_scheduler,
             pending_renderer_size: Cell::new(None),
             renderer_resize_retry_pending: Cell::new(false),
             winit_window: cell,
@@ -1597,6 +1600,19 @@ mod tests {
             Some(RendererBackend::NovaVulkan)
         );
         assert!(candidates.contains(&RendererBackend::NovaDx12));
+    }
+
+    #[test]
+    fn explicit_adapter_does_not_fallback_to_another_backend() {
+        let options = RendererOptions {
+            adapter_name: Some("AMD Radeon 780M".to_string()),
+            ..RendererOptions::with_backend(RendererBackend::NovaVulkan)
+        };
+
+        assert_eq!(
+            renderer_backend_candidates(&options, RendererBackend::NovaVulkan, true),
+            vec![RendererBackend::NovaVulkan]
+        );
     }
 
     #[test]

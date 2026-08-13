@@ -83,6 +83,7 @@ impl NovaRenderer {
         clear_color: ClearColor,
         depth_attachment: Option<RenderPassDepthAttachment>,
         frame_resource_index: usize,
+        damage: Option<ScissorRect>,
     ) -> Result<()>
     where
         D: BackendPresentationCompat + BackendQueue,
@@ -90,22 +91,24 @@ impl NovaRenderer {
         if submission_mode == GpuSubmissionMode::Synchronous
             || !async_capabilities.async_presentation
         {
-            device.render_steps_and_present(
+            device.render_step_list_and_present_with_damage_compat(
                 swapchain,
                 render_pass,
-                steps,
+                RenderStepList::from_render_steps(steps),
                 clear_color,
                 depth_attachment,
+                damage,
             )?;
             return Ok(());
         }
 
-        let submission = device.render_steps_and_present_deferred(
+        let submission = device.render_step_list_and_present_deferred_with_damage_compat(
             swapchain,
             render_pass,
-            steps,
+            RenderStepList::from_render_steps(steps),
             clear_color,
             depth_attachment,
+            damage,
         )?;
         if is_real_submission(submission) {
             pending_submissions.push(PendingSubmission {

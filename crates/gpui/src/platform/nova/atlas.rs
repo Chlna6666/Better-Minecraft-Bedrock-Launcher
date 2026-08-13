@@ -31,6 +31,9 @@ pub(super) struct NovaAtlas {
     /// method that can change the texture set. The renderer polls this each frame to skip the
     /// texture sync (mutex + allocations) when nothing changed.
     texture_set_generation: AtomicU64,
+    /// Lock-free mirror of atlas pixel content changes. Blur source caching uses this to avoid
+    /// reusing a filtered texture after an image or glyph upload changed sampled pixels.
+    content_generation: AtomicU64,
     /// Lock-free mirror of whether [`NovaAtlasState::pending_removals`] is non-empty.
     pending_removals_flag: AtomicBool,
 }
@@ -50,6 +53,8 @@ pub(super) struct NovaAtlasState {
     max_atlas_textures: usize,
     /// Monotonic counter bumped whenever a texture is created or removed.
     texture_set_generation: u64,
+    /// Monotonic counter bumped after every successfully encoded tile upload.
+    pub(super) content_generation: u64,
 }
 
 impl Default for NovaAtlasState {
@@ -68,6 +73,7 @@ impl Default for NovaAtlasState {
             max_atlas_bytes: NOVA_MIN_IMAGE_ATLAS_BYTES,
             max_atlas_textures: NOVA_MIN_IMAGE_ATLAS_TEXTURES,
             texture_set_generation: 0,
+            content_generation: 0,
         }
     }
 }
@@ -101,6 +107,7 @@ impl NovaAtlas {
         let state = NovaAtlasState::with_fallback_tiles();
         Self {
             texture_set_generation: AtomicU64::new(state.texture_set_generation),
+            content_generation: AtomicU64::new(state.content_generation),
             pending_removals_flag: AtomicBool::new(!state.pending_removals.is_empty()),
             state: Mutex::new(state),
         }
@@ -111,6 +118,8 @@ impl NovaAtlas {
     fn publish_state_flags(&self, state: &NovaAtlasState) {
         self.texture_set_generation
             .store(state.texture_set_generation, AtomicOrdering::Release);
+        self.content_generation
+            .store(state.content_generation, AtomicOrdering::Release);
         self.pending_removals_flag
             .store(!state.pending_removals.is_empty(), AtomicOrdering::Release);
     }
@@ -118,6 +127,10 @@ impl NovaAtlas {
     /// Monotonic counter identifying the current set of atlas textures without locking.
     pub(super) fn texture_set_generation(&self) -> u64 {
         self.texture_set_generation.load(AtomicOrdering::Acquire)
+    }
+
+    pub(super) fn content_generation(&self) -> u64 {
+        self.content_generation.load(AtomicOrdering::Acquire)
     }
 
     pub(super) fn trim(&self, level: GpuiMemoryTrimLevel) {
@@ -132,11 +145,15 @@ impl NovaAtlas {
             }
             GpuiMemoryTrimLevel::Aggressive => {
                 let previous_generation = state.texture_set_generation;
+                let previous_content_generation = state.content_generation;
                 *state = NovaAtlasState::with_fallback_tiles();
                 // Keep the generation monotonic across the reset so a renderer that synced
                 // before the reset can never observe a stale-but-equal value.
                 state.texture_set_generation = previous_generation
                     .wrapping_add(state.texture_set_generation)
+                    .wrapping_add(1);
+                state.content_generation = previous_content_generation
+                    .wrapping_add(state.content_generation)
                     .wrapping_add(1);
             }
         }
@@ -261,6 +278,7 @@ impl PlatformAtlas for NovaAtlas {
                     bytes.as_ref(),
                     tile.padding,
                 ) {
+                    self.publish_state_flags(&state);
                     return Ok(Some(tile));
                 }
                 log::warn!(
@@ -654,6 +672,28 @@ impl NovaAtlasState {
 mod tests {
     use super::*;
     use crate::{ImageId, RenderImageParams, RenderImagePixelFormat, size};
+
+    #[test]
+    fn queued_tile_upload_advances_atlas_content_generation() {
+        let mut state = NovaAtlasState::default();
+        let generation = state.content_generation;
+
+        assert!(state.enqueue_tile_upload(
+            AtlasTextureId {
+                index: 0,
+                kind: AtlasTextureKind::Bgra,
+            },
+            AtlasTextureKind::Bgra,
+            Point {
+                x: DevicePixels(0),
+                y: DevicePixels(0),
+            },
+            size(DevicePixels(1), DevicePixels(1)),
+            &[0, 0, 0, 255],
+            0,
+        ));
+        assert_ne!(state.content_generation, generation);
+    }
 
     #[test]
     fn deallocating_last_texture_tile_removes_pending_uploads() {

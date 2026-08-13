@@ -94,6 +94,7 @@ fn with_active_context<R>(
 #[derive(Debug, Clone)]
 pub(crate) enum WindowsUserEvent {
     RunMainThreadTasks,
+    VSync,
     DockMenuAction(usize),
     Quit,
 }
@@ -108,6 +109,7 @@ pub(crate) struct WindowsPlatform {
     renderer_backend: RendererBackend,
     renderer_options: RendererOptions,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+    vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     ole_initialized: bool,
 }
 
@@ -242,6 +244,7 @@ impl WindowsPlatform {
             renderer_backend,
             renderer_options: RendererOptions::with_backend(renderer_backend),
             event_loop_proxy,
+            vsync_scheduler: Arc::new(super::vsync::VSyncScheduler::new()),
             ole_initialized: false,
         }
     }
@@ -314,6 +317,7 @@ impl WindowsPlatform {
             renderer_backend,
             renderer_options,
             event_loop_proxy,
+            vsync_scheduler: Arc::new(super::vsync::VSyncScheduler::new()),
             ole_initialized: true,
         })
     }
@@ -325,6 +329,7 @@ impl WindowsPlatform {
             disable_direct_composition: self.disable_direct_composition,
             renderer_backend: self.renderer_backend,
             renderer_options: self.renderer_options.clone(),
+            vsync_scheduler: self.vsync_scheduler.clone(),
         }
     }
 
@@ -484,7 +489,14 @@ impl Platform for WindowsPlatform {
             pressed_button: None,
             hovered_window_id: None,
             pending_file_drops: FxHashMap::default(),
+            vsync_scheduler: self.vsync_scheduler.clone(),
         };
+        if let Err(error) = super::vsync::spawn_vsync_thread(
+            event_loop.create_proxy(),
+            self.vsync_scheduler.clone(),
+        ) {
+            log::error!("failed to start GPUI Windows DWM frame pacing: {error}");
+        }
         let _ = event_loop.run_app(&mut application);
     }
 
@@ -926,6 +938,7 @@ struct WindowsApplication {
     pressed_button: Option<MouseButton>,
     hovered_window_id: Option<winit::window::WindowId>,
     pending_file_drops: FxHashMap<winit::window::WindowId, PendingFileDrop>,
+    vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
 }
 
 impl WindowsApplication {
@@ -1046,6 +1059,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         });
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
+            WindowsUserEvent::VSync => self.dispatch_pending_window_updates(),
             WindowsUserEvent::DockMenuAction(action_index) => {
                 self.inner.handle_dock_action_event(action_index);
             }
@@ -1061,10 +1075,6 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             *storage.borrow_mut() = Some((event_loop as *const _, self as *mut _));
         });
         self.run_foreground_tasks(event_loop);
-        // `RedrawRequested` can be suppressed while a native window is being mapped or when
-        // Windows coalesces redraws. Consume resize and frame work that survived the event cycle
-        // so the frame watchdog does not become the normal delivery path.
-        self.dispatch_pending_window_updates();
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = None;
         });
@@ -1408,6 +1418,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.vsync_scheduler.shutdown();
         if let Some(ref mut callback) = self.inner.state.borrow_mut().callbacks.quit {
             callback();
         }
@@ -1438,6 +1449,7 @@ pub(crate) struct WindowCreationInfo {
     pub(crate) disable_direct_composition: bool,
     pub(crate) renderer_backend: RendererBackend,
     pub(crate) renderer_options: RendererOptions,
+    pub(crate) vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
 }
 
 fn open_target(target: impl AsRef<OsStr>) -> Result<()> {

@@ -18,16 +18,13 @@ impl NovaRenderer {
         };
         let path_mask_target_descriptor = self.path_mask_target_descriptor(target_size);
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
-        let present_cache_target_descriptor = self.present_cache_target_descriptor(target_size);
         let old_path_mask_target = self.current_path_mask_target();
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
-        let old_present_cache_target = self.current_present_cache_target();
         let old_depth_texture = self.depth_texture;
         let old_depth_texture_view = self.depth_texture_view;
-        let (next_path_mask_target, next_backdrop_blur_targets, next_present_cache_target): (
+        let (next_path_mask_target, next_backdrop_blur_targets): (
             NovaPathMaskTarget,
             Option<NovaBackdropBlurTargets>,
-            NovaPresentCacheTarget,
         ) = match &mut self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
@@ -43,26 +40,16 @@ impl NovaRenderer {
                 } else {
                     None
                 };
-                let next_present_cache_target = create_present_cache_target(
-                    device,
-                    "gpui nova dx12",
-                    present_cache_target_descriptor,
-                )?;
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova dx12", target_size)?;
                 destroy_path_mask_target(device, old_path_mask_target, "DX12");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX12");
                 }
-                destroy_present_cache_target(device, old_present_cache_target, "DX12");
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX12");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
-                (
-                    next_path_mask_target,
-                    next_backdrop_blur_targets,
-                    next_present_cache_target,
-                )
+                (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => {
@@ -81,26 +68,16 @@ impl NovaRenderer {
                 } else {
                     None
                 };
-                let next_present_cache_target = create_present_cache_target(
-                    device,
-                    "gpui nova metal",
-                    present_cache_target_descriptor,
-                )?;
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova metal", target_size)?;
                 destroy_path_mask_target(device, old_path_mask_target, "Metal");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Metal");
                 }
-                destroy_present_cache_target(device, old_present_cache_target, "Metal");
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Metal");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
-                (
-                    next_path_mask_target,
-                    next_backdrop_blur_targets,
-                    next_present_cache_target,
-                )
+                (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
@@ -122,26 +99,16 @@ impl NovaRenderer {
                 } else {
                     None
                 };
-                let next_present_cache_target = create_present_cache_target(
-                    device,
-                    "gpui nova vulkan",
-                    present_cache_target_descriptor,
-                )?;
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova vulkan", target_size)?;
                 destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Vulkan");
                 }
-                destroy_present_cache_target(device, old_present_cache_target, "Vulkan");
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Vulkan");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
-                (
-                    next_path_mask_target,
-                    next_backdrop_blur_targets,
-                    next_present_cache_target,
-                )
+                (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
@@ -159,14 +126,11 @@ impl NovaRenderer {
         self.path_texture_view = next_path_mask_target.texture_view;
         self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
         self.backdrop_blur_targets = next_backdrop_blur_targets;
-        self.present_cache_texture = next_present_cache_target.texture;
-        self.present_cache_texture_view = next_present_cache_target.texture_view;
-        self.update_present_cache_resource_sets(&next_present_cache_target.resource_sets)?;
+        self.invalidate_backdrop_blur_cache();
         self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_config = surface_config;
         self.current_size = next_size;
-        self.needs_full_redraw_after_resize = true;
-        self.present_cache_valid = false;
+        self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
         Ok(())
     }
 
@@ -287,8 +251,6 @@ impl NovaRenderer {
                 alpha.output_mode,
             );
             self.surface_alpha = alpha;
-            self.needs_full_redraw_after_resize = true;
-            self.present_cache_valid = false;
             return Ok(());
         }
 
@@ -300,16 +262,13 @@ impl NovaRenderer {
         };
         let path_mask_target_descriptor = self.path_mask_target_descriptor(config.size);
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(config.size);
-        let present_cache_target_descriptor = self.present_cache_target_descriptor(config.size);
         let old_path_mask_target = self.current_path_mask_target();
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
-        let old_present_cache_target = self.current_present_cache_target();
         let old_depth_texture = self.depth_texture;
         let old_depth_texture_view = self.depth_texture_view;
-        let (next_path_mask_target, next_backdrop_blur_targets, next_present_cache_target): (
+        let (next_path_mask_target, next_backdrop_blur_targets): (
             NovaPathMaskTarget,
             Option<NovaBackdropBlurTargets>,
-            NovaPresentCacheTarget,
         ) = match &mut self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
@@ -326,26 +285,16 @@ impl NovaRenderer {
                 } else {
                     None
                 };
-                let next_present_cache_target = create_present_cache_target(
-                    device,
-                    "gpui nova dx12",
-                    present_cache_target_descriptor,
-                )?;
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova dx12", config.size)?;
                 destroy_path_mask_target(device, old_path_mask_target, "DX12");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX12");
                 }
-                destroy_present_cache_target(device, old_present_cache_target, "DX12");
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX12");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
-                (
-                    next_path_mask_target,
-                    next_backdrop_blur_targets,
-                    next_present_cache_target,
-                )
+                (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => {
@@ -368,26 +317,16 @@ impl NovaRenderer {
                 } else {
                     None
                 };
-                let next_present_cache_target = create_present_cache_target(
-                    device,
-                    "gpui nova metal",
-                    present_cache_target_descriptor,
-                )?;
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova metal", config.size)?;
                 destroy_path_mask_target(device, old_path_mask_target, "Metal");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Metal");
                 }
-                destroy_present_cache_target(device, old_present_cache_target, "Metal");
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Metal");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
-                (
-                    next_path_mask_target,
-                    next_backdrop_blur_targets,
-                    next_present_cache_target,
-                )
+                (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
@@ -409,26 +348,16 @@ impl NovaRenderer {
                 } else {
                     None
                 };
-                let next_present_cache_target = create_present_cache_target(
-                    device,
-                    "gpui nova vulkan",
-                    present_cache_target_descriptor,
-                )?;
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova vulkan", config.size)?;
                 destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Vulkan");
                 }
-                destroy_present_cache_target(device, old_present_cache_target, "Vulkan");
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Vulkan");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
-                (
-                    next_path_mask_target,
-                    next_backdrop_blur_targets,
-                    next_present_cache_target,
-                )
+                (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
@@ -446,13 +375,10 @@ impl NovaRenderer {
         self.path_texture_view = next_path_mask_target.texture_view;
         self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
         self.backdrop_blur_targets = next_backdrop_blur_targets;
-        self.present_cache_texture = next_present_cache_target.texture;
-        self.present_cache_texture_view = next_present_cache_target.texture_view;
-        self.update_present_cache_resource_sets(&next_present_cache_target.resource_sets)?;
+        self.invalidate_backdrop_blur_cache();
+        self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
         self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_alpha = alpha;
-        self.needs_full_redraw_after_resize = true;
-        self.present_cache_valid = false;
         Ok(())
     }
 
@@ -472,33 +398,11 @@ impl NovaRenderer {
         self.backdrop_blur_targets.clone()
     }
 
-    fn current_present_cache_target(&self) -> NovaPresentCacheTarget {
-        NovaPresentCacheTarget {
-            texture: self.present_cache_texture,
-            texture_view: self.present_cache_texture_view,
-            resource_sets: self
-                .frame_resources
-                .iter()
-                .map(|resources| resources.present_cache_resource_set)
-                .collect(),
-        }
-    }
-
     fn path_mask_target_descriptor(&self, size: Extent2d) -> NovaPathMaskTargetDescriptor {
         NovaPathMaskTargetDescriptor {
             size,
             format: self.surface_format,
             resource_set_layout: self.path_resource_set_layout,
-            frame_buffers: self.frame_resource_buffers(),
-            sampler: self.atlas_sampler,
-        }
-    }
-
-    fn present_cache_target_descriptor(&self, size: Extent2d) -> NovaPresentCacheTargetDescriptor {
-        NovaPresentCacheTargetDescriptor {
-            size,
-            format: self.surface_format,
-            resource_set_layout: self.poly_sprite_resource_set_layout,
             frame_buffers: self.frame_resource_buffers(),
             sampler: self.atlas_sampler,
         }

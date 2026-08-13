@@ -1794,139 +1794,7 @@ fn present_draw_steps_continue_after_backdrop_blur_batch() {
 }
 
 #[test]
-fn partial_render_plan_produces_dirty_region_scissor() {
-    let scene = crate::Scene::default();
-    let mut dirty_region = crate::DirtyRegion::empty();
-    dirty_region.push(crate::bounds(
-        Point {
-            x: crate::ScaledPixels(10.25),
-            y: crate::ScaledPixels(20.75),
-        },
-        size(crate::ScaledPixels(30.1), crate::ScaledPixels(40.1)),
-    ));
-    dirty_region.push(crate::bounds(
-        Point {
-            x: crate::ScaledPixels(60.0),
-            y: crate::ScaledPixels(70.0),
-        },
-        size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
-    ));
-    let render_plan = FrameRenderPlan {
-        scene: &scene,
-        dirty_region: &dirty_region,
-        partial_present_mode: PartialPresentMode::Partial,
-        trim_policy: Default::default(),
-        visual_effect_quality: FrameVisualEffectQuality::Full,
-    };
-
-    assert_eq!(
-        partial_scissor_for_plan(
-            render_plan,
-            DrawableSize {
-                width: 100,
-                height: 100,
-            },
-        ),
-        Some(ScissorRect {
-            x: 10,
-            y: 20,
-            width: 60,
-            height: 60,
-        })
-    );
-}
-
-#[test]
-fn backdrop_blur_disables_partial_present_scissor() {
-    let scene = backdrop_blur_scene(None);
-    let mut dirty_region = crate::DirtyRegion::empty();
-    dirty_region.push(crate::bounds(
-        Point {
-            x: crate::ScaledPixels(8.5),
-            y: crate::ScaledPixels(9.25),
-        },
-        size(crate::ScaledPixels(20.0), crate::ScaledPixels(30.0)),
-    ));
-    let render_plan = FrameRenderPlan {
-        scene: &scene,
-        dirty_region: &dirty_region,
-        partial_present_mode: PartialPresentMode::Partial,
-        trim_policy: Default::default(),
-        visual_effect_quality: FrameVisualEffectQuality::Full,
-    };
-
-    assert_eq!(
-        partial_present_scissor(
-            render_plan,
-            DrawableSize {
-                width: 100,
-                height: 100,
-            },
-            UnsupportedBatchSummary::default(),
-            true,
-        ),
-        None
-    );
-    assert_eq!(
-        partial_present_scissor(
-            render_plan,
-            DrawableSize {
-                width: 100,
-                height: 100,
-            },
-            UnsupportedBatchSummary {
-                surfaces: 1,
-                ..Default::default()
-            },
-            true,
-        ),
-        None
-    );
-    assert_eq!(
-        partial_present_scissor(
-            render_plan,
-            DrawableSize {
-                width: 100,
-                height: 100,
-            },
-            UnsupportedBatchSummary::default(),
-            false,
-        ),
-        Some(ScissorRect {
-            x: 8,
-            y: 9,
-            width: 21,
-            height: 31,
-        })
-    );
-}
-
-#[test]
-fn full_render_plan_does_not_produce_scissor() {
-    let scene = crate::Scene::default();
-    let dirty_region = crate::DirtyRegion::full(crate::bounds(
-        Point {
-            x: crate::ScaledPixels(0.0),
-            y: crate::ScaledPixels(0.0),
-        },
-        size(crate::ScaledPixels(100.0), crate::ScaledPixels(100.0)),
-    ));
-    let render_plan = FrameRenderPlan::full_redraw(&scene, &dirty_region);
-
-    assert_eq!(
-        partial_scissor_for_plan(
-            render_plan,
-            DrawableSize {
-                width: 100,
-                height: 100,
-            },
-        ),
-        None
-    );
-}
-
-#[test]
-fn surface_resize_forces_full_redraw_plan() {
+fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
     let scene = crate::Scene::default();
     let mut dirty_region = crate::DirtyRegion::empty();
     dirty_region.push(crate::bounds(
@@ -1942,27 +1810,22 @@ fn surface_resize_forces_full_redraw_plan() {
         partial_present_mode: PartialPresentMode::Partial,
         trim_policy: Default::default(),
         visual_effect_quality: FrameVisualEffectQuality::Disabled,
+        backdrop_blur_refresh_required: false,
     };
 
-    assert_eq!(
-        resolve_surface_render_plan(partial_plan, true).partial_present_mode,
-        PartialPresentMode::FullRedraw
-    );
-    assert_eq!(
-        resolve_surface_render_plan(partial_plan, true).visual_effect_quality,
-        FrameVisualEffectQuality::Disabled
-    );
     assert_eq!(
         resolve_surface_render_plan(partial_plan, false).partial_present_mode,
         PartialPresentMode::Partial
     );
-}
-
-#[test]
-fn retained_cache_copy_is_disabled_after_surface_resize() {
-    assert!(can_present_retained_cache_only(true, false));
-    assert!(!can_present_retained_cache_only(true, true));
-    assert!(!can_present_retained_cache_only(false, false));
+    assert_eq!(
+        resolve_surface_render_plan(partial_plan, true).partial_present_mode,
+        PartialPresentMode::FullRedraw
+    );
+    assert!(resolve_surface_render_plan(partial_plan, true).backdrop_blur_refresh_required);
+    assert_eq!(
+        resolve_surface_render_plan(partial_plan, false).visual_effect_quality,
+        FrameVisualEffectQuality::Disabled
+    );
 }
 
 #[test]
@@ -3137,7 +3000,6 @@ fn test_pipelines() -> NovaPipelines {
         premultiplied: test_blend_pipelines(100),
         path_rasterization: test_render_pipeline_id(4),
         paths: test_render_pipeline_id(5),
-        present_copy: test_render_pipeline_id(8),
         backdrop_blur_downsample: test_render_pipeline_id(6),
         backdrop_blur_upsample: test_render_pipeline_id(7),
     }

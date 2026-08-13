@@ -152,32 +152,11 @@ where
             surface_config.size,
         )
         .context("creating nova path render pipeline")?;
-    let present_copy = device
-        .create_render_pipeline(
-            &RenderPipelineDescriptor {
-                label: Some(format!("{label} retained present copy pipeline")),
-                vertex_shader: shaders.poly_vertex,
-                vertex_entry_point: "vs_poly_sprite".to_string(),
-                fragment_shader: shaders.poly_fragment,
-                fragment_entry_point: "fs_poly_sprite".to_string(),
-                vertex_buffers: Vec::new(),
-                render_pass,
-                pipeline_layout: Some(layouts.poly_pipeline_layout),
-                color_format: surface_config.format,
-                blend_mode: BlendMode::Replace,
-                primitive_topology: PrimitiveTopology::TriangleStrip,
-                depth_state: None,
-            },
-            surface_config.size,
-        )
-        .context("creating nova retained present copy render pipeline")?;
-
     Ok(NovaPipelines {
         alpha,
         premultiplied,
         path_rasterization,
         paths,
-        present_copy,
         backdrop_blur_downsample,
         backdrop_blur_upsample,
     })

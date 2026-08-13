@@ -5,7 +5,6 @@ pub(super) struct NovaPipelines {
     pub(super) premultiplied: NovaBlendPipelines,
     pub(super) path_rasterization: RenderPipelineId,
     pub(super) paths: RenderPipelineId,
-    pub(super) present_copy: RenderPipelineId,
     pub(super) backdrop_blur_downsample: RenderPipelineId,
     pub(super) backdrop_blur_upsample: RenderPipelineId,
 }

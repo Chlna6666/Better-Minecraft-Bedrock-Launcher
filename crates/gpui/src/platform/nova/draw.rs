@@ -281,15 +281,6 @@ fn draw_steps_can_merge(previous: &DrawStepDescriptor, next: &DrawStepDescriptor
         && previous.first_instance.checked_add(previous.instance_count) == Some(next.first_instance)
 }
 
-pub(super) fn apply_scissor_to_steps(steps: &mut [RenderStepDescriptor], scissor: ScissorRect) {
-    for step in steps {
-        match step {
-            RenderStepDescriptor::Draw(step) => step.scissor = Some(scissor),
-            RenderStepDescriptor::DrawIndexed(step) => step.scissor = Some(scissor),
-        }
-    }
-}
-
 pub(super) fn partial_scissor_for_plan(
     render_plan: FrameRenderPlan<'_>,
     target_size: DrawableSize,
@@ -299,12 +290,10 @@ pub(super) fn partial_scissor_for_plan(
     }
 
     let bounds = render_plan.dirty_region.union_bounds()?;
-    let target_width = target_size.width;
-    let target_height = target_size.height;
-    let x = scaled_pixels_floor_u32(bounds.origin.x).min(target_width);
-    let y = scaled_pixels_floor_u32(bounds.origin.y).min(target_height);
-    let right = scaled_pixels_ceil_u32(bounds.right()).min(target_width);
-    let bottom = scaled_pixels_ceil_u32(bounds.bottom()).min(target_height);
+    let x = scaled_pixels_floor_u32(bounds.origin.x).min(target_size.width);
+    let y = scaled_pixels_floor_u32(bounds.origin.y).min(target_size.height);
+    let right = scaled_pixels_ceil_u32(bounds.right()).min(target_size.width);
+    let bottom = scaled_pixels_ceil_u32(bounds.bottom()).min(target_size.height);
     let scissor = ScissorRect {
         x,
         y,

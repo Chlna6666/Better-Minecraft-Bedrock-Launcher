@@ -22,6 +22,52 @@ pub(super) enum NovaBackend {
 }
 
 impl NovaBackend {
+    pub(super) fn adapter_name(&self) -> &str {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => device.adapter_name(),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(_) => "nova-gfx Metal",
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => device.adapter_name(),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            Self::Unavailable => "nova-gfx unavailable",
+        }
+    }
+
+    pub(super) fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => device.supports_partial_presentation(swapchain),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(device) => device.supports_partial_presentation(swapchain),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => device.supports_partial_presentation(swapchain),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            Self::Unavailable => false,
+        }
+    }
+
     pub(super) fn label(&self) -> &'static str {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]

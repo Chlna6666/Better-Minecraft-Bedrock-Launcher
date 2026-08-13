@@ -12,7 +12,7 @@ use crate::{
     LoadOp, PipelineLayoutDesc, PipelineLayoutId, RenderPassDepthAttachment, RenderPassDesc,
     RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor, RenderStepList,
     ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
-    Result, SamplerDesc, SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId,
+    Result, SamplerDesc, SamplerId, ScissorRect, ShaderModuleDesc, ShaderModuleId, SubmissionId,
     SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId,
     TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
 };
@@ -553,6 +553,16 @@ impl<T> BackendQueue for T where T: GfxCommandDevice + GfxSubmissionDevice {}
 /// These helpers are the normalized high-level presentation API. Backend-specific
 /// acquire/present synchronization details stay inside backend crates.
 pub trait GfxPresentationDevice {
+    /// Returns whether `swapchain` can consume native presentation damage.
+    ///
+    /// Backends returning `true` must keep every rotating back buffer coherent, restrict rendering
+    /// to the effective damaged region, and pass that same region to the native presentation API.
+    /// This contract avoids a retained full-surface texture or a previous-buffer copy.
+    #[must_use]
+    fn supports_partial_presentation(&self, _swapchain: SwapchainId) -> bool {
+        false
+    }
+
     /// Acquires a swapchain image, records draw steps, submits them, and presents.
     ///
     /// # Errors
@@ -647,6 +657,32 @@ pub trait GfxPresentationDevice {
                 depth_attachment,
             ),
         }
+    }
+
+    /// Renders borrowed render-step lists and supplies the changed region to native incremental
+    /// presentation when the backend supports it.
+    ///
+    /// The default implementation safely ignores `damage` and performs a regular full present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing or presentation fails.
+    fn render_step_list_and_present_with_damage_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        _damage: Option<ScissorRect>,
+    ) -> Result<()> {
+        self.render_step_list_and_present_compat(
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+        )
     }
 
     /// Renders borrowed render-step lists into a texture target.
@@ -797,6 +833,32 @@ pub trait GfxPresentationDevice {
                 depth_attachment,
             ),
         }
+    }
+
+    /// Deferred counterpart of [`Self::render_step_list_and_present_with_damage_compat`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing, presentation, or submission fails.
+    fn render_step_list_and_present_deferred_with_damage_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        _damage: Option<ScissorRect>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        self.render_step_list_and_present_deferred_compat(
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+        )
     }
 }
 
@@ -1641,6 +1703,11 @@ impl<D> GfxPresentationDevice for SharedGfxDevice<D>
 where
     D: GfxPresentationDevice + GfxSubmissionDevice,
 {
+    fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
+        self.with_device(|device| Ok(device.supports_partial_presentation(swapchain)))
+            .unwrap_or(false)
+    }
+
     fn draw_steps_and_present(
         &mut self,
         swapchain: SwapchainId,
@@ -1736,6 +1803,51 @@ where
                 steps,
                 clear_color,
                 depth_attachment,
+            )
+        })
+    }
+
+    fn render_step_list_and_present_with_damage_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<()> {
+        self.with_device(|device| {
+            device.render_step_list_and_present_with_damage_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                damage,
+            )
+        })
+    }
+
+    fn render_step_list_and_present_deferred_with_damage_compat(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        self.with_device(|device| {
+            device.render_step_list_and_present_deferred_with_damage_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                damage,
             )
         })
     }

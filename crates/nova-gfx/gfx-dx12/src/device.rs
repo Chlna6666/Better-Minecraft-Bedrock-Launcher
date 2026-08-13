@@ -41,14 +41,15 @@ mod platform {
         GfxCommandDevice, GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice,
         GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxThreadingMode,
         IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineLayoutDesc,
-        PipelineLayoutId, PresentMode, PrimitiveTopology, RenderPassDepthAttachment,
-        RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor,
-        RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource, ResourceBindingType,
-        ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
-        SamplerDesc, SamplerId, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage,
-        ShaderStages, SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId,
-        SwapchainId, TextureDesc, TextureDimension, TextureId, TextureUsage, TextureViewDesc,
-        TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
+        PipelineLayoutId, PowerPreference, PresentMode, PrimitiveTopology,
+        RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc,
+        RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
+        ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
+        ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, SamplerDesc, SamplerId,
+        ScissorRect, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages,
+        SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId,
+        TextureDesc, TextureDimension, TextureId, TextureUsage, TextureViewDesc, TextureViewId,
+        TextureWrite, TextureWriteDesc, resource_set_list,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -120,16 +121,19 @@ mod platform {
                     DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
-                DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_PRESENT,
-                DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING, DXGI_SCALING_STRETCH,
-                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
-                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+                DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS, DXGI_SCALING,
+                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+                DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
-                IDXGIFactory4, IDXGIFactory5, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain3,
+                IDXGIFactory4, IDXGIFactory5, IDXGIFactory6, IDXGIOutput, IDXGISwapChain1,
+                IDXGISwapChain3,
             },
         },
         Win32::{
-            Foundation::{CloseHandle, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT},
+            Foundation::{CloseHandle, HANDLE, HWND, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT},
             System::Threading::{CreateEventW, WaitForSingleObject},
         },
         core::{BOOL, Error as WindowsError, Interface, PCSTR, PCWSTR},
@@ -160,6 +164,7 @@ mod platform {
     pub struct Dx12Device {
         factory: IDXGIFactory4,
         _adapter: IDXGIAdapter1,
+        adapter_name: String,
         device: ID3D12Device,
         graphics_queue: ID3D12CommandQueue,
         fence: ID3D12Fence,
@@ -199,11 +204,17 @@ mod platform {
         /// # Errors
         ///
         /// Returns [`GfxError`] if Direct3D 12 initialization fails.
-        pub fn new(_desc: &DeviceDesc) -> Result<Self> {
+        pub fn new(desc: &DeviceDesc) -> Result<Self> {
             enable_debug_layer_if_requested();
             let factory = create_factory()?;
             let allow_tearing = factory_supports_tearing(&factory);
-            let adapter = pick_adapter(&factory)?;
+            let adapter = pick_adapter(&factory, desc)?;
+            let adapter_description = adapter_description(&adapter)?;
+            log::info!(
+                "nova-gfx DX12 selected adapter: name=\"{}\" preference={:?}",
+                adapter_description.name,
+                desc.power_preference
+            );
             let device = create_device(&adapter)?;
             let graphics_queue = create_command_queue(&device)?;
             let resource_heap = DescriptorHeapAllocator::new(
@@ -232,6 +243,7 @@ mod platform {
                 next_fence_value: 1,
                 factory,
                 _adapter: adapter,
+                adapter_name: adapter_description.name,
                 device,
                 graphics_queue,
                 buffers: ResourceRegistry::new("buffer"),
@@ -261,6 +273,11 @@ mod platform {
                 allow_tearing,
                 submitted_frames: 0,
             })
+        }
+
+        /// Returns the adapter selected when this logical device was created.
+        pub fn adapter_name(&self) -> &str {
+            &self.adapter_name
         }
 
         /// Creates a native D3D12 surface from raw-window-handle traits.
@@ -358,11 +375,7 @@ mod platform {
                 } else {
                     DXGI_SCALING::default()
                 },
-                SwapEffect: if uses_composition {
-                    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
-                } else {
-                    DXGI_SWAP_EFFECT_FLIP_DISCARD
-                },
+                SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: composite_alpha_to_dxgi(config.alpha_mode),
                 Flags: creation_flags,
             };
@@ -418,6 +431,7 @@ mod platform {
             } else {
                 None
             };
+            let partial_presentation = true;
             let mut swapchain = Dx12Swapchain {
                 surface,
                 config,
@@ -429,6 +443,8 @@ mod platform {
                 frame_index: 0,
                 creation_flags,
                 frame_latency_waitable,
+                partial_presentation,
+                pending_damage: vec![Dx12BackBufferDamage::Full; BACK_BUFFER_COUNT as usize],
             };
             Self::rebuild_render_targets(&self.device, &mut swapchain)?;
             Ok(swapchain)
@@ -519,7 +535,7 @@ mod platform {
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
                 Scaling: DXGI_SCALING::default(),
-                SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
                     CompositeAlphaMode::Auto
@@ -1386,6 +1402,7 @@ mod platform {
             clear_color: ClearColor,
         ) -> Result<()> {
             self.wait_swapchain_frame_latency(swapchain);
+            self.prepare_swapchain_damage(swapchain, None)?;
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
                 .record_resource_steps_frame(encoder, swapchain, render_pass, steps, clear_color)
@@ -1435,7 +1452,27 @@ mod platform {
             clear_color: ClearColor,
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
+            self.render_step_list_and_present_with_depth_and_damage(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                None,
+            )
+        }
+
+        fn render_step_list_and_present_with_depth_and_damage(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+            damage: Option<ScissorRect>,
+        ) -> Result<()> {
             self.wait_swapchain_frame_latency(swapchain);
+            let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
                 .record_render_step_list_frame(
@@ -1445,10 +1482,11 @@ mod platform {
                     steps,
                     clear_color,
                     depth_attachment,
+                    render_damage,
                 )
                 .and_then(|()| self.submit(encoder));
             self.finish_temporary_command_encoder(encoder, result)?;
-            self.present(swapchain, 0)
+            self.present_with_damage(swapchain, 0, render_damage)
         }
 
         /// Records and submits draw steps into a regular texture view.
@@ -1555,7 +1593,27 @@ mod platform {
             clear_color: ClearColor,
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId> {
+            self.render_step_list_and_present_deferred_with_damage(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                None,
+            )
+        }
+
+        fn render_step_list_and_present_deferred_with_damage(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+            damage: Option<ScissorRect>,
+        ) -> Result<SubmissionId> {
             self.wait_swapchain_frame_latency(swapchain);
+            let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
             let result = self
                 .record_render_step_list_frame(
@@ -1565,6 +1623,7 @@ mod platform {
                     steps,
                     clear_color,
                     depth_attachment,
+                    render_damage,
                 )
                 .and_then(|()| Self::submit_deferred(self, encoder));
             let submission = match result {
@@ -1574,7 +1633,7 @@ mod platform {
                     return Err(error);
                 }
             };
-            self.present(swapchain, 0)?;
+            self.present_with_damage(swapchain, 0, render_damage)?;
             Ok(submission)
         }
 
@@ -1649,23 +1708,104 @@ mod platform {
         }
 
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
+            self.present_with_damage(swapchain, _image_index, None)
+        }
+
+        fn present_with_damage(
+            &mut self,
+            swapchain: SwapchainId,
+            _image_index: u32,
+            damage: Option<ScissorRect>,
+        ) -> Result<()> {
             self.check_device_removed("DX12 present preflight")?;
-            {
+            let result = {
                 let swapchain = self.swapchains.get_mut(swapchain)?;
                 let supports_tearing =
                     swapchain.creation_flags & (DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32) != 0;
                 let (sync_interval, flags) =
                     present_mode_to_dxgi(swapchain.config.present_mode, supports_tearing);
-                // SAFETY: Swapchain is valid and command submission has completed recording.
-                let result = unsafe { swapchain.swapchain.Present(sync_interval, flags) };
-                result.ok().map_err(|error| {
-                    self.backend_error_with_device_reason("DXGI Present", &error)
-                })?;
+                let result = if let Some(damage) = damage.filter(|_| swapchain.partial_presentation)
+                {
+                    let mut rect = Self::damage_to_dxgi_rect(damage)?;
+                    let parameters = DXGI_PRESENT_PARAMETERS {
+                        DirtyRectsCount: 1,
+                        pDirtyRects: &raw mut rect,
+                        pScrollRect: ptr::null_mut(),
+                        pScrollOffset: ptr::null_mut(),
+                    };
+                    let swapchain1: IDXGISwapChain1 = swapchain
+                        .swapchain
+                        .cast()
+                        .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    // SAFETY: The swapchain and damage rectangle remain valid for the call.
+                    unsafe { swapchain1.Present1(sync_interval, flags, &raw const parameters) }
+                } else {
+                    // SAFETY: Swapchain is valid and command submission has completed recording.
+                    unsafe { swapchain.swapchain.Present(sync_interval, flags) }
+                };
+                result
+            };
+            result
+                .ok()
+                .map_err(|error| self.backend_error_with_device_reason("DXGI Present", &error))?;
+            {
+                let swapchain = self.swapchains.get_mut(swapchain)?;
+                let presented_frame_index =
+                    usize::try_from(swapchain.frame_index).map_err(|error| {
+                        GfxError::InvalidInput(format!("swapchain frame index overflow: {error}"))
+                    })?;
+                let pending_damage = swapchain
+                    .pending_damage
+                    .get_mut(presented_frame_index)
+                    .ok_or_else(|| {
+                        GfxError::Backend(
+                            "DX12 swapchain damage index is out of bounds".to_string(),
+                        )
+                    })?;
+                *pending_damage = Dx12BackBufferDamage::Clean;
             }
             let swapchain = self.swapchains.get_mut(swapchain)?;
             // SAFETY: Swapchain is valid after a successful Present call.
             swapchain.frame_index = unsafe { swapchain.swapchain.GetCurrentBackBufferIndex() };
             Ok(())
+        }
+
+        fn prepare_swapchain_damage(
+            &mut self,
+            swapchain: SwapchainId,
+            damage: Option<ScissorRect>,
+        ) -> Result<Option<ScissorRect>> {
+            let swapchain = self.swapchains.get_mut(swapchain)?;
+            if !swapchain.partial_presentation {
+                return Ok(None);
+            }
+            for pending_damage in &mut swapchain.pending_damage {
+                pending_damage.accumulate(damage);
+            }
+            let frame_index = usize::try_from(swapchain.frame_index).map_err(|error| {
+                GfxError::InvalidInput(format!("swapchain frame index overflow: {error}"))
+            })?;
+            let pending_damage = swapchain.pending_damage.get(frame_index).ok_or_else(|| {
+                GfxError::Backend("DX12 swapchain damage index is out of bounds".to_string())
+            })?;
+            Ok(pending_damage.present_damage())
+        }
+
+        fn damage_to_dxgi_rect(damage: ScissorRect) -> Result<RECT> {
+            Ok(RECT {
+                left: i32::try_from(damage.x).map_err(|error| {
+                    GfxError::InvalidInput(format!("damage left overflow: {error}"))
+                })?,
+                top: i32::try_from(damage.y).map_err(|error| {
+                    GfxError::InvalidInput(format!("damage top overflow: {error}"))
+                })?,
+                right: i32::try_from(damage.x.saturating_add(damage.width)).map_err(|error| {
+                    GfxError::InvalidInput(format!("damage right overflow: {error}"))
+                })?,
+                bottom: i32::try_from(damage.y.saturating_add(damage.height)).map_err(|error| {
+                    GfxError::InvalidInput(format!("damage bottom overflow: {error}"))
+                })?,
+            })
         }
 
         /// Destroys a buffer once in-flight GPU work has retired.
@@ -2168,6 +2308,7 @@ mod platform {
                 RenderStepList::from_draw_steps(steps),
                 clear_color,
                 None,
+                None,
             )
         }
 
@@ -2187,6 +2328,7 @@ mod platform {
                 RenderStepList::from_render_steps(steps),
                 clear_color,
                 depth_attachment,
+                None,
             )
         }
 
@@ -2202,6 +2344,7 @@ mod platform {
             steps: RenderStepList<'_>,
             clear_color: ClearColor,
             depth_attachment: Option<RenderPassDepthAttachment>,
+            frame_damage: Option<ScissorRect>,
         ) -> Result<()> {
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
@@ -2290,10 +2433,13 @@ mod platform {
                     GfxError::InvalidInput(format!("swapchain height overflow: {error}"))
                 })?,
             };
-            let clear_rects = steps
-                .iter()
-                .filter_map(RenderStepRef::scissor)
-                .find(|scissor| !scissor.is_empty())
+            let clear_rects = frame_damage
+                .or_else(|| {
+                    steps
+                        .iter()
+                        .filter_map(RenderStepRef::scissor)
+                        .find(|scissor| !scissor.is_empty())
+                })
                 .and_then(|scissor| dx12_rect_for_scissor(scissor, swapchain.config.size).ok())
                 .map(|rect| [rect]);
             let clear = [
@@ -2334,17 +2480,30 @@ mod platform {
                             D3D12_CLEAR_FLAG_DEPTH,
                             depth,
                             0,
-                            None,
+                            clear_rects.as_ref().map(|rects| rects.as_slice()),
                         );
                     }
                 }
                 command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
             }
             for step in steps.iter() {
-                let step_scissor = step
-                    .scissor()
-                    .and_then(|scissor| dx12_rect_for_scissor(scissor, swapchain.config.size).ok())
-                    .unwrap_or(scissor);
+                let step_scissor = match (step.scissor(), frame_damage) {
+                    (Some(step_scissor), Some(frame_damage)) => {
+                        intersect_scissor_rects(step_scissor, frame_damage)
+                    }
+                    (Some(step_scissor), None) => step_scissor,
+                    (None, Some(frame_damage)) => frame_damage,
+                    (None, None) => ScissorRect {
+                        x: 0,
+                        y: 0,
+                        width: swapchain.config.size.width(),
+                        height: swapchain.config.size.height(),
+                    },
+                };
+                if step_scissor.is_empty() {
+                    continue;
+                }
+                let step_scissor = dx12_rect_for_scissor(step_scissor, swapchain.config.size)?;
                 let (
                     pipeline_state,
                     root_signature,
@@ -2984,12 +3143,116 @@ mod platform {
         Ok(adapters)
     }
 
-    fn pick_adapter(factory: &IDXGIFactory4) -> Result<IDXGIAdapter1> {
-        let adapter_index = 0;
-        // SAFETY: Factory is valid and adapter_index selects the first adapter.
-        match unsafe { factory.EnumAdapters1(adapter_index) } {
-            Ok(adapter) => Ok(adapter),
-            Err(error) => Err(Dx12Error::Unavailable(error.to_string()).into()),
+    struct Dx12AdapterDescription {
+        name: String,
+        dedicated_video_memory: usize,
+        software: bool,
+    }
+
+    fn pick_adapter(factory: &IDXGIFactory4, desc: &DeviceDesc) -> Result<IDXGIAdapter1> {
+        if let Some(requested_name) = desc.adapter_name.as_deref() {
+            let requested_name = requested_name.trim();
+            if !requested_name.is_empty() {
+                return enumerate_hardware_adapters(factory)?
+                    .into_iter()
+                    .find_map(|(adapter, description)| {
+                        description
+                            .name
+                            .eq_ignore_ascii_case(requested_name)
+                            .then_some(adapter)
+                    })
+                    .ok_or_else(|| {
+                        Dx12Error::Unavailable(format!(
+                            "requested DX12 adapter is unavailable: {requested_name}"
+                        ))
+                        .into()
+                    });
+            }
+        }
+
+        if let Ok(factory6) = factory.cast::<IDXGIFactory6>()
+            && let Some(adapter) = pick_adapter_by_gpu_preference(&factory6, desc.power_preference)?
+        {
+            return Ok(adapter);
+        }
+
+        let mut adapters = enumerate_hardware_adapters(factory)?;
+        adapters.sort_by_key(|(_, description)| {
+            fallback_adapter_rank(description.dedicated_video_memory, desc.power_preference)
+        });
+        adapters
+            .into_iter()
+            .next()
+            .map(|(adapter, _)| adapter)
+            .ok_or_else(|| Dx12Error::Unavailable("no hardware DX12 adapter".to_string()).into())
+    }
+
+    fn pick_adapter_by_gpu_preference(
+        factory: &IDXGIFactory6,
+        power_preference: PowerPreference,
+    ) -> Result<Option<IDXGIAdapter1>> {
+        let preference = match power_preference {
+            PowerPreference::LowPower => DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+            PowerPreference::HighPerformance => DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+        };
+        let mut adapter_index = 0;
+        loop {
+            // SAFETY: Factory is live and DXGI validates the monotonically increasing index.
+            let adapter = match unsafe {
+                factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(adapter_index, preference)
+            } {
+                Ok(adapter) => adapter,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => return Ok(None),
+                Err(error) => return Err(GfxError::Backend(error.to_string())),
+            };
+            adapter_index += 1;
+            if !adapter_description(&adapter)?.software {
+                return Ok(Some(adapter));
+            }
+        }
+    }
+
+    fn enumerate_hardware_adapters(
+        factory: &IDXGIFactory4,
+    ) -> Result<Vec<(IDXGIAdapter1, Dx12AdapterDescription)>> {
+        let mut adapters = Vec::new();
+        let mut adapter_index = 0;
+        loop {
+            // SAFETY: Factory is live and DXGI validates the monotonically increasing index.
+            let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+                Ok(adapter) => adapter,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(GfxError::Backend(error.to_string())),
+            };
+            adapter_index += 1;
+            let description = adapter_description(&adapter)?;
+            if !description.software {
+                adapters.push((adapter, description));
+            }
+        }
+        Ok(adapters)
+    }
+
+    fn adapter_description(adapter: &IDXGIAdapter1) -> Result<Dx12AdapterDescription> {
+        // SAFETY: Adapter is live and DXGI initializes the returned descriptor.
+        let description =
+            unsafe { adapter.GetDesc1() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+        Ok(Dx12AdapterDescription {
+            name: String::from_utf16_lossy(&description.Description)
+                .trim_end_matches('\0')
+                .to_string(),
+            dedicated_video_memory: description.DedicatedVideoMemory,
+            software: description.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0,
+        })
+    }
+
+    fn fallback_adapter_rank(
+        dedicated_video_memory: usize,
+        power_preference: PowerPreference,
+    ) -> usize {
+        match power_preference {
+            PowerPreference::LowPower => dedicated_video_memory,
+            PowerPreference::HighPerformance => usize::MAX.saturating_sub(dedicated_video_memory),
         }
     }
 
@@ -3262,6 +3525,44 @@ mod platform {
         })
     }
 
+    fn union_scissor_rects(left: ScissorRect, right: ScissorRect) -> ScissorRect {
+        let x = left.x.min(right.x);
+        let y = left.y.min(right.y);
+        let right_edge = left
+            .x
+            .saturating_add(left.width)
+            .max(right.x.saturating_add(right.width));
+        let bottom_edge = left
+            .y
+            .saturating_add(left.height)
+            .max(right.y.saturating_add(right.height));
+        ScissorRect {
+            x,
+            y,
+            width: right_edge.saturating_sub(x),
+            height: bottom_edge.saturating_sub(y),
+        }
+    }
+
+    fn intersect_scissor_rects(left: ScissorRect, right: ScissorRect) -> ScissorRect {
+        let x = left.x.max(right.x);
+        let y = left.y.max(right.y);
+        let right_edge = left
+            .x
+            .saturating_add(left.width)
+            .min(right.x.saturating_add(right.width));
+        let bottom_edge = left
+            .y
+            .saturating_add(left.height)
+            .min(right.y.saturating_add(right.height));
+        ScissorRect {
+            x,
+            y,
+            width: right_edge.saturating_sub(x),
+            height: bottom_edge.saturating_sub(y),
+        }
+    }
+
     fn rebuild_render_targets(device: &ID3D12Device, swapchain: &mut Dx12Swapchain) -> Result<()> {
         let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
@@ -3295,6 +3596,7 @@ mod platform {
         swapchain.rtv_heap = Some(rtv_heap);
         swapchain.render_targets = render_targets;
         swapchain.rtv_descriptor_size = descriptor_size;
+        swapchain.pending_damage = vec![Dx12BackBufferDamage::Full; BACK_BUFFER_COUNT as usize];
         Ok(())
     }
 
@@ -3566,7 +3868,7 @@ mod platform {
                 async_submission: true,
                 async_wait: true,
                 async_presentation: true,
-                partial_presentation: false,
+                partial_presentation: true,
             }
         }
 
@@ -3584,6 +3886,12 @@ mod platform {
     }
 
     impl GfxPresentationDevice for Dx12Device {
+        fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
+            self.swapchains
+                .get(swapchain)
+                .is_ok_and(|swapchain| swapchain.partial_presentation)
+        }
+
         fn draw_steps_and_present(
             &mut self,
             swapchain: SwapchainId,
@@ -3657,6 +3965,26 @@ mod platform {
                 steps,
                 clear_color,
                 depth_attachment,
+            )
+        }
+
+        fn render_step_list_and_present_with_damage_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+            damage: Option<ScissorRect>,
+        ) -> Result<()> {
+            Self::render_step_list_and_present_with_depth_and_damage(
+                self,
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                damage,
             )
         }
 
@@ -3735,6 +4063,29 @@ mod platform {
                 steps,
                 clear_color,
                 depth_attachment,
+            )
+        }
+
+        fn render_step_list_and_present_deferred_with_damage_compat(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+            damage: Option<ScissorRect>,
+        ) -> Result<SubmissionId>
+        where
+            Self: GfxSubmissionDevice,
+        {
+            Self::render_step_list_and_present_deferred_with_damage(
+                self,
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                damage,
             )
         }
     }
@@ -4975,6 +5326,32 @@ mod platform {
         hwnd: HWND,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Dx12BackBufferDamage {
+        Clean,
+        Partial(ScissorRect),
+        Full,
+    }
+
+    impl Dx12BackBufferDamage {
+        fn accumulate(&mut self, damage: Option<ScissorRect>) {
+            *self = match (*self, damage) {
+                (_, None) | (Self::Full, Some(_)) => Self::Full,
+                (Self::Clean, Some(damage)) => Self::Partial(damage),
+                (Self::Partial(previous), Some(damage)) => {
+                    Self::Partial(union_scissor_rects(previous, damage))
+                }
+            };
+        }
+
+        fn present_damage(self) -> Option<ScissorRect> {
+            match self {
+                Self::Partial(damage) => Some(damage),
+                Self::Clean | Self::Full => None,
+            }
+        }
+    }
+
     #[derive(Clone)]
     struct Dx12Swapchain {
         surface: SurfaceId,
@@ -4989,6 +5366,10 @@ mod platform {
         creation_flags: u32,
         /// Frame-latency waitable object; closed when the swapchain retires.
         frame_latency_waitable: Option<HANDLE>,
+        /// Flip-sequential swapchains can preserve pixels outside native dirty rectangles.
+        partial_presentation: bool,
+        /// Damage accumulated since each rotating back buffer was last current.
+        pending_damage: Vec<Dx12BackBufferDamage>,
     }
 
     #[cfg(test)]
@@ -5003,6 +5384,67 @@ mod platform {
             assert_eq!(
                 format,
                 windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM
+            );
+        }
+
+        #[test]
+        fn present_damage_maps_to_dxgi_edges() {
+            let rect = Dx12Device::damage_to_dxgi_rect(ScissorRect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+            })
+            .expect("damage should fit DXGI coordinates");
+
+            assert_eq!(
+                (rect.left, rect.top, rect.right, rect.bottom),
+                (10, 20, 40, 60)
+            );
+        }
+
+        #[test]
+        fn back_buffer_damage_accumulates_without_copying_previous_buffers() {
+            let mut damage = Dx12BackBufferDamage::Clean;
+
+            damage.accumulate(Some(ScissorRect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+            }));
+            damage.accumulate(Some(ScissorRect {
+                x: 35,
+                y: 10,
+                width: 20,
+                height: 15,
+            }));
+
+            assert_eq!(
+                damage.present_damage(),
+                Some(ScissorRect {
+                    x: 10,
+                    y: 10,
+                    width: 45,
+                    height: 50,
+                })
+            );
+            damage.accumulate(None);
+            assert_eq!(damage, Dx12BackBufferDamage::Full);
+        }
+
+        #[test]
+        fn fallback_adapter_rank_respects_power_preference() {
+            let integrated_memory = 512 * 1024 * 1024;
+            let discrete_memory = 8 * 1024 * 1024 * 1024;
+
+            assert!(
+                fallback_adapter_rank(integrated_memory, PowerPreference::LowPower)
+                    < fallback_adapter_rank(discrete_memory, PowerPreference::LowPower)
+            );
+            assert!(
+                fallback_adapter_rank(discrete_memory, PowerPreference::HighPerformance)
+                    < fallback_adapter_rank(integrated_memory, PowerPreference::HighPerformance)
             );
         }
 

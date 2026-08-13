@@ -45,42 +45,6 @@ pub(super) fn path_resource_bindings(
     ]
 }
 
-pub(super) fn present_cache_resource_bindings(
-    global_buffer: BufferId,
-    texture_view: TextureViewId,
-    sampler: SamplerId,
-    sprite_buffer: BufferId,
-) -> Vec<ResourceBinding> {
-    vec![
-        ResourceBinding {
-            binding: 0,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
-                buffer: global_buffer,
-                offset: 0,
-                size: GLOBAL_UPLOAD_BYTES as u64,
-                stride: None,
-            }),
-        },
-        ResourceBinding {
-            binding: 4,
-            resource: ResourceBindingResource::Texture(TextureBinding { texture_view }),
-        },
-        ResourceBinding {
-            binding: 5,
-            resource: ResourceBindingResource::Sampler(SamplerBinding { sampler }),
-        },
-        ResourceBinding {
-            binding: 9,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
-                buffer: sprite_buffer,
-                offset: 0,
-                size: PACKED_POLY_SPRITE_BYTES as u64,
-                stride: Some(PACKED_POLY_SPRITE_BYTES as u32),
-            }),
-        },
-    ]
-}
-
 pub(super) fn backdrop_blur_pass_resource_bindings(
     source_texture_view: TextureViewId,
     sampler: SamplerId,

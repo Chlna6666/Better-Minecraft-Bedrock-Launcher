@@ -1,7 +1,7 @@
 use super::*;
 
 impl NovaRenderer {
-    pub(super) fn prepare_draw_steps(&mut self, partial_scissor: Option<ScissorRect>) {
+    pub(super) fn prepare_draw_steps(&mut self) {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
@@ -37,26 +37,6 @@ impl NovaRenderer {
             NovaDrawStepMode::Present,
             steps,
         );
-        if let Some(scissor) = partial_scissor {
-            apply_scissor_to_steps(steps, scissor);
-        }
-    }
-
-    pub(super) fn prepare_present_copy_steps(&mut self, enabled: bool) {
-        let steps = &mut self.draw_step_scratch.present_copy_steps;
-        steps.clear();
-        if !enabled {
-            return;
-        }
-        steps.push(RenderStepDescriptor::Draw(DrawStepDescriptor {
-            pipeline: self.pipelines.present_copy,
-            resource_sets: resource_set_list([self.present_cache_resource_set]),
-            vertex_count: 4,
-            first_vertex: 0,
-            instance_count: 1,
-            first_instance: 0,
-            scissor: None,
-        }));
     }
 
     pub(super) fn prepare_backdrop_blur_source_steps(&mut self, enabled: bool) {

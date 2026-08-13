@@ -16,21 +16,6 @@ pub(super) struct NovaPathMaskTargetDescriptor {
 }
 
 #[derive(Clone)]
-pub(super) struct NovaPresentCacheTarget {
-    pub(super) texture: TextureId,
-    pub(super) texture_view: TextureViewId,
-    pub(super) resource_sets: Vec<ResourceSetId>,
-}
-
-pub(super) struct NovaPresentCacheTargetDescriptor {
-    pub(super) size: Extent2d,
-    pub(super) format: Format,
-    pub(super) resource_set_layout: ResourceSetLayoutId,
-    pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
-    pub(super) sampler: SamplerId,
-}
-
-#[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
     pub(super) downsample: u8,
     pub(super) source: NovaTextureTarget,
@@ -121,64 +106,6 @@ pub(super) fn destroy_path_mask_target<D>(
     if let Err(error) = device.destroy_texture(target.texture) {
         log::debug!("failed to destroy {backend_name} old path mask texture: {error}");
     }
-}
-
-pub(super) fn create_present_cache_target<D>(
-    device: &mut D,
-    label: &str,
-    descriptor: NovaPresentCacheTargetDescriptor,
-) -> Result<NovaPresentCacheTarget>
-where
-    D: BackendResources + BackendPipelines,
-{
-    let target = create_render_texture_target(
-        device,
-        &format!("{label} retained present cache"),
-        descriptor.size,
-        descriptor.format,
-    )?;
-    let mut resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-    for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-        resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-            label: Some(format!(
-                "{label} retained present cache frame {index} resource set"
-            )),
-            layout: descriptor.resource_set_layout,
-            bindings: present_cache_resource_bindings(
-                buffers.global_buffer,
-                target.texture_view,
-                descriptor.sampler,
-                buffers.present_copy_sprite_buffer,
-            ),
-        })?);
-    }
-    Ok(NovaPresentCacheTarget {
-        texture: target.texture,
-        texture_view: target.texture_view,
-        resource_sets,
-    })
-}
-
-pub(super) fn destroy_present_cache_target<D>(
-    device: &mut D,
-    target: NovaPresentCacheTarget,
-    backend_name: &str,
-) where
-    D: BackendResources + BackendPipelines,
-{
-    for resource_set in target.resource_sets {
-        if let Err(error) = device.destroy_resource_set(resource_set) {
-            log::debug!("failed to destroy {backend_name} retained present resource set: {error}");
-        }
-    }
-    destroy_render_texture_target(
-        device,
-        NovaTextureTarget {
-            texture: target.texture,
-            texture_view: target.texture_view,
-        },
-        backend_name,
-    );
 }
 
 pub(super) fn create_backdrop_blur_target_chain<D>(

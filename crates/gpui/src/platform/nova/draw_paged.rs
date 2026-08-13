@@ -5,10 +5,9 @@ const INDEX_FORMAT_U16_FLAG: u32 = 1 << 31;
 const INDEX_OFFSET_MASK: u32 = !INDEX_FORMAT_U16_FLAG;
 
 pub(super) use super::draw_legacy::{
-    NovaBackdropBlurRenderPass, NovaDrawStepMode, apply_scissor_to_steps,
-    backdrop_blur_render_passes_for_targets_into, partial_scissor_for_plan,
-    path_mask_draw_steps_for_upload, path_mask_draw_steps_for_upload_into, scaled_pixels_ceil_u32,
-    scaled_pixels_floor_u32,
+    NovaBackdropBlurRenderPass, NovaDrawStepMode, backdrop_blur_render_passes_for_targets_into,
+    partial_scissor_for_plan, path_mask_draw_steps_for_upload,
+    path_mask_draw_steps_for_upload_into,
 };
 
 fn custom_mesh_3d_index_byte_offset(entry: NovaMeshCacheEntry) -> u32 {

@@ -9,8 +9,7 @@ mod present;
 mod submission;
 mod surface_lifecycle;
 
-#[cfg(test)]
-pub(in crate::platform::nova) use present::partial_present_scissor;
+const SWAPCHAIN_WARMUP_FRAME_COUNT: u8 = 1;
 
 pub(super) fn nova_present_mode_for_backend(
     _backend: RendererBackend,
@@ -77,8 +76,6 @@ pub(crate) struct NovaRenderer {
     path_sprite_buffer: BufferId,
     mono_sprite_buffer: BufferId,
     poly_sprite_buffer: BufferId,
-    present_copy_sprite_buffer: BufferId,
-    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache,
     underline_buffer: BufferId,
     backdrop_blur_pass_buffer: BufferId,
     backdrop_blur_buffer: BufferId,
@@ -92,7 +89,6 @@ pub(crate) struct NovaRenderer {
     path_rasterization_resource_set: ResourceSetId,
     path_resource_set_layout: ResourceSetLayoutId,
     path_resource_set: ResourceSetId,
-    present_cache_resource_set: ResourceSetId,
     mono_sprite_resource_set_layout: ResourceSetLayoutId,
     poly_sprite_resource_set_layout: ResourceSetLayoutId,
     gpu_atlas_textures: FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
@@ -113,11 +109,12 @@ pub(crate) struct NovaRenderer {
     custom_mesh_3d_pipelines: FxHashMap<GpuMesh3dShaderId, RenderPipelineId>,
     custom_mesh_3d_pipeline_failures: FxHashSet<GpuMesh3dShaderId>,
     backdrop_blur_targets: Option<NovaBackdropBlurTargets>,
+    backdrop_blur_cache_valid: bool,
+    backdrop_blur_cache_atlas_generation: u64,
+    backdrop_blur_cache_quality: Option<NovaBackdropBlurQuality>,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
-    present_cache_texture: TextureId,
-    present_cache_texture_view: TextureViewId,
     frame_upload: NovaFrameUpload,
     draw_step_scratch: NovaDrawStepScratch,
     current_size: DrawableSize,
@@ -130,8 +127,7 @@ pub(crate) struct NovaRenderer {
     metrics_started_at: Instant,
     first_frame_reported: bool,
     submitted_frames: u64,
-    needs_full_redraw_after_resize: bool,
-    present_cache_valid: bool,
+    swapchain_warmup_frames: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -143,33 +139,18 @@ struct PendingSubmission {
 #[derive(Default)]
 struct NovaDrawStepScratch {
     draw_steps: Vec<RenderStepDescriptor>,
-    present_copy_steps: Vec<RenderStepDescriptor>,
     backdrop_blur_source_steps: Vec<RenderStepDescriptor>,
     path_mask_steps: Vec<DrawStepDescriptor>,
     backdrop_blur_passes: Vec<NovaBackdropBlurRenderPass>,
-}
-
-#[derive(Default)]
-struct PresentCopySpriteUploadCache {
-    frame_sizes: Vec<Option<DrawableSize>>,
-    bytes: Vec<u8>,
-}
-
-impl PresentCopySpriteUploadCache {
-    fn new(frame_resource_count: usize) -> Self {
-        Self {
-            frame_sizes: vec![None; frame_resource_count],
-            bytes: Vec::new(),
-        }
-    }
 }
 
 impl NovaRenderer {
     pub(crate) fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
         self.apply_pending_drawable_size()?;
         self.observe_render_plan(render_plan);
-        let render_plan =
-            resolve_surface_render_plan(render_plan, self.needs_full_redraw_after_resize);
+        let supports_partial = self.swapchain_warmup_frames == 0
+            && self.backend.supports_partial_presentation(self.swapchain);
+        let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
         let upload = self.frame_upload.encode(
             render_plan.scene,
@@ -182,8 +163,7 @@ impl NovaRenderer {
             self.ensure_backdrop_blur_targets()?;
         }
         self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        self.draw_present(upload, render_plan)?;
-        self.needs_full_redraw_after_resize = false;
+        self.draw_present(upload, render_plan, backdrop_blur_quality)?;
         Ok(())
     }
 
@@ -252,6 +232,7 @@ impl NovaRenderer {
             }
         };
         self.backdrop_blur_targets = Some(next_backdrop_blur_targets);
+        self.invalidate_backdrop_blur_cache();
         Ok(())
     }
 
@@ -261,16 +242,9 @@ impl NovaRenderer {
     ) -> Result<()> {
         self.apply_pending_drawable_size()?;
         self.observe_render_plan(render_plan);
-        if can_present_retained_cache_only(
-            self.present_cache_valid,
-            self.needs_full_redraw_after_resize,
-        ) {
-            self.present_retained_cache_only()?;
-            return Ok(());
-        }
-        let render_plan =
-            resolve_surface_render_plan(render_plan, self.needs_full_redraw_after_resize);
-        let render_plan = render_plan.with_full_redraw();
+        let supports_partial = self.swapchain_warmup_frames == 0
+            && self.backend.supports_partial_presentation(self.swapchain);
+        let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
         let upload = self.frame_upload.encode(
             render_plan.scene,
@@ -283,8 +257,7 @@ impl NovaRenderer {
             self.ensure_backdrop_blur_targets()?;
         }
         self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        self.draw_present(upload, render_plan)?;
-        self.needs_full_redraw_after_resize = false;
+        self.draw_present(upload, render_plan, backdrop_blur_quality)?;
         Ok(())
     }
 
@@ -304,7 +277,11 @@ impl NovaRenderer {
         }
         self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
         let dirty_region = crate::DirtyRegion::default();
-        self.draw_present(upload, FrameRenderPlan::full_redraw(scene, &dirty_region))
+        self.draw_present(
+            upload,
+            FrameRenderPlan::full_redraw(scene, &dirty_region),
+            backdrop_blur_quality,
+        )
     }
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -312,16 +289,16 @@ impl NovaRenderer {
     }
 
     pub(crate) fn gpu_specs(&self) -> GpuSpecs {
-        let (device_name, driver_name) = match self.backend {
+        let driver_name = match self.backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(_) => ("nova-gfx DX12", "nova-dx12"),
+            NovaBackend::Dx12(_) => "nova-dx12",
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(_) => ("nova-gfx Metal", "nova-metal"),
+            NovaBackend::Metal(_) => "nova-metal",
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            NovaBackend::Vulkan(_) => ("nova-gfx Vulkan", "nova-vulkan"),
+            NovaBackend::Vulkan(_) => "nova-vulkan",
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
@@ -330,11 +307,11 @@ impl NovaRenderer {
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
                 )
             )))]
-            NovaBackend::Unavailable => ("nova-gfx unavailable", "nova-unavailable"),
+            NovaBackend::Unavailable => "nova-unavailable",
         };
         GpuSpecs {
             is_software_emulated: false,
-            device_name: device_name.to_string(),
+            device_name: self.backend.adapter_name().to_string(),
             driver_name: driver_name.to_string(),
             driver_info: "phase2b2-nova-batch-smoke".to_string(),
         }
@@ -349,8 +326,6 @@ impl NovaRenderer {
         self.atlas.trim(level);
         self.frame_upload.trim_retained_capacity(level);
         self.draw_step_scratch.trim_retained_capacity(level);
-        self.present_copy_sprite_upload_cache
-            .trim_retained_capacity(level);
         self.trim_custom_mesh_3d_cache(level);
         if let Err(error) = self.demote_custom_mesh_3d_buffers_if_idle(level) {
             log::debug!("failed to demote idle nova 3D mesh buffers: {error}");
@@ -399,6 +374,7 @@ impl NovaRenderer {
     }
 
     fn destroy_backdrop_blur_targets(&mut self) {
+        self.invalidate_backdrop_blur_cache();
         let Some(targets) = self.backdrop_blur_targets.take() else {
             return;
         };
@@ -430,6 +406,11 @@ impl NovaRenderer {
         }
     }
 
+    fn invalidate_backdrop_blur_cache(&mut self) {
+        self.backdrop_blur_cache_valid = false;
+        self.backdrop_blur_cache_quality = None;
+    }
+
     fn depth_attachment(&self) -> RenderPassDepthAttachment {
         RenderPassDepthAttachment {
             target: self.depth_texture_view,
@@ -450,7 +431,6 @@ impl NovaRenderer {
         self.path_sprite_buffer = resources.buffers.path_sprite_buffer;
         self.mono_sprite_buffer = resources.buffers.mono_sprite_buffer;
         self.poly_sprite_buffer = resources.buffers.poly_sprite_buffer;
-        self.present_copy_sprite_buffer = resources.buffers.present_copy_sprite_buffer;
         self.underline_buffer = resources.buffers.underline_buffer;
         self.backdrop_blur_pass_buffer = resources.buffers.backdrop_blur_pass_buffer;
         self.backdrop_blur_buffer = resources.buffers.backdrop_blur_buffer;
@@ -462,7 +442,6 @@ impl NovaRenderer {
         self.path_rasterization_resource_set =
             resources.resource_sets.path_rasterization_resource_set;
         self.path_resource_set = resources.path_resource_set;
-        self.present_cache_resource_set = resources.present_cache_resource_set;
         self.underline_resource_set = resources.resource_sets.underline_resource_set;
         self.custom_mesh_3d_resource_set = resources.resource_sets.custom_mesh_3d_resource_set;
         Ok(())
@@ -484,19 +463,6 @@ impl NovaRenderer {
         }
         for (resources, resource_set) in self.frame_resources.iter_mut().zip(resource_sets) {
             resources.path_resource_set = *resource_set;
-        }
-        Ok(())
-    }
-
-    pub(super) fn update_present_cache_resource_sets(
-        &mut self,
-        resource_sets: &[ResourceSetId],
-    ) -> Result<()> {
-        if resource_sets.len() != self.frame_resources.len() {
-            anyhow::bail!("present cache frame resource set count does not match frame resources");
-        }
-        for (resources, resource_set) in self.frame_resources.iter_mut().zip(resource_sets) {
-            resources.present_cache_resource_set = *resource_set;
         }
         Ok(())
     }
@@ -573,21 +539,9 @@ impl NovaDrawStepScratch {
             GpuiMemoryTrimLevel::Aggressive => 1,
         };
         trim_vec_capacity(&mut self.draw_steps, 64, multiplier);
-        trim_vec_capacity(&mut self.present_copy_steps, 1, multiplier);
         trim_vec_capacity(&mut self.backdrop_blur_source_steps, 64, multiplier);
         trim_vec_capacity(&mut self.path_mask_steps, 32, multiplier);
         trim_vec_capacity(&mut self.backdrop_blur_passes, 16, multiplier);
-    }
-}
-
-impl PresentCopySpriteUploadCache {
-    fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
-        let multiplier = match level {
-            GpuiMemoryTrimLevel::Light => 16,
-            GpuiMemoryTrimLevel::Moderate => 8,
-            GpuiMemoryTrimLevel::Aggressive => 1,
-        };
-        trim_vec_capacity(&mut self.bytes, PACKED_POLY_SPRITE_BYTES, multiplier);
     }
 }
 
@@ -614,14 +568,12 @@ mod tests {
     fn draw_step_scratch_aggressive_trim_shrinks_retained_capacity() {
         let mut scratch = NovaDrawStepScratch::default();
         scratch.draw_steps.reserve(2048);
-        scratch.present_copy_steps.reserve(128);
         scratch.backdrop_blur_source_steps.reserve(2048);
         scratch.path_mask_steps.reserve(1024);
 
         scratch.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
 
         assert!(scratch.draw_steps.capacity() <= 64);
-        assert!(scratch.present_copy_steps.capacity() <= 1);
         assert!(scratch.backdrop_blur_source_steps.capacity() <= 64);
         assert!(scratch.path_mask_steps.capacity() <= 32);
     }

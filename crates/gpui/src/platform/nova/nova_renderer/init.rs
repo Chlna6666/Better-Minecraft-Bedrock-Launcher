@@ -80,7 +80,6 @@ impl NovaRenderer {
                     .first()
                     .copied()
                     .context("nova renderer resources should include at least one frame slot")?;
-                let frame_resource_count = frame_resources.len();
                 Ok(Self {
                     backend: NovaBackend::Dx12(device),
                     surface,
@@ -105,12 +104,6 @@ impl NovaRenderer {
                     path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
                     mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
                     poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
-                    present_copy_sprite_buffer: current_frame_resources
-                        .buffers
-                        .present_copy_sprite_buffer,
-                    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache::new(
-                        frame_resource_count,
-                    ),
                     underline_buffer: current_frame_resources.buffers.underline_buffer,
                     backdrop_blur_pass_buffer: current_frame_resources
                         .buffers
@@ -132,7 +125,6 @@ impl NovaRenderer {
                         .path_rasterization_resource_set,
                     path_resource_set_layout: resources.path_resource_set_layout,
                     path_resource_set: current_frame_resources.path_resource_set,
-                    present_cache_resource_set: current_frame_resources.present_cache_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
@@ -159,11 +151,12 @@ impl NovaRenderer {
                     custom_mesh_3d_pipelines: FxHashMap::default(),
                     custom_mesh_3d_pipeline_failures: FxHashSet::default(),
                     backdrop_blur_targets: resources.backdrop_blur_targets,
+                    backdrop_blur_cache_valid: false,
+                    backdrop_blur_cache_atlas_generation: 0,
+                    backdrop_blur_cache_quality: None,
                     atlas_sampler: resources.atlas_sampler,
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
-                    present_cache_texture: resources.present_cache_texture,
-                    present_cache_texture_view: resources.present_cache_texture_view,
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
@@ -176,8 +169,7 @@ impl NovaRenderer {
                     metrics_started_at,
                     first_frame_reported: false,
                     submitted_frames: 0,
-                    needs_full_redraw_after_resize: true,
-                    present_cache_valid: false,
+                    swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-dx12", target_os = "windows")))]
@@ -214,7 +206,6 @@ impl NovaRenderer {
                     .first()
                     .copied()
                     .context("nova renderer resources should include at least one frame slot")?;
-                let frame_resource_count = frame_resources.len();
                 Ok(Self {
                     backend: NovaBackend::Metal(device),
                     surface,
@@ -239,12 +230,6 @@ impl NovaRenderer {
                     path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
                     mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
                     poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
-                    present_copy_sprite_buffer: current_frame_resources
-                        .buffers
-                        .present_copy_sprite_buffer,
-                    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache::new(
-                        frame_resource_count,
-                    ),
                     underline_buffer: current_frame_resources.buffers.underline_buffer,
                     backdrop_blur_pass_buffer: current_frame_resources
                         .buffers
@@ -266,7 +251,6 @@ impl NovaRenderer {
                         .path_rasterization_resource_set,
                     path_resource_set_layout: resources.path_resource_set_layout,
                     path_resource_set: current_frame_resources.path_resource_set,
-                    present_cache_resource_set: current_frame_resources.present_cache_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
@@ -293,11 +277,12 @@ impl NovaRenderer {
                     custom_mesh_3d_pipelines: FxHashMap::default(),
                     custom_mesh_3d_pipeline_failures: FxHashSet::default(),
                     backdrop_blur_targets: resources.backdrop_blur_targets,
+                    backdrop_blur_cache_valid: false,
+                    backdrop_blur_cache_atlas_generation: 0,
+                    backdrop_blur_cache_quality: None,
                     atlas_sampler: resources.atlas_sampler,
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
-                    present_cache_texture: resources.present_cache_texture,
-                    present_cache_texture_view: resources.present_cache_texture_view,
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
@@ -310,8 +295,7 @@ impl NovaRenderer {
                     metrics_started_at,
                     first_frame_reported: false,
                     submitted_frames: 0,
-                    needs_full_redraw_after_resize: true,
-                    present_cache_valid: false,
+                    swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-metal", target_os = "macos")))]
@@ -372,7 +356,6 @@ impl NovaRenderer {
                     .first()
                     .copied()
                     .context("nova renderer resources should include at least one frame slot")?;
-                let frame_resource_count = frame_resources.len();
                 Ok(Self {
                     backend: NovaBackend::Vulkan(device),
                     surface,
@@ -397,12 +380,6 @@ impl NovaRenderer {
                     path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
                     mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
                     poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
-                    present_copy_sprite_buffer: current_frame_resources
-                        .buffers
-                        .present_copy_sprite_buffer,
-                    present_copy_sprite_upload_cache: PresentCopySpriteUploadCache::new(
-                        frame_resource_count,
-                    ),
                     underline_buffer: current_frame_resources.buffers.underline_buffer,
                     backdrop_blur_pass_buffer: current_frame_resources
                         .buffers
@@ -424,7 +401,6 @@ impl NovaRenderer {
                         .path_rasterization_resource_set,
                     path_resource_set_layout: resources.path_resource_set_layout,
                     path_resource_set: current_frame_resources.path_resource_set,
-                    present_cache_resource_set: current_frame_resources.present_cache_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
                     poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
                     gpu_atlas_textures,
@@ -451,11 +427,12 @@ impl NovaRenderer {
                     custom_mesh_3d_pipelines: FxHashMap::default(),
                     custom_mesh_3d_pipeline_failures: FxHashSet::default(),
                     backdrop_blur_targets: resources.backdrop_blur_targets,
+                    backdrop_blur_cache_valid: false,
+                    backdrop_blur_cache_atlas_generation: 0,
+                    backdrop_blur_cache_quality: None,
                     atlas_sampler: resources.atlas_sampler,
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
-                    present_cache_texture: resources.present_cache_texture,
-                    present_cache_texture_view: resources.present_cache_texture_view,
                     frame_upload: NovaFrameUpload::default(),
                     draw_step_scratch: NovaDrawStepScratch::default(),
                     current_size,
@@ -468,8 +445,7 @@ impl NovaRenderer {
                     metrics_started_at,
                     first_frame_reported: false,
                     submitted_frames: 0,
-                    needs_full_redraw_after_resize: true,
-                    present_cache_valid: false,
+                    swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
                 })
             }
             #[cfg(not(all(

@@ -28,15 +28,15 @@ use gfx_core::{
     FilterMode, Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxError,
     GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
     GfxSurfaceDevice, GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    PipelineLayoutDesc, PipelineLayoutId, PresentMode, PrimitiveTopology,
+    PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode, PrimitiveTopology,
     RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId,
     RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource,
     ResourceBindingType, ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc,
-    ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId, ShaderBinary, ShaderCode,
-    ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus,
-    SurfaceConfig, SurfaceDesc, SurfaceId, TextureDataLayout, TextureDesc, TextureDimension,
-    TextureId, TextureUsage, TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc,
-    VertexFormat,
+    ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId, ScissorRect, ShaderBinary,
+    ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages, SubmissionId,
+    SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, TextureDataLayout, TextureDesc,
+    TextureDimension, TextureId, TextureUsage, TextureViewDesc, TextureViewId, TextureWrite,
+    TextureWriteDesc, VertexFormat,
 };
 use gfx_memory::{
     DeferredFreeQueue, MemoryAllocation, MemoryAllocator, UploadAllocation, UploadRingAllocator,
@@ -105,6 +105,7 @@ pub struct VulkanDevice {
     instance: Instance,
     surface_loader: khr::surface::Instance,
     physical_device: vk::PhysicalDevice,
+    adapter_name: String,
     device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
@@ -133,6 +134,7 @@ pub struct VulkanDevice {
     deferred_destroys: DeferredFreeQueue<DeferredResource>,
     next_upload_fence_value: u64,
     submitted_frames: u64,
+    incremental_presentation: bool,
 }
 
 impl VulkanDevice {
@@ -145,9 +147,13 @@ impl VulkanDevice {
         let entry = load_entry()?;
         let instance = create_instance(&entry, &desc.application_name)?;
         let surface_loader = khr::surface::Instance::new(&entry, &instance);
-        let physical_device = pick_physical_device_without_surface(&instance)?;
+        let physical_device = pick_physical_device_without_surface(&instance, desc)?;
+        // SAFETY: The selected physical device belongs to this live instance.
+        let adapter_properties =
+            unsafe { instance.get_physical_device_properties(physical_device) };
+        let adapter_name = physical_device_name(&adapter_properties);
         let queue_families = queue_family_indices_without_surface(&instance, physical_device)?;
-        let (device, graphics_queue, present_queue) =
+        let (device, graphics_queue, present_queue, incremental_presentation) =
             create_device(&instance, physical_device, queue_families)?;
         let device = Arc::new(device);
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
@@ -168,6 +174,7 @@ impl VulkanDevice {
             instance,
             surface_loader,
             physical_device,
+            adapter_name,
             device,
             graphics_queue,
             present_queue,
@@ -196,7 +203,13 @@ impl VulkanDevice {
             deferred_destroys: DeferredFreeQueue::new(),
             next_upload_fence_value: 1,
             submitted_frames: 0,
+            incremental_presentation,
         })
+    }
+
+    /// Returns the physical adapter selected when this logical device was created.
+    pub fn adapter_name(&self) -> &str {
+        &self.adapter_name
     }
 
     /// Creates a native Vulkan surface from raw-window-handle traits.
@@ -1175,12 +1188,32 @@ impl VulkanDevice {
         clear_color: ClearColor,
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
+        self.render_step_list_and_present_with_damage(
+            swapchain_id,
+            render_pass_id,
+            steps,
+            clear_color,
+            depth_attachment,
+            None,
+        )
+    }
+
+    fn render_step_list_and_present_with_damage(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+        render_pass_id: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<()> {
         let Some(submission) = self.render_step_list_and_present_tracked(
             swapchain_id,
             render_pass_id,
             steps,
             clear_color,
             depth_attachment,
+            damage,
         )?
         else {
             return Ok(());
@@ -1197,6 +1230,25 @@ impl VulkanDevice {
         clear_color: ClearColor,
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<SubmissionId> {
+        self.render_step_list_and_present_deferred_with_damage(
+            swapchain_id,
+            render_pass_id,
+            steps,
+            clear_color,
+            depth_attachment,
+            None,
+        )
+    }
+
+    fn render_step_list_and_present_deferred_with_damage(
+        &mut self,
+        swapchain_id: gfx_core::SwapchainId,
+        render_pass_id: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<SubmissionId> {
         Ok(self
             .render_step_list_and_present_tracked(
                 swapchain_id,
@@ -1204,6 +1256,7 @@ impl VulkanDevice {
                 steps,
                 clear_color,
                 depth_attachment,
+                damage,
             )?
             .unwrap_or_else(|| SubmissionId::from_parts(0, 0)))
     }
@@ -1215,6 +1268,7 @@ impl VulkanDevice {
         steps: RenderStepList<'_>,
         clear_color: ClearColor,
         depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
     ) -> Result<Option<SubmissionId>> {
         let Some(present_frame) = self.acquire_present_frame(swapchain_id)? else {
             return Ok(None);
@@ -1263,6 +1317,7 @@ impl VulkanDevice {
             swapchain_id,
             present_frame.image_index,
             present_frame.render_finished,
+            damage,
         )?;
         let swapchain = self.swapchains.get_mut(swapchain_id)?;
         swapchain.frame_index = (present_frame.frame_index + 1) % FRAMES_IN_FLIGHT;
@@ -1452,15 +1507,30 @@ impl VulkanDevice {
         swapchain_id: gfx_core::SwapchainId,
         image_index: u32,
         wait_semaphore: vk::Semaphore,
+        damage: Option<ScissorRect>,
     ) -> Result<()> {
         let swapchain = self.swapchains.get(swapchain_id)?.swapchain;
         let wait_semaphores = [wait_semaphore];
         let swapchains = [swapchain];
         let image_indices = [image_index];
-        let present_info = vk::PresentInfoKHR::default()
+        let mut present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(&wait_semaphores)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
+        let rectangles = if let Some(damage) = damage.filter(|_| self.incremental_presentation) {
+            Some([Self::damage_to_present_rect(damage)?])
+        } else {
+            None
+        };
+        let regions = rectangles
+            .as_ref()
+            .map(|rectangles| [vk::PresentRegionKHR::default().rectangles(rectangles)]);
+        let mut present_regions = regions
+            .as_ref()
+            .map(|regions| vk::PresentRegionsKHR::default().regions(regions));
+        if let Some(present_regions) = present_regions.as_mut() {
+            present_info = present_info.push_next(present_regions);
+        }
         // SAFETY: Present queue and swapchain are valid and synchronized by wait_semaphore.
         let present_result = unsafe {
             self.swapchain_loader
@@ -1470,6 +1540,22 @@ impl VulkanDevice {
             Ok(_) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => Ok(()),
             Err(error) => Err(VulkanError::from(error).into()),
         }
+    }
+
+    fn damage_to_present_rect(damage: ScissorRect) -> Result<vk::RectLayerKHR> {
+        let x = i32::try_from(damage.x).map_err(|error| {
+            GfxError::InvalidInput(format!("present damage x overflow: {error}"))
+        })?;
+        let y = i32::try_from(damage.y).map_err(|error| {
+            GfxError::InvalidInput(format!("present damage y overflow: {error}"))
+        })?;
+        Ok(vk::RectLayerKHR::default()
+            .offset(vk::Offset2D { x, y })
+            .extent(vk::Extent2D {
+                width: damage.width,
+                height: damage.height,
+            })
+            .layer(0))
     }
 
     /// Destroys a buffer.
@@ -2406,6 +2492,10 @@ impl GfxSubmissionDevice for VulkanDevice {
 }
 
 impl GfxPresentationDevice for VulkanDevice {
+    fn supports_partial_presentation(&self, swapchain: gfx_core::SwapchainId) -> bool {
+        self.incremental_presentation && self.swapchains.get(swapchain).is_ok()
+    }
+
     fn draw_steps_and_present(
         &mut self,
         swapchain: gfx_core::SwapchainId,
@@ -2479,6 +2569,26 @@ impl GfxPresentationDevice for VulkanDevice {
             steps,
             clear_color,
             depth_attachment,
+        )
+    }
+
+    fn render_step_list_and_present_with_damage_compat(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<()> {
+        Self::render_step_list_and_present_with_damage(
+            self,
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+            damage,
         )
     }
 
@@ -2557,6 +2667,29 @@ impl GfxPresentationDevice for VulkanDevice {
             steps,
             clear_color,
             depth_attachment,
+        )
+    }
+
+    fn render_step_list_and_present_deferred_with_damage_compat(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<SubmissionId>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        Self::render_step_list_and_present_deferred_with_damage(
+            self,
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+            damage,
         )
     }
 }
@@ -3025,15 +3158,85 @@ fn instance_extension_names() -> Vec<*const i8> {
     names
 }
 
-fn pick_physical_device_without_surface(instance: &Instance) -> Result<vk::PhysicalDevice> {
+fn pick_physical_device_without_surface(
+    instance: &Instance,
+    desc: &DeviceDesc,
+) -> Result<vk::PhysicalDevice> {
     // SAFETY: Instance is valid.
     let devices = unsafe { instance.enumerate_physical_devices() }.map_err(VulkanError::from)?;
-    devices
+    let requested_name = desc
+        .adapter_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let mut candidates = devices
         .into_iter()
-        .find(|device| queue_family_indices_without_surface(instance, *device).is_ok())
+        .filter_map(|device| {
+            queue_family_indices_without_surface(instance, device)
+                .is_ok()
+                .then(|| {
+                    // SAFETY: Physical device belongs to this instance.
+                    let properties = unsafe { instance.get_physical_device_properties(device) };
+                    (device, properties)
+                })
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(requested_name) = requested_name {
+        return candidates
+            .into_iter()
+            .find_map(|(device, properties)| {
+                physical_device_name(&properties)
+                    .eq_ignore_ascii_case(requested_name)
+                    .then_some(device)
+            })
+            .ok_or_else(|| {
+                VulkanError::Unavailable(format!(
+                    "requested Vulkan adapter is unavailable: {requested_name}"
+                ))
+                .into()
+            });
+    }
+
+    candidates.sort_by_key(|(_, properties)| {
+        physical_device_preference_rank(properties.device_type, desc.power_preference)
+    });
+    candidates
+        .into_iter()
+        .next()
+        .map(|(device, _)| device)
         .ok_or_else(|| {
             VulkanError::Unavailable("no suitable Vulkan physical device".to_string()).into()
         })
+}
+
+fn physical_device_name(properties: &vk::PhysicalDeviceProperties) -> String {
+    // SAFETY: Vulkan guarantees a null-terminated device name in this fixed-size field.
+    unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn physical_device_preference_rank(
+    device_type: vk::PhysicalDeviceType,
+    power_preference: PowerPreference,
+) -> u8 {
+    match power_preference {
+        PowerPreference::LowPower => match device_type {
+            vk::PhysicalDeviceType::INTEGRATED_GPU => 0,
+            vk::PhysicalDeviceType::VIRTUAL_GPU => 1,
+            vk::PhysicalDeviceType::DISCRETE_GPU => 2,
+            vk::PhysicalDeviceType::CPU => 4,
+            _ => 3,
+        },
+        PowerPreference::HighPerformance => match device_type {
+            vk::PhysicalDeviceType::DISCRETE_GPU => 0,
+            vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
+            vk::PhysicalDeviceType::VIRTUAL_GPU => 2,
+            vk::PhysicalDeviceType::CPU => 4,
+            _ => 3,
+        },
+    }
 }
 
 fn queue_family_indices_without_surface(
@@ -3064,7 +3267,7 @@ fn create_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
-) -> Result<(ash::Device, vk::Queue, vk::Queue)> {
+) -> Result<(ash::Device, vk::Queue, vk::Queue, bool)> {
     let priorities = [1.0_f32];
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
@@ -3079,7 +3282,19 @@ fn create_device(
                 .queue_priorities(&priorities)
         })
         .collect::<Vec<_>>();
-    let device_extensions = [khr::swapchain::NAME.as_ptr()];
+    // SAFETY: Extension properties are owned values returned for this physical device.
+    let available_extensions =
+        unsafe { instance.enumerate_device_extension_properties(physical_device) }
+            .map_err(VulkanError::from)?;
+    let incremental_presentation = available_extensions.iter().any(|extension| {
+        // SAFETY: Vulkan guarantees a null-terminated extension name in this fixed-size field.
+        let name = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
+        name == khr::incremental_present::NAME
+    });
+    let mut device_extensions = vec![khr::swapchain::NAME.as_ptr()];
+    if incremental_presentation {
+        device_extensions.push(khr::incremental_present::NAME.as_ptr());
+    }
     let create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
         .enabled_extension_names(&device_extensions);
@@ -3090,7 +3305,12 @@ fn create_device(
     let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
     // SAFETY: Queue family index and queue index are valid per device creation.
     let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
-    Ok((device, graphics_queue, present_queue))
+    Ok((
+        device,
+        graphics_queue,
+        present_queue,
+        incremental_presentation,
+    ))
 }
 
 fn query_swapchain_support(
@@ -4135,6 +4355,49 @@ mod tests {
         let mode = choose_present_mode(&[vk::PresentModeKHR::FIFO], PresentMode::Mailbox);
 
         assert_eq!(mode, vk::PresentModeKHR::FIFO);
+    }
+
+    #[test]
+    fn present_damage_maps_to_vulkan_region() {
+        let region = VulkanDevice::damage_to_present_rect(ScissorRect {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40,
+        })
+        .expect("damage should fit Vulkan coordinates");
+
+        assert_eq!(region.offset, vk::Offset2D { x: 10, y: 20 });
+        assert_eq!(
+            region.extent,
+            vk::Extent2D {
+                width: 30,
+                height: 40
+            }
+        );
+        assert_eq!(region.layer, 0);
+    }
+
+    #[test]
+    fn physical_device_preference_rank_selects_requested_power_class() {
+        assert!(
+            physical_device_preference_rank(
+                vk::PhysicalDeviceType::INTEGRATED_GPU,
+                PowerPreference::LowPower,
+            ) < physical_device_preference_rank(
+                vk::PhysicalDeviceType::DISCRETE_GPU,
+                PowerPreference::LowPower,
+            )
+        );
+        assert!(
+            physical_device_preference_rank(
+                vk::PhysicalDeviceType::DISCRETE_GPU,
+                PowerPreference::HighPerformance,
+            ) < physical_device_preference_rank(
+                vk::PhysicalDeviceType::INTEGRATED_GPU,
+                PowerPreference::HighPerformance,
+            )
+        );
     }
 
     #[test]

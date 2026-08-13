@@ -223,8 +223,13 @@ impl NovaAtlasState {
             let Some(pixels) = self.upload_bytes.get_mut(pending_upload.offset..end) else {
                 return false;
             };
-            return encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, padding)
-                .is_some();
+            let encoded =
+                encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, padding)
+                    .is_some();
+            if encoded {
+                self.content_generation = self.content_generation.wrapping_add(1);
+            }
+            return encoded;
         }
         let offset = self.upload_bytes.len();
         let Some(end) = offset.checked_add(len) else {
@@ -254,6 +259,7 @@ impl NovaAtlasState {
             offset,
             len,
         });
+        self.content_generation = self.content_generation.wrapping_add(1);
         true
     }
 }
