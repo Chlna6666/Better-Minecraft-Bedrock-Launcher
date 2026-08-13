@@ -24,6 +24,15 @@ pub(super) fn section_placeholder(
     desc: SharedString,
 ) -> impl IntoElement {
     crate::ui::components::page_shell::glass_card(colors)
+        .shadow(Vec::new())
+        .bg(Hsla {
+            a: 0.94,
+            ..colors.settings_card_bg
+        })
+        .border_color(Hsla {
+            a: 0.28,
+            ..colors.border
+        })
         .w_full()
         .p(px(12.))
         .child(

@@ -210,13 +210,22 @@ fn sub_title(colors: &ThemeColors, title: SharedString) -> Div {
 
 fn base_card(colors: &ThemeColors, id: impl Into<ElementId>) -> Stateful<Div> {
     crate::ui::components::page_shell::glass_card(colors)
+        .shadow(Vec::new())
+        .bg(Hsla {
+            a: 0.94,
+            ..colors.settings_card_bg
+        })
+        .border_color(Hsla {
+            a: 0.28,
+            ..colors.border
+        })
         .id(id)
         .w_full()
         .p(px(18.))
         .hover(|this| {
             this.bg(Hsla {
-                a: 0.84,
-                ..colors.surface
+                a: 0.96,
+                ..colors.surface_hover
             })
         })
 }
@@ -789,7 +798,7 @@ fn action_btn(
                 offset: point(px(0.), px(3.)),
             }])
         })
-        .active(|this| this.scale(0.96))
+        .active(|this| this.opacity(0.86))
         .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| (on_click)(cx))
         .child(
             div()

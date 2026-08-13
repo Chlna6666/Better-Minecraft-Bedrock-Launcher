@@ -1,9 +1,12 @@
+use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::StatefulInteractiveElement as _;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use super::proton_gdk;
@@ -19,7 +22,14 @@ pub(super) fn render_settings_content(
     update: &UpdateState,
     system_font_names: &[String],
 ) -> impl IntoElement {
+    let compact_plugins = window_width < px(980.);
+
     if state.tab == SettingsTab::Plugins {
+        let panel = animated_settings_panel(
+            plugins::render_plugins_tab(colors, i18n, state, plugin_model, compact_plugins),
+            state.tab,
+            true,
+        );
         return div()
             .relative()
             .flex_1()
@@ -39,14 +49,10 @@ pub(super) fn render_settings_content(
                             .w_full()
                             .max_w(px(960.))
                             .h_full()
+                            .min_w(px(0.))
                             .min_h(px(0.))
                             .pb(px(16.))
-                            .child(plugins::render_plugins_tab(
-                                colors,
-                                i18n,
-                                state,
-                                plugin_model,
-                            )),
+                            .child(panel),
                     ),
             )
             .into_any_element();
@@ -64,7 +70,8 @@ pub(super) fn render_settings_content(
                 .into_any_element()
         }
         SettingsTab::Plugins => {
-            plugins::render_plugins_tab(colors, i18n, state, plugin_model).into_any_element()
+            plugins::render_plugins_tab(colors, i18n, state, plugin_model, compact_plugins)
+                .into_any_element()
         }
         SettingsTab::About => {
             about::render_about_tab(colors, window_width, render_engine, i18n, state, update)
@@ -87,7 +94,7 @@ pub(super) fn render_settings_content(
                     .max_w(px(960.))
                     .pt(px(6.))
                     .pb(px(24.))
-                    .child(panel),
+                    .child(animated_settings_panel(panel, state.tab, false)),
             ),
         );
 
@@ -98,5 +105,34 @@ pub(super) fn render_settings_content(
         .flex()
         .flex_col()
         .child(scroll_area)
+        .into_any_element()
+}
+
+fn animated_settings_panel(
+    panel: impl IntoElement,
+    tab: SettingsTab,
+    fill_height: bool,
+) -> AnyElement {
+    let key = match tab {
+        SettingsTab::Game => "settings-content-game",
+        SettingsTab::Launcher => "settings-content-launcher",
+        #[cfg(target_os = "linux")]
+        SettingsTab::ProtonGdk => "settings-content-proton-gdk",
+        SettingsTab::Customization => "settings-content-customization",
+        SettingsTab::Plugins => "settings-content-plugins",
+        SettingsTab::About => "settings-content-about",
+    };
+    let translation = AnimationProperty::translation(point(px(10.), px(0.)), point(px(0.), px(0.)));
+
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .when(fill_height, |this| this.h_full().min_h(px(0.)))
+        .child(panel)
+        .with_animation(
+            key,
+            spring_motion(spring_smooth(), Duration::from_millis(520)).with_property(translation),
+            |panel, progress| panel.opacity(0.76 + progress * 0.24),
+        )
         .into_any_element()
 }

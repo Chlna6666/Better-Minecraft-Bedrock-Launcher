@@ -1,4 +1,4 @@
-use crate::ui::animation::{ease_out_cubic_motion, repeating_linear_motion};
+use crate::ui::animation::{repeating_linear_motion, spring_motion, spring_smooth};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::modal;
 use crate::ui::state::i18n::I18n;
@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use tracing::warn;
 
-use super::super::common::{settings_card, settings_card_header, settings_sub_row};
+use super::super::common::settings_card;
 
 #[derive(Clone, Copy)]
 struct ConnectivityService {
@@ -373,13 +373,10 @@ pub(super) fn render_connectivity_modal(
 
     let animated_card = card.with_animation(
         "launcher-connectivity-modal-card",
-        ease_out_cubic_motion(Duration::from_millis(260)),
-        |card, progress| {
-            card.opacity(progress)
-                .relative()
-                .left(px((1.0 - progress) * 28.0))
-                .top(px((1.0 - progress) * 6.0))
-        },
+        spring_motion(spring_smooth(), Duration::from_millis(520)).with_property(
+            AnimationProperty::translation(point(px(28.), px(6.)), point(px(0.), px(0.))),
+        ),
+        |card, progress| card.opacity(progress),
     );
 
     Some(
@@ -581,23 +578,26 @@ fn render_connectivity_list(
                                     connectivity_item_row(colors, i18n, service, item)
                                         .with_animation(
                                             row_id,
-                                            ease_out_cubic_motion(Duration::from_millis(220)),
-                                            |row, progress| {
-                                                row.opacity(0.72 + progress * 0.28)
-                                                    .relative()
-                                                    .left(px((1.0 - progress) * 12.0))
-                                            },
+                                            spring_motion(
+                                                spring_smooth(),
+                                                Duration::from_millis(480),
+                                            )
+                                            .with_property(AnimationProperty::translation(
+                                                point(px(12.), px(0.)),
+                                                point(px(0.), px(0.)),
+                                            )),
+                                            |row, progress| row.opacity(0.72 + progress * 0.28),
                                         )
                                 }
                                 _ => connectivity_item_row(colors, i18n, service, item)
                                     .with_animation(
                                         row_id,
-                                        ease_out_cubic_motion(Duration::from_millis(220)),
-                                        |row, progress| {
-                                            row.opacity(0.58 + progress * 0.42)
-                                                .relative()
-                                                .left(px((1.0 - progress) * 14.0))
-                                        },
+                                        spring_motion(spring_smooth(), Duration::from_millis(480))
+                                            .with_property(AnimationProperty::translation(
+                                                point(px(14.), px(0.)),
+                                                point(px(0.), px(0.)),
+                                            )),
+                                        |row, progress| row.opacity(0.58 + progress * 0.42),
                                     ),
                             }
                         }),
@@ -851,7 +851,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         })
                         .with_animation(
                             "launcher-connectivity-loading-dot-1",
-                            repeating_linear_motion(Duration::from_millis(720)),
+                            loading_dot_motion(Duration::from_millis(720)),
                             |dot, progress| {
                                 let pulse = if progress < 0.5 {
                                     progress * 2.0
@@ -873,7 +873,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         })
                         .with_animation(
                             "launcher-connectivity-loading-dot-2",
-                            repeating_linear_motion(Duration::from_millis(900)),
+                            loading_dot_motion(Duration::from_millis(900)),
                             |dot, progress| {
                                 let pulse = if progress < 0.5 {
                                     progress * 2.0
@@ -895,7 +895,7 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                         })
                         .with_animation(
                             "launcher-connectivity-loading-dot-3",
-                            repeating_linear_motion(Duration::from_millis(1080)),
+                            loading_dot_motion(Duration::from_millis(1080)),
                             |dot, progress| {
                                 let pulse = if progress < 0.5 {
                                     progress * 2.0
@@ -908,6 +908,13 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                 ),
         )
         .into_any_element()
+}
+
+fn loading_dot_motion(duration: Duration) -> Animation {
+    repeating_linear_motion(duration).with_property(AnimationProperty::translation(
+        point(px(0.), px(0.)),
+        point(px(0.), px(0.)),
+    ))
 }
 
 fn icon_button(

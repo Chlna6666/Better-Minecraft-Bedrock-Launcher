@@ -3,19 +3,20 @@ use crate::ui::components::dropdown::{Dropdown, DropdownOption};
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{Input, InputSize, InputState};
 use crate::ui::components::markdown_renderer::{parse_markdown_document, render_markdown_document};
+use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::components::toast;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
+use crate::ui::views::settings::SettingsPageView;
 use crate::ui::views::settings::common::{
-    settings_action_button, settings_badge, settings_card, settings_control_box, settings_value_box,
+    settings_action_button, settings_card, settings_control_box, settings_value_box,
 };
 use crate::ui::views::settings::state::{
     PluginReadmeCacheKey, PluginResourceCacheKey, PluginSettingsSubTab, SettingsPageState,
     SettingsTab,
 };
-use crate::ui::views::settings::{SettingsPageView, rows::tab_title};
 use bmcbl_plugin_api::LogLevel;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -403,6 +404,7 @@ pub(super) fn render_plugins_tab(
     i18n: &I18n,
     state: &SettingsPageState,
     model: &PluginSettingsModel,
+    compact: bool,
 ) -> Div {
     let selected = model
         .selected_id
@@ -412,14 +414,19 @@ pub(super) fn render_plugins_tab(
     div()
         .w_full()
         .h_full()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
         .flex()
-        .items_start()
+        .when(compact, |this| this.flex_col())
+        .items_stretch()
         .gap(px(12.))
         .child(plugin_list(
             colors,
             i18n,
             &model.statuses,
             model.selected_id.as_deref(),
+            compact,
         ))
         .child(plugin_detail(colors, i18n, state, model, selected))
 }
@@ -515,10 +522,15 @@ fn plugin_list(
     i18n: &I18n,
     statuses: &[PluginStatus],
     selected_id: Option<&str>,
+    compact: bool,
 ) -> Stateful<Div> {
     let mut list = settings_card(colors, "settings-plugins-list")
-        .w(px(250.))
+        .when(compact, |this| this.w_full().h(px(190.)))
+        .when(!compact, |this| this.w(px(250.)).h_full())
         .flex_shrink_0()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
         .p(px(10.))
         .flex()
         .flex_col()
@@ -704,6 +716,8 @@ fn plugin_detail(
     settings_card(colors, "settings-plugin-detail")
         .flex_1()
         .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
         .p(px(14.))
         .flex()
         .flex_col()
@@ -719,8 +733,10 @@ fn plugin_detail(
             div()
                 .id("settings-plugin-detail-scroll")
                 .flex_1()
+                .min_w(px(0.))
                 .min_h(px(0.))
-                .overflow_y_scroll()
+                .overflow_scroll()
+                .scrollbar_width(px(0.))
                 .child(match state.plugin_sub_tab {
                     PluginSettingsSubTab::Readme => plugin_readme_panel(colors, i18n, model),
                     PluginSettingsSubTab::Permissions => plugin_permissions_panel(colors, status),
@@ -768,10 +784,12 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                 .flex()
                 .items_center()
                 .justify_between()
+                .flex_wrap()
                 .gap(px(12.))
                 .child(
                     div()
                         .flex()
+                        .flex_1()
                         .items_center()
                         .gap(px(12.))
                         .min_w(px(0.))
@@ -866,10 +884,13 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                 .flex()
                 .items_center()
                 .justify_between()
+                .flex_wrap()
                 .gap(px(10.))
                 .child(
                     div()
                         .flex()
+                        .flex_1()
+                        .min_w(px(0.))
                         .items_center()
                         .flex_wrap()
                         .gap(px(6.))
@@ -891,6 +912,8 @@ fn plugin_header_card(colors: &ThemeColors, i18n: &I18n, status: &PluginStatus) 
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
+                        .justify_end()
                         .items_center()
                         .gap(px(6.))
                         .child(
@@ -987,7 +1010,7 @@ fn plugin_sub_tabs(
     i18n: &I18n,
     plugin_id: &str,
     active: PluginSettingsSubTab,
-) -> Div {
+) -> impl IntoElement {
     let button = |label: SharedString, tab: PluginSettingsSubTab| {
         let is_active = active == tab;
         let plugin_id = plugin_id.to_string();
@@ -1027,7 +1050,11 @@ fn plugin_sub_tabs(
     };
 
     div()
+        .w_full()
+        .min_w(px(0.))
         .flex()
+        .overflow_x_scrollbar()
+        .scrollbar_width(px(0.))
         .gap(px(4.))
         .p(px(3.))
         .rounded(px(crate::ui::theme::tokens::radius::MD))

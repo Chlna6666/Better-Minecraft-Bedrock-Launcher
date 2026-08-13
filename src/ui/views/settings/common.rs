@@ -223,9 +223,17 @@ pub(super) fn spawn_persist_background_blur(blur: f32, cx: &mut App) {
 }
 
 pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
-    // 统一卡片基底（圆角/边框/背景/阴影配方来自 page_shell::glass_card），
-    // 设置页在其上追加顶部高光细线。
+    // 设置页位于可自定义背景之上：提高表面不透明度，保证文字对比度稳定。
     crate::ui::components::page_shell::glass_card(colors)
+        .shadow(Vec::new())
+        .bg(Hsla {
+            a: 0.94,
+            ..colors.settings_card_bg
+        })
+        .border_color(Hsla {
+            a: 0.28,
+            ..colors.border
+        })
         .id(id)
         .relative()
         .w_full()
@@ -252,12 +260,12 @@ pub(super) fn settings_flat_card(colors: &ThemeColors, id: &'static str) -> Stat
         .overflow_hidden()
         .border_1()
         .border_color(Hsla {
-            a: 0.22,
+            a: 0.28,
             ..colors.border
         })
         .bg(Hsla {
-            a: 0.72,
-            ..colors.surface
+            a: 0.94,
+            ..colors.settings_card_bg
         })
         .child(
             div()
@@ -283,7 +291,7 @@ pub(super) fn settings_inline_card(colors: &ThemeColors, id: &'static str) -> St
         .gap(px(22.))
         .hover(|this| {
             this.bg(Hsla {
-                a: 0.84,
+                a: 0.94,
                 ..colors.surface_hover
             })
             .border_color(Hsla {
@@ -303,7 +311,7 @@ pub(super) fn settings_flat_inline_card(colors: &ThemeColors, id: &'static str) 
         .gap(px(22.))
         .hover(|this| {
             this.bg(Hsla {
-                a: 0.84,
+                a: 0.94,
                 ..colors.surface_hover
             })
             .border_color(Hsla {
@@ -612,6 +620,14 @@ pub(super) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div
             crate::ui::components::page_shell::page_panel(colors)
                 .w_full()
                 .h_full()
+                .bg(Hsla {
+                    a: 0.96,
+                    ..colors.settings_panel_bg
+                })
+                .border_color(Hsla {
+                    a: 0.28,
+                    ..colors.border
+                })
                 .p(px(14.))
                 .child(content),
         ),

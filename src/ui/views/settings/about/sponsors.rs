@@ -109,15 +109,6 @@ pub(super) fn render_sponsors_modal(
             a: 0.99,
             ..colors.surface
         })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.30,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(40.),
-            spread_radius: px(0.),
-            offset: point(px(0.), px(16.)),
-        }])
         .flex()
         .flex_col()
         .child(
@@ -422,15 +413,6 @@ fn sponsor_item(colors: &ThemeColors, item: AboutSponsorEntry) -> Stateful<Div> 
             a: 1.0,
             ..colors.surface
         })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: 0.08,
-                ..rgb(0x000000).into()
-            },
-            blur_radius: px(10.),
-            spread_radius: px(0.),
-            offset: point(px(0.), px(3.)),
-        }])
         .p(px(12.))
         .flex()
         .items_center()
@@ -440,15 +422,6 @@ fn sponsor_item(colors: &ThemeColors, item: AboutSponsorEntry) -> Stateful<Div> 
                 a: 1.0,
                 ..colors.surface
             })
-            .shadow(vec![BoxShadow {
-                color: Hsla {
-                    a: 0.14,
-                    ..rgb(0x000000).into()
-                },
-                blur_radius: px(14.),
-                spread_radius: px(0.),
-                offset: point(px(0.), px(4.)),
-            }])
         })
         .child(sponsor_avatar(colors, &item))
         .child(

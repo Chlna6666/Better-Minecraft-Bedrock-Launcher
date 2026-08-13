@@ -1,3 +1,4 @@
+use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
@@ -46,7 +47,11 @@ pub(super) fn refresh_gpu_adapters_for_backend(renderer_backend: String, cx: &mu
     .detach();
 }
 
-pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab) -> Div {
+pub(super) fn render_tabs(
+    colors: &ThemeColors,
+    i18n: &I18n,
+    active: SettingsTab,
+) -> impl IntoElement {
     let tab = |id: &'static str,
                icon: &'static str,
                label: SharedString,
@@ -55,12 +60,12 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
         let is_active = tab == active;
         let bg = if is_active {
             Hsla {
-                a: 0.20,
+                a: 0.16,
                 ..colors.accent
             }
         } else {
             Hsla {
-                a: 0.44,
+                a: 0.0,
                 ..colors.surface
             }
         };
@@ -81,8 +86,9 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
             colors.text_secondary
         };
 
-        let mut tab_button = div()
+        div()
             .id(id)
+            .flex_shrink_0()
             .min_h(px(42.))
             .flex()
             .items_center()
@@ -121,7 +127,12 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
                     ..colors.surface_hover
                 })
             })
-            .active(|this| this.scale(0.96))
+            .active(|this| {
+                this.opacity(0.88).bg(Hsla {
+                    a: 0.20,
+                    ..colors.accent
+                })
+            })
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 let committed_blur = cx.update_global(|s: &mut SettingsPageState, _cx| {
                     if s.commit_background_blur_preview() {
@@ -140,29 +151,15 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
                     refresh_gpu_adapters_if_needed(cx);
                     super::launcher::logs::refresh_log_stats(cx);
                 }
-            });
-
-        if is_active {
-            tab_button = tab_button.shadow(vec![BoxShadow {
-                color: Hsla {
-                    a: 0.14,
-                    ..rgb(0x000000).into()
-                },
-                blur_radius: px(12.),
-                spread_radius: px(-6.),
-                offset: point(px(0.), px(4.)),
-            }]);
-        }
-
-        tab_button
+            })
     };
 
     let container = div()
         .w_full()
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .bg(Hsla {
-            a: 0.42,
-            ..colors.surface
+            a: 0.92,
+            ..colors.settings_card_bg
         })
         .border_1()
         .border_color(Hsla {
@@ -171,6 +168,9 @@ pub(super) fn render_tabs(colors: &ThemeColors, i18n: &I18n, active: SettingsTab
         })
         .p(px(7.))
         .flex()
+        .min_w(px(0.))
+        .overflow_x_scrollbar()
+        .scrollbar_width(px(0.))
         .items_center()
         .gap(px(8.))
         .child(tab(
