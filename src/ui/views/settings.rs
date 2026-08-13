@@ -23,6 +23,7 @@ mod plugins;
 mod proton_gdk;
 mod rows;
 pub mod state;
+mod surface;
 mod tabs;
 
 const STATIC_ASSET_PRELOAD_LIMIT: usize = 4;
@@ -137,7 +138,7 @@ pub fn render_settings_page(
 ) -> impl IntoElement + use<> {
     let settings_layout = layout::SettingsLayout::new(window_width, window_height);
 
-    common::page_shell(
+    surface::page_shell(
         div()
             .size_full()
             .min_w(px(0.))

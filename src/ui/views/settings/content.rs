@@ -24,7 +24,7 @@ pub(super) fn render_settings_content(
     system_font_names: &[String],
     layout: &SettingsLayout,
 ) -> impl IntoElement {
-    let compact_plugins = window_width < px(980.);
+    let compact_plugins = layout.plugin_compact;
 
     if state.tab == SettingsTab::Plugins {
         let panel = animated_settings_panel(
@@ -36,13 +36,16 @@ pub(super) fn render_settings_content(
             .relative()
             .flex_1()
             .min_h(px(0.))
+            .min_w(px(0.))
             .flex()
             .flex_col()
+            .overflow_hidden()
             .child(
                 div()
                     .id("settings-plugins-viewport")
                     .flex_1()
                     .min_h(px(0.))
+                    .min_w(px(0.))
                     .w_full()
                     .flex()
                     .justify_center()
@@ -53,7 +56,7 @@ pub(super) fn render_settings_content(
                             .h_full()
                             .min_w(px(0.))
                             .min_h(px(0.))
-                            .pb(px(16.))
+                            .pb(if compact_plugins { px(6.) } else { px(10.) })
                             .child(panel),
                     ),
             )
@@ -85,6 +88,7 @@ pub(super) fn render_settings_content(
         .id("settings-content-scroll")
         .flex_1()
         .min_h(px(0.))
+        .min_w(px(0.))
         .overflow_y_scroll()
         .scrollbar_width(px(0.))
         .flex()
@@ -94,8 +98,8 @@ pub(super) fn render_settings_content(
                 div()
                     .w_full()
                     .max_w(layout.content_max_width)
-                    .pt(px(6.))
-                    .pb(px(24.))
+                    .pt(px(4.))
+                    .pb(px(18.))
                     .child(animated_settings_panel(panel, state.tab, false)),
             ),
         );
@@ -104,6 +108,7 @@ pub(super) fn render_settings_content(
         .relative()
         .flex_1()
         .min_h(px(0.))
+        .min_w(px(0.))
         .flex()
         .flex_col()
         .child(scroll_area)
@@ -124,7 +129,7 @@ fn animated_settings_panel(
         SettingsTab::Plugins => "settings-content-plugins",
         SettingsTab::About => "settings-content-about",
     };
-    let translation = AnimationProperty::translation(point(px(10.), px(0.)), point(px(0.), px(0.)));
+    let translation = AnimationProperty::translation(point(px(14.), px(0.)), point(px(0.), px(0.)));
 
     div()
         .w_full()
@@ -133,8 +138,8 @@ fn animated_settings_panel(
         .child(panel)
         .with_animation(
             key,
-            spring_motion(spring_smooth(), Duration::from_millis(520)).with_property(translation),
-            |panel, progress| panel.opacity(0.76 + progress * 0.24),
+            spring_motion(spring_smooth(), Duration::from_millis(340)).with_property(translation),
+            |panel, progress| panel.opacity(0.58 + progress * 0.42),
         )
         .into_any_element()
 }
