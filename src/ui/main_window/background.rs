@@ -156,7 +156,13 @@ impl AppBackgroundView {
             .bg(background_blur_overlay_color(blur));
 
         if BACKGROUND_GPU_BACKDROP_BLUR_ENABLED {
-            container.child(overlay.backdrop_blur(px(blur)))
+            let blur_style = BackdropBlurStyle::new(px(blur)).auto_quality();
+            let blur_style = if blur < 1.0 {
+                blur_style.downsample(1).levels(1)
+            } else {
+                blur_style
+            };
+            container.child(overlay.backdrop_blur(blur_style))
         } else {
             container.child(overlay)
         }
