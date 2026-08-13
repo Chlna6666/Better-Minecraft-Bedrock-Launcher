@@ -66,6 +66,8 @@ use winit::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 
 mod action_bindings;
 mod content_mask;
+#[cfg(test)]
+mod dirty_region_tests;
 mod dispatch;
 mod draw;
 mod draw_reuse;

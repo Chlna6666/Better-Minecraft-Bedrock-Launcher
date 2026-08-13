@@ -7,6 +7,7 @@ mod input;
 mod keyboard;
 mod platform;
 mod util;
+mod vsync;
 mod window;
 
 pub(crate) use clipboard::*;
