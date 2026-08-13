@@ -24,7 +24,6 @@ pub(crate) struct RetainedSceneSegment {
     pub(crate) paint_range: Range<PaintIndex>,
     pub(crate) prepaint_range: Range<PrepaintStateIndex>,
     pub(crate) entity_id: EntityId,
-    pub(crate) dirty: bool,
 }
 
 pub(crate) struct Frame {

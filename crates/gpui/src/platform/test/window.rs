@@ -36,6 +36,7 @@ pub(crate) struct TestWindowState {
     request_frame_count: Rc<Cell<usize>>,
     last_requested_frame: Rc<Cell<Option<RequestFrameOptions>>>,
     start_window_move_count: Rc<Cell<usize>>,
+    draw_count: Rc<Cell<usize>>,
     present_framebuffer_only_count: Rc<Cell<usize>>,
     draw_delay: Duration,
     input_handler: Option<PlatformInputHandler>,
@@ -92,6 +93,7 @@ impl TestWindow {
             request_frame_count: Rc::new(Cell::new(0)),
             last_requested_frame: Rc::new(Cell::new(None)),
             start_window_move_count: Rc::new(Cell::new(0)),
+            draw_count: Rc::new(Cell::new(0)),
             present_framebuffer_only_count: Rc::new(Cell::new(0)),
             draw_delay: Duration::ZERO,
             input_handler: None,
@@ -157,6 +159,10 @@ impl TestWindow {
 
     pub(crate) fn present_framebuffer_only_count(&self) -> usize {
         self.0.lock().present_framebuffer_only_count.get()
+    }
+
+    pub(crate) fn draw_count(&self) -> usize {
+        self.0.lock().draw_count.get()
     }
 
     pub(crate) fn set_draw_delay(&self, delay: Duration) {
@@ -366,7 +372,10 @@ impl PlatformWindow for TestWindow {
     fn on_appearance_changed(&self, _callback: Box<dyn FnMut()>) {}
 
     fn draw(&self, _render_plan: crate::FrameRenderPlan<'_>) {
-        let draw_delay = self.0.lock().draw_delay;
+        let lock = self.0.lock();
+        lock.draw_count.set(lock.draw_count.get().saturating_add(1));
+        let draw_delay = lock.draw_delay;
+        drop(lock);
         if !draw_delay.is_zero() {
             thread::sleep(draw_delay);
         }

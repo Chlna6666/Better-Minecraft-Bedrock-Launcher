@@ -470,6 +470,10 @@ impl Window {
             .animation_engine
             .borrow_mut()
             .tick_driver(driver, self.animation_time());
+        self.backdrop_blur_refresh_required = self
+            .rendered_frame
+            .scene
+            .backdrop_blur_source_animation_values_changed(&tick.scene_values);
         self.rendered_frame
             .scene
             .replace_animation_values(tick.scene_values);
@@ -581,7 +585,7 @@ impl Window {
                 self.rendered_frame.scene.len()
             );
         } else if decision.draw_frame {
-            self.draw_visible_frame(frame_budget, cx);
+            self.draw_visible_frame(frame_options.require_presentation, frame_budget, cx);
         } else if decision.present_frame {
             self.present_framebuffer_only();
         } else if decision.activity.active {
@@ -597,11 +601,16 @@ impl Window {
         });
     }
 
-    fn draw_visible_frame(&mut self, frame_budget: Duration, cx: &mut App) {
+    fn draw_visible_frame(
+        &mut self,
+        require_presentation: bool,
+        frame_budget: Duration,
+        cx: &mut App,
+    ) {
         let draw_started_at = Instant::now();
         let arena_clear_needed = measure("frame generation", || self.draw(cx));
         let draw_elapsed = draw_started_at.elapsed();
-        if self.needs_present.get() {
+        if require_presentation || self.needs_present.get() {
             measure("frame presentation", || self.present());
         }
         measure("frame arena clear", || arena_clear_needed.clear());

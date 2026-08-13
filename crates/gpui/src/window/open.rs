@@ -335,6 +335,7 @@ impl Window {
             animation_dirty_region: DirtyRegion::empty(),
             render_present_mode: PartialPresentMode::FullRedraw,
             render_trim_policy: RetainedResourceTrimPolicy::None,
+            backdrop_blur_refresh_required: true,
             force_full_redraw: Cell::new(true),
             force_view_cache_refresh: true,
             idle_render_frames: 0,

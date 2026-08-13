@@ -117,6 +117,10 @@ impl Window {
         self.next_frame
             .scene
             .replace_animation_values(scene_animation_values);
+        self.backdrop_blur_refresh_required = self
+            .next_frame
+            .scene
+            .backdrop_blur_refresh_required(&self.rendered_frame.scene);
         self.prepare_render_plan_for_next_frame(
             previous_scene_was_empty || force_full_redraw || self.draw_was_degraded,
             directly_dirty_views,
@@ -158,7 +162,11 @@ impl Window {
         self.force_view_cache_refresh = false;
         self.recovering_degraded_draw = false;
         self.has_completed_rendered_frame = true;
-        self.needs_present.set(true);
+        // A layout RAF may notify and rebuild a view after its sampled value has already
+        // converged. Retain the newly built CPU scene, but do not encode, upload, or present an
+        // identical framebuffer. Platform exposure and explicit presentation requests still use
+        // the presentation-only path without coming through this flag.
+        self.needs_present.set(!self.render_dirty_region.is_empty());
         if self.draw_was_degraded {
             self.invalidator.set_dirty(true);
         } else {
@@ -270,8 +278,15 @@ impl Window {
             }
 
             if !dirty_region.is_empty() && self.next_frame.scene.has_backdrop_blurs() {
-                for bounds in self.next_frame.scene.backdrop_blur_bounds() {
-                    dirty_region.push(bounds);
+                let source_damage: SmallVec<[Bounds<ScaledPixels>; 4]> = dirty_region
+                    .rects()
+                    .iter()
+                    .map(|rect| rect.bounds)
+                    .collect();
+                for damage in source_damage {
+                    for bounds in self.next_frame.scene.backdrop_blur_damage(damage) {
+                        dirty_region.push(bounds);
+                    }
                 }
             }
 
@@ -306,48 +321,90 @@ impl Window {
 
         let mut previous_bounds: FxHashMap<EntityId, Bounds<ScaledPixels>> = FxHashMap::default();
         let mut current_bounds: FxHashMap<EntityId, Bounds<ScaledPixels>> = FxHashMap::default();
+        let mut previous_segments: FxHashMap<EntityId, SmallVec<[&RetainedSceneSegment; 1]>> =
+            FxHashMap::default();
+        let mut current_segments: FxHashMap<EntityId, SmallVec<[&RetainedSceneSegment; 1]>> =
+            FxHashMap::default();
 
         for segment in &self.rendered_frame.retained_scene_segments {
+            previous_segments
+                .entry(segment.entity_id)
+                .or_default()
+                .push(segment);
             previous_bounds
                 .entry(segment.entity_id)
                 .and_modify(|bounds| *bounds = bounds.union(&segment.bounds))
                 .or_insert(segment.bounds);
         }
         for segment in &self.next_frame.retained_scene_segments {
+            current_segments
+                .entry(segment.entity_id)
+                .or_default()
+                .push(segment);
             current_bounds
                 .entry(segment.entity_id)
                 .and_modify(|bounds| *bounds = bounds.union(&segment.bounds))
                 .or_insert(segment.bounds);
         }
 
-        // Damage both the old and new extent of views that were directly invalidated. This covers
-        // removal, insertion, growth, and shrink without promoting their cache-invalidated ancestors
-        // to pixel-dirty status.
+        // Diff the directly invalidated view's retained scene operations. A layout-driven spring
+        // often belongs to a full-window page view even though only a button, pill, or menu changes;
+        // using the whole view segment would promote that animation to full-window presentation.
         for entity_id in directly_dirty_views {
-            if let Some(bounds) = previous_bounds.get(entity_id) {
-                dirty_region.push(*bounds);
-            }
-            if let Some(bounds) = current_bounds.get(entity_id) {
-                dirty_region.push(*bounds);
+            let previous = previous_segments.get(entity_id);
+            let current = current_segments.get(entity_id);
+            let diffed = previous.zip(current).is_some_and(|(previous, current)| {
+                if previous.len() != 1 || current.len() != 1 {
+                    return false;
+                }
+                self.next_frame.scene.for_each_changed_bounds(
+                    current[0].scene_range.clone(),
+                    &self.rendered_frame.scene,
+                    previous[0].scene_range.clone(),
+                    |bounds| dirty_region.push(bounds),
+                )
+            });
+            if !diffed {
+                if let Some(bounds) = previous_bounds.get(entity_id) {
+                    dirty_region.push(*bounds);
+                }
+                if let Some(bounds) = current_bounds.get(entity_id) {
+                    dirty_region.push(*bounds);
+                }
             }
         }
 
         // Layout changes can move siblings even though those siblings were not directly notified.
         // Compare retained bounds across frames and damage only entities whose visual extent moved,
         // appeared, or disappeared. Stable ancestors such as MainWindow therefore remain clean.
-        for (entity_id, bounds) in &current_bounds {
-            match previous_bounds.get(entity_id) {
-                Some(previous) if previous != bounds => {
-                    dirty_region.push(*previous);
-                    dirty_region.push(*bounds);
+        for (entity_id, segments) in &current_segments {
+            match previous_segments.get(entity_id) {
+                Some(previous)
+                    if previous.len() == segments.len()
+                        && previous
+                            .iter()
+                            .zip(segments)
+                            .all(|(previous, current)| previous.bounds == current.bounds) => {}
+                Some(previous) => {
+                    for segment in previous {
+                        dirty_region.push(segment.bounds);
+                    }
+                    for segment in segments {
+                        dirty_region.push(segment.bounds);
+                    }
                 }
-                None => dirty_region.push(*bounds),
-                _ => {}
+                None => {
+                    for segment in segments {
+                        dirty_region.push(segment.bounds);
+                    }
+                }
             }
         }
-        for (entity_id, bounds) in &previous_bounds {
-            if !current_bounds.contains_key(entity_id) {
-                dirty_region.push(*bounds);
+        for (entity_id, segments) in &previous_segments {
+            if !current_segments.contains_key(entity_id) {
+                for segment in segments {
+                    dirty_region.push(segment.bounds);
+                }
             }
         }
     }
@@ -359,6 +416,7 @@ impl Window {
             partial_present_mode: self.render_present_mode,
             trim_policy: self.render_trim_policy,
             visual_effect_quality: FrameVisualEffectQuality::Full,
+            backdrop_blur_refresh_required: self.backdrop_blur_refresh_required,
         }
     }
 

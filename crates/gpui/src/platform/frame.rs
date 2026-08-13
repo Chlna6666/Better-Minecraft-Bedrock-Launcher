@@ -158,6 +158,7 @@ pub(crate) struct FrameRenderPlan<'a> {
     pub(crate) partial_present_mode: PartialPresentMode,
     pub(crate) trim_policy: RetainedResourceTrimPolicy,
     pub(crate) visual_effect_quality: FrameVisualEffectQuality,
+    pub(crate) backdrop_blur_refresh_required: bool,
 }
 
 impl<'a> FrameRenderPlan<'a> {
@@ -169,12 +170,21 @@ impl<'a> FrameRenderPlan<'a> {
             partial_present_mode: PartialPresentMode::FullRedraw,
             trim_policy: RetainedResourceTrimPolicy::None,
             visual_effect_quality: FrameVisualEffectQuality::Full,
+            backdrop_blur_refresh_required: true,
         }
     }
 
     pub(crate) fn with_full_redraw(self) -> Self {
         Self {
             partial_present_mode: PartialPresentMode::FullRedraw,
+            ..self
+        }
+    }
+
+    pub(crate) fn surface_requires_full_redraw(self) -> Self {
+        Self {
+            partial_present_mode: PartialPresentMode::FullRedraw,
+            backdrop_blur_refresh_required: true,
             ..self
         }
     }

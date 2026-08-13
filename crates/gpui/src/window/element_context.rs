@@ -381,7 +381,6 @@ impl Window {
         let should_track_segment = self.invalidator.phase() == DrawPhase::Paint;
         let prepaint_start = should_track_segment.then(|| self.prepaint_index());
         let paint_start = should_track_segment.then(|| self.paint_index());
-        let was_dirty = should_track_segment && self.dirty_views.contains(&id);
         if let Some(paint_start) = &paint_start {
             self.view_bounds_stack.push(ViewBoundsFrame {
                 scanned_until: paint_start.scene_index,
@@ -447,7 +446,6 @@ impl Window {
                             paint_range: paint_start..paint_end,
                             prepaint_range: prepaint_start..self.prepaint_index(),
                             entity_id: id,
-                            dirty: was_dirty,
                         });
                 }
             }

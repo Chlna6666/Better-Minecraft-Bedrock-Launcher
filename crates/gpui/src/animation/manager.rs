@@ -4,7 +4,7 @@ use super::{
         AnimationParallel, AnimationSequence, AnimationSpec, AnimationStagger,
         ParallelTimelineSample, SequencedTimelineSample, StaggerTimelineSample, TimelineSample,
     },
-    transition::{resolve_driver_with_cpu_policy, TransitionProperty},
+    transition::{TransitionProperty, resolve_driver_with_cpu_policy},
 };
 use crate::{Bounds, GlobalElementId, Pixels, SceneAnimationId, SceneAnimationValue};
 use collections::{FxHashMap, FxHashSet};

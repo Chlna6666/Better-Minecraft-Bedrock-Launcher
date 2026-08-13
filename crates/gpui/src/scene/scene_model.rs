@@ -102,7 +102,7 @@ impl Scene {
         let mut bounds = None::<Bounds<ScaledPixels>>;
         for operation in self.paint_operations.get(range)? {
             let operation_bounds = match operation {
-                PaintOperation::Primitive(primitive) => Some(*primitive.bounds()),
+                PaintOperation::Primitive(primitive) => Some(primitive.visual_bounds()),
                 PaintOperation::StartLayer(layer_bounds) => Some(*layer_bounds),
                 PaintOperation::EndLayer => None,
             };
@@ -116,6 +116,47 @@ impl Scene {
         bounds
     }
 
+    pub(crate) fn for_each_changed_bounds(
+        &self,
+        current_range: Range<usize>,
+        previous: &Self,
+        previous_range: Range<usize>,
+        mut visit: impl FnMut(Bounds<ScaledPixels>),
+    ) -> bool {
+        let Some(current) = self.paint_operations.get(current_range) else {
+            return false;
+        };
+        let Some(previous) = previous.paint_operations.get(previous_range) else {
+            return false;
+        };
+
+        let prefix_len = current
+            .iter()
+            .zip(previous)
+            .take_while(|(current, previous)| current.visually_eq(previous))
+            .count();
+        let max_suffix_len = current.len().min(previous.len()).saturating_sub(prefix_len);
+        let suffix_len = current
+            .iter()
+            .rev()
+            .zip(previous.iter().rev())
+            .take(max_suffix_len)
+            .take_while(|(current, previous)| current.visually_eq(previous))
+            .count();
+
+        for operation in &previous[prefix_len..previous.len().saturating_sub(suffix_len)] {
+            if let Some(bounds) = operation.visual_bounds() {
+                visit(bounds);
+            }
+        }
+        for operation in &current[prefix_len..current.len().saturating_sub(suffix_len)] {
+            if let Some(bounds) = operation.visual_bounds() {
+                visit(bounds);
+            }
+        }
+        true
+    }
+
     pub(crate) fn requires_full_redraw_fallback(&self) -> bool {
         !self.surfaces.is_empty() || !self.gpu_meshes_3d.is_empty()
     }
@@ -124,8 +165,93 @@ impl Scene {
         !self.backdrop_blurs.is_empty()
     }
 
-    pub(crate) fn backdrop_blur_bounds(&self) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
-        self.backdrop_blurs.iter().map(|blur| blur.bounds)
+    pub(crate) fn backdrop_blur_refresh_required(&self, previous: &Self) -> bool {
+        if self.backdrop_blurs.is_empty() {
+            return false;
+        }
+        if self.backdrop_blurs != previous.backdrop_blurs {
+            return true;
+        }
+
+        let current_source = self.backdrop_blur_source_operations();
+        let previous_source = previous.backdrop_blur_source_operations();
+        if current_source.len() != previous_source.len()
+            || current_source
+                .iter()
+                .zip(previous_source)
+                .any(|(current, previous)| !current.visually_eq(previous))
+        {
+            return true;
+        }
+
+        self.backdrop_blur_source_animation_values_changed(&previous.animation_values)
+    }
+
+    pub(crate) fn backdrop_blur_source_animation_values_changed(
+        &self,
+        previous_values: &[SceneAnimationValue],
+    ) -> bool {
+        if self.backdrop_blurs.is_empty() {
+            return false;
+        }
+
+        self.backdrop_blur_source_operations()
+            .iter()
+            .filter_map(|operation| match operation {
+                PaintOperation::Primitive(primitive) => primitive.animation_id(),
+                PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
+            })
+            .chain(
+                self.backdrop_blurs
+                    .iter()
+                    .filter_map(|blur| blur.animation_id),
+            )
+            .any(|animation_id| {
+                self.animation_value(animation_id)
+                    != previous_values
+                        .iter()
+                        .find(|value| value.animation_id == animation_id)
+            })
+    }
+
+    fn backdrop_blur_source_operations(&self) -> &[PaintOperation] {
+        let source_end = self
+            .paint_operations
+            .iter()
+            .position(|operation| {
+                matches!(
+                    operation,
+                    PaintOperation::Primitive(Primitive::BackdropBlur(_))
+                )
+            })
+            .unwrap_or(self.paint_operations.len());
+        &self.paint_operations[..source_end]
+    }
+
+    fn animation_value(&self, animation_id: SceneAnimationId) -> Option<&SceneAnimationValue> {
+        self.animation_values
+            .iter()
+            .find(|value| value.animation_id == animation_id)
+    }
+
+    pub(crate) fn backdrop_blur_damage(
+        &self,
+        damage: Bounds<ScaledPixels>,
+    ) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
+        let influence_radius = self
+            .backdrop_blurs
+            .iter()
+            .map(backdrop_blur_influence_radius)
+            .fold(ScaledPixels(0.0), |left, right| {
+                ScaledPixels(left.0.max(right.0))
+            });
+        self.backdrop_blurs.iter().filter_map(move |blur| {
+            let affected = damage
+                .dilate(influence_radius)
+                .intersect(&blur.bounds)
+                .intersect(&blur.content_mask.bounds);
+            (!affected.is_empty()).then_some(affected)
+        })
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
@@ -637,6 +763,34 @@ impl Scene {
         self.prepared_batches.primitive_count = self.primitive_count();
         self.prepared_batches.retained_capacity = self.prepared_batches.batches.capacity();
     }
+}
+
+fn backdrop_blur_influence_radius(blur: &PaintBackdropBlur) -> ScaledPixels {
+    let radius = blur.radius.0.abs();
+    if !radius.is_finite() || radius <= 0.0 {
+        return ScaledPixels(0.0);
+    }
+
+    let downsample = f32::from(blur.downsample.max(1));
+    let levels = blur.levels.clamp(1, 6);
+    let offset = (radius / downsample / f32::from(levels)).clamp(1.0 / 256.0, 6.0);
+    let pyramid_span = match levels {
+        1 => 0.0,
+        2 => 1.0,
+        3 => 3.0,
+        4 => 7.0,
+        5 => 15.0,
+        _ => 31.0,
+    };
+    let downsample_source_span = 1.0 + downsample * pyramid_span;
+    let upsample_source_span = 2.0 * downsample * pyramid_span;
+
+    // Dual-Kawase support accumulates through every downsample and upsample pass. The upsample
+    // shader reaches two source texels per pass; the final term conservatively includes linear
+    // sampling at each level and during the composite sample.
+    let tap_support = offset * (downsample_source_span + 2.0 * upsample_source_span);
+    let linear_support = downsample_source_span + upsample_source_span + downsample;
+    ScaledPixels((tap_support + linear_support).ceil())
 }
 
 fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation) -> bool {

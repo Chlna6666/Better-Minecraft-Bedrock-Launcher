@@ -113,9 +113,60 @@ fn monochrome_sprite(order: DrawOrder, pad: u32) -> MonochromeSprite {
     }
 }
 
+fn backdrop_blur(order: DrawOrder) -> PaintBackdropBlur {
+    let bounds = Bounds::new(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(100.0), ScaledPixels(100.0)),
+    );
+    PaintBackdropBlur {
+        order,
+        animation_id: None,
+        bounds,
+        content_mask: ContentMask {
+            bounds,
+            ..Default::default()
+        },
+        corner_radii: Default::default(),
+        radius: ScaledPixels(8.0),
+        downsample: 2,
+        levels: 3,
+        saturation: 1.0,
+        tint: None,
+    }
+}
+
+#[test]
+fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
+    let mut previous = Scene::default();
+    previous.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
+    previous.insert_primitive(backdrop_blur(1));
+    previous.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
+
+    let mut top_layer_changed = Scene::default();
+    top_layer_changed
+        .insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
+    top_layer_changed.insert_primitive(backdrop_blur(1));
+    top_layer_changed.insert_primitive(monochrome_sprite(
+        2,
+        MonochromeSpriteSampling::Linear as u32,
+    ));
+
+    assert!(!top_layer_changed.backdrop_blur_refresh_required(&previous));
+
+    let mut source_changed = Scene::default();
+    source_changed.insert_primitive(monochrome_sprite(
+        0,
+        MonochromeSpriteSampling::Linear as u32,
+    ));
+    source_changed.insert_primitive(backdrop_blur(1));
+    source_changed.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
+
+    assert!(source_changed.backdrop_blur_refresh_required(&previous));
+}
+
 #[test]
 fn backdrop_blur_does_not_force_scene_full_redraw_fallback() {
-    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
+    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(1000.0))).scale(1.0);
     let mut scene = Scene::default();
 
     scene.insert_primitive(PaintBackdropBlur {
@@ -135,11 +186,103 @@ fn backdrop_blur_does_not_force_scene_full_redraw_fallback() {
     });
 
     assert!(scene.has_backdrop_blurs());
+    let damage = Bounds::new(
+        point(ScaledPixels(400.0), ScaledPixels(400.0)),
+        size(ScaledPixels(10.0), ScaledPixels(10.0)),
+    );
     assert_eq!(
-        scene.backdrop_blur_bounds().collect::<Vec<_>>(),
-        vec![bounds]
+        scene.backdrop_blur_damage(damage).collect::<Vec<_>>(),
+        vec![Bounds::new(
+            point(ScaledPixels(337.0), ScaledPixels(337.0)),
+            size(ScaledPixels(136.0), ScaledPixels(136.0)),
+        )]
     );
     assert!(!scene.requires_full_redraw_fallback());
+}
+
+#[test]
+fn scene_diff_reports_only_changed_primitive_bounds() {
+    let mut previous = Scene::default();
+    previous.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
+    let mut previous_animated = monochrome_sprite(1, MonochromeSpriteSampling::Glyph as u32);
+    previous_animated.bounds.origin.x = ScaledPixels(2.0);
+    previous.insert_primitive(previous_animated.clone());
+    previous.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
+
+    let mut current = Scene::default();
+    current.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
+    let mut current_animated = previous_animated.clone();
+    current_animated.bounds.origin.x = ScaledPixels(4.0);
+    current.insert_primitive(current_animated.clone());
+    current.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
+
+    let mut changed_bounds = Vec::new();
+    assert!(
+        current.for_each_changed_bounds(0..3, &previous, 0..3, |bounds| {
+            changed_bounds.push(bounds);
+        })
+    );
+    assert_eq!(
+        changed_bounds,
+        vec![
+            previous_animated
+                .bounds
+                .intersect(&previous_animated.content_mask.bounds),
+            current_animated
+                .bounds
+                .intersect(&current_animated.content_mask.bounds),
+        ]
+    );
+}
+
+#[test]
+fn scene_diff_includes_shadow_shader_margin() {
+    let content_bounds = Bounds::new(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(1000.0), ScaledPixels(1000.0)),
+    );
+    let previous_shadow = Shadow {
+        order: 0,
+        blur_radius: ScaledPixels(4.0),
+        animation_id: None,
+        bounds: Bounds::new(
+            point(ScaledPixels(100.0), ScaledPixels(100.0)),
+            size(ScaledPixels(20.0), ScaledPixels(20.0)),
+        ),
+        content_mask: ContentMask {
+            bounds: content_bounds,
+            ..Default::default()
+        },
+        corner_radii: Default::default(),
+        color: Hsla::default().into(),
+    };
+    let mut current_shadow = previous_shadow.clone();
+    current_shadow.bounds.origin.x = ScaledPixels(110.0);
+
+    let mut previous = Scene::default();
+    previous.insert_primitive(previous_shadow);
+    let mut current = Scene::default();
+    current.insert_primitive(current_shadow);
+
+    let mut changed_bounds = Vec::new();
+    assert!(
+        current.for_each_changed_bounds(0..1, &previous, 0..1, |bounds| {
+            changed_bounds.push(bounds);
+        })
+    );
+    assert_eq!(
+        changed_bounds,
+        vec![
+            Bounds::new(
+                point(ScaledPixels(88.0), ScaledPixels(88.0)),
+                size(ScaledPixels(44.0), ScaledPixels(44.0)),
+            ),
+            Bounds::new(
+                point(ScaledPixels(98.0), ScaledPixels(88.0)),
+                size(ScaledPixels(44.0), ScaledPixels(44.0)),
+            ),
+        ]
+    );
 }
 
 #[test]

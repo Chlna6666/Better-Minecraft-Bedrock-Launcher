@@ -20,7 +20,7 @@ pub(crate) struct PathCacheId(pub(crate) usize);
 pub(crate) struct PathGeometryGeneration(pub(crate) u64);
 
 /// A line made up of a series of vertices and control points.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub(crate) id: PathId,
     pub(crate) cache_id: PathCacheId,
@@ -211,7 +211,7 @@ impl From<Path<ScaledPixels>> for Primitive {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(C)]
 pub(crate) struct PathVertex<P: Clone + Debug + Default + PartialEq> {
     pub(crate) xy_position: Point<P>,

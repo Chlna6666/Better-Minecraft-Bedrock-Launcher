@@ -61,6 +61,38 @@ pub(crate) enum Primitive {
 }
 
 impl Primitive {
+    pub(crate) fn visually_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Shadow(left), Self::Shadow(right)) => left == right,
+            (Self::Quad(left), Self::Quad(right)) => left == right,
+            (Self::Path(left), Self::Path(right)) => left == right,
+            (Self::Underline(left), Self::Underline(right)) => left == right,
+            (Self::MonochromeSprite(left), Self::MonochromeSprite(right)) => left == right,
+            (Self::PolychromeSprite(left), Self::PolychromeSprite(right)) => left == right,
+            (Self::BackdropBlur(left), Self::BackdropBlur(right)) => left == right,
+            (Self::Surface(_), Self::Surface(_)) | (Self::GpuMesh3d(_), Self::GpuMesh3d(_)) => {
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
+        let bounds = match self {
+            Self::Shadow(shadow) => {
+                let radius = shadow.blur_radius.0.abs();
+                let margin = if radius.is_finite() {
+                    ScaledPixels(radius * 3.0)
+                } else {
+                    ScaledPixels(0.0)
+                };
+                shadow.bounds.dilate(margin)
+            }
+            _ => *self.bounds(),
+        };
+        bounds.intersect(&self.content_mask().bounds)
+    }
+
     pub(crate) fn order(&self) -> DrawOrder {
         match self {
             Primitive::Shadow(shadow) => shadow.order,
@@ -146,7 +178,26 @@ impl Primitive {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+impl PaintOperation {
+    pub(crate) fn visually_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Primitive(left), Self::Primitive(right)) => left.visually_eq(right),
+            (Self::StartLayer(left), Self::StartLayer(right)) => left == right,
+            (Self::EndLayer, Self::EndLayer) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn visual_bounds(&self) -> Option<Bounds<ScaledPixels>> {
+        match self {
+            Self::Primitive(primitive) => Some(primitive.visual_bounds()),
+            Self::StartLayer(bounds) => Some(*bounds),
+            Self::EndLayer => None,
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
 #[repr(C)]
 pub(crate) struct Quad {
     pub order: DrawOrder,
@@ -166,7 +217,7 @@ impl From<Quad> for Primitive {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub(crate) struct Underline {
     pub order: DrawOrder,
@@ -184,7 +235,7 @@ impl From<Underline> for Primitive {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub(crate) struct Shadow {
     pub order: DrawOrder,
@@ -213,7 +264,7 @@ pub enum BorderStyle {
     Dashed = 1,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(C)]
 pub(crate) struct MonochromeSprite {
     pub order: DrawOrder,
@@ -248,7 +299,7 @@ impl From<MonochromeSprite> for Primitive {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(C)]
 pub(crate) struct PolychromeSprite {
     pub order: DrawOrder,
@@ -383,7 +434,7 @@ impl From<f64> for BackdropBlurStyle {
 }
 
 /// Backdrop blur primitive emitted into the scene.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PaintBackdropBlur {
     pub order: DrawOrder,
     pub animation_id: Option<SceneAnimationId>,
