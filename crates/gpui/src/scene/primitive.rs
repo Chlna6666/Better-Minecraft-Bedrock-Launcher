@@ -221,7 +221,7 @@ impl From<Quad> for Primitive {
 #[repr(C)]
 pub(crate) struct Underline {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub pad: u32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Rgba,
@@ -253,14 +253,11 @@ impl From<Shadow> for Primitive {
     }
 }
 
-/// The style of a border.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[repr(C)]
 pub enum BorderStyle {
-    /// A solid border.
     #[default]
     Solid = 0,
-    /// A dashed border.
     Dashed = 1,
 }
 
@@ -303,7 +300,7 @@ impl From<MonochromeSprite> for Primitive {
 #[repr(C)]
 pub(crate) struct PolychromeSprite {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub pad: u32,
     pub grayscale: bool,
     pub opacity: f32,
     pub animation_id: Option<SceneAnimationId>,
@@ -319,7 +316,6 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
-/// The backing content for a painted surface.
 #[derive(Clone, Debug)]
 pub(crate) enum SurfaceContent {
     #[cfg(target_os = "macos")]
@@ -342,23 +338,16 @@ impl From<PaintSurface> for Primitive {
     }
 }
 
-/// Parameters for GPU-backed backdrop blur.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropBlurStyle {
-    /// Blur radius in logical pixels.
     pub radius: Pixels,
-    /// Downsample factor used by backends that implement a separable GPU blur.
     pub downsample: u8,
-    /// Number of Dual Kawase downsample/upsample levels.
     pub levels: u8,
-    /// Saturation multiplier applied after blur.
     pub saturation: f32,
-    /// Optional tint color blended over the blurred backdrop.
     pub tint: Option<Hsla>,
 }
 
 impl BackdropBlurStyle {
-    /// Creates a blur style with conservative defaults for interactive UI.
     pub fn new(radius: Pixels) -> Self {
         Self {
             radius,
@@ -369,15 +358,10 @@ impl BackdropBlurStyle {
         }
     }
 
-    /// Selects an efficient blur pyramid for the configured radius.
-    ///
-    /// Sub-pixel radii stay at full resolution so they do not disappear after
-    /// downsampling. Modal-sized radii use a two-level half-resolution pyramid
-    /// to reduce bandwidth without paying for the previous three-level chain.
     pub fn auto_quality(mut self) -> Self {
         let radius = self.radius.0.abs();
         let (downsample, levels) = if radius < 1.0 {
-            (1, 2)
+            (1, 1)
         } else if radius < 6.0 {
             (1, 2)
         } else if radius <= 12.0 {
@@ -390,25 +374,21 @@ impl BackdropBlurStyle {
         self
     }
 
-    /// Sets the downsample factor. Values lower than one are clamped to one.
     pub fn downsample(mut self, downsample: u8) -> Self {
         self.downsample = downsample.max(1);
         self
     }
 
-    /// Sets the number of Dual Kawase blur levels. Values are clamped to `1..=6`.
     pub fn levels(mut self, levels: u8) -> Self {
         self.levels = levels.clamp(1, 6);
         self
     }
 
-    /// Sets the saturation multiplier.
     pub fn saturation(mut self, saturation: f32) -> Self {
         self.saturation = saturation.max(0.0);
         self
     }
 
-    /// Sets a tint color blended over the blurred backdrop.
     pub fn tint(mut self, tint: Hsla) -> Self {
         self.tint = Some(tint);
         self
@@ -433,7 +413,6 @@ impl From<f64> for BackdropBlurStyle {
     }
 }
 
-/// Backdrop blur primitive emitted into the scene.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PaintBackdropBlur {
     pub order: DrawOrder,
