@@ -7,7 +7,7 @@ impl Window {
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
         let previous_scene_was_empty = self.rendered_frame.scene.len() == 0;
         let force_full_redraw = self.force_full_redraw.get();
-        let restored_input_handler_index = self.begin_draw_cycle(cx);
+        let (restored_input_handler_index, directly_dirty_views) = self.begin_draw_cycle(cx);
         self.draw_roots(cx);
         self.next_frame.window_active = self.active.get();
 
@@ -26,16 +26,21 @@ impl Window {
             self.platform_window.set_input_handler(input_handler);
         }
 
-        self.finish_completed_draw(previous_scene_was_empty, force_full_redraw, cx)
+        self.finish_completed_draw(
+            previous_scene_was_empty,
+            force_full_redraw,
+            &directly_dirty_views,
+            cx,
+        )
     }
 
-    fn begin_draw_cycle(&mut self, cx: &mut App) -> Option<usize> {
+    fn begin_draw_cycle(&mut self, cx: &mut App) -> (Option<usize>, SmallVec<[EntityId; 8]>) {
         let frame_budget = DIRTY_FRAME_BACKPRESSURE_BUDGET;
         self.dirty_frame_scheduled = false;
         self.draw_deadline = Some(Instant::now() + frame_budget);
         self.draw_was_degraded = false;
         record_window_layout_recompute(self.handle.window_id().as_u64());
-        self.invalidate_entities();
+        let directly_dirty_views = self.invalidate_entities();
         self.pending_list_measured_items = 0;
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
@@ -44,7 +49,7 @@ impl Window {
         self.view_bounds_stack.clear();
         self.invalidator.set_dirty(false);
         self.requested_autoscroll = None;
-        self.restore_previous_input_handler()
+        (self.restore_previous_input_handler(), directly_dirty_views)
     }
 
     fn restore_previous_input_handler(&mut self) -> Option<usize> {
@@ -100,6 +105,7 @@ impl Window {
         &mut self,
         previous_scene_was_empty: bool,
         force_full_redraw: bool,
+        directly_dirty_views: &[EntityId],
         cx: &mut App,
     ) -> ArenaClearNeeded {
         self.finish_layout_and_text_frame();
@@ -113,6 +119,7 @@ impl Window {
             .replace_animation_values(scene_animation_values);
         self.prepare_render_plan_for_next_frame(
             previous_scene_was_empty || force_full_redraw || self.draw_was_degraded,
+            directly_dirty_views,
         );
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene.frame_metrics();
@@ -235,7 +242,11 @@ impl Window {
         }
     }
 
-    fn prepare_render_plan_for_next_frame(&mut self, force_full_redraw: bool) {
+    fn prepare_render_plan_for_next_frame(
+        &mut self,
+        force_full_redraw: bool,
+        directly_dirty_views: &[EntityId],
+    ) {
         let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
         let mut dirty_region = DirtyRegion::empty();
 
@@ -248,11 +259,12 @@ impl Window {
             }
             dirty_region.mark_full(viewport);
         } else {
-            for segment in &self.next_frame.retained_scene_segments {
-                if segment.dirty {
-                    dirty_region.push(segment.bounds);
-                }
-            }
+            // `dirty_views` deliberately contains the full ancestor path so AnyView can invalidate
+            // retained prepaint/paint caches. That is a traversal/cache semantic, not a pixel-damage
+            // semantic: treating every ancestor RetainedSceneSegment as changed makes a dirty root
+            // segment turn a local child update into a full-window redraw. Compute damage from the
+            // directly invalidated views instead and separately account for layout-induced moves.
+            self.add_direct_view_damage(&mut dirty_region, directly_dirty_views);
             for rect in self.animation_dirty_region.rects() {
                 dirty_region.push(rect.bounds);
             }
@@ -283,6 +295,63 @@ impl Window {
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
     }
 
+    fn add_direct_view_damage(
+        &self,
+        dirty_region: &mut DirtyRegion,
+        directly_dirty_views: &[EntityId],
+    ) {
+        if directly_dirty_views.is_empty() {
+            return;
+        }
+
+        let mut previous_bounds: FxHashMap<EntityId, Bounds<ScaledPixels>> = FxHashMap::default();
+        let mut current_bounds: FxHashMap<EntityId, Bounds<ScaledPixels>> = FxHashMap::default();
+
+        for segment in &self.rendered_frame.retained_scene_segments {
+            previous_bounds
+                .entry(segment.entity_id)
+                .and_modify(|bounds| *bounds = bounds.union(&segment.bounds))
+                .or_insert(segment.bounds);
+        }
+        for segment in &self.next_frame.retained_scene_segments {
+            current_bounds
+                .entry(segment.entity_id)
+                .and_modify(|bounds| *bounds = bounds.union(&segment.bounds))
+                .or_insert(segment.bounds);
+        }
+
+        // Damage both the old and new extent of views that were directly invalidated. This covers
+        // removal, insertion, growth, and shrink without promoting their cache-invalidated ancestors
+        // to pixel-dirty status.
+        for entity_id in directly_dirty_views {
+            if let Some(bounds) = previous_bounds.get(entity_id) {
+                dirty_region.push(*bounds);
+            }
+            if let Some(bounds) = current_bounds.get(entity_id) {
+                dirty_region.push(*bounds);
+            }
+        }
+
+        // Layout changes can move siblings even though those siblings were not directly notified.
+        // Compare retained bounds across frames and damage only entities whose visual extent moved,
+        // appeared, or disappeared. Stable ancestors such as MainWindow therefore remain clean.
+        for (entity_id, bounds) in &current_bounds {
+            match previous_bounds.get(entity_id) {
+                Some(previous) if previous != bounds => {
+                    dirty_region.push(*previous);
+                    dirty_region.push(*bounds);
+                }
+                None => dirty_region.push(*bounds),
+                _ => {}
+            }
+        }
+        for (entity_id, bounds) in &previous_bounds {
+            if !current_bounds.contains_key(entity_id) {
+                dirty_region.push(*bounds);
+            }
+        }
+    }
+
     fn render_plan(&self) -> FrameRenderPlan<'_> {
         FrameRenderPlan {
             scene: &self.rendered_frame.scene,
@@ -308,12 +377,16 @@ impl Window {
         mem::swap(&mut entities, entities_ref.deref_mut());
     }
 
-    fn invalidate_entities(&mut self) {
+    fn invalidate_entities(&mut self) -> SmallVec<[EntityId; 8]> {
         let mut views = self.invalidator.take_views();
+        let mut directly_dirty_views = SmallVec::new();
+        directly_dirty_views.reserve(views.len());
         for entity in views.drain() {
+            directly_dirty_views.push(entity);
             self.mark_view_dirty(entity);
         }
         self.invalidator.replace_views(views);
+        directly_dirty_views
     }
 
     #[profiling::function]
