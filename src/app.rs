@@ -149,8 +149,12 @@ fn application_default_font(bootstrap: &AppBootstrap) -> gpui::DefaultFontConfig
     )
 }
 
-fn gpu_power_preference_for_adapter(_gpu_adapter_name: Option<&str>) -> gpui::GpuPowerPreference {
-    gpui::GpuPowerPreference::HighPerformance
+fn gpu_power_preference_for_adapter(gpu_adapter_name: Option<&str>) -> gpui::GpuPowerPreference {
+    if gpu_adapter_name.is_some() {
+        gpui::GpuPowerPreference::HighPerformance
+    } else {
+        gpui::GpuPowerPreference::AutoLowPower
+    }
 }
 
 #[derive(Default)]
@@ -614,7 +618,10 @@ fn main_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
             appears_transparent: true,
             ..Default::default()
         });
-        options.window_background = WindowBackgroundAppearance::Transparent;
+        // The main view paints an opaque full-window background. Keeping the framebuffer opaque
+        // lets Vulkan use the widely supported Win32 OPAQUE composite mode while the titlebar and
+        // client-side chrome remain transparent/undecorated independently.
+        options.window_background = WindowBackgroundAppearance::Opaque;
     }
 
     #[cfg(target_os = "linux")]
@@ -754,10 +761,10 @@ mod tests {
     use gpui::GpuPowerPreference;
 
     #[test]
-    fn automatic_gpu_adapter_uses_high_performance_preference() {
+    fn automatic_gpu_adapter_uses_low_power_preference() {
         assert_eq!(
             gpu_power_preference_for_adapter(None),
-            GpuPowerPreference::HighPerformance
+            GpuPowerPreference::AutoLowPower
         );
     }
 

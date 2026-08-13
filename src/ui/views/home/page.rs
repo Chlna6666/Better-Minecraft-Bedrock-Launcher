@@ -595,7 +595,7 @@ impl HomePageView {
                     a: 0.12,
                 })
             })
-            .active(|style| style.scale(0.94).opacity(0.9))
+            .active(|style| style.opacity(0.9))
             .when(!is_empty, |style| {
                 style.on_mouse_down(
                     MouseButton::Left,

@@ -25,11 +25,7 @@ unsafe extern "system" {
     #[link_name = "GetCurrentProcessId"]
     fn get_current_process_id_raw() -> u32;
     #[link_name = "OpenProcess"]
-    fn open_process_raw(
-        desired_access: u32,
-        inherit_handle: i32,
-        process_id: u32,
-    ) -> *mut c_void;
+    fn open_process_raw(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
     #[link_name = "WaitForSingleObject"]
     fn wait_for_single_object_raw(handle: *mut c_void, milliseconds: u32) -> u32;
     #[link_name = "CloseHandle"]
@@ -106,8 +102,7 @@ fn host_paths() -> Result<(PathBuf, PathBuf), String> {
 fn write_response(path: &Path, response: &TerminalHostResponse) -> Result<(), String> {
     let bytes = serde_json::to_vec(response)
         .map_err(|error| format!("序列化 Windows Terminal Host 响应失败: {error}"))?;
-    fs::write(path, bytes)
-        .map_err(|error| format!("写入 Windows Terminal Host 响应失败: {error}"))
+    fs::write(path, bytes).map_err(|error| format!("写入 Windows Terminal Host 响应失败: {error}"))
 }
 
 fn read_response(path: &Path) -> Option<TerminalHostResponse> {
@@ -130,8 +125,8 @@ fn cmd_quote(path: &Path) -> String {
 /// registry and the one-shot authenticated pipe keep exactly their old trust
 /// boundary.
 pub(crate) async fn start_host() -> Result<Option<TerminalHostHandle>, String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("无法定位 BMCBL.exe: {error}"))?;
+    let current_exe =
+        std::env::current_exe().map_err(|error| format!("无法定位 BMCBL.exe: {error}"))?;
     let (command_path, response_path) = host_paths()?;
 
     // BMCBL.exe is a WINDOWS-subsystem binary in release builds. Keep cmd.exe as

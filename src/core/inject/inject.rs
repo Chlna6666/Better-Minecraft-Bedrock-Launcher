@@ -174,9 +174,7 @@ fn take_registered_xuser_payload(handle: &str) -> Option<Vec<u8>> {
         .map(SensitivePayload::into_inner)
 }
 
-fn take_launch_metadata(
-    metadata: Option<Vec<(String, String)>>,
-) -> (Option<Vec<u8>>, Option<u32>) {
+fn take_launch_metadata(metadata: Option<Vec<(String, String)>>) -> (Option<Vec<u8>>, Option<u32>) {
     let mut xuser_payload = None;
     let mut terminal_host_pid = None;
     for (key, value) in metadata.unwrap_or_default() {
@@ -192,7 +190,10 @@ fn take_launch_metadata(
 fn build_child_environment(terminal_host_pid: Option<u32>) -> Option<Vec<u16>> {
     let host_pid = terminal_host_pid?;
     let mut entries = std::env::vars_os()
-        .filter(|(key, _)| !key.to_string_lossy().eq_ignore_ascii_case(TERMINAL_HOST_PID_KEY))
+        .filter(|(key, _)| {
+            !key.to_string_lossy()
+                .eq_ignore_ascii_case(TERMINAL_HOST_PID_KEY)
+        })
         .collect::<Vec<(OsString, OsString)>>();
     entries.push((
         OsString::from(TERMINAL_HOST_PID_KEY),

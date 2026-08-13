@@ -485,15 +485,16 @@ impl MainWindowView {
             }
         };
         let route_key = route_enter_animation_key(route);
-        // 页面进场：Apple 风格弹簧滑入，带轻微 Q 弹回稳。
+        let route_translation = AnimationProperty::translation(
+            point(px(18.0 * transition_direction), px(0.0)),
+            point(px(0.0), px(0.0)),
+        );
+        // 页面进场：保留 Apple 风格弹簧，由 scene translation 驱动以避免逐帧重排。
         let animated_page = div().size_full().child(page).with_animation(
             route_key,
-            spring_motion(apple_spring(0.36, 0.74), Duration::from_millis(520)),
-            move |page, progress| {
-                page.opacity(progress.clamp(0.0, 1.0))
-                    .relative()
-                    .left(px((1.0 - progress) * 18.0 * transition_direction))
-            },
+            spring_motion(apple_spring(0.36, 0.74), Duration::from_millis(520))
+                .with_property(route_translation),
+            |page, _progress| page,
         );
         div()
             .absolute()

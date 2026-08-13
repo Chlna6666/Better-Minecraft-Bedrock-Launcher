@@ -2,6 +2,8 @@ use crate::ui::animation::{SpringValue, apple_spring, spring_smooth};
 use gpui::Global;
 use std::time::Instant;
 
+const PILL_EDGE_SETTLE_DISTANCE: f32 = 0.006;
+
 /// 顶栏导航状态。
 ///
 /// 新版 UI 的所有导航动画均由可中断弹簧驱动（Apple 风格）：
@@ -94,9 +96,16 @@ impl NavState {
 
     /// 胶囊左右边缘位置（以 tab 序号为单位，允许轻微过冲产生 Q 弹）。
     pub fn pill_edges(&self, now: Instant) -> (f32, f32) {
-        let a = self.pill_fast.value(now);
-        let b = self.pill_slow.value(now);
-        (a.min(b), a.max(b))
+        let fast = self.pill_fast.sample(now);
+        let slow = self.pill_slow.sample(now);
+        let target = self.pill_to_index as f32;
+        if (fast.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
+            && (slow.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
+        {
+            return (target, target);
+        }
+
+        (fast.value.min(slow.value), fast.value.max(slow.value))
     }
 
     pub fn pill_direction(&self) -> f32 {
@@ -174,6 +183,28 @@ mod tests {
         assert!((left - 4.0).abs() < 0.01);
         assert!((right - 4.0).abs() < 0.01);
         assert!(!nav.is_animating(settled));
+    }
+
+    #[test]
+    fn pill_edges_snap_subpixel_tail_motion_to_target() {
+        let now = Instant::now();
+        let mut nav = NavState::default();
+        nav.start_pill_animation(4, now);
+
+        let settling_time = (1..=500)
+            .map(|step| now + Duration::from_millis(step * 10))
+            .find(|sample_time| {
+                let fast = nav.pill_fast.sample(*sample_time);
+                let slow = nav.pill_slow.sample(*sample_time);
+                !fast.done
+                    && !slow.done
+                    && (fast.value - 4.0).abs() <= PILL_EDGE_SETTLE_DISTANCE
+                    && (slow.value - 4.0).abs() <= PILL_EDGE_SETTLE_DISTANCE
+            })
+            .expect("弹簧应在完成前进入亚像素收敛区间");
+
+        assert_eq!(nav.pill_edges(settling_time), (4.0, 4.0));
+        assert!(nav.is_animating(settling_time));
     }
 
     #[test]
