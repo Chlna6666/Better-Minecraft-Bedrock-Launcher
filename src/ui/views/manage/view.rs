@@ -429,19 +429,6 @@ impl ManagePageView {
                                             ..colors.surface_hover
                                         })
                                     })
-                                    .shadow(if selected {
-                                        vec![BoxShadow {
-                                            color: Hsla {
-                                                a: 0.10,
-                                                ..colors.accent
-                                            },
-                                            blur_radius: px(10.0),
-                                            spread_radius: px(-6.0),
-                                            offset: point(px(0.), px(2.)),
-                                        }]
-                                    } else {
-                                        Vec::new()
-                                    })
                                     .child(
                                         div()
                                             .w_full()

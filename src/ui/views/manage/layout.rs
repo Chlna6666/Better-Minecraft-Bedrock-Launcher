@@ -284,6 +284,7 @@ pub(super) fn render_pack_subtype_switch(
     )
     .height(px(28.))
     .item_width(px(76.))
+    .without_indicator_shadow()
     .into_any_element()
 }
 
@@ -311,15 +312,6 @@ pub(super) fn render_toolbar_search_input(
         .border_1()
         .border_color(shell_border)
         .bg(shell_background)
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                a: if dark_mode { 0.12 } else { 0.06 },
-                ..colors.accent
-            },
-            blur_radius: px(10.0),
-            spread_radius: px(-6.0),
-            offset: point(px(0.), px(2.)),
-        }])
         .child(
             Input::new(input)
                 .with_size(InputSize::Small)
