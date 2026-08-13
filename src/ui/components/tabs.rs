@@ -1,5 +1,6 @@
 use crate::ui::animation::{ease_out_cubic, raw_progress, request_animation_frame_if};
 use crate::ui::theme::colors::ThemeColors;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -129,6 +130,7 @@ pub struct AnimatedSegmentTabs {
     colors: ThemeColors,
     height: Pixels,
     item_width: Option<Pixels>,
+    indicator_shadow: bool,
 }
 
 impl AnimatedSegmentTabs {
@@ -139,6 +141,7 @@ impl AnimatedSegmentTabs {
             colors: *colors,
             height: px(34.),
             item_width: None,
+            indicator_shadow: true,
         }
     }
 
@@ -149,6 +152,11 @@ impl AnimatedSegmentTabs {
 
     pub fn item_width(mut self, item_width: Pixels) -> Self {
         self.item_width = Some(item_width);
+        self
+    }
+
+    pub fn without_indicator_shadow(mut self) -> Self {
+        self.indicator_shadow = false;
         self
     }
 }
@@ -165,6 +173,7 @@ impl RenderOnce for AnimatedSegmentTabs {
         let selected_index = self.items.iter().position(|item| item.active).unwrap_or(0);
         let segment_width = 1.0 / item_count as f32;
         let item_width = self.item_width;
+        let indicator_shadow = self.indicator_shadow;
         let active_background = colors.settings_field_bg;
         let active_border = Hsla {
             a: if dark_mode { 0.52 } else { 0.28 },
@@ -237,15 +246,17 @@ impl RenderOnce for AnimatedSegmentTabs {
                 .bg(active_background)
                 .border_1()
                 .border_color(active_border)
-                .shadow(vec![BoxShadow {
-                    color: Hsla {
-                        a: if dark_mode { 0.18 } else { 0.10 },
-                        ..colors.accent
-                    },
-                    blur_radius: px(10.0),
-                    spread_radius: px(-4.0),
-                    offset: point(px(0.), px(2.)),
-                }])
+                .when(indicator_shadow, |indicator| {
+                    indicator.shadow(vec![BoxShadow {
+                        color: Hsla {
+                            a: if dark_mode { 0.18 } else { 0.10 },
+                            ..colors.accent
+                        },
+                        blur_radius: px(10.0),
+                        spread_radius: px(-4.0),
+                        offset: point(px(0.), px(2.)),
+                    }])
+                })
                 .into_any_element()
         } else {
             let indicator_left = relative(
@@ -262,15 +273,17 @@ impl RenderOnce for AnimatedSegmentTabs {
                 .bg(active_background)
                 .border_1()
                 .border_color(active_border)
-                .shadow(vec![BoxShadow {
-                    color: Hsla {
-                        a: if dark_mode { 0.18 } else { 0.10 },
-                        ..colors.accent
-                    },
-                    blur_radius: px(10.0),
-                    spread_radius: px(-4.0),
-                    offset: point(px(0.), px(2.)),
-                }])
+                .when(indicator_shadow, |indicator| {
+                    indicator.shadow(vec![BoxShadow {
+                        color: Hsla {
+                            a: if dark_mode { 0.18 } else { 0.10 },
+                            ..colors.accent
+                        },
+                        blur_radius: px(10.0),
+                        spread_radius: px(-4.0),
+                        offset: point(px(0.), px(2.)),
+                    }])
+                })
                 .into_any_element()
         };
 

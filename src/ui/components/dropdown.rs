@@ -302,17 +302,6 @@ pub fn render_overlay(
             a: 0.22,
             ..colors.border
         })
-        .shadow(vec![BoxShadow {
-            color: Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 0.0,
-                a: 0.16,
-            },
-            blur_radius: px(24.0),
-            spread_radius: px(-8.0),
-            offset: point(px(0.), px(10.)),
-        }])
         .opacity(panel_opacity)
         .on_scroll_wheel(|_, _window, cx| {
             cx.stop_propagation();
@@ -634,18 +623,9 @@ impl RenderOnce for Dropdown {
                 a: 0.24,
                 ..colors.border
             })
-            .shadow(vec![BoxShadow {
-                color: Hsla {
-                    a: 0.12,
-                    ..rgb(0x000000).into()
-                },
-                blur_radius: px(14.0),
-                spread_radius: px(-6.0),
-                offset: point(px(0.), px(4.)),
-            }])
             .when(!enabled, |this| this.opacity(0.65))
             .active(|s| {
-                s.scale(0.97).bg(Hsla {
+                s.opacity(0.88).bg(Hsla {
                     a: 0.92,
                     ..colors.surface_hover
                 })
