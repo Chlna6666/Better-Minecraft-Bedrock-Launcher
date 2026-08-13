@@ -2,6 +2,7 @@ use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::views::settings::layout::SettingsLayout;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::StatefulInteractiveElement as _;
 use gpui::prelude::FluentBuilder as _;
@@ -21,6 +22,7 @@ pub(super) fn render_settings_content(
     plugin_model: &plugins::PluginSettingsModel,
     update: &UpdateState,
     system_font_names: &[String],
+    layout: &SettingsLayout,
 ) -> impl IntoElement {
     let compact_plugins = window_width < px(980.);
 
@@ -47,7 +49,7 @@ pub(super) fn render_settings_content(
                     .child(
                         div()
                             .w_full()
-                            .max_w(px(960.))
+                            .max_w(layout.plugin_max_width)
                             .h_full()
                             .min_w(px(0.))
                             .min_h(px(0.))
@@ -91,7 +93,7 @@ pub(super) fn render_settings_content(
             div().w_full().flex().justify_center().child(
                 div()
                     .w_full()
-                    .max_w(px(960.))
+                    .max_w(layout.content_max_width)
                     .pt(px(6.))
                     .pb(px(24.))
                     .child(animated_settings_panel(panel, state.tab, false)),

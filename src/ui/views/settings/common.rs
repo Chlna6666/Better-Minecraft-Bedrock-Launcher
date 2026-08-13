@@ -613,7 +613,11 @@ pub(super) fn settings_sub_input_row(
     )
 }
 
-pub(super) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
+pub(super) fn page_shell(
+    content: impl IntoElement,
+    colors: &ThemeColors,
+    layout: &super::layout::SettingsLayout,
+) -> Div {
     // 统一页面容器：配方（含渐变与高光线）来自 page_shell::page_panel。
     crate::ui::components::page_shell::page_frame(
         div().size_full().flex().justify_center().child(
@@ -628,7 +632,7 @@ pub(super) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div
                     a: 0.28,
                     ..colors.border
                 })
-                .p(px(14.))
+                .p(layout.page_padding)
                 .child(content),
         ),
     )

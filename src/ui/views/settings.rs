@@ -16,6 +16,8 @@ mod content;
 mod customization;
 mod game;
 mod launcher;
+mod layout;
+mod navigation;
 mod plugins;
 #[cfg(target_os = "linux")]
 mod proton_gdk;
@@ -125,7 +127,7 @@ impl Render for SettingsPageView {
 pub fn render_settings_page(
     colors: ThemeColors,
     window_width: Pixels,
-    _window_height: Pixels,
+    window_height: Pixels,
     render_engine: SharedString,
     i18n: &I18n,
     state: &SettingsPageState,
@@ -133,13 +135,22 @@ pub fn render_settings_page(
     update: &UpdateState,
     system_font_names: &[String],
 ) -> impl IntoElement + use<> {
+    let settings_layout = layout::SettingsLayout::new(window_width, window_height);
+
     common::page_shell(
         div()
             .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .child(tabs::render_tabs(&colors, i18n, state.tab))
+            .gap(settings_layout.content_gap)
+            .child(navigation::render_tabs(
+                &colors,
+                i18n,
+                state.tab,
+                &settings_layout,
+            ))
             .child(content::render_settings_content(
                 &colors,
                 window_width,
@@ -149,8 +160,10 @@ pub fn render_settings_page(
                 &plugin_model,
                 update,
                 system_font_names,
+                &settings_layout,
             )),
         &colors,
+        &settings_layout,
     )
 }
 
@@ -208,7 +221,7 @@ pub fn render_settings_overlay(
                 true,
                 crate::ui::overlays::user_agreement::UserAgreementModalOptions::read_only(
                     std::rc::Rc::new(|cx: &mut App| {
-                        cx.update_global(|state: &mut SettingsPageState, cx| {
+                        cx.update_global(|state: &mut SettingsPageState, _cx| {
                             state.about_agreement_open = false;
                         });
                     }),
