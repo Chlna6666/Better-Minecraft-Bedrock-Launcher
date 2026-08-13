@@ -1,6 +1,7 @@
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::views::settings::layout::SettingsLayout;
 use crate::ui::views::settings::state::{SettingsPageState, SettingsTab};
 use gpui::StatefulInteractiveElement as _;
 use gpui::*;
@@ -18,12 +19,14 @@ pub(super) fn render_settings_content(
     plugin_model: &plugins::PluginSettingsModel,
     update: &UpdateState,
     system_font_names: &[String],
+    layout: &SettingsLayout,
 ) -> impl IntoElement {
     if state.tab == SettingsTab::Plugins {
         return div()
             .relative()
             .flex_1()
             .min_h(px(0.))
+            .min_w(px(0.))
             .flex()
             .flex_col()
             .child(
@@ -31,16 +34,18 @@ pub(super) fn render_settings_content(
                     .id("settings-plugins-viewport")
                     .flex_1()
                     .min_h(px(0.))
+                    .min_w(px(0.))
                     .w_full()
                     .flex()
                     .justify_center()
                     .child(
                         div()
                             .w_full()
-                            .max_w(px(960.))
+                            .min_w(px(0.))
+                            .max_w(layout.plugin_max_width)
                             .h_full()
                             .min_h(px(0.))
-                            .pb(px(16.))
+                            .pb(px(12.))
                             .child(plugins::render_plugins_tab(
                                 colors,
                                 i18n,
@@ -54,39 +59,31 @@ pub(super) fn render_settings_content(
 
     let panel: AnyElement = match state.tab {
         SettingsTab::Game => game::render_game_tab(colors, i18n, state).into_any_element(),
-        SettingsTab::Launcher => {
-            launcher::render_launcher_tab(colors, i18n, state).into_any_element()
-        }
+        SettingsTab::Launcher => launcher::render_launcher_tab(colors, i18n, state).into_any_element(),
         #[cfg(target_os = "linux")]
         SettingsTab::ProtonGdk => proton_gdk::render(colors).into_any_element(),
-        SettingsTab::Customization => {
-            customization::render_customization_tab(colors, i18n, state, system_font_names)
-                .into_any_element()
-        }
-        SettingsTab::Plugins => {
-            plugins::render_plugins_tab(colors, i18n, state, plugin_model).into_any_element()
-        }
-        SettingsTab::About => {
-            about::render_about_tab(colors, window_width, render_engine, i18n, state, update)
-                .into_any_element()
-        }
+        SettingsTab::Customization => customization::render_customization_tab(colors, i18n, state, system_font_names).into_any_element(),
+        SettingsTab::Plugins => plugins::render_plugins_tab(colors, i18n, state, plugin_model).into_any_element(),
+        SettingsTab::About => about::render_about_tab(colors, window_width, render_engine, i18n, state, update).into_any_element(),
     };
 
     let scroll_area = div()
         .id("settings-content-scroll")
         .flex_1()
         .min_h(px(0.))
+        .min_w(px(0.))
         .overflow_y_scroll()
         .scrollbar_width(px(0.))
         .flex()
         .flex_col()
         .child(
-            div().w_full().flex().justify_center().child(
+            div().w_full().min_w(px(0.)).flex().justify_center().child(
                 div()
                     .w_full()
-                    .max_w(px(960.))
-                    .pt(px(6.))
-                    .pb(px(24.))
+                    .min_w(px(0.))
+                    .max_w(layout.content_max_width)
+                    .pt(px(4.))
+                    .pb(px(20.))
                     .child(panel),
             ),
         );
@@ -95,6 +92,7 @@ pub(super) fn render_settings_content(
         .relative()
         .flex_1()
         .min_h(px(0.))
+        .min_w(px(0.))
         .flex()
         .flex_col()
         .child(scroll_area)

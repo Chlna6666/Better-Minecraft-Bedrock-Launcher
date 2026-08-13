@@ -2,6 +2,7 @@ use crate::config::config::ProxyType;
 use crate::ui::components::input::{Input, InputState};
 use crate::ui::components::toast::{self, ToastKind};
 use crate::ui::theme::colors::ThemeColors;
+use crate::ui::views::settings::layout::SettingsLayout;
 use crate::ui::views::settings::state::{LauncherDisplayMode, SettingsPageState};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -223,12 +224,23 @@ pub(super) fn spawn_persist_background_blur(blur: f32, cx: &mut App) {
 }
 
 pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<Div> {
-    // 统一卡片基底（圆角/边框/背景/阴影配方来自 page_shell::glass_card），
-    // 设置页在其上追加顶部高光细线。
-    crate::ui::components::page_shell::glass_card(colors)
+    div()
         .id(id)
         .relative()
         .w_full()
+        .min_w(px(0.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .overflow_hidden()
+        .border_1()
+        .border_color(Hsla {
+            a: 0.18,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.56,
+            ..colors.surface
+        })
+        .shadow(crate::ui::components::page_shell::card_shadow())
         .child(
             div()
                 .absolute()
@@ -237,7 +249,7 @@ pub(super) fn settings_card(colors: &ThemeColors, id: &'static str) -> Stateful<
                 .right(px(14.))
                 .h(px(1.))
                 .bg(Hsla {
-                    a: 0.10,
+                    a: 0.09,
                     ..colors.border
                 }),
         )
@@ -248,15 +260,16 @@ pub(super) fn settings_flat_card(colors: &ThemeColors, id: &'static str) -> Stat
         .id(id)
         .relative()
         .w_full()
+        .min_w(px(0.))
         .rounded(px(crate::ui::theme::tokens::radius::MD))
         .overflow_hidden()
         .border_1()
         .border_color(Hsla {
-            a: 0.22,
+            a: 0.18,
             ..colors.border
         })
         .bg(Hsla {
-            a: 0.72,
+            a: 0.48,
             ..colors.surface
         })
         .child(
@@ -267,7 +280,7 @@ pub(super) fn settings_flat_card(colors: &ThemeColors, id: &'static str) -> Stat
                 .right(px(14.))
                 .h(px(1.))
                 .bg(Hsla {
-                    a: 0.10,
+                    a: 0.08,
                     ..colors.border
                 }),
         )
@@ -278,16 +291,17 @@ pub(super) fn settings_inline_card(colors: &ThemeColors, id: &'static str) -> St
         .px(px(16.))
         .py(px(16.))
         .flex()
+        .flex_wrap()
         .items_start()
         .justify_between()
-        .gap(px(22.))
+        .gap(px(16.))
         .hover(|this| {
             this.bg(Hsla {
-                a: 0.84,
+                a: 0.68,
                 ..colors.surface_hover
             })
             .border_color(Hsla {
-                a: 0.30,
+                a: 0.28,
                 ..colors.border
             })
         })
@@ -298,16 +312,17 @@ pub(super) fn settings_flat_inline_card(colors: &ThemeColors, id: &'static str) 
         .px(px(16.))
         .py(px(16.))
         .flex()
+        .flex_wrap()
         .items_start()
         .justify_between()
-        .gap(px(22.))
+        .gap(px(16.))
         .hover(|this| {
             this.bg(Hsla {
-                a: 0.84,
+                a: 0.66,
                 ..colors.surface_hover
             })
             .border_color(Hsla {
-                a: 0.30,
+                a: 0.28,
                 ..colors.border
             })
         })
@@ -323,9 +338,10 @@ pub(super) fn settings_card_header(
         .px(px(14.))
         .py(px(13.))
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
-        .gap(px(14.))
+        .gap(px(12.))
         .child(settings_card_text(colors, title, desc))
 }
 
@@ -336,7 +352,7 @@ pub(super) fn settings_card_text(
 ) -> Div {
     div()
         .flex_1()
-        .min_w(px(0.))
+        .min_w(px(180.))
         .flex()
         .flex_col()
         .gap(px(4.))
@@ -362,6 +378,7 @@ pub(super) fn settings_card_text(
 pub(super) fn settings_badge(colors: &ThemeColors, label: SharedString) -> Div {
     div()
         .max_w(px(260.))
+        .max_w_full()
         .h(px(28.))
         .px(px(10.))
         .rounded(px(crate::ui::theme::tokens::radius::FULL))
@@ -414,12 +431,14 @@ pub(super) fn settings_option_row_shell(
             }
         })
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
-        .gap(px(14.))
+        .gap(px(12.))
         .child(
             div()
-                .min_w(px(0.))
+                .flex_1()
+                .min_w(px(180.))
                 .flex()
                 .flex_col()
                 .gap(px(3.))
@@ -461,17 +480,18 @@ pub(super) fn settings_control_box(
 ) -> Div {
     div()
         .w(width)
+        .max_w_full()
         .min_w(px(0.))
         .h(px(30.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .text_color(colors.text_primary)
         .bg(Hsla {
-            a: 0.84,
+            a: 0.72,
             ..colors.settings_field_bg
         })
         .border_1()
         .border_color(Hsla {
-            a: if active { 0.34 } else { 0.24 },
+            a: if active { 0.34 } else { 0.22 },
             ..if active { colors.accent } else { colors.border }
         })
         .px(px(10.))
@@ -509,17 +529,18 @@ pub(super) fn settings_action_button(
 ) -> Div {
     div()
         .w(px(92.))
+        .max_w_full()
         .flex_shrink_0()
         .h(px(30.))
         .px(px(8.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .bg(Hsla {
-            a: 0.84,
+            a: 0.72,
             ..colors.settings_field_bg
         })
         .border_1()
         .border_color(Hsla {
-            a: 0.24,
+            a: 0.22,
             ..colors.border
         })
         .when(enabled, |this| this.cursor_pointer())
@@ -550,11 +571,14 @@ pub(super) fn settings_sub_row(
             ..colors.border
         })
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
-        .gap(px(14.))
+        .gap(px(12.))
         .child(
             div()
+                .flex_1()
+                .min_w(px(160.))
                 .text_size(px(13.))
                 .text_color(Hsla {
                     a: 0.92,
@@ -605,15 +629,87 @@ pub(super) fn settings_sub_input_row(
     )
 }
 
-pub(super) fn page_shell(content: impl IntoElement, colors: &ThemeColors) -> Div {
-    // 统一页面容器：配方（含渐变与高光线）来自 page_shell::page_panel。
-    crate::ui::components::page_shell::page_frame(
-        div().size_full().flex().justify_center().child(
-            crate::ui::components::page_shell::page_panel(colors)
-                .w_full()
-                .h_full()
-                .p(px(14.))
-                .child(content),
-        ),
-    )
+pub(super) fn page_shell(
+    content: impl IntoElement,
+    colors: &ThemeColors,
+    layout: &SettingsLayout,
+) -> Div {
+    let material_tint = Hsla {
+        a: if colors.bg.l < 0.5 { 0.54 } else { 0.46 },
+        ..colors.settings_panel_bg
+    };
+
+    div()
+        .absolute()
+        .left(layout.page_inset_x)
+        .right(layout.page_inset_x)
+        .top(layout.page_inset_top)
+        .bottom(layout.page_inset_bottom)
+        .flex()
+        .min_h(px(0.))
+        .min_w(px(0.))
+        .child(
+            div()
+                .relative()
+                .size_full()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .rounded(px(crate::ui::theme::tokens::radius::LG))
+                .overflow_hidden()
+                .border_1()
+                .border_color(Hsla {
+                    a: 0.18,
+                    ..colors.border
+                })
+                .shadow(crate::ui::components::page_shell::panel_shadow())
+                .backdrop_blur(
+                    BackdropBlurStyle::new(px(18.0))
+                        .auto_quality()
+                        .saturation(1.06)
+                        .tint(material_tint),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(linear_gradient(
+                            180.0,
+                            linear_color_stop(
+                                Hsla {
+                                    a: 0.05,
+                                    ..colors.accent
+                                },
+                                0.0,
+                            ),
+                            linear_color_stop(
+                                Hsla {
+                                    a: 0.01,
+                                    ..colors.surface
+                                },
+                                1.0,
+                            ),
+                        )),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(px(crate::ui::theme::tokens::radius::LG))
+                        .right(px(crate::ui::theme::tokens::radius::LG))
+                        .h(px(1.))
+                        .bg(Hsla {
+                            a: 0.14,
+                            ..colors.border
+                        }),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .size_full()
+                        .min_h(px(0.))
+                        .min_w(px(0.))
+                        .p(layout.page_padding)
+                        .child(content),
+                ),
+        )
 }
