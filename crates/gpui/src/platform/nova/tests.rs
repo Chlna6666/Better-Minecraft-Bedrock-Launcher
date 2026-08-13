@@ -92,16 +92,16 @@ fn fs_test_mesh(input: MeshOut) -> @location(0) vec4<f32> {
 }
 
 #[test]
-fn dx12_and_vulkan_auto_vsync_prefer_non_blocking_present_mode() {
+fn dx12_and_vulkan_auto_vsync_use_fifo_present_mode() {
     let options = RendererOptions::default();
 
     assert_eq!(
         nova_present_mode_for_backend(RendererBackend::NovaDx12, &options),
-        gfx_core::PresentMode::Mailbox
+        gfx_core::PresentMode::Fifo
     );
     assert_eq!(
         nova_present_mode_for_backend(RendererBackend::NovaVulkan, &options),
-        gfx_core::PresentMode::Mailbox
+        gfx_core::PresentMode::Fifo
     );
 }
 
@@ -3089,7 +3089,7 @@ fn nova_sprite_hlsl_bindings_match_dx12_resource_sets() {
     .expect("poly sprite vertex shader should compile to HLSL")
     .code
     else {
-        panic!("expected poly sprite vertex HLSL");
+        panic!("expected poly sprite HLSL");
     };
     assert!(
         poly_vertex_hlsl.contains("ByteAddressBuffer b_poly_sprites : register(t9)"),
