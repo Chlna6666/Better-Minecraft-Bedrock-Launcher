@@ -1,401 +1,228 @@
-# Rust Design Conventions / Rust 设计规范
+# BMCBL Agent Instructions
 
-本项目使用 `skills/rust-design-conventions` 技能作为 Rust 全栈设计与性能权威指南。
-当涉及编写 Rust 代码、项目结构、模块/Crate 划分、API 设计、Cargo.toml 配置、命名
-规范、性能优化、内存与布局、并发（Send/Sync/原子）、异步（Future/Pin/Tokio）、
-零成本抽象、unsafe/FFI、零拷贝、生命周期、宏系统、构建/Features/交叉编译、测试、
-文档注释、Lint/clippy、SemVer、依赖管理与供应链等任务时，**优先读取该技能**。
+## 项目定位与事实源
 
-技能位置：
+BMCBL 是面向 Minecraft Bedrock 的原生 Rust/GPUI 启动器，Windows 是当前首要
+支持平台。应用以单个原生可执行文件为主要交付形态，资源由应用构建流程嵌入，
+UI 使用仓库内维护的 GPUI 与 nova-gfx 渲染路径；业务逻辑应保持为普通 Rust
+模块，不通过 WebView command 承载核心功能。
 
-- `skills/rust-design-conventions/SKILL.md` — 主文件：默认行为规则 + 场景路由索引。
-- `skills/rust-design-conventions/references/*.md` — 按主题拆分的深度参考模块
-  （api-design、async-programming、cargo-build-features、code-robustness、
-  concurrency、dependency-management、documentation、file-layout、lifetimes、
-  lint-and-clippy、macros、memory-and-layout、naming-conventions、
-  performance-optimization、performance-pitfalls、testing-standards、unsafe-rust、
-  zero-copy、zero-cost-abstractions）。
+以下文档是分主题的事实源；本文件只保留协作时必须知道的边界和入口，细节变更时
+应优先更新对应事实源，而不是复制一份更长的目录说明：
 
-> 用法：不要一次性读取所有参考文件。根据当前任务场景，按主文件中的「场景 → 模块对照表」
-> 按需读取最相关的 1–2 个模块。
+- [`docs/BMCBL_PROJECT_STRUCTURE.md`](docs/BMCBL_PROJECT_STRUCTURE.md)：当前 workspace 和模块结构。
+- [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md)：产品目标、资源嵌入和验证基线。
+- [`docs/ARCHITECTURE_BOUNDARIES.md`](docs/ARCHITECTURE_BOUNDARIES.md)：GPUI 与应用的职责边界。
+- [`docs/ASYNC_RUNTIME_MODEL.md`](docs/ASYNC_RUNTIME_MODEL.md)：运行时所有权、任务终态和 GPUI 状态桥接。
+- [`src/ui/README.md`](src/ui/README.md)：UI 放置规则和当前 UI 细分结构。
+- [`docs/AI.md`](docs/AI.md)：GPUI、日志、异步、资源和验证约定。
+- [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md)：当前计划以及实体图标/脚本流水线。
+- [`docs/COMMIT_CONVENTIONS.md`](docs/COMMIT_CONVENTIONS.md)：提交信息和 Cocogitto hook。
 
-## Default Project Settings
+## 修改边界
 
-When creating Rust projects or Cargo.toml files, ALWAYS use:
+默认采用最小变更原则。开始修改前先明确 IN SCOPE / OUT OF SCOPE，并确认目标文件
+属于正确的职责层；不要借任务之机升级依赖、改迁移或配置、重构无关模块、扩大
+可见性或顺手修复另一个问题。
 
-```toml
-[package]
-edition = "2024"
+本次任务若只要求文档，默认只改文档和必要的链接，不改源码、Cargo 清单、锁文件、
+构建脚本、CI 或资源。若发现文档与实现不一致，先以代码和事实源为准，再在本次
+范围内更新最小必要的说明。
 
-[lints.rust]
-unsafe_code = "warn"
+### 主要职责边界
 
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
-```
+| 区域 | 负责内容 | 不应放入 |
+| --- | --- | --- |
+| `src/app.rs`、`src/startup.rs` | GPUI 启动、globals、字体、窗口、renderer 和启动策略 | 页面业务、通用 GPUI 默认值 |
+| `src/ui` | GPUI 页面、窗口、组件、覆盖层、UI 状态和交互协调 | HTTP 客户端、持久缓存、解析/解码、下载、归档、Minecraft 领域逻辑 |
+| `src/core` | Minecraft、CurseForge、EasyTier、在线、注入、版本和平台领域逻辑 | 页面实体和具体 UI 组件 |
+| `src/downloads`、`src/archive`、`src/tasks` | 下载、解压、完整性、运行时、任务状态和后台工作流 | render 内的调度和实时后台锁读取 |
+| `src/http` | HTTP 请求封装和代理 | 页面专用网络实现 |
+| `src/music` | 音乐库、封面、播放服务和音乐状态 | 页面内的播放器后端 |
+| `src/plugins` | 插件 manifest、运行时、事件、watcher、UI DSL 和插件窗口 | GPUI 框架对 BMCBL 业务的依赖 |
+| `src/i18n`、`src/assets`、`src/utils` | 本地化实现、嵌入资源辅助和通用工具 | 具体页面编排或跨层业务聚合 |
+| `crates/gpui` | 通用 GPUI 框架、窗口、输入、布局、渲染和并发原语 | BMCBL routes、assets、默认背景、下载服务和窗口策略 |
 
+修改 `crates/gpui`、`src/app.rs` 或 `src/ui` 顶层前，必须阅读
+`docs/ARCHITECTURE_BOUNDARIES.md`；修改后台运行时、任务、下载、归档、长期 core
+工作流或后台到 GPUI 的传播链路前，必须完整阅读
+`docs/ASYNC_RUNTIME_MODEL.md`。
 
-# Rust coding guidelines
+## Workspace 与应用入口
 
-* Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
-* Do not write organizational or comments that summarize the code. Comments should only be written in order to explain "why" the code is written in some way in the case there is a reason that is tricky / non-obvious.
-* Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
-* Avoid using functions that panic like `unwrap()`, instead use mechanisms like `?` to propagate errors.
-* Be careful with operations like indexing which may panic if the indexes are out of bounds.
-* Never silently discard errors with `let _ =` on fallible operations. Always handle errors appropriately:
-  - Propagate errors with `?` when the calling function should handle them
-  - Use `.log_err()` or similar when you need to ignore errors but want visibility
-  - Use explicit error handling with `match` or `if let Err(...)` when you need custom logic
-  - Example: avoid `let _ = client.request(...).await?;` - use `client.request(...).await?;` instead
-* When implementing async operations that may fail, ensure errors propagate to the UI layer so users get meaningful feedback.
-* Never create files with `mod.rs` paths - prefer `src/some_module.rs` instead of `src/some_module/mod.rs`.
-* When creating new crates, prefer specifying the library root path in `Cargo.toml` using `[lib] path = "...rs"` instead of the default `lib.rs`, to maintain consistent and descriptive naming (e.g., `gpui.rs` or `main.rs`).
-* Avoid creative additions unless explicitly requested
-* Use full words for variable names (no abbreviations like "q" for "queue")
-* Use variable shadowing to scope clones in async contexts for clarity, minimizing the lifetime of borrowed references.
-  Example:
-  ```rust
-  executor.spawn({
-      let task_ran = task_ran.clone();
-      async move {
-          *task_ran.borrow_mut() = true;
-      }
-  });
-  ```
+`Cargo.toml` 是 workspace 成员和 feature 的权威来源。根 package 使用 Rust 2024，
+库入口为 `src/lib.rs`，二进制入口为 `src/main.rs`，构建脚本为 `build.rs`。
+不要把 `crates/*` 下的每个目录都假设为 workspace member；当前 workspace 同时包含
+应用、GPUI、渲染、世界数据和网络相关 crate，并排除了部分上游/供应商目录。
 
-## Async Runtime And GPUI State Contract
+主要 workspace crate 分组如下：
 
-修改 `src/tasks`、`src/downloads`、`src/archive`、长期运行的 core 工作流，或任何
-后台状态到 GPUI 的传播链路前，**必须先完整阅读
-`docs/ASYNC_RUNTIME_MODEL.md`**。该文档是运行时所有权、任务终态、取消语义、
-事件桥接和 render 数据访问的唯一事实源。
+- GPUI 与运行时：`crates/gpui`、`crates/gpui_tokio`、`crates/egpui`、
+  `crates/egpui-build`、`crates/egpui-manifest`。
+- Bedrock 数据与渲染：`crates/bedrock-leveldb`、`crates/bedrock-world`、
+  `crates/bedrock-render`。
+- 插件与 UI 支持：`crates/gpui-hooks`、`crates/lucide-gpui`、
+  `crates/bmcbl-plugin-api`、`crates/bmcbl-plugin-macros`。
+- 网络与连接：`crates/easytier-bmcbl`、`crates/nethernet`、
+  `crates/raknet/raknet-tokio`。
+- 图形抽象：`crates/nova-gfx/` 下的 gfx-* crate 和示例。
 
-强制规则：
+`vendor/` 存放被 patch 的第三方依赖；`crates/easytier`、`crates/raknet` 和
+`vendor/sctk-adwaita` 当前不属于 workspace member。依赖、feature、平台条件和
+patch 关系以 `Cargo.toml` 为准。
 
-- 业务代码通过 `src/tasks/runtime.rs` 的语义化 API 选择工作类型，不得自行选择
-  或创建物理 Runtime、blocking pool、Rayon pool。
-- 禁止通过 `Handle::try_current()` 探测环境后退化到系统线程。
-- 禁止从 GPUI 页面/View 直接调用 `tokio::spawn` 或
-  `tokio::task::spawn_blocking`。
-- 持久工作流不得由 GPUI `Task` 生命周期拥有；生产者只能发布纯事件/快照。
-- 只有 `completed`、`cancelled`、`error` 是终态；等待子任务必须调用
-  `wait_for_task_terminal()`，不得枚举“已知运行态”推断完成。
-- GPUI 前台消费者负责更新 Entity/Global 并触发重绘；render 不得读取后台锁、
-  TaskManager 实时状态或启动异步工作。
-- 轮询只允许用于无法提供事件的外部系统，并且必须按文档列出的例外条件实现。
+### 应用层模块
 
-# BMCBL Project Structure / 项目结构
-
-BMCBL 是一个基于 GPUI 的原生 Rust 桌面启动器（Windows 优先）。下面给出仓库的文件路径树，并说明每个目录与关键文件的功能。图标资源（`crates/lucide-gpui/icons/`）与 `vendor/` 第三方依赖在树中省略，避免噪声。
-
-## Workspace Layout / 顶层布局
-
-```
-BMCBL/
-├── Cargo.toml              # Workspace 根清单，声明成员 crate 与共享依赖
-├── Cargo.lock              # 依赖锁定
-├── build.rs                # 应用级构建脚本：嵌入 Windows 清单、图标、payload 元数据
-├── src/                    # BMCBL 应用主 crate（二进制 + 库）
-├── crates/                 # 本地工作空间成员 crate
-│   ├── gpui-hooks/         # GPUI React 风格 hooks 适配层（use_state 等）
-│   ├── gpui-hooks-macros/  # hooks 的过程宏
-│   ├── lucide-gpui/        # Lucide 图标资源 crate（基于 GPUI）
-│   ├── nova-gfx/           # 跨后端图形抽象（Vulkan/DX12/Metal）与示例
-│   ├── bmcbl-plugin-api/   # 插件宿主/插件间公共 API 类型
-│   ├── bmcbl-plugin-macros/# 插件开发派生宏
-│   └── bmcbl-plugin-tools/ # 插件打包/校验工具
-├── crates/gpui/            # 独立维护的 GPUI GUI 核心（勿直接耦合业务）
-├── assets/                 # 嵌入资源（编译期通过 AssetSource 打包）
-├── docs/                   # 架构与设计文档
-├── examples/plugins/       # 插件示例（bedrock-notes、hello-wasm）
-└── scripts/                # 构建/校验/性能脚本（PowerShell）
-```
-
-## Application Source / 应用主 crate (`src/`)
-
-```
+```text
 src/
-├── main.rs                 # 二进制入口：解析参数并启动 app
-├── lib.rs                  # 库根：重导出模块，供测试与集成
-├── app.rs                  # 应用启动：globals、字体注册、窗口、启动策略
-├── startup.rs              # 启动流程编排（初始化顺序、单实例检查等）
-├── launch.rs               # Minecraft 进程拉起逻辑
-├── result.rs               # 统一错误/结果类型别名
-├── config/                 # 配置模型与持久化
-│   ├── config.rs           # Config 结构与字段
-│   ├── defaults.rs         # 默认值
-│   ├── storage.rs          # 读写配置文件
-│   └── test.rs             # 配置测试辅助
-├── core/                   # 非 UI 业务逻辑（核心领域）
-│   ├── mod.rs
-│   ├── minecraft/          # MC 版本管理、mod 管理、地图、截图、服务器、
-│   │                       #   level.dat、资源包、UWP/AppX/GDK 集成、
-│   │                       #   key patcher、mouse lock、远程版本源等
-│   ├── curseforge/         # CurseForge API 客户端与数据模型
-│   ├── easytier/           # EasyTier 联网（虚拟局域网）集成
-│   ├── inject/             # 注入/补丁相关底层工具
-│   ├── online/             # 在线房间/对等连接业务
-│   ├── version/            # 版本号解析与比较
-│   ├── sponsors.rs         # 赞助者数据
-│   └── ui_prefs.rs         # UI 偏好（桥接 config 与 UI）
-├── downloads/              # 下载引擎
-│   ├── manager.rs          # 下载管理器（调度、任务编排）
-│   ├── single.rs / multi.rs # 单文件 / 多文件下载
-│   ├── integrity.rs / md5.rs # 校验完整性、MD5
-│   ├── api.rs / runtime.rs # 下载对外 API 与运行时支持
-│   └── mod.rs
-├── archive/                # 归档/解压（zip 等）
-├── http/                   # HTTP 客户端
-│   ├── request.rs          # 请求封装
-│   ├── gpui_client.rs      # GPUI 线程友好的客户端
-│   └── proxy.rs            # 代理支持
-├── tasks/                  # 后台任务管理器（下载/解压/联网等统一调度）
-├── music/                  # 内置音乐播放器（service/state/types）
-├── plugins/                # 插件运行时（事件、清单、watcher、UI DSL、window）
-├── i18n/                   # 本地化实现（读取 assets/locales）
-├── assets/                 # 资源加载（asset_source / generated / mod）
-└── utils/                  # 通用工具（日志、网络、内存、诊断、更新器、
-                            #   文件操作、单实例、系统信息、Cloudflare 等）
+├── main.rs / lib.rs       二进制薄入口与库模块装配
+├── app.rs / startup.rs    GPUI 启动、窗口、globals、字体和早期启动编排
+├── launch.rs / result.rs  Minecraft 启动与统一结果类型
+├── config/                配置模型、默认值、存储和测试辅助
+├── core/                  非 UI 领域逻辑
+├── downloads/             下载引擎、完整性和下载运行时
+├── archive/               归档/解压
+├── tasks/                 后台任务管理、运行时和任务快照/事件
+├── http/                  HTTP 与代理
+├── music/                 音乐服务、状态和类型
+├── plugins/               插件运行时和窗口/事件桥
+├── i18n/                  本地化实现
+├── assets/                应用侧 AssetSource 和生成资源辅助
+├── utils/                 日志、诊断、网络、文件、更新和系统工具
+└── ui/                    GPUI 页面、窗口、组件、状态和覆盖层
 ```
 
-## UI Layer / UI 层 (`src/ui/`)
+`src/core` 当前主要按 `minecraft`、`curseforge`、`easytier`、`inject`、`online`、
+`version`、`sponsors` 和 `ui_prefs` 组织。下载、归档和任务模块的长期工作流不应
+下沉到页面或通用组件。
 
-遵循「页面/窗口根 view 只负责组合与生命周期」的原则，每个大页面按职责拆分到子模块。
+## UI 结构与放置
 
-```
-src/ui/
-├── mod.rs                  # UI 模块总装配
-├── main_window.rs          # 主窗口入口（组合）
-├── main_window/            # 主窗口职责模块
-│   ├── background(.rs/_support.rs)  # 动态背景与支撑逻辑
-│   ├── chrome(.rs/_view.rs)         # 标题栏/窗口边框 chrome
-│   ├── controls.rs                  # 窗口控件（最小化/关闭等）
-│   ├── music_player.rs              # 内嵌播放器面板
-│   ├── page_loading.rs / page_registry.rs / route_effects.rs
-│   ├── update_flow.rs / support.rs
-├── window.rs               # 工具/子窗口入口
-├── window/                 # 子窗口实现
-│   ├── map_viewer/         # 地图查看器（含 3D 预览、WGSL 着色器、瓦片缓存、
-│   │                       #   交互、预览面板渲染、测试）
-│   ├── chrome.rs / debug(/) # 子窗口 chrome 与调试视图
-│   ├── import(/)            # 导入流程窗口
-│   └── level_dat(/)         # level.dat 编辑器窗口
-├── views/                  # 顶层路由页面
-│   ├── home(/)             # 首页
-│   ├── download(/)         # 下载中心（游戏/mod/CurseForge 子页）
-│   ├── manage/             # 存档管理（actions、tabs、layout、state、
-│   │                        #   level_dat_editor/schema、version_settings…）
-│   ├── settings(/)         # 设置（launcher/about/customization/game/plugins）
-│   ├── tasks(/)            # 任务列表页
-│   ├── tools(/)            # 工具页（在线联机 room/peers/widgets/sidebar）
-│   └── plugin.rs           # 插件页面
-├── components/             # 可复用 UI 组件（button、modal、dropdown、
-│                            #   markdown_renderer、html_renderer、tabs、
-│                            #   split_pane、virtual_list、color_picker…）
-├── state/                  # 全局/共享 UI 状态（navigation、launcher、
-│                            #   i18n、theme、update、diagnostics、agreement…）
-├── theme/                  # 主题 tokens（colors）与 helper
-├── runtime/                # 运行时根视图装配（root_view）
-├── overlays/               # 全屏覆盖层（更新、诊断、启动前置、用户协议）
-├── hooks.rs / hooks/       # GPUI hooks 适配与封装
-├── animation.rs            # 动画辅助
-├── navigation.rs           # 路由/导航状态机
-├── overlays.rs             # 覆盖层装配
-├── state.rs                # 状态装配
-├── runtime.rs              # 运行时装配
-├── update_check.rs         # 更新检查编排
-└── README.md               # UI 层约定说明
-```
+`src/ui/README.md` 是 UI 细分结构的优先事实源。顶层职责如下：
 
-## Assets & Docs / 资源与文档
+- `main_window/`：主窗口 background、chrome、controls、page registry、loading、
+  route effects、music player 和 update flow；它是组合/协调层。
+- `views/`：`home`、`download`、`manage`、`settings`、`tasks`、`tools` 和
+  `plugin` 路由页面；页面专用状态和 widget 靠近对应页面。
+- `window/`：独立工具窗口，包括 debug、import、level.dat、map viewer、plugin
+  和 skin pack；窗口根只负责装配和生命周期。
+- `components/`：无页面依赖的可复用视觉组件，如 button、input、modal、tabs、
+  markdown/html renderer、split pane、virtual list、toast 等。
+- `state/`：跨页面 UI 状态，包括 navigation、launcher、i18n、theme、update、
+  diagnostics、agreement、local versions、music 和 quit；持久业务状态不放这里。
+- `theme/`、`overlays/`、`runtime/`、`hooks.rs`/`hooks/`、`navigation.rs`、
+  `animation.rs`、`update_check.rs`：主题、覆盖层、根视图装配、hooks、路由和动画/
+  更新辅助。
 
-```
-assets/
-├── fonts/                  # 嵌入字体（HarmonyOS Sans / MiSans / OPPO Sans）
-├── icons/                  # 应用图标
-├── images/                 # 内嵌图片（about、minecraft 等）
-├── locales/                # 翻译源数据（含 agreement）
-└── bin/                    # 需随应用分发的二进制
+页面或窗口 root 应主要组合布局、生命周期、订阅和 `Render` 实现。出现 state model、
+IO/cache、解码、后台任务、输入行为和多个面板混在一个文件时，按职责拆到 sibling
+module；优先按类型族/变更理由组织，不要一函数一文件。`curseforge`、`map_viewer`
+和 `skin_pack` 是高复杂度区域，新逻辑应放到已有的职责子模块。
 
-docs/
-├── AI.md                   # AI 代码贡献约定（双语，GPUI 规则）
-├── ARCHITECTURE_BOUNDARIES.md  # GPUI 框架与应用的边界（改框架前必读）
-├── ASYNC_RUNTIME_MODEL.md  # Runtime Facade、任务状态与 GPUI 事件桥接规范
-├── PROJECT_SPEC.md         # 项目规格
-├── GPUI_ROUTER_HOOKS.md    # 路由与 hooks 用法
-├── GPUI_VENDOR_RENDERING.md # vendor GPUI 渲染说明
-├── GPUI_DEFAULT_FONT.md    # 默认字体策略
-└── MAP_RENDERER.md         # 地图渲染器设计
+组件必须通用，不能依赖具体页面；`src/core` 不得依赖具体 UI 页面。渲染阶段只投影
+GPUI 自己拥有的稳定快照，不获取 task manager/service 的跨线程锁，不启动/取消后台
+工作，也不执行网络、文件、解析、解码或持久化操作。状态改变后由前台消费者更新
+Entity/Global 并调用 `cx.notify()`。
 
-scripts/
-├── check_i18n_lang.ps1     # 校验多语言键完整性
-├── profile_startup.ps1     # 启动性能分析
-└── tmp_patch_bedrock_model_material.ps1  # 临时补丁脚本
-```
+使用当前 GPUI API：`App`、`Context<T>`、`Window`、`Entity<T>`、`WeakEntity<T>`、
+`Render` 和 `RenderOnce`。新代码使用 async closure 形式的 `cx.spawn(async move |cx| ...)`；
+不要使用已废弃的 `Model`、`View`、`AppContext`、`ModelContext`、`WindowContext` 或
+`ViewContext`。
 
-## Boundary Rules Recap / 边界要点
+## 异步运行时与 GPUI 状态契约
 
-- `src/ui` 只渲染与协调 UI 状态；网络 IO、解码、持久缓存、解析、下载与长流程放在 `src/core`、`src/downloads`、`src/tasks` 等非 UI 模块。
-- 修改 `crates/gpui`、`src/app.rs` 或 `src/ui` 顶层前，先读 `docs/ARCHITECTURE_BOUNDARIES.md`。
-- 修改异步执行、后台任务或 GPUI 状态传播前，先读 `docs/ASYNC_RUNTIME_MODEL.md`。
-- GPUI 框架代码不得依赖 BMCBL 的 routes/pages/assets/默认背景/下载服务/窗口策略。
-- 应用默认值（Vulkan 偏好、嵌入字体、默认背景、主窗口 chrome、启动服务）归应用启动或 UI 代码，而非 GPUI 框架默认。
+### Runtime ownership
 
-# GPUI
+现有 BMCBL 下载、归档、任务管理和长期工作流由 `src/tasks/runtime.rs` 的
+`AppRuntime` 统一拥有。业务模块只选择语义化 API，不创建物理 runtime、blocking pool、
+Rayon pool 或额外全局 executor：
 
-## Git 提交规范
+- `spawn_io`：网络、timer、进程和 orchestration；
+- `run_io_blocking`：阻塞文件/平台调用；
+- `spawn_download_task` / `spawn_download_blocking`：下载工作流及写入；
+- `spawn_archive_task` / `run_archive_blocking`：归档/安装及解压；
+- `run_cpu` / `install_cpu`：应用 CPU/Rayon 工作；
+- `gpui_tokio::Tokio::spawn_result`：有界、view-scoped 的 Tokio 请求结果。
 
-提交信息统一使用 Conventional Commits，描述内容使用中文，格式为
-`类型(范围): 中文描述`。允许类型和 hook 使用方式见
-[docs/COMMIT_CONVENTIONS.md](docs/COMMIT_CONVENTIONS.md)。
+新的 egpui host 使用 `egpui::ApplicationRuntime`/`RuntimeProvider`；不要把这套
+新 host 生命周期与现有 BMCBL AppRuntime 工作流混成一个 runtime owner。
 
-本仓库使用 Rust 编写的 Cocogitto 管理提交规范和 Git hook。开发者首次使用时执行
-`cargo install cocogitto --locked` 和 `cog install-hook commit-msg`。详细规范见
-[docs/COMMIT_CONVENTIONS.md](docs/COMMIT_CONVENTIONS.md) 与根目录 `cog.toml`。
+禁止在生产业务或 UI 代码中构造 `tokio::runtime::Runtime/Builder`、调用
+`Handle::try_current()` 探测环境、从 GPUI 页面直接调用 `tokio::spawn` 或
+`tokio::task::spawn_blocking`、构造 Rayon `ThreadPool`，或用 `std::thread::spawn`
+作为通用兜底。只有文档明确的 Windows hook、进程退出 watchdog 或阻塞 foreign callback
+等平台生命周期例外可以使用专用 OS thread。
 
-GPUI is a UI framework which also provides primitives for state and concurrency management.
+### Task 与事件
 
-## Project boundaries
+- 只有 `completed`、`cancelled`、`error` 是终态；未知状态必须按活动状态处理。
+- 等待子任务使用 `wait_for_task_terminal()`，不要枚举已知“运行态”推断完成。
+- 持久工作流不能由 GPUI `Task` 拥有；生产者只能发布 `Send + 'static` 的纯事件/快照，
+  不得捕获 `App`、`Context<T>`、`Window`、`Entity<T>` 或 render 元素。
+- 有界请求可由 `gpui_tokio` 桥接；持久工作流应由 AppRuntime 运行并通过事件/快照回传。
+- Domain stream 的 channel、滞后恢复和关闭语义由领域模块/适配器负责；页面不要手写
+  `recv -> Entity::update -> cx.notify()` 循环。view-scoped Entity 使用
+  `Context::spawn_stream`，应用生命周期 Global 使用 `App::spawn_stream`。
+- 生产者不修改 GPUI 状态；前台消费者负责更新 Entity/Global、处理错误并通知重绘。
+- 只有外部系统无法产生事件时才允许轮询，并且要明确间隔、单实例、去重、过期结果拒绝、
+  teardown 取消和错误时保留最后快照。
 
-- Follow `docs/ARCHITECTURE_BOUNDARIES.md` before changing the GPUI framework,
-  `src/app.rs`, or `src/ui`.
-- Follow `docs/ASYNC_RUNTIME_MODEL.md` before changing runtime ownership,
-  background tasks, durable workflows, or background-to-GPUI state propagation.
-- GPUI framework code must not depend on BMCBL routes, pages, assets, default
-  backgrounds, download services, or application window policy.
-- BMCBL application defaults such as Vulkan preference, embedded fonts, default
-  background selection, and main-window chrome behavior belong in application
-  startup or UI code, not in GPUI framework defaults.
-- `src/ui` renders and coordinates UI state. Network IO, decoding, persistent
-  cache implementation, parsing, downloads, and durable program workflows belong
-  outside render methods and generic UI components.
+## Rust、平台与代码质量
 
-## UI modularity
+涉及 Rust、Cargo、模块、async、并发、测试、lint 或 API 设计时，优先使用
+`rust-design-conventions` skill，并按其场景路由只读取必要参考文件。
 
-- Page and window root `view.rs` files should only assemble the top-level UI,
-  own the lifecycle entry points, and implement `Render`.
-- Do not put state models, persistent IO, caches, decoding, parsing, background
-  render tasks, panel rendering, and pointer/input behavior into one large
-  `view.rs`.
-- Split a UI file once it exceeds roughly 1,500 lines or contains more than two
-  major responsibilities. Prefer responsibility modules such as `model.rs`,
-  `interactions.rs`, `panels.rs`, `tile_cache.rs`, `tile_render.rs`,
-  `viewport.rs`, or domain-specific equivalents.
-- Keep page/window internals scoped as `pub(super)` by default. Do not expose
-  internal UI state or helper types at crate level unless another ownership
-  boundary genuinely needs them.
-- New UI features should extend or add the relevant responsibility module
-  instead of appending more logic to the root `view.rs`.
+- 保持 Rust 2024、现有 workspace lints（`unsafe_code = "warn"`，Clippy `all`/
+  `pedantic` = `warn`）和平台条件；不要无理由升级依赖或修改 feature matrix。
+- 优先借用，避免为了通过 borrow checker 添加 clone；参数和变量使用完整、有领域意义的
+  名称。可恢复失败用 `Result`/`Option` 表达；生产代码不使用 `unwrap()`，`expect()`
+  只能用于有明确不变量的场景。
+- 不用 `let _ =` 静默丢弃 fallible 操作；错误应传播、带上下文记录或转化为可见 UI 状态。
+- 新文件不要创建 `mod.rs` 路径；使用 `src/module.rs` 或已有的扁平模块布局。
+- 新增公共 API 前评估所有调用方、错误语义、可见性、平台/MSRV 和 breaking change。
+- 函数超过约 50 行、实现文件超过约 500 行、参数超过 5 个或职责混杂时，先拆分到
+  合理的类型族/职责模块；不要通过 helper 碎片化掩盖边界问题。
+- 文件系统/进程/环境值使用 `Path`、`PathBuf`、`OsStr` 等跨平台类型；平台差异使用
+  `cfg` 和目标特定模块隔离。
 
-## Context
+## 资源、本地化与日志
 
-Context types allow interaction with global state, windows, entities, and system services. They are typically passed to functions as the argument named `cx`. When a function takes callbacks they come after the `cx` parameter.
+- `assets/` 是构建期输入；`src/assets` 是应用侧加载/生成辅助。`build.rs` 负责 Windows
+  manifest、图标和 payload metadata。必须落盘的 payload 使用运行时目录：优先
+  `%LOCALAPPDATA%\\BMCBL\\runtime\\...`，fallback 为 `%TEMP%\\BMCBL\\runtime\\...`。
+- 只读资源优先使用 `include_bytes!`、`include_str!`、生成表或通用 GPUI `AssetSource`；
+  BMCBL 资源名和默认背景策略留在应用代码，不放进 GPUI 框架默认值。
+- `I18n` (`src/ui/state/i18n.rs`) 是 GPUI Global；翻译源在 `assets/locales/`，render
+  通过 Global 读取翻译，语言切换更新 Global 并刷新受影响窗口。
+- 日志通过应用日志桥接进入统一系统。不要新增 `RUST_LOG`、`GPUI_*`、`ZED_*` 或
+  `BMCBL_*` 运行时配置开关；环境变量只用于操作系统、编译/构建、CI 或外部子进程协议。
 
-* `App` is the root context type, providing access to global state and read and update of entities.
-* `Context<T>` is provided when updating an `Entity<T>`. This context dereferences into `App`, so functions which take `&App` can also take `&Context<T>`.
-* `AsyncApp` and `AsyncWindowContext` are provided by `cx.spawn` and `cx.spawn_in`. These can be held across await points.
+## 文档、脚本与验证
 
-## `Window`
+仓库常用脚本位于 `scripts/`，包括 `check_gpui_layout.ps1`、`check_i18n_lang.ps1`、
+启动性能分析、实体图标生成、发布/打包和 Windows/Linux setup 脚本。执行脚本前先
+阅读其参数和副作用；临时补丁脚本不要当作通用构建入口。
 
-`Window` provides access to the state of an application window. It is passed to functions as an argument named `window` and comes before `cx` when present. It is used for managing focus, dispatching actions, directly drawing, getting user input state, etc.
+按改动风险选择最小验证集：
 
-## Entities
-
-An `Entity<T>` is a handle to state of type `T`. With `thing: Entity<T>`:
-
-* `thing.entity_id()` returns `EntityId`
-* `thing.downgrade()` returns `WeakEntity<T>`
-* `thing.read(cx: &App)` returns `&T`.
-* `thing.read_with(cx, |thing: &T, cx: &App| ...)` returns the closure's return value.
-* `thing.update(cx, |thing: &mut T, cx: &mut Context<T>| ...)` allows the closure to mutate the state, and provides a `Context<T>` for interacting with the entity. It returns the closure's return value.
-* `thing.update_in(cx, |thing: &mut T, window: &mut Window, cx: &mut Context<T>| ...)` takes a `AsyncWindowContext` or `VisualTestContext`. It's the same as `update` while also providing the `Window`.
-
-Within the closures, the inner `cx` provided to the closure must be used instead of the outer `cx` to avoid issues with multiple borrows.
-
-Trying to update an entity while it's already being updated must be avoided as this will cause a panic.
-
-When  `read_with`, `update`, or `update_in` are used with an async context, the closure's return value is wrapped in an `anyhow::Result`.
-
-`WeakEntity<T>` is a weak handle. It has `read_with`, `update`, and `update_in` methods that work the same, but always return an `anyhow::Result` so that they can fail if the entity no longer exists. This can be useful to avoid memory leaks - if entities have mutually recursive handles to each other they will never be dropped.
-
-## Concurrency
-
-All use of entities and UI rendering occurs on a single foreground thread.
-
-`cx.spawn(async move |cx| ...)` runs an async closure on the foreground thread. Within the closure, `cx` is an async context like `AsyncApp` or `AsyncWindowContext`.
-
-When the outer cx is a `Context<T>`, the use of `spawn` instead looks like `cx.spawn(async move |handle, cx| ...)`, where `handle: WeakEntity<T>`.
-
-To do work on other threads, `cx.background_spawn(async move { ... })` is used. Often this background task is awaited on by a foreground task which uses the results to update state.
-
-Both `cx.spawn` and `cx.background_spawn` return a `Task<R>`, which is a future that can be awaited upon. If this task is dropped, then its work is cancelled. To prevent this one of the following must be done:
-
-* Awaiting the task in some other async context.
-* Detaching the task via `task.detach()` or `task.detach_and_log_err(cx)`, allowing it to run indefinitely.
-* Storing the task in a field, if the work should be halted when the struct is dropped.
-
-A task which doesn't do anything but provide a value can be created with `Task::ready(value)`.
-
-## Elements
-
-The `Render` trait is used to render some state into an element tree that is laid out using flexbox layout. An `Entity<T>` where `T` implements `Render` is sometimes called a "view".
-
-Example:
-
-```
-struct TextWithBorder(SharedString);
-
-impl Render for TextWithBorder {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().border_1().child(self.0.clone())
-    }
-}
+```powershell
+cargo fmt --all --check
+cargo check --workspace --no-default-features
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
-Since `impl IntoElement for SharedString` exists, it can be used as an argument to `child`. `SharedString` is used to avoid copying strings, and is either an `&'static str` or `Arc<str>`.
+涉及 GPUI framework 时补充：
 
-UI components that are constructed just to be turned into elements can instead implement the `RenderOnce` trait, which is similar to `Render`, but its `render` method takes ownership of `self`. Types that implement this trait can use `#[derive(IntoElement)]` to use them directly as children.
+```powershell
+cargo check --manifest-path crates/gpui/Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
+```
 
-The style methods on elements are similar to those used by Tailwind CSS.
+文档-only 变更至少检查引用路径和链接；未运行的验证必须在交付摘要中说明。Windows
+是当前主要验证平台，Linux/macOS 兼容性不要在未实际验证时宣称已通过。
 
-If some attributes or children of an element tree are conditional, `.when(condition, |this| ...)` can be used to run the closure only when `condition` is true. Similarly, `.when_some(option, |this, value| ...)` runs the closure when the `Option` has a value.
+## Git 约定
 
-## Input events
-
-Input event handlers can be registered on an element via methods like `.on_click(|event, window, cx: &mut App| ...)`.
-
-Often event handlers will want to update the entity that's in the current `Context<T>`. The `cx.listener` method provides this - its use looks like `.on_click(cx.listener(|this: &mut T, event, window, cx: &mut Context<T>| ...)`.
-
-## Actions
-
-Actions are dispatched via user keyboard interaction or in code via `window.dispatch_action(SomeAction.boxed_clone(), cx)` or `focus_handle.dispatch_action(&SomeAction, window, cx)`.
-
-Actions with no data defined with the `actions!(some_namespace, [SomeAction, AnotherAction])` macro call. Otherwise the `Action` derive macro is used. Doc comments on actions are displayed to the user.
-
-Action handlers can be registered on an element via the event handler `.on_action(|action, window, cx| ...)`. Like other event handlers, this is often used with `cx.listener`.
-
-## Notify
-
-When a view's state has changed in a way that may affect its rendering, it should call `cx.notify()`. This will cause the view to be rerendered. It will also cause any observe callbacks registered for the entity with `cx.observe` to be called.
-
-## Entity events
-
-While updating an entity (`cx: Context<T>`), it can emit an event using `cx.emit(event)`. Entities register which events they can emit by declaring `impl EventEmittor<EventType> for EntityType {}`.
-
-Other entities can then register a callback to handle these events by doing `cx.subscribe(other_entity, |this, other_entity, event, cx| ...)`. This will return a `Subscription` which deregisters the callback when dropped.  Typically `cx.subscribe` happens when creating a new entity and the subscriptions are stored in a `_subscriptions: Vec<Subscription>` field.
-
-## Recent API changes
-
-GPUI has had some changes to its APIs. Always write code using the new APIs:
-
-* `spawn` methods now take async closures (`AsyncFn`), and so should be called like `cx.spawn(async move |cx| ...)`.
-* Use `Entity<T>`. This replaces `Model<T>` and `View<T>` which no longer exist and should NEVER be used.
-* Use `App` references. This replaces `AppContext` which no longer exists and should NEVER be used.
-* Use `Context<T>` references. This replaces `ModelContext<T>` which no longer exists and should NEVER be used.
-* `Window` is now passed around explicitly. The new interface adds a `Window` reference parameter to some methods, and adds some new "*_in" methods for plumbing `Window`. The old types `WindowContext` and `ViewContext<T>` should NEVER be used.
-
-
-## General guidelines
-
-- Use `./script/clippy` instead of `cargo clippy`
+提交信息遵循 [`docs/COMMIT_CONVENTIONS.md`](docs/COMMIT_CONVENTIONS.md) 的
+Conventional Commits 与 Cocogitto hook。除非用户明确要求，不要自行创建提交、分支、
+推送或 PR；提交前确认 diff 只包含当前任务范围内的文件。
