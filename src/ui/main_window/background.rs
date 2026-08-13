@@ -4,6 +4,7 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
+const BACKGROUND_GPU_BLUR_MIN_RADIUS_PX: f32 = 1.0;
 const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
 const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
 
@@ -155,14 +156,10 @@ impl AppBackgroundView {
             .inset_0()
             .bg(background_blur_overlay_color(blur));
 
-        if BACKGROUND_GPU_BACKDROP_BLUR_ENABLED {
-            let blur_style = BackdropBlurStyle::new(px(blur)).auto_quality();
-            let blur_style = if blur < 1.0 {
-                blur_style.downsample(1).levels(1)
-            } else {
-                blur_style
-            };
-            container.child(overlay.backdrop_blur(blur_style))
+        if background_uses_gpu_blur(blur) {
+            container.child(
+                overlay.backdrop_blur(BackdropBlurStyle::new(px(blur)).auto_quality()),
+            )
         } else {
             container.child(overlay)
         }
@@ -238,6 +235,10 @@ impl AppBackgroundView {
     }
 }
 
+fn background_uses_gpu_blur(blur: f32) -> bool {
+    BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur >= BACKGROUND_GPU_BLUR_MIN_RADIUS_PX
+}
+
 fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
     let alpha = (blur / BACKGROUND_BLUR_OVERLAY_REFERENCE_PX).clamp(0.0, 1.0)
         * BACKGROUND_BLUR_OVERLAY_MAX_ALPHA;
@@ -310,7 +311,7 @@ mod tests {
     use super::{
         BACKGROUND_ANIMATION_MAX_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
         BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, animation_suppression_changed,
-        background_animation_policy, background_blur_overlay_color,
+        background_animation_policy, background_blur_overlay_color, background_uses_gpu_blur,
     };
 
     #[test]
@@ -344,6 +345,8 @@ mod tests {
     #[test]
     fn background_blur_uses_gpu_backdrop_blur_by_default() {
         assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
+        assert!(!background_uses_gpu_blur(0.1));
+        assert!(background_uses_gpu_blur(1.0));
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
             background_blur_overlay_color(f32::MAX).a,
