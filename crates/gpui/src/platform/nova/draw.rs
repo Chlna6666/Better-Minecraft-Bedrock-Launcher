@@ -359,7 +359,7 @@ pub(super) fn backdrop_blur_render_passes_for_targets_into(
         };
         for (level_index, level) in variant.levels.iter().enumerate() {
             let resource_set = if level_index == 0 {
-                targets
+                variant
                     .source_pass_resource_sets
                     .get(frame_resource_index)
                     .copied()
