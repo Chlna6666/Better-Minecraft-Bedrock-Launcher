@@ -1,5 +1,63 @@
 use super::*;
 
+#[cfg(target_os = "windows")]
+fn native_windows_drawable_size<W>(window: &W) -> Option<Size<DevicePixels>>
+where
+    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
+{
+    use ::winit::raw_window_handle::RawWindowHandle;
+    use windows::Win32::{
+        Foundation::{HWND, RECT},
+        UI::WindowsAndMessaging::GetClientRect,
+    };
+
+    let raw_window_handle = window.window_handle().ok()?.as_raw();
+    let RawWindowHandle::Win32(handle) = raw_window_handle else {
+        return None;
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut _);
+    let mut client_rect = RECT::default();
+    // SAFETY: `hwnd` comes from the live window borrowed for renderer initialization.
+    unsafe { GetClientRect(hwnd, &mut client_rect).ok()? };
+    let width = client_rect.right.saturating_sub(client_rect.left);
+    let height = client_rect.bottom.saturating_sub(client_rect.top);
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+
+    Some(Size {
+        width: DevicePixels(width),
+        height: DevicePixels(height),
+    })
+}
+
+fn resolve_initial_drawable_size<W>(
+    window: &W,
+    requested: Size<DevicePixels>,
+) -> Size<DevicePixels>
+where
+    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
+{
+    #[cfg(target_os = "windows")]
+    if let Some(native) = native_windows_drawable_size(window) {
+        if native != requested {
+            log::debug!(
+                "Nova renderer initial drawable size corrected from requested={}x{} to native-client={}x{}",
+                requested.width.0,
+                requested.height.0,
+                native.width.0,
+                native.height.0,
+            );
+        }
+        return native;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
+
+    requested
+}
+
 impl NovaRenderer {
     pub(crate) fn new<W>(
         window: &W,
@@ -40,6 +98,12 @@ impl NovaRenderer {
             + 'static,
     {
         let metrics_started_at = Instant::now();
+        // Windows can report a fractional logical size during hidden-window startup. Rebuilding
+        // physical pixels from that logical size may differ from the real HWND client area by one
+        // pixel, which makes the whole scene (most visibly glyph atlas sprites) be resampled until
+        // the first native resize. Match gpui-ce's native-pixel contract by treating the actual
+        // client rect as authoritative before the swapchain and all size-dependent resources exist.
+        let drawable_size = resolve_initial_drawable_size(window, drawable_size);
         let width = drawable_size.width.0.max(1) as u32;
         let height = drawable_size.height.0.max(1) as u32;
         log::info!("renderer_path=nova-gfx backend={backend}");
