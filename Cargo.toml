@@ -32,7 +32,7 @@ zstd = "0.13.3"
 [dependencies]
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
-gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx", "nova-gfx-dx12", "nova-gfx-vulkan", "build-shader-validation"] }
+gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx", "nova-gfx-dx12", "nova-gfx-vulkan"] }
 gpui_tokio = { path = "crates/gpui_tokio" }
 gpui-router = { version = "0.3.0", default-features = false, features = [] }
 gpui_hooks = { path = "crates/gpui-hooks" }
@@ -137,8 +137,8 @@ members = [
     "crates/nova-gfx/gfx-dx12",
     "crates/nova-gfx/gfx-metal",
     "crates/nova-gfx/gfx-opengl",
-    "crates/nova-gfx/gfx-vulkan",
     "crates/nova-gfx/gfx-webgl",
+    "crates/nova-gfx/gfx-vulkan",
     "crates/nova-gfx/examples/triangle",
     "crates/nova-gfx/examples/triangle-dx12",
     "crates/nova-gfx/examples/triangle-metal",
