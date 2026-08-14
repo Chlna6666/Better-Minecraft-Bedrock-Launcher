@@ -158,8 +158,8 @@ where
         memory_location: MemoryLocation::CpuToGpu,
     })?;
     let backdrop_blur_pass_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} backdrop blur pass")),
-        size: BACKDROP_BLUR_PASS_BYTES as u64,
+        label: Some(format!("{label} backdrop blur passes")),
+        size: (MAX_BACKDROP_BLURS * BACKDROP_BLUR_PASS_BYTES) as u64,
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
