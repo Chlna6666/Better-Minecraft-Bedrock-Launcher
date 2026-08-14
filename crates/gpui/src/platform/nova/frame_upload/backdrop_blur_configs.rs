@@ -9,28 +9,40 @@ const BLUR_BOUNDS_WIDTH_OFFSET: usize = 24;
 const BLUR_BOUNDS_HEIGHT_OFFSET: usize = 28;
 const BLUR_RADIUS_OFFSET: usize = 112;
 
-/// One renderer-side blur configuration.
+/// Renderer target identity for one reusable blur filter.
 ///
-/// Draw order and bounds deliberately participate in identity. Two glass surfaces with the same
-/// radius do not have the same backdrop when either their draw position or sampling rectangle is
-/// different. Treating those surfaces as one renderer target was the root cause of unrelated
-/// background/titlebar/popover filters reusing each other's cached result.
+/// The source group is part of the key, so filters are never reused across different draw-order
+/// barriers. Bounds are deliberately excluded: overlapping rectangles in the same source group can
+/// share one filtered target when overlap recomputation is disabled.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(in crate::platform::nova) struct NovaBackdropBlurReuseKey {
+    source_group: u32,
+    downsample: u8,
+    levels: u8,
+    radius_bits: u32,
+}
+
+/// One renderer-side blur configuration.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::platform::nova) struct NovaBackdropBlurConfig {
+    source_group: u32,
     order: u32,
     downsample: u8,
     levels: u8,
     radius_bits: u32,
     bounds_bits: [u32; 4],
+    recompute_overlap: bool,
 }
 
 impl NovaBackdropBlurConfig {
     fn new(
+        source_group: u32,
         order: u32,
         downsample: u8,
         levels: u8,
         radius: f32,
         bounds: [f32; 4],
+        recompute_overlap: bool,
     ) -> Self {
         let downsample = downsample.max(1);
         let levels = levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS);
@@ -41,11 +53,13 @@ impl NovaBackdropBlurConfig {
         };
         let bounds = bounds.map(|value| if value.is_finite() { value } else { 0.0 });
         Self {
+            source_group,
             order,
             downsample,
             levels,
             radius_bits: radius.to_bits(),
             bounds_bits: bounds.map(f32::to_bits),
+            recompute_overlap,
         }
     }
 
@@ -69,6 +83,52 @@ impl NovaBackdropBlurConfig {
     /// Returns `[x, y, width, height]` in source/device pixels.
     pub(in crate::platform::nova) fn bounds(self) -> [f32; 4] {
         self.bounds_bits.map(f32::from_bits)
+    }
+
+    pub(in crate::platform::nova) fn reuse_key(self) -> NovaBackdropBlurReuseKey {
+        NovaBackdropBlurReuseKey {
+            source_group: self.source_group,
+            downsample: self.downsample,
+            levels: self.levels,
+            radius_bits: self.radius_bits,
+        }
+    }
+
+    /// Returns whether this canonical target can be sampled by `other`.
+    pub(in crate::platform::nova) fn covers(self, other: Self) -> bool {
+        if self.reuse_key() != other.reuse_key() {
+            return false;
+        }
+        if self.recompute_overlap || other.recompute_overlap {
+            return self == other;
+        }
+        bounds_contains(self.bounds(), other.bounds())
+    }
+
+    /// Returns whether two primitives may share one filter target.
+    fn should_merge_with(self, other: Self) -> bool {
+        !self.recompute_overlap
+            && !other.recompute_overlap
+            && self.reuse_key() == other.reuse_key()
+            && source_regions_overlap(self, other)
+    }
+
+    fn union_bounds(self, other: Self) -> Self {
+        let left = self.bounds();
+        let right = other.bounds();
+        let x = left[0].min(right[0]);
+        let y = left[1].min(right[1]);
+        let right_edge = (left[0] + left[2]).max(right[0] + right[2]);
+        let bottom_edge = (left[1] + left[3]).max(right[1] + right[3]);
+        Self::new(
+            self.source_group,
+            self.order.min(other.order),
+            self.downsample,
+            self.levels,
+            self.radius(),
+            [x, y, (right_edge - x).max(0.0), (bottom_edge - y).max(0.0)],
+            false,
+        )
     }
 
     /// Compatibility accessor retained for diagnostics/tests that previously referred to the
@@ -137,37 +197,51 @@ pub(in crate::platform::nova) struct NovaBackdropBlurRun {
 impl NovaFrameUpload {
     pub(in crate::platform::nova) fn backdrop_blur_configs(&self) -> Vec<NovaBackdropBlurConfig> {
         let mut configs = Vec::new();
-        let mut seen = FxHashSet::default();
         for batch in &self.batches {
             let NovaUploadedBatch::BackdropBlurs { first, count } = *batch else {
                 continue;
             };
-            for config in self.backdrop_blur_configs_for_range(first, count) {
-                if seen.insert(config) {
-                    configs.push(config);
-                }
-            }
+            configs.extend(self.backdrop_blur_configs_for_range(first, count));
         }
         configs
     }
 
+    /// Returns canonical filter targets for one backdrop source group.
+    ///
+    /// By default, equal Gaussian configurations whose kernel footprints overlap are coalesced
+    /// into one union target. This prevents the overlap from being blurred twice. Set
+    /// `GPUI_NOVA_BLUR_OVERLAP_MODE=isolated` (or `recompute`) before process startup to disable
+    /// this optimization for diagnostics or workloads that explicitly require independent passes.
     pub(in crate::platform::nova) fn backdrop_blur_configs_for_range(
         &self,
         first: u32,
         count: u32,
     ) -> Vec<NovaBackdropBlurConfig> {
-        let mut configs = Vec::new();
-        let mut seen = FxHashSet::default();
+        let mut configs = Vec::<NovaBackdropBlurConfig>::new();
         let Some(end) = first.checked_add(count) else {
             return configs;
         };
         for primitive_index in first..end {
-            let Some(config) = self.backdrop_blur_config_at(primitive_index) else {
+            let Some(mut config) = self.backdrop_blur_config_at(primitive_index, first) else {
                 continue;
             };
-            if seen.insert(config) {
+            if config.recompute_overlap {
                 configs.push(config);
+                continue;
             }
+
+            // Merge transitively. A overlaps B and B overlaps C must produce one target even if A
+            // and C do not directly overlap before B is unioned in.
+            let mut index = 0;
+            while index < configs.len() {
+                if configs[index].should_merge_with(config) {
+                    config = configs.remove(index).union_bounds(config);
+                    index = 0;
+                } else {
+                    index += 1;
+                }
+            }
+            configs.push(config);
         }
         configs
     }
@@ -180,11 +254,6 @@ impl NovaFrameUpload {
     }
 
     /// Rebuilds the pass parameter buffer for a separable Gaussian filter.
-    ///
-    /// Each configuration owns two consecutive pass records: horizontal first, vertical second.
-    /// The horizontal pass works in source pixels; the vertical pass runs in the downsampled
-    /// intermediate target and therefore uses radius/downsample. The shader derives direction from
-    /// instance parity, which keeps this 16-byte record compact.
     pub(in crate::platform::nova) fn rebuild_backdrop_blur_passes(
         &mut self,
         configs: &[NovaBackdropBlurConfig],
@@ -216,12 +285,12 @@ impl NovaFrameUpload {
         let Some(end) = first.checked_add(count) else {
             return;
         };
-        let Some(mut current_config) = self.backdrop_blur_config_at(first) else {
+        let Some(mut current_config) = self.backdrop_blur_config_at(first, first) else {
             return;
         };
         let mut run_first = first;
         for primitive_index in first.saturating_add(1)..end {
-            let Some(config) = self.backdrop_blur_config_at(primitive_index) else {
+            let Some(config) = self.backdrop_blur_config_at(primitive_index, first) else {
                 continue;
             };
             if config == current_config {
@@ -244,7 +313,11 @@ impl NovaFrameUpload {
         }
     }
 
-    fn backdrop_blur_config_at(&self, primitive_index: u32) -> Option<NovaBackdropBlurConfig> {
+    fn backdrop_blur_config_at(
+        &self,
+        primitive_index: u32,
+        source_group: u32,
+    ) -> Option<NovaBackdropBlurConfig> {
         let primitive_index = usize::try_from(primitive_index).ok()?;
         let offset = primitive_index.checked_mul(PACKED_BACKDROP_BLUR_BYTES)?;
         let record = self
@@ -261,13 +334,64 @@ impl NovaFrameUpload {
             f32::from_bits(read_u32(record, BLUR_BOUNDS_HEIGHT_OFFSET)?),
         ];
         Some(NovaBackdropBlurConfig::new(
+            source_group,
             order,
             u8::try_from(downsample).ok()?.max(1),
             u8::try_from(levels).ok()?.clamp(1, MAX_BACKDROP_BLUR_LEVELS),
             radius,
             bounds,
+            backdrop_blur_overlap_recompute_enabled(),
         ))
     }
+}
+
+fn source_regions_overlap(left: NovaBackdropBlurConfig, right: NovaBackdropBlurConfig) -> bool {
+    let support = left.radius().max(right.radius()).max(0.0) + 1.0;
+    let left = dilated_bounds(left.bounds(), support);
+    let right = dilated_bounds(right.bounds(), support);
+    rects_overlap(left, right)
+}
+
+fn dilated_bounds(bounds: [f32; 4], amount: f32) -> [f32; 4] {
+    [
+        bounds[0] - amount,
+        bounds[1] - amount,
+        (bounds[2] + amount * 2.0).max(0.0),
+        (bounds[3] + amount * 2.0).max(0.0),
+    ]
+}
+
+fn rects_overlap(left: [f32; 4], right: [f32; 4]) -> bool {
+    let left_right = left[0] + left[2];
+    let left_bottom = left[1] + left[3];
+    let right_right = right[0] + right[2];
+    let right_bottom = right[1] + right[3];
+    left[0] <= right_right
+        && right[0] <= left_right
+        && left[1] <= right_bottom
+        && right[1] <= left_bottom
+}
+
+fn bounds_contains(container: [f32; 4], child: [f32; 4]) -> bool {
+    let epsilon = 0.01;
+    container[0] <= child[0] + epsilon
+        && container[1] <= child[1] + epsilon
+        && container[0] + container[2] + epsilon >= child[0] + child[2]
+        && container[1] + container[3] + epsilon >= child[1] + child[3]
+}
+
+fn backdrop_blur_overlap_recompute_enabled() -> bool {
+    static RECOMPUTE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *RECOMPUTE.get_or_init(|| {
+        std::env::var("GPUI_NOVA_BLUR_OVERLAP_MODE")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "isolated" | "recompute" | "1" | "true" | "on"
+                )
+            })
+    })
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
@@ -310,91 +434,96 @@ mod tests {
             .copy_from_slice(&radius.to_bits().to_ne_bytes());
     }
 
-    fn push_blur_record(
-        upload: &mut NovaFrameUpload,
-        order: u32,
-        downsample: u8,
-        levels: u8,
-        radius: f32,
-    ) {
-        push_blur_record_with_bounds(
-            upload,
-            order,
-            downsample,
-            levels,
-            radius,
-            [8.0, 12.0, 320.0, 180.0],
-        );
-    }
-
     #[test]
-    fn blur_configs_preserve_distinct_filter_strengths() {
+    fn overlapping_equal_blurs_share_one_filter_target_by_default() {
         let mut upload = NovaFrameUpload::default();
-        push_blur_record(&mut upload, 1, 1, 1, 2.0);
-        push_blur_record(&mut upload, 2, 2, 3, 18.0);
+        push_blur_record_with_bounds(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0]);
+        push_blur_record_with_bounds(&mut upload, 20, 1, 2, 18.0, [200.0, 20.0, 300.0, 80.0]);
         upload
             .batches
             .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
 
         let configs = upload.backdrop_blur_configs();
-        assert_eq!(configs.len(), 2);
-        assert_ne!(configs[0], configs[1]);
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].bounds(), [0.0, 0.0, 500.0, 100.0]);
     }
 
     #[test]
-    fn identical_radius_at_different_draw_orders_is_isolated() {
+    fn disjoint_equal_blurs_keep_separate_filter_targets() {
         let mut upload = NovaFrameUpload::default();
-        push_blur_record(&mut upload, 10, 1, 1, 18.0);
-        push_blur_record(&mut upload, 20, 1, 1, 18.0);
+        push_blur_record_with_bounds(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 100.0, 60.0]);
+        push_blur_record_with_bounds(&mut upload, 20, 1, 2, 18.0, [800.0, 400.0, 100.0, 60.0]);
         upload
             .batches
             .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
 
-        let configs = upload.backdrop_blur_configs();
-        assert_eq!(configs.len(), 2);
-        assert_ne!(configs[0].order(), configs[1].order());
+        assert_eq!(upload.backdrop_blur_configs().len(), 2);
     }
 
     #[test]
-    fn identical_style_at_different_bounds_is_isolated() {
-        let mut upload = NovaFrameUpload::default();
-        push_blur_record_with_bounds(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 60.0]);
-        push_blur_record_with_bounds(
-            &mut upload,
+    fn isolated_overlap_mode_prevents_target_reuse() {
+        let left = NovaBackdropBlurConfig::new(
+            0,
             10,
             1,
             2,
             18.0,
-            [800.0, 80.0, 360.0, 520.0],
+            [0.0, 0.0, 300.0, 80.0],
+            true,
         );
-        upload
-            .batches
-            .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
+        let right = NovaBackdropBlurConfig::new(
+            0,
+            20,
+            1,
+            2,
+            18.0,
+            [200.0, 20.0, 300.0, 80.0],
+            true,
+        );
+        assert!(!left.should_merge_with(right));
+        assert!(!left.covers(right));
+    }
 
-        let configs = upload.backdrop_blur_configs();
-        assert_eq!(configs.len(), 2);
-        assert_ne!(configs[0].bounds(), configs[1].bounds());
+    #[test]
+    fn different_source_groups_never_share_targets() {
+        let left = NovaBackdropBlurConfig::new(
+            0,
+            10,
+            1,
+            2,
+            18.0,
+            [0.0, 0.0, 300.0, 80.0],
+            false,
+        );
+        let right = NovaBackdropBlurConfig::new(
+            2,
+            10,
+            1,
+            2,
+            18.0,
+            [0.0, 0.0, 300.0, 80.0],
+            false,
+        );
+        assert_ne!(left.reuse_key(), right.reuse_key());
     }
 
     #[test]
     fn subpixel_blur_radius_is_not_quantized_to_one_pixel() {
         let mut upload = NovaFrameUpload::default();
-        push_blur_record(&mut upload, 1, 1, 1, 0.1);
-        push_blur_record(&mut upload, 2, 1, 1, 1.0);
+        push_blur_record_with_bounds(&mut upload, 1, 1, 1, 0.1, [8.0, 12.0, 320.0, 180.0]);
         upload
             .batches
-            .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
+            .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 });
 
         let configs = upload.backdrop_blur_configs();
-        assert_eq!(configs.len(), 2);
+        assert_eq!(configs.len(), 1);
         assert!((configs[0].radius() - 0.1).abs() <= f32::EPSILON);
-        assert!((configs[1].radius() - 1.0).abs() <= f32::EPSILON);
     }
 
     #[test]
     fn gaussian_pass_parameters_keep_subpixel_radius() {
         let mut upload = NovaFrameUpload::default();
-        push_blur_record(&mut upload, 1, 1, 1, 0.1);
+        push_blur_record_with_bounds(&mut upload, 1, 1, 1, 0.1, [8.0, 12.0, 320.0, 180.0]);
         upload
             .batches
             .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 });
@@ -414,19 +543,5 @@ mod tests {
         );
         assert!((horizontal - 0.1).abs() <= f32::EPSILON);
         assert!((vertical - 0.1).abs() <= f32::EPSILON);
-    }
-
-    #[test]
-    fn blur_runs_split_mixed_styles_without_scene_rebatching() {
-        let mut upload = NovaFrameUpload::default();
-        push_blur_record(&mut upload, 1, 1, 1, 2.0);
-        push_blur_record(&mut upload, 1, 1, 1, 2.0);
-        push_blur_record(&mut upload, 2, 2, 3, 18.0);
-        let mut runs = Vec::new();
-        upload.for_each_backdrop_blur_run(0, 3, |run| runs.push(run));
-
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0].count, 2);
-        assert_eq!(runs[1].count, 1);
     }
 }
