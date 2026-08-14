@@ -461,6 +461,10 @@ impl Window {
             levels: style.levels.clamp(1, 6),
             saturation: style.saturation.max(0.0),
             tint: style.tint,
+            recompute_overlap: matches!(
+                style.overlap_mode,
+                crate::BackdropBlurOverlapMode::Recompute
+            ),
         });
     }
 
@@ -515,9 +519,6 @@ impl Window {
             .retain(|slot_key, _| slot_key.image_id != data.id);
         self.image_paint_tile_cache
             .retain(|cache_key, _| cache_key.image_id != data.id);
-        // Retained scenes store raw atlas coordinates. Keep the GPU tile resident until an
-        // aggressive atlas trim rebuilds the entire scene, while allowing the decoded bitmap
-        // and window-side lookup entries to be released immediately.
         record_image_drop(1);
 
         Ok(())
