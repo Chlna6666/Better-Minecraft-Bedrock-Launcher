@@ -4,9 +4,9 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
-// 1px 仍保留真实 GPU 模糊，但小半径不再走 auto_quality 的多级 Dual Kawase 链。
-// 0.xpx 的视觉收益很低，继续用轻微遮罩避免创建全窗 blur target。
-const BACKGROUND_GPU_BLUR_MIN_RADIUS_PX: f32 = 1.0;
+// 背景模糊直接保留用户配置的浮点半径。0.1px、0.2px 等亚像素值不能再被
+// 1px 阈值吞掉；小半径统一使用全分辨率单级滤镜，避免多级 Dual Kawase
+// 把 1px 放大成明显更强的视觉模糊。
 const BACKGROUND_BLUR_SINGLE_PASS_MAX_RADIUS_PX: f32 = 3.0;
 const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
 const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
@@ -237,7 +237,7 @@ impl AppBackgroundView {
 }
 
 fn background_uses_gpu_blur(blur: f32) -> bool {
-    BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur >= BACKGROUND_GPU_BLUR_MIN_RADIUS_PX
+    BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur.is_finite() && blur > 0.0
 }
 
 fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
@@ -350,11 +350,12 @@ mod tests {
     }
 
     #[test]
-    fn tiny_background_blur_uses_single_gpu_filter_from_one_pixel() {
+    fn subpixel_background_blur_enters_single_gpu_filter() {
         assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
-        assert!(!background_uses_gpu_blur(0.1));
+        assert!(!background_uses_gpu_blur(0.0));
+        assert!(background_uses_gpu_blur(0.1));
+        assert!(background_uses_gpu_blur(0.5));
         assert!(background_uses_gpu_blur(1.0));
-        assert!(background_uses_gpu_blur(1.5));
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
             background_blur_overlay_color(f32::MAX).a,
