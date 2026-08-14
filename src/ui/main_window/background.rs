@@ -4,6 +4,10 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
+// 主窗口标题栏拥有独立的玻璃模糊。背景图仍铺满整个窗口，但背景 blur primitive
+// 必须从标题栏下方开始，否则即使滤镜纹理已经按半径隔离，背景 0.1px 仍会先改写
+// 标题栏区域，随后再与标题栏自己的 18px 玻璃层叠加。
+const BACKGROUND_CONTENT_TOP_PX: f32 = 60.0;
 // 背景模糊直接保留用户配置的浮点半径。0.1px、0.2px 等亚像素值不能再被
 // 1px 阈值吞掉；小半径统一使用全分辨率单级滤镜，避免多级 Dual Kawase
 // 把 1px 放大成明显更强的视觉模糊。
@@ -154,9 +158,15 @@ impl AppBackgroundView {
             return container;
         }
 
+        // 背景图片继续覆盖标题栏，供标题栏自己的 backdrop blur 取样；只有“背景模糊”
+        // 这一效果层避开标题栏。这样背景 0.1px 与标题栏 18px 从元素 bounds 开始就隔离，
+        // 而不是等到 Nova filter variant 阶段才尝试补救。
         let overlay = div()
             .absolute()
-            .inset_0()
+            .top(px(BACKGROUND_CONTENT_TOP_PX))
+            .left(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
             .bg(background_blur_overlay_color(blur));
 
         if background_uses_gpu_blur(blur) {
