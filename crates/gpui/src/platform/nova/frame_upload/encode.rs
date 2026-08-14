@@ -52,9 +52,15 @@ impl NovaFrameUpload {
             &mut self.text_raster_params,
             rendering_parameters.grayscale_enhanced_contrast,
         );
-        write_f32_vec(&mut self.text_raster_params, 0.0);
-        write_f32_vec(&mut self.text_raster_params, 0.0);
-        write_f32_vec(&mut self.text_raster_params, 0.0);
+        write_f32_vec(
+            &mut self.text_raster_params,
+            rendering_parameters.subpixel_enhanced_contrast,
+        );
+        write_u32_vec(
+            &mut self.text_raster_params,
+            u32::from(rendering_parameters.is_bgr),
+        );
+        write_u32_vec(&mut self.text_raster_params, 0);
 
         let mut summary = FrameUploadSummary::default();
         for value in &scene.animation_values {

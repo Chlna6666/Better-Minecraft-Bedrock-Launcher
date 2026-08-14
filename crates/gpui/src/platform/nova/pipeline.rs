@@ -15,6 +15,8 @@ pub(super) struct NovaBlendPipelines {
     pub(super) quads: RenderPipelineId,
     pub(super) shadows: RenderPipelineId,
     pub(super) mono_sprites: RenderPipelineId,
+    #[cfg(target_os = "windows")]
+    pub(super) subpixel_sprites: RenderPipelineId,
     pub(super) poly_sprites: RenderPipelineId,
     pub(super) underlines: RenderPipelineId,
     pub(super) backdrop_blurs: RenderPipelineId,
@@ -125,6 +127,26 @@ where
                 descriptor.suffix
             )
         })?;
+    #[cfg(target_os = "windows")]
+    let subpixel_sprites = device
+        .create_render_pipeline(
+            &RenderPipelineDescriptor {
+                label: Some(format!("{} RGB subpixel sprite pipeline", descriptor.label)),
+                vertex_shader: descriptor.subpixel_vertex,
+                vertex_entry_point: "vs_subpixel_sprite".to_string(),
+                fragment_shader: descriptor.subpixel_fragment,
+                fragment_entry_point: "fs_subpixel_sprite".to_string(),
+                vertex_buffers: Vec::new(),
+                render_pass: descriptor.render_pass,
+                pipeline_layout: Some(descriptor.mono_pipeline_layout),
+                color_format: descriptor.color_format,
+                blend_mode: BlendMode::SubpixelDualSource,
+                primitive_topology: PrimitiveTopology::TriangleStrip,
+                depth_state: None,
+            },
+            descriptor.size,
+        )
+        .context("creating nova RGB subpixel sprite render pipeline")?;
     let poly_sprites = device
         .create_render_pipeline(
             &RenderPipelineDescriptor {
@@ -212,6 +234,8 @@ where
         quads,
         shadows,
         mono_sprites,
+        #[cfg(target_os = "windows")]
+        subpixel_sprites,
         poly_sprites,
         underlines,
         backdrop_blurs,

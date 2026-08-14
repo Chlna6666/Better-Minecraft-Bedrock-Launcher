@@ -66,7 +66,8 @@ mod platform {
             },
             Direct3D12::{
                 D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA,
-                D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_ZERO,
+                D3D12_BLEND_INV_SRC1_COLOR, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
+                D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_SRC1_COLOR, D3D12_BLEND_ZERO,
                 D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH, D3D12_COLOR_WRITE_ENABLE_ALL,
                 D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
                 D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC,
@@ -124,8 +125,8 @@ mod platform {
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
                 DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS, DXGI_SCALING,
-                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-                DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+                DXGI_SCALING_NONE, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
                 IDXGIFactory4, IDXGIFactory5, IDXGIFactory6, IDXGIOutput, IDXGISwapChain1,
@@ -373,7 +374,7 @@ mod platform {
                 Scaling: if uses_composition {
                     DXGI_SCALING_STRETCH
                 } else {
-                    DXGI_SCALING::default()
+                    DXGI_SCALING_NONE
                 },
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: composite_alpha_to_dxgi(config.alpha_mode),
@@ -534,7 +535,7 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                Scaling: DXGI_SCALING::default(),
+                Scaling: DXGI_SCALING_NONE,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
@@ -3477,6 +3478,13 @@ mod platform {
                     D3D12_BLEND_INV_SRC_ALPHA,
                     D3D12_BLEND_ONE,
                     D3D12_BLEND_ONE,
+                ),
+                BlendMode::SubpixelDualSource => (
+                    true.into(),
+                    D3D12_BLEND_SRC1_COLOR,
+                    D3D12_BLEND_INV_SRC1_COLOR,
+                    D3D12_BLEND_ONE,
+                    D3D12_BLEND_ZERO,
                 ),
             };
         D3D12_RENDER_TARGET_BLEND_DESC {

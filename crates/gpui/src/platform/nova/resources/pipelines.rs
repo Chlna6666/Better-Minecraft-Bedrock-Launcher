@@ -37,6 +37,10 @@ where
             shadow_fragment: shaders.shadow_fragment,
             mono_vertex: shaders.mono_vertex,
             mono_fragment: shaders.mono_fragment,
+            #[cfg(target_os = "windows")]
+            subpixel_vertex: shaders.subpixel_vertex,
+            #[cfg(target_os = "windows")]
+            subpixel_fragment: shaders.subpixel_fragment,
             poly_vertex: shaders.poly_vertex,
             poly_fragment: shaders.poly_fragment,
             underline_vertex: shaders.underline_vertex,
@@ -68,6 +72,10 @@ where
             shadow_fragment: shaders.shadow_fragment,
             mono_vertex: shaders.mono_vertex,
             mono_fragment: shaders.mono_fragment,
+            #[cfg(target_os = "windows")]
+            subpixel_vertex: shaders.subpixel_vertex,
+            #[cfg(target_os = "windows")]
+            subpixel_fragment: shaders.subpixel_fragment,
             poly_vertex: shaders.poly_vertex,
             poly_fragment: shaders.poly_fragment,
             underline_vertex: shaders.underline_vertex,

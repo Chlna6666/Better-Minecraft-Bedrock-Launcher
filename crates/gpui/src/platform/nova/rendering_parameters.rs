@@ -64,9 +64,12 @@ fn system_rendering_parameters() -> SystemRenderingParameters {
     };
 
     let parameters = (|| -> Option<SystemRenderingParameters> {
-        let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()? };
+        let factory: IDWriteFactory5 =
+            unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()? };
         let render_params: IDWriteRenderingParams1 =
-            unsafe { factory.CreateRenderingParams().ok()? }.cast().ok()?;
+            unsafe { factory.CreateRenderingParams().ok()? }
+                .cast()
+                .ok()?;
         Some(SystemRenderingParameters {
             gamma: unsafe { render_params.GetGamma() },
             grayscale_enhanced_contrast: unsafe { render_params.GetGrayscaleEnhancedContrast() },

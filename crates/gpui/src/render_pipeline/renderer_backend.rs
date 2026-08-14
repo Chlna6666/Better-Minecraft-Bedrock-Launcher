@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
 /// Maximum frame rate GPUI allows for continuous window composition.
@@ -212,15 +212,16 @@ impl RendererBackend {
     /// `Auto` reports conservative capabilities because its concrete backend is
     /// not known until platform startup resolves it.
     pub const fn capabilities(self) -> RendererCapabilities {
-        match self {
+        let text_rasterization = match self {
+            #[cfg(target_os = "windows")]
+            Self::NovaVulkan | Self::NovaDx12 => TextRasterizationMode::RgbSubpixel,
             Self::Auto
             | Self::NovaVulkan
             | Self::NovaDx12
             | Self::NovaMetal
-            | Self::HeadlessTest => RendererCapabilities {
-                text_rasterization: TextRasterizationMode::Grayscale,
-            },
-        }
+            | Self::HeadlessTest => TextRasterizationMode::Grayscale,
+        };
+        RendererCapabilities { text_rasterization }
     }
 
     /// Returns GPUI's platform default renderer backend.
@@ -382,17 +383,25 @@ mod tests {
     }
 
     #[test]
-    fn nova_backends_report_grayscale_text_rasterization() {
-        for backend in [
-            RendererBackend::NovaVulkan,
-            RendererBackend::NovaDx12,
-            RendererBackend::NovaMetal,
-        ] {
+    fn nova_backends_report_platform_text_rasterization() {
+        #[cfg(target_os = "windows")]
+        for backend in [RendererBackend::NovaVulkan, RendererBackend::NovaDx12] {
+            assert_eq!(
+                backend.capabilities().text_rasterization,
+                TextRasterizationMode::RgbSubpixel
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        for backend in [RendererBackend::NovaVulkan, RendererBackend::NovaDx12] {
             assert_eq!(
                 backend.capabilities().text_rasterization,
                 TextRasterizationMode::Grayscale
             );
         }
+        assert_eq!(
+            RendererBackend::NovaMetal.capabilities().text_rasterization,
+            TextRasterizationMode::Grayscale
+        );
     }
 
     #[test]
