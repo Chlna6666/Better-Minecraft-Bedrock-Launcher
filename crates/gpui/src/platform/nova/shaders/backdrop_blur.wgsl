@@ -44,12 +44,15 @@ struct BackdropBlurVarying {
 }
 
 @vertex
-fn vs_backdrop_blur_pass(@builtin(vertex_index) vertex_id: u32) -> BackdropBlurPassVarying {
+fn vs_backdrop_blur_pass(
+    @builtin(vertex_index) vertex_id: u32,
+    @builtin(instance_index) instance_id: u32,
+) -> BackdropBlurPassVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     var out = BackdropBlurPassVarying();
     out.position = vec4<f32>(unit_vertex * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
     out.texture_coords = unit_vertex;
-    out.offset = b_backdrop_blur_passes[0].offset;
+    out.offset = b_backdrop_blur_passes[instance_id].offset;
     return out;
 }
 
