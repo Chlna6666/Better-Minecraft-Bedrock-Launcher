@@ -3,31 +3,49 @@ use super::*;
 const BLUR_ORDER_OFFSET: usize = 0;
 const BLUR_DOWNSAMPLE_OFFSET: usize = 4;
 const BLUR_LEVELS_OFFSET: usize = 8;
+const BLUR_BOUNDS_X_OFFSET: usize = 16;
+const BLUR_BOUNDS_Y_OFFSET: usize = 20;
+const BLUR_BOUNDS_WIDTH_OFFSET: usize = 24;
+const BLUR_BOUNDS_HEIGHT_OFFSET: usize = 28;
 const BLUR_RADIUS_OFFSET: usize = 112;
 
 /// One renderer-side blur configuration.
 ///
-/// `order` deliberately participates in identity. Two glass surfaces with the same radius but at
-/// different draw positions do not have the same backdrop: reusing one filtered texture for both
-/// is semantically invalid and was the cause of titlebar/background blur contamination.
+/// Draw order and bounds deliberately participate in identity. Two glass surfaces with the same
+/// radius do not have the same backdrop when either their draw position or sampling rectangle is
+/// different. Treating those surfaces as one renderer target was the root cause of unrelated
+/// background/titlebar/popover filters reusing each other's cached result.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::platform::nova) struct NovaBackdropBlurConfig {
     order: u32,
     downsample: u8,
     levels: u8,
     radius_bits: u32,
+    bounds_bits: [u32; 4],
 }
 
 impl NovaBackdropBlurConfig {
-    fn new(order: u32, downsample: u8, levels: u8, radius: f32) -> Self {
+    fn new(
+        order: u32,
+        downsample: u8,
+        levels: u8,
+        radius: f32,
+        bounds: [f32; 4],
+    ) -> Self {
         let downsample = downsample.max(1);
         let levels = levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS);
-        let radius = if radius.is_finite() { radius.max(0.0) } else { 0.0 };
+        let radius = if radius.is_finite() {
+            radius.max(0.0)
+        } else {
+            0.0
+        };
+        let bounds = bounds.map(|value| if value.is_finite() { value } else { 0.0 });
         Self {
             order,
             downsample,
             levels,
             radius_bits: radius.to_bits(),
+            bounds_bits: bounds.map(f32::to_bits),
         }
     }
 
@@ -46,6 +64,11 @@ impl NovaBackdropBlurConfig {
     /// Blur radius in source/device pixels. It is intentionally not quantized; 0.1px stays 0.1px.
     pub(in crate::platform::nova) fn radius(self) -> f32 {
         f32::from_bits(self.radius_bits)
+    }
+
+    /// Returns `[x, y, width, height]` in source/device pixels.
+    pub(in crate::platform::nova) fn bounds(self) -> [f32; 4] {
+        self.bounds_bits.map(f32::from_bits)
     }
 
     /// Compatibility accessor retained for diagnostics/tests that previously referred to the
@@ -170,7 +193,7 @@ impl NovaFrameUpload {
         self.backdrop_blur_passes
             .reserve(configs.len().saturating_mul(BACKDROP_BLUR_PASS_BYTES * 2));
         for config in configs {
-            let radius = config.radius().max(1.0 / 256.0);
+            let radius = config.radius().max(1.0 / 4096.0);
             write_backdrop_blur_pass(&mut self.backdrop_blur_passes, radius);
             write_backdrop_blur_pass(
                 &mut self.backdrop_blur_passes,
@@ -231,11 +254,18 @@ impl NovaFrameUpload {
         let downsample = read_u32(record, BLUR_DOWNSAMPLE_OFFSET)?;
         let levels = read_u32(record, BLUR_LEVELS_OFFSET)?;
         let radius = f32::from_bits(read_u32(record, BLUR_RADIUS_OFFSET)?);
+        let bounds = [
+            f32::from_bits(read_u32(record, BLUR_BOUNDS_X_OFFSET)?),
+            f32::from_bits(read_u32(record, BLUR_BOUNDS_Y_OFFSET)?),
+            f32::from_bits(read_u32(record, BLUR_BOUNDS_WIDTH_OFFSET)?),
+            f32::from_bits(read_u32(record, BLUR_BOUNDS_HEIGHT_OFFSET)?),
+        ];
         Some(NovaBackdropBlurConfig::new(
             order,
             u8::try_from(downsample).ok()?.max(1),
             u8::try_from(levels).ok()?.clamp(1, MAX_BACKDROP_BLUR_LEVELS),
             radius,
+            bounds,
         ))
     }
 }
@@ -249,12 +279,13 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 mod tests {
     use super::*;
 
-    fn push_blur_record(
+    fn push_blur_record_with_bounds(
         upload: &mut NovaFrameUpload,
         order: u32,
         downsample: u8,
         levels: u8,
         radius: f32,
+        bounds: [f32; 4],
     ) {
         let start = upload.backdrop_blurs.len();
         upload
@@ -266,8 +297,34 @@ mod tests {
             .copy_from_slice(&u32::from(downsample).to_ne_bytes());
         upload.backdrop_blurs[start + BLUR_LEVELS_OFFSET..start + BLUR_LEVELS_OFFSET + 4]
             .copy_from_slice(&u32::from(levels).to_ne_bytes());
+        for (offset, value) in [
+            (BLUR_BOUNDS_X_OFFSET, bounds[0]),
+            (BLUR_BOUNDS_Y_OFFSET, bounds[1]),
+            (BLUR_BOUNDS_WIDTH_OFFSET, bounds[2]),
+            (BLUR_BOUNDS_HEIGHT_OFFSET, bounds[3]),
+        ] {
+            upload.backdrop_blurs[start + offset..start + offset + 4]
+                .copy_from_slice(&value.to_bits().to_ne_bytes());
+        }
         upload.backdrop_blurs[start + BLUR_RADIUS_OFFSET..start + BLUR_RADIUS_OFFSET + 4]
             .copy_from_slice(&radius.to_bits().to_ne_bytes());
+    }
+
+    fn push_blur_record(
+        upload: &mut NovaFrameUpload,
+        order: u32,
+        downsample: u8,
+        levels: u8,
+        radius: f32,
+    ) {
+        push_blur_record_with_bounds(
+            upload,
+            order,
+            downsample,
+            levels,
+            radius,
+            [8.0, 12.0, 320.0, 180.0],
+        );
     }
 
     #[test]
@@ -299,6 +356,27 @@ mod tests {
     }
 
     #[test]
+    fn identical_style_at_different_bounds_is_isolated() {
+        let mut upload = NovaFrameUpload::default();
+        push_blur_record_with_bounds(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 60.0]);
+        push_blur_record_with_bounds(
+            &mut upload,
+            10,
+            1,
+            2,
+            18.0,
+            [800.0, 80.0, 360.0, 520.0],
+        );
+        upload
+            .batches
+            .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
+
+        let configs = upload.backdrop_blur_configs();
+        assert_eq!(configs.len(), 2);
+        assert_ne!(configs[0].bounds(), configs[1].bounds());
+    }
+
+    #[test]
     fn subpixel_blur_radius_is_not_quantized_to_one_pixel() {
         let mut upload = NovaFrameUpload::default();
         push_blur_record(&mut upload, 1, 1, 1, 0.1);
@@ -322,10 +400,15 @@ mod tests {
             .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 1 });
         upload.rebuild_backdrop_blur_passes_for_current_frame();
 
-        assert_eq!(upload.backdrop_blur_passes.len(), BACKDROP_BLUR_PASS_BYTES * 2);
-        let horizontal = f32::from_ne_bytes(upload.backdrop_blur_passes[0..4].try_into().unwrap());
+        assert_eq!(
+            upload.backdrop_blur_passes.len(),
+            BACKDROP_BLUR_PASS_BYTES * 2
+        );
+        let horizontal =
+            f32::from_ne_bytes(upload.backdrop_blur_passes[0..4].try_into().unwrap());
         let vertical = f32::from_ne_bytes(
-            upload.backdrop_blur_passes[BACKDROP_BLUR_PASS_BYTES..BACKDROP_BLUR_PASS_BYTES + 4]
+            upload.backdrop_blur_passes
+                [BACKDROP_BLUR_PASS_BYTES..BACKDROP_BLUR_PASS_BYTES + 4]
                 .try_into()
                 .unwrap(),
         );
