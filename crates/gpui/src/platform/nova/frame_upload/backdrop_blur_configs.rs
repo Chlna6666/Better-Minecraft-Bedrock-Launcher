@@ -24,7 +24,7 @@ pub(in crate::platform::nova) struct NovaBackdropBlurReuseKey {
 /// `member_first..=member_last` identifies the primitive span owned by one reusable GPU target.
 /// Bounds deliberately do not participate in target identity, so an animated popover can move
 /// without destroying and recreating its ping/pong textures every frame.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::platform::nova) struct NovaBackdropBlurConfig {
     source_group: u32,
     member_first: u32,
@@ -117,6 +117,11 @@ impl NovaBackdropBlurConfig {
             && (!self.recompute_overlap || self.same_target_slot(other))
     }
 
+    /// Compatibility name used by target lookup. Coverage means target membership, not geometry.
+    pub(in crate::platform::nova) fn covers(self, other: Self) -> bool {
+        self.owns(other)
+    }
+
     fn should_merge_with(self, other: Self) -> bool {
         !self.recompute_overlap
             && !other.recompute_overlap
@@ -152,6 +157,14 @@ impl NovaBackdropBlurConfig {
         self.radius()
     }
 }
+
+impl PartialEq for NovaBackdropBlurConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_target_slot(*other)
+    }
+}
+
+impl Eq for NovaBackdropBlurConfig {}
 
 #[derive(Clone, Debug)]
 pub(in crate::platform::nova) struct NovaBackdropBlurConfigSet {
@@ -461,25 +474,12 @@ mod tests {
     #[test]
     fn target_set_equality_ignores_animated_bounds() {
         let left = NovaBackdropBlurConfig::new(
-            0,
-            0,
-            10,
-            1,
-            2,
-            18.0,
-            [0.0, 0.0, 300.0, 80.0],
-            false,
+            0, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false,
         );
         let right = NovaBackdropBlurConfig::new(
-            0,
-            0,
-            10,
-            1,
-            2,
-            18.0,
-            [12.0, 4.0, 320.0, 80.0],
-            false,
+            0, 0, 10, 1, 2, 18.0, [12.0, 4.0, 320.0, 80.0], false,
         );
+        assert_eq!(left, right);
         assert_eq!(
             NovaBackdropBlurConfigSet::new(vec![left], 1),
             NovaBackdropBlurConfigSet::new(vec![right], 1)
@@ -489,24 +489,10 @@ mod tests {
     #[test]
     fn different_source_groups_never_share_targets() {
         let left = NovaBackdropBlurConfig::new(
-            0,
-            0,
-            10,
-            1,
-            2,
-            18.0,
-            [0.0, 0.0, 300.0, 80.0],
-            false,
+            0, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false,
         );
         let right = NovaBackdropBlurConfig::new(
-            2,
-            0,
-            10,
-            1,
-            2,
-            18.0,
-            [0.0, 0.0, 300.0, 80.0],
-            false,
+            2, 0, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false,
         );
         assert_ne!(left.reuse_key(), right.reuse_key());
     }
