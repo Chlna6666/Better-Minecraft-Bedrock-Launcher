@@ -4,9 +4,9 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
-// 1px 左右的全窗 Dual Kawase 代价远高于肉眼收益，并且会额外保留一张全分辨率
-// blur target。小半径仅保留轻微遮罩，从 1.5px 开始才进入 GPU 模糊链。
-const BACKGROUND_GPU_BLUR_MIN_RADIUS_PX: f32 = 1.5;
+// 1px 仍保留真实 GPU 模糊，但小半径不再走 auto_quality 的多级 Dual Kawase 链。
+// 0.xpx 的视觉收益很低，继续用轻微遮罩避免创建全窗 blur target。
+const BACKGROUND_GPU_BLUR_MIN_RADIUS_PX: f32 = 1.0;
 const BACKGROUND_BLUR_SINGLE_PASS_MAX_RADIUS_PX: f32 = 3.0;
 const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
 const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
@@ -350,10 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn tiny_background_blur_avoids_fullscreen_gpu_filter() {
+    fn tiny_background_blur_uses_single_gpu_filter_from_one_pixel() {
         assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
         assert!(!background_uses_gpu_blur(0.1));
-        assert!(!background_uses_gpu_blur(1.0));
+        assert!(background_uses_gpu_blur(1.0));
         assert!(background_uses_gpu_blur(1.5));
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
