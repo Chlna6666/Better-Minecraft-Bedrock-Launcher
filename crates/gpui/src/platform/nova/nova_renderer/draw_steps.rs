@@ -39,9 +39,9 @@ impl NovaRenderer {
 
     /// Builds one exact source-prefix render for every backdrop batch.
     ///
-    /// Each group now renders only the source rectangle needed by its Gaussian kernel. The old
-    /// implementation replayed every prefix over the full drawable and then ran two full-screen
-    /// filter passes, which made a small titlebar/popover blur scale with window resolution.
+    /// Each group renders only the source rectangle needed by its Gaussian kernel. Compatible
+    /// overlapping primitives can share one canonical filter target, while different source groups
+    /// remain strict draw-order barriers and can never share their filtered result.
     pub(super) fn prepare_backdrop_blur_groups(
         &self,
         enabled: bool,
@@ -169,13 +169,17 @@ impl NovaRenderer {
         let Some(targets) = self.backdrop_blur_targets.as_ref() else {
             return;
         };
-        backdrop_blur_render_passes_for_targets_into(
+        // GPU targets have stable identities and deliberately keep their allocation across animated
+        // bounds changes. Always derive pass geometry/scissors from the current frame instead of
+        // reading the bounds stored when the target texture was originally allocated.
+        let configs = self.frame_upload.backdrop_blur_configs();
+        backdrop_blur_render_passes_for_configs_into(
             &self.pipelines,
             targets,
             self.current_frame_resource_index,
+            &configs,
             passes,
         );
-        let configs: Vec<_> = targets.variants.iter().map(|variant| variant.config).collect();
         apply_filter_pass_scissors(&configs, self.current_size, passes);
     }
 
@@ -273,8 +277,6 @@ fn blur_source_scissor(
         return None;
     }
 
-    // The Gaussian kernel never samples farther than `radius`. One extra source pixel covers
-    // bilinear interpolation at the boundary and avoids a hard seam around rounded glass.
     let support = config.radius().max(0.0) + 1.0;
     let left = floor_clamped_u32(x - support, drawable_size.width);
     let top = floor_clamped_u32(y - support, drawable_size.height);
