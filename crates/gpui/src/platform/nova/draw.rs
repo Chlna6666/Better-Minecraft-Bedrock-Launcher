@@ -3,7 +3,30 @@ use super::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NovaDrawStepMode {
     Present,
+    /// Legacy first-backdrop prefix, retained for callers/tests while the staged path is used by
+    /// the renderer.
     BackdropSource,
+    /// Draw every batch strictly before `batch_end`. Earlier backdrop groups are composited using
+    /// their own cached targets, so the resulting texture is the exact source for the next group.
+    BackdropSourceThrough { batch_end: usize },
+}
+
+impl NovaDrawStepMode {
+    fn stops_before(self, batch_index: usize, batch: &NovaUploadedBatch) -> bool {
+        match self {
+            Self::Present => false,
+            Self::BackdropSource => matches!(batch, NovaUploadedBatch::BackdropBlurs { .. }),
+            Self::BackdropSourceThrough { batch_end } => batch_index >= batch_end,
+        }
+    }
+
+    fn draws_backdrop_blurs(self) -> bool {
+        !matches!(self, Self::BackdropSource)
+    }
+
+    fn draws_custom_mesh(self) -> bool {
+        !matches!(self, Self::BackdropSource)
+    }
 }
 
 pub(super) fn draw_steps_for_upload(
@@ -62,10 +85,8 @@ pub(super) fn draw_steps_for_upload_into(
 ) {
     steps.clear();
     steps.reserve(upload.batches.len().saturating_add(1));
-    for batch in &upload.batches {
-        if mode != NovaDrawStepMode::Present
-            && matches!(batch, NovaUploadedBatch::BackdropBlurs { .. })
-        {
+    for (batch_index, batch) in upload.batches.iter().enumerate() {
+        if mode.stops_before(batch_index, batch) {
             break;
         }
         match *batch {
@@ -179,7 +200,7 @@ pub(super) fn draw_steps_for_upload_into(
                 },
             ),
             NovaUploadedBatch::BackdropBlurs { first, count } => {
-                if mode == NovaDrawStepMode::Present {
+                if mode.draws_backdrop_blurs() {
                     upload.for_each_backdrop_blur_run(first, count, |run| {
                         let Some(resource_set) = backdrop_blur_resource_set(run.config) else {
                             return;
@@ -206,7 +227,7 @@ pub(super) fn draw_steps_for_upload_into(
                 range,
                 first_parameter_index,
             } => {
-                if mode == NovaDrawStepMode::Present {
+                if mode.draws_custom_mesh() {
                     let Some(mesh) = custom_mesh_3d_cache_entry(mesh_id, generation) else {
                         continue;
                     };
@@ -344,64 +365,80 @@ pub(super) fn backdrop_blur_render_passes_for_targets_into(
     frame_resource_index: usize,
     passes: &mut Vec<NovaBackdropBlurRenderPass>,
 ) {
-    passes.clear();
-    let required = targets.variants.iter().fold(0usize, |count, variant| {
-        count.saturating_add(variant.levels.len().saturating_mul(2).saturating_sub(1))
-    });
-    passes.reserve(required);
+    let configs: Vec<_> = targets.variants.iter().map(|variant| variant.config).collect();
+    backdrop_blur_render_passes_for_configs_into(
+        pipelines,
+        targets,
+        frame_resource_index,
+        &configs,
+        passes,
+    );
+}
 
-    for (variant_index, variant) in targets.variants.iter().enumerate() {
-        if variant.levels.is_empty() {
-            continue;
-        }
-        let Ok(first_instance) = u32::try_from(variant_index) else {
+pub(super) fn backdrop_blur_render_passes_for_configs_into(
+    pipelines: &NovaPipelines,
+    targets: &NovaBackdropBlurTargets,
+    frame_resource_index: usize,
+    configs: &[NovaBackdropBlurConfig],
+    passes: &mut Vec<NovaBackdropBlurRenderPass>,
+) {
+    passes.clear();
+    passes.reserve(configs.len().saturating_mul(2));
+
+    for config in configs {
+        let Some((variant_index, variant)) = targets
+            .variants
+            .iter()
+            .enumerate()
+            .find(|(_, variant)| variant.config == *config)
+        else {
             continue;
         };
-        for (level_index, level) in variant.levels.iter().enumerate() {
-            let resource_set = if level_index == 0 {
-                targets
-                    .source_pass_resource_sets
-                    .get(frame_resource_index)
-                    .copied()
-                    .unwrap_or_else(|| ResourceSetId::new(0))
-            } else {
-                variant.levels[level_index - 1]
-                    .pass_resource_sets
-                    .get(frame_resource_index)
-                    .copied()
-                    .unwrap_or_else(|| ResourceSetId::new(0))
-            };
-            passes.push(NovaBackdropBlurRenderPass {
-                target_texture_view: level.texture_view,
-                step: DrawStepDescriptor {
-                    pipeline: pipelines.backdrop_blur_downsample,
-                    resource_sets: resource_set_list([resource_set]),
-                    vertex_count: 4,
-                    first_vertex: 0,
-                    instance_count: 1,
-                    first_instance,
-                    scissor: None,
-                },
-            });
-        }
-        for target_index in (0..variant.levels.len().saturating_sub(1)).rev() {
-            passes.push(NovaBackdropBlurRenderPass {
-                target_texture_view: variant.levels[target_index].texture_view,
-                step: DrawStepDescriptor {
-                    pipeline: pipelines.backdrop_blur_upsample,
-                    resource_sets: resource_set_list([variant.levels[target_index + 1]
-                        .pass_resource_sets
-                        .get(frame_resource_index)
-                        .copied()
-                        .unwrap_or_else(|| ResourceSetId::new(0))]),
-                    vertex_count: 4,
-                    first_vertex: 0,
-                    instance_count: 1,
-                    first_instance,
-                    scissor: None,
-                },
-            });
-        }
+        let [horizontal, vertical] = variant.levels.as_slice() else {
+            continue;
+        };
+        let Some(source_resource_set) = targets
+            .source_pass_resource_sets
+            .get(frame_resource_index)
+            .copied()
+        else {
+            continue;
+        };
+        let Some(horizontal_resource_set) = horizontal
+            .pass_resource_sets
+            .get(frame_resource_index)
+            .copied()
+        else {
+            continue;
+        };
+        let Ok(pass_base) = u32::try_from(variant_index.saturating_mul(2)) else {
+            continue;
+        };
+
+        passes.push(NovaBackdropBlurRenderPass {
+            target_texture_view: horizontal.texture_view,
+            step: DrawStepDescriptor {
+                pipeline: pipelines.backdrop_blur_downsample,
+                resource_sets: resource_set_list([source_resource_set]),
+                vertex_count: 4,
+                first_vertex: 0,
+                instance_count: 1,
+                first_instance: pass_base,
+                scissor: None,
+            },
+        });
+        passes.push(NovaBackdropBlurRenderPass {
+            target_texture_view: vertical.texture_view,
+            step: DrawStepDescriptor {
+                pipeline: pipelines.backdrop_blur_upsample,
+                resource_sets: resource_set_list([horizontal_resource_set]),
+                vertex_count: 4,
+                first_vertex: 0,
+                instance_count: 1,
+                first_instance: pass_base.saturating_add(1),
+                scissor: None,
+            },
+        });
     }
 }
 
