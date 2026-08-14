@@ -13,9 +13,9 @@ pub(super) fn draw_steps_for_upload(
     quad_resource_set: ResourceSetId,
     shadow_resource_set: ResourceSetId,
     path_resource_set: ResourceSetId,
-    mut sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
-    mut custom_mesh_3d_pipeline: impl FnMut(GpuMesh3dShaderId) -> Option<RenderPipelineId>,
-    mut custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<NovaMeshCacheEntry>,
+    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
+    custom_mesh_3d_pipeline: impl FnMut(GpuMesh3dShaderId) -> Option<RenderPipelineId>,
+    custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<NovaMeshCacheEntry>,
     underline_resource_set: ResourceSetId,
     backdrop_blur_resource_set: ResourceSetId,
     custom_mesh_3d_resource_set: ResourceSetId,
@@ -34,7 +34,7 @@ pub(super) fn draw_steps_for_upload(
         custom_mesh_3d_pipeline,
         custom_mesh_3d_cache_entry,
         underline_resource_set,
-        backdrop_blur_resource_set,
+        |_| Some(backdrop_blur_resource_set),
         custom_mesh_3d_resource_set,
         custom_mesh_3d_indices_buffer,
         mode,
@@ -54,7 +54,7 @@ pub(super) fn draw_steps_for_upload_into(
     mut custom_mesh_3d_pipeline: impl FnMut(GpuMesh3dShaderId) -> Option<RenderPipelineId>,
     mut custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<NovaMeshCacheEntry>,
     underline_resource_set: ResourceSetId,
-    backdrop_blur_resource_set: ResourceSetId,
+    mut backdrop_blur_resource_set: impl FnMut(NovaBackdropBlurConfig) -> Option<ResourceSetId>,
     custom_mesh_3d_resource_set: ResourceSetId,
     custom_mesh_3d_indices_buffer: BufferId,
     mode: NovaDrawStepMode,
@@ -69,63 +69,55 @@ pub(super) fn draw_steps_for_upload_into(
             break;
         }
         match *batch {
-            NovaUploadedBatch::SolidQuads { first, count } => {
-                push_draw_step(
-                    steps,
-                    DrawStepDescriptor {
-                        pipeline: blend_pipelines.solid_quads,
-                        resource_sets: resource_set_list([quad_resource_set]),
-                        vertex_count: 4,
-                        first_vertex: 0,
-                        instance_count: count,
-                        first_instance: first,
-                        scissor: None,
-                    },
-                );
-            }
-            NovaUploadedBatch::Quads { first, count } => {
-                push_draw_step(
-                    steps,
-                    DrawStepDescriptor {
-                        pipeline: blend_pipelines.quads,
-                        resource_sets: resource_set_list([quad_resource_set]),
-                        vertex_count: 4,
-                        first_vertex: 0,
-                        instance_count: count,
-                        first_instance: first,
-                        scissor: None,
-                    },
-                );
-            }
-            NovaUploadedBatch::Shadows { first, count } => {
-                push_draw_step(
-                    steps,
-                    DrawStepDescriptor {
-                        pipeline: blend_pipelines.shadows,
-                        resource_sets: resource_set_list([shadow_resource_set]),
-                        vertex_count: 4,
-                        first_vertex: 0,
-                        instance_count: count,
-                        first_instance: first,
-                        scissor: None,
-                    },
-                );
-            }
+            NovaUploadedBatch::SolidQuads { first, count } => push_draw_step(
+                steps,
+                DrawStepDescriptor {
+                    pipeline: blend_pipelines.solid_quads,
+                    resource_sets: resource_set_list([quad_resource_set]),
+                    vertex_count: 4,
+                    first_vertex: 0,
+                    instance_count: count,
+                    first_instance: first,
+                    scissor: None,
+                },
+            ),
+            NovaUploadedBatch::Quads { first, count } => push_draw_step(
+                steps,
+                DrawStepDescriptor {
+                    pipeline: blend_pipelines.quads,
+                    resource_sets: resource_set_list([quad_resource_set]),
+                    vertex_count: 4,
+                    first_vertex: 0,
+                    instance_count: count,
+                    first_instance: first,
+                    scissor: None,
+                },
+            ),
+            NovaUploadedBatch::Shadows { first, count } => push_draw_step(
+                steps,
+                DrawStepDescriptor {
+                    pipeline: blend_pipelines.shadows,
+                    resource_sets: resource_set_list([shadow_resource_set]),
+                    vertex_count: 4,
+                    first_vertex: 0,
+                    instance_count: count,
+                    first_instance: first,
+                    scissor: None,
+                },
+            ),
             NovaUploadedBatch::PathRasterization { .. } => {}
-            NovaUploadedBatch::Paths { first, count } => {
-                push_draw_step(
-                    steps,
-                    DrawStepDescriptor {
-                        pipeline: pipelines.paths,
-                        resource_sets: resource_set_list([path_resource_set]),
-                        vertex_count: 4,
-                        first_vertex: 0,
-                        instance_count: count,
-                        first_instance: first,
-                        scissor: None,
-                    },
-                );
-            }
+            NovaUploadedBatch::Paths { first, count } => push_draw_step(
+                steps,
+                DrawStepDescriptor {
+                    pipeline: pipelines.paths,
+                    resource_sets: resource_set_list([path_resource_set]),
+                    vertex_count: 4,
+                    first_vertex: 0,
+                    instance_count: count,
+                    first_instance: first,
+                    scissor: None,
+                },
+            ),
             NovaUploadedBatch::MonoSprites {
                 texture_id,
                 first,
@@ -174,34 +166,37 @@ pub(super) fn draw_steps_for_upload_into(
                     );
                 }
             }
-            NovaUploadedBatch::Underlines { first, count } => {
-                push_draw_step(
-                    steps,
-                    DrawStepDescriptor {
-                        pipeline: blend_pipelines.underlines,
-                        resource_sets: resource_set_list([underline_resource_set]),
-                        vertex_count: 4,
-                        first_vertex: 0,
-                        instance_count: count,
-                        first_instance: first,
-                        scissor: None,
-                    },
-                );
-            }
+            NovaUploadedBatch::Underlines { first, count } => push_draw_step(
+                steps,
+                DrawStepDescriptor {
+                    pipeline: blend_pipelines.underlines,
+                    resource_sets: resource_set_list([underline_resource_set]),
+                    vertex_count: 4,
+                    first_vertex: 0,
+                    instance_count: count,
+                    first_instance: first,
+                    scissor: None,
+                },
+            ),
             NovaUploadedBatch::BackdropBlurs { first, count } => {
                 if mode == NovaDrawStepMode::Present {
-                    push_draw_step(
-                        steps,
-                        DrawStepDescriptor {
-                            pipeline: blend_pipelines.backdrop_blurs,
-                            resource_sets: resource_set_list([backdrop_blur_resource_set]),
-                            vertex_count: 4,
-                            first_vertex: 0,
-                            instance_count: count,
-                            first_instance: first,
-                            scissor: None,
-                        },
-                    );
+                    upload.for_each_backdrop_blur_run(first, count, |run| {
+                        let Some(resource_set) = backdrop_blur_resource_set(run.config) else {
+                            return;
+                        };
+                        push_draw_step(
+                            steps,
+                            DrawStepDescriptor {
+                                pipeline: blend_pipelines.backdrop_blurs,
+                                resource_sets: resource_set_list([resource_set]),
+                                vertex_count: 4,
+                                first_vertex: 0,
+                                instance_count: run.count,
+                                first_instance: run.first,
+                                scissor: None,
+                            },
+                        );
+                    });
                 }
             }
             NovaUploadedBatch::CustomMesh3d {
@@ -220,32 +215,29 @@ pub(super) fn draw_steps_for_upload_into(
                     };
                     if range.count == 0 || range_end > mesh.index_count || mesh.vertex_count == 0 {
                         continue;
-                    } else {
-                        let Some(first_index) = mesh.index_offset.checked_add(range.start) else {
-                            continue;
-                        };
-                        let Ok(base_vertex) = i32::try_from(mesh.vertex_offset) else {
-                            continue;
-                        };
-                        if let Some(pipeline) = custom_mesh_3d_pipeline(shader_id) {
-                            steps.push(RenderStepDescriptor::DrawIndexed(
-                                DrawIndexedStepDescriptor {
-                                    pipeline,
-                                    resource_sets: resource_set_list([custom_mesh_3d_resource_set]),
-                                    index_buffer: IndexBufferBinding {
-                                        buffer: custom_mesh_3d_indices_buffer,
-                                        format: IndexFormat::Uint32,
-                                        offset: 0,
-                                    },
-                                    index_count: range.count,
-                                    first_index,
-                                    base_vertex,
-                                    instance_count: 1,
-                                    first_instance: first_parameter_index,
-                                    scissor: None,
-                                },
-                            ));
-                        }
+                    }
+                    let Some(first_index) = mesh.index_offset.checked_add(range.start) else {
+                        continue;
+                    };
+                    let Ok(base_vertex) = i32::try_from(mesh.vertex_offset) else {
+                        continue;
+                    };
+                    if let Some(pipeline) = custom_mesh_3d_pipeline(shader_id) {
+                        steps.push(RenderStepDescriptor::DrawIndexed(DrawIndexedStepDescriptor {
+                            pipeline,
+                            resource_sets: resource_set_list([custom_mesh_3d_resource_set]),
+                            index_buffer: IndexBufferBinding {
+                                buffer: custom_mesh_3d_indices_buffer,
+                                format: IndexFormat::Uint32,
+                                offset: 0,
+                            },
+                            index_count: range.count,
+                            first_index,
+                            base_vertex,
+                            instance_count: 1,
+                            first_instance: first_parameter_index,
+                            scissor: None,
+                        }));
                     }
                 }
             }
@@ -268,15 +260,13 @@ fn push_draw_step(steps: &mut Vec<RenderStepDescriptor>, step: DrawStepDescripto
     if step.vertex_count == 0 || step.instance_count == 0 {
         return;
     }
-    if let Some(RenderStepDescriptor::Draw(previous)) = steps.last_mut() {
-        if draw_steps_can_merge(previous, &step) {
-            if let Some(instance_count) = previous.instance_count.checked_add(step.instance_count) {
-                previous.instance_count = instance_count;
-                return;
-            }
-        }
+    if let Some(RenderStepDescriptor::Draw(previous)) = steps.last_mut()
+        && draw_steps_can_merge(previous, &step)
+        && let Some(instance_count) = previous.instance_count.checked_add(step.instance_count)
+    {
+        previous.instance_count = instance_count;
+        return;
     }
-
     steps.push(RenderStepDescriptor::Draw(step));
 }
 
@@ -296,7 +286,6 @@ pub(super) fn partial_scissor_for_plan(
     if render_plan.partial_present_mode != PartialPresentMode::Partial {
         return None;
     }
-
     let bounds = render_plan.dirty_region.union_bounds()?;
     let x = scaled_pixels_floor_u32(bounds.origin.x).min(target_size.width);
     let y = scaled_pixels_floor_u32(bounds.origin.y).min(target_size.height);
@@ -353,59 +342,66 @@ pub(super) fn backdrop_blur_render_passes_for_targets_into(
     pipelines: &NovaPipelines,
     targets: &NovaBackdropBlurTargets,
     frame_resource_index: usize,
-    levels: usize,
     passes: &mut Vec<NovaBackdropBlurRenderPass>,
 ) {
     passes.clear();
-    if targets.levels.is_empty() {
-        return;
-    }
-    let levels = levels.clamp(1, targets.levels.len());
-    passes.reserve(levels.saturating_mul(2).saturating_sub(1));
-    for (level_index, level) in targets.levels.iter().take(levels).enumerate() {
-        let resource_set = if level_index == 0 {
-            targets
-                .source_pass_resource_sets
-                .get(frame_resource_index)
-                .copied()
-                .unwrap_or_else(|| ResourceSetId::new(0))
-        } else {
-            targets.levels[level_index - 1]
-                .pass_resource_sets
-                .get(frame_resource_index)
-                .copied()
-                .unwrap_or_else(|| ResourceSetId::new(0))
+    let required = targets.variants.iter().fold(0usize, |count, variant| {
+        count.saturating_add(variant.levels.len().saturating_mul(2).saturating_sub(1))
+    });
+    passes.reserve(required);
+
+    for (variant_index, variant) in targets.variants.iter().enumerate() {
+        if variant.levels.is_empty() {
+            continue;
+        }
+        let Ok(first_instance) = u32::try_from(variant_index) else {
+            continue;
         };
-        passes.push(NovaBackdropBlurRenderPass {
-            target_texture_view: level.texture_view,
-            step: DrawStepDescriptor {
-                pipeline: pipelines.backdrop_blur_downsample,
-                resource_sets: resource_set_list([resource_set]),
-                vertex_count: 4,
-                first_vertex: 0,
-                instance_count: 1,
-                first_instance: 0,
-                scissor: None,
-            },
-        });
-    }
-    for target_index in (0..levels.saturating_sub(1)).rev() {
-        passes.push(NovaBackdropBlurRenderPass {
-            target_texture_view: targets.levels[target_index].texture_view,
-            step: DrawStepDescriptor {
-                pipeline: pipelines.backdrop_blur_upsample,
-                resource_sets: resource_set_list([targets.levels[target_index + 1]
+        for (level_index, level) in variant.levels.iter().enumerate() {
+            let resource_set = if level_index == 0 {
+                targets
+                    .source_pass_resource_sets
+                    .get(frame_resource_index)
+                    .copied()
+                    .unwrap_or_else(|| ResourceSetId::new(0))
+            } else {
+                variant.levels[level_index - 1]
                     .pass_resource_sets
                     .get(frame_resource_index)
                     .copied()
-                    .unwrap_or_else(|| ResourceSetId::new(0))]),
-                vertex_count: 4,
-                first_vertex: 0,
-                instance_count: 1,
-                first_instance: 0,
-                scissor: None,
-            },
-        });
+                    .unwrap_or_else(|| ResourceSetId::new(0))
+            };
+            passes.push(NovaBackdropBlurRenderPass {
+                target_texture_view: level.texture_view,
+                step: DrawStepDescriptor {
+                    pipeline: pipelines.backdrop_blur_downsample,
+                    resource_sets: resource_set_list([resource_set]),
+                    vertex_count: 4,
+                    first_vertex: 0,
+                    instance_count: 1,
+                    first_instance,
+                    scissor: None,
+                },
+            });
+        }
+        for target_index in (0..variant.levels.len().saturating_sub(1)).rev() {
+            passes.push(NovaBackdropBlurRenderPass {
+                target_texture_view: variant.levels[target_index].texture_view,
+                step: DrawStepDescriptor {
+                    pipeline: pipelines.backdrop_blur_upsample,
+                    resource_sets: resource_set_list([variant.levels[target_index + 1]
+                        .pass_resource_sets
+                        .get(frame_resource_index)
+                        .copied()
+                        .unwrap_or_else(|| ResourceSetId::new(0))]),
+                    vertex_count: 4,
+                    first_vertex: 0,
+                    instance_count: 1,
+                    first_instance,
+                    scissor: None,
+                },
+            });
+        }
     }
 }
 
@@ -466,15 +462,13 @@ fn push_path_mask_draw_step(steps: &mut Vec<DrawStepDescriptor>, step: DrawStepD
     if step.vertex_count == 0 || step.instance_count == 0 {
         return;
     }
-    if let Some(previous) = steps.last_mut() {
-        if path_mask_draw_steps_can_merge(previous, &step) {
-            if let Some(vertex_count) = previous.vertex_count.checked_add(step.vertex_count) {
-                previous.vertex_count = vertex_count;
-                return;
-            }
-        }
+    if let Some(previous) = steps.last_mut()
+        && path_mask_draw_steps_can_merge(previous, &step)
+        && let Some(vertex_count) = previous.vertex_count.checked_add(step.vertex_count)
+    {
+        previous.vertex_count = vertex_count;
+        return;
     }
-
     steps.push(step);
 }
 
