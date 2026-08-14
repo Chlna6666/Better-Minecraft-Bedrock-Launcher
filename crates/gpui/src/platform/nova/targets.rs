@@ -17,10 +17,15 @@ pub(super) struct NovaPathMaskTargetDescriptor {
 
 #[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
-    pub(super) downsample: u8,
     pub(super) source: NovaTextureTarget,
-    pub(super) levels: Vec<NovaBackdropBlurLevelTarget>,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
+    pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
+}
+
+#[derive(Clone)]
+pub(super) struct NovaBackdropBlurVariantTargets {
+    pub(super) config: NovaBackdropBlurConfig,
+    pub(super) levels: Vec<NovaBackdropBlurLevelTarget>,
     pub(super) target_resource_sets: Vec<ResourceSetId>,
 }
 
@@ -45,6 +50,30 @@ pub(super) struct NovaBackdropBlurTargetDescriptor {
 pub(super) struct NovaTextureTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
+}
+
+impl NovaBackdropBlurTargets {
+    pub(super) fn configs_match(&self, configs: &[NovaBackdropBlurConfig]) -> bool {
+        self.variants.len() == configs.len()
+            && self
+                .variants
+                .iter()
+                .zip(configs)
+                .all(|(variant, config)| variant.config == *config)
+    }
+
+    pub(super) fn resource_set_for_config(
+        &self,
+        config: NovaBackdropBlurConfig,
+        frame_resource_index: usize,
+    ) -> Option<ResourceSetId> {
+        self.variants
+            .iter()
+            .find(|variant| variant.config == config)?
+            .target_resource_sets
+            .get(frame_resource_index)
+            .copied()
+    }
 }
 
 pub(super) fn create_path_mask_target<D>(
@@ -116,9 +145,22 @@ pub(super) fn create_backdrop_blur_target_chain<D>(
 where
     D: BackendResources + BackendPipelines,
 {
+    let fallback = [NovaBackdropBlurConfig::fallback(descriptor.downsample)];
+    create_backdrop_blur_target_chain_for_configs(device, label, descriptor, &fallback)
+}
+
+pub(super) fn create_backdrop_blur_target_chain_for_configs<D>(
+    device: &mut D,
+    label: &str,
+    descriptor: NovaBackdropBlurTargetDescriptor,
+    configs: &[NovaBackdropBlurConfig],
+) -> Result<NovaBackdropBlurTargets>
+where
+    D: BackendResources + BackendPipelines,
+{
     let source = create_render_texture_target(
         device,
-        &format!("{label} backdrop blur source"),
+        &format!("{label} backdrop blur shared source"),
         descriptor.size,
         descriptor.format,
     )?;
@@ -126,7 +168,7 @@ where
     for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
         source_pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
             label: Some(format!(
-                "{label} backdrop blur source pass frame {index} resource set"
+                "{label} backdrop blur shared source frame {index} resource set"
             )),
             layout: descriptor.pass_resource_set_layout,
             bindings: backdrop_blur_pass_resource_bindings(
@@ -136,65 +178,77 @@ where
             ),
         })?);
     }
-    let downsample = descriptor.downsample.max(1);
-    let mut levels = Vec::with_capacity(usize::from(MAX_BACKDROP_BLUR_LEVELS));
-    for level in 0..MAX_BACKDROP_BLUR_LEVELS {
-        let factor = u32::from(downsample).saturating_mul(1_u32 << u32::from(level));
-        let target_size = Extent2d::new(
-            (descriptor.size.width() / factor).max(1),
-            (descriptor.size.height() / factor).max(1),
-        )?;
-        let target = create_render_texture_target(
-            device,
-            &format!("{label} backdrop blur target level {level}"),
-            target_size,
-            descriptor.format,
-        )?;
-        let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-        for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-            pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                label: Some(format!(
-                    "{label} backdrop blur target level {level} frame {index} pass resource set"
-                )),
-                layout: descriptor.pass_resource_set_layout,
-                bindings: backdrop_blur_pass_resource_bindings(
-                    target.texture_view,
-                    descriptor.sampler,
-                    buffers.backdrop_blur_pass_buffer,
+
+    let mut variants = Vec::with_capacity(configs.len());
+    for (variant_index, config) in configs.iter().copied().enumerate() {
+        let downsample = u32::from(config.downsample().max(1));
+        let level_count = config.levels().clamp(1, usize::from(MAX_BACKDROP_BLUR_LEVELS));
+        let mut levels = Vec::with_capacity(level_count);
+        for level_index in 0..level_count {
+            let factor = downsample.saturating_mul(1_u32 << level_index as u32);
+            let target_size = Extent2d::new(
+                (descriptor.size.width() / factor).max(1),
+                (descriptor.size.height() / factor).max(1),
+            )?;
+            let target = create_render_texture_target(
+                device,
+                &format!(
+                    "{label} backdrop blur variant {variant_index} level {level_index}"
                 ),
-            })?);
+                target_size,
+                descriptor.format,
+            )?;
+            let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+            for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                    label: Some(format!(
+                        "{label} backdrop blur variant {variant_index} level {level_index} frame {frame_index} pass resource set"
+                    )),
+                    layout: descriptor.pass_resource_set_layout,
+                    bindings: backdrop_blur_pass_resource_bindings(
+                        target.texture_view,
+                        descriptor.sampler,
+                        buffers.backdrop_blur_pass_buffer,
+                    ),
+                })?);
+            }
+            levels.push(NovaBackdropBlurLevelTarget {
+                texture: target.texture,
+                texture_view: target.texture_view,
+                pass_resource_sets,
+            });
         }
-        levels.push(NovaBackdropBlurLevelTarget {
-            texture: target.texture,
-            texture_view: target.texture_view,
-            pass_resource_sets,
-        });
-    }
-    let mut target_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-    for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-        target_resource_sets.push(
-            device.create_resource_set(&ResourceSetDescriptor {
+
+        let mut target_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+        for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+            let source_texture_view = levels
+                .first()
+                .map_or(source.texture_view, |level| level.texture_view);
+            target_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
                 label: Some(format!(
-                    "{label} backdrop blur target frame {index} resource set"
+                    "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
                 )),
                 layout: descriptor.blur_resource_set_layout,
                 bindings: backdrop_blur_resource_bindings(
                     buffers.global_buffer,
-                    levels
-                        .first()
-                        .map_or(source.texture_view, |level| level.texture_view),
+                    source_texture_view,
                     descriptor.sampler,
                     buffers.backdrop_blur_buffer,
                 ),
-            })?,
-        );
+            })?);
+        }
+
+        variants.push(NovaBackdropBlurVariantTargets {
+            config,
+            levels,
+            target_resource_sets,
+        });
     }
+
     Ok(NovaBackdropBlurTargets {
-        downsample,
         source,
-        levels,
         source_pass_resource_sets,
-        target_resource_sets,
+        variants,
     })
 }
 
@@ -212,29 +266,31 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
             );
         }
     }
-    for resource_set in targets.target_resource_sets {
-        if let Err(error) = device.destroy_resource_set(resource_set) {
-            log::debug!(
-                "failed to destroy {backend_name} backdrop blur target resource set: {error}"
-            );
-        }
-    }
-    for target in targets.levels {
-        for resource_set in target.pass_resource_sets {
+    for variant in targets.variants {
+        for resource_set in variant.target_resource_sets {
             if let Err(error) = device.destroy_resource_set(resource_set) {
                 log::debug!(
-                    "failed to destroy {backend_name} backdrop blur level resource set: {error}"
+                    "failed to destroy {backend_name} backdrop blur target resource set: {error}"
                 );
             }
         }
-        destroy_render_texture_target(
-            device,
-            NovaTextureTarget {
-                texture: target.texture,
-                texture_view: target.texture_view,
-            },
-            backend_name,
-        );
+        for target in variant.levels {
+            for resource_set in target.pass_resource_sets {
+                if let Err(error) = device.destroy_resource_set(resource_set) {
+                    log::debug!(
+                        "failed to destroy {backend_name} backdrop blur level resource set: {error}"
+                    );
+                }
+            }
+            destroy_render_texture_target(
+                device,
+                NovaTextureTarget {
+                    texture: target.texture,
+                    texture_view: target.texture_view,
+                },
+                backend_name,
+            );
+        }
     }
     destroy_render_texture_target(device, targets.source, backend_name);
 }
