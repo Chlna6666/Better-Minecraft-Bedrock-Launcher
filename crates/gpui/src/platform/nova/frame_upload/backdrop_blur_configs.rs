@@ -9,11 +9,7 @@ const BLUR_BOUNDS_WIDTH_OFFSET: usize = 24;
 const BLUR_BOUNDS_HEIGHT_OFFSET: usize = 28;
 const BLUR_RADIUS_OFFSET: usize = 112;
 
-/// Renderer target identity for one reusable blur filter.
-///
-/// The source group is part of the key, so filters are never reused across different draw-order
-/// barriers. Bounds are deliberately excluded: overlapping rectangles in the same source group can
-/// share one filtered target when overlap recomputation is disabled.
+/// Renderer filter identity shared by compatible blur primitives in one source group.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::platform::nova) struct NovaBackdropBlurReuseKey {
     source_group: u32,
@@ -26,7 +22,8 @@ pub(in crate::platform::nova) struct NovaBackdropBlurReuseKey {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::platform::nova) struct NovaBackdropBlurConfig {
     source_group: u32,
-    order: u32,
+    order_min: u32,
+    order_max: u32,
     downsample: u8,
     levels: u8,
     radius_bits: u32,
@@ -54,7 +51,8 @@ impl NovaBackdropBlurConfig {
         let bounds = bounds.map(|value| if value.is_finite() { value } else { 0.0 });
         Self {
             source_group,
-            order,
+            order_min: order,
+            order_max: order,
             downsample,
             levels,
             radius_bits: radius.to_bits(),
@@ -64,7 +62,7 @@ impl NovaBackdropBlurConfig {
     }
 
     pub(in crate::platform::nova) fn order(self) -> u32 {
-        self.order
+        self.order_min
     }
 
     pub(in crate::platform::nova) fn downsample(self) -> u8 {
@@ -94,22 +92,28 @@ impl NovaBackdropBlurConfig {
         }
     }
 
-    /// Returns whether this canonical target can be sampled by `other`.
-    pub(in crate::platform::nova) fn covers(self, other: Self) -> bool {
-        if self.reuse_key() != other.reuse_key() {
-            return false;
-        }
-        if self.recompute_overlap || other.recompute_overlap {
-            return self == other;
-        }
-        bounds_contains(self.bounds(), other.bounds())
+    /// Stable GPU-target identity. Animated bounds are intentionally excluded.
+    pub(in crate::platform::nova) fn same_target_slot(self, other: Self) -> bool {
+        self.reuse_key() == other.reuse_key()
+            && self.order_min == other.order_min
+            && self.order_max == other.order_max
+            && self.recompute_overlap == other.recompute_overlap
     }
 
-    /// Returns whether two primitives may share one filter target.
+    /// Returns whether this canonical target owns the primitive represented by `other`.
+    pub(in crate::platform::nova) fn owns(self, other: Self) -> bool {
+        self.reuse_key() == other.reuse_key()
+            && other.order_min == other.order_max
+            && other.order_min >= self.order_min
+            && other.order_min <= self.order_max
+            && (!self.recompute_overlap || self.same_target_slot(other))
+    }
+
     fn should_merge_with(self, other: Self) -> bool {
         !self.recompute_overlap
             && !other.recompute_overlap
             && self.reuse_key() == other.reuse_key()
+            && self.order_max.saturating_add(1) >= other.order_min
             && source_regions_overlap(self, other)
     }
 
@@ -120,15 +124,17 @@ impl NovaBackdropBlurConfig {
         let y = left[1].min(right[1]);
         let right_edge = (left[0] + left[2]).max(right[0] + right[2]);
         let bottom_edge = (left[1] + left[3]).max(right[1] + right[3]);
-        Self::new(
+        let mut merged = Self::new(
             self.source_group,
-            self.order.min(other.order),
+            self.order_min.min(other.order_min),
             self.downsample,
             self.levels,
             self.radius(),
             [x, y, (right_edge - x).max(0.0), (bottom_edge - y).max(0.0)],
             false,
-        )
+        );
+        merged.order_max = self.order_max.max(other.order_max);
+        merged
     }
 
     /// Compatibility accessor retained for diagnostics/tests that previously referred to the
@@ -138,7 +144,7 @@ impl NovaBackdropBlurConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(in crate::platform::nova) struct NovaBackdropBlurConfigSet {
     configs: Vec<NovaBackdropBlurConfig>,
     legacy_downsample: u8,
@@ -168,6 +174,20 @@ impl NovaBackdropBlurConfigSet {
             .max(1)
     }
 }
+
+impl PartialEq for NovaBackdropBlurConfigSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.legacy_downsample == other.legacy_downsample
+            && self.configs.len() == other.configs.len()
+            && self
+                .configs
+                .iter()
+                .zip(&other.configs)
+                .all(|(left, right)| left.same_target_slot(*right))
+    }
+}
+
+impl Eq for NovaBackdropBlurConfigSet {}
 
 impl From<NovaBackdropBlurConfigSet> for usize {
     fn from(value: NovaBackdropBlurConfigSet) -> Self {
@@ -208,10 +228,10 @@ impl NovaFrameUpload {
 
     /// Returns canonical filter targets for one backdrop source group.
     ///
-    /// By default, equal Gaussian configurations whose kernel footprints overlap are coalesced
-    /// into one union target. This prevents the overlap from being blurred twice. Set
-    /// `GPUI_NOVA_BLUR_OVERLAP_MODE=isolated` (or `recompute`) before process startup to disable
-    /// this optimization for diagnostics or workloads that explicitly require independent passes.
+    /// Adjacent equal Gaussian configurations whose kernel footprints overlap are coalesced into
+    /// one union target by default, so the shared overlap is filtered once. Set
+    /// `GPUI_NOVA_BLUR_OVERLAP_MODE=isolated` (or `recompute`) before process startup to force one
+    /// target per primitive for diagnostics or intentionally independent overlap calculation.
     pub(in crate::platform::nova) fn backdrop_blur_configs_for_range(
         &self,
         first: u32,
@@ -222,26 +242,16 @@ impl NovaFrameUpload {
             return configs;
         };
         for primitive_index in first..end {
-            let Some(mut config) = self.backdrop_blur_config_at(primitive_index, first) else {
+            let Some(config) = self.backdrop_blur_config_at(primitive_index, first) else {
                 continue;
             };
-            if config.recompute_overlap {
+            if let Some(previous) = configs.last_mut()
+                && previous.should_merge_with(config)
+            {
+                *previous = previous.union_bounds(config);
+            } else {
                 configs.push(config);
-                continue;
             }
-
-            // Merge transitively. A overlaps B and B overlaps C must produce one target even if A
-            // and C do not directly overlap before B is unioned in.
-            let mut index = 0;
-            while index < configs.len() {
-                if configs[index].should_merge_with(config) {
-                    config = configs.remove(index).union_bounds(config);
-                    index = 0;
-                } else {
-                    index += 1;
-                }
-            }
-            configs.push(config);
         }
         configs
     }
@@ -372,14 +382,6 @@ fn rects_overlap(left: [f32; 4], right: [f32; 4]) -> bool {
         && right[1] <= left_bottom
 }
 
-fn bounds_contains(container: [f32; 4], child: [f32; 4]) -> bool {
-    let epsilon = 0.01;
-    container[0] <= child[0] + epsilon
-        && container[1] <= child[1] + epsilon
-        && container[0] + container[2] + epsilon >= child[0] + child[2]
-        && container[1] + container[3] + epsilon >= child[1] + child[3]
-}
-
 fn backdrop_blur_overlap_recompute_enabled() -> bool {
     static RECOMPUTE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *RECOMPUTE.get_or_init(|| {
@@ -435,10 +437,10 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_equal_blurs_share_one_filter_target_by_default() {
+    fn overlapping_adjacent_blurs_share_one_filter_target_by_default() {
         let mut upload = NovaFrameUpload::default();
         push_blur_record_with_bounds(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0]);
-        push_blur_record_with_bounds(&mut upload, 20, 1, 2, 18.0, [200.0, 20.0, 300.0, 80.0]);
+        push_blur_record_with_bounds(&mut upload, 11, 1, 2, 18.0, [200.0, 20.0, 300.0, 80.0]);
         upload
             .batches
             .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
@@ -452,12 +454,38 @@ mod tests {
     fn disjoint_equal_blurs_keep_separate_filter_targets() {
         let mut upload = NovaFrameUpload::default();
         push_blur_record_with_bounds(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 100.0, 60.0]);
-        push_blur_record_with_bounds(&mut upload, 20, 1, 2, 18.0, [800.0, 400.0, 100.0, 60.0]);
+        push_blur_record_with_bounds(&mut upload, 11, 1, 2, 18.0, [800.0, 400.0, 100.0, 60.0]);
         upload
             .batches
             .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
 
         assert_eq!(upload.backdrop_blur_configs().len(), 2);
+    }
+
+    #[test]
+    fn target_set_equality_ignores_animated_bounds() {
+        let left = NovaBackdropBlurConfig::new(
+            0,
+            10,
+            1,
+            2,
+            18.0,
+            [0.0, 0.0, 300.0, 80.0],
+            false,
+        );
+        let right = NovaBackdropBlurConfig::new(
+            0,
+            10,
+            1,
+            2,
+            18.0,
+            [12.0, 4.0, 320.0, 80.0],
+            false,
+        );
+        assert_eq!(
+            NovaBackdropBlurConfigSet::new(vec![left], 1),
+            NovaBackdropBlurConfigSet::new(vec![right], 1)
+        );
     }
 
     #[test]
@@ -473,7 +501,7 @@ mod tests {
         );
         let right = NovaBackdropBlurConfig::new(
             0,
-            20,
+            11,
             1,
             2,
             18.0,
@@ -481,7 +509,7 @@ mod tests {
             true,
         );
         assert!(!left.should_merge_with(right));
-        assert!(!left.covers(right));
+        assert!(!left.owns(right));
     }
 
     #[test]
