@@ -73,8 +73,8 @@ impl NovaFrameUpload {
         self.path_paint_key_scratch = Vec::new();
     }
 
-    pub(in crate::platform::nova) fn backdrop_blur_downsample(&self) -> u8 {
-        self.backdrop_blur_downsample.max(1)
+    pub(in crate::platform::nova) fn backdrop_blur_downsample(&self) -> NovaBackdropBlurConfigSet {
+        self.backdrop_blur_config_set()
     }
 
     pub(in crate::platform::nova) fn backdrop_blur_levels(&self) -> usize {
