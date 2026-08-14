@@ -66,7 +66,7 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
             resource: ResourceBindingResource::Buffer(BufferBinding {
                 buffer: pass_buffer,
                 offset: 0,
-                size: BACKDROP_BLUR_PASS_BYTES as u64,
+                size: (MAX_BACKDROP_BLURS * BACKDROP_BLUR_PASS_BYTES) as u64,
                 stride: Some(BACKDROP_BLUR_PASS_BYTES as u32),
             }),
         },
