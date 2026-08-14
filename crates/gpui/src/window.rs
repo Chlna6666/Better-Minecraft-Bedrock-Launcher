@@ -66,6 +66,7 @@ use winit::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 
 mod action_bindings;
 mod content_mask;
+pub(crate) mod debug_visualization;
 #[cfg(test)]
 mod dirty_region_tests;
 mod dispatch;
@@ -104,6 +105,7 @@ mod titlebar;
 mod window_id;
 
 pub use content_mask::ContentMask;
+pub use debug_visualization::WindowDebugVisualization;
 use dispatch::{log_timed_gpui_event, platform_input_name};
 pub use element_id::ElementId;
 pub(crate) use focus::{AnyWindowFocusListener, ELEMENT_ARENA, FocusMap, WindowFocusEvent};

@@ -366,6 +366,8 @@ impl Style {
             );
         }
 
+        crate::window::debug_visualization::paint_layout_bounds(self, bounds, window, cx);
+
         #[cfg(debug_assertions)]
         if self.debug_below {
             cx.remove_global::<DebugBelow>();

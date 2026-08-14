@@ -6,7 +6,8 @@ impl Window {
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
         let previous_scene_was_empty = self.rendered_frame.scene.len() == 0;
-        let force_full_redraw = self.force_full_redraw.get();
+        let debug_force_full_redraw = self.begin_debug_visualization_frame(cx);
+        let force_full_redraw = self.force_full_redraw.get() || debug_force_full_redraw;
         let (restored_input_handler_index, directly_dirty_views) = self.begin_draw_cycle(cx);
         self.draw_roots(cx);
         self.next_frame.window_active = self.active.get();
@@ -173,6 +174,7 @@ impl Window {
             self.dirty_views.clear();
             self.animation_dirty_region = DirtyRegion::empty();
         }
+        self.finish_debug_visualization_frame(cx);
         self.draw_deadline = None;
 
         ArenaClearNeeded
@@ -555,6 +557,8 @@ impl Window {
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         self.paint_inspector_hitbox(cx);
+
+        self.paint_debug_surface_update_flash(cx);
     }
 
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
