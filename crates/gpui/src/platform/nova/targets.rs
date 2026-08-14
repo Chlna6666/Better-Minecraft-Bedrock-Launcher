@@ -17,6 +17,7 @@ pub(super) struct NovaPathMaskTargetDescriptor {
 
 #[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
+    pub(super) downsample: NovaBackdropBlurConfigSet,
     pub(super) source: NovaTextureTarget,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
@@ -39,7 +40,7 @@ pub(super) struct NovaBackdropBlurLevelTarget {
 pub(super) struct NovaBackdropBlurTargetDescriptor {
     pub(super) size: Extent2d,
     pub(super) format: Format,
-    pub(super) downsample: u8,
+    pub(super) downsample: NovaBackdropBlurConfigSet,
     pub(super) pass_resource_set_layout: ResourceSetLayoutId,
     pub(super) blur_resource_set_layout: ResourceSetLayoutId,
     pub(super) frame_buffers: Vec<NovaFrameResourceBuffers>,
@@ -53,15 +54,6 @@ pub(super) struct NovaTextureTarget {
 }
 
 impl NovaBackdropBlurTargets {
-    pub(super) fn configs_match(&self, configs: &[NovaBackdropBlurConfig]) -> bool {
-        self.variants.len() == configs.len()
-            && self
-                .variants
-                .iter()
-                .zip(configs)
-                .all(|(variant, config)| variant.config == *config)
-    }
-
     pub(super) fn resource_set_for_config(
         &self,
         config: NovaBackdropBlurConfig,
@@ -145,14 +137,16 @@ pub(super) fn create_backdrop_blur_target_chain<D>(
 where
     D: BackendResources + BackendPipelines,
 {
-    let fallback = [NovaBackdropBlurConfig::fallback(descriptor.downsample)];
-    create_backdrop_blur_target_chain_for_configs(device, label, descriptor, &fallback)
+    let config_set = descriptor.downsample.clone();
+    let configs = config_set.configs().to_vec();
+    create_backdrop_blur_target_chain_with_configs(device, label, descriptor, config_set, &configs)
 }
 
-pub(super) fn create_backdrop_blur_target_chain_for_configs<D>(
+fn create_backdrop_blur_target_chain_with_configs<D>(
     device: &mut D,
     label: &str,
     descriptor: NovaBackdropBlurTargetDescriptor,
+    config_set: NovaBackdropBlurConfigSet,
     configs: &[NovaBackdropBlurConfig],
 ) -> Result<NovaBackdropBlurTargets>
 where
@@ -246,6 +240,7 @@ where
     }
 
     Ok(NovaBackdropBlurTargets {
+        downsample: config_set,
         source,
         source_pass_resource_sets,
         variants,
