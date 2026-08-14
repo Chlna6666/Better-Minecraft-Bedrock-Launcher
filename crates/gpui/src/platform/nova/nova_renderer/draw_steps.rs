@@ -68,6 +68,10 @@ impl NovaRenderer {
     }
 
     pub(super) fn prepare_backdrop_blur_passes(&mut self, enabled: bool) {
+        if enabled {
+            self.frame_upload
+                .rebuild_backdrop_blur_passes_for_current_frame();
+        }
         let passes = &mut self.draw_step_scratch.backdrop_blur_passes;
         passes.clear();
         if !enabled {
