@@ -18,8 +18,8 @@ pub(super) struct NovaPathMaskTargetDescriptor {
 #[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
     pub(super) downsample: NovaBackdropBlurConfigSet,
-    // This is a transient, unfiltered source target. Different blur configurations never share a
-    // filtered result; the same raw target is overwritten when a later draw-order group is built.
+    // Raw source is transient. Filtered targets are isolated by source group and filter key, while
+    // overlapping rectangles inside one compatible group may intentionally share a variant.
     pub(super) source: NovaTextureTarget,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
@@ -65,10 +65,35 @@ impl NovaBackdropBlurTargets {
     ) -> Option<ResourceSetId> {
         self.variants
             .iter()
-            .find(|variant| variant.config == config)?
+            .find(|variant| variant.config.covers(config))?
             .target_resource_sets
             .get(frame_resource_index)
             .copied()
+    }
+
+    /// Returns whether the existing GPU texture layout can serve the next frame.
+    ///
+    /// Bounds are intentionally ignored. Moving/resizing an animated glass surface updates only
+    /// CPU metadata and scissors instead of destroying and recreating full-size GPU textures.
+    pub(super) fn is_layout_compatible(&self, next: &NovaBackdropBlurConfigSet) -> bool {
+        self.variants.len() == next.configs().len()
+            && self
+                .variants
+                .iter()
+                .zip(next.configs())
+                .all(|(variant, config)| {
+                    variant.config.reuse_key() == config.reuse_key()
+                        && variant.config.downsample() == config.downsample()
+                        && variant.config.levels() == config.levels()
+                })
+    }
+
+    /// Updates per-frame canonical bounds without reallocating GPU resources.
+    pub(super) fn update_configs(&mut self, next: NovaBackdropBlurConfigSet) {
+        for (variant, config) in self.variants.iter_mut().zip(next.configs()) {
+            variant.config = *config;
+        }
+        self.downsample = next;
     }
 }
 
@@ -318,10 +343,10 @@ pub(super) fn destroy_depth_target<D>(
     D: BackendResources,
 {
     if let Err(error) = device.destroy_texture_view(texture_view) {
-        log::debug!("failed to destroy {backend_name} depth texture view: {error}");
+        log::debug!("failed to destroy {backend_name} old path mask texture view: {error}");
     }
     if let Err(error) = device.destroy_texture(texture) {
-        log::debug!("failed to destroy {backend_name} depth texture: {error}");
+        log::debug!("failed to destroy {backend_name} old path mask texture: {error}");
     }
 }
 
