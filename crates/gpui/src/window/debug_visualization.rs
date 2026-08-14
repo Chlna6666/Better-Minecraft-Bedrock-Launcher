@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AbsoluteLength, Length, Timer};
+use crate::{AbsoluteLength, Length, Timer, rgb};
 
 const SURFACE_FLASH_HOLD: Duration = Duration::from_millis(90);
 
