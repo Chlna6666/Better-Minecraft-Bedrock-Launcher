@@ -19,13 +19,13 @@ pub(super) fn page_shell(
         .overflow_hidden()
         .border_1()
         .border_color(Hsla {
-            a: 0.30,
+            a: 0.36,
             ..colors.border
         })
-        // 设置页本身是主工作表面，不再把它做成近乎透明的玻璃层。
-        // 背景只保留轻微透出，卡片则承担更高的不透明层级，避免多层浅色玻璃叠加。
+        // 设置页是承载信息的主工作表面，而不是漂浮玻璃层。
+        // 保持近实色，只让自定义背景极轻微透出；导航和弹层再负责材质层级。
         .bg(Hsla {
-            a: 0.82,
+            a: 0.96,
             ..colors.settings_panel_bg
         })
         .child(
