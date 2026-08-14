@@ -1,8 +1,11 @@
 // --- isolated backdrop blur --- //
 //
-// The old Dual-Kawase pyramid exaggerated small radii and made subpixel values feel quantized.
-// Nova now uses two separable Gaussian passes. Fractional radii remain fractional sample
-// positions all the way to the hardware sampler.
+// Nova uses a separable Gaussian filter for backdrop blur. The blur radius stays in floating-point
+// source pixels from the GPUI primitive through the shader, so values such as 0.1px remain valid.
+//
+// Each axis uses bilinear tap pairing: the equivalent 17-tap kernel is evaluated with 9 texture
+// samples (center + four positive/negative pairs). This keeps the visual kernel smooth while
+// substantially reducing texture bandwidth during high-refresh-rate UI animation.
 
 struct BackdropBlurPass {
     radius: f32,
@@ -74,26 +77,40 @@ fn gaussian_weight(distance: f32, sigma: f32) -> f32 {
 
 fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
     let pass = b_backdrop_blur_passes[input.instance_id];
-    let radius = max(pass.radius, 1.0 / 256.0);
-    let sigma = max(radius / 3.0, 1.0 / 1024.0);
+    let radius = max(pass.radius, 1.0 / 4096.0);
+    let sigma = max(radius / 3.0, 1.0 / 4096.0);
     let tap_step = radius / 8.0;
     let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0));
     let horizontal = (input.instance_id & 1u) == 0u;
     let axis = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), horizontal);
     let texel_axis = axis / source_size;
 
-    var color = vec4<f32>(0.0);
-    var weight_sum = 0.0;
-    for (var tap: i32 = -8; tap <= 8; tap = tap + 1) {
-        let distance = f32(tap) * tap_step;
-        let weight = gaussian_weight(distance, sigma);
-        color += sample_backdrop_blur_texture(input.texture_coords + texel_axis * distance) * weight;
-        weight_sum += weight;
+    // Center tap.
+    let center_weight = gaussian_weight(0.0, sigma);
+    var color = sample_backdrop_blur_texture(input.texture_coords) * center_weight;
+    var weight_sum = center_weight;
+
+    // Pair adjacent Gaussian taps and let the linear sampler interpolate between them. Four
+    // paired distances on each side are equivalent to the old +/-8 discrete taps but require
+    // eight texture samples instead of sixteen.
+    for (var pair: i32 = 0; pair < 4; pair = pair + 1) {
+        let tap0 = f32(pair * 2 + 1) * tap_step;
+        let tap1 = f32(pair * 2 + 2) * tap_step;
+        let weight0 = gaussian_weight(tap0, sigma);
+        let weight1 = gaussian_weight(tap1, sigma);
+        let pair_weight = weight0 + weight1;
+        let paired_distance = (tap0 * weight0 + tap1 * weight1) / max(pair_weight, 1e-8);
+        let delta = texel_axis * paired_distance;
+
+        color += sample_backdrop_blur_texture(input.texture_coords + delta) * pair_weight;
+        color += sample_backdrop_blur_texture(input.texture_coords - delta) * pair_weight;
+        weight_sum += pair_weight * 2.0;
     }
+
     return color / max(weight_sum, 1e-6);
 }
 
-// Keep the old pipeline entry names so the gfx abstraction does not need another shader ABI.
+// Keep the existing pipeline entry names so the gfx abstraction remains backend-neutral.
 // The first instance of a configuration is horizontal and the second is vertical.
 @fragment
 fn fs_backdrop_blur_downsample(input: BackdropBlurPassVarying) -> @location(0) vec4<f32> {
