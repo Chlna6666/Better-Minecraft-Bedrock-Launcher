@@ -206,8 +206,10 @@ fn encode_monochrome_upload(
                 .min(width.saturating_sub(1));
             let coverage = source[y * width + x];
             let atlas_index = (upload_y * upload_width + upload_x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            destination[atlas_index] = 0;
-            destination[atlas_index + 1] = 0;
+            // Keep the atlas representation compatible with the Windows dual-source text
+            // pipeline: grayscale masks are represented as equal R/G/B coverage values.
+            destination[atlas_index] = coverage;
+            destination[atlas_index + 1] = coverage;
             destination[atlas_index + 2] = coverage;
             destination[atlas_index + 3] = 255;
         }
