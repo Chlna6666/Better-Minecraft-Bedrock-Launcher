@@ -5,7 +5,8 @@ const INDEX_FORMAT_U16_FLAG: u32 = 1 << 31;
 const INDEX_OFFSET_MASK: u32 = !INDEX_FORMAT_U16_FLAG;
 
 pub(super) use super::draw_legacy::{
-    NovaBackdropBlurRenderPass, NovaDrawStepMode, backdrop_blur_render_passes_for_targets_into,
+    NovaBackdropBlurRenderPass, NovaDrawStepMode,
+    backdrop_blur_render_passes_for_configs_into, backdrop_blur_render_passes_for_targets_into,
     partial_scissor_for_plan, path_mask_draw_steps_for_upload,
     path_mask_draw_steps_for_upload_into,
 };
