@@ -74,7 +74,7 @@ impl From<NovaBackdropBlurConfigSet> for usize {
 
 impl PartialEq<u8> for NovaBackdropBlurConfigSet {
     fn eq(&self, other: &u8) -> bool {
-        self.legacy_downsample == other.max(&1).to_owned()
+        self.legacy_downsample == (*other).max(1)
     }
 }
 
