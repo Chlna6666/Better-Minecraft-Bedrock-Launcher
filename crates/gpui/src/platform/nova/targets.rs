@@ -18,14 +18,16 @@ pub(super) struct NovaPathMaskTargetDescriptor {
 #[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
     pub(super) downsample: NovaBackdropBlurConfigSet,
+    // 这里只复用“未经过滤”的场景输入，避免为每个半径重复绘制整棵场景。
+    // 每个 config 的滤镜金字塔、采样参数和最终纹理仍然完全独立。
+    pub(super) source: NovaTextureTarget,
+    pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
 }
 
 #[derive(Clone)]
 pub(super) struct NovaBackdropBlurVariantTargets {
     pub(super) config: NovaBackdropBlurConfig,
-    pub(super) source: NovaTextureTarget,
-    pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     pub(super) levels: Vec<NovaBackdropBlurLevelTarget>,
     pub(super) target_resource_sets: Vec<ResourceSetId>,
 }
@@ -152,31 +154,29 @@ fn create_backdrop_blur_target_chain_with_configs<D>(
 where
     D: BackendResources + BackendPipelines,
 {
+    let source = create_render_texture_target(
+        device,
+        &format!("{label} backdrop blur raw source"),
+        descriptor.size,
+        descriptor.format,
+    )?;
+    let mut source_pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+    for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+        source_pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+            label: Some(format!(
+                "{label} backdrop blur raw source frame {index} resource set"
+            )),
+            layout: descriptor.pass_resource_set_layout,
+            bindings: backdrop_blur_pass_resource_bindings(
+                source.texture_view,
+                descriptor.sampler,
+                buffers.backdrop_blur_pass_buffer,
+            ),
+        })?);
+    }
+
     let mut variants = Vec::with_capacity(configs.len());
     for (variant_index, config) in configs.iter().copied().enumerate() {
-        // 不同模糊配置拥有完全独立的 source/filter chain。背景 0.xpx、标题栏和
-        // Modal 不再通过同一张 source texture 或同一组 pass resource set 发生耦合。
-        let source = create_render_texture_target(
-            device,
-            &format!("{label} backdrop blur variant {variant_index} source"),
-            descriptor.size,
-            descriptor.format,
-        )?;
-        let mut source_pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-        for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-            source_pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                label: Some(format!(
-                    "{label} backdrop blur variant {variant_index} source frame {frame_index} resource set"
-                )),
-                layout: descriptor.pass_resource_set_layout,
-                bindings: backdrop_blur_pass_resource_bindings(
-                    source.texture_view,
-                    descriptor.sampler,
-                    buffers.backdrop_blur_pass_buffer,
-                ),
-            })?);
-        }
-
         let downsample = u32::from(config.downsample().max(1));
         let level_count = config.levels().clamp(1, usize::from(MAX_BACKDROP_BLUR_LEVELS));
         let mut levels = Vec::with_capacity(level_count);
@@ -236,8 +236,6 @@ where
 
         variants.push(NovaBackdropBlurVariantTargets {
             config,
-            source,
-            source_pass_resource_sets,
             levels,
             target_resource_sets,
         });
@@ -245,6 +243,8 @@ where
 
     Ok(NovaBackdropBlurTargets {
         downsample: config_set,
+        source,
+        source_pass_resource_sets,
         variants,
     })
 }
@@ -256,14 +256,14 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
 ) where
     D: BackendResources + BackendPipelines,
 {
-    for variant in targets.variants {
-        for resource_set in variant.source_pass_resource_sets {
-            if let Err(error) = device.destroy_resource_set(resource_set) {
-                log::debug!(
-                    "failed to destroy {backend_name} backdrop blur source resource set: {error}"
-                );
-            }
+    for resource_set in targets.source_pass_resource_sets {
+        if let Err(error) = device.destroy_resource_set(resource_set) {
+            log::debug!(
+                "failed to destroy {backend_name} backdrop blur source resource set: {error}"
+            );
         }
+    }
+    for variant in targets.variants {
         for resource_set in variant.target_resource_sets {
             if let Err(error) = device.destroy_resource_set(resource_set) {
                 log::debug!(
@@ -288,8 +288,8 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
                 backend_name,
             );
         }
-        destroy_render_texture_target(device, variant.source, backend_name);
     }
+    destroy_render_texture_target(device, targets.source, backend_name);
 }
 
 pub(super) fn create_depth_target<D>(
