@@ -1,5 +1,10 @@
 use super::*;
 
+pub(super) struct NovaPreparedBackdropBlurGroup {
+    pub(super) source_steps: Vec<RenderStepDescriptor>,
+    pub(super) filter_passes: Vec<NovaBackdropBlurRenderPass>,
+}
+
 impl NovaRenderer {
     pub(super) fn prepare_draw_steps(&mut self) {
         let blend_pipelines = self.current_blend_pipelines();
@@ -30,6 +35,76 @@ impl NovaRenderer {
             NovaDrawStepMode::Present,
             steps,
         );
+    }
+
+    /// Builds one exact source-prefix render for every backdrop batch.
+    ///
+    /// Earlier blur groups are included when preparing a later source. This gives every glass
+    /// surface the pixels that really existed behind it at its draw-order position instead of the
+    /// old global "everything samples the first blur's source" model.
+    pub(super) fn prepare_backdrop_blur_groups(
+        &self,
+        enabled: bool,
+    ) -> Vec<NovaPreparedBackdropBlurGroup> {
+        if !enabled {
+            return Vec::new();
+        }
+        let Some(targets) = self.backdrop_blur_targets.as_ref() else {
+            return Vec::new();
+        };
+        let blend_pipelines = self.current_blend_pipelines();
+        let frame_resource_index = self.current_frame_resource_index;
+        let gpu_atlas_textures = &self.gpu_atlas_textures;
+        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
+        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
+        let mut groups = Vec::new();
+
+        for (batch_index, batch) in self.frame_upload.batches.iter().enumerate() {
+            let NovaUploadedBatch::BackdropBlurs { first, count } = *batch else {
+                continue;
+            };
+            let mut source_steps = Vec::new();
+            draw_steps_for_upload_into(
+                &self.frame_upload,
+                &self.pipelines,
+                blend_pipelines,
+                self.quad_resource_set,
+                self.shadow_resource_set,
+                self.path_resource_set,
+                |texture_id| {
+                    sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
+                },
+                |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
+                |mesh_id, generation| {
+                    custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
+                },
+                self.underline_resource_set,
+                |config| targets.resource_set_for_config(config, frame_resource_index),
+                self.custom_mesh_3d_resource_set,
+                self.custom_mesh_3d_indices_buffer,
+                NovaDrawStepMode::BackdropSourceThrough {
+                    batch_end: batch_index,
+                },
+                &mut source_steps,
+            );
+
+            let configs = self
+                .frame_upload
+                .backdrop_blur_configs_for_range(first, count);
+            let mut filter_passes = Vec::new();
+            backdrop_blur_render_passes_for_configs_into(
+                &self.pipelines,
+                targets,
+                frame_resource_index,
+                &configs,
+                &mut filter_passes,
+            );
+            groups.push(NovaPreparedBackdropBlurGroup {
+                source_steps,
+                filter_passes,
+            });
+        }
+        groups
     }
 
     pub(super) fn prepare_backdrop_blur_source_steps(&mut self, enabled: bool) {
