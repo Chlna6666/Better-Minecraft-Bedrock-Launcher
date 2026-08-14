@@ -28,6 +28,6 @@ pub(crate) use path::{PathCacheId, PathGeometryGeneration, PathId, PathVertex_Sc
 pub use path_builder::*;
 pub(crate) use prepared::*;
 pub(crate) use primitive::*;
-pub use primitive::{BackdropBlurStyle, BorderStyle};
+pub use primitive::{BackdropBlurOverlapMode, BackdropBlurStyle, BorderStyle};
 pub(crate) use scene_model::*;
 pub use transform::TransformationMatrix;
