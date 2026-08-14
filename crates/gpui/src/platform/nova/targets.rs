@@ -15,6 +15,7 @@ pub(super) struct NovaPathMaskTargetDescriptor {
     pub(super) sampler: SamplerId,
 }
 
+#[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
     pub(super) downsample: NovaBackdropBlurConfigSet,
     // This is a transient, unfiltered source target. Different blur configurations never share a
@@ -24,6 +25,7 @@ pub(super) struct NovaBackdropBlurTargets {
     pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
 }
 
+#[derive(Clone)]
 pub(super) struct NovaBackdropBlurVariantTargets {
     pub(super) config: NovaBackdropBlurConfig,
     // Two same-resolution scratch targets form a separable Gaussian ping/pong pair:
@@ -32,6 +34,7 @@ pub(super) struct NovaBackdropBlurVariantTargets {
     pub(super) target_resource_sets: Vec<ResourceSetId>,
 }
 
+#[derive(Clone)]
 pub(super) struct NovaBackdropBlurLevelTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
