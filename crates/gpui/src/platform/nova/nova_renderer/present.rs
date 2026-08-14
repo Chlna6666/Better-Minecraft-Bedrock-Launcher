@@ -155,7 +155,7 @@ impl NovaRenderer {
             return (0, [0; 6]);
         }
         let source_pixels = self.drawable_pixels().saturating_mul(source_group_count);
-        let mut level_pixels = [0; 6];
+        let mut level_pixels = [0usize; 6];
         for config in self.frame_upload.backdrop_blur_configs() {
             let factor = usize::from(config.downsample().max(1));
             let width = (self.current_size.width as usize / factor).max(1);
