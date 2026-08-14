@@ -3,25 +3,84 @@ use super::*;
 pub(super) struct NovaRenderingParameters {
     pub(super) gamma_ratios: [f32; 4],
     pub(super) grayscale_enhanced_contrast: f32,
+    pub(super) subpixel_enhanced_contrast: f32,
+    pub(super) is_bgr: bool,
 }
 
 impl NovaRenderingParameters {
     pub(super) fn from_env() -> Self {
+        let system = system_rendering_parameters();
         let gamma = std::env::var("ZED_FONTS_GAMMA")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(1.45_f32)
+            .unwrap_or(system.gamma)
             .clamp(1.0, 2.2);
         let grayscale_enhanced_contrast = std::env::var("ZED_FONTS_GRAYSCALE_ENHANCED_CONTRAST")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(0.35_f32)
+            .unwrap_or(system.grayscale_enhanced_contrast)
+            .max(0.0);
+        let subpixel_enhanced_contrast = std::env::var("ZED_FONTS_SUBPIXEL_ENHANCED_CONTRAST")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(system.subpixel_enhanced_contrast)
             .max(0.0);
         Self {
             gamma_ratios: gamma_ratios(gamma),
             grayscale_enhanced_contrast,
+            subpixel_enhanced_contrast,
+            is_bgr: system.is_bgr,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct SystemRenderingParameters {
+    gamma: f32,
+    grayscale_enhanced_contrast: f32,
+    subpixel_enhanced_contrast: f32,
+    is_bgr: bool,
+}
+
+impl Default for SystemRenderingParameters {
+    fn default() -> Self {
+        Self {
+            gamma: 1.45,
+            grayscale_enhanced_contrast: 0.35,
+            subpixel_enhanced_contrast: 0.5,
+            is_bgr: false,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn system_rendering_parameters() -> SystemRenderingParameters {
+    use windows::{
+        Win32::Graphics::DirectWrite::{
+            DWRITE_FACTORY_TYPE_SHARED, DWRITE_PIXEL_GEOMETRY_BGR, DWriteCreateFactory,
+            IDWriteFactory5, IDWriteRenderingParams1,
+        },
+        core::Interface,
+    };
+
+    let parameters = (|| -> Option<SystemRenderingParameters> {
+        let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()? };
+        let render_params: IDWriteRenderingParams1 =
+            unsafe { factory.CreateRenderingParams().ok()? }.cast().ok()?;
+        Some(SystemRenderingParameters {
+            gamma: unsafe { render_params.GetGamma() },
+            grayscale_enhanced_contrast: unsafe { render_params.GetGrayscaleEnhancedContrast() },
+            subpixel_enhanced_contrast: unsafe { render_params.GetEnhancedContrast() },
+            is_bgr: unsafe { render_params.GetPixelGeometry() } == DWRITE_PIXEL_GEOMETRY_BGR,
+        })
+    })();
+
+    parameters.unwrap_or_default()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_rendering_parameters() -> SystemRenderingParameters {
+    SystemRenderingParameters::default()
 }
 
 fn gamma_ratios(gamma: f32) -> [f32; 4] {
