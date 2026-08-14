@@ -2,7 +2,7 @@
 name = "bmcbl"
 version = "0.2.0"
 license = "GPL-3.0-only"
-description = "一个minecraft bedrock启动器"
+description = "Better Minecraft: Bedrock Launcher"
 authors = ["Chlna6666"]
 edition = "2024"
 build = "build.rs"
