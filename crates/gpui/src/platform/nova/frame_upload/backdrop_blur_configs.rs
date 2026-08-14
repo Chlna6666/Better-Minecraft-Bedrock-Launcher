@@ -229,6 +229,21 @@ mod tests {
     }
 
     #[test]
+    fn subpixel_blur_radius_is_not_quantized_to_one_pixel() {
+        let mut upload = NovaFrameUpload::default();
+        push_blur_record(&mut upload, 1, 1, 0.1);
+        push_blur_record(&mut upload, 1, 1, 1.0);
+        upload
+            .batches
+            .push(NovaUploadedBatch::BackdropBlurs { first: 0, count: 2 });
+
+        let configs = upload.backdrop_blur_configs();
+        assert_eq!(configs.len(), 2);
+        assert!((configs[0].offset() - 0.1).abs() <= f32::EPSILON);
+        assert!((configs[1].offset() - 1.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
     fn blur_runs_split_mixed_styles_without_scene_rebatching() {
         let mut upload = NovaFrameUpload::default();
         push_blur_record(&mut upload, 1, 1, 2.0);
