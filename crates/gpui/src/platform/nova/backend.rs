@@ -48,35 +48,14 @@ impl NovaBackend {
     pub(super) fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => {
-                // DXGI Present1 dirty rectangles look attractive for small GPUI damage, but under
-                // high-frequency titlebar/tab springs DWM moves preservation work onto the GPU Copy
-                // engine. That makes the no-blur path substantially more expensive than a full
-                // present. gpui-ce's Windows renderer uses ordinary Present as well. Keep GPUI's
-                // retained scene/damage generation, but do not hand dirty rectangles to DXGI.
-                let _ = (device, swapchain);
-                false
-            }
+            Self::Dx12(device) => device.supports_partial_presentation(swapchain),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             Self::Metal(device) => device.supports_partial_presentation(swapchain),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => {
-                #[cfg(target_os = "windows")]
-                {
-                    // VK_KHR_incremental_present reaches the same Windows compositor. On animation
-                    // bursts it exhibits the same copy-engine amplification as DXGI dirty rects, so
-                    // Windows Nova keeps one presentation policy across DX12 and Vulkan.
-                    let _ = (device, swapchain);
-                    false
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    device.supports_partial_presentation(swapchain)
-                }
-            }
+            Self::Vulkan(device) => device.supports_partial_presentation(swapchain),
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
