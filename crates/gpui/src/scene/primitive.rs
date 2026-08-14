@@ -221,7 +221,7 @@ impl From<Quad> for Primitive {
 #[repr(C)]
 pub(crate) struct Underline {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub pad: u32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Rgba,
@@ -303,7 +303,7 @@ impl From<MonochromeSprite> for Primitive {
 #[repr(C)]
 pub(crate) struct PolychromeSprite {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub pad: u32,
     pub grayscale: bool,
     pub opacity: f32,
     pub animation_id: Option<SceneAnimationId>,
@@ -342,6 +342,16 @@ impl From<PaintSurface> for Primitive {
     }
 }
 
+/// Controls whether compatible overlapping backdrop blurs reuse one filtered target.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum BackdropBlurOverlapMode {
+    /// Reuse one Gaussian result for compatible overlapping primitives. This is the default.
+    #[default]
+    Reuse,
+    /// Recompute every blur primitive independently, including pixels covered by another blur.
+    Recompute,
+}
+
 /// Parameters for GPU-backed backdrop blur.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropBlurStyle {
@@ -349,12 +359,14 @@ pub struct BackdropBlurStyle {
     pub radius: Pixels,
     /// Downsample factor used by backends that implement a separable GPU blur.
     pub downsample: u8,
-    /// Number of Dual Kawase downsample/upsample levels.
+    /// Number of filter levels requested by the backend.
     pub levels: u8,
     /// Saturation multiplier applied after blur.
     pub saturation: f32,
     /// Optional tint color blended over the blurred backdrop.
     pub tint: Option<Hsla>,
+    /// Controls whether compatible overlap is reused or recomputed independently.
+    pub overlap_mode: BackdropBlurOverlapMode,
 }
 
 impl BackdropBlurStyle {
@@ -366,14 +378,11 @@ impl BackdropBlurStyle {
             levels: 3,
             saturation: 1.0,
             tint: None,
+            overlap_mode: BackdropBlurOverlapMode::Reuse,
         }
     }
 
-    /// Selects an efficient blur pyramid for the configured radius.
-    ///
-    /// Sub-pixel radii stay at full resolution so they do not disappear after
-    /// downsampling. Modal-sized radii use a two-level half-resolution pyramid
-    /// to reduce bandwidth without paying for the previous three-level chain.
+    /// Selects an efficient blur configuration for the configured radius.
     pub fn auto_quality(mut self) -> Self {
         let radius = self.radius.0.abs();
         let (downsample, levels) = if radius < 1.0 {
@@ -396,7 +405,7 @@ impl BackdropBlurStyle {
         self
     }
 
-    /// Sets the number of Dual Kawase blur levels. Values are clamped to `1..=6`.
+    /// Sets the number of filter levels. Values are clamped to `1..=6`.
     pub fn levels(mut self, levels: u8) -> Self {
         self.levels = levels.clamp(1, 6);
         self
@@ -411,6 +420,12 @@ impl BackdropBlurStyle {
     /// Sets a tint color blended over the blurred backdrop.
     pub fn tint(mut self, tint: Hsla) -> Self {
         self.tint = Some(tint);
+        self
+    }
+
+    /// Selects how compatible overlapping blur primitives are evaluated.
+    pub fn overlap_mode(mut self, overlap_mode: BackdropBlurOverlapMode) -> Self {
+        self.overlap_mode = overlap_mode;
         self
     }
 }
@@ -446,6 +461,7 @@ pub(crate) struct PaintBackdropBlur {
     pub levels: u8,
     pub saturation: f32,
     pub tint: Option<Hsla>,
+    pub recompute_overlap: bool,
 }
 
 impl From<PaintBackdropBlur> for Primitive {
