@@ -39,9 +39,9 @@ impl NovaRenderer {
 
     /// Builds one exact source-prefix render for every backdrop batch.
     ///
-    /// Earlier blur groups are included when preparing a later source. This gives every glass
-    /// surface the pixels that really existed behind it at its draw-order position instead of the
-    /// old global "everything samples the first blur's source" model.
+    /// Each group now renders only the source rectangle needed by its Gaussian kernel. The old
+    /// implementation replayed every prefix over the full drawable and then ran two full-screen
+    /// filter passes, which made a small titlebar/popover blur scale with window resolution.
     pub(super) fn prepare_backdrop_blur_groups(
         &self,
         enabled: bool,
@@ -63,6 +63,13 @@ impl NovaRenderer {
             let NovaUploadedBatch::BackdropBlurs { first, count } = *batch else {
                 continue;
             };
+            let configs = self
+                .frame_upload
+                .backdrop_blur_configs_for_range(first, count);
+            if configs.is_empty() {
+                continue;
+            }
+
             let mut source_steps = Vec::new();
             draw_steps_for_upload_into(
                 &self.frame_upload,
@@ -88,9 +95,14 @@ impl NovaRenderer {
                 &mut source_steps,
             );
 
-            let configs = self
-                .frame_upload
-                .backdrop_blur_configs_for_range(first, count);
+            let group_source_scissor = configs
+                .iter()
+                .filter_map(|config| blur_source_scissor(*config, self.current_size))
+                .reduce(union_scissor_rects);
+            if let Some(scissor) = group_source_scissor {
+                apply_scissor_to_steps(&mut source_steps, scissor);
+            }
+
             let mut filter_passes = Vec::new();
             backdrop_blur_render_passes_for_configs_into(
                 &self.pipelines,
@@ -99,6 +111,8 @@ impl NovaRenderer {
                 &configs,
                 &mut filter_passes,
             );
+            apply_filter_pass_scissors(&configs, self.current_size, &mut filter_passes);
+
             groups.push(NovaPreparedBackdropBlurGroup {
                 source_steps,
                 filter_passes,
@@ -161,6 +175,8 @@ impl NovaRenderer {
             self.current_frame_resource_index,
             passes,
         );
+        let configs: Vec<_> = targets.variants.iter().map(|variant| variant.config).collect();
+        apply_filter_pass_scissors(&configs, self.current_size, passes);
     }
 
     pub(super) fn has_backdrop_blurs(&self) -> bool {
@@ -210,4 +226,150 @@ fn custom_mesh_cache_entry(
         .get(&mesh_id)
         .copied()
         .filter(|entry| entry.generation == generation)
+}
+
+fn apply_filter_pass_scissors(
+    configs: &[NovaBackdropBlurConfig],
+    drawable_size: DrawableSize,
+    passes: &mut [NovaBackdropBlurRenderPass],
+) {
+    for (config, pass_pair) in configs.iter().zip(passes.chunks_mut(2)) {
+        let Some(source_scissor) = blur_source_scissor(*config, drawable_size) else {
+            continue;
+        };
+        let target_scissor = downsample_scissor(
+            source_scissor,
+            config.downsample(),
+            drawable_size,
+        );
+        for pass in pass_pair {
+            pass.step.scissor = Some(target_scissor);
+        }
+    }
+}
+
+fn apply_scissor_to_steps(steps: &mut [RenderStepDescriptor], scissor: ScissorRect) {
+    for step in steps {
+        let previous = step.scissor();
+        let clipped = previous.map_or(scissor, |previous| intersect_scissor_rects(previous, scissor));
+        match step {
+            RenderStepDescriptor::Draw(step) => step.scissor = Some(clipped),
+            RenderStepDescriptor::DrawIndexed(step) => step.scissor = Some(clipped),
+        }
+    }
+}
+
+fn blur_source_scissor(
+    config: NovaBackdropBlurConfig,
+    drawable_size: DrawableSize,
+) -> Option<ScissorRect> {
+    let [x, y, width, height] = config.bounds();
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+
+    // The Gaussian kernel never samples farther than `radius`. One extra source pixel covers
+    // bilinear interpolation at the boundary and avoids a hard seam around rounded glass.
+    let support = config.radius().max(0.0) + 1.0;
+    let left = floor_clamped_u32(x - support, drawable_size.width);
+    let top = floor_clamped_u32(y - support, drawable_size.height);
+    let right = ceil_clamped_u32(x + width + support, drawable_size.width);
+    let bottom = ceil_clamped_u32(y + height + support, drawable_size.height);
+    let scissor = ScissorRect {
+        x: left,
+        y: top,
+        width: right.saturating_sub(left),
+        height: bottom.saturating_sub(top),
+    };
+    (!scissor.is_empty()).then_some(scissor)
+}
+
+fn downsample_scissor(
+    source: ScissorRect,
+    downsample: u8,
+    drawable_size: DrawableSize,
+) -> ScissorRect {
+    let factor = u32::from(downsample.max(1));
+    let target_width = (drawable_size.width / factor).max(1);
+    let target_height = (drawable_size.height / factor).max(1);
+    let right = source.x.saturating_add(source.width);
+    let bottom = source.y.saturating_add(source.height);
+    let x = (source.x / factor).min(target_width);
+    let y = (source.y / factor).min(target_height);
+    let scaled_right = right.div_ceil(factor).min(target_width);
+    let scaled_bottom = bottom.div_ceil(factor).min(target_height);
+    ScissorRect {
+        x,
+        y,
+        width: scaled_right.saturating_sub(x),
+        height: scaled_bottom.saturating_sub(y),
+    }
+}
+
+fn union_scissor_rects(left: ScissorRect, right: ScissorRect) -> ScissorRect {
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    let right_edge = left
+        .x
+        .saturating_add(left.width)
+        .max(right.x.saturating_add(right.width));
+    let bottom_edge = left
+        .y
+        .saturating_add(left.height)
+        .max(right.y.saturating_add(right.height));
+    ScissorRect {
+        x,
+        y,
+        width: right_edge.saturating_sub(x),
+        height: bottom_edge.saturating_sub(y),
+    }
+}
+
+fn intersect_scissor_rects(left: ScissorRect, right: ScissorRect) -> ScissorRect {
+    let x = left.x.max(right.x);
+    let y = left.y.max(right.y);
+    let right_edge = left
+        .x
+        .saturating_add(left.width)
+        .min(right.x.saturating_add(right.width));
+    let bottom_edge = left
+        .y
+        .saturating_add(left.height)
+        .min(right.y.saturating_add(right.height));
+    ScissorRect {
+        x,
+        y,
+        width: right_edge.saturating_sub(x),
+        height: bottom_edge.saturating_sub(y),
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite clamped blur bounds are converted to integer scissor coordinates"
+)]
+fn floor_clamped_u32(value: f32, limit: u32) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else if value >= limit as f32 {
+        limit
+    } else {
+        value.floor() as u32
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite clamped blur bounds are converted to integer scissor coordinates"
+)]
+fn ceil_clamped_u32(value: f32, limit: u32) -> u32 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else if value >= limit as f32 {
+        limit
+    } else {
+        value.ceil() as u32
+    }
 }
