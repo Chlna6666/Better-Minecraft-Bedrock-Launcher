@@ -165,67 +165,78 @@ impl Scene {
         !self.backdrop_blurs.is_empty()
     }
 
+    /// Returns whether any pixels sampled by any backdrop group changed.
+    ///
+    /// Backdrop filters are draw-order barriers: a background filter must not become dirty merely
+    /// because a later tab animates, and a titlebar filter only cares about source pixels inside
+    /// its own sampling footprint. The old implementation compared one global prefix before the
+    /// first blur and forced every filter target to rebuild together.
     pub(crate) fn backdrop_blur_refresh_required(&self, previous: &Self) -> bool {
         if self.backdrop_blurs.is_empty() {
             return false;
         }
-        if self.backdrop_blurs != previous.backdrop_blurs {
+
+        let current_blurs = backdrop_blur_operations(&self.paint_operations);
+        let previous_blurs = backdrop_blur_operations(&previous.paint_operations);
+        if current_blurs.len() != previous_blurs.len() {
             return true;
         }
 
-        let current_source = self.backdrop_blur_source_operations();
-        let previous_source = previous.backdrop_blur_source_operations();
-        if current_source.len() != previous_source.len()
-            || current_source
-                .iter()
-                .zip(previous_source)
-                .any(|(current, previous)| !current.visually_eq(previous))
+        for ((current_index, current_blur), (previous_index, previous_blur)) in
+            current_blurs.into_iter().zip(previous_blurs)
         {
-            return true;
+            if current_blur != previous_blur {
+                return true;
+            }
+            let source_region = backdrop_blur_source_region(current_blur);
+            if source_region.is_empty() {
+                continue;
+            }
+            if paint_operations_changed_in_region(
+                &self.paint_operations[..current_index],
+                &previous.paint_operations[..previous_index],
+                source_region,
+            ) {
+                return true;
+            }
         }
 
         self.backdrop_blur_source_animation_values_changed(&previous.animation_values)
     }
 
+    /// Checks GPU-side animation values that can change pixels sampled by a backdrop group.
+    ///
+    /// This is used by animation-only frames where the CPU scene itself is retained. It applies
+    /// the same draw-order and spatial isolation as [`Self::backdrop_blur_refresh_required`].
     pub(crate) fn backdrop_blur_source_animation_values_changed(
         &self,
-        previous_values: &[SceneAnimationValue],
+        next_values: &[SceneAnimationValue],
     ) -> bool {
         if self.backdrop_blurs.is_empty() {
             return false;
         }
 
-        self.backdrop_blur_source_operations()
-            .iter()
-            .filter_map(|operation| match operation {
-                PaintOperation::Primitive(primitive) => primitive.animation_id(),
-                PaintOperation::StartLayer(_) | PaintOperation::EndLayer => None,
-            })
-            .chain(
-                self.backdrop_blurs
-                    .iter()
-                    .filter_map(|blur| blur.animation_id),
-            )
-            .any(|animation_id| {
-                self.animation_value(animation_id)
-                    != previous_values
-                        .iter()
-                        .find(|value| value.animation_id == animation_id)
-            })
-    }
-
-    fn backdrop_blur_source_operations(&self) -> &[PaintOperation] {
-        let source_end = self
-            .paint_operations
-            .iter()
-            .position(|operation| {
-                matches!(
-                    operation,
-                    PaintOperation::Primitive(Primitive::BackdropBlur(_))
-                )
-            })
-            .unwrap_or(self.paint_operations.len());
-        &self.paint_operations[..source_end]
+        for (blur_index, blur) in backdrop_blur_operations(&self.paint_operations) {
+            if animation_value_changed(self, blur.animation_id, next_values) {
+                return true;
+            }
+            let source_region = backdrop_blur_source_region(blur);
+            if source_region.is_empty() {
+                continue;
+            }
+            for operation in &self.paint_operations[..blur_index] {
+                let PaintOperation::Primitive(primitive) = operation else {
+                    continue;
+                };
+                if !primitive.visual_bounds().intersects(&source_region) {
+                    continue;
+                }
+                if animation_value_changed(self, primitive.animation_id(), next_values) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn animation_value(&self, animation_id: SceneAnimationId) -> Option<&SceneAnimationValue> {
@@ -238,14 +249,10 @@ impl Scene {
         &self,
         damage: Bounds<ScaledPixels>,
     ) -> impl Iterator<Item = Bounds<ScaledPixels>> + '_ {
-        let influence_radius = self
-            .backdrop_blurs
-            .iter()
-            .map(backdrop_blur_influence_radius)
-            .fold(ScaledPixels(0.0), |left, right| {
-                ScaledPixels(left.0.max(right.0))
-            });
         self.backdrop_blurs.iter().filter_map(move |blur| {
+            // Each blur carries its own kernel support. A 0.1px background filter must never inherit
+            // the 18px titlebar's damage expansion merely because both exist in the same scene.
+            let influence_radius = backdrop_blur_influence_radius(blur);
             let affected = damage
                 .dilate(influence_radius)
                 .intersect(&blur.bounds)
@@ -765,32 +772,78 @@ impl Scene {
     }
 }
 
+fn backdrop_blur_operations(
+    operations: &[PaintOperation],
+) -> Vec<(usize, &PaintBackdropBlur)> {
+    operations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, operation)| match operation {
+            PaintOperation::Primitive(Primitive::BackdropBlur(blur)) => Some((index, blur)),
+            PaintOperation::Primitive(_)
+            | PaintOperation::StartLayer(_)
+            | PaintOperation::EndLayer => None,
+        })
+        .collect()
+}
+
+fn backdrop_blur_source_region(blur: &PaintBackdropBlur) -> Bounds<ScaledPixels> {
+    blur.bounds
+        .intersect(&blur.content_mask.bounds)
+        .dilate(backdrop_blur_influence_radius(blur))
+}
+
+fn paint_operations_changed_in_region(
+    current: &[PaintOperation],
+    previous: &[PaintOperation],
+    region: Bounds<ScaledPixels>,
+) -> bool {
+    let prefix_len = current
+        .iter()
+        .zip(previous)
+        .take_while(|(current, previous)| current.visually_eq(previous))
+        .count();
+    let max_suffix_len = current.len().min(previous.len()).saturating_sub(prefix_len);
+    let suffix_len = current
+        .iter()
+        .rev()
+        .zip(previous.iter().rev())
+        .take(max_suffix_len)
+        .take_while(|(current, previous)| current.visually_eq(previous))
+        .count();
+
+    current[prefix_len..current.len().saturating_sub(suffix_len)]
+        .iter()
+        .chain(&previous[prefix_len..previous.len().saturating_sub(suffix_len)])
+        .filter_map(PaintOperation::visual_bounds)
+        .any(|bounds| bounds.intersects(&region))
+}
+
+fn animation_value_changed(
+    scene: &Scene,
+    animation_id: Option<SceneAnimationId>,
+    next_values: &[SceneAnimationValue],
+) -> bool {
+    let Some(animation_id) = animation_id else {
+        return false;
+    };
+    scene.animation_value(animation_id)
+        != next_values
+            .iter()
+            .find(|value| value.animation_id == animation_id)
+}
+
 fn backdrop_blur_influence_radius(blur: &PaintBackdropBlur) -> ScaledPixels {
     let radius = blur.radius.0.abs();
     if !radius.is_finite() || radius <= 0.0 {
         return ScaledPixels(0.0);
     }
 
-    let downsample = f32::from(blur.downsample.max(1));
-    let levels = blur.levels.clamp(1, 6);
-    let offset = (radius / downsample / f32::from(levels)).clamp(1.0 / 256.0, 6.0);
-    let pyramid_span = match levels {
-        1 => 0.0,
-        2 => 1.0,
-        3 => 3.0,
-        4 => 7.0,
-        5 => 15.0,
-        _ => 31.0,
-    };
-    let downsample_source_span = 1.0 + downsample * pyramid_span;
-    let upsample_source_span = 2.0 * downsample * pyramid_span;
-
-    // Dual-Kawase support accumulates through every downsample and upsample pass. The upsample
-    // shader reaches two source texels per pass; the final term conservatively includes linear
-    // sampling at each level and during the composite sample.
-    let tap_support = offset * (downsample_source_span + 2.0 * upsample_source_span);
-    let linear_support = downsample_source_span + upsample_source_span + downsample;
-    ScaledPixels((tap_support + linear_support).ceil())
+    // The separable Gaussian kernel samples exactly through ±radius. Add half of the source texel
+    // footprint to account for linear filtering and downsampled sources without carrying over the
+    // old Dual-Kawase pyramid's exponentially growing support.
+    let linear_footprint = 0.5 * f32::from(blur.downsample.max(1));
+    ScaledPixels(radius + linear_footprint)
 }
 
 fn ordering_operations_match(current: &PaintOperation, previous: &PaintOperation) -> bool {
