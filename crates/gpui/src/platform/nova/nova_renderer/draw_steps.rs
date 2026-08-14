@@ -240,26 +240,28 @@ fn apply_filter_pass_scissors(
         let target_scissor =
             downsample_scissor(source_scissor, config.downsample(), drawable_size);
         for pass in pass_pair {
-            apply_scissor_to_step(&mut pass.step, target_scissor);
+            pass.step.scissor = Some(clip_scissor(pass.step.scissor, target_scissor));
         }
     }
 }
 
 fn apply_scissor_to_steps(steps: &mut [RenderStepDescriptor], scissor: ScissorRect) {
     for step in steps {
-        apply_scissor_to_step(step, scissor);
+        match step {
+            RenderStepDescriptor::Draw(step) => {
+                step.scissor = Some(clip_scissor(step.scissor, scissor));
+            }
+            RenderStepDescriptor::DrawIndexed(step) => {
+                step.scissor = Some(clip_scissor(step.scissor, scissor));
+            }
+        }
     }
 }
 
-fn apply_scissor_to_step(step: &mut RenderStepDescriptor, scissor: ScissorRect) {
-    let previous = step.scissor();
-    let clipped = previous.map_or(scissor, |previous| {
+fn clip_scissor(previous: Option<ScissorRect>, scissor: ScissorRect) -> ScissorRect {
+    previous.map_or(scissor, |previous| {
         intersect_scissor_rects(previous, scissor)
-    });
-    match step {
-        RenderStepDescriptor::Draw(step) => step.scissor = Some(clipped),
-        RenderStepDescriptor::DrawIndexed(step) => step.scissor = Some(clipped),
-    }
+    })
 }
 
 fn blur_source_scissor(
