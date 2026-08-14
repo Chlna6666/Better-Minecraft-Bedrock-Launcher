@@ -15,24 +15,23 @@ pub(super) struct NovaPathMaskTargetDescriptor {
     pub(super) sampler: SamplerId,
 }
 
-#[derive(Clone)]
 pub(super) struct NovaBackdropBlurTargets {
     pub(super) downsample: NovaBackdropBlurConfigSet,
-    // 这里只复用“未经过滤”的场景输入，避免为每个半径重复绘制整棵场景。
-    // 每个 config 的滤镜金字塔、采样参数和最终纹理仍然完全独立。
+    // This is a transient, unfiltered source target. Different blur configurations never share a
+    // filtered result; the same raw target is overwritten when a later draw-order group is built.
     pub(super) source: NovaTextureTarget,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     pub(super) variants: Vec<NovaBackdropBlurVariantTargets>,
 }
 
-#[derive(Clone)]
 pub(super) struct NovaBackdropBlurVariantTargets {
     pub(super) config: NovaBackdropBlurConfig,
+    // Two same-resolution scratch targets form a separable Gaussian ping/pong pair:
+    // levels[0] = horizontal result, levels[1] = vertical/final result.
     pub(super) levels: Vec<NovaBackdropBlurLevelTarget>,
     pub(super) target_resource_sets: Vec<ResourceSetId>,
 }
 
-#[derive(Clone)]
 pub(super) struct NovaBackdropBlurLevelTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
@@ -178,18 +177,16 @@ where
     let mut variants = Vec::with_capacity(configs.len());
     for (variant_index, config) in configs.iter().copied().enumerate() {
         let downsample = u32::from(config.downsample().max(1));
-        let level_count = config.levels().clamp(1, usize::from(MAX_BACKDROP_BLUR_LEVELS));
-        let mut levels = Vec::with_capacity(level_count);
-        for level_index in 0..level_count {
-            let factor = downsample.saturating_mul(1_u32 << level_index as u32);
-            let target_size = Extent2d::new(
-                (descriptor.size.width() / factor).max(1),
-                (descriptor.size.height() / factor).max(1),
-            )?;
+        let target_size = Extent2d::new(
+            (descriptor.size.width() / downsample).max(1),
+            (descriptor.size.height() / downsample).max(1),
+        )?;
+        let mut levels = Vec::with_capacity(2);
+        for pass_index in 0..2 {
             let target = create_render_texture_target(
                 device,
                 &format!(
-                    "{label} backdrop blur variant {variant_index} level {level_index}"
+                    "{label} backdrop gaussian variant {variant_index} pass {pass_index}"
                 ),
                 target_size,
                 descriptor.format,
@@ -198,7 +195,7 @@ where
             for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
                 pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
                     label: Some(format!(
-                        "{label} backdrop blur variant {variant_index} level {level_index} frame {frame_index} pass resource set"
+                        "{label} backdrop gaussian variant {variant_index} pass {pass_index} frame {frame_index} resource set"
                     )),
                     layout: descriptor.pass_resource_set_layout,
                     bindings: backdrop_blur_pass_resource_bindings(
@@ -218,7 +215,7 @@ where
         let mut target_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
         for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
             let source_texture_view = levels
-                .first()
+                .last()
                 .map_or(source.texture_view, |level| level.texture_view);
             target_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
                 label: Some(format!(
