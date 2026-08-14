@@ -132,10 +132,18 @@ pub(super) fn draw_steps_for_upload_into(
                 count,
             } => {
                 if let Some(resource_set) = sprite_resource_set(texture_id) {
+                    #[cfg(target_os = "windows")]
+                    let pipeline = if texture_id.kind == AtlasTextureKind::Subpixel {
+                        blend_pipelines.subpixel_sprites
+                    } else {
+                        blend_pipelines.mono_sprites
+                    };
+                    #[cfg(not(target_os = "windows"))]
+                    let pipeline = blend_pipelines.mono_sprites;
                     push_draw_step(
                         steps,
                         DrawStepDescriptor {
-                            pipeline: blend_pipelines.mono_sprites,
+                            pipeline,
                             resource_sets: resource_set_list([resource_set]),
                             vertex_count: 4,
                             first_vertex: 0,

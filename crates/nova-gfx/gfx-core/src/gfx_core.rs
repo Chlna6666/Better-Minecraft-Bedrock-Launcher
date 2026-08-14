@@ -1219,6 +1219,9 @@ pub enum BlendMode {
     PremultipliedAlpha,
     /// Preserve color-over behavior while accumulating alpha.
     AdditiveAlpha,
+    /// Windows RGB subpixel text using the second fragment output as per-channel coverage.
+    #[cfg(target_os = "windows")]
+    SubpixelDualSource,
 }
 
 /// Primitive topology used by a graphics pipeline.

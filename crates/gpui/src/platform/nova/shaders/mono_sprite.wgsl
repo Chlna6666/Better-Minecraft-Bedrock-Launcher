@@ -1,4 +1,4 @@
-// --- monochrome sprites --- //
+// --- monochrome and RGB subpixel sprites --- //
 
 struct MonochromeSprite {
     order: u32,
@@ -20,8 +20,12 @@ struct MonoSpriteVarying {
     @location(5) @interpolate(flat) content_mask_radii: vec4<f32>,
 }
 
-@vertex
-fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> MonoSpriteVarying {
+struct SubpixelSpriteFragmentOutput {
+    @location(0) @blend_src(0) foreground: vec4<f32>,
+    @location(0) @blend_src(1) coverage: vec4<f32>,
+}
+
+fn mono_sprite_varying(vertex_id: u32, instance_id: u32) -> MonoSpriteVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let sprite = b_mono_sprites[instance_id];
 
@@ -35,16 +39,23 @@ fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     return out;
 }
 
+@vertex
+fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> MonoSpriteVarying {
+    return mono_sprite_varying(vertex_id, instance_id);
+}
+
+@vertex
+fn vs_subpixel_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> MonoSpriteVarying {
+    return mono_sprite_varying(vertex_id, instance_id);
+}
+
 @fragment
 fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
     let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
     }
-    if (clip_coverage <= 0.0) {
-        return vec4<f32>(0.0);
-    }
-    if (input.color.a <= 0.0) {
+    if (clip_coverage <= 0.0 || input.color.a <= 0.0) {
         return vec4<f32>(0.0);
     }
 
@@ -59,7 +70,29 @@ fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
         text_raster_params.grayscale_enhanced_contrast,
         text_raster_params.gamma_ratios
     );
-
-    // convert to srgb space as the rest of the code (output swapchain) expects that
     return blend_color(input.color, alpha_corrected * clip_coverage);
+}
+
+@fragment
+fn fs_subpixel_sprite(input: MonoSpriteVarying) -> SubpixelSpriteFragmentOutput {
+    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
+    if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0 || input.color.a <= 0.0) {
+        return SubpixelSpriteFragmentOutput(vec4<f32>(0.0), vec4<f32>(0.0));
+    }
+
+    var sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0).rgb;
+    if (text_raster_params.is_bgr != 0u) {
+        sample = sample.bgr;
+    }
+    let corrected = apply_contrast_and_gamma_correction3(
+        sample,
+        input.color.rgb,
+        text_raster_params.subpixel_enhanced_contrast,
+        text_raster_params.gamma_ratios
+    );
+
+    var out = SubpixelSpriteFragmentOutput();
+    out.foreground = vec4<f32>(input.color.rgb, 1.0);
+    out.coverage = vec4<f32>(input.color.a * corrected * clip_coverage, 1.0);
+    return out;
 }

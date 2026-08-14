@@ -3295,9 +3295,24 @@ fn create_device(
     if incremental_presentation {
         device_extensions.push(khr::incremental_present::NAME.as_ptr());
     }
+    let mut enabled_features = vk::PhysicalDeviceFeatures::default();
+    #[cfg(target_os = "windows")]
+    {
+        // Windows Nova has a single strict text contract: RGB subpixel composition requires
+        // independent destination attenuation for R/G/B, which Vulkan exposes through dualSrcBlend.
+        let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
+        if supported_features.dual_src_blend != vk::TRUE {
+            return Err(VulkanError::Unavailable(
+                "Windows Nova Vulkan requires dualSrcBlend for RGB subpixel text".to_string(),
+            )
+            .into());
+        }
+        enabled_features.dual_src_blend = vk::TRUE;
+    }
     let create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
-        .enabled_extension_names(&device_extensions);
+        .enabled_extension_names(&device_extensions)
+        .enabled_features(&enabled_features);
     // SAFETY: Physical device and queue info were selected from this instance.
     let device = unsafe { instance.create_device(physical_device, &create_info, None) }
         .map_err(VulkanError::from)?;
@@ -3680,6 +3695,17 @@ fn create_graphics_pipeline(
                 .color_blend_op(vk::BlendOp::ADD)
                 .src_alpha_blend_factor(vk::BlendFactor::ONE)
                 .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+                .alpha_blend_op(vk::BlendOp::ADD);
+        }
+        #[cfg(target_os = "windows")]
+        BlendMode::SubpixelDualSource => {
+            color_blend_attachment = color_blend_attachment
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC1_COLOR)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC1_COLOR)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
                 .alpha_blend_op(vk::BlendOp::ADD);
         }
     }

@@ -24,17 +24,31 @@ fn apply_alpha_correction(a: f32, b: f32, g: vec4<f32>) -> f32 {
 fn apply_contrast_and_gamma_correction(sample: f32, color: vec3<f32>, enhanced_contrast_factor: f32, gamma_ratios: vec4<f32>) -> f32 {
     let enhanced_contrast = light_on_dark_contrast(enhanced_contrast_factor, color);
     let brightness = color_brightness(color);
-
     let contrasted = enhance_contrast(sample, enhanced_contrast);
     return apply_alpha_correction(contrasted, brightness, gamma_ratios);
+}
+
+fn apply_contrast_and_gamma_correction3(sample: vec3<f32>, color: vec3<f32>, enhanced_contrast_factor: f32, gamma_ratios: vec4<f32>) -> vec3<f32> {
+    let enhanced_contrast = light_on_dark_contrast(enhanced_contrast_factor, color);
+    let brightness = color_brightness(color);
+    let contrasted = vec3<f32>(
+        enhance_contrast(sample.r, enhanced_contrast),
+        enhance_contrast(sample.g, enhanced_contrast),
+        enhance_contrast(sample.b, enhanced_contrast),
+    );
+    return vec3<f32>(
+        apply_alpha_correction(contrasted.r, brightness, gamma_ratios),
+        apply_alpha_correction(contrasted.g, brightness, gamma_ratios),
+        apply_alpha_correction(contrasted.b, brightness, gamma_ratios),
+    );
 }
 
 struct TextRasterParams {
     gamma_ratios: vec4<f32>,
     grayscale_enhanced_contrast: f32,
-    pad0: f32,
-    pad1: f32,
-    pad2: f32,
+    subpixel_enhanced_contrast: f32,
+    is_bgr: u32,
+    pad0: u32,
 }
 
 @group(0) @binding(1) var<uniform> text_raster_params: TextRasterParams;

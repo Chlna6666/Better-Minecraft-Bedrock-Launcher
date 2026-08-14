@@ -75,6 +75,10 @@ pub(super) struct NovaShaderBinaries {
     pub(super) path_fragment: gfx_core::ShaderBinary,
     pub(super) mono_vertex: gfx_core::ShaderBinary,
     pub(super) mono_fragment: gfx_core::ShaderBinary,
+    #[cfg(target_os = "windows")]
+    pub(super) subpixel_vertex: gfx_core::ShaderBinary,
+    #[cfg(target_os = "windows")]
+    pub(super) subpixel_fragment: gfx_core::ShaderBinary,
     pub(super) poly_vertex: gfx_core::ShaderBinary,
     pub(super) poly_fragment: gfx_core::ShaderBinary,
     pub(super) underline_vertex: gfx_core::ShaderBinary,
@@ -146,6 +150,10 @@ pub(super) struct NovaBlendPipelineDescriptor<'a> {
     pub(super) shadow_fragment: gfx_core::ShaderModuleId,
     pub(super) mono_vertex: gfx_core::ShaderModuleId,
     pub(super) mono_fragment: gfx_core::ShaderModuleId,
+    #[cfg(target_os = "windows")]
+    pub(super) subpixel_vertex: gfx_core::ShaderModuleId,
+    #[cfg(target_os = "windows")]
+    pub(super) subpixel_fragment: gfx_core::ShaderModuleId,
     pub(super) poly_vertex: gfx_core::ShaderModuleId,
     pub(super) poly_fragment: gfx_core::ShaderModuleId,
     pub(super) underline_vertex: gfx_core::ShaderModuleId,
@@ -214,6 +222,20 @@ pub(super) fn compile_nova_shader_binaries(
             "fs_mono_sprite",
         )
         .context("compiling nova mono sprite fragment shader")?,
+        #[cfg(target_os = "windows")]
+        subpixel_vertex: compile(
+            NOVA_MONO_SPRITE_SHADER_SOURCE,
+            ShaderStage::Vertex,
+            "vs_subpixel_sprite",
+        )
+        .context("compiling nova RGB subpixel sprite vertex shader")?,
+        #[cfg(target_os = "windows")]
+        subpixel_fragment: compile(
+            NOVA_MONO_SPRITE_SHADER_SOURCE,
+            ShaderStage::Fragment,
+            "fs_subpixel_sprite",
+        )
+        .context("compiling nova RGB subpixel sprite fragment shader")?,
         poly_vertex: compile(
             NOVA_POLY_SPRITE_SHADER_SOURCE,
             ShaderStage::Vertex,

@@ -31,10 +31,7 @@ where
     })
 }
 
-fn resolve_initial_drawable_size<W>(
-    window: &W,
-    requested: Size<DevicePixels>,
-) -> Size<DevicePixels>
+fn resolve_initial_drawable_size<W>(window: &W, requested: Size<DevicePixels>) -> Size<DevicePixels>
 where
     W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
 {

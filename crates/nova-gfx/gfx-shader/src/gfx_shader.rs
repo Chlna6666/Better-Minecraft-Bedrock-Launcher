@@ -55,7 +55,7 @@ impl WgslModule {
     pub fn parse(source: &str) -> Result<Self> {
         let module = naga::front::wgsl::parse_str(source)
             .map_err(|error| ShaderError::Parse(error.emit_to_string(source)))?;
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), Capabilities::DUAL_SOURCE_BLENDING)
             .validate(&module)
             .map_err(|error| ShaderError::Validate(error.to_string()))?;
         Ok(Self { module, info })
