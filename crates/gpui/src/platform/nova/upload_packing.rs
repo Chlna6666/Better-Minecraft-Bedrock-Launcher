@@ -62,9 +62,6 @@ fn pack_custom_mesh_3d_color(color: [f32; 4]) -> u32 {
     let green = pack_unorm8(color[1]);
     let blue = pack_unorm8(color[2]);
 
-    // Skin preview historically stores three edge-mask bits in floor(alpha / 2), while map
-    // meshes use a conventional alpha in 0..=1. Preserve both representations in one byte:
-    // high three bits are the edge mask and low five bits are the normalized alpha.
     let encoded_alpha = if color[3].is_finite() {
         color[3].max(0.0)
     } else {
@@ -104,7 +101,7 @@ pub(super) fn write_backdrop_blur(
     write_u32_vec(bytes, blur.order);
     write_u32_vec(bytes, u32::from(blur.downsample));
     write_u32_vec(bytes, u32::from(blur.levels.clamp(1, 6)));
-    write_u32_vec(bytes, 0);
+    write_u32_vec(bytes, u32::from(blur.recompute_overlap));
     write_bounds_scaled(bytes, &blur.bounds);
     write_content_mask(bytes, &blur.content_mask);
     write_corners(bytes, &blur.corner_radii);
@@ -128,9 +125,6 @@ pub(super) fn backdrop_blur_offset(radius: f32, downsample: u8, levels: u8) -> f
     let downsample = f32::from(downsample.max(1));
     let levels = f32::from(levels.clamp(1, 6));
     let offset = radius / downsample / levels;
-
-    // Preserve sub-pixel sample distances. The previous 0.5 lower clamp made
-    // all small radii look identical and effectively disabled values below 1px.
     offset.clamp(1.0 / 256.0, 6.0)
 }
 
