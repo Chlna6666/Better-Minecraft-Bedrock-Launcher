@@ -76,8 +76,8 @@ fn gaussian_weight(distance: f32, sigma: f32) -> f32 {
 }
 
 fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
-    let pass = b_backdrop_blur_passes[input.instance_id];
-    let radius = max(pass.radius, 1.0 / 4096.0);
+    let blur_pass = b_backdrop_blur_passes[input.instance_id];
+    let radius = max(blur_pass.radius, 1.0 / 4096.0);
     let sigma = max(radius / 3.0, 1.0 / 4096.0);
     let tap_step = radius / 8.0;
     let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0));
