@@ -1,4 +1,5 @@
 use crate::ui::components::adaptive::{AdaptiveSizeClass, WindowMetrics};
+use crate::ui::components::page_shell::{PAGE_INSET_BOTTOM, PAGE_INSET_TOP, PAGE_INSET_X};
 use gpui::{Pixels, px};
 
 #[derive(Clone, Copy, Debug)]
@@ -20,22 +21,11 @@ impl SettingsLayout {
         let width_px = window_width / px(1.0);
         let height_px = window_height / px(1.0);
 
-        let (page_inset_x, page_padding, content_gap) = match metrics.width_class {
-            AdaptiveSizeClass::Compact => (px(8.0), px(9.0), px(8.0)),
-            AdaptiveSizeClass::Regular => (px(12.0), px(10.0), px(9.0)),
-            AdaptiveSizeClass::Spacious => (px(18.0), px(12.0), px(10.0)),
+        let (page_padding, content_gap) = match metrics.width_class {
+            AdaptiveSizeClass::Compact => (px(9.0), px(8.0)),
+            AdaptiveSizeClass::Regular => (px(10.0), px(9.0)),
+            AdaptiveSizeClass::Spacious => (px(12.0), px(10.0)),
         };
-
-        // 标题栏固定 60px。设置页只保留必要的呼吸空间，避免默认窗口下
-        // 因固定 92px 顶部 inset 把插件工作区压缩到不可用高度。
-        let page_inset_top = if height_px < 680.0 {
-            px(66.0)
-        } else if height_px < 820.0 {
-            px(72.0)
-        } else {
-            px(82.0)
-        };
-        let page_inset_bottom = if height_px < 820.0 { px(8.0) } else { px(14.0) };
 
         let content_max_width = if width_px >= 1500.0 {
             px(1180.0)
@@ -45,10 +35,10 @@ impl SettingsLayout {
             px(960.0)
         };
 
-        // 插件页是工作区，不应该套普通设置页的窄内容宽度；让容器吃满可用宽度，
-        // 仅在大窗口上留出少量视觉边界。
+        // 设置页仍可自适应内部间距，但页面级外框必须与其他路由共用同一组 inset。
+        // 这样切换页面时背景面板不会上下跳动，也不会因设置页单独压缩高度而显得更大。
         let available_width = (width_px
-            - 2.0 * (page_inset_x / px(1.0))
+            - 2.0 * (PAGE_INSET_X / px(1.0))
             - 2.0 * (page_padding / px(1.0)))
             .max(320.0);
         let plugin_max_width = px(if width_px >= 1600.0 {
@@ -62,15 +52,33 @@ impl SettingsLayout {
         let plugin_compact = width_px < 1280.0 || height_px < 690.0;
 
         Self {
-            page_inset_x,
-            page_inset_top,
-            page_inset_bottom,
+            page_inset_x: PAGE_INSET_X,
+            page_inset_top: PAGE_INSET_TOP,
+            page_inset_bottom: PAGE_INSET_BOTTOM,
             page_padding,
             content_gap,
             content_max_width,
             plugin_max_width,
             scroll_tabs: width_px < 760.0,
             plugin_compact,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_page_reuses_route_page_insets() {
+        let compact = SettingsLayout::new(px(720.0), px(620.0));
+        let regular = SettingsLayout::new(px(1215.0), px(750.0));
+        let spacious = SettingsLayout::new(px(1600.0), px(1000.0));
+
+        for layout in [compact, regular, spacious] {
+            assert_eq!(layout.page_inset_x, PAGE_INSET_X);
+            assert_eq!(layout.page_inset_top, PAGE_INSET_TOP);
+            assert_eq!(layout.page_inset_bottom, PAGE_INSET_BOTTOM);
         }
     }
 }
