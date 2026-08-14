@@ -242,27 +242,19 @@ fn encode_subpixel_upload(
                 .saturating_sub(padding)
                 .min(width.saturating_sub(1));
             let source_index = (y * width + x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            let coverage = subpixel_coverage(
-                source[source_index],
-                source[source_index + 1],
-                source[source_index + 2],
-                source[source_index + 3],
-            );
+            let alpha = u16::from(source[source_index + 3]);
+            let red = u16::from(source[source_index]).saturating_mul(alpha) / 255;
+            let green = u16::from(source[source_index + 1]).saturating_mul(alpha) / 255;
+            let blue = u16::from(source[source_index + 2]).saturating_mul(alpha) / 255;
             let atlas_index = (upload_y * upload_width + upload_x) * NOVA_ATLAS_BYTES_PER_PIXEL;
-            destination[atlas_index] = 0;
-            destination[atlas_index + 1] = 0;
-            destination[atlas_index + 2] = coverage;
+
+            // The GPU atlas uses BGRA8 memory layout. Preserve DirectWrite's independent
+            // R/G/B coverage values instead of collapsing them into one grayscale channel.
+            destination[atlas_index] = u8::try_from(blue).unwrap_or(u8::MAX);
+            destination[atlas_index + 1] = u8::try_from(green).unwrap_or(u8::MAX);
+            destination[atlas_index + 2] = u8::try_from(red).unwrap_or(u8::MAX);
             destination[atlas_index + 3] = 255;
         }
     }
     Some(())
-}
-
-fn subpixel_coverage(red: u8, green: u8, blue: u8, alpha: u8) -> u8 {
-    let coverage = u16::from(red)
-        .saturating_add(u16::from(green))
-        .saturating_add(u16::from(blue))
-        / 3;
-    let premultiplied_coverage = coverage.saturating_mul(u16::from(alpha)) / 255;
-    u8::try_from(premultiplied_coverage).unwrap_or(u8::MAX)
 }
