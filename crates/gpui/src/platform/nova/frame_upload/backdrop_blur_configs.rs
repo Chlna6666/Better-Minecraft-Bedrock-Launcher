@@ -12,10 +12,6 @@ pub(in crate::platform::nova) struct NovaBackdropBlurConfig {
 }
 
 impl NovaBackdropBlurConfig {
-    pub(in crate::platform::nova) fn fallback(downsample: u8) -> Self {
-        Self::new(downsample.max(1), 1, 1.0)
-    }
-
     fn new(downsample: u8, levels: u8, radius: f32) -> Self {
         let downsample = downsample.max(1);
         let levels = levels.clamp(1, MAX_BACKDROP_BLUR_LEVELS);
@@ -36,6 +32,55 @@ impl NovaBackdropBlurConfig {
 
     pub(in crate::platform::nova) fn offset(self) -> f32 {
         f32::from_bits(self.offset_bits)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::platform::nova) struct NovaBackdropBlurConfigSet {
+    configs: Vec<NovaBackdropBlurConfig>,
+    legacy_downsample: u8,
+}
+
+impl NovaBackdropBlurConfigSet {
+    pub(in crate::platform::nova) fn new(
+        configs: Vec<NovaBackdropBlurConfig>,
+        legacy_downsample: u8,
+    ) -> Self {
+        Self {
+            configs,
+            legacy_downsample: legacy_downsample.max(1),
+        }
+    }
+
+    pub(in crate::platform::nova) fn configs(&self) -> &[NovaBackdropBlurConfig] {
+        &self.configs
+    }
+
+    pub(in crate::platform::nova) fn representative_downsample(&self) -> u8 {
+        self.configs
+            .iter()
+            .map(|config| config.downsample())
+            .min()
+            .unwrap_or(self.legacy_downsample)
+            .max(1)
+    }
+}
+
+impl From<NovaBackdropBlurConfigSet> for usize {
+    fn from(value: NovaBackdropBlurConfigSet) -> Self {
+        usize::from(value.representative_downsample())
+    }
+}
+
+impl PartialEq<u8> for NovaBackdropBlurConfigSet {
+    fn eq(&self, other: &u8) -> bool {
+        self.legacy_downsample == other.max(&1).to_owned()
+    }
+}
+
+impl PartialEq<NovaBackdropBlurConfigSet> for u8 {
+    fn eq(&self, other: &NovaBackdropBlurConfigSet) -> bool {
+        other == self
     }
 }
 
@@ -69,6 +114,13 @@ impl NovaFrameUpload {
         configs
     }
 
+    pub(in crate::platform::nova) fn backdrop_blur_config_set(&self) -> NovaBackdropBlurConfigSet {
+        NovaBackdropBlurConfigSet::new(
+            self.backdrop_blur_configs(),
+            self.backdrop_blur_downsample.max(1),
+        )
+    }
+
     pub(in crate::platform::nova) fn rebuild_backdrop_blur_passes(
         &mut self,
         configs: &[NovaBackdropBlurConfig],
@@ -79,6 +131,11 @@ impl NovaFrameUpload {
         for config in configs {
             write_backdrop_blur_pass(&mut self.backdrop_blur_passes, config.offset());
         }
+    }
+
+    pub(in crate::platform::nova) fn rebuild_backdrop_blur_passes_for_current_frame(&mut self) {
+        let configs = self.backdrop_blur_configs();
+        self.rebuild_backdrop_blur_passes(&configs);
     }
 
     pub(in crate::platform::nova) fn for_each_backdrop_blur_run(
