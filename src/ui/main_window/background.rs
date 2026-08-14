@@ -4,14 +4,9 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
-// 主窗口标题栏拥有独立的玻璃模糊。背景图仍铺满整个窗口，但背景 blur primitive
-// 必须从标题栏下方开始，否则即使滤镜纹理已经按半径隔离，背景 0.1px 仍会先改写
-// 标题栏区域，随后再与标题栏自己的 18px 玻璃层叠加。
-const BACKGROUND_CONTENT_TOP_PX: f32 = 60.0;
-// 背景模糊直接保留用户配置的浮点半径。0.1px、0.2px 等亚像素值不能再被
-// 1px 阈值吞掉；小半径统一使用全分辨率单级滤镜，避免多级 Dual Kawase
-// 把 1px 放大成明显更强的视觉模糊。
-const BACKGROUND_BLUR_SINGLE_PASS_MAX_RADIUS_PX: f32 = 3.0;
+// Background blur is a full-background effect. Nova now isolates backdrop sources by draw order,
+// so the application no longer needs to carve a 60px hole around the titlebar to avoid sharing
+// filter results with the titlebar glass.
 const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
 const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
 
@@ -158,15 +153,9 @@ impl AppBackgroundView {
             return container;
         }
 
-        // 背景图片继续覆盖标题栏，供标题栏自己的 backdrop blur 取样；只有“背景模糊”
-        // 这一效果层避开标题栏。这样背景 0.1px 与标题栏 18px 从元素 bounds 开始就隔离，
-        // 而不是等到 Nova filter variant 阶段才尝试补救。
         let overlay = div()
             .absolute()
-            .top(px(BACKGROUND_CONTENT_TOP_PX))
-            .left(px(0.))
-            .right(px(0.))
-            .bottom(px(0.))
+            .inset_0()
             .bg(background_blur_overlay_color(blur));
 
         if background_uses_gpu_blur(blur) {
@@ -251,12 +240,9 @@ fn background_uses_gpu_blur(blur: f32) -> bool {
 }
 
 fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
-    let style = BackdropBlurStyle::new(px(blur)).auto_quality();
-    if blur < BACKGROUND_BLUR_SINGLE_PASS_MAX_RADIUS_PX {
-        style.downsample(1).levels(1)
-    } else {
-        style
-    }
+    // Background blur is capped at 10px by configuration, so keep it full-resolution. The new
+    // separable Gaussian uses exactly two passes and no longer needs Dual-Kawase levels.
+    BackdropBlurStyle::new(px(blur)).downsample(1).levels(2)
 }
 
 fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
@@ -360,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn subpixel_background_blur_enters_single_gpu_filter() {
+    fn subpixel_background_blur_enters_gaussian_gpu_filter() {
         assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
         assert!(!background_uses_gpu_blur(0.0));
         assert!(background_uses_gpu_blur(0.1));
