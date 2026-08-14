@@ -1,7 +1,11 @@
-// --- backdrop blur --- //
+// --- isolated backdrop blur --- //
+//
+// The old Dual-Kawase pyramid exaggerated small radii and made subpixel values feel quantized.
+// Nova now uses two separable Gaussian passes. Fractional radii remain fractional sample
+// positions all the way to the hardware sampler.
 
 struct BackdropBlurPass {
-    offset: f32,
+    radius: f32,
     pad0: f32,
     pad1: f32,
     pad: u32,
@@ -28,7 +32,7 @@ struct BackdropBlur {
 struct BackdropBlurPassVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) texture_coords: vec2<f32>,
-    @location(1) @interpolate(flat) offset: f32,
+    @location(1) @interpolate(flat) instance_id: u32,
 }
 
 struct BackdropBlurVarying {
@@ -50,9 +54,13 @@ fn vs_backdrop_blur_pass(
 ) -> BackdropBlurPassVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     var out = BackdropBlurPassVarying();
-    out.position = vec4<f32>(unit_vertex * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+    out.position = vec4<f32>(
+        unit_vertex * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0),
+        0.0,
+        1.0,
+    );
     out.texture_coords = unit_vertex;
-    out.offset = b_backdrop_blur_passes[instance_id].offset;
+    out.instance_id = instance_id;
     return out;
 }
 
@@ -60,44 +68,48 @@ fn sample_backdrop_blur_texture(texture_coords: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(t_sprite, s_sprite, texture_coords, 0.0);
 }
 
-fn kawase_downsample(texture_coords: vec2<f32>, texel_size: vec2<f32>, offset: f32) -> vec4<f32> {
-    let delta = texel_size * offset;
-    var color = sample_backdrop_blur_texture(texture_coords) * 4.0;
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(-delta.x, -delta.y));
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(delta.x, -delta.y));
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(-delta.x, delta.y));
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(delta.x, delta.y));
-    return color * 0.125;
+fn gaussian_weight(distance: f32, sigma: f32) -> f32 {
+    return exp(-(distance * distance) / max(2.0 * sigma * sigma, 1e-8));
 }
 
-fn kawase_upsample(texture_coords: vec2<f32>, texel_size: vec2<f32>, offset: f32) -> vec4<f32> {
-    let delta = texel_size * offset;
+fn gaussian_blur(input: BackdropBlurPassVarying) -> vec4<f32> {
+    let pass = b_backdrop_blur_passes[input.instance_id];
+    let radius = max(pass.radius, 1.0 / 256.0);
+    let sigma = max(radius / 3.0, 1.0 / 1024.0);
+    let tap_step = radius / 8.0;
+    let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0));
+    let horizontal = (input.instance_id & 1u) == 0u;
+    let axis = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), horizontal);
+    let texel_axis = axis / source_size;
+
     var color = vec4<f32>(0.0);
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(-2.0 * delta.x, 0.0));
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(-delta.x, delta.y)) * 2.0;
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(0.0, 2.0 * delta.y));
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(delta.x, delta.y)) * 2.0;
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(2.0 * delta.x, 0.0));
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(delta.x, -delta.y)) * 2.0;
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(0.0, -2.0 * delta.y));
-    color += sample_backdrop_blur_texture(texture_coords + vec2<f32>(-delta.x, -delta.y)) * 2.0;
-    return color * 0.0833333333;
+    var weight_sum = 0.0;
+    for (var tap: i32 = -8; tap <= 8; tap = tap + 1) {
+        let distance = f32(tap) * tap_step;
+        let weight = gaussian_weight(distance, sigma);
+        color += sample_backdrop_blur_texture(input.texture_coords + texel_axis * distance) * weight;
+        weight_sum += weight;
+    }
+    return color / max(weight_sum, 1e-6);
 }
 
+// Keep the old pipeline entry names so the gfx abstraction does not need another shader ABI.
+// The first instance of a configuration is horizontal and the second is vertical.
 @fragment
 fn fs_backdrop_blur_downsample(input: BackdropBlurPassVarying) -> @location(0) vec4<f32> {
-    let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0));
-    return kawase_downsample(input.texture_coords, 1.0 / source_size, input.offset);
+    return gaussian_blur(input);
 }
 
 @fragment
 fn fs_backdrop_blur_upsample(input: BackdropBlurPassVarying) -> @location(0) vec4<f32> {
-    let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0));
-    return kawase_upsample(input.texture_coords, 1.0 / source_size, input.offset);
+    return gaussian_blur(input);
 }
 
 @vertex
-fn vs_backdrop_blur(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> BackdropBlurVarying {
+fn vs_backdrop_blur(
+    @builtin(vertex_index) vertex_id: u32,
+    @builtin(instance_index) instance_id: u32,
+) -> BackdropBlurVarying {
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let blur = b_backdrop_blurs[instance_id];
     let screen_position = blur.bounds.origin + unit_vertex * blur.bounds.size;
@@ -105,8 +117,16 @@ fn vs_backdrop_blur(@builtin(vertex_index) vertex_id: u32, @builtin(instance_ind
     out.position = to_device_position(unit_vertex, blur.bounds);
     out.texture_coords = screen_position / max(blur.blurred_size, vec2<f32>(1.0));
     out.clip_distances = distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask.bounds);
-    out.content_mask_bounds = vec4<f32>(blur.content_mask.corner_bounds.origin, blur.content_mask.corner_bounds.size);
-    out.content_mask_radii = vec4<f32>(blur.content_mask.corner_radii.top_left, blur.content_mask.corner_radii.top_right, blur.content_mask.corner_radii.bottom_right, blur.content_mask.corner_radii.bottom_left);
+    out.content_mask_bounds = vec4<f32>(
+        blur.content_mask.corner_bounds.origin,
+        blur.content_mask.corner_bounds.size,
+    );
+    out.content_mask_radii = vec4<f32>(
+        blur.content_mask.corner_radii.top_left,
+        blur.content_mask.corner_radii.top_right,
+        blur.content_mask.corner_radii.bottom_right,
+        blur.content_mask.corner_radii.bottom_left,
+    );
     out.bounds = vec4<f32>(blur.bounds.origin, blur.bounds.size);
     out.corner_radii = vec4<f32>(
         blur.corner_radii.top_left,
@@ -121,16 +141,17 @@ fn vs_backdrop_blur(@builtin(vertex_index) vertex_id: u32, @builtin(instance_ind
 
 fn saturate_color(color: vec3<f32>, saturation: f32) -> vec3<f32> {
     let luminance = dot(color, GRAYSCALE_FACTORS);
-    return mix(vec3<f32>(luminance), color, saturation);
+    return mix(vec3<f32>(luminance), color, max(saturation, 0.0));
 }
 
 @fragment
 fn fs_backdrop_blur(input: BackdropBlurVarying) -> @location(0) vec4<f32> {
-    let clip_coverage = content_mask_coverage_from_packed(input.position.xy, input.content_mask_bounds, input.content_mask_radii);
-    if (any(input.clip_distances < vec4<f32>(0.0))) {
-        return vec4<f32>(0.0);
-    }
-    if (clip_coverage <= 0.0) {
+    let clip_coverage = content_mask_coverage_from_packed(
+        input.position.xy,
+        input.content_mask_bounds,
+        input.content_mask_radii,
+    );
+    if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0) {
         return vec4<f32>(0.0);
     }
     let distance = quad_sdf_from_packed(input.position.xy, input.bounds, input.corner_radii);
