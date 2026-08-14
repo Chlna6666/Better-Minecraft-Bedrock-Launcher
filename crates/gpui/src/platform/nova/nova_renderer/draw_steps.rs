@@ -7,16 +7,7 @@ impl NovaRenderer {
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
-        let backdrop_blur_resource_set = self
-            .backdrop_blur_targets
-            .as_ref()
-            .and_then(|targets| {
-                targets
-                    .target_resource_sets
-                    .get(frame_resource_index)
-                    .copied()
-            })
-            .unwrap_or_else(|| ResourceSetId::new(0));
+        let backdrop_blur_targets = self.backdrop_blur_targets.as_ref();
         let steps = &mut self.draw_step_scratch.draw_steps;
         draw_steps_for_upload_into(
             &self.frame_upload,
@@ -31,7 +22,9 @@ impl NovaRenderer {
                 custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
             },
             self.underline_resource_set,
-            backdrop_blur_resource_set,
+            |config| {
+                backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index)
+            },
             self.custom_mesh_3d_resource_set,
             self.custom_mesh_3d_indices_buffer,
             NovaDrawStepMode::Present,
@@ -49,16 +42,7 @@ impl NovaRenderer {
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
         let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
-        let backdrop_blur_resource_set = self
-            .backdrop_blur_targets
-            .as_ref()
-            .and_then(|targets| {
-                targets
-                    .target_resource_sets
-                    .get(frame_resource_index)
-                    .copied()
-            })
-            .unwrap_or_else(|| ResourceSetId::new(0));
+        let backdrop_blur_targets = self.backdrop_blur_targets.as_ref();
         let steps = &mut self.draw_step_scratch.backdrop_blur_source_steps;
         draw_steps_for_upload_into(
             &self.frame_upload,
@@ -73,7 +57,9 @@ impl NovaRenderer {
                 custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
             },
             self.underline_resource_set,
-            backdrop_blur_resource_set,
+            |config| {
+                backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index)
+            },
             self.custom_mesh_3d_resource_set,
             self.custom_mesh_3d_indices_buffer,
             NovaDrawStepMode::BackdropSource,
@@ -94,7 +80,6 @@ impl NovaRenderer {
             &self.pipelines,
             targets,
             self.current_frame_resource_index,
-            self.frame_upload.backdrop_blur_levels(),
             passes,
         );
     }
