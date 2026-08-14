@@ -4,7 +4,10 @@ use tracing::{info, instrument};
 pub(crate) const CUSTOM_BACKGROUND_PIPELINE_ENABLED: bool = true;
 const BACKGROUND_ANIMATION_MAX_FPS: f32 = 12.0;
 const BACKGROUND_GPU_BACKDROP_BLUR_ENABLED: bool = true;
-const BACKGROUND_GPU_BLUR_MIN_RADIUS_PX: f32 = 1.0;
+// 1px 左右的全窗 Dual Kawase 代价远高于肉眼收益，并且会额外保留一张全分辨率
+// blur target。小半径仅保留轻微遮罩，从 1.5px 开始才进入 GPU 模糊链。
+const BACKGROUND_GPU_BLUR_MIN_RADIUS_PX: f32 = 1.5;
+const BACKGROUND_BLUR_SINGLE_PASS_MAX_RADIUS_PX: f32 = 3.0;
 const BACKGROUND_BLUR_OVERLAY_REFERENCE_PX: f32 = 24.0;
 const BACKGROUND_BLUR_OVERLAY_MAX_ALPHA: f32 = 0.22;
 
@@ -157,9 +160,7 @@ impl AppBackgroundView {
             .bg(background_blur_overlay_color(blur));
 
         if background_uses_gpu_blur(blur) {
-            container.child(
-                overlay.backdrop_blur(BackdropBlurStyle::new(px(blur)).auto_quality()),
-            )
+            container.child(overlay.backdrop_blur(background_backdrop_blur_style(blur)))
         } else {
             container.child(overlay)
         }
@@ -237,6 +238,15 @@ impl AppBackgroundView {
 
 fn background_uses_gpu_blur(blur: f32) -> bool {
     BACKGROUND_GPU_BACKDROP_BLUR_ENABLED && blur >= BACKGROUND_GPU_BLUR_MIN_RADIUS_PX
+}
+
+fn background_backdrop_blur_style(blur: f32) -> BackdropBlurStyle {
+    let style = BackdropBlurStyle::new(px(blur)).auto_quality();
+    if blur < BACKGROUND_BLUR_SINGLE_PASS_MAX_RADIUS_PX {
+        style.downsample(1).levels(1)
+    } else {
+        style
+    }
 }
 
 fn background_blur_overlay_color(blur: f32) -> gpui::Hsla {
@@ -317,14 +327,12 @@ mod tests {
     #[test]
     fn background_animation_policy_pauses_when_suppressed() {
         let policy = background_animation_policy(true, true);
-
         assert!(!policy.play);
     }
 
     #[test]
     fn background_animation_policy_throttles_when_window_inactive() {
         let policy = background_animation_policy(false, false);
-
         assert!(policy.play);
         assert_eq!(policy.inactive_max_fps, Some(1.0));
     }
@@ -332,7 +340,6 @@ mod tests {
     #[test]
     fn background_animation_policy_caps_active_playback() {
         let policy = background_animation_policy(false, true);
-
         assert_eq!(policy.max_fps, Some(BACKGROUND_ANIMATION_MAX_FPS));
     }
 
@@ -343,10 +350,11 @@ mod tests {
     }
 
     #[test]
-    fn background_blur_uses_gpu_backdrop_blur_by_default() {
+    fn tiny_background_blur_avoids_fullscreen_gpu_filter() {
         assert!(BACKGROUND_GPU_BACKDROP_BLUR_ENABLED);
         assert!(!background_uses_gpu_blur(0.1));
-        assert!(background_uses_gpu_blur(1.0));
+        assert!(!background_uses_gpu_blur(1.0));
+        assert!(background_uses_gpu_blur(1.5));
         assert_eq!(background_blur_overlay_color(0.0).a, 0.0);
         assert_eq!(
             background_blur_overlay_color(f32::MAX).a,
