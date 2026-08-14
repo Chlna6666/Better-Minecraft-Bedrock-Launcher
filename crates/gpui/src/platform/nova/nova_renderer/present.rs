@@ -91,7 +91,11 @@ where
         )?;
     }
     if !frame_upload.animation_values.is_empty() {
-        device.write_buffer(buffers.animation_value, 0, &frame_upload.animation_values)?;
+        device.write_buffer(
+            buffers.animation_value,
+            0,
+            &frame_upload.animation_values,
+        )?;
     }
     if !frame_upload.custom_mesh_3d_parameters.is_empty() {
         device.write_buffer(
@@ -156,7 +160,6 @@ impl NovaRenderer {
             let factor = usize::from(config.downsample().max(1));
             let width = (self.current_size.width as usize / factor).max(1);
             let height = (self.current_size.height as usize / factor).max(1);
-            // Horizontal + vertical Gaussian passes use same-size ping/pong targets.
             level_pixels[0] = level_pixels[0]
                 .saturating_add(width.saturating_mul(height).saturating_mul(2));
         }
@@ -183,6 +186,9 @@ impl NovaRenderer {
             self.backend.supports_partial_presentation(self.swapchain);
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
+        // Atlas content_generation is bumped when CPU-side atlas content is encoded, before the
+        // deferred GPU upload happens. Therefore a pending glyph/image upload already invalidates
+        // the blur cache here and does not need a second post-upload source rebuild.
         let atlas_content_generation = self.atlas.content_generation();
         let backdrop_blur_refresh_required = has_backdrop_blurs
             && (render_plan.backdrop_blur_refresh_required
@@ -204,9 +210,14 @@ impl NovaRenderer {
 
         self.prepare_draw_steps();
         self.prepare_path_mask_draw_steps();
-        // Rebuild the compact Gaussian parameter buffer before frame buffers are uploaded.
         self.prepare_backdrop_blur_passes(has_backdrop_blurs);
-        let backdrop_blur_groups = self.prepare_backdrop_blur_groups(has_backdrop_blurs);
+        // Building exact source prefixes is O(blur_groups * scene_batches). Do not do that on
+        // every tab/button animation frame when all filtered targets are still valid.
+        let backdrop_blur_groups = if backdrop_blur_refresh_required {
+            self.prepare_backdrop_blur_groups(true)
+        } else {
+            Vec::new()
+        };
         let draw_step_count = self.draw_step_scratch.draw_steps.len();
         let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
         let mask_pass_count = usize::from(path_mask_step_count != 0);
@@ -382,8 +393,7 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                let refresh_backdrop_blur =
-                    backdrop_blur_refresh_required || atlas_stats.upload_count != 0;
+                let refresh_backdrop_blur = backdrop_blur_refresh_required;
                 backdrop_blur_refreshed = refresh_backdrop_blur;
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
@@ -485,8 +495,7 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                let refresh_backdrop_blur =
-                    backdrop_blur_refresh_required || atlas_stats.upload_count != 0;
+                let refresh_backdrop_blur = backdrop_blur_refresh_required;
                 backdrop_blur_refreshed = refresh_backdrop_blur;
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
@@ -572,8 +581,7 @@ impl NovaRenderer {
                         Some(depth_attachment),
                     )?;
                 }
-                let refresh_backdrop_blur =
-                    backdrop_blur_refresh_required || atlas_stats.upload_count != 0;
+                let refresh_backdrop_blur = backdrop_blur_refresh_required;
                 backdrop_blur_refreshed = refresh_backdrop_blur;
                 if refresh_backdrop_blur
                     && let Some(source_texture_view) = backdrop_blur_source_texture_view
