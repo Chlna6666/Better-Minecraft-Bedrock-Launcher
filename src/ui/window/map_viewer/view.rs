@@ -76,6 +76,103 @@ impl Drop for MapViewerWindowView {
 }
 
 impl MapViewerWindowView {
+    fn release_window_resources(&mut self, cx: &mut Context<Self>) {
+        self.cancel_metadata_scan();
+        self.cancel_active_render();
+        self.cancel_professional_overlay_query();
+        self.cancel_slime_window_candidate_query();
+        self.preview_3d.clear_resources(true);
+
+        // Stored tasks are window-scoped. Dropping their handles prevents delayed refreshes
+        // from keeping work alive while the native window is being removed.
+        self.viewport_idle_task.take();
+        self.task_updates_task.take();
+
+        self.session_generation = self.session_generation.saturating_add(1);
+        self.metadata_generation = self.metadata_generation.saturating_add(1);
+        self.render_generation = self.render_generation.saturating_add(1);
+        self.viewport_idle_generation = self.viewport_idle_generation.saturating_add(1);
+        self.viewport_plan_generation = self.viewport_plan_generation.saturating_add(1);
+        self.pending_render_image_eviction_generation = self
+            .pending_render_image_eviction_generation
+            .saturating_add(1);
+        self.pending_viewport_refresh = false;
+        self.viewport_work_refresh_scheduled = false;
+        self.viewport_composite_signature = None;
+        self.viewport_composite_request_id = None;
+        self.metadata_loading = false;
+        self.session_loading = false;
+
+        if let Some(session) = self.render_session.take() {
+            cx.background_spawn(async move {
+                drop(session);
+            })
+            .detach();
+        }
+
+        // A tile can be referenced simultaneously by RegionManager, the retained canvas
+        // snapshot and a delayed eviction entry. GPUI image resources must be released once,
+        // so collect every window-owned RenderImage by ImageId before clearing the owners.
+        let mut render_images = BTreeMap::<ImageId, Arc<RenderImage>>::new();
+        let mut collect_image = |image: Arc<RenderImage>| {
+            render_images.entry(image.id).or_insert(image);
+        };
+
+        for image in self.tile_manager.clear() {
+            collect_image(image);
+        }
+        for tile in self.canvas_tile_snapshot.tiles.iter() {
+            collect_image(tile.image.clone());
+        }
+        for image in self.canvas_tile_snapshot.screen_images.iter() {
+            collect_image(image.image.clone());
+        }
+        for (_, image) in self.pending_render_image_evictions.drain(..) {
+            collect_image(image);
+        }
+        for image in self.paste_preview_images.iter() {
+            collect_image(image.image.clone());
+        }
+        for image in self.professional.copied_chunk_preview_images.values() {
+            collect_image(image.image.clone());
+        }
+        for image in self.professional.entity_avatar_pool.values() {
+            collect_image(image.clone());
+        }
+        drop(collect_image);
+
+        self.canvas_tile_generation = self.canvas_tile_generation.saturating_add(1);
+        self.canvas_tile_snapshot = Arc::new(TilePaintSnapshot {
+            generation: self.canvas_tile_generation,
+            ..TilePaintSnapshot::default()
+        });
+        self.paste_preview_images = Arc::new(Vec::new());
+        self.paste_preview_images_generation =
+            self.paste_preview_images_generation.saturating_add(1);
+        self.professional.copied_chunk_preview_images.clear();
+        self.professional.entity_avatar_pool = Arc::new(BTreeMap::new());
+        self.pending_interaction_ready_tiles.clear();
+        self.active_render_tiles.clear();
+        self.active_render_center_tiles.clear();
+        self.active_render_request_tiles.clear();
+        self.last_synced_canvas_snapshot_key = None;
+        self.last_synced_tile_layer_snapshot_key = None;
+
+        let released_render_images = render_images.len();
+        for image in render_images.into_values() {
+            cx.drop_image(image, None);
+        }
+
+        crate::utils::memory_diagnostics::clear_map_viewer_memory();
+        tracing::debug!(
+            released_render_images,
+            session_generation = self.session_generation,
+            metadata_generation = self.metadata_generation,
+            render_generation = self.render_generation,
+            "map_viewer window resources released before close"
+        );
+    }
+
     fn render_external_file_drop_target(&self, cx: &mut Context<Self>) -> Div {
         div()
             .absolute()
@@ -283,7 +380,10 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
     let options = map_viewer_window_options(cx);
     let window = cx.open_window(options, move |window, cx| {
         window.set_title(&title);
-        window.on_window_should_close(cx, |window, _cx| {
+        window.activate_window();
+        let view = cx.new(|cx| MapViewerWindowView::new(init, window, cx));
+        let close_view = view.clone();
+        window.on_window_should_close(cx, move |window, cx| {
             let restored_bounds = window.window_bounds().bounds();
             let prefs = crate::core::ui_prefs::MapViewerWindowPrefs {
                 width: restored_bounds.size.width / px(1.0),
@@ -292,11 +392,10 @@ pub fn open_map_viewer_window(init: MapViewerWindowInit, cx: &mut App) {
             if let Err(error) = crate::core::ui_prefs::save_map_viewer_window_prefs(&prefs) {
                 tracing::warn!(%error, "failed to save map viewer window size");
             }
+            close_view.update(cx, |this, cx| this.release_window_resources(cx));
             window.remove_window();
             true
         });
-        window.activate_window();
-        let view = cx.new(|cx| MapViewerWindowView::new(init, window, cx));
         view.update(cx, |this, cx| this.spawn_viewport_watchdog(cx));
         cx.new(|cx| crate::ui::runtime::root_view::RootView::new(view, window, cx))
     });
