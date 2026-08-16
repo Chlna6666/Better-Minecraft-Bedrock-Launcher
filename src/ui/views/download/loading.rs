@@ -90,21 +90,23 @@ fn game_shimmer_block(
 }
 
 fn resource_sweep(id: SharedString, colors: &ThemeColors) -> AnyElement {
-    let start = -0.28f32;
-    let end = 1.06f32;
+    let start = -0.24f32;
+    let end = 1.08f32;
     div()
         .absolute()
         .top(px(0.0))
         .bottom(px(0.0))
         .left(relative(start))
-        .w(relative(0.24))
+        .w(relative(0.20))
         .bg(Hsla {
-            a: 0.075,
+            a: 0.085,
             ..colors.text_primary
         })
         .with_animation(
             id,
-            Animation::new(RESOURCE_SWEEP_DURATION).repeat(),
+            Animation::new(RESOURCE_SWEEP_DURATION)
+                .repeat()
+                .with_easing(|t| t),
             move |this, t| this.left(relative(start + (end - start) * t)),
         )
         .into_any_element()
@@ -279,8 +281,65 @@ fn render_game_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
         .children(rows)
 }
 
+fn render_resource_sidebar_loading(colors: &ThemeColors) -> Div {
+    let rows = (0..8)
+        .map(|index| {
+            div()
+                .w_full()
+                .h(px(36.0))
+                .px(px(12.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .child(static_block(
+                    px(18.0),
+                    px(18.0),
+                    px(crate::ui::theme::tokens::radius::XS),
+                    colors.text_secondary,
+                    0.065,
+                ))
+                .child(static_block(
+                    px(92.0 + (index % 3) as f32 * 12.0),
+                    px(11.0),
+                    px(crate::ui::theme::tokens::radius::FULL),
+                    colors.text_secondary,
+                    0.060,
+                ))
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
+
+    div()
+        .size_full()
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.12,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.45,
+            ..colors.settings_field_bg
+        })
+        .p(px(10.0))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(static_block(
+            px(42.0),
+            px(10.0),
+            px(crate::ui::theme::tokens::radius::FULL),
+            colors.text_secondary,
+            0.055,
+        ))
+        .child(div().flex().flex_col().gap(px(2.0)).children(rows))
+}
+
 fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
-    let row_count = visible_count(viewport_height, RESOURCE_ROW_HEIGHT, 3, 8);
+    // ResourcePack 的真实布局由左侧 220px 分类栏和右侧 CurseForge 内容壳组成。
+    // 加载态必须保留这层结构，只替换右侧结果列表，不能把骨架铺满整个页面。
+    let list_height = (viewport_height - px(170.0)).max(px(RESOURCE_ROW_HEIGHT));
+    let row_count = visible_count(list_height, RESOURCE_ROW_HEIGHT, 3, 8);
     let rows = (0..row_count)
         .map(|row| {
             div()
@@ -288,13 +347,8 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
                 .h(px(78.0))
                 .min_h(px(78.0))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
-                .border_1()
-                .border_color(Hsla {
-                    a: 0.08,
-                    ..colors.border
-                })
                 .bg(Hsla {
-                    a: 0.20,
+                    a: 0.16,
                     ..colors.surface
                 })
                 .px(px(12.0))
@@ -309,7 +363,7 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
                     px(42.0),
                     px(crate::ui::theme::tokens::radius::SM),
                     colors.text_secondary,
-                    0.09,
+                    0.085,
                 ))
                 .child(
                     div()
@@ -323,40 +377,43 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
                             px(13.0),
                             px(crate::ui::theme::tokens::radius::FULL),
                             colors.text_secondary,
-                            0.10,
+                            0.095,
                         ))
                         .child(static_block(
                             px(360.0),
                             px(11.0),
                             px(crate::ui::theme::tokens::radius::FULL),
                             colors.text_secondary,
-                            0.075,
+                            0.070,
                         ))
                         .child(
                             div()
+                                .w_full()
                                 .flex()
                                 .items_center()
                                 .gap(px(10.0))
+                                .min_w(px(0.0))
+                                .overflow_hidden()
                                 .child(static_block(
                                     px(120.0),
                                     px(10.0),
                                     px(crate::ui::theme::tokens::radius::FULL),
                                     colors.text_secondary,
-                                    0.075,
+                                    0.070,
                                 ))
                                 .child(static_block(
                                     px(80.0),
                                     px(10.0),
                                     px(crate::ui::theme::tokens::radius::FULL),
                                     colors.text_secondary,
-                                    0.075,
+                                    0.070,
                                 ))
                                 .child(static_block(
                                     px(92.0),
                                     px(10.0),
                                     px(crate::ui::theme::tokens::radius::FULL),
                                     colors.text_secondary,
-                                    0.075,
+                                    0.070,
                                 )),
                         ),
                 )
@@ -365,27 +422,139 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
                     px(30.0),
                     px(crate::ui::theme::tokens::radius::SM),
                     colors.accent,
-                    0.10,
+                    0.095,
                 ))
+                // Sweep 只存在于右侧真实结果卡内部，所有卡从左向右同步移动。
                 .child(resource_sweep(
-                    SharedString::from(format!("resource-loading-sweep-{row}")),
+                    SharedString::from(format!("resource-loading-card-sweep-{row}")),
                     colors,
                 ))
                 .into_any_element()
         })
         .collect::<Vec<_>>();
 
+    let right_shell = div()
+        .size_full()
+        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .border_1()
+        .border_color(Hsla {
+            a: 0.06,
+            ..colors.border
+        })
+        .bg(Hsla {
+            a: 0.85,
+            ..colors.surface
+        })
+        .overflow_hidden()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex_none()
+                .m(px(12.0))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .bg(Hsla {
+                    a: 0.78,
+                    ..colors.surface
+                })
+                .border_1()
+                .border_color(Hsla {
+                    a: 0.06,
+                    ..colors.border
+                })
+                .px(px(12.0))
+                .py(px(10.0))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .child(static_block(
+                            px(86.0),
+                            px(16.0),
+                            px(crate::ui::theme::tokens::radius::FULL),
+                            colors.text_secondary,
+                            0.075,
+                        ))
+                        .child(static_block(
+                            px(82.0),
+                            px(24.0),
+                            px(crate::ui::theme::tokens::radius::FULL),
+                            colors.text_secondary,
+                            0.055,
+                        ))
+                        .child(static_block(
+                            px(64.0),
+                            px(24.0),
+                            px(crate::ui::theme::tokens::radius::FULL),
+                            colors.text_secondary,
+                            0.055,
+                        )),
+                )
+                .child(static_block(
+                    px(72.0),
+                    px(28.0),
+                    px(crate::ui::theme::tokens::radius::FULL),
+                    colors.accent,
+                    0.075,
+                )),
+        )
+        .child(
+            div()
+                .w_full()
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_hidden()
+                .px(px(12.0))
+                .py(px(12.0))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .children(rows),
+        )
+        // 分页加载态不绘制任何占位控件/动画，只保留正式 footer 的高度，
+        // 避免数据完成后 footer 出现导致列表区域整体跳动。
+        .child(
+            div()
+                .flex_none()
+                .h(px(56.0))
+                .bg(Hsla {
+                    a: 0.30,
+                    ..colors.surface
+                }),
+        );
+
     div()
         .size_full()
         .min_h(px(0.0))
         .min_w(px(0.0))
         .overflow_hidden()
-        .px(px(12.0))
-        .py(px(12.0))
         .flex()
-        .flex_col()
-        .gap(px(6.0))
-        .children(rows)
+        .gap(px(20.0))
+        .p(px(12.0))
+        .child(
+            div()
+                .w(px(220.0))
+                .flex_none()
+                .min_h(px(0.0))
+                .overflow_hidden()
+                .child(render_resource_sidebar_loading(colors)),
+        )
+        .child(
+            div()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .flex_1()
+                .overflow_hidden()
+                .child(right_shell),
+        )
 }
 
 fn render_mod_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
