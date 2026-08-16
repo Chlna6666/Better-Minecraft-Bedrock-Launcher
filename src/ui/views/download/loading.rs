@@ -1,17 +1,16 @@
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use gpui::{AnimationExt as _, *};
+use std::f32::consts::TAU;
 use std::time::Duration;
 
-const LOADING_SHIMMER_DURATION: Duration = Duration::from_millis(1250);
-const LOADING_ROW_HEIGHT: f32 = 76.0;
-const LOADING_ROW_SEPARATOR_HEIGHT: f32 = 1.0;
-const LOADING_MIN_ROWS: usize = 4;
-const LOADING_MAX_ROWS: usize = 8;
-const LOADING_BLOCK_PHASE: f32 = 0.055;
-const SHIMMER_START: f32 = -0.45;
-const SHIMMER_END: f32 = 1.12;
-const SHIMMER_WIDTH: f32 = 0.34;
+const GAME_SHIMMER_DURATION: Duration = Duration::from_millis(1200);
+const RESOURCE_SWEEP_DURATION: Duration = Duration::from_millis(1550);
+const MOD_PULSE_DURATION: Duration = Duration::from_millis(1050);
+
+const GAME_ROW_HEIGHT: f32 = 76.0;
+const RESOURCE_ROW_HEIGHT: f32 = 84.0;
+const MOD_CARD_HEIGHT: f32 = 160.0;
 
 pub(super) fn should_render_loading(state: &DownloadPageState, tab: DownloadTab) -> bool {
     match tab {
@@ -26,221 +25,530 @@ pub(super) fn should_render_loading(state: &DownloadPageState, tab: DownloadTab)
     }
 }
 
-fn loading_row_count(viewport_height: Pixels) -> usize {
-    let height = (viewport_height / px(1.0)).max(1.0);
-    let reserved = 72.0;
-    let available = (height - reserved).max(LOADING_ROW_HEIGHT);
-    ((available / (LOADING_ROW_HEIGHT + LOADING_ROW_SEPARATOR_HEIGHT)).ceil() as usize)
-        .clamp(LOADING_MIN_ROWS, LOADING_MAX_ROWS)
+fn visible_count(viewport_height: Pixels, pitch: f32, min: usize, max: usize) -> usize {
+    let height = (viewport_height / px(1.0)).max(pitch);
+    ((height / pitch).ceil() as usize).clamp(min, max)
 }
 
-fn shimmer_phase(block: usize) -> f32 {
-    // 只按横向块位置错开相位。所有列表行使用完全相同的相位，
-    // 因此动画不会再形成从上到下的波动。
-    (block as f32 * LOADING_BLOCK_PHASE).fract()
+fn static_block(
+    width: Pixels,
+    height: Pixels,
+    radius: Pixels,
+    color: Hsla,
+    alpha: f32,
+) -> Div {
+    div()
+        .w(width)
+        .h(height)
+        .rounded(radius)
+        .bg(Hsla { a: alpha, ..color })
 }
 
-fn shimmer_animation(phase_offset: f32) -> Animation {
-    Animation::new(LOADING_SHIMMER_DURATION)
-        .repeat()
-        .with_easing(move |t| (t + phase_offset).fract())
-}
-
-fn animated_block(
+fn game_shimmer_block(
     id: SharedString,
     width: Pixels,
     height: Pixels,
     radius: Pixels,
-    base_color: Hsla,
-    base_alpha: f32,
-    highlight_color: Hsla,
-    highlight_alpha: f32,
-    phase_offset: f32,
+    colors: &ThemeColors,
+    accent: bool,
+    phase: f32,
 ) -> AnyElement {
-    let highlight = div()
+    let base_color = if accent { colors.accent } else { colors.text_secondary };
+    let highlight_color = if accent { colors.text_primary } else { colors.text_primary };
+    let start = -0.42f32;
+    let end = 1.10f32;
+    let band = div()
         .absolute()
         .top(px(0.0))
         .bottom(px(0.0))
-        .left(relative(SHIMMER_START))
-        .w(relative(SHIMMER_WIDTH))
+        .left(relative(start))
+        .w(relative(0.32))
         .rounded(radius)
         .bg(Hsla {
-            a: highlight_alpha,
+            a: if accent { 0.14 } else { 0.19 },
             ..highlight_color
         })
-        .with_animation(id, shimmer_animation(phase_offset), |this, t| {
-            let left = SHIMMER_START + (SHIMMER_END - SHIMMER_START) * t;
-            this.left(relative(left))
-        });
+        .with_animation(
+            id,
+            Animation::new(GAME_SHIMMER_DURATION)
+                .repeat()
+                .with_easing(move |t| (t + phase).fract()),
+            move |this, t| this.left(relative(start + (end - start) * t)),
+        );
 
     div()
         .w(width)
         .h(height)
         .rounded(radius)
         .bg(Hsla {
-            a: base_alpha,
+            a: if accent { 0.10 } else { 0.075 },
             ..base_color
         })
         .relative()
         .overflow_hidden()
-        .child(highlight)
+        .child(band)
         .into_any_element()
 }
 
-fn animated_bar(
-    colors: &ThemeColors,
-    row: usize,
-    block: usize,
-    width: Pixels,
-    height: Pixels,
-) -> AnyElement {
-    animated_block(
-        SharedString::from(format!("download-loading-{row}-{block}")),
-        width,
-        height,
-        px(crate::ui::theme::tokens::radius::FULL),
-        colors.text_secondary,
-        0.075,
-        colors.text_primary,
-        0.18,
-        shimmer_phase(block),
-    )
+fn resource_sweep(id: SharedString, colors: &ThemeColors, phase: f32) -> AnyElement {
+    let start = -0.28f32;
+    let end = 1.06f32;
+    div()
+        .absolute()
+        .top(px(0.0))
+        .bottom(px(0.0))
+        .left(relative(start))
+        .w(relative(0.24))
+        .bg(Hsla {
+            a: 0.075,
+            ..colors.text_primary
+        })
+        .with_animation(
+            id,
+            Animation::new(RESOURCE_SWEEP_DURATION)
+                .repeat()
+                .with_easing(move |t| (t + phase).fract()),
+            move |this, t| this.left(relative(start + (end - start) * t)),
+        )
+        .into_any_element()
 }
 
-fn skeleton_row(colors: &ThemeColors, row: usize) -> Div {
-    let image = animated_block(
-        SharedString::from(format!("download-loading-{row}-image")),
-        px(42.0),
-        px(42.0),
-        px(crate::ui::theme::tokens::radius::SM),
-        colors.text_secondary,
-        0.085,
-        colors.text_primary,
-        0.18,
-        shimmer_phase(0),
-    );
-    let title = animated_bar(colors, row, 1, px(240.0), px(15.0));
-    let tag = animated_block(
-        SharedString::from(format!("download-loading-{row}-tag")),
-        px(72.0),
-        px(20.0),
-        px(crate::ui::theme::tokens::radius::SM),
-        colors.text_secondary,
-        0.065,
-        colors.text_primary,
-        0.16,
-        shimmer_phase(2),
-    );
-    let meta_left = animated_bar(colors, row, 3, px(68.0), px(10.0));
-    let meta_right = animated_bar(colors, row, 4, px(96.0), px(10.0));
-    let status = animated_bar(colors, row, 5, px(78.0), px(14.0));
-    let action = animated_block(
-        SharedString::from(format!("download-loading-{row}-action")),
-        px(88.0),
-        px(28.0),
-        px(crate::ui::theme::tokens::radius::FULL),
-        colors.accent,
-        0.10,
-        colors.text_primary,
-        0.16,
-        shimmer_phase(6),
-    );
-
+fn mod_pulse_block(
+    id: SharedString,
+    width: Pixels,
+    height: Pixels,
+    radius: Pixels,
+    color: Hsla,
+    min_alpha: f32,
+    max_alpha: f32,
+    phase: f32,
+) -> AnyElement {
     div()
-        .w_full()
-        .h(px(LOADING_ROW_HEIGHT))
-        .min_h(px(LOADING_ROW_HEIGHT))
-        .px(px(24.0))
-        .py(px(12.0))
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(px(12.0))
-        .child(
+        .w(width)
+        .h(height)
+        .rounded(radius)
+        .bg(Hsla { a: min_alpha, ..color })
+        .with_animation(
+            id,
+            Animation::new(MOD_PULSE_DURATION)
+                .repeat()
+                .with_easing(move |t| {
+                    let p = (t + phase).fract();
+                    (0.5 - 0.5 * (TAU * p).cos()).clamp(0.0, 1.0)
+                }),
+            move |this, t| {
+                this.bg(Hsla {
+                    a: min_alpha + (max_alpha - min_alpha) * t,
+                    ..color
+                })
+            },
+        )
+        .into_any_element()
+}
+
+fn render_game_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
+    let row_count = visible_count(viewport_height, GAME_ROW_HEIGHT + 1.0, 4, 8);
+    let rows = (0..row_count)
+        .map(|row| {
+            let id = |name: &str| SharedString::from(format!("game-loading-{row}-{name}"));
             div()
                 .flex()
-                .items_center()
-                .min_w(px(0.0))
-                .flex_1()
+                .flex_col()
                 .child(
                     div()
-                        .w(px(64.0))
+                        .w_full()
+                        .h(px(GAME_ROW_HEIGHT))
+                        .px(px(24.0))
+                        .py(px(12.0))
                         .flex()
                         .items_center()
-                        .child(image),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .pr(px(16.0))
-                        .flex()
-                        .flex_col()
-                        .justify_center()
-                        .gap(px(6.0))
+                        .justify_between()
+                        .gap(px(12.0))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(10.0))
-                                .child(title)
-                                .child(tag),
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .child(
+                                    div().w(px(64.0)).child(game_shimmer_block(
+                                        id("icon"),
+                                        px(42.0),
+                                        px(42.0),
+                                        px(crate::ui::theme::tokens::radius::SM),
+                                        colors,
+                                        false,
+                                        0.00,
+                                    )),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .pr(px(16.0))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.0))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(10.0))
+                                                .child(game_shimmer_block(
+                                                    id("title"),
+                                                    px(240.0),
+                                                    px(15.0),
+                                                    px(crate::ui::theme::tokens::radius::FULL),
+                                                    colors,
+                                                    false,
+                                                    0.04,
+                                                ))
+                                                .child(game_shimmer_block(
+                                                    id("badge"),
+                                                    px(72.0),
+                                                    px(20.0),
+                                                    px(crate::ui::theme::tokens::radius::SM),
+                                                    colors,
+                                                    false,
+                                                    0.08,
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.0))
+                                                .child(game_shimmer_block(
+                                                    id("meta-a"),
+                                                    px(68.0),
+                                                    px(10.0),
+                                                    px(crate::ui::theme::tokens::radius::FULL),
+                                                    colors,
+                                                    false,
+                                                    0.12,
+                                                ))
+                                                .child(game_shimmer_block(
+                                                    id("meta-b"),
+                                                    px(96.0),
+                                                    px(10.0),
+                                                    px(crate::ui::theme::tokens::radius::FULL),
+                                                    colors,
+                                                    false,
+                                                    0.16,
+                                                )),
+                                        ),
+                                ),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(8.0))
-                                .child(meta_left)
-                                .child(meta_right),
+                                .gap(px(10.0))
+                                .child(game_shimmer_block(
+                                    id("status"),
+                                    px(78.0),
+                                    px(14.0),
+                                    px(crate::ui::theme::tokens::radius::FULL),
+                                    colors,
+                                    false,
+                                    0.20,
+                                ))
+                                .child(game_shimmer_block(
+                                    id("action"),
+                                    px(88.0),
+                                    px(28.0),
+                                    px(crate::ui::theme::tokens::radius::FULL),
+                                    colors,
+                                    true,
+                                    0.24,
+                                )),
                         ),
-                ),
-        )
-        .child(
+                )
+                .child(div().h(px(1.0)).bg(Hsla {
+                    a: 0.055,
+                    ..colors.border
+                }))
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
+
+    div()
+        .size_full()
+        .min_h(px(0.0))
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .children(rows)
+}
+
+fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
+    let row_count = visible_count(viewport_height, RESOURCE_ROW_HEIGHT, 3, 8);
+    let rows = (0..row_count)
+        .map(|row| {
+            let phase = (row as f32 * 0.055).fract();
             div()
+                .w_full()
+                .h(px(78.0))
+                .min_h(px(78.0))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .border_1()
+                .border_color(Hsla {
+                    a: 0.08,
+                    ..colors.border
+                })
+                .bg(Hsla {
+                    a: 0.20,
+                    ..colors.surface
+                })
+                .px(px(12.0))
+                .py(px(9.0))
+                .relative()
+                .overflow_hidden()
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .child(status)
-                .child(action),
-        )
-}
-
-fn skeleton_row_with_separator(colors: &ThemeColors, row: usize) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .child(skeleton_row(colors, row))
-        .child(div().h(px(LOADING_ROW_SEPARATOR_HEIGHT)).bg(Hsla {
-            a: 0.055,
-            ..colors.border
-        }))
-}
-
-pub(super) fn render_loading_placeholder(
-    colors: &ThemeColors,
-    viewport_height: Pixels,
-) -> impl IntoElement {
-    let row_count = loading_row_count(viewport_height);
-    let rows = (0..row_count)
-        .map(|row| skeleton_row_with_separator(colors, row).into_any_element())
+                .child(static_block(
+                    px(42.0),
+                    px(42.0),
+                    px(crate::ui::theme::tokens::radius::SM),
+                    colors.text_secondary,
+                    0.09,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(static_block(
+                            px(220.0),
+                            px(13.0),
+                            px(crate::ui::theme::tokens::radius::FULL),
+                            colors.text_secondary,
+                            0.10,
+                        ))
+                        .child(static_block(
+                            px(360.0),
+                            px(11.0),
+                            px(crate::ui::theme::tokens::radius::FULL),
+                            colors.text_secondary,
+                            0.075,
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(static_block(
+                                    px(120.0),
+                                    px(10.0),
+                                    px(crate::ui::theme::tokens::radius::FULL),
+                                    colors.text_secondary,
+                                    0.075,
+                                ))
+                                .child(static_block(
+                                    px(80.0),
+                                    px(10.0),
+                                    px(crate::ui::theme::tokens::radius::FULL),
+                                    colors.text_secondary,
+                                    0.075,
+                                ))
+                                .child(static_block(
+                                    px(92.0),
+                                    px(10.0),
+                                    px(crate::ui::theme::tokens::radius::FULL),
+                                    colors.text_secondary,
+                                    0.075,
+                                )),
+                        ),
+                )
+                .child(static_block(
+                    px(92.0),
+                    px(30.0),
+                    px(crate::ui::theme::tokens::radius::SM),
+                    colors.accent,
+                    0.10,
+                ))
+                .child(resource_sweep(
+                    SharedString::from(format!("resource-loading-sweep-{row}")),
+                    colors,
+                    phase,
+                ))
+                .into_any_element()
+        })
         .collect::<Vec<_>>();
 
-    let footer = animated_block(
-        SharedString::from("download-loading-footer"),
-        px(1080.0),
-        px(32.0),
-        px(crate::ui::theme::tokens::radius::MD),
-        colors.text_secondary,
-        0.055,
-        colors.text_primary,
-        0.16,
-        shimmer_phase(0),
-    );
+    div()
+        .size_full()
+        .min_h(px(0.0))
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .px(px(12.0))
+        .py(px(12.0))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .children(rows)
+}
 
-    // 每个实际占位块内部都有独立的横向高亮带：从块左侧之外进入，
-    // 横穿占位块后从右侧离开。列表行之间没有纵向相位差，视觉方向
-    // 始终是左 -> 右；动画只改变高亮带位置，不改变占位块尺寸。
+fn render_mod_loading(
+    colors: &ThemeColors,
+    viewport_width: Pixels,
+    viewport_height: Pixels,
+) -> Div {
+    let width = (viewport_width / px(1.0)).max(320.0);
+    let columns = (((width - 40.0 + 16.0) / (320.0 + 16.0)).floor() as usize).clamp(1, 4);
+    let rows = visible_count(viewport_height, MOD_CARD_HEIGHT + 16.0, 2, 4);
+    let card_count = (columns * rows).clamp(4, 12);
+
+    let cards = (0..card_count)
+        .map(|card| {
+            let phase = (card % columns) as f32 * 0.08 + (card / columns) as f32 * 0.025;
+            let id = |name: &str| SharedString::from(format!("mod-loading-{card}-{name}"));
+            div()
+                .w(px(320.0))
+                .flex_grow()
+                .min_h(px(MOD_CARD_HEIGHT))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .border_1()
+                .border_color(Hsla {
+                    a: 0.18,
+                    ..colors.border
+                })
+                .bg(Hsla {
+                    a: 0.45,
+                    ..colors.surface
+                })
+                .p(px(14.0))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(px(12.0))
+                                .child(mod_pulse_block(
+                                    id("avatar"),
+                                    px(48.0),
+                                    px(48.0),
+                                    px(crate::ui::theme::tokens::radius::SM),
+                                    colors.accent,
+                                    0.05,
+                                    0.16,
+                                    phase,
+                                ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(5.0))
+                                        .child(mod_pulse_block(
+                                            id("name"),
+                                            px(168.0),
+                                            px(14.0),
+                                            px(crate::ui::theme::tokens::radius::FULL),
+                                            colors.text_secondary,
+                                            0.05,
+                                            0.17,
+                                            phase + 0.06,
+                                        ))
+                                        .child(mod_pulse_block(
+                                            id("package"),
+                                            px(118.0),
+                                            px(10.0),
+                                            px(crate::ui::theme::tokens::radius::FULL),
+                                            colors.text_secondary,
+                                            0.04,
+                                            0.13,
+                                            phase + 0.12,
+                                        )),
+                                ),
+                        )
+                        .child(mod_pulse_block(
+                            id("desc-a"),
+                            px(250.0),
+                            px(10.0),
+                            px(crate::ui::theme::tokens::radius::FULL),
+                            colors.text_secondary,
+                            0.04,
+                            0.12,
+                            phase + 0.18,
+                        ))
+                        .child(mod_pulse_block(
+                            id("desc-b"),
+                            px(205.0),
+                            px(10.0),
+                            px(crate::ui::theme::tokens::radius::FULL),
+                            colors.text_secondary,
+                            0.04,
+                            0.12,
+                            phase + 0.22,
+                        )),
+                )
+                .child(
+                    div()
+                        .pt(px(8.0))
+                        .border_t_1()
+                        .border_color(Hsla {
+                            a: 0.06,
+                            ..colors.border
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(mod_pulse_block(
+                                    id("version"),
+                                    px(54.0),
+                                    px(18.0),
+                                    px(crate::ui::theme::tokens::radius::XS),
+                                    colors.accent,
+                                    0.05,
+                                    0.14,
+                                    phase + 0.28,
+                                ))
+                                .child(mod_pulse_block(
+                                    id("stars"),
+                                    px(42.0),
+                                    px(10.0),
+                                    px(crate::ui::theme::tokens::radius::FULL),
+                                    colors.text_secondary,
+                                    0.04,
+                                    0.12,
+                                    phase + 0.32,
+                                )),
+                        )
+                        .child(mod_pulse_block(
+                            id("detail"),
+                            px(68.0),
+                            px(28.0),
+                            px(crate::ui::theme::tokens::radius::SM),
+                            colors.accent,
+                            0.05,
+                            0.15,
+                            phase + 0.36,
+                        )),
+                )
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
+
+    // 模组真实页面在网格上方还有统计条；加载态只保留其结构，不伪造分页。
     div()
         .size_full()
         .min_h(px(0.0))
@@ -250,20 +558,55 @@ pub(super) fn render_loading_placeholder(
         .flex_col()
         .child(
             div()
-                .flex_1()
-                .min_h(px(0.0))
-                .min_w(px(0.0))
-                .overflow_hidden()
+                .w_full()
+                .px(px(20.0))
+                .py(px(10.0))
+                .border_b_1()
+                .border_color(Hsla {
+                    a: 0.08,
+                    ..colors.border
+                })
                 .flex()
-                .flex_col()
-                .children(rows),
+                .items_center()
+                .justify_between()
+                .child(static_block(
+                    px(180.0),
+                    px(18.0),
+                    px(crate::ui::theme::tokens::radius::SM),
+                    colors.text_secondary,
+                    0.06,
+                ))
+                .child(static_block(
+                    px(230.0),
+                    px(10.0),
+                    px(crate::ui::theme::tokens::radius::FULL),
+                    colors.text_secondary,
+                    0.045,
+                )),
         )
         .child(
             div()
-                .w_full()
-                .px(px(14.0))
-                .py(px(11.0))
+                .flex_1()
+                .min_h(px(0.0))
                 .overflow_hidden()
-                .child(footer),
+                .p(px(20.0))
+                .flex()
+                .flex_wrap()
+                .gap(px(16.0))
+                .items_stretch()
+                .children(cards),
         )
+}
+
+pub(super) fn render_loading_placeholder(
+    colors: &ThemeColors,
+    viewport_width: Pixels,
+    viewport_height: Pixels,
+    tab: DownloadTab,
+) -> Div {
+    match tab {
+        DownloadTab::Game => render_game_loading(colors, viewport_height),
+        DownloadTab::ResourcePack => render_resource_loading(colors, viewport_height),
+        DownloadTab::Mod => render_mod_loading(colors, viewport_width, viewport_height),
+    }
 }
