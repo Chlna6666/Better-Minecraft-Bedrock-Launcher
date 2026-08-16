@@ -54,7 +54,6 @@ fn game_shimmer_block(
     phase: f32,
 ) -> AnyElement {
     let base_color = if accent { colors.accent } else { colors.text_secondary };
-    let highlight_color = if accent { colors.text_primary } else { colors.text_primary };
     let start = -0.42f32;
     let end = 1.10f32;
     let band = div()
@@ -66,7 +65,7 @@ fn game_shimmer_block(
         .rounded(radius)
         .bg(Hsla {
             a: if accent { 0.14 } else { 0.19 },
-            ..highlight_color
+            ..colors.text_primary
         })
         .with_animation(
             id,
@@ -90,7 +89,7 @@ fn game_shimmer_block(
         .into_any_element()
 }
 
-fn resource_sweep(id: SharedString, colors: &ThemeColors, phase: f32) -> AnyElement {
+fn resource_sweep(id: SharedString, colors: &ThemeColors) -> AnyElement {
     let start = -0.28f32;
     let end = 1.06f32;
     div()
@@ -105,9 +104,7 @@ fn resource_sweep(id: SharedString, colors: &ThemeColors, phase: f32) -> AnyElem
         })
         .with_animation(
             id,
-            Animation::new(RESOURCE_SWEEP_DURATION)
-                .repeat()
-                .with_easing(move |t| (t + phase).fract()),
+            Animation::new(RESOURCE_SWEEP_DURATION).repeat(),
             move |this, t| this.left(relative(start + (end - start) * t)),
         )
         .into_any_element()
@@ -286,7 +283,6 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
     let row_count = visible_count(viewport_height, RESOURCE_ROW_HEIGHT, 3, 8);
     let rows = (0..row_count)
         .map(|row| {
-            let phase = (row as f32 * 0.055).fract();
             div()
                 .w_full()
                 .h(px(78.0))
@@ -374,7 +370,6 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
                 .child(resource_sweep(
                     SharedString::from(format!("resource-loading-sweep-{row}")),
                     colors,
-                    phase,
                 ))
                 .into_any_element()
         })
@@ -393,19 +388,12 @@ fn render_resource_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div
         .children(rows)
 }
 
-fn render_mod_loading(
-    colors: &ThemeColors,
-    viewport_width: Pixels,
-    viewport_height: Pixels,
-) -> Div {
-    let width = (viewport_width / px(1.0)).max(320.0);
-    let columns = (((width - 40.0 + 16.0) / (320.0 + 16.0)).floor() as usize).clamp(1, 4);
+fn render_mod_loading(colors: &ThemeColors, viewport_height: Pixels) -> Div {
     let rows = visible_count(viewport_height, MOD_CARD_HEIGHT + 16.0, 2, 4);
-    let card_count = (columns * rows).clamp(4, 12);
-
+    let card_count = (rows * 3).clamp(6, 12);
     let cards = (0..card_count)
         .map(|card| {
-            let phase = (card % columns) as f32 * 0.08 + (card / columns) as f32 * 0.025;
+            let phase = (card % 3) as f32 * 0.08 + (card / 3) as f32 * 0.025;
             let id = |name: &str| SharedString::from(format!("mod-loading-{card}-{name}"));
             div()
                 .w(px(320.0))
@@ -548,7 +536,6 @@ fn render_mod_loading(
         })
         .collect::<Vec<_>>();
 
-    // 模组真实页面在网格上方还有统计条；加载态只保留其结构，不伪造分页。
     div()
         .size_full()
         .min_h(px(0.0))
@@ -598,15 +585,28 @@ fn render_mod_loading(
         )
 }
 
+#[derive(IntoElement)]
+struct DownloadLoadingPlaceholder {
+    colors: ThemeColors,
+    viewport_height: Pixels,
+}
+
+impl RenderOnce for DownloadLoadingPlaceholder {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        match cx.global::<DownloadPageState>().tab {
+            DownloadTab::Game => render_game_loading(&self.colors, self.viewport_height),
+            DownloadTab::ResourcePack => render_resource_loading(&self.colors, self.viewport_height),
+            DownloadTab::Mod => render_mod_loading(&self.colors, self.viewport_height),
+        }
+    }
+}
+
 pub(super) fn render_loading_placeholder(
     colors: &ThemeColors,
-    viewport_width: Pixels,
     viewport_height: Pixels,
-    tab: DownloadTab,
-) -> Div {
-    match tab {
-        DownloadTab::Game => render_game_loading(colors, viewport_height),
-        DownloadTab::ResourcePack => render_resource_loading(colors, viewport_height),
-        DownloadTab::Mod => render_mod_loading(colors, viewport_width, viewport_height),
+) -> impl IntoElement {
+    DownloadLoadingPlaceholder {
+        colors: colors.clone(),
+        viewport_height,
     }
 }
