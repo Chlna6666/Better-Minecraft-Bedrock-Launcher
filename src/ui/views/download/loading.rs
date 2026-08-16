@@ -1,15 +1,16 @@
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
-use gpui::prelude::FluentBuilder as _;
 use gpui::{AnimationExt as _, *};
+use std::f32::consts::TAU;
 use std::time::Duration;
 
-const LOADING_PULSE_DURATION: Duration = Duration::from_millis(900);
-const LOADING_ROW_STAGGER_MS: u64 = 70;
+const LOADING_PULSE_DURATION: Duration = Duration::from_millis(1400);
 const LOADING_ROW_HEIGHT: f32 = 76.0;
 const LOADING_ROW_SEPARATOR_HEIGHT: f32 = 1.0;
 const LOADING_MIN_ROWS: usize = 4;
 const LOADING_MAX_ROWS: usize = 8;
+const LOADING_ROW_PHASE: f32 = 0.095;
+const LOADING_BLOCK_PHASE: f32 = 0.035;
 
 pub(super) fn should_render_loading(state: &DownloadPageState, tab: DownloadTab) -> bool {
     match tab {
@@ -32,22 +33,102 @@ fn loading_row_count(viewport_height: Pixels) -> usize {
         .clamp(LOADING_MIN_ROWS, LOADING_MAX_ROWS)
 }
 
-fn skeleton_fill(colors: &ThemeColors, alpha: f32) -> Hsla {
-    Hsla {
-        a: alpha,
-        ..colors.text_secondary
-    }
+fn pulse_phase(row: usize, block: usize) -> f32 {
+    (row as f32 * LOADING_ROW_PHASE + block as f32 * LOADING_BLOCK_PHASE).fract()
 }
 
-fn skeleton_bar(colors: &ThemeColors, width: Pixels, height: Pixels, alpha: f32) -> Div {
+fn pulse_animation(phase_offset: f32) -> Animation {
+    Animation::new(LOADING_PULSE_DURATION)
+        .repeat()
+        .with_easing(move |t| {
+            let phase = (t + phase_offset).fract();
+            // 余弦往返的首尾值一致，不会在循环边界发生闪跳。
+            (0.5 - 0.5 * (TAU * phase).cos()).clamp(0.0, 1.0)
+        })
+}
+
+fn animated_block(
+    id: SharedString,
+    width: Pixels,
+    height: Pixels,
+    radius: Pixels,
+    color: Hsla,
+    min_alpha: f32,
+    max_alpha: f32,
+    phase_offset: f32,
+) -> AnyElement {
     div()
         .w(width)
         .h(height)
-        .rounded(px(crate::ui::theme::tokens::radius::FULL))
-        .bg(skeleton_fill(colors, alpha))
+        .rounded(radius)
+        .bg(Hsla {
+            a: min_alpha,
+            ..color
+        })
+        .with_animation(id, pulse_animation(phase_offset), move |this, t| {
+            this.bg(Hsla {
+                a: min_alpha + (max_alpha - min_alpha) * t,
+                ..color
+            })
+        })
+        .into_any_element()
 }
 
-fn skeleton_row(colors: &ThemeColors) -> Div {
+fn animated_bar(
+    colors: &ThemeColors,
+    row: usize,
+    block: usize,
+    width: Pixels,
+    height: Pixels,
+) -> AnyElement {
+    animated_block(
+        SharedString::from(format!("download-loading-{row}-{block}")),
+        width,
+        height,
+        px(crate::ui::theme::tokens::radius::FULL),
+        colors.text_secondary,
+        0.045,
+        0.20,
+        pulse_phase(row, block),
+    )
+}
+
+fn skeleton_row(colors: &ThemeColors, row: usize) -> Div {
+    let image = animated_block(
+        SharedString::from(format!("download-loading-{row}-image")),
+        px(42.0),
+        px(42.0),
+        px(crate::ui::theme::tokens::radius::SM),
+        colors.text_secondary,
+        0.055,
+        0.22,
+        pulse_phase(row, 0),
+    );
+    let title = animated_bar(colors, row, 1, px(240.0), px(15.0));
+    let tag = animated_block(
+        SharedString::from(format!("download-loading-{row}-tag")),
+        px(72.0),
+        px(20.0),
+        px(crate::ui::theme::tokens::radius::SM),
+        colors.text_secondary,
+        0.04,
+        0.15,
+        pulse_phase(row, 2),
+    );
+    let meta_left = animated_bar(colors, row, 3, px(68.0), px(10.0));
+    let meta_right = animated_bar(colors, row, 4, px(96.0), px(10.0));
+    let status = animated_bar(colors, row, 5, px(78.0), px(14.0));
+    let action = animated_block(
+        SharedString::from(format!("download-loading-{row}-action")),
+        px(88.0),
+        px(28.0),
+        px(crate::ui::theme::tokens::radius::FULL),
+        colors.accent,
+        0.07,
+        0.24,
+        pulse_phase(row, 6),
+    );
+
     div()
         .w_full()
         .h(px(LOADING_ROW_HEIGHT))
@@ -69,13 +150,7 @@ fn skeleton_row(colors: &ThemeColors) -> Div {
                         .w(px(64.0))
                         .flex()
                         .items_center()
-                        .child(
-                            div()
-                                .w(px(42.0))
-                                .h(px(42.0))
-                                .rounded(px(crate::ui::theme::tokens::radius::SM))
-                                .bg(skeleton_fill(colors, 0.09)),
-                        ),
+                        .child(image),
                 )
                 .child(
                     div()
@@ -91,22 +166,16 @@ fn skeleton_row(colors: &ThemeColors) -> Div {
                                 .flex()
                                 .items_center()
                                 .gap(px(10.0))
-                                .child(skeleton_bar(colors, px(240.0), px(15.0), 0.11))
-                                .child(
-                                    div()
-                                        .w(px(72.0))
-                                        .h(px(20.0))
-                                        .rounded(px(crate::ui::theme::tokens::radius::SM))
-                                        .bg(skeleton_fill(colors, 0.075)),
-                                ),
+                                .child(title)
+                                .child(tag),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap(px(8.0))
-                                .child(skeleton_bar(colors, px(68.0), px(10.0), 0.085))
-                                .child(skeleton_bar(colors, px(96.0), px(10.0), 0.085)),
+                                .child(meta_left)
+                                .child(meta_right),
                         ),
                 ),
         )
@@ -115,45 +184,20 @@ fn skeleton_row(colors: &ThemeColors) -> Div {
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .child(skeleton_bar(colors, px(78.0), px(14.0), 0.085))
-                .child(
-                    div()
-                        .w(px(88.0))
-                        .h(px(28.0))
-                        .rounded(px(crate::ui::theme::tokens::radius::FULL))
-                        .bg(Hsla {
-                            a: 0.11,
-                            ..colors.accent
-                        }),
-                ),
+                .child(status)
+                .child(action),
         )
 }
 
-fn loading_pulse(delay: Duration) -> Animation {
-    Animation::from_spec(
-        AnimationSpec::new(LOADING_PULSE_DURATION)
-            .delay(delay)
-            .ease(Easing::InOutCubic)
-            .direction(AnimationDirection::Alternate)
-            .repeat(RepeatMode::Forever),
-    )
-    .with_property(AnimationProperty::opacity(0.58, 1.0))
-}
-
-fn animated_skeleton_row(colors: &ThemeColors, index: usize) -> AnyElement {
-    let delay = Duration::from_millis(LOADING_ROW_STAGGER_MS.saturating_mul(index as u64));
-    let animation_id = SharedString::from(format!("download-loading-row-{index}"));
-
+fn skeleton_row_with_separator(colors: &ThemeColors, row: usize) -> Div {
     div()
         .flex()
         .flex_col()
-        .child(skeleton_row(colors))
+        .child(skeleton_row(colors, row))
         .child(div().h(px(LOADING_ROW_SEPARATOR_HEIGHT)).bg(Hsla {
             a: 0.055,
             ..colors.border
         }))
-        .with_animation(animation_id, loading_pulse(delay), |this, _| this)
-        .into_any_element()
 }
 
 pub(super) fn render_loading_placeholder(
@@ -162,31 +206,32 @@ pub(super) fn render_loading_placeholder(
 ) -> impl IntoElement {
     let row_count = loading_row_count(viewport_height);
     let rows = (0..row_count)
-        .map(|index| animated_skeleton_row(colors, index))
+        .map(|row| skeleton_row_with_separator(colors, row).into_any_element())
         .collect::<Vec<_>>();
 
-    let footer_delay = Duration::from_millis(
-        LOADING_ROW_STAGGER_MS.saturating_mul(row_count.saturating_add(1) as u64),
-    );
+    let footer_color = colors.text_secondary;
     let footer = div()
-        .px(px(14.0))
-        .py(px(11.0))
-        .child(
-            div()
-                .w_full()
-                .h(px(32.0))
-                .rounded(px(crate::ui::theme::tokens::radius::MD))
-                .bg(skeleton_fill(colors, 0.065)),
-        )
+        .w_full()
+        .h(px(32.0))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
+        .bg(Hsla {
+            a: 0.04,
+            ..footer_color
+        })
         .with_animation(
             "download-loading-footer",
-            loading_pulse(footer_delay),
-            |this, _| this,
+            pulse_animation(pulse_phase(row_count, 0)),
+            move |this, t| {
+                this.bg(Hsla {
+                    a: 0.04 + 0.13 * t,
+                    ..footer_color
+                })
+            },
         );
 
-    // 每个列表项独立绑定场景级 Opacity 动画，并以固定相位差错峰启动。
-    // 这样真正发生变化的是各行的绘制透明度，而不是外层空容器；同时
-    // 不修改 left/width/height 等布局属性，不会让加载动画触发逐帧重排。
+    // 动画直接作用在每个实际绘制的占位矩形上，而不是依赖父容器
+    // Opacity 或场景动画传播。各块带有轻微相位差，因此会形成从左到右、
+    // 从上到下连续流动的呼吸效果，同时尺寸和位置保持完全静态。
     div()
         .size_full()
         .min_h(px(0.0))
@@ -204,5 +249,5 @@ pub(super) fn render_loading_placeholder(
                 .flex_col()
                 .children(rows),
         )
-        .child(footer)
+        .child(div().px(px(14.0)).py(px(11.0)).child(footer))
 }
