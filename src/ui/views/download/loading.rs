@@ -5,6 +5,7 @@ use gpui::{AnimationExt as _, *};
 use std::time::Duration;
 
 const LOADING_PULSE_DURATION: Duration = Duration::from_millis(900);
+const LOADING_ROW_STAGGER_MS: u64 = 70;
 const LOADING_ROW_HEIGHT: f32 = 76.0;
 const LOADING_ROW_SEPARATOR_HEIGHT: f32 = 1.0;
 const LOADING_MIN_ROWS: usize = 4;
@@ -128,7 +129,21 @@ fn skeleton_row(colors: &ThemeColors) -> Div {
         )
 }
 
-fn skeleton_row_with_separator(colors: &ThemeColors) -> Div {
+fn loading_pulse(delay: Duration) -> Animation {
+    Animation::from_spec(
+        AnimationSpec::new(LOADING_PULSE_DURATION)
+            .delay(delay)
+            .ease(Easing::InOutCubic)
+            .direction(AnimationDirection::Alternate)
+            .repeat(RepeatMode::Forever),
+    )
+    .with_property(AnimationProperty::opacity(0.58, 1.0))
+}
+
+fn animated_skeleton_row(colors: &ThemeColors, index: usize) -> AnyElement {
+    let delay = Duration::from_millis(LOADING_ROW_STAGGER_MS.saturating_mul(index as u64));
+    let animation_id = SharedString::from(format!("download-loading-row-{index}"));
+
     div()
         .flex()
         .flex_col()
@@ -137,6 +152,8 @@ fn skeleton_row_with_separator(colors: &ThemeColors) -> Div {
             a: 0.055,
             ..colors.border
         }))
+        .with_animation(animation_id, loading_pulse(delay), |this, _| this)
+        .into_any_element()
 }
 
 pub(super) fn render_loading_placeholder(
@@ -145,10 +162,32 @@ pub(super) fn render_loading_placeholder(
 ) -> impl IntoElement {
     let row_count = loading_row_count(viewport_height);
     let rows = (0..row_count)
-        .map(|_| skeleton_row_with_separator(colors).into_any_element())
+        .map(|index| animated_skeleton_row(colors, index))
         .collect::<Vec<_>>();
 
-    let skeleton_content = div()
+    let footer_delay = Duration::from_millis(
+        LOADING_ROW_STAGGER_MS.saturating_mul(row_count.saturating_add(1) as u64),
+    );
+    let footer = div()
+        .px(px(14.0))
+        .py(px(11.0))
+        .child(
+            div()
+                .w_full()
+                .h(px(32.0))
+                .rounded(px(crate::ui::theme::tokens::radius::MD))
+                .bg(skeleton_fill(colors, 0.065)),
+        )
+        .with_animation(
+            "download-loading-footer",
+            loading_pulse(footer_delay),
+            |this, _| this,
+        );
+
+    // 每个列表项独立绑定场景级 Opacity 动画，并以固定相位差错峰启动。
+    // 这样真正发生变化的是各行的绘制透明度，而不是外层空容器；同时
+    // 不修改 left/width/height 等布局属性，不会让加载动画触发逐帧重排。
+    div()
         .size_full()
         .min_h(px(0.0))
         .min_w(px(0.0))
@@ -165,34 +204,5 @@ pub(super) fn render_loading_placeholder(
                 .flex_col()
                 .children(rows),
         )
-        .child(
-            div()
-                .px(px(14.0))
-                .py(px(11.0))
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(32.0))
-                        .rounded(px(crate::ui::theme::tokens::radius::MD))
-                        .bg(skeleton_fill(colors, 0.065)),
-                ),
-        );
-
-    // 统一加载层只声明一个场景级透明度动画。Opacity 不改变布局，
-    // GPUI/Nova 可以直接绑定场景动画，避免旧 shimmer 每帧修改 left
-    // 导致整组骨架重新布局，同时 Alternate 保证循环端点连续、无跳变。
-    let pulse = Animation::from_spec(
-        AnimationSpec::new(LOADING_PULSE_DURATION)
-            .ease(Easing::InOutCubic)
-            .direction(AnimationDirection::Alternate)
-            .repeat(RepeatMode::Forever),
-    )
-    .with_property(AnimationProperty::opacity(0.76, 0.96));
-
-    div()
-        .size_full()
-        .min_h(px(0.0))
-        .min_w(px(0.0))
-        .child(skeleton_content)
-        .with_animation("download-loading-pulse", pulse, |this, _| this)
+        .child(footer)
 }
