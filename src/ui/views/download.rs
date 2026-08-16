@@ -12,6 +12,7 @@ use tracing::warn;
 mod common;
 pub(crate) mod curseforge;
 mod game;
+mod loading;
 mod mod_install;
 mod mods;
 pub mod state;
@@ -531,7 +532,7 @@ pub fn render_download_page(
     cx: &mut Context<DownloadPageView>,
     colors: ThemeColors,
     _window_width: Pixels,
-    _window_height: Pixels,
+    window_height: Pixels,
     now: Instant,
     curseforge_resource_panel: &Entity<curseforge::CurseForgeResourcePanelView>,
     game_panel_view: Option<&Entity<game::DownloadGamePanelView>>,
@@ -579,15 +580,23 @@ pub fn render_download_page(
             ..colors.border
         }));
 
-    let body: AnyElement = match active_tab {
-        DownloadTab::Game => game_panel_view
-            .cloned()
-            .map(IntoElement::into_any_element)
-            .unwrap_or_else(|| div().size_full().into_any_element()),
-        DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
-        DownloadTab::Mod => {
-            ensure_levilauncher_loaded(cx);
-            mods::render_mod_panel(window, cx, &colors).into_any_element()
+    if active_tab == DownloadTab::Mod {
+        ensure_levilauncher_loaded(cx);
+    }
+    let show_loading = cx.read_global(|state: &DownloadPageState, _cx| {
+        loading::should_render_loading(state, active_tab)
+    });
+
+    let body: AnyElement = if show_loading {
+        loading::render_loading_placeholder(&colors, window_height).into_any_element()
+    } else {
+        match active_tab {
+            DownloadTab::Game => game_panel_view
+                .cloned()
+                .map(IntoElement::into_any_element)
+                .unwrap_or_else(|| div().size_full().into_any_element()),
+            DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
+            DownloadTab::Mod => mods::render_mod_panel(window, cx, &colors).into_any_element(),
         }
     };
 
