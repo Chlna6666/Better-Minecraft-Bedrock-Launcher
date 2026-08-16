@@ -1,16 +1,17 @@
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use gpui::{AnimationExt as _, *};
-use std::f32::consts::TAU;
 use std::time::Duration;
 
-const LOADING_PULSE_DURATION: Duration = Duration::from_millis(1400);
+const LOADING_SHIMMER_DURATION: Duration = Duration::from_millis(1250);
 const LOADING_ROW_HEIGHT: f32 = 76.0;
 const LOADING_ROW_SEPARATOR_HEIGHT: f32 = 1.0;
 const LOADING_MIN_ROWS: usize = 4;
 const LOADING_MAX_ROWS: usize = 8;
-const LOADING_ROW_PHASE: f32 = 0.095;
-const LOADING_BLOCK_PHASE: f32 = 0.035;
+const LOADING_BLOCK_PHASE: f32 = 0.055;
+const SHIMMER_START: f32 = -0.45;
+const SHIMMER_END: f32 = 1.12;
+const SHIMMER_WIDTH: f32 = 0.34;
 
 pub(super) fn should_render_loading(state: &DownloadPageState, tab: DownloadTab) -> bool {
     match tab {
@@ -33,18 +34,16 @@ fn loading_row_count(viewport_height: Pixels) -> usize {
         .clamp(LOADING_MIN_ROWS, LOADING_MAX_ROWS)
 }
 
-fn pulse_phase(row: usize, block: usize) -> f32 {
-    (row as f32 * LOADING_ROW_PHASE + block as f32 * LOADING_BLOCK_PHASE).fract()
+fn shimmer_phase(block: usize) -> f32 {
+    // 只按横向块位置错开相位。所有列表行使用完全相同的相位，
+    // 因此动画不会再形成从上到下的波动。
+    (block as f32 * LOADING_BLOCK_PHASE).fract()
 }
 
-fn pulse_animation(phase_offset: f32) -> Animation {
-    Animation::new(LOADING_PULSE_DURATION)
+fn shimmer_animation(phase_offset: f32) -> Animation {
+    Animation::new(LOADING_SHIMMER_DURATION)
         .repeat()
-        .with_easing(move |t| {
-            let phase = (t + phase_offset).fract();
-            // 余弦往返的首尾值一致，不会在循环边界发生闪跳。
-            (0.5 - 0.5 * (TAU * phase).cos()).clamp(0.0, 1.0)
-        })
+        .with_easing(move |t| (t + phase_offset).fract())
 }
 
 fn animated_block(
@@ -52,25 +51,39 @@ fn animated_block(
     width: Pixels,
     height: Pixels,
     radius: Pixels,
-    color: Hsla,
-    min_alpha: f32,
-    max_alpha: f32,
+    base_color: Hsla,
+    base_alpha: f32,
+    highlight_color: Hsla,
+    highlight_alpha: f32,
     phase_offset: f32,
 ) -> AnyElement {
+    let highlight = div()
+        .absolute()
+        .top(px(0.0))
+        .bottom(px(0.0))
+        .left(relative(SHIMMER_START))
+        .w(relative(SHIMMER_WIDTH))
+        .rounded(radius)
+        .bg(Hsla {
+            a: highlight_alpha,
+            ..highlight_color
+        })
+        .with_animation(id, shimmer_animation(phase_offset), |this, t| {
+            let left = SHIMMER_START + (SHIMMER_END - SHIMMER_START) * t;
+            this.left(relative(left))
+        });
+
     div()
         .w(width)
         .h(height)
         .rounded(radius)
         .bg(Hsla {
-            a: min_alpha,
-            ..color
+            a: base_alpha,
+            ..base_color
         })
-        .with_animation(id, pulse_animation(phase_offset), move |this, t| {
-            this.bg(Hsla {
-                a: min_alpha + (max_alpha - min_alpha) * t,
-                ..color
-            })
-        })
+        .relative()
+        .overflow_hidden()
+        .child(highlight)
         .into_any_element()
 }
 
@@ -87,9 +100,10 @@ fn animated_bar(
         height,
         px(crate::ui::theme::tokens::radius::FULL),
         colors.text_secondary,
-        0.045,
-        0.20,
-        pulse_phase(row, block),
+        0.075,
+        colors.text_primary,
+        0.18,
+        shimmer_phase(block),
     )
 }
 
@@ -100,9 +114,10 @@ fn skeleton_row(colors: &ThemeColors, row: usize) -> Div {
         px(42.0),
         px(crate::ui::theme::tokens::radius::SM),
         colors.text_secondary,
-        0.055,
-        0.22,
-        pulse_phase(row, 0),
+        0.085,
+        colors.text_primary,
+        0.18,
+        shimmer_phase(0),
     );
     let title = animated_bar(colors, row, 1, px(240.0), px(15.0));
     let tag = animated_block(
@@ -111,9 +126,10 @@ fn skeleton_row(colors: &ThemeColors, row: usize) -> Div {
         px(20.0),
         px(crate::ui::theme::tokens::radius::SM),
         colors.text_secondary,
-        0.04,
-        0.15,
-        pulse_phase(row, 2),
+        0.065,
+        colors.text_primary,
+        0.16,
+        shimmer_phase(2),
     );
     let meta_left = animated_bar(colors, row, 3, px(68.0), px(10.0));
     let meta_right = animated_bar(colors, row, 4, px(96.0), px(10.0));
@@ -124,9 +140,10 @@ fn skeleton_row(colors: &ThemeColors, row: usize) -> Div {
         px(28.0),
         px(crate::ui::theme::tokens::radius::FULL),
         colors.accent,
-        0.07,
-        0.24,
-        pulse_phase(row, 6),
+        0.10,
+        colors.text_primary,
+        0.16,
+        shimmer_phase(6),
     );
 
     div()
@@ -209,29 +226,21 @@ pub(super) fn render_loading_placeholder(
         .map(|row| skeleton_row_with_separator(colors, row).into_any_element())
         .collect::<Vec<_>>();
 
-    let footer_color = colors.text_secondary;
-    let footer = div()
-        .w_full()
-        .h(px(32.0))
-        .rounded(px(crate::ui::theme::tokens::radius::MD))
-        .bg(Hsla {
-            a: 0.04,
-            ..footer_color
-        })
-        .with_animation(
-            "download-loading-footer",
-            pulse_animation(pulse_phase(row_count, 0)),
-            move |this, t| {
-                this.bg(Hsla {
-                    a: 0.04 + 0.13 * t,
-                    ..footer_color
-                })
-            },
-        );
+    let footer = animated_block(
+        SharedString::from("download-loading-footer"),
+        px(1080.0),
+        px(32.0),
+        px(crate::ui::theme::tokens::radius::MD),
+        colors.text_secondary,
+        0.055,
+        colors.text_primary,
+        0.16,
+        shimmer_phase(0),
+    );
 
-    // 动画直接作用在每个实际绘制的占位矩形上，而不是依赖父容器
-    // Opacity 或场景动画传播。各块带有轻微相位差，因此会形成从左到右、
-    // 从上到下连续流动的呼吸效果，同时尺寸和位置保持完全静态。
+    // 每个实际占位块内部都有独立的横向高亮带：从块左侧之外进入，
+    // 横穿占位块后从右侧离开。列表行之间没有纵向相位差，视觉方向
+    // 始终是左 -> 右；动画只改变高亮带位置，不改变占位块尺寸。
     div()
         .size_full()
         .min_h(px(0.0))
@@ -249,5 +258,12 @@ pub(super) fn render_loading_placeholder(
                 .flex_col()
                 .children(rows),
         )
-        .child(div().px(px(14.0)).py(px(11.0)).child(footer))
+        .child(
+            div()
+                .w_full()
+                .px(px(14.0))
+                .py(px(11.0))
+                .overflow_hidden()
+                .child(footer),
+        )
 }
