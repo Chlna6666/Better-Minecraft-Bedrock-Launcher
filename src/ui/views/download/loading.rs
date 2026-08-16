@@ -142,7 +142,7 @@ fn skeleton_row_with_separator(colors: &ThemeColors) -> Div {
 pub(super) fn render_loading_placeholder(
     colors: &ThemeColors,
     viewport_height: Pixels,
-) -> Div {
+) -> impl IntoElement {
     let row_count = loading_row_count(viewport_height);
     let rows = (0..row_count)
         .map(|_| skeleton_row_with_separator(colors).into_any_element())
