@@ -1,11 +1,10 @@
-use crate::ui::animation::repeating_linear_motion;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::{DownloadPageState, DownloadTab};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnimationExt as _, *};
 use std::time::Duration;
 
-const LOADING_PULSE_DURATION: Duration = Duration::from_millis(1600);
+const LOADING_PULSE_DURATION: Duration = Duration::from_millis(900);
 const LOADING_ROW_HEIGHT: f32 = 76.0;
 const LOADING_ROW_SEPARATOR_HEIGHT: f32 = 1.0;
 const LOADING_MIN_ROWS: usize = 4;
@@ -179,20 +178,21 @@ pub(super) fn render_loading_placeholder(
                 ),
         );
 
-    // 旧实现让每一行单独移动 shimmer 的 left 属性，既触发布局动画，
-    // 又会在每个循环末尾从右侧瞬间跳回左侧。统一加载层只运行一个
-    // 透明度脉冲，首尾取值相同，因此循环连续且不会引起列表布局抖动。
+    // 统一加载层只声明一个场景级透明度动画。Opacity 不改变布局，
+    // GPUI/Nova 可以直接绑定场景动画，避免旧 shimmer 每帧修改 left
+    // 导致整组骨架重新布局，同时 Alternate 保证循环端点连续、无跳变。
+    let pulse = Animation::from_spec(
+        AnimationSpec::new(LOADING_PULSE_DURATION)
+            .ease(Easing::InOutCubic)
+            .direction(AnimationDirection::Alternate)
+            .repeat(RepeatMode::Forever),
+    )
+    .with_property(AnimationProperty::opacity(0.76, 0.96));
+
     div()
         .size_full()
         .min_h(px(0.0))
         .min_w(px(0.0))
         .child(skeleton_content)
-        .with_animation(
-            "download-loading-pulse",
-            repeating_linear_motion(LOADING_PULSE_DURATION),
-            |this, t| {
-                let triangle = 1.0 - (2.0 * t - 1.0).abs();
-                this.opacity(0.76 + triangle * 0.20)
-            },
-        )
+        .with_animation("download-loading-pulse", pulse, |this, _| this)
 }
