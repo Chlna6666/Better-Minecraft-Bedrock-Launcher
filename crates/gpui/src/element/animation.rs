@@ -42,6 +42,15 @@ pub struct AnimationProperty {
 }
 
 impl AnimationProperty {
+    /// Animate visual opacity without changing layout.
+    pub fn opacity(from: f32, to: f32) -> Self {
+        Self {
+            property: TransitionProperty::Opacity,
+            from: [from.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+            to: [to.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+        }
+    }
+
     /// Animate a visual rotation around the element center.
     pub fn rotation(from: impl Into<Radians>, to: impl Into<Radians>) -> Self {
         Self {
@@ -387,6 +396,18 @@ fn next_animation_frame_delay(done: bool, repeats: bool, window_active: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_opacity_uses_scene_animation_metadata() {
+        let animation = Animation::new(Duration::from_millis(900))
+            .with_property(AnimationProperty::opacity(0.25, 0.9));
+
+        let (property, spec) = animation.scene_animation().expect("scene animation");
+        assert_eq!(property.property, TransitionProperty::Opacity);
+        assert_eq!(property.from, [0.25, 0.0, 0.0, 0.0]);
+        assert_eq!(property.to, [0.9, 0.0, 0.0, 0.0]);
+        assert_eq!(spec.driver, AnimationDriver::Auto);
+    }
 
     #[test]
     fn declared_rotation_uses_scene_animation_metadata() {
