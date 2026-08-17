@@ -19,6 +19,14 @@
     clippy::wildcard_imports
 )]
 
+#[cfg(feature = "backend-bedrock-leveldb")]
+mod bedrock_leveldb {
+    pub use ::bedrock_leveldb::access::*;
+    pub use ::bedrock_leveldb::engine::*;
+    pub use ::bedrock_leveldb::error::*;
+    pub use ::bedrock_leveldb::format::*;
+}
+
 #[path = "model/block_state.rs"]
 mod block_state;
 mod chunk;
