@@ -110,30 +110,8 @@ pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-// Crate-private migration shims. Physical generic directories are gone; these aliases exist only so
-// large implementation files can be migrated incrementally without restoring any pre-0.7 public API.
-mod model {
-    pub(crate) use crate::chunk::key::{
-        ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
-        EncodedChunkKey, GlobalRecordKind, MapRecordId, ParsedVillageKey, VillageRecordKind,
-    };
-    pub(crate) use crate::chunk::legacy::{LegacyBiomeSample, LegacySubChunk, LegacyTerrain};
-    pub(crate) use crate::chunk::model::{
-        BlockPos, Chunk, ChunkPos, ChunkRecord, ChunkVersion, Dimension, EntityData,
-    };
-    pub(crate) use crate::chunk::palette::{BlockPalette, BlockState};
-    pub(crate) use crate::chunk::subchunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
-    pub(crate) use crate::parsed::model::{
-        ActorRecord, ActorResolution, ActorSource, Biome2d, Biome3d, BlockEntityRecord,
-        HardcodedSpawnAreaKind, HeightMap2d, ItemStack, MapKnownFields, MapPixels,
-        ParsedActorDigest, ParsedBiomeData, ParsedBiomeStorage, ParsedBlockEntity, ParsedChunkData,
-        ParsedChunkRecord, ParsedChunkRecordValue, ParsedDbEntry, ParsedDbValue, ParsedEntity,
-        ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData, ParsedPlayer, ParsedVillageData,
-        ParsedWorld,
-    };
-    pub(crate) use crate::player_impl::{PlayerData, PlayerId};
-}
-
+// Temporary crate-private database alias for implementation files that are still moving from the
+// old generic storage name to the Bedrock world database domain. It is not public API.
 mod storage {
     pub(crate) use crate::database::*;
 }
