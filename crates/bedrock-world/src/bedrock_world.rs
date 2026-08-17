@@ -34,6 +34,8 @@
     clippy::wildcard_imports
 )]
 
+/// Typed modern paletted-chunk block editing helpers.
+pub mod block_edit;
 /// Canonical semantic identity helpers for Bedrock block states.
 pub mod block_state;
 /// Data-driven historical block-state migration helpers.
@@ -68,6 +70,10 @@ pub mod surface;
 /// High-level lazy world handle and scan/render helpers.
 pub mod world;
 
+pub use block_edit::{
+    BlockEdit, BlockEditOptions, BlockEditResult, BlockEntityEdit, BlockStorageLayer,
+    apply_block_edits_blocking, set_block_state_blocking,
+};
 pub use block_state_upgrade::{
     BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
     BlockStateValueRewrite,
