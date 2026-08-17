@@ -1,7 +1,7 @@
 //! Safe `level.dat` migration guards.
 
-use crate::codec::level_dat::LevelDatDocument;
-use crate::codec::nbt::NbtTag;
+use crate::level::LevelDatDocument;
+use crate::nbt::NbtTag;
 use crate::error::{BedrockWorldError, Result};
 
 /// Explicit target for a `level.dat` migration.
