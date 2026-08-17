@@ -87,12 +87,16 @@ pub mod world;
 
 /// Semantic Minecraft world model types with no editor or migration policy attached.
 pub mod model {
-    pub use crate::chunk::{
-        ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPalette, BlockPos, BlockState,
-        Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension, EntityData,
-        GlobalRecordKind, LegacyBiomeSample, LegacySubChunk, LegacyTerrain, MapRecordId,
-        ParsedVillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat, VillageRecordKind,
+    pub use crate::chunk::key::{
+        ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
+        EncodedChunkKey, GlobalRecordKind, MapRecordId, ParsedVillageKey, VillageRecordKind,
     };
+    pub use crate::chunk::legacy::{LegacyBiomeSample, LegacySubChunk, LegacyTerrain};
+    pub use crate::chunk::model::{
+        BlockPos, Chunk, ChunkPos, ChunkRecord, ChunkVersion, Dimension, EntityData,
+    };
+    pub use crate::chunk::palette::{BlockPalette, BlockState};
+    pub use crate::chunk::subchunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
     pub use crate::parsed::{
         ActorRecord, ActorResolution, ActorSource, Biome2d, Biome3d, BlockEntityRecord,
         HardcodedSpawnAreaKind, HeightMap2d, ItemStack, MapKnownFields, MapPixels,
@@ -106,11 +110,13 @@ pub mod model {
 
 /// Bedrock binary/NBT/chunk/structure codecs and decode policies.
 pub mod codec {
-    pub use crate::chunk::{
+    pub use crate::chunk::legacy::{
         LEGACY_SUBCHUNK_BLOCK_COUNT, LEGACY_SUBCHUNK_MIN_VALUE_LEN,
         LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_BLOCK_COUNT,
-        LEGACY_TERRAIN_VALUE_LEN, block_storage_index,
+        LEGACY_TERRAIN_VALUE_LEN,
     };
+    pub use crate::chunk::palette::block_storage_index;
+    pub use crate::chunk::subchunk::{parse_subchunk, parse_subchunk_with_mode};
     pub use crate::mcstructure::{
         McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
         McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
