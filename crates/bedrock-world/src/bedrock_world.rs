@@ -37,7 +37,7 @@ pub mod biome {
 /// Bedrock actor/entity records and actor-index identities.
 pub mod entity {
     pub use crate::chunk::key::{ActorDigestKey, ActorUid};
-    pub use crate::chunk::model::EntityData;
+    pub use crate::chunk::EntityData;
     pub use crate::parsed::{
         ActorRecord, ActorResolution, ActorSource, ParsedActorDigest, ParsedEntity,
         encode_actor_digest_ids, parse_actor_digest_ids,
@@ -87,14 +87,8 @@ pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-// Preserve the historical crate-private spellings used by the large world implementation while the
-// files themselves now follow conventional parent/child module discovery. This keeps internal symbol
-// migration independent from file-layout cleanup and avoids reintroducing `#[path]` declarations.
 pub(crate) use world::{discover, surface};
 
-// Crate-private compatibility prelude for implementation files that still use the former crate-root
-// spelling. This is deliberately not public API and can be removed incrementally as responsibilities
-// are physically split into their final modules.
 pub(crate) use biome::{Biome2d, Biome3d};
 pub(crate) use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
 pub(crate) use chunk::{

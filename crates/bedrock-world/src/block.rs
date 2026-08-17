@@ -4,6 +4,6 @@
 // mounting the file at the crate root with `#[path]`.
 mod state;
 
-pub use crate::chunk::model::BlockPos;
+pub use crate::chunk::position::BlockPos;
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
