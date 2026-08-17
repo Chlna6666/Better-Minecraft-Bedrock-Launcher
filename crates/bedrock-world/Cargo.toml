@@ -1,6 +1,6 @@
 [package]
 name = "bedrock-world"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
@@ -40,7 +40,7 @@ backend-bedrock-leveldb = ["dep:bedrock-leveldb", "bedrock-leveldb/zlib", "bedro
 leveldb-mmap = ["backend-bedrock-leveldb", "bedrock-leveldb/mmap"]
 
 [dependencies]
-bedrock-leveldb = { path = "../bedrock-leveldb", version = "0.5.1", default-features = false, optional = true }
+bedrock-leveldb = { path = "../bedrock-leveldb", version = "0.6.0", default-features = false, optional = true }
 bytes = "1.10.1"
 indexmap = { version = "2.12.1", features = ["serde"] }
 log = "0.4"
