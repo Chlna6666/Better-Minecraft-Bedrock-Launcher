@@ -1,42 +1,42 @@
-//! Read-first `LevelDB` access for Minecraft Bedrock world databases.
+//! High-performance access to Mojang's modified LevelDB storage used by Minecraft Bedrock.
 //!
-//! `bedrock-leveldb` can read native Bedrock/LevelDB table, manifest, and WAL
-//! files and exposes lazy point lookups plus visitor-based scans over raw byte
-//! keys and values. The write path appends standard `LevelDB` write batches to
-//! WAL files and flushes native `.ldb` tables plus native manifest edits, while
-//! older crate-specific `BWLDB...` files remain readable for migration. Set
-//! [`OpenOptions::write_buffer_size`] to `0` to keep writes in the WAL overlay
-//! until an explicit flush or compaction.
+//! `bedrock-leveldb` is intentionally a **storage-engine** crate. It understands native LevelDB
+//! tables, manifests, WAL records, Mojang compression variants, checksums, snapshots, caches,
+//! compaction and raw byte key/value operations. It does not interpret Minecraft chunk keys, NBT,
+//! BlockState, entities, biomes, dimensions, players or any other game semantics; those belong in
+//! the higher-level `bedrock-world` crate.
+//!
+//! Native Bedrock/LevelDB table, manifest and WAL files are read lazily. Point lookups and visitor
+//! scans operate on arbitrary byte keys and values, with borrowed/shared/owned value strategies for
+//! zero-copy-oriented consumers. The write path appends native write batches to WAL files and flushes
+//! native `.ldb` tables plus manifest edits. Older crate-specific `BWLDB...` files remain readable for
+//! migration of databases produced by earlier versions of this crate.
 //!
 //! # Logging
 //!
-//! The crate emits low-noise diagnostics through the [`log`] facade at
-//! `trace`, `debug`, and `warn` levels. It never installs a global logger and
-//! never writes to stdout or stderr; applications decide whether to connect
-//! `env_logger`, `log4rs`, `tracing-log`, or another logging backend.
+//! The crate emits low-noise diagnostics through the [`log`] facade at `trace`, `debug`, and `warn`
+//! levels. It never installs a global logger and never writes to stdout or stderr; applications choose
+//! their logging backend.
 //!
 //! # Errors
 //!
-//! Errors are returned as [`LevelDbError`]. Prefer matching
-//! [`ErrorKind`] through [`LevelDbError::kind`] and using
-//! [`LevelDbError::path`] for path-aware recovery instead of parsing display
-//! strings.
+//! Errors are returned as [`LevelDbError`]. Prefer matching [`ErrorKind`] through
+//! [`LevelDbError::kind`] and using [`LevelDbError::path`] for path-aware recovery instead of parsing
+//! display strings.
 //!
-//! # Bedrock Record Helpers
+//! # Compatibility boundary
 //!
-//! The crate includes small helpers for Bedrock `LevelDB` record keys and legacy
-//! terrain payload families. These helpers parse documented storage bytes such
-//! as `LegacyTerrain` and pre-paletted `SubChunkPrefix` values, but they do not
-//! interpret NBT, actors, players, or gameplay semantics.
+//! Historical Minecraft versions may change the meaning or layout of raw keys and values. That is
+//! deliberately invisible here: if the underlying Mojang LevelDB representation is readable, this
+//! crate returns the exact raw bytes. World-format compatibility, historical chunk codecs and
+//! migrations are implemented by `bedrock-world`.
 //!
 //! # Features
 //!
-//! docs.rs builds this crate with all features enabled. Default builds enable
-//! `zlib`, `snappy`, and `async`. The `async` feature depends on Tokio with
-//! default features disabled and enables only the runtime pieces needed for
-//! `spawn_blocking` wrappers. Optional `mmap` exposes read-only mapped table
-//! scans, while `repair-tools` and `bench` are reserved for tooling and
-//! benchmark-only paths.
+//! docs.rs builds this crate with all features enabled. Default builds enable `zlib`, `snappy`, and
+//! `async`. The `async` feature depends on Tokio with default features disabled and enables only the
+//! runtime pieces needed for `spawn_blocking` wrappers. Optional `mmap` exposes read-only mapped table
+//! scans, while `repair-tools` and `bench` are reserved for tooling and benchmark-only paths.
 //!
 //! # Example
 //!
@@ -46,9 +46,9 @@
 //! # fn example() -> bedrock_leveldb::Result<()> {
 //! let dir = tempfile::tempdir()?;
 //! let db = Db::open(dir.path(), OpenOptions::default())?;
-//! db.put(b"player_1".as_slice(), b"value".as_slice(), Default::default())?;
+//! db.put(b"raw-key".as_slice(), b"raw-value".as_slice(), Default::default())?;
 //!
-//! assert_eq!(db.get(b"player_1")?.as_deref(), Some(b"value".as_slice()));
+//! assert_eq!(db.get(b"raw-key")?.as_deref(), Some(b"raw-value".as_slice()));
 //!
 //! db.for_each_key(Default::default(), |_key| Ok(VisitorControl::Continue))?;
 //! # Ok(())
@@ -57,7 +57,6 @@
 #![warn(missing_docs)]
 
 mod batch;
-mod bedrock;
 mod coding;
 mod db;
 mod error;
@@ -67,15 +66,9 @@ mod table;
 mod wal;
 
 pub use batch::{WriteBatch, WriteOp};
-pub use bedrock::{
-    BedrockKey, ChunkCoordinates, ChunkKey, ChunkRecordTag, Dimension,
-    LEGACY_SUBCHUNK_MIN_VALUE_LEN, LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN,
-    LEGACY_TERRAIN_BLOCK_COUNT, LEGACY_TERRAIN_VALUE_LEN, LegacyBiomeSample, LegacySubChunk,
-    LegacyTerrain, SUBCHUNK_BLOCK_COUNT, SubChunkIndex, SubChunkPayload,
-};
 pub use db::{
-    Db, DbCacheStats, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport,
-    Snapshot, ValueRef,
+    Db, DbCacheStats, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport, Snapshot,
+    ValueRef,
 };
 pub use error::{ErrorKind, LevelDbError, Result};
 pub use options::{
