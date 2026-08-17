@@ -50,6 +50,8 @@ pub mod discover;
 pub mod error;
 /// Read-only whole-world consistency and corruption auditing.
 pub mod integrity;
+/// Explicit pre-LevelDB Pocket Edition container import helpers.
+pub mod legacy_import;
 /// `level.dat` header parsing, validation, and atomic write helpers.
 pub mod level_dat;
 /// Minecraft Bedrock `.mcstructure` files and world placement helpers.
@@ -98,6 +100,10 @@ pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub use integrity::{
     WorldIntegrityIssue, WorldIntegrityIssueKind, WorldIntegrityOptions, WorldIntegrityReport,
     WorldIntegritySeverity, WorldIntegrityStatus, audit_world_integrity_blocking,
+};
+pub use legacy_import::{
+    PocketChunksDatImportOptions, PocketChunksDatImportReport,
+    import_pocket_chunks_dat_records_blocking,
 };
 pub use level_dat::{
     LevelDatDocument, LevelDatHeader, LevelDatReadWarning,
