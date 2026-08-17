@@ -220,30 +220,55 @@ impl BlockStateUpgrader {
 
     /// Upgrades one state and rejects unresolved, unknown, or future-version data.
     pub fn upgrade_strict(&self, state: &BlockState) -> Result<BlockState> {
+        self.upgrade_strict_with_validator(state, |_| true)
+    }
+
+    /// Upgrades one state and requires the resulting semantic permutation to be accepted by a
+    /// caller-supplied authoritative palette validator.
+    ///
+    /// This closes an important safety gap in data-driven migrations: matching a rewrite rule proves
+    /// only that a transformation was requested, not that the resulting identifier/state assignment
+    /// actually exists in the target Bedrock palette. Servers and editors should use this method when
+    /// an authoritative version palette is available and only persist the returned state on success.
+    pub fn upgrade_strict_with_validator<F>(
+        &self,
+        state: &BlockState,
+        validator: F,
+    ) -> Result<BlockState>
+    where
+        F: FnOnce(&BlockState) -> bool,
+    {
         let result = self.upgrade(state)?;
-        match result.status {
+        let resolved = match result.status {
             BlockStateUpgradeStatus::Current | BlockStateUpgradeStatus::Upgraded { .. } => {
-                Ok(result.state)
+                result.state
             }
-            BlockStateUpgradeStatus::UnresolvedLegacy => Err(BedrockWorldError::Validation(
-                format!(
+            BlockStateUpgradeStatus::UnresolvedLegacy => {
+                return Err(BedrockWorldError::Validation(format!(
                     "no block-state upgrade rule for {} version {:?} -> {}",
                     state.name, state.version, self.target_version
-                ),
-            )),
+                )));
+            }
             BlockStateUpgradeStatus::FutureVersion { version } => {
-                Err(BedrockWorldError::Validation(format!(
+                return Err(BedrockWorldError::Validation(format!(
                     "block state {} uses future storage version {version}; target version {} must not rewrite it",
                     state.name, self.target_version
-                )))
+                )));
             }
-            BlockStateUpgradeStatus::UnknownVersion => Err(BedrockWorldError::Validation(
-                format!(
+            BlockStateUpgradeStatus::UnknownVersion => {
+                return Err(BedrockWorldError::Validation(format!(
                     "block state {} has no storage version and no version-agnostic upgrade rule",
                     state.name
-                ),
-            )),
+                )));
+            }
+        };
+        if !validator(&resolved) {
+            return Err(BedrockWorldError::Validation(format!(
+                "upgraded block state {} is not present in the authoritative target palette version {}",
+                resolved.name, self.target_version
+            )));
         }
+        Ok(resolved)
     }
 }
 
@@ -262,8 +287,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn explicit_rule_upgrades_identifier_schema_and_version() {
+    fn test_upgrader() -> BlockStateUpgrader {
         let mut rule = BlockStateUpgradeRule::new("minecraft:old_test");
         rule.max_source_version = Some(10);
         rule.target_identifier = Some("minecraft:test".to_string());
@@ -272,9 +296,14 @@ mod tests {
         rule.remove_states.insert("obsolete".to_string());
         rule.set_states
             .insert("waterlogged".to_string(), NbtTag::Byte(0));
-
         let mut upgrader = BlockStateUpgrader::new(20);
         upgrader.push_rule(rule);
+        upgrader
+    }
+
+    #[test]
+    fn explicit_rule_upgrades_identifier_schema_and_version() {
+        let upgrader = test_upgrader();
         let result = upgrader.upgrade(&old_state()).expect("upgrade");
         assert_eq!(
             result.status,
@@ -310,5 +339,27 @@ mod tests {
         );
         assert_eq!(result.state, state);
         assert!(upgrader.upgrade_strict(&state).is_err());
+    }
+
+    #[test]
+    fn strict_validator_rejects_rule_output_missing_from_target_palette() {
+        let upgrader = test_upgrader();
+        let error = upgrader
+            .upgrade_strict_with_validator(&old_state(), |_| false)
+            .expect_err("validator must reject unknown target permutation");
+        assert!(error.to_string().contains("authoritative target palette"));
+    }
+
+    #[test]
+    fn strict_validator_accepts_known_target_permutation() {
+        let upgrader = test_upgrader();
+        let upgraded = upgrader
+            .upgrade_strict_with_validator(&old_state(), |state| {
+                state.name == "minecraft:test"
+                    && state.states.get("direction") == Some(&NbtTag::Int(2))
+                    && state.states.get("waterlogged") == Some(&NbtTag::Byte(0))
+            })
+            .expect("known permutation");
+        assert_eq!(upgraded.version, Some(20));
     }
 }
