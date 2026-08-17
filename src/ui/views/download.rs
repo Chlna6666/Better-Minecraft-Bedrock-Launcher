@@ -583,9 +583,12 @@ pub fn render_download_page(
     if active_tab == DownloadTab::Mod {
         ensure_levilauncher_loaded(cx);
     }
-    let show_loading = cx.read_global(|state: &DownloadPageState, _cx| {
-        loading::should_render_loading(state, active_tab)
-    });
+    // ResourcePack 自己维护真实的左侧分类栏、右侧内容壳和结果列表加载态。
+    // 外层统一骨架只负责游戏和模组，避免把 ResourcePack 整个页面替换掉。
+    let show_loading = active_tab != DownloadTab::ResourcePack
+        && cx.read_global(|state: &DownloadPageState, _cx| {
+            loading::should_render_loading(state, active_tab)
+        });
 
     let body: AnyElement = if show_loading {
         loading::render_loading_placeholder(&colors, window_height).into_any_element()
