@@ -1,8 +1,8 @@
 //! Modern paletted SubChunk encoder shared by editing and migration.
 
-use crate::codec::nbt::{NbtTag, NbtWriter};
+use crate::chunk::palette::BlockState;
 use crate::error::{BedrockWorldError, Result};
-use crate::model::BlockState;
+use crate::nbt::{NbtTag, NbtWriter};
 use bytes::Bytes;
 use indexmap::IndexMap;
 use std::collections::BTreeMap;
