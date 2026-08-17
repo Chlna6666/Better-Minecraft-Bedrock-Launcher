@@ -1,8 +1,8 @@
 //! Discovery helpers for locating Bedrock world folders on disk.
 
+use crate::codec::level_dat::read_level_dat_document;
+use crate::codec::NbtTag;
 use crate::error::Result;
-use crate::level_dat::read_level_dat_document;
-use crate::nbt::NbtTag;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -179,7 +179,7 @@ fn count_packs(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::level_dat::{LevelDatDocument, write_level_dat_document};
+    use crate::codec::level_dat::{LevelDatDocument, write_level_dat_document};
     use indexmap::IndexMap;
     use std::io::Write as _;
 
