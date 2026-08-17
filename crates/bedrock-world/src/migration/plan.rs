@@ -1,12 +1,12 @@
-//! World migration planning derived from observed records rather than a single global version.
+//! World upgrade planning derived from observed records rather than a single global version.
 
-use crate::audit::{
+use crate::chunk::ChunkPos;
+use crate::integrity::{
     ActorStorageModel, CompatibilityLevel, WorldCompatibilityReport, WritePolicy,
 };
-use crate::migration::{ActorMigrationAction, classify_actor_migration};
-use crate::model::ChunkPos;
+use crate::upgrade::{ActorMigrationAction, classify_actor_migration};
 
-/// A reason a world cannot be migrated destructively without additional authoritative information.
+/// A reason a world cannot be upgraded destructively without additional authoritative information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationBlocker {
     /// Future/unknown chunk data is present and must be preserved raw.
@@ -17,16 +17,16 @@ pub enum MigrationBlocker {
     ActorStorage,
 }
 
-/// One chunk selected for historical format migration.
+/// One chunk selected for historical format upgrade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkMigrationTarget {
     /// Chunk position including dimension.
     pub pos: ChunkPos,
-    /// Compatibility observed before migration.
+    /// Compatibility observed before upgrade.
     pub compatibility: CompatibilityLevel,
 }
 
-/// Deterministic migration plan built from a read-only compatibility scan.
+/// Deterministic upgrade plan built from a read-only compatibility scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldMigrationPlan {
     /// Requested mutation policy.
@@ -40,7 +40,7 @@ pub struct WorldMigrationPlan {
 }
 
 impl WorldMigrationPlan {
-    /// Builds a migration plan from a compatibility report without touching storage.
+    /// Builds an upgrade plan from a compatibility report without touching storage.
     #[must_use]
     pub fn from_report(report: &WorldCompatibilityReport, policy: WritePolicy) -> Self {
         let mut chunks = Vec::new();
