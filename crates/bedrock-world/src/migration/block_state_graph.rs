@@ -4,9 +4,11 @@
 //! state names, identifiers and value domains across releases, so robust conversion is represented as
 //! explicit directed migration edges rather than stamping an old state with the newest version.
 
-use crate::{
-    BedrockWorldError, BlockState, BlockStateUpgradeRule, BlockStateUpgrader, Result,
+use super::block_state_upgrade::{
+    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
 };
+use crate::block::BlockState;
+use crate::error::{BedrockWorldError, Result};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// One directed block-state schema migration step.
@@ -62,8 +64,6 @@ impl BlockStateMigrationStep {
 
         let mut upgrader = BlockStateUpgrader::new(self.to_version);
         for mut rule in self.rules.clone() {
-            // A graph edge is already version-scoped. Tighten unspecified rule bounds to the exact
-            // edge source version so one rule cannot accidentally migrate a state from another era.
             if rule.min_source_version.is_none() {
                 rule.min_source_version = Some(self.from_version);
             }
@@ -74,26 +74,25 @@ impl BlockStateMigrationStep {
         }
         let result = upgrader.upgrade(state)?;
         match result.status {
-            crate::BlockStateUpgradeStatus::Upgraded { .. } => Ok(result.state),
-            crate::BlockStateUpgradeStatus::UnresolvedLegacy if self.allow_identity => {
+            BlockStateUpgradeStatus::Upgraded { .. } => Ok(result.state),
+            BlockStateUpgradeStatus::UnresolvedLegacy if self.allow_identity => {
                 let mut identity = state.clone();
                 identity.version = Some(self.to_version);
                 Ok(identity)
             }
-            crate::BlockStateUpgradeStatus::UnknownVersion if self.allow_identity => {
+            BlockStateUpgradeStatus::UnknownVersion if self.allow_identity => {
                 Err(BedrockWorldError::Validation(
                     "identity migration requires an explicit source block-state version".to_string(),
                 ))
             }
-            crate::BlockStateUpgradeStatus::Current => Ok(result.state),
-            crate::BlockStateUpgradeStatus::FutureVersion { version } => {
+            BlockStateUpgradeStatus::Current => Ok(result.state),
+            BlockStateUpgradeStatus::FutureVersion { version } => {
                 Err(BedrockWorldError::Validation(format!(
                     "migration edge {} -> {} received future version {version}",
                     self.from_version, self.to_version
                 )))
             }
-            crate::BlockStateUpgradeStatus::UnresolvedLegacy
-            | crate::BlockStateUpgradeStatus::UnknownVersion => {
+            BlockStateUpgradeStatus::UnresolvedLegacy | BlockStateUpgradeStatus::UnknownVersion => {
                 Err(BedrockWorldError::UnsupportedChunkFormat(format!(
                     "no block-state migration rule matched {} on schema edge {} -> {}",
                     state.name, self.from_version, self.to_version
@@ -231,7 +230,7 @@ impl BlockStateMigrationGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NbtTag;
+    use crate::nbt::NbtTag;
 
     fn state(version: i32) -> BlockState {
         BlockState {
