@@ -5,6 +5,7 @@
 
 pub mod level_dat;
 pub mod nbt;
+pub mod subchunk;
 
 pub use crate::chunk::legacy::{
     LEGACY_SUBCHUNK_BLOCK_COUNT, LEGACY_SUBCHUNK_MIN_VALUE_LEN,
@@ -20,3 +21,4 @@ pub use crate::mcstructure::codec::{
 pub use crate::mcstructure::placement::{McStructurePlacement, McStructureRotation};
 pub use nbt::{NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter, visit_nbt_events};
 pub use crate::parsed::report::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
+pub use subchunk::{encode_palette_layer, encode_paletted_subchunk};

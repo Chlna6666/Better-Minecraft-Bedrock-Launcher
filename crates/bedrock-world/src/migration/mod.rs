@@ -6,6 +6,7 @@ pub mod actor;
 pub mod biome;
 pub mod block_state_graph;
 pub mod block_state_upgrade;
+pub mod chunk;
 pub mod historical_chunk;
 pub mod legacy_import;
 pub mod plan;
@@ -19,6 +20,10 @@ pub use block_state_graph::{BlockStateMigrationGraph, BlockStateMigrationStep};
 pub use block_state_upgrade::{
     BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
     BlockStateValueRewrite,
+};
+pub use chunk::{
+    HistoricalChunkMigrationOptions, HistoricalChunkMigrationReport,
+    migrate_historical_chunk_blocking,
 };
 pub use historical_chunk::{
     LegacyBlockMapping, LegacyBlockReference, LegacyBlockResolver, LegacyBlockSource,
