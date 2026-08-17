@@ -13,5 +13,7 @@ pub mod palette;
 pub mod legacy;
 /// Versioned subchunk payload models and decode policies.
 pub mod subchunk;
+/// Modern paletted subchunk write helpers shared by world editing and structure placement.
+pub(crate) mod subchunk_write;
 
 pub use implementation::*;

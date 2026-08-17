@@ -35,9 +35,6 @@ mod selection_query;
 #[path = "world/surface.rs"]
 mod surface;
 
-// Internal byte-format implementation grouping still being split into game-data domains.
-mod codec;
-
 /// Blocks, block states, palettes and block-entity data.
 pub mod block {
     pub use crate::chunk::model::BlockPos;
@@ -83,26 +80,18 @@ pub mod village {
 
 /// Bedrock `.mcstructure` files and structure placement.
 pub mod structure {
-    pub use crate::codec::{
-        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
-        McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
+    pub use crate::mcstructure::codec::{
+        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructureSize,
+        read_mcstructure_file, write_mcstructure_file,
     };
+    pub use crate::mcstructure::placement::{McStructurePlacement, McStructureRotation};
 }
 
 /// Bedrock little-endian NBT parsing, writing and borrowed views.
-pub mod nbt {
-    pub use crate::codec::nbt::{
-        NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter,
-        nbt_tags_equal_for_write, parse_consecutive_root_nbt, parse_root_nbt,
-        parse_root_nbt_with_consumed, serialize_root_nbt, validate_root_nbt_for_write,
-        visit_nbt_events,
-    };
-}
+pub mod nbt;
 
 /// `level.dat` document access and world-level metadata.
-pub mod level {
-    pub use crate::codec::level_dat::*;
-}
+pub mod level;
 
 /// Bedrock world database records, scanning and LevelDB-backed world storage.
 pub mod database;
@@ -121,8 +110,73 @@ pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-// Temporary crate-private aliases for implementation files that still import the old crate root. They
-// are not public API and disappear as those implementation files move to direct game-domain imports.
+// Crate-private migration shims. Physical generic directories are gone; these aliases exist only so
+// large implementation files can be migrated incrementally without restoring any pre-0.7 public API.
+mod model {
+    pub(crate) use crate::chunk::key::{
+        ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
+        EncodedChunkKey, GlobalRecordKind, MapRecordId, ParsedVillageKey, VillageRecordKind,
+    };
+    pub(crate) use crate::chunk::legacy::{LegacyBiomeSample, LegacySubChunk, LegacyTerrain};
+    pub(crate) use crate::chunk::model::{
+        BlockPos, Chunk, ChunkPos, ChunkRecord, ChunkVersion, Dimension, EntityData,
+    };
+    pub(crate) use crate::chunk::palette::{BlockPalette, BlockState};
+    pub(crate) use crate::chunk::subchunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
+    pub(crate) use crate::parsed::model::{
+        ActorRecord, ActorResolution, ActorSource, Biome2d, Biome3d, BlockEntityRecord,
+        HardcodedSpawnAreaKind, HeightMap2d, ItemStack, MapKnownFields, MapPixels,
+        ParsedActorDigest, ParsedBiomeData, ParsedBiomeStorage, ParsedBlockEntity, ParsedChunkData,
+        ParsedChunkRecord, ParsedChunkRecordValue, ParsedDbEntry, ParsedDbValue, ParsedEntity,
+        ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData, ParsedPlayer, ParsedVillageData,
+        ParsedWorld,
+    };
+    pub(crate) use crate::player_impl::{PlayerData, PlayerId};
+}
+
+mod storage {
+    pub(crate) use crate::database::*;
+}
+
+mod audit {
+    pub(crate) use crate::integrity::*;
+}
+
+mod migration {
+    pub(crate) use crate::upgrade::*;
+}
+
+mod codec {
+    pub(crate) use crate::chunk::legacy::{
+        LEGACY_SUBCHUNK_BLOCK_COUNT, LEGACY_SUBCHUNK_MIN_VALUE_LEN,
+        LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_BLOCK_COUNT,
+        LEGACY_TERRAIN_VALUE_LEN,
+    };
+    pub(crate) use crate::chunk::palette::block_storage_index;
+    pub(crate) use crate::chunk::subchunk::{parse_subchunk, parse_subchunk_with_mode};
+    pub(crate) use crate::chunk::subchunk_write::{encode_palette_layer, encode_paletted_subchunk};
+    pub(crate) use crate::mcstructure::codec::{
+        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructureSize,
+        read_mcstructure_file, write_mcstructure_file,
+    };
+    pub(crate) use crate::mcstructure::placement::{McStructurePlacement, McStructureRotation};
+    pub(crate) use crate::nbt::{NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter, visit_nbt_events};
+    pub(crate) use crate::parsed::report::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
+
+    pub(crate) mod level_dat {
+        pub(crate) use crate::level::*;
+    }
+
+    pub(crate) mod nbt {
+        pub(crate) use crate::nbt::*;
+    }
+
+    pub(crate) mod subchunk {
+        pub(crate) use crate::chunk::subchunk_write::*;
+    }
+}
+
+// Temporary crate-root aliases for implementation files still being moved to direct domain imports.
 pub(crate) use chunk::key::{
     ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
     EncodedChunkKey, GlobalRecordKind, MapRecordId, ParsedVillageKey, VillageRecordKind,
@@ -142,7 +196,7 @@ pub(crate) use parsed::model::{
 };
 pub(crate) use player_impl::{PlayerData, PlayerId};
 pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
-pub(crate) use codec::nbt::{NbtReader, NbtTag, NbtWriter};
+pub(crate) use nbt::{NbtReader, NbtTag, NbtWriter};
 pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub(crate) use level as level_dat;
 pub(crate) use query::WriteGuard;
