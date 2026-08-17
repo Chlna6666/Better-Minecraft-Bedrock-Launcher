@@ -1,10 +1,10 @@
 [package]
 name = "bedrock-world"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
-description = "Async Minecraft Bedrock world, level.dat, NBT, player and chunk library"
+description = "Multi-version Minecraft Bedrock world, level.dat, NBT, player and chunk library"
 repository = "https://github.com/BE-Community-Dev/bedrock-world"
 homepage = "https://github.com/BE-Community-Dev/bedrock-world"
 documentation = "https://docs.rs/bedrock-world"
