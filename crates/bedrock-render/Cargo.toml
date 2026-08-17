@@ -1,6 +1,6 @@
 [package]
 name = "bedrock-render"
-version = "0.5.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -25,7 +25,6 @@ include = [
     "docs/**/*.md",
     "docs/images/*.png",
     "examples/**/*.rs",
-    "examples/web_map_assets/*",
     "src/**/*.rs",
     "tests/**/*.rs",
 ]
@@ -46,8 +45,8 @@ webp = ["image/webp"]
 png = ["image/png"]
 
 [dependencies]
-bedrock-leveldb = { path = "../bedrock-leveldb", default-features = false, features = ["zlib", "snappy"] }
-bedrock-world = { path = "../bedrock-world", default-features = false, features = ["backend-bedrock-leveldb"] }
+bedrock-leveldb = { path = "../bedrock-leveldb", version = "0.7.0", default-features = false, features = ["zlib", "snappy"] }
+bedrock-world = { path = "../bedrock-world", version = "0.7.0", default-features = false, features = ["backend-bedrock-leveldb"] }
 crossbeam-channel = "0.5.15"
 image = { version = "0.25.6", default-features = false }
 indexmap = "2.12.1"
