@@ -2,12 +2,13 @@
 //!
 //! `chunks.dat` is not a LevelDB database. The importer deliberately separates container migration
 //! from chunk-format migration: it copies decoded legacy terrain records into a caller-provided
-//! writable storage backend, but it does not pretend those records are modern paletted chunks.
+//! writable database backend, but it does not pretend those records are modern paletted chunks.
 
-use crate::{
-    BedrockDbKey, ChunkRecordTag, PocketChunksDatStorage, Result, StorageBatch, StorageReadOptions,
-    StorageVisitorControl, WorldStorage,
+use crate::chunk::{BedrockDbKey, ChunkRecordTag};
+use crate::database::{
+    PocketChunksDatStorage, StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage,
 };
+use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
 use std::path::Path;
 
@@ -41,12 +42,12 @@ pub struct PocketChunksDatImportReport {
     pub requires_chunk_migration: bool,
 }
 
-/// Imports pre-LevelDB Pocket `chunks.dat` terrain into a writable raw world storage.
+/// Imports pre-LevelDB Pocket `chunks.dat` terrain into a writable raw world database.
 ///
 /// The source [`PocketChunksDatStorage`] decoder converts the old container layout into Bedrock
 /// `LegacyTerrain` chunk records. Those records are copied without converting block IDs, metadata,
 /// biomes or heights into a newer paletted chunk schema. Callers that need a modern world must run an
-/// explicit historical chunk migration after this container import.
+/// explicit historical chunk upgrade after this container import.
 ///
 /// `level.dat`, `entities.dat`, and other sidecar files are intentionally not written through this
 /// function because they are not LevelDB key/value records. Higher-level world import tools should
@@ -57,7 +58,7 @@ pub fn import_pocket_chunks_dat_records_blocking(
     options: PocketChunksDatImportOptions,
 ) -> Result<PocketChunksDatImportReport> {
     if options.batch_entries == 0 {
-        return Err(crate::BedrockWorldError::Validation(
+        return Err(BedrockWorldError::Validation(
             "Pocket chunks.dat import batch_entries must be greater than zero".to_string(),
         ));
     }
