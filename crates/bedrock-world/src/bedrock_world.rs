@@ -138,36 +138,6 @@ mod storage {
     pub(crate) use crate::database::*;
 }
 
-mod codec {
-    pub(crate) use crate::chunk::legacy::{
-        LEGACY_SUBCHUNK_BLOCK_COUNT, LEGACY_SUBCHUNK_MIN_VALUE_LEN,
-        LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_BLOCK_COUNT,
-        LEGACY_TERRAIN_VALUE_LEN,
-    };
-    pub(crate) use crate::chunk::palette::block_storage_index;
-    pub(crate) use crate::chunk::subchunk::{parse_subchunk, parse_subchunk_with_mode};
-    pub(crate) use crate::chunk::subchunk_write::{encode_palette_layer, encode_paletted_subchunk};
-    pub(crate) use crate::mcstructure::codec::{
-        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructureSize,
-        read_mcstructure_file, write_mcstructure_file,
-    };
-    pub(crate) use crate::mcstructure::placement::{McStructurePlacement, McStructureRotation};
-    pub(crate) use crate::nbt::{NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter, visit_nbt_events};
-    pub(crate) use crate::parsed::report::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
-
-    pub(crate) mod level_dat {
-        pub(crate) use crate::level::*;
-    }
-
-    pub(crate) mod nbt {
-        pub(crate) use crate::nbt::*;
-    }
-
-    pub(crate) mod subchunk {
-        pub(crate) use crate::chunk::subchunk_write::*;
-    }
-}
-
 // Temporary crate-root aliases for implementation files still being moved to direct domain imports.
 pub(crate) use chunk::key::{
     ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
