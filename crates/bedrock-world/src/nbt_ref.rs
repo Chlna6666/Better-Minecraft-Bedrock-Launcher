@@ -1,5 +1,5 @@
+use crate::codec::NbtRef;
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::NbtRef;
 use std::borrow::Cow;
 
 const MAX_DEPTH: usize = 128;
