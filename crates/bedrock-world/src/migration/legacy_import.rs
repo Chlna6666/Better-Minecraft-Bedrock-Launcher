@@ -8,6 +8,7 @@ use crate::{
     BedrockDbKey, ChunkRecordTag, PocketChunksDatStorage, Result, StorageBatch, StorageReadOptions,
     StorageVisitorControl, WorldStorage,
 };
+use bytes::Bytes;
 use std::path::Path;
 
 const DEFAULT_IMPORT_BATCH_ENTRIES: usize = 128;
@@ -78,7 +79,7 @@ pub fn import_pocket_chunks_dat_records_blocking(
             return Ok(StorageVisitorControl::Continue);
         }
 
-        batch.put(key, value.clone());
+        batch.put(Bytes::copy_from_slice(key), value.clone());
         pending = pending.saturating_add(1);
         report.terrain_records = report.terrain_records.saturating_add(1);
         report.bytes_copied = report.bytes_copied.saturating_add(value.len());
