@@ -140,8 +140,9 @@ pub(crate) use codec::nbt::{NbtReader, NbtTag, NbtWriter};
 pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub(crate) use level as level_dat;
 pub(crate) use model::*;
-pub(crate) use query::{WorldChunkQueryRegion, WriteGuard};
+pub(crate) use query::WriteGuard;
 pub(crate) use storage::{MemoryStorage, StorageCachePolicy, StorageReadOptions, WorldStorage};
 pub(crate) use world::{
-    BedrockWorld, CancelFlag, OpenOptions, SurfaceColumn, WorldStorageHandle, WorldTransaction,
+    BedrockWorld, CancelFlag, OpenOptions, SurfaceColumn, WorldChunkQueryRegion, WorldStorageHandle,
+    WorldTransaction,
 };
