@@ -9,16 +9,24 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 pub use bedrock_world::{
-    ActorRecord, ActorSource, ActorUid, BedrockWorld, Biome2d, Biome3d, BlockEntityRecord,
-    BlockPos, CancelFlag, ChunkDetail, ChunkPos, ChunkRecordTag, ChunkVersion, Dimension,
-    GlobalRecordKind, HardcodedSpawnAreaKind, HeightMap2d, MapKnownFields, MapPixels, MapRecordId,
-    NbtTag, OpenOptions, ParsedBiomeStorage, ParsedBlockEntity, ParsedEntity, ParsedGlobalData,
-    ParsedHardcodedSpawnArea, ParsedMapData, RegionOverlayQuery, RegionOverlayQueryOptions,
-    SelectionStats, SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, VillageOverlayIndex,
-    WorldScanOptions, WriteGuard, query_block_tip_blocking, query_chunk_detail_blocking,
-    query_region_overlays_blocking, query_region_overlays_blocking_with_control,
-    query_selection_stats_blocking, query_slime_chunk_windows,
+    codec::NbtTag,
+    model::{
+        ActorRecord, ActorSource, ActorUid, Biome2d, Biome3d, BlockEntityRecord, BlockPos,
+        ChunkPos, ChunkRecordTag, ChunkVersion, Dimension, GlobalRecordKind,
+        HardcodedSpawnAreaKind, HeightMap2d, MapKnownFields, MapPixels, MapRecordId,
+        ParsedBiomeStorage, ParsedBlockEntity, ParsedEntity, ParsedGlobalData,
+        ParsedHardcodedSpawnArea, ParsedMapData,
+    },
+    query::{
+        ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
+        SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, VillageOverlayIndex,
+        query_block_tip_blocking, query_chunk_detail_blocking, query_region_overlays_blocking,
+        query_region_overlays_blocking_with_control, query_selection_stats_blocking,
+        query_slime_chunk_windows,
+    },
+    world::{BedrockWorld, CancelFlag, OpenOptions, WorldScanOptions},
 };
+pub use bedrock_world::query::write::WriteGuard;
 
 /// Describes the render-side state that should be refreshed after a world edit.
 ///
@@ -375,7 +383,7 @@ impl MapWorldEditor {
         edit: F,
     ) -> Result<MapEditInvalidation>
     where
-        F: FnOnce(&mut NbtTag) -> bedrock_world::Result<()>,
+        F: FnOnce(&mut NbtTag) -> bedrock_world::error::Result<()>,
     {
         self.world.edit_block_entity_at_blocking(pos, block, edit)?;
         Ok(MapEditInvalidation::chunk(pos).with_metadata())
