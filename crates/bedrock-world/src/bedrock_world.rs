@@ -129,3 +129,18 @@ pub mod editor {
 pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
+
+// Temporary crate-private aliases for implementation files that are still being physically moved to
+// the domain modules above. They are intentionally not public API and are removed as each implementation
+// file is migrated; external consumers cannot use the pre-0.7 crate-root surface through these names.
+pub(crate) use audit::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
+pub(crate) use chunk::palette::block_storage_index;
+pub(crate) use codec::nbt::{NbtReader, NbtTag, NbtWriter};
+pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+pub(crate) use level as level_dat;
+pub(crate) use model::*;
+pub(crate) use query::{WorldChunkQueryRegion, WriteGuard};
+pub(crate) use storage::{MemoryStorage, StorageCachePolicy, StorageReadOptions, WorldStorage};
+pub(crate) use world::{
+    BedrockWorld, CancelFlag, OpenOptions, SurfaceColumn, WorldStorageHandle, WorldTransaction,
+};
