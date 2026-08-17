@@ -7,8 +7,8 @@
 //!
 //! # Public API
 //!
-//! Common database types are exported directly from the crate root, matching the shape of LevelDB's
-//! own public API. Physical implementation modules remain internal and must stay world-format agnostic.
+//! Common database types are exported directly from the crate root, matching LevelDB's public API
+//! style. Implementation modules remain private and world-format agnostic.
 //!
 //! ```rust,no_run
 //! use bedrock_leveldb::{Db, Options, ReadOptions, WriteBatch, WriteOptions};
@@ -24,20 +24,15 @@
 //! ```
 #![warn(missing_docs)]
 
-#[path = "format/batch.rs"]
+#[path = "write_batch.rs"]
 mod batch;
-#[path = "format/coding.rs"]
 mod coding;
-#[path = "engine/impl.rs"]
 mod db;
 /// Storage-engine error types.
 pub mod error;
-#[path = "format/manifest.rs"]
 mod manifest;
 mod options;
-#[path = "format/table/impl.rs"]
 mod table;
-#[path = "format/wal.rs"]
 mod wal;
 
 pub use batch::{WriteBatch, WriteOp};
