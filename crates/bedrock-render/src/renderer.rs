@@ -1,11 +1,24 @@
-#[path = "renderer/cache.rs"]
-mod cache;
+mod world_07 {
+    pub use ::bedrock_world::codec::*;
+    pub use ::bedrock_world::model::*;
+    pub use ::bedrock_world::storage::*;
+    pub use ::bedrock_world::world::*;
+}
+
+mod cache {
+    use super::world_07 as bedrock_world;
+    include!("renderer/cache.rs");
+}
 #[path = "renderer/gpu.rs"]
 mod gpu;
-#[path = "renderer/occupancy.rs"]
-mod occupancy;
-#[path = "renderer/pipeline.rs"]
-mod pipeline;
+mod occupancy {
+    use super::world_07 as bedrock_world;
+    include!("renderer/occupancy.rs");
+}
+mod pipeline {
+    use super::world_07 as bedrock_world;
+    include!("renderer/pipeline.rs");
+}
 
 pub use pipeline::{
     AtlasRenderOptions, BakeDiagnostics, BakeOptions, BlockBoundaryRenderOptions,
