@@ -5,9 +5,7 @@
 //! upgrades. Callers should inspect the concrete world/chunk/subchunk data and choose an explicit
 //! [`WritePolicy`] before mutating historical or future-format data.
 
-use crate::{
-    ActorSource, ChunkRecord, ChunkRecordTag, SubChunkFormat, WorldFormat,
-};
+use crate::{ActorSource, ChunkRecord, ChunkRecordTag, SubChunkFormat, WorldFormat};
 use serde::{Deserialize, Serialize};
 
 /// Compatibility level of decoded Bedrock data relative to the codecs implemented by this crate.
@@ -96,7 +94,9 @@ impl ActorStorageModel {
     pub const fn merge(self, other: Self) -> Self {
         match (self, other) {
             (Self::Unknown, value) | (value, Self::Unknown) => value,
-            (left, right) if left as u8 == right as u8 => left,
+            (Self::LegacyInline, Self::LegacyInline) => Self::LegacyInline,
+            (Self::ModernDigest, Self::ModernDigest) => Self::ModernDigest,
+            (Self::Mixed, _) | (_, Self::Mixed) => Self::Mixed,
             _ => Self::Mixed,
         }
     }
@@ -145,7 +145,6 @@ impl SubChunkCodecKind {
             Some(8) => Self::PalettedV8,
             Some(9) => Self::PalettedV9,
             Some(version @ 10..) => Self::UnknownFuture(version),
-            Some(version) => Self::UnknownLegacy(version),
             None => Self::Unknown,
         }
     }
@@ -169,7 +168,9 @@ impl SubChunkFormat {
     #[must_use]
     pub const fn codec_kind(&self) -> SubChunkCodecKind {
         match self {
-            Self::LegacySubChunk(subchunk) => SubChunkCodecKind::from_version(Some(subchunk.version)),
+            Self::LegacySubChunk(subchunk) => {
+                SubChunkCodecKind::from_version(Some(subchunk.version()))
+            }
             Self::LegacyTerrain => SubChunkCodecKind::UnknownLegacy(0xff),
             Self::FixedArrayV1 => SubChunkCodecKind::PalettedV1,
             Self::Paletted { version, .. } => SubChunkCodecKind::from_version(Some(*version)),
@@ -181,22 +182,25 @@ impl SubChunkFormat {
     #[must_use]
     pub const fn compatibility(&self) -> CompatibilityLevel {
         match self {
-            Self::Raw { version: Some(version), .. } if *version > 9 => {
-                CompatibilityLevel::UnsupportedFuture
-            }
+            Self::Raw {
+                version: Some(version),
+                ..
+            } if *version > 9 => CompatibilityLevel::UnsupportedFuture,
             Self::Raw { .. } => CompatibilityLevel::ReadCompatible,
             Self::LegacySubChunk(_) | Self::LegacyTerrain | Self::FixedArrayV1 => {
                 CompatibilityLevel::MigrationRequired
             }
             Self::Paletted { version: 8 | 9, .. } => CompatibilityLevel::Exact,
-            Self::Paletted { version, .. } if *version > 9 => CompatibilityLevel::UnsupportedFuture,
+            Self::Paletted { version, .. } if *version > 9 => {
+                CompatibilityLevel::UnsupportedFuture
+            }
             Self::Paletted { .. } => CompatibilityLevel::ReadCompatible,
         }
     }
 }
 
 /// Coarse storage capabilities known immediately after opening a world.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorldCapabilities {
     /// Detected physical world storage format.
     pub format: WorldFormat,
@@ -257,7 +261,7 @@ impl WorldFormat {
 }
 
 /// Capabilities and historical-format evidence collected from one chunk's records.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkCapabilities {
     /// Overall compatibility of the inspected chunk.
     pub compatibility: CompatibilityLevel,
@@ -297,9 +301,9 @@ impl ChunkCapabilities {
 
         for record in records {
             match record.key.tag {
-                ChunkRecordTag::Version | ChunkRecordTag::VersionOld | ChunkRecordTag::LegacyVersion => {
-                    capabilities.has_version_record = true;
-                }
+                ChunkRecordTag::Version
+                | ChunkRecordTag::VersionOld
+                | ChunkRecordTag::LegacyVersion => capabilities.has_version_record = true,
                 ChunkRecordTag::LegacyTerrain => {
                     capabilities.has_legacy_terrain = true;
                     capabilities.compatibility = merge_compatibility(
@@ -337,7 +341,9 @@ impl ChunkCapabilities {
                 _ => {}
             }
         }
-        capabilities.subchunk_codecs.sort_by_key(|codec| codec_sort_key(*codec));
+        capabilities
+            .subchunk_codecs
+            .sort_by_key(|codec| codec_sort_key(*codec));
         capabilities.subchunk_codecs.dedup();
         capabilities
     }
@@ -403,7 +409,7 @@ mod tests {
     fn modern_v9_chunk_is_directly_writable() {
         let capabilities = ChunkCapabilities::inspect(&[
             record(ChunkRecordTag::Version, None, &[40]),
-            record(ChunkRecordTag::Data3D, None, &[0; 1]),
+            record(ChunkRecordTag::Data3D, None, &[0]),
             record(ChunkRecordTag::SubChunkPrefix, Some(0), &[9, 1, 0]),
         ]);
         assert_eq!(capabilities.compatibility, CompatibilityLevel::Exact);
@@ -413,10 +419,13 @@ mod tests {
     #[test]
     fn legacy_and_future_data_are_not_preserve_writable() {
         let legacy = ChunkCapabilities::inspect(&[
-            record(ChunkRecordTag::LegacyTerrain, None, &[0; 1]),
-            record(ChunkRecordTag::Entity, None, &[0; 1]),
+            record(ChunkRecordTag::LegacyTerrain, None, &[0]),
+            record(ChunkRecordTag::Entity, None, &[0]),
         ]);
-        assert_eq!(legacy.compatibility, CompatibilityLevel::MigrationRequired);
+        assert_eq!(
+            legacy.compatibility,
+            CompatibilityLevel::MigrationRequired
+        );
         assert!(!legacy.writable_with(WritePolicy::Preserve));
         assert!(legacy.writable_with(WritePolicy::Migrate));
 
@@ -425,7 +434,10 @@ mod tests {
             Some(0),
             &[10, 1, 0],
         )]);
-        assert_eq!(future.compatibility, CompatibilityLevel::UnsupportedFuture);
+        assert_eq!(
+            future.compatibility,
+            CompatibilityLevel::UnsupportedFuture
+        );
         assert!(!future.writable_with(WritePolicy::Migrate));
     }
 }
