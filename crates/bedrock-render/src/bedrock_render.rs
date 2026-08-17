@@ -12,7 +12,8 @@ mod palette;
 mod renderer;
 
 pub use bedrock_world::{
-    BedrockWorld, ChunkData, ChunkLoadOptions, ExactChunkSelection, SlimeChunkBounds,
+    query::SlimeChunkBounds,
+    world::{BedrockWorld, ChunkData, ChunkLoadOptions, ExactChunkSelection},
 };
 pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
