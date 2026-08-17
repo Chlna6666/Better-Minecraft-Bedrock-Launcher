@@ -3,7 +3,7 @@
 //! Query APIs are organised around game data and spatial inspection. Generic implementation-layer
 //! names are not part of the 0.7 public API.
 
-#[path = "query/impl.rs"]
+#[path = "query/operations.rs"]
 mod implementation;
 
 pub mod analysis;

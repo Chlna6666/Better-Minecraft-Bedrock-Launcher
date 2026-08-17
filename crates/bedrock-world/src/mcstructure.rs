@@ -1,9 +1,9 @@
 //! Minecraft Bedrock `.mcstructure` codecs and world placement helpers.
 //!
 //! File codec and placement responsibilities have stable child-module entry points while the current
-//! implementation is progressively split from `mcstructure/impl.rs`.
+//! implementation is progressively split from `mcstructure/operations.rs`.
 
-#[path = "mcstructure/impl.rs"]
+#[path = "mcstructure/operations.rs"]
 mod implementation;
 
 pub mod codec;

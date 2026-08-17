@@ -3,7 +3,7 @@
 //! Parser implementation remains behind a compatibility facade while semantic models and parse-report
 //! policy have stable responsibility entry points under `parsed/`.
 
-#[path = "parsed/impl.rs"]
+#[path = "parsed/parser.rs"]
 mod implementation;
 
 pub mod model;

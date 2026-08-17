@@ -3,7 +3,7 @@
 //! Existing `bedrock_world::world::*` consumers keep the same API while implementation code is moved
 //! into responsibility-oriented modules under `world/`.
 
-#[path = "world/impl.rs"]
+#[path = "world/access.rs"]
 mod implementation;
 
 pub mod chunk_io;

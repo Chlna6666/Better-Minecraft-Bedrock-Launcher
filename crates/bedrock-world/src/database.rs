@@ -3,7 +3,7 @@
 //! This module owns Bedrock world record scanning and database adapters while delegating Mojang
 //! LevelDB engine mechanics to `bedrock-leveldb`.
 
-#[path = "database/impl.rs"]
+#[path = "database/storage.rs"]
 mod implementation;
 
 pub mod adapters;
