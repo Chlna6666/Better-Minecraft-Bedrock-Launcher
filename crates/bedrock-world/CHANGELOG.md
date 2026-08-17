@@ -2,6 +2,36 @@
 
 All notable changes to `bedrock-world` are tracked here.
 
+## 0.5.2 - 2026-08-17
+
+### Added
+
+- Added a read-only whole-world integrity auditor covering `level.dat`, chunk/subchunk parseability, palette block-state versions, player/entity/block-entity NBT, and `digp` ↔ `actorprefix` ownership relationships.
+- Added typed modern paletted-chunk block editing with chunk-grouped writes, primary/secondary block layers, block-entity replacement/removal, heightmap updates, FinalizedState updates, and bounded transactional commit batches.
+- Added a data-driven `BlockStateUpgrader` with identifier/state rename/remove/set/value-rewrite rules and strict unresolved-state handling.
+
+### Changed
+
+- Updated the optional `bedrock-leveldb` backend requirement to 0.5.1.
+- Future block-state storage versions are now classified separately and rejected by strict upgrade paths instead of being treated as current data.
+- Typed edits refuse unsupported/legacy subchunk encodings rather than guessing a destructive rewrite.
+
+### Safety
+
+- Existing `level.dat` `RandomSeed` values are map-owned metadata: helper APIs only initialize a seed when the field is absent and never overwrite an existing valid value.
+- Unknown or future block-state schemas remain preserved/unresolved until an explicit migration rule exists.
+
+## 0.5.1 - 2026-08-17
+
+### Added
+
+- Added canonical Bedrock `BlockState` NBT/byte helpers and semantic equality so world, editor, renderer, and server consumers share one order-stable identity definition.
+- Added `read_level_dat_random_seed` and `initialize_level_dat_random_seed_if_missing` for safe map-owned seed handling.
+
+### Changed
+
+- Canonical block-state identity excludes storage-version metadata and emits state keys in deterministic lexical order.
+
 ## 0.4.0 - 2026-08-04
 
 ### Added
@@ -243,26 +273,15 @@ All notable changes to `bedrock-world` are tracked here.
 
 ### Added
 
-- Initial public crate-ready world API for `level.dat`, little-endian NBT,
-  Bedrock DB key classification, player reads, chunk/subchunk parsing, entity
-  and block-entity parsing, item extraction, biome summaries, maps, villages,
-  globals, and scan progress/cancellation.
-- Legacy LevelDB-era chunk parsing for `LegacyTerrain` records and
-  pre-paletted `SubChunkPrefix` payloads, including block ID, metadata, and
-  optional light arrays.
-- Paletted subchunk parsing for old single-storage v1 payloads and modern
-  v8/v9 storage-count payloads.
-- Lazy `BedrockWorld` APIs backed by `bedrock-leveldb`, async wrappers,
-  benches, fixture tests, and English/Simplified Chinese documentation.
+- Initial public crate-ready world API for `level.dat`, little-endian Bedrock NBT, player records, entity summaries, biome data, map/village records, and scan-oriented APIs for launchers or offline tools.
+- Legacy LevelDB-era chunk parsing for `LegacyTerrain` records and pre-paletted `SubChunkPrefix` payloads, including block ID, metadata, and optional light arrays.
+- Paletted subchunk parsing for old single-storage v1 payloads and modern v8/v9 storage-count payloads.
+- Lazy `BedrockWorld` APIs backed by `bedrock-leveldb`, async wrappers, benches, fixture tests, and English/Simplified Chinese documentation.
 - Stable `BedrockWorldErrorKind` categories for application error handling.
-- Read-only enforcement for batched world transactions and read-only LevelDB
-  opens through `BedrockWorld::open`.
-- Optional large-world fixture policy, contribution notes, API/testing guides,
-  and dual MIT/Apache-2.0 license files.
+- Read-only enforcement for batched world transactions and read-only LevelDB opens through `BedrockWorld::open`.
+- Optional large-world fixture policy, contribution notes, API/testing guides, and dual MIT/Apache-2.0 license files.
 
 ### Notes
 
-- Full semantic migration of historical gameplay data remains intentionally
-  scoped to structured chunk/world parsers, not the lower-level storage crate.
-- Complete structured editing for every chunk version is not implemented in this
-  release.
+- Full semantic migration of historical gameplay data remains intentionally scoped to structured chunk/world parsers, not the lower-level storage crate.
+- Complete structured editing for every chunk version is not implemented in this release.
