@@ -1,14 +1,8 @@
 //! High-level lazy world access built on top of the storage layer.
 //!
-//! Existing `bedrock_world::world::*` consumers keep the same API while implementation code is moved
-//! into responsibility-oriented modules under `world/`.
+//! World lifecycle, scanning, terrain access, and transactions currently share one cohesive access
+//! implementation. Responsibility child modules are added only when code is physically split.
 
 mod access;
-
-pub mod chunk_io;
-pub mod open;
-pub mod scan;
-pub mod terrain;
-pub mod transaction;
 
 pub use access::*;

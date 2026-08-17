@@ -1,11 +1,8 @@
 //! Structured parsers layered above raw Bedrock world records.
 //!
-//! Parsing, semantic models, and parse-report policy use responsibility-oriented child modules under
-//! `parsed/`.
+//! Parser output models and reports currently live with the parser because they share decoding
+//! invariants. They can be split later when the child modules own their implementations.
 
 mod parser;
-
-pub mod model;
-pub mod report;
 
 pub use parser::*;

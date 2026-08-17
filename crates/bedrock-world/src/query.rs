@@ -1,13 +1,10 @@
 //! Minecraft Bedrock world inspection and overlay queries.
 //!
-//! Query APIs are organised around game data and spatial inspection. Generic implementation-layer
-//! names are not part of the 0.7 public API.
+//! Query operations are grouped by their actual implementation ownership. Exact non-rectangular
+//! selections are an independent responsibility and therefore keep a dedicated child module.
 
 mod operations;
-
-pub mod analysis;
-pub mod inspect;
-pub mod overlay;
+pub mod selection;
 
 /// Guarded mutation helpers used by query-driven world tools.
 pub mod write {
@@ -18,7 +15,5 @@ pub mod write {
 }
 
 pub use operations::*;
-
-// Temporary crate-private bridge while selection/query implementation files are physically moved to
-// their final game-domain locations. This is not exported to external consumers.
-pub(crate) use crate::parsed::model::ParsedChunkRecordValue;
+pub use selection::*;
+pub(crate) use crate::parsed::ParsedChunkRecordValue;

@@ -5,10 +5,5 @@
 
 mod storage;
 
-pub mod adapters;
-pub mod core;
-pub mod memory;
-pub mod pipeline;
-
 pub use storage::*;
 pub(crate) use crate::world::CancelFlag;

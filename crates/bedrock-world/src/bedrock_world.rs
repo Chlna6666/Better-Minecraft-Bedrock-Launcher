@@ -31,7 +31,6 @@ mod nbt_ref;
 mod parsed;
 #[path = "player/data.rs"]
 mod player_impl;
-mod selection_query;
 #[path = "world/surface.rs"]
 mod surface;
 
@@ -39,52 +38,49 @@ mod surface;
 pub mod block {
     pub use crate::chunk::model::BlockPos;
     pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
-    pub use crate::parsed::model::{BlockEntityRecord, ParsedBlockEntity};
+    pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
 }
 
 /// Biome and height-map data stored by Bedrock chunks.
 pub mod biome {
     pub use crate::chunk::legacy::LegacyBiomeSample;
-    pub use crate::parsed::model::{
-        Biome2d, Biome3d, HeightMap2d, ParsedBiomeData, ParsedBiomeStorage,
-    };
+    pub use crate::parsed::{Biome2d, Biome3d, HeightMap2d, ParsedBiomeData, ParsedBiomeStorage};
 }
 
 /// Bedrock actor/entity records and actor-index identities.
 pub mod entity {
     pub use crate::chunk::key::{ActorDigestKey, ActorUid};
     pub use crate::chunk::model::EntityData;
-    pub use crate::parsed::model::{
+    pub use crate::parsed::{
         ActorRecord, ActorResolution, ActorSource, ParsedActorDigest, ParsedEntity,
+        encode_actor_digest_ids, parse_actor_digest_ids,
     };
-    pub use crate::parsed::{encode_actor_digest_ids, parse_actor_digest_ids};
 }
 
 /// Bedrock player records and inventory item data.
 pub mod player {
-    pub use crate::parsed::model::{ItemStack, ParsedPlayer};
+    pub use crate::parsed::{ItemStack, ParsedPlayer};
     pub use crate::player_impl::{PlayerData, PlayerId};
 }
 
 /// Bedrock map item records.
 pub mod map {
     pub use crate::chunk::key::MapRecordId;
-    pub use crate::parsed::model::{MapKnownFields, MapPixels, ParsedMapData};
+    pub use crate::parsed::{MapKnownFields, MapPixels, ParsedMapData};
 }
 
 /// Bedrock village database records.
 pub mod village {
     pub use crate::chunk::key::{ParsedVillageKey, VillageRecordKind};
-    pub use crate::parsed::model::ParsedVillageData;
+    pub use crate::parsed::ParsedVillageData;
 }
 
 /// Bedrock `.mcstructure` files and structure placement.
 pub mod structure {
-    pub use crate::mcstructure::codec::{
-        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructureSize,
-        read_mcstructure_file, write_mcstructure_file,
+    pub use crate::mcstructure::{
+        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
+        McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
     };
-    pub use crate::mcstructure::placement::{McStructurePlacement, McStructureRotation};
 }
 
 /// Bedrock little-endian NBT parsing, writing and borrowed views.
@@ -109,3 +105,35 @@ pub mod editor;
 pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
+
+// Crate-private migration prelude for monolithic implementation files that still use the former
+// crate-root spelling. This is deliberately not public API and is deleted as those files are split
+// into their final responsibility modules.
+pub(crate) use biome::{Biome2d, Biome3d};
+pub(crate) use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
+pub(crate) use chunk::{
+    ActorDigestKey, ActorUid, Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
+    Dimension, ParsedVillageKey, SubChunk, SubChunkFormat,
+};
+pub(crate) use database::{StorageCachePolicy, StorageReadOptions};
+pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
+pub(crate) use nbt::{NbtReader, NbtTag, NbtWriter};
+pub(crate) use parsed::{ParsedChunkRecord, ParsedChunkRecordValue};
+pub(crate) use query::WriteGuard;
+pub(crate) use world::{
+    BedrockWorld, CancelFlag, SurfaceColumn, WorldChunkQueryRegion, WorldStorageHandle,
+    WorldTransaction,
+};
+
+pub(crate) mod level_dat {
+    pub(crate) use crate::upgrade::level_dat::*;
+}
+
+pub(crate) mod storage {
+    pub(crate) use crate::database::*;
+
+    pub(crate) mod backend {
+        pub(crate) use crate::database::BedrockLevelDbStorage;
+    }
+}

@@ -1,11 +1,8 @@
 //! Minecraft Bedrock `.mcstructure` codecs and world placement helpers.
 //!
-//! File codec and placement responsibilities have stable child-module entry points while placement
-//! operations remain isolated under `mcstructure/operations.rs`.
+//! Codec, model, and placement behavior currently share one cohesive implementation module. Child
+//! modules are introduced only when they own implementation rather than acting as re-export facades.
 
 mod operations;
-
-pub mod codec;
-pub mod placement;
 
 pub use operations::*;
