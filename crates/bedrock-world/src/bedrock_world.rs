@@ -40,7 +40,6 @@ mod surface;
 mod model;
 mod codec;
 mod migration;
-mod audit;
 mod storage;
 mod edit;
 
@@ -117,9 +116,7 @@ pub mod upgrade {
 }
 
 /// Bedrock world compatibility and integrity validation.
-pub mod integrity {
-    pub use crate::audit::*;
-}
+pub mod integrity;
 
 /// Typed policy-guarded Bedrock world editing.
 pub mod editor {
@@ -134,7 +131,7 @@ pub mod world;
 // Temporary crate-private aliases for implementation files that are still being physically moved to
 // the domain modules above. They are intentionally not public API and are removed as each implementation
 // file is migrated; external consumers cannot use the pre-0.7 crate-root surface through these names.
-pub(crate) use audit::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
+pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
 pub(crate) use chunk::palette::block_storage_index;
 pub(crate) use codec::nbt::{NbtReader, NbtTag, NbtWriter};
 pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
