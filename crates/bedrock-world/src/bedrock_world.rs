@@ -56,13 +56,16 @@ pub mod world;
 // completed; external callers cannot use these crate-root names.
 pub(crate) use audit::{
     ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind, WorldCapabilities,
-    WritePolicy, compatibility, compatibility_scan, integrity,
+    WritePolicy,
 };
-pub(crate) use codec::{level_dat, nbt};
+pub(crate) use codec::{
+    NbtReader, NbtTag, NbtWriter, block_storage_index, level_dat, nbt,
+};
 pub(crate) use edit::block_edit;
 pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub(crate) use migration::{
-    block_state_graph, block_state_upgrade, historical_chunk, legacy_import,
+    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, block_state_graph,
+    block_state_upgrade, historical_chunk, legacy_import,
 };
 pub(crate) use model::*;
 pub(crate) use query::*;
