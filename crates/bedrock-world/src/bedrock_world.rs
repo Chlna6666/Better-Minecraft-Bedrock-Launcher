@@ -44,6 +44,8 @@ pub mod block_state_upgrade;
 pub mod chunk;
 /// Historical world/chunk/subchunk compatibility and explicit write-policy helpers.
 pub mod compatibility;
+/// Whole-world compatibility scanning for mixed historical/modern record sets.
+pub mod compatibility_scan;
 /// Filesystem discovery for Bedrock world folders.
 pub mod discover;
 /// Crate-wide error and result types.
@@ -94,6 +96,9 @@ pub use chunk::{
 pub use compatibility::{
     ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind, WorldCapabilities,
     WritePolicy,
+};
+pub use compatibility_scan::{
+    ChunkCompatibilitySummary, WorldCompatibilityReport, scan_world_compatibility_blocking,
 };
 pub use discover::{WorldDiscovery, WorldSummary, discover_worlds};
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
