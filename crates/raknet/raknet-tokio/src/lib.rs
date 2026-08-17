@@ -14,7 +14,7 @@ mod session;
 pub mod prelude {
     pub use crate::client::RakClient;
     pub use crate::server::{RakServer, RakServerError};
-    pub use crate::session::RakSession;
+    pub use crate::session::{RakReceiver, RakSendHandle, RakSession};
     pub use raknet::prelude::{
         RakClientConfig, RakClientError, RakPriority, RakReliability, RakServerConfig,
         RakSessionConfig, RakSessionError,
