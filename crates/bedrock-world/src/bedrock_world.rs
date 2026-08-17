@@ -1,8 +1,8 @@
-//! Tools for inspecting, migrating and editing Minecraft Bedrock worlds.
+//! Tools for inspecting, upgrading and editing Minecraft Bedrock worlds.
 //!
 //! `bedrock-world` owns Minecraft Bedrock world semantics. Mojang LevelDB mechanics belong exclusively
-//! to `bedrock-leveldb`. The 0.7 API is intentionally breaking: consumers use responsibility modules
-//! instead of crate-root type/function re-exports.
+//! to `bedrock-leveldb`. The 0.7 API is intentionally breaking and is organised by Bedrock game-data
+//! domains instead of generic software layers.
 
 #![deny(missing_docs)]
 #![allow(
@@ -21,7 +21,7 @@
 
 #[path = "model/block_state.rs"]
 mod block_state;
-mod chunk;
+pub mod chunk;
 #[path = "world/discover.rs"]
 mod discover;
 /// Crate-wide Bedrock world error types.
@@ -30,24 +30,94 @@ mod mcstructure;
 mod nbt_ref;
 mod parsed;
 #[path = "model/player.rs"]
-mod player;
+mod player_impl;
 mod selection_query;
 #[path = "model/surface.rs"]
 mod surface;
 
-/// Semantic Minecraft Bedrock models.
-pub mod model;
-/// Binary and NBT codecs. Codecs do not choose migration or write policy.
-pub mod codec;
-/// Historical schema/format migration.
-pub mod migration;
-/// Typed policy-guarded mutation APIs.
-pub mod edit;
-/// Compatibility and integrity auditing.
-pub mod audit;
+// Internal implementation groupings. These are deliberately private in 0.7;
+// consumers use Bedrock-domain modules below.
+mod model;
+mod codec;
+mod migration;
+mod audit;
+mod storage;
+mod edit;
+
+/// Blocks, block states, palettes and block-entity data.
+pub mod block {
+    pub use crate::model::{BlockEntityRecord, BlockPalette, BlockPos, BlockState, ParsedBlockEntity};
+    pub use crate::chunk::palette::block_storage_index;
+}
+
+/// Biome and height-map data stored by Bedrock chunks.
+pub mod biome {
+    pub use crate::model::{Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeData, ParsedBiomeStorage};
+}
+
+/// Bedrock actor/entity records and actor-index identities.
+pub mod entity {
+    pub use crate::model::{ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, EntityData, ParsedActorDigest, ParsedEntity};
+}
+
+/// Bedrock player records and inventory item data.
+pub mod player {
+    pub use crate::model::{ItemStack, ParsedPlayer};
+    pub use crate::player_impl::{PlayerData, PlayerId};
+}
+
+/// Bedrock map item records.
+pub mod map {
+    pub use crate::model::{MapKnownFields, MapPixels, MapRecordId, ParsedMapData};
+}
+
+/// Bedrock village database records.
+pub mod village {
+    pub use crate::model::{ParsedVillageData, ParsedVillageKey, VillageRecordKind};
+}
+
+/// Bedrock `.mcstructure` files and structure placement.
+pub mod structure {
+    pub use crate::codec::{
+        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
+        McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
+    };
+}
+
+/// Bedrock little-endian NBT parsing, writing and borrowed views.
+pub mod nbt {
+    pub use crate::codec::{
+        NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter,
+        parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt, visit_nbt_events,
+    };
+}
+
+/// `level.dat` document access and world-level metadata.
+pub mod level {
+    pub use crate::codec::level_dat::*;
+}
+
+/// Bedrock world database records, scanning and LevelDB-backed world storage.
+pub mod database {
+    pub use crate::storage::*;
+}
+
+/// Explicit historical Bedrock world and BlockState upgrades.
+pub mod upgrade {
+    pub use crate::migration::*;
+}
+
+/// Bedrock world compatibility and integrity validation.
+pub mod integrity {
+    pub use crate::audit::*;
+}
+
+/// Typed policy-guarded Bedrock world editing.
+pub mod editor {
+    pub use crate::edit::*;
+}
+
 /// Read/query APIs for maps, regions and selections.
 pub mod query;
-/// Minecraft world storage abstraction and LevelDB adapter.
-pub mod storage;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
