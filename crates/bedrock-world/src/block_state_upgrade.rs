@@ -115,7 +115,7 @@ impl BlockStateUpgradeRule {
 /// Outcome of upgrading one block state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockStateUpgradeStatus {
-    /// The state already targets the requested storage version.
+    /// The state exactly targets the requested storage version.
     Current,
     /// One or more explicit rewrite rules upgraded the state.
     Upgraded {
@@ -124,6 +124,11 @@ pub enum BlockStateUpgradeStatus {
     },
     /// The state is older than the target but no rewrite rule is known.
     UnresolvedLegacy,
+    /// The state is newer than the target schema and must not be rewritten by an older library.
+    FutureVersion {
+        /// Storage version carried by the world state.
+        version: i32,
+    },
     /// The state carries no storage version and no explicit version-agnostic rule matched it.
     UnknownVersion,
 }
@@ -173,11 +178,19 @@ impl BlockStateUpgrader {
 
     /// Attempts to upgrade one state without guessing missing migrations.
     pub fn upgrade(&self, state: &BlockState) -> Result<BlockStateUpgradeResult> {
-        if state.version.is_some_and(|version| version >= self.target_version) {
-            return Ok(BlockStateUpgradeResult {
-                state: state.clone(),
-                status: BlockStateUpgradeStatus::Current,
-            });
+        if let Some(version) = state.version {
+            if version == self.target_version {
+                return Ok(BlockStateUpgradeResult {
+                    state: state.clone(),
+                    status: BlockStateUpgradeStatus::Current,
+                });
+            }
+            if version > self.target_version {
+                return Ok(BlockStateUpgradeResult {
+                    state: state.clone(),
+                    status: BlockStateUpgradeStatus::FutureVersion { version },
+                });
+            }
         }
 
         let mut upgraded = state.clone();
@@ -205,7 +218,7 @@ impl BlockStateUpgrader {
         })
     }
 
-    /// Upgrades one state and rejects unresolved historical data.
+    /// Upgrades one state and rejects unresolved, unknown, or future-version data.
     pub fn upgrade_strict(&self, state: &BlockState) -> Result<BlockState> {
         let result = self.upgrade(state)?;
         match result.status {
@@ -218,6 +231,12 @@ impl BlockStateUpgrader {
                     state.name, state.version, self.target_version
                 ),
             )),
+            BlockStateUpgradeStatus::FutureVersion { version } => {
+                Err(BedrockWorldError::Validation(format!(
+                    "block state {} uses future storage version {version}; target version {} must not rewrite it",
+                    state.name, self.target_version
+                )))
+            }
             BlockStateUpgradeStatus::UnknownVersion => Err(BedrockWorldError::Validation(
                 format!(
                     "block state {} has no storage version and no version-agnostic upgrade rule",
@@ -274,5 +293,22 @@ mod tests {
         assert_eq!(result.status, BlockStateUpgradeStatus::UnresolvedLegacy);
         assert_eq!(result.state.version, Some(10));
         assert!(upgrader.upgrade_strict(&old_state()).is_err());
+    }
+
+    #[test]
+    fn future_version_is_preserved_and_rejected_by_strict_upgrade() {
+        let state = BlockState {
+            name: "minecraft:future_test".to_string(),
+            states: BTreeMap::new(),
+            version: Some(21),
+        };
+        let upgrader = BlockStateUpgrader::new(20);
+        let result = upgrader.upgrade(&state).expect("classify future state");
+        assert_eq!(
+            result.status,
+            BlockStateUpgradeStatus::FutureVersion { version: 21 }
+        );
+        assert_eq!(result.state, state);
+        assert!(upgrader.upgrade_strict(&state).is_err());
     }
 }
