@@ -9,7 +9,9 @@ pub mod block_state_upgrade;
 pub mod chunk;
 pub mod historical_chunk;
 pub mod legacy_import;
+pub mod level_dat;
 pub mod plan;
+pub mod player;
 
 pub use actor::{
     ActorMigrationAction, ActorMigrationReport, actor_storage_compatibility,
@@ -34,4 +36,8 @@ pub use legacy_import::{
     PocketChunksDatImportOptions, PocketChunksDatImportReport,
     import_pocket_chunks_dat_records_blocking,
 };
+pub use level_dat::{LevelDatMigrationOptions, migrate_level_dat_document};
 pub use plan::{ChunkMigrationTarget, MigrationBlocker, WorldMigrationPlan};
+pub use player::{
+    PlayerMigrationReport, embedded_player_bytes, migrate_embedded_player_blocking,
+};
