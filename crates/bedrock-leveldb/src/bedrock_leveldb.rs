@@ -4,6 +4,17 @@
 //! compression variants, checksums, snapshots, caches, compaction and arbitrary byte key/value I/O.
 //! Minecraft chunk keys, NBT, BlockState, actors, dimensions and other game semantics belong to
 //! `bedrock-world`.
+//!
+//! # 0.7 public API
+//!
+//! Public consumers use responsibility modules only:
+//!
+//! - [`engine`] for database lifecycle and stateful operations;
+//! - [`access`] for raw reads/scans and borrowed views;
+//! - [`format`] for write batches and physical format policies;
+//! - [`error`] for typed storage errors.
+//!
+//! The pre-0.7 crate-root re-exports have been removed.
 #![warn(missing_docs)]
 
 #[path = "format/batch.rs"]
@@ -30,21 +41,3 @@ pub mod access;
 pub mod format;
 /// Storage I/O infrastructure reserved for mmap/file/buffer-pool implementations.
 pub mod io;
-
-// Temporary repository-internal migration surface. BMCBL/bedrock-world callers are migrated to the
-// grouped modules before these root aliases are deleted from the 0.6 API.
-#[doc(hidden)]
-pub use batch::{WriteBatch, WriteOp};
-#[doc(hidden)]
-pub use db::{
-    Db, DbCacheStats, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport, Snapshot,
-    ValueRef,
-};
-#[doc(hidden)]
-pub use error::{ErrorKind, LevelDbError, Result};
-#[doc(hidden)]
-pub use options::{
-    CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions, ReadOptions,
-    ReadStrategy, ScanCancelFlag, ScanMode, ScanOutcome, ScanPipelineOptions, ScanProgress,
-    ScanProgressSink, ThreadingOptions, VisitorControl, WriteOptions,
-};
