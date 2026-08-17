@@ -1,12 +1,9 @@
-//! Bedrock chunk facade and compatibility re-exports.
-//!
-//! New code should prefer the responsibility-specific submodules. The root `chunk::*` exports remain
-//! during the 0.6 transition so existing consumers do not need an all-at-once migration.
+//! Minecraft Bedrock chunk data, keys, palettes and historical chunk formats.
 
 #[path = "chunk/impl.rs"]
 mod implementation;
 
-/// Chunk/world coordinate and semantic model types.
+/// Chunk/world coordinate and semantic chunk types.
 pub mod model;
 /// Bedrock world database key codecs and key classifications.
 pub mod key;
