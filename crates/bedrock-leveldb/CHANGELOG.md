@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.0 - 2026-08-17
+
+### Breaking Changes
+
+- Removed the public Minecraft-world semantic helpers (`BedrockKey`, `ChunkKey`, `Dimension`,
+  `LegacyTerrain`, `LegacySubChunk`, `SubChunkPayload` and related constants). These concepts belong
+  to `bedrock-world`; `bedrock-leveldb` now exposes only Mojang LevelDB storage-engine primitives and
+  raw byte key/value APIs.
+- Consumers that previously used these helpers should move chunk/key/terrain interpretation to
+  `bedrock-world` 0.6 or newer.
+
+### Compatibility
+
+- The native table reader continues to accept compression tags `0` (none), `1` (Snappy), `2`
+  (zlib-wrapped DEFLATE), and `4` (Bedrock raw DEFLATE) while preserving raw user key/value bytes.
+- Added an optional local historical database fixture matrix for uncompressed, Snappy, zlib,
+  Bedrock-raw-deflate, WAL replay and multi-table databases.
+- Historical compatibility tests open fixtures read-only and scan raw entries without invoking
+  Minecraft world-format logic or implicit repair.
+
+### Scope
+
+- `bedrock-leveldb` is now explicitly a high-performance pure Rust implementation of the storage
+  boundary used by Mojang's modified LevelDB: WAL, SSTable, manifest, compression, checksum, cache,
+  snapshot, scan, batch, flush, compaction and repair mechanics only.
+- NBT, chunk keys, BlockState, actors, biomes, maps, players and world migrations are exclusively
+  handled by `bedrock-world`.
+
 ## 0.5.1 - 2026-08-17
 
 ### Added
@@ -131,20 +159,13 @@ All notable changes to `bedrock-leveldb` are tracked here.
   table batch sizing, and progress cadence in parallel scans.
 - Added `ScanOutcome` diagnostics for `tables_scanned`, `worker_threads`,
   `queue_wait_ms`, and `cancel_checks`.
-- Added `get_many_owned` regression coverage for early Bedrock
-  `LegacyTerrain` (`0x30`) keys, preserving missing/duplicate/input ordering.
-- Reaffirmed the storage-layer contract for renderer coordinate debugging:
-  `get_many_owned` returns raw `LegacyTerrain`, legacy `SubChunkPrefix`, and
-  modern `SubChunkPrefix` bytes unchanged; coordinate interpretation belongs to
-  `bedrock-world` and `bedrock-render` tests.
-- Clarified that legacy biome priority is also a world/render semantic; this
-  crate only preserves the raw `LegacyTerrain` bytes and input ordering.
-- Documented the old-world LevelDB boundary: native zlib tag `2`, raw deflate
-  tag `4`, WAL + `.ldb`, and exact `LegacyTerrain` reads are supported here;
-  pre-LevelDB `chunks.dat` files remain a `bedrock-world` backend concern.
-- Corrected the `LegacyTerrain` helper's biome accessor so the final 1024-byte
-  tail is exposed as `[biome_id, red, green, blue]` samples, with
-  `biome_color_at` returning compatibility `0x00RRGGBB`.
+- Added `get_many_owned` regression coverage for early Bedrock raw chunk-record keys, preserving
+  missing/duplicate/input ordering without interpreting those keys in the storage layer.
+- Clarified that legacy biome priority and terrain interpretation are world semantics; this crate only
+  preserves raw key/value bytes and input ordering.
+- Documented the old-world LevelDB boundary: native zlib tag `2`, raw deflate tag `4`, WAL + `.ldb`,
+  and exact raw reads are supported here; pre-LevelDB `chunks.dat` files remain a `bedrock-world`
+  concern.
 - Added clearer Rayon worker logging around scan start/finish, prefix scans,
   progress, queue backpressure, and cancellation-sensitive paths through the
   `log` facade.
@@ -158,35 +179,3 @@ All notable changes to `bedrock-leveldb` are tracked here.
 - New writes now use native LevelDB-compatible files. The old `BWLDB...` format
   remains readable for migration/backward compatibility, but is no longer the
   default flush output.
-
-### Migration Notes
-
-- Render and world callers that previously used `for_each_prefix` only to collect
-  keys should migrate to `for_each_prefix_key`.
-- Async callers should wrap `Db` in `Arc` and use the owned async helpers instead
-  of reopening the database per request.
-- Tune `ScanPipelineOptions` only after looking at `ScanOutcome.queue_wait_ms`
-  and `worker_threads`; the default zero values are automatic and usually best
-  for interactive render indexing.
-
-## 0.1.0 - 2026-05-01
-
-### Added
-
-- Initial public crate-ready implementation of a pure Rust LevelDB-style backend
-  for Minecraft Bedrock world databases.
-- Read-first native LevelDB support for manifest, WAL, table blocks, prefix
-  scans, cache controls, cooperative scan cancellation, and progress reporting.
-- Custom write, delete, batch, flush, and reopen support using this crate's
-  documented `BWLDB...` table format.
-- Bedrock LevelDB key helpers plus documented legacy `LegacyTerrain` and
-  pre-paletted `SubChunkPrefix` payload helpers.
-- `log` facade diagnostics, structured errors, CI, Criterion benchmarks, package
-  metadata, and English/Simplified Chinese documentation.
-
-### Notes
-
-- Native LevelDB-compatible writes and compaction are intentionally not part of
-  this release.
-- Pre-LevelDB Bedrock files such as `chunks.dat` and `entities.dat` are outside
-  this crate's storage scope.
