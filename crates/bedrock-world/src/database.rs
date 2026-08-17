@@ -6,4 +6,5 @@
 mod storage;
 
 pub use storage::*;
+pub use storage::backend::BedrockLevelDbStorage;
 pub(crate) use crate::world::CancelFlag;
