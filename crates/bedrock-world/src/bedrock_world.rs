@@ -39,7 +39,6 @@ mod surface;
 // consumers use Bedrock-domain modules below.
 mod model;
 mod codec;
-mod storage;
 mod edit;
 
 /// Blocks, block states, palettes and block-entity data.
@@ -104,10 +103,7 @@ pub mod level {
 }
 
 /// Bedrock world database records, scanning and LevelDB-backed world storage.
-pub mod database {
-    pub use crate::storage::*;
-    pub(crate) use crate::world::CancelFlag;
-}
+pub mod database;
 
 /// Explicit historical Bedrock world and BlockState upgrades.
 pub mod upgrade;
@@ -135,7 +131,7 @@ pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub(crate) use level as level_dat;
 pub(crate) use model::*;
 pub(crate) use query::WriteGuard;
-pub(crate) use storage::{MemoryStorage, StorageCachePolicy, StorageReadOptions, WorldStorage};
+pub(crate) use database::{MemoryStorage, StorageCachePolicy, StorageReadOptions, WorldStorage};
 pub(crate) use world::{
     BedrockWorld, CancelFlag, OpenOptions, SurfaceColumn, WorldChunkQueryRegion, WorldStorageHandle,
     WorldTransaction,
