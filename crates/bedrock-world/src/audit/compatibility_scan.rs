@@ -4,13 +4,15 @@
 //! modern chunk records, legacy inline entities, modern actor digests and unknown future records at
 //! the same time. This scan therefore derives compatibility from the actual key/value population.
 
-use crate::{
-    ActorStorageModel, BedrockDbKey, ChunkCapabilities, ChunkKey, ChunkPos, ChunkRecord,
-    ChunkRecordTag, CompatibilityLevel, Result, StorageReadOptions, StorageVisitorControl,
-    SubChunkCodecKind, WorldCapabilities, WorldFormat, WorldStorage,
+use super::{
+    ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind, WorldCapabilities,
 };
+use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag};
+use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::error::Result;
+use crate::world::WorldFormat;
 use bytes::Bytes;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Per-chunk compatibility summary produced by a whole-world scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,10 +77,6 @@ impl WorldCompatibilityReport {
 }
 
 /// Scans raw world storage once and derives world/chunk capability information.
-///
-/// This function does not mutate the database and deliberately inspects record shapes rather than
-/// relying on one `level.dat` version field. Subchunk values are retained only as a one-byte version
-/// probe while the scan is in progress, so large terrain payloads are not duplicated in memory.
 pub fn scan_world_compatibility_blocking(
     storage: &dyn WorldStorage,
     format: WorldFormat,
@@ -118,8 +116,6 @@ pub fn scan_world_compatibility_blocking(
                 actor_storage = actor_storage.merge(ActorStorageModel::ModernDigest);
             }
             BedrockDbKey::Unknown(_) => {
-                // Unknown 9/10/13/14-byte chunk keys are still recoverable through ChunkKey so an
-                // unrecognised tag contributes to the owning chunk instead of being lost globally.
                 if let Ok(key) = ChunkKey::decode(raw_key) {
                     chunk_records
                         .entry(key.pos)
@@ -245,7 +241,8 @@ const fn worst_compatibility(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Dimension, MemoryStorage, StorageBatch};
+    use crate::chunk::Dimension;
+    use crate::database::{MemoryStorage, StorageBatch};
 
     #[test]
     fn mixed_actor_and_future_subchunk_are_reported() {
