@@ -48,4 +48,8 @@ pub use cache::{
     world_cache_signature,
 };
 
-pub use bedrock_world::{ChunkBounds, ChunkPos, Dimension, NbtTag};
+pub use bedrock_world::{
+    codec::NbtTag,
+    model::{ChunkPos, Dimension},
+    world::ChunkBounds,
+};
