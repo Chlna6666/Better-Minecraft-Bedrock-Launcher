@@ -1,9 +1,20 @@
-//! Bedrock chunk facade.
+//! Bedrock chunk facade and compatibility re-exports.
 //!
-//! The implementation lives under `chunk/` so the historical key/model/palette/legacy/subchunk
-//! responsibilities can be split incrementally without changing the existing public `chunk::*` API.
+//! New code should prefer the responsibility-specific submodules. The root `chunk::*` exports remain
+//! during the 0.6 transition so existing consumers do not need an all-at-once migration.
 
 #[path = "chunk/impl.rs"]
 mod implementation;
+
+/// Chunk/world coordinate and semantic model types.
+pub mod model;
+/// Bedrock world database key codecs and key classifications.
+pub mod key;
+/// Block-state palettes and packed block-storage helpers.
+pub mod palette;
+/// Historical numeric terrain and legacy subchunk representations.
+pub mod legacy;
+/// Versioned subchunk payload models and decode policies.
+pub mod subchunk;
 
 pub use implementation::*;
