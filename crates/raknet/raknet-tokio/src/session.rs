@@ -14,11 +14,16 @@ use raknet::error::RakSessionError;
 use raknet::reliability::{ReliabilityEngine, SessionEvent};
 use raknet::types::{RakPriority, RakReliability};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+
+const SESSION_OPEN: u8 = 0;
+const SESSION_LOCAL_CLOSED: u8 = 1;
+const SESSION_PEER_DISCONNECTED: u8 = 2;
+const SESSION_DEAD: u8 = 3;
 
 /// 当前 Unix 毫秒时间戳（用于线上 ping/pong 时间字段）。
 pub(crate) fn wall_ms() -> u64 {
@@ -41,7 +46,8 @@ pub(crate) struct SessionShared {
     engine: Mutex<ReliabilityEngine>,
     /// 握手期间为 true：Deliver 事件交还驱动处理而非推给用户。
     handshaking: AtomicBool,
-    closed: AtomicBool,
+    /// 首个终止原因。0 表示仍处于打开状态，其余值一旦写入便不再覆盖。
+    close_state: AtomicU8,
     incoming_tx: Mutex<Option<mpsc::UnboundedSender<Bytes>>>,
     incoming_rx: Mutex<Option<mpsc::UnboundedReceiver<Bytes>>>,
     /// 会话终结时通知驱动清理路由表。
@@ -65,7 +71,7 @@ impl SessionShared {
             socket,
             engine: Mutex::new(engine),
             handshaking: AtomicBool::new(true),
-            closed: AtomicBool::new(false),
+            close_state: AtomicU8::new(SESSION_OPEN),
             incoming_tx: Mutex::new(Some(tx)),
             incoming_rx: Mutex::new(Some(rx)),
             dead_tx,
@@ -87,11 +93,21 @@ impl SessionShared {
                 let mut out = Vec::new();
                 let mut events = Vec::new();
                 lock_engine(&shared.engine).tick(Instant::now(), wall_ms(), &mut out, &mut events);
+
+                // 先保存终止原因再发生任何 await，避免并发发送在这个窗口里只看到
+                // 模糊的 `Closed`，从而丢失 PeerDisconnected/Dead 的根因。
+                for event in &events {
+                    match event {
+                        SessionEvent::PeerDisconnected => shared.mark_peer_disconnected(),
+                        SessionEvent::Dead => shared.mark_dead(),
+                        SessionEvent::Deliver(_) => {}
+                    }
+                }
+
                 shared.send_all(&out).await;
                 for event in events {
-                    match event {
-                        SessionEvent::Deliver(p) => shared.push_incoming(p),
-                        SessionEvent::PeerDisconnected | SessionEvent::Dead => shared.mark_closed(),
+                    if let SessionEvent::Deliver(p) = event {
+                        shared.push_incoming(p);
                     }
                 }
             }
@@ -117,6 +133,18 @@ impl SessionShared {
         ) {
             tracing::debug!(addr = %self.addr, "丢弃非法在线数据报：{error}");
         }
+
+        // ReliabilityEngine 已在产生终止事件时关闭内部 open 状态。这里必须在 UDP
+        // 冲刷前同步记录原因，否则另一个发送任务可能先进入 engine.send() 并只得到
+        // `Closed`，正是 Calcite 大包发送时原先观察到的诊断丢失窗口。
+        for event in &events {
+            match event {
+                SessionEvent::PeerDisconnected => self.mark_peer_disconnected(),
+                SessionEvent::Dead => self.mark_dead(),
+                SessionEvent::Deliver(_) => {}
+            }
+        }
+
         self.send_all(&out).await;
 
         let handshaking = self.handshaking.load(Ordering::Acquire);
@@ -130,7 +158,7 @@ impl SessionShared {
                         self.push_incoming(p);
                     }
                 }
-                SessionEvent::PeerDisconnected | SessionEvent::Dead => self.mark_closed(),
+                SessionEvent::PeerDisconnected | SessionEvent::Dead => {}
             }
         }
         hs
@@ -144,12 +172,17 @@ impl SessionShared {
         priority: RakPriority,
     ) -> Result<(), RakSessionError> {
         if self.is_closed() {
-            return Err(RakSessionError::Closed);
+            return Err(self.closed_error());
         }
         let mut out = Vec::new();
         {
             let mut engine = lock_engine(&self.engine);
-            engine.send(payload, reliability, priority)?;
+            if let Err(error) = engine.send(payload, reliability, priority) {
+                if matches!(&error, RakSessionError::Closed) && self.is_closed() {
+                    return Err(self.closed_error());
+                }
+                return Err(error);
+            }
             engine.pump(Instant::now(), &mut out);
         }
         self.send_all(&out).await;
@@ -158,13 +191,21 @@ impl SessionShared {
 
     /// 发送 Disconnect 并关闭会话。
     pub async fn close(&self) -> Result<(), RakSessionError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(RakSessionError::Closed);
+        if self.is_closed() {
+            return Err(self.closed_error());
         }
         let mut out = Vec::new();
         let result = lock_engine(&self.engine).disconnect(Instant::now(), &mut out);
-        self.send_all(&out).await;
-        self.mark_closed();
+        if let Err(RakSessionError::Closed) = &result
+            && self.is_closed()
+        {
+            return Err(self.closed_error());
+        }
+        if result.is_ok() {
+            // 和远端终止路径一样，先记录状态再 await UDP 发送，关闭原因不会被并发覆盖。
+            self.mark_closed();
+            self.send_all(&out).await;
+        }
         result
     }
 
@@ -210,14 +251,39 @@ impl SessionShared {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        self.close_state.load(Ordering::Acquire) != SESSION_OPEN
     }
 
-    /// 标记关闭：唤醒 recv（发送端置空）、通知驱动清理、停止 ticker。
+    fn closed_error(&self) -> RakSessionError {
+        match self.close_state.load(Ordering::Acquire) {
+            SESSION_PEER_DISCONNECTED => RakSessionError::PeerDisconnected,
+            SESSION_DEAD => RakSessionError::Dead,
+            _ => RakSessionError::Closed,
+        }
+    }
+
+    fn mark_peer_disconnected(&self) {
+        self.mark_closed_with_state(SESSION_PEER_DISCONNECTED, "peer-disconnected");
+    }
+
+    fn mark_dead(&self) {
+        self.mark_closed_with_state(SESSION_DEAD, "dead");
+    }
+
+    /// 标记本地关闭：唤醒 recv（发送端置空）、通知驱动清理、停止 ticker。
     pub fn mark_closed(&self) {
-        if self.closed.swap(true, Ordering::AcqRel) {
+        self.mark_closed_with_state(SESSION_LOCAL_CLOSED, "local-closed");
+    }
+
+    fn mark_closed_with_state(&self, state: u8, reason: &'static str) {
+        if self
+            .close_state
+            .compare_exchange(SESSION_OPEN, state, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return;
         }
+        tracing::debug!(addr = %self.addr, reason, "RakNet 会话关闭");
         self.incoming_tx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -235,7 +301,10 @@ async fn close_shared(shared: &SessionShared) -> Result<(), RakSessionError> {
         return Ok(());
     }
     match shared.close().await {
-        Ok(()) | Err(RakSessionError::Closed) => Ok(()),
+        Ok(())
+        | Err(RakSessionError::Closed)
+        | Err(RakSessionError::PeerDisconnected)
+        | Err(RakSessionError::Dead) => Ok(()),
         Err(error) => Err(error),
     }
 }
@@ -343,13 +412,16 @@ impl RakReceiver {
     {
         match self.incoming.recv().await {
             Some(bytes) => Ok(Box::<[u8]>::from(&bytes[..]).into()),
-            None => Err(RakSessionError::Closed),
+            None => Err(self.shared.closed_error()),
         }
     }
 
     /// 零拷贝接收：直接返回入站数据报的切片视图。
     pub async fn recv_bytes(&mut self) -> Result<Bytes, RakSessionError> {
-        self.incoming.recv().await.ok_or(RakSessionError::Closed)
+        self.incoming
+            .recv()
+            .await
+            .ok_or_else(|| self.shared.closed_error())
     }
 
     pub async fn close(&self) -> Result<(), RakSessionError> {
@@ -437,18 +509,20 @@ impl RakSession {
     where
         Box<[u8]>: Into<T>,
     {
+        let shared = self.shared.clone();
         match self.incoming_mut()?.recv().await {
             Some(bytes) => Ok(Box::<[u8]>::from(&bytes[..]).into()),
-            None => Err(RakSessionError::Closed),
+            None => Err(shared.closed_error()),
         }
     }
 
     /// 零拷贝接收：直接返回入站数据报的切片视图。
     pub async fn recv_bytes(&mut self) -> Result<Bytes, RakSessionError> {
+        let shared = self.shared.clone();
         self.incoming_mut()?
             .recv()
             .await
-            .ok_or(RakSessionError::Closed)
+            .ok_or_else(|| shared.closed_error())
     }
 
     /// 发送一条消息。
@@ -478,7 +552,7 @@ impl RakSession {
             .await
     }
 
-    /// 通知对端断开并关闭会话。重复关闭返回 `Err(Closed)`，保持旧 API 语义。
+    /// 通知对端断开并关闭会话。重复关闭返回终止原因，保持错误可诊断。
     pub async fn close(&self) -> Result<(), RakSessionError> {
         self.shared.close().await
     }
