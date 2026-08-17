@@ -1,15 +1,15 @@
 [package]
 name = "bedrock-leveldb"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
-description = "Pure Rust LevelDB-style storage backend for Minecraft Bedrock worlds"
+description = "High-performance pure Rust storage engine for Mojang's modified LevelDB"
 repository = "https://github.com/BE-Community-Dev/bedrock-leveldb"
 homepage = "https://github.com/BE-Community-Dev/bedrock-leveldb"
 documentation = "https://docs.rs/bedrock-leveldb"
 readme = "README.md"
-keywords = ["minecraft", "bedrock", "leveldb", "mcbe", "world"]
+keywords = ["minecraft", "bedrock", "leveldb", "storage", "database"]
 categories = ["database-implementations", "filesystem"]
 include = [
     "Cargo.toml",
@@ -21,6 +21,7 @@ include = [
     "LICENSE-MIT",
     "src/**/*.rs",
     "tests/**/*.rs",
+    "tests/fixtures/README.md",
     "benches/**/*.rs",
 ]
 
