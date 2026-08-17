@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1 - 2026-08-17
+
+### Added
+
+- Added `WriteBatch::encoded_len_hint` so callers can reserve WAL buffers and make backpressure decisions without first encoding the batch.
+- Added `WriteBatch::compact_last_write_wins` for storage-engine-level duplicate-key elimination inside one atomic batch.
+
+### Changed
+
+- `WriteBatch::encode` now reserves a conservative target capacity up front, reducing reallocations on large map-editor transactions.
+- Batch compaction preserves LevelDB last-write-wins semantics and the relative order of retained final operations, reducing redundant WAL and memtable traffic for repeated writes to the same chunk record.
+
+### Scope
+
+- This crate remains a Mojang Bedrock LevelDB storage engine only. Chunk, SubChunk, BlockState, NBT game semantics, entities, heightmaps, and world migration remain the responsibility of `bedrock-world`.
+
 ## 0.5.0
 
 - Replace the aggregate `OpenOptions::cache_size` setting with independent sharded native cache capacities.
