@@ -3,11 +3,12 @@
 //! Actor migration belongs to `bedrock-world`: `Entity`, `digp`, `actorprefix`, actor `UniqueID` and
 //! Bedrock NBT are Minecraft world semantics rather than LevelDB mechanics.
 
-use crate::audit::{ActorStorageModel, CompatibilityLevel, WritePolicy};
-use crate::codec::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
+use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
+use crate::database::{StorageBatch, WorldStorage};
+use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
-use crate::model::{ActorDigestKey, ActorUid, ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::storage::{StorageBatch, WorldStorage};
+use crate::integrity::{ActorStorageModel, CompatibilityLevel, WritePolicy};
+use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
 use bytes::Bytes;
 use std::collections::BTreeSet;
 
@@ -168,9 +169,9 @@ fn actor_unique_id(root: &NbtTag) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::nbt::NbtTag;
-    use crate::model::Dimension;
-    use crate::storage::{MemoryStorage, WorldStorage};
+    use crate::chunk::Dimension;
+    use crate::database::{MemoryStorage, WorldStorage};
+    use crate::nbt::NbtTag;
     use indexmap::IndexMap;
 
     #[test]
