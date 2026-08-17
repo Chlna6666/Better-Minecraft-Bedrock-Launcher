@@ -42,6 +42,8 @@ pub mod block_state;
 pub mod block_state_upgrade;
 /// Chunk keys, subchunk formats, palette data, and legacy terrain helpers.
 pub mod chunk;
+/// Historical world/chunk/subchunk compatibility and explicit write-policy helpers.
+pub mod compatibility;
 /// Filesystem discovery for Bedrock world folders.
 pub mod discover;
 /// Crate-wide error and result types.
@@ -86,6 +88,10 @@ pub use chunk::{
     LEGACY_TERRAIN_BLOCK_COUNT, LEGACY_TERRAIN_VALUE_LEN, LegacyBiomeSample, LegacySubChunk,
     LegacyTerrain, MapRecordId, ParsedVillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat,
     VillageRecordKind, block_storage_index,
+};
+pub use compatibility::{
+    ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind, WorldCapabilities,
+    WritePolicy,
 };
 pub use discover::{WorldDiscovery, WorldSummary, discover_worlds};
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
