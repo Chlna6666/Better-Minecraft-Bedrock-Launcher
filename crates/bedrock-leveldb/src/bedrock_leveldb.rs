@@ -5,16 +5,23 @@
 //! Minecraft chunk keys, NBT, BlockState, actors, dimensions and other game semantics belong to
 //! `bedrock-world`.
 //!
-//! # 0.7 public API
+//! # Public API
 //!
-//! Public consumers use responsibility modules only:
+//! Common database types are exported directly from the crate root, matching the shape of LevelDB's
+//! own public API. Physical implementation modules remain internal and must stay world-format agnostic.
 //!
-//! - [`engine`] for database lifecycle and stateful operations;
-//! - [`access`] for raw reads/scans and borrowed views;
-//! - [`format`] for write batches and physical format policies;
-//! - [`error`] for typed storage errors.
+//! ```rust,no_run
+//! use bedrock_leveldb::{Db, Options, ReadOptions, WriteBatch, WriteOptions};
 //!
-//! The pre-0.7 crate-root re-exports have been removed.
+//! # fn example() -> bedrock_leveldb::Result<()> {
+//! let db = Db::open("path/to/db", Options::default())?;
+//! let _ = db.get(b"key")?;
+//! let mut batch = WriteBatch::new();
+//! batch.put("key", "value");
+//! db.write(batch, WriteOptions::default())?;
+//! # Ok(())
+//! # }
+//! ```
 #![warn(missing_docs)]
 
 #[path = "format/batch.rs"]
@@ -33,11 +40,15 @@ mod table;
 #[path = "format/wal.rs"]
 mod wal;
 
-/// Database lifecycle, snapshots, statistics, cache configuration and repair.
-pub mod engine;
-/// Raw byte reads/scans, borrowed views, cancellation and progress controls.
-pub mod access;
-/// Mojang LevelDB physical format and write policies.
-pub mod format;
-/// Storage I/O infrastructure reserved for mmap/file/buffer-pool implementations.
-pub mod io;
+pub use batch::{WriteBatch, WriteOp};
+pub use db::{
+    Db, DbCacheStats, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport, Snapshot,
+    ValueRef,
+};
+pub use error::{ErrorKind, LevelDbError, Result};
+pub use options::{
+    CachePolicy, ChecksumMode, CompressionPolicy, NativeCacheOptions, OpenOptions as Options,
+    ReadOptions, ReadStrategy, ScanCancelFlag, ScanMode, ScanOutcome, ScanPipelineOptions,
+    ScanProgress, ScanProgressSink, ThreadingOptions, VisitorControl, WriteOptions,
+    MAX_LEVELDB_THREADS,
+};
