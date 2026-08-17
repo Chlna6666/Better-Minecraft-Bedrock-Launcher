@@ -136,6 +136,6 @@ pub(crate) mod storage {
     pub(crate) use crate::database::*;
 
     pub(crate) mod backend {
-        pub(crate) use crate::database::backend::BedrockLevelDbStorage;
+        pub(crate) use crate::database::BedrockLevelDbStorage;
     }
 }
