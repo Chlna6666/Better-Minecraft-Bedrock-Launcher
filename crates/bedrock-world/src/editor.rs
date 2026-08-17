@@ -6,7 +6,7 @@ pub use block_edit::{
     BlockEdit, BlockEditOptions, BlockEditResult, BlockEntityEdit, BlockStorageLayer,
     apply_block_edits_blocking, set_block_state_blocking,
 };
-pub use crate::mcstructure::placement::{
+pub use crate::mcstructure::{
     McStructurePlacement, McStructureRotation, McStructureWritePhase, McStructureWriteProgress,
     McStructureWriteResult,
 };

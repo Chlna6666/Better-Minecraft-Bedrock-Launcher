@@ -119,7 +119,7 @@ pub(crate) use database::{StorageCachePolicy, StorageReadOptions};
 pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
 pub(crate) use nbt::{NbtReader, NbtTag, NbtWriter};
-pub(crate) use parsed::{ParsedChunkRecord, ParsedChunkRecordValue};
+pub(crate) use parsed::ParsedChunkRecord;
 pub(crate) use query::WriteGuard;
 pub(crate) use world::{
     BedrockWorld, CancelFlag, SurfaceColumn, WorldChunkQueryRegion, WorldStorageHandle,
@@ -127,13 +127,15 @@ pub(crate) use world::{
 };
 
 pub(crate) mod level_dat {
-    pub(crate) use crate::upgrade::level_dat::*;
+    pub(crate) use crate::level::{
+        LevelDatDocument, read_level_dat_document, write_level_dat_document,
+    };
 }
 
 pub(crate) mod storage {
     pub(crate) use crate::database::*;
 
     pub(crate) mod backend {
-        pub(crate) use crate::database::BedrockLevelDbStorage;
+        pub(crate) use crate::database::backend::BedrockLevelDbStorage;
     }
 }

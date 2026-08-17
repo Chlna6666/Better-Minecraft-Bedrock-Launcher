@@ -8,7 +8,7 @@ use crate::chunk::subchunk_write::encode_paletted_subchunk;
 use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::integrity::{CompatibilityLevel, SubChunkCodecKind};
-use crate::parsed::model::Biome2d;
+use crate::parsed::Biome2d;
 use crate::upgrade::{
     BlockStateMigrationGraph, LegacyBlockResolver, promote_data2d_to_data3d,
     resolve_legacy_subchunk, resolve_legacy_terrain,
