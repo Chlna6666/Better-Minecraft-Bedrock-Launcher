@@ -1,14 +1,15 @@
 //! Canonical migration decoding for historical numeric Bedrock terrain.
 //!
 //! `LegacyTerrain` and pre-paletted subchunk versions store numeric block IDs plus four-bit data
-//! values. Those numbers are version-dependent game semantics, so the codec does not guess their
+//! values. Those numbers are version-dependent game semantics, so the upgrader does not guess their
 //! modern meaning. A caller supplies a [`LegacyBlockResolver`] backed by an authoritative/versioned
-//! mapping and receives normal [`crate::BlockState`] values suitable for later palette validation.
+//! mapping and receives normal [`crate::block::BlockState`] values suitable for later palette validation.
 
-use crate::{
-    BedrockWorldError, BlockState, LegacyBiomeSample, LegacySubChunk, LegacyTerrain, Result,
-    SubChunkCodecKind, block_storage_index,
-};
+use crate::biome::LegacyBiomeSample;
+use crate::block::{BlockState, block_storage_index};
+use crate::chunk::legacy::{LegacySubChunk, LegacyTerrain};
+use crate::error::{BedrockWorldError, Result};
+use crate::integrity::SubChunkCodecKind;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 
@@ -137,7 +138,7 @@ pub fn resolve_legacy_subchunk(
         version: subchunk.version(),
     };
     let mut blocks = Vec::with_capacity(BLOCKS_PER_SUBCHUNK);
-    blocks.resize_with(BLOCKS_PER_SUBCHUNK, || invalid_placeholder_state());
+    blocks.resize_with(BLOCKS_PER_SUBCHUNK, invalid_placeholder_state);
 
     for local_x in 0..16_u8 {
         for local_z in 0..16_u8 {
@@ -181,7 +182,7 @@ pub fn resolve_legacy_terrain(
             BedrockWorldError::Validation("legacy terrain subchunk index overflowed".to_string())
         })?;
         let mut blocks = Vec::with_capacity(BLOCKS_PER_SUBCHUNK);
-        blocks.resize_with(BLOCKS_PER_SUBCHUNK, || invalid_placeholder_state());
+        blocks.resize_with(BLOCKS_PER_SUBCHUNK, invalid_placeholder_state);
         for local_x in 0..16_u8 {
             for local_z in 0..16_u8 {
                 for local_y in 0..16_u8 {
@@ -214,8 +215,6 @@ pub fn resolve_legacy_terrain(
             y,
             source_codec: SubChunkCodecKind::UnknownLegacy(0xff),
             blocks,
-            // One LegacyTerrain value backs all eight canonical slices. Keep the raw payload on the
-            // outer result rather than cloning 83 KiB eight times.
             raw: Bytes::new(),
         });
     }
@@ -270,7 +269,7 @@ fn invalid_placeholder_state() -> BlockState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NbtTag;
+    use crate::nbt::NbtTag;
 
     fn test_state(name: &str) -> BlockState {
         BlockState {
