@@ -38,6 +38,8 @@
 pub mod block_edit;
 /// Canonical semantic identity helpers for Bedrock block states.
 pub mod block_state;
+/// Directed version graph for historical BlockState schema migrations.
+pub mod block_state_graph;
 /// Data-driven historical block-state migration helpers.
 pub mod block_state_upgrade;
 /// Chunk keys, subchunk formats, palette data, and legacy terrain helpers.
@@ -82,6 +84,7 @@ pub use block_edit::{
     BlockEdit, BlockEditOptions, BlockEditResult, BlockEntityEdit, BlockStorageLayer,
     apply_block_edits_blocking, set_block_state_blocking,
 };
+pub use block_state_graph::{BlockStateMigrationGraph, BlockStateMigrationStep};
 pub use block_state_upgrade::{
     BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
     BlockStateValueRewrite,
