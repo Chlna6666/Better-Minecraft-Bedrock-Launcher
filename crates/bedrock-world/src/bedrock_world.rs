@@ -109,20 +109,3 @@ pub mod editor;
 pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
-
-// Temporary crate-root aliases for implementation files still being moved to direct domain imports.
-pub(crate) use chunk::key::{ActorDigestKey, ActorUid, ChunkKey, ChunkRecordTag, ParsedVillageKey};
-pub(crate) use chunk::model::{BlockPos, Chunk, ChunkPos, ChunkRecord, ChunkVersion, Dimension};
-pub(crate) use chunk::palette::{BlockPalette, BlockState, block_storage_index};
-pub(crate) use chunk::subchunk::{SubChunk, SubChunkFormat};
-pub(crate) use parsed::model::{Biome2d, Biome3d, ParsedChunkRecord};
-pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
-pub(crate) use nbt::{NbtReader, NbtTag, NbtWriter};
-pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
-pub(crate) use level as level_dat;
-pub(crate) use query::WriteGuard;
-pub(crate) use database::{StorageCachePolicy, StorageReadOptions};
-pub(crate) use world::{
-    BedrockWorld, CancelFlag, SurfaceColumn, WorldChunkQueryRegion, WorldStorageHandle,
-    WorldTransaction,
-};
