@@ -3,13 +3,18 @@
 //! Migration is explicit and version-aware. Unknown future data is never rewritten implicitly.
 
 pub mod actor;
+pub mod biome;
 pub mod block_state_graph;
 pub mod block_state_upgrade;
 pub mod historical_chunk;
 pub mod legacy_import;
 pub mod plan;
 
-pub use actor::{ActorMigrationAction, actor_storage_compatibility, classify_actor_migration};
+pub use actor::{
+    ActorMigrationAction, ActorMigrationReport, actor_storage_compatibility,
+    classify_actor_migration, migrate_inline_actor_chunk_blocking,
+};
+pub use biome::promote_data2d_to_data3d;
 pub use block_state_graph::{BlockStateMigrationGraph, BlockStateMigrationStep};
 pub use block_state_upgrade::{
     BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
