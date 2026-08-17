@@ -108,6 +108,7 @@ pub mod level {
 /// Bedrock world database records, scanning and LevelDB-backed world storage.
 pub mod database {
     pub use crate::storage::*;
+    pub(crate) use crate::world::CancelFlag;
 }
 
 /// Explicit historical Bedrock world and BlockState upgrades.
