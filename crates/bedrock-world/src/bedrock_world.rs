@@ -36,12 +36,16 @@
 
 /// Canonical semantic identity helpers for Bedrock block states.
 pub mod block_state;
+/// Data-driven historical block-state migration helpers.
+pub mod block_state_upgrade;
 /// Chunk keys, subchunk formats, palette data, and legacy terrain helpers.
 pub mod chunk;
 /// Filesystem discovery for Bedrock world folders.
 pub mod discover;
 /// Crate-wide error and result types.
 pub mod error;
+/// Read-only whole-world consistency and corruption auditing.
+pub mod integrity;
 /// `level.dat` header parsing, validation, and atomic write helpers.
 pub mod level_dat;
 /// Minecraft Bedrock `.mcstructure` files and world placement helpers.
@@ -64,6 +68,10 @@ pub mod surface;
 /// High-level lazy world handle and scan/render helpers.
 pub mod world;
 
+pub use block_state_upgrade::{
+    BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
+    BlockStateValueRewrite,
+};
 pub use chunk::{
     ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPalette, BlockPos, BlockState,
     Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension,
@@ -75,6 +83,10 @@ pub use chunk::{
 };
 pub use discover::{WorldDiscovery, WorldSummary, discover_worlds};
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+pub use integrity::{
+    WorldIntegrityIssue, WorldIntegrityIssueKind, WorldIntegrityOptions, WorldIntegrityReport,
+    WorldIntegritySeverity, WorldIntegrityStatus, audit_world_integrity_blocking,
+};
 pub use level_dat::{
     LevelDatDocument, LevelDatHeader, LevelDatReadWarning,
     initialize_level_dat_random_seed_if_missing, parse_level_dat_document, read_level_dat,
