@@ -1,17 +1,18 @@
 //! Historical chunk conversion into modern paletted Bedrock records.
 
-use crate::audit::{CompatibilityLevel, SubChunkCodecKind};
-use crate::codec::subchunk::encode_paletted_subchunk;
+use crate::chunk::key::{ChunkKey, ChunkRecordTag};
+use crate::chunk::legacy::{LegacySubChunk, LegacyTerrain};
+use crate::chunk::model::{ChunkPos, ChunkVersion};
+use crate::chunk::palette::BlockState;
+use crate::chunk::subchunk_write::encode_paletted_subchunk;
+use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
-use crate::migration::{
+use crate::integrity::{CompatibilityLevel, SubChunkCodecKind};
+use crate::parsed::model::Biome2d;
+use crate::upgrade::{
     BlockStateMigrationGraph, LegacyBlockResolver, promote_data2d_to_data3d,
     resolve_legacy_subchunk, resolve_legacy_terrain,
 };
-use crate::model::{
-    Biome2d, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion, LegacySubChunk,
-    LegacyTerrain,
-};
-use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 
