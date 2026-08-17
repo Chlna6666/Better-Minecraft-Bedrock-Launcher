@@ -1,7 +1,7 @@
-//! Migration helpers for historical 2D biome records.
+//! Upgrade helpers for historical 2D biome records.
 
+use crate::biome::{Biome2d, Biome3d, ParsedBiomeStorage};
 use crate::error::{BedrockWorldError, Result};
-use crate::model::{Biome2d, Biome3d, ParsedBiomeStorage};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
