@@ -7,6 +7,7 @@ pub mod block_state_graph;
 pub mod block_state_upgrade;
 pub mod historical_chunk;
 pub mod legacy_import;
+pub mod plan;
 
 pub use actor::{ActorMigrationAction, actor_storage_compatibility, classify_actor_migration};
 pub use block_state_graph::{BlockStateMigrationGraph, BlockStateMigrationStep};
@@ -23,3 +24,4 @@ pub use legacy_import::{
     PocketChunksDatImportOptions, PocketChunksDatImportReport,
     import_pocket_chunks_dat_records_blocking,
 };
+pub use plan::{ChunkMigrationTarget, MigrationBlocker, WorldMigrationPlan};

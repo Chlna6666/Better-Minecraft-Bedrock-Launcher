@@ -1,8 +1,8 @@
 //! Tools for inspecting, migrating and editing Minecraft Bedrock worlds.
 //!
 //! `bedrock-world` owns Minecraft Bedrock world semantics. Mojang LevelDB mechanics belong exclusively
-//! to `bedrock-leveldb`. The 0.6 API is intentionally breaking: consumers use the responsibility
-//! modules below instead of crate-root type/function re-exports.
+//! to `bedrock-leveldb`. The 0.6 API is intentionally breaking: consumers use responsibility modules
+//! instead of crate-root type/function re-exports.
 
 #![deny(missing_docs)]
 #![allow(
@@ -19,16 +19,20 @@
     clippy::wildcard_imports
 )]
 
+#[path = "model/block_state.rs"]
 mod block_state;
 mod chunk;
+#[path = "world/discover.rs"]
 mod discover;
 /// Crate-wide Bedrock world error types.
 pub mod error;
 mod mcstructure;
 mod nbt_ref;
 mod parsed;
+#[path = "model/player.rs"]
 mod player;
 mod selection_query;
+#[path = "model/surface.rs"]
 mod surface;
 
 /// Semantic Minecraft Bedrock models.
@@ -48,9 +52,8 @@ pub mod storage;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-// Internal-only migration aliases. These keep implementation files compiling while the physical split
-// is completed. They are deliberately not public API and will be removed once internal imports use the
-// responsibility modules directly.
+// Internal-only aliases. They preserve existing implementation imports while the physical split is
+// completed; external callers cannot use these crate-root names.
 pub(crate) use audit::{
     ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind, WorldCapabilities,
     WritePolicy, compatibility, compatibility_scan, integrity,
