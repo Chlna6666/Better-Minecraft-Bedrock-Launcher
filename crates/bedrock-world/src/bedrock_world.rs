@@ -19,7 +19,7 @@
     clippy::wildcard_imports
 )]
 
-#[path = "model/block_state.rs"]
+#[path = "block/state.rs"]
 mod block_state;
 pub mod chunk;
 #[path = "world/discover.rs"]
@@ -29,52 +29,56 @@ pub mod error;
 mod mcstructure;
 mod nbt_ref;
 mod parsed;
-#[path = "model/player.rs"]
+#[path = "player/data.rs"]
 mod player_impl;
 mod selection_query;
-#[path = "model/surface.rs"]
+#[path = "world/surface.rs"]
 mod surface;
 
-// Internal implementation groupings that are still being split into game-data domains.
-mod model;
+// Internal byte-format implementation grouping still being split into game-data domains.
 mod codec;
 
 /// Blocks, block states, palettes and block-entity data.
 pub mod block {
-    pub use crate::chunk::palette::block_storage_index;
-    pub use crate::model::{BlockEntityRecord, BlockPalette, BlockPos, BlockState, ParsedBlockEntity};
+    pub use crate::chunk::model::BlockPos;
+    pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
+    pub use crate::parsed::model::{BlockEntityRecord, ParsedBlockEntity};
 }
 
 /// Biome and height-map data stored by Bedrock chunks.
 pub mod biome {
-    pub use crate::model::{
-        Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeData, ParsedBiomeStorage,
+    pub use crate::chunk::legacy::LegacyBiomeSample;
+    pub use crate::parsed::model::{
+        Biome2d, Biome3d, HeightMap2d, ParsedBiomeData, ParsedBiomeStorage,
     };
 }
 
 /// Bedrock actor/entity records and actor-index identities.
 pub mod entity {
-    pub use crate::model::{
-        ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, EntityData,
-        ParsedActorDigest, ParsedEntity,
+    pub use crate::chunk::key::{ActorDigestKey, ActorUid};
+    pub use crate::chunk::model::EntityData;
+    pub use crate::parsed::model::{
+        ActorRecord, ActorResolution, ActorSource, ParsedActorDigest, ParsedEntity,
     };
     pub use crate::parsed::{encode_actor_digest_ids, parse_actor_digest_ids};
 }
 
 /// Bedrock player records and inventory item data.
 pub mod player {
-    pub use crate::model::{ItemStack, ParsedPlayer};
+    pub use crate::parsed::model::{ItemStack, ParsedPlayer};
     pub use crate::player_impl::{PlayerData, PlayerId};
 }
 
 /// Bedrock map item records.
 pub mod map {
-    pub use crate::model::{MapKnownFields, MapPixels, MapRecordId, ParsedMapData};
+    pub use crate::chunk::key::MapRecordId;
+    pub use crate::parsed::model::{MapKnownFields, MapPixels, ParsedMapData};
 }
 
 /// Bedrock village database records.
 pub mod village {
-    pub use crate::model::{ParsedVillageData, ParsedVillageKey, VillageRecordKind};
+    pub use crate::chunk::key::{ParsedVillageKey, VillageRecordKind};
+    pub use crate::parsed::model::ParsedVillageData;
 }
 
 /// Bedrock `.mcstructure` files and structure placement.
@@ -117,15 +121,30 @@ pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-// Temporary crate-private aliases for implementation files that are still being physically moved to
-// the domain modules above. They are intentionally not public API and are removed as each implementation
-// file is migrated; external consumers cannot use the pre-0.7 crate-root surface through these names.
+// Temporary crate-private aliases for implementation files that still import the old crate root. They
+// are not public API and disappear as those implementation files move to direct game-domain imports.
+pub(crate) use chunk::key::{
+    ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
+    EncodedChunkKey, GlobalRecordKind, MapRecordId, ParsedVillageKey, VillageRecordKind,
+};
+pub(crate) use chunk::legacy::{LegacyBiomeSample, LegacySubChunk, LegacyTerrain};
+pub(crate) use chunk::model::{
+    BlockPos, Chunk, ChunkPos, ChunkRecord, ChunkVersion, Dimension, EntityData,
+};
+pub(crate) use chunk::palette::{BlockPalette, BlockState, block_storage_index};
+pub(crate) use chunk::subchunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
+pub(crate) use parsed::model::{
+    ActorRecord, ActorResolution, ActorSource, Biome2d, Biome3d, BlockEntityRecord,
+    HardcodedSpawnAreaKind, HeightMap2d, ItemStack, MapKnownFields, MapPixels, ParsedActorDigest,
+    ParsedBiomeData, ParsedBiomeStorage, ParsedBlockEntity, ParsedChunkData, ParsedChunkRecord,
+    ParsedChunkRecordValue, ParsedDbEntry, ParsedDbValue, ParsedEntity, ParsedGlobalData,
+    ParsedHardcodedSpawnArea, ParsedMapData, ParsedPlayer, ParsedVillageData, ParsedWorld,
+};
+pub(crate) use player_impl::{PlayerData, PlayerId};
 pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
-pub(crate) use chunk::palette::block_storage_index;
 pub(crate) use codec::nbt::{NbtReader, NbtTag, NbtWriter};
 pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub(crate) use level as level_dat;
-pub(crate) use model::*;
 pub(crate) use query::WriteGuard;
 pub(crate) use database::{MemoryStorage, StorageCachePolicy, StorageReadOptions, WorldStorage};
 pub(crate) use world::{

@@ -22,4 +22,4 @@ pub use implementation::*;
 
 // Temporary crate-private bridge while selection/query implementation files are physically moved to
 // their final game-domain locations. This is not exported to external consumers.
-pub(crate) use crate::model::ParsedChunkRecordValue;
+pub(crate) use crate::parsed::model::ParsedChunkRecordValue;
