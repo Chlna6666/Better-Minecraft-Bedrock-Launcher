@@ -73,6 +73,47 @@ impl LevelDatDocument {
     pub const fn version(&self) -> u32 {
         self.header.version
     }
+
+    /// Returns the map-owned `RandomSeed` without modifying the document.
+    ///
+    /// Bedrock stores the seed as a signed 64-bit integer in modern worlds, although some
+    /// older tooling has emitted an `Int`. Both representations are accepted. A missing seed
+    /// is reported as `Ok(None)` so callers can distinguish a new/incomplete document from an
+    /// existing map. Any other scalar type is treated as corruption instead of silently
+    /// falling back to a configured or randomly generated seed.
+    pub fn random_seed(&self) -> Result<Option<i64>> {
+        let NbtTag::Compound(root) = &self.root else {
+            return Err(BedrockWorldError::CorruptWorld(
+                "level.dat root is not a compound".to_string(),
+            ));
+        };
+        match root.get("RandomSeed") {
+            None => Ok(None),
+            Some(NbtTag::Long(seed)) => Ok(Some(*seed)),
+            Some(NbtTag::Int(seed)) => Ok(Some(i64::from(*seed))),
+            Some(other) => Err(BedrockWorldError::CorruptWorld(format!(
+                "level.dat RandomSeed uses unsupported NBT type: {other:?}"
+            ))),
+        }
+    }
+
+    /// Initializes `RandomSeed` only when the document does not already own a seed.
+    ///
+    /// Existing maps are authoritative: if `RandomSeed` already exists, its value is returned
+    /// unchanged even when `candidate` differs. This prevents map editors or servers from
+    /// accidentally generating new chunks with a different seed and creating terrain seams.
+    pub fn initialize_random_seed_if_missing(&mut self, candidate: i64) -> Result<i64> {
+        if let Some(seed) = self.random_seed()? {
+            return Ok(seed);
+        }
+        let NbtTag::Compound(root) = &mut self.root else {
+            return Err(BedrockWorldError::CorruptWorld(
+                "level.dat root is not a compound".to_string(),
+            ));
+        };
+        root.insert("RandomSeed".to_string(), NbtTag::Long(candidate));
+        Ok(candidate)
+    }
 }
 
 /// Parses a complete `level.dat` byte slice.
@@ -126,6 +167,27 @@ pub fn read_level_dat_document(path: &Path) -> Result<LevelDatDocument> {
 /// Alias for [`read_level_dat_document`].
 pub fn read_level_dat(path: &Path) -> Result<LevelDatDocument> {
     read_level_dat_document(path)
+}
+
+/// Reads the map-owned `RandomSeed` from an existing `level.dat`.
+///
+/// Unlike application-level configuration fallbacks, this function never invents a seed. A
+/// missing seed remains `None` and malformed metadata is returned as an error.
+pub fn read_level_dat_random_seed(path: &Path) -> Result<Option<i64>> {
+    read_level_dat_document(path)?.random_seed()
+}
+
+/// Initializes a missing `RandomSeed` and atomically writes the document only when needed.
+///
+/// If the map already has a seed, no file write occurs and the existing value is returned.
+pub fn initialize_level_dat_random_seed_if_missing(path: &Path, candidate: i64) -> Result<i64> {
+    let mut document = read_level_dat_document(path)?;
+    if let Some(seed) = document.random_seed()? {
+        return Ok(seed);
+    }
+    let seed = document.initialize_random_seed_if_missing(candidate)?;
+    write_level_dat_document(path, &document)?;
+    Ok(seed)
 }
 
 /// Writes a `level.dat` document through a temporary file and replacement.
@@ -295,5 +357,48 @@ mod tests {
                 actual_payload_len: payload.len(),
             }]
         );
+    }
+
+    #[test]
+    fn existing_random_seed_is_never_replaced() {
+        let mut root = IndexMap::new();
+        root.insert("RandomSeed".to_string(), NbtTag::Long(123456789));
+        let mut document = LevelDatDocument::new(10, NbtTag::Compound(root));
+
+        let resolved = document
+            .initialize_random_seed_if_missing(-987654321)
+            .expect("seed");
+        assert_eq!(resolved, 123456789);
+        assert_eq!(document.random_seed().expect("read"), Some(123456789));
+    }
+
+    #[test]
+    fn missing_random_seed_is_initialized_once() {
+        let mut document = LevelDatDocument::new(10, NbtTag::Compound(IndexMap::new()));
+        assert_eq!(document.random_seed().expect("read"), None);
+        assert_eq!(
+            document
+                .initialize_random_seed_if_missing(42)
+                .expect("initialize"),
+            42
+        );
+        assert_eq!(document.random_seed().expect("read"), Some(42));
+        assert_eq!(
+            document
+                .initialize_random_seed_if_missing(99)
+                .expect("preserve"),
+            42
+        );
+    }
+
+    #[test]
+    fn malformed_random_seed_does_not_fall_back() {
+        let mut root = IndexMap::new();
+        root.insert(
+            "RandomSeed".to_string(),
+            NbtTag::String("not-a-seed".to_string()),
+        );
+        let document = LevelDatDocument::new(10, NbtTag::Compound(root));
+        assert!(document.random_seed().is_err());
     }
 }
