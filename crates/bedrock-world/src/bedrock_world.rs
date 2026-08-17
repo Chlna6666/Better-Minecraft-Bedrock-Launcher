@@ -46,18 +46,23 @@ mod edit;
 
 /// Blocks, block states, palettes and block-entity data.
 pub mod block {
-    pub use crate::model::{BlockEntityRecord, BlockPalette, BlockPos, BlockState, ParsedBlockEntity};
     pub use crate::chunk::palette::block_storage_index;
+    pub use crate::model::{BlockEntityRecord, BlockPalette, BlockPos, BlockState, ParsedBlockEntity};
 }
 
 /// Biome and height-map data stored by Bedrock chunks.
 pub mod biome {
-    pub use crate::model::{Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeData, ParsedBiomeStorage};
+    pub use crate::model::{
+        Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, ParsedBiomeData, ParsedBiomeStorage,
+    };
 }
 
 /// Bedrock actor/entity records and actor-index identities.
 pub mod entity {
-    pub use crate::model::{ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, EntityData, ParsedActorDigest, ParsedEntity};
+    pub use crate::model::{
+        ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, EntityData,
+        ParsedActorDigest, ParsedEntity,
+    };
 }
 
 /// Bedrock player records and inventory item data.
@@ -86,7 +91,7 @@ pub mod structure {
 
 /// Bedrock little-endian NBT parsing, writing and borrowed views.
 pub mod nbt {
-    pub use crate::codec::{
+    pub use crate::codec::nbt::{
         NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter,
         parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt, visit_nbt_events,
     };
