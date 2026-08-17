@@ -2,8 +2,9 @@
 
 use crate::Result;
 use bedrock_world::{
-    BedrockWorld, ChunkData, ChunkLoadOptions, ChunkPos, ExactChunkSelection, SlimeChunkBounds,
-    WorldStorageHandle,
+    model::ChunkPos,
+    query::SlimeChunkBounds,
+    world::{BedrockWorld, ChunkData, ChunkLoadOptions, ExactChunkSelection, WorldStorageHandle},
 };
 
 /// A render-oriented plan derived from an exact non-rectangular chunk selection.
@@ -78,15 +79,15 @@ impl ExactChunkRenderPlan {
 pub struct ExactChunkRenderData {
     /// The exact plan used to perform the load.
     pub plan: ExactChunkRenderPlan,
-    /// Chunk data returned in the exact plan's position order.
+    /// Loaded chunk data in the same stable order as [`ExactChunkRenderPlan::positions`].
     pub chunks: Vec<ChunkData>,
 }
 
-/// Loads chunk data for an exact selection without scanning its bounding-box holes.
+/// Loads exactly the selected chunks, preserving holes and disconnected components.
 ///
-/// This is the canonical low-level source API for non-rectangular 3D, OBJ and
-/// other render/export consumers. It delegates directly to `bedrock-world`'s
-/// multi-chunk query using the explicit selected positions.
+/// # Errors
+///
+/// Returns storage, decode, cancellation, or chunk-loading errors from `bedrock-world`.
 pub fn load_exact_chunk_render_data_blocking<S>(
     world: &BedrockWorld<S>,
     selection: ExactChunkSelection,
@@ -96,14 +97,14 @@ where
     S: WorldStorageHandle,
 {
     let plan = ExactChunkRenderPlan::new(selection);
-    let chunks = world.query_chunk_data_many_blocking(plan.positions().iter().copied(), options)?;
+    let chunks = world.load_chunks_exact_blocking(plan.selection(), options)?;
     Ok(ExactChunkRenderData { plan, chunks })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bedrock_world::Dimension;
+    use bedrock_world::model::{ChunkPos, Dimension};
 
     fn chunk(x: i32, z: i32) -> ChunkPos {
         ChunkPos {
@@ -114,22 +115,14 @@ mod tests {
     }
 
     #[test]
-    fn render_plan_keeps_exact_membership() {
-        let selection =
-            ExactChunkSelection::new([chunk(0, 0), chunk(1, 0), chunk(0, 1), chunk(4, 4)])
-                .expect("selection");
+    fn plan_preserves_disconnected_selection() {
+        let selection = ExactChunkSelection::from_positions([chunk(0, 0), chunk(2, 0)]);
         let plan = ExactChunkRenderPlan::new(selection);
 
-        assert_eq!(plan.chunk_count(), 4);
-        assert!(plan.contains(chunk(0, 1)));
-        assert!(!plan.contains(chunk(1, 1)));
-        assert_eq!(
-            plan.rectangle_cover()
-                .iter()
-                .map(|bounds| bounds.chunk_count())
-                .sum::<usize>(),
-            4
-        );
-        assert!(plan.bounds().chunk_count() > plan.chunk_count());
+        assert_eq!(plan.chunk_count(), 2);
+        assert!(plan.contains(chunk(0, 0)));
+        assert!(!plan.contains(chunk(1, 0)));
+        assert!(plan.contains(chunk(2, 0)));
+        assert_eq!(plan.rectangle_cover().len(), 2);
     }
 }
