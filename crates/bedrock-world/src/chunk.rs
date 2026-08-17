@@ -1,7 +1,9 @@
 //! Minecraft Bedrock chunk data, keys, palettes and historical chunk formats.
 
-#[path = "chunk/impl.rs"]
-mod implementation;
+// Chunk storage codec shared by the responsibility-specific public modules below.
+// Keep this implementation private so callers use stable semantic paths such as
+// `chunk::key`, `chunk::model`, and `chunk::subchunk` rather than an implementation module.
+mod codec;
 
 /// Chunk/world coordinate and semantic chunk types.
 pub mod model;
@@ -16,4 +18,4 @@ pub mod subchunk;
 /// Modern paletted subchunk write helpers shared by world editing and structure placement.
 pub(crate) mod subchunk_write;
 
-pub use implementation::*;
+pub use codec::*;

@@ -4,5 +4,7 @@
 //! implementation. Responsibility child modules are added only when code is physically split.
 
 mod access;
+pub(crate) mod discover;
+pub(crate) mod surface;
 
 pub use access::*;

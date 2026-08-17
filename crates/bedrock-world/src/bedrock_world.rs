@@ -19,27 +19,14 @@
     clippy::wildcard_imports
 )]
 
-#[path = "block/state.rs"]
-mod block_state;
+pub mod block;
 pub mod chunk;
-#[path = "world/discover.rs"]
-mod discover;
 /// Crate-wide Bedrock world error types.
 pub mod error;
 mod mcstructure;
 mod nbt_ref;
 mod parsed;
-#[path = "player/data.rs"]
-mod player_impl;
-#[path = "world/surface.rs"]
-mod surface;
-
-/// Blocks, block states, palettes and block-entity data.
-pub mod block {
-    pub use crate::chunk::model::BlockPos;
-    pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
-    pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
-}
+pub mod player;
 
 /// Biome and height-map data stored by Bedrock chunks.
 pub mod biome {
@@ -55,12 +42,6 @@ pub mod entity {
         ActorRecord, ActorResolution, ActorSource, ParsedActorDigest, ParsedEntity,
         encode_actor_digest_ids, parse_actor_digest_ids,
     };
-}
-
-/// Bedrock player records and inventory item data.
-pub mod player {
-    pub use crate::parsed::{ItemStack, ParsedPlayer};
-    pub use crate::player_impl::{PlayerData, PlayerId};
 }
 
 /// Bedrock map item records.
@@ -106,9 +87,14 @@ pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-// Crate-private migration prelude for monolithic implementation files that still use the former
-// crate-root spelling. This is deliberately not public API and is deleted as those files are split
-// into their final responsibility modules.
+// Preserve the historical crate-private spellings used by the large world implementation while the
+// files themselves now follow conventional parent/child module discovery. This keeps internal symbol
+// migration independent from file-layout cleanup and avoids reintroducing `#[path]` declarations.
+pub(crate) use world::{discover, surface};
+
+// Crate-private compatibility prelude for implementation files that still use the former crate-root
+// spelling. This is deliberately not public API and can be removed incrementally as responsibilities
+// are physically split into their final modules.
 pub(crate) use biome::{Biome2d, Biome3d};
 pub(crate) use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
 pub(crate) use chunk::{
