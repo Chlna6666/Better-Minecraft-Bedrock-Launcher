@@ -1,7 +1,7 @@
-//! Professional map/world queries used by viewers and offline tools.
+//! Minecraft Bedrock world inspection and overlay queries.
 //!
-//! Implementation remains behind a compatibility facade while responsibility entry points live in
-//! dedicated files under `query/`.
+//! Query APIs are organised around game data and spatial inspection. Generic implementation-layer
+//! names are not part of the 0.7 public API.
 
 #[path = "query/impl.rs"]
 mod implementation;
@@ -10,7 +10,7 @@ pub mod analysis;
 pub mod inspect;
 pub mod overlay;
 
-/// Explicit guarded mutation helpers retained during the 0.6 transition.
+/// Guarded mutation helpers used by query-driven world tools.
 pub mod write {
     pub use super::implementation::{
         WriteGuard, delete_chunk_positions_blocking, delete_chunks_blocking,
@@ -19,3 +19,7 @@ pub mod write {
 }
 
 pub use implementation::*;
+
+// Temporary crate-private bridge while selection/query implementation files are physically moved to
+// their final game-domain locations. This is not exported to external consumers.
+pub(crate) use crate::model::ParsedChunkRecordValue;
