@@ -1,13 +1,13 @@
-//! Migration of legacy player data embedded in `level.dat`.
+//! Upgrade of legacy player data embedded in `level.dat`.
 
-use crate::codec::level_dat::LevelDatDocument;
-use crate::codec::nbt::{NbtTag, serialize_root_nbt};
+use crate::database::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
-use crate::model::{PlayerData, PlayerId};
-use crate::storage::{StorageBatch, WorldStorage};
+use crate::level::LevelDatDocument;
+use crate::nbt::{NbtTag, serialize_root_nbt};
+use crate::player::{PlayerData, PlayerId};
 use bytes::Bytes;
 
-/// Result of preparing/migrating a legacy embedded player.
+/// Result of preparing/upgrading a legacy embedded player.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PlayerMigrationReport {
     /// Whether a legacy `Player` compound was present in `level.dat`.
