@@ -1,7 +1,7 @@
 // src-tauri/src/commands/map.rs
 use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, game_target_dirs};
 use anyhow::Result;
-use bedrock_world::{WorldDiscovery, discover_worlds};
+use bedrock_world::world::discover::{WorldDiscovery, discover_worlds};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

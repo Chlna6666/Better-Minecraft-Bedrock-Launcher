@@ -9,24 +9,25 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 pub use bedrock_world::{
-    codec::NbtTag,
-    model::{
-        ActorRecord, ActorSource, ActorUid, Biome2d, Biome3d, BlockEntityRecord, BlockPos,
-        ChunkPos, ChunkRecordTag, ChunkVersion, Dimension, GlobalRecordKind,
-        HardcodedSpawnAreaKind, HeightMap2d, MapKnownFields, MapPixels, MapRecordId,
-        ParsedBiomeStorage, ParsedBlockEntity, ParsedEntity, ParsedGlobalData,
-        ParsedHardcodedSpawnArea, ParsedMapData,
+    biome::{Biome2d, Biome3d, HeightMap2d, ParsedBiomeStorage},
+    block::{BlockEntityRecord, BlockPos, ParsedBlockEntity},
+    chunk::{
+        ChunkPos, ChunkRecordTag, ChunkVersion, Dimension, HardcodedSpawnAreaKind,
+        ParsedHardcodedSpawnArea,
     },
+    database::{GlobalRecordKind, ParsedGlobalData},
+    entity::{ActorRecord, ActorSource, ActorUid, ParsedEntity},
+    map::{MapKnownFields, MapPixels, MapRecordId, ParsedMapData},
+    nbt::NbtTag,
     query::{
         ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
-        SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, VillageOverlayIndex,
+        SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, VillageOverlayIndex, WriteGuard,
         query_block_tip_blocking, query_chunk_detail_blocking, query_region_overlays_blocking,
         query_region_overlays_blocking_with_control, query_selection_stats_blocking,
         query_slime_chunk_windows,
     },
     world::{BedrockWorld, CancelFlag, OpenOptions, WorldScanOptions},
 };
-pub use bedrock_world::query::write::WriteGuard;
 
 /// Describes the render-side state that should be refreshed after a world edit.
 ///

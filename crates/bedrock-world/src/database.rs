@@ -5,6 +5,8 @@
 
 mod storage;
 
+pub use crate::chunk::key::{BedrockDbKey, BedrockDbKeyKind, GlobalRecordKind};
+pub use crate::parsed::ParsedGlobalData;
 pub use storage::*;
 pub use storage::backend::BedrockLevelDbStorage;
 pub(crate) use crate::world::CancelFlag;

@@ -7,7 +7,7 @@
 
 use crate::chunk::key::{ChunkKey, ChunkRecordTag};
 use crate::chunk::legacy::{LegacyTerrain, LEGACY_TERRAIN_BLOCK_COUNT, LEGACY_TERRAIN_VALUE_LEN};
-use crate::chunk::model::{ChunkPos, Dimension};
+use crate::chunk::position::{ChunkPos, Dimension};
 use crate::error::{BedrockWorldError, Result};
 use crate::level::read_level_dat_document;
 use crate::nbt::NbtTag;

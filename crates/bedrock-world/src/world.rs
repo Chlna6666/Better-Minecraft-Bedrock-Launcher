@@ -1,10 +1,11 @@
-//! High-level lazy world access built on top of the storage layer.
-//!
-//! World lifecycle, scanning, terrain access, and transactions currently share one cohesive access
-//! implementation. Responsibility child modules are added only when code is physically split.
+//! High-level Minecraft Bedrock world lifecycle and world-level data access.
 
 mod access;
-pub(crate) mod discover;
+/// Filesystem discovery for Minecraft Bedrock world folders.
+pub mod discover;
 pub(crate) mod surface;
 
 pub use access::*;
+pub use crate::parsed::{
+    RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport,
+};

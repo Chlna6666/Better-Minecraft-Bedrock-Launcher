@@ -21,6 +21,10 @@ pub use level_chunk::{Chunk, ChunkRecord, EntityData};
 pub use palette::*;
 pub use position::*;
 pub use subchunk::*;
+pub use crate::parsed::{
+    HardcodedSpawnAreaKind, ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,
+    ParsedHardcodedSpawnArea, parse_chunk_records, parse_chunk_records_with_options,
+};
 
 #[cfg(test)]
 mod tests;

@@ -1,9 +1,12 @@
 use anyhow::{Context, Result, bail};
 use bedrock_world::{
-    BedrockWorld, CancelFlag, ChunkPos, ChunkRecordFingerprint, ChunkRecordQuery,
-    ChunkRecordQueryResult, Dimension, ParsedChunkRecordValue,
-    fingerprint_chunk_records_many_blocking_with_control,
-    query_chunk_records_many_blocking_with_control,
+    chunk::{ChunkPos, Dimension, ParsedChunkRecordValue},
+    query::{
+        ChunkRecordFingerprint, ChunkRecordQuery, ChunkRecordQueryResult,
+        fingerprint_chunk_records_many_blocking_with_control,
+        query_chunk_records_many_blocking_with_control,
+    },
+    world::{BedrockWorld, CancelFlag, OpenOptions},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -183,7 +186,7 @@ pub fn load_map_info_tiles_blocking(
     // This makes cache hits reliable even when Minecraft or another editor changed the
     // world behind BMCBL's back.
     cancel_if_requested(cancel)?;
-    let world = BedrockWorld::open_blocking(world_path, bedrock_world::OpenOptions::default())
+    let world = BedrockWorld::open_blocking(world_path, OpenOptions::default())
         .context("open world for map information cache validation")?;
     let source_hashes = map_info_source_hashes(&world, &keys, cancel)?;
 

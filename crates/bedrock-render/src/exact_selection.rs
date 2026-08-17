@@ -2,9 +2,9 @@
 
 use crate::Result;
 use bedrock_world::{
-    model::ChunkPos,
-    query::SlimeChunkBounds,
-    world::{BedrockWorld, ChunkData, ChunkLoadOptions, ExactChunkSelection, WorldStorageHandle},
+    chunk::ChunkPos,
+    query::{ExactChunkSelection, SlimeChunkBounds},
+    world::{BedrockWorld, ChunkData, ChunkLoadOptions, WorldStorageHandle},
 };
 
 /// A render-oriented plan derived from an exact non-rectangular chunk selection.
@@ -46,7 +46,7 @@ impl ExactChunkRenderPlan {
         self.bounds
     }
 
-    /// Returns the exact selected positions in stable order.
+    /// Returns the exact selected positions in stable row-major order.
     #[must_use]
     pub fn positions(&self) -> &[ChunkPos] {
         &self.positions
@@ -58,7 +58,7 @@ impl ExactChunkRenderPlan {
         self.positions.len()
     }
 
-    /// Returns an exact rectangle cover for adapting legacy rectangle-only renderers.
+    /// Returns an exact rectangle cover for adapting rectangle-oriented renderers.
     ///
     /// Every returned rectangle is fully contained in the selection, so holes and
     /// disconnected gaps are never filled.
@@ -79,11 +79,14 @@ impl ExactChunkRenderPlan {
 pub struct ExactChunkRenderData {
     /// The exact plan used to perform the load.
     pub plan: ExactChunkRenderPlan,
-    /// Loaded chunk data in the same stable order as [`ExactChunkRenderPlan::positions`].
+    /// Loaded render data for the exact requested positions.
     pub chunks: Vec<ChunkData>,
 }
 
 /// Loads exactly the selected chunks, preserving holes and disconnected components.
+///
+/// This uses the canonical explicit-position world query and never expands the
+/// selection to its bounding rectangle.
 ///
 /// # Errors
 ///
@@ -97,14 +100,17 @@ where
     S: WorldStorageHandle,
 {
     let plan = ExactChunkRenderPlan::new(selection);
-    let chunks = world.load_chunks_exact_blocking(plan.selection(), options)?;
+    let (chunks, _) = world.query_chunk_data_with_stats_blocking(
+        plan.positions().iter().copied(),
+        options,
+    )?;
     Ok(ExactChunkRenderData { plan, chunks })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bedrock_world::model::{ChunkPos, Dimension};
+    use bedrock_world::chunk::{ChunkPos, Dimension};
 
     fn chunk(x: i32, z: i32) -> ChunkPos {
         ChunkPos {
@@ -116,7 +122,8 @@ mod tests {
 
     #[test]
     fn plan_preserves_disconnected_selection() {
-        let selection = ExactChunkSelection::from_positions([chunk(0, 0), chunk(2, 0)]);
+        let selection = ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)])
+            .expect("exact selection");
         let plan = ExactChunkRenderPlan::new(selection);
 
         assert_eq!(plan.chunk_count(), 2);

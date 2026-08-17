@@ -83,6 +83,12 @@ pub(super) use crate::utils::file_ops;
 pub(super) use crate::utils::file_picker::{
     pick_file_path_with_filter, pick_save_path_with_filter,
 };
+
+// Make the map-viewer's private current-domain import surface available to source units that still
+// contain qualified `bedrock_world::...` spellings. This is not a bedrock-world public compatibility
+// API: the library continues to expose only its responsibility modules.
+pub(super) use super::bedrock_world_domains as bedrock_world;
+
 pub(super) use bedrock_render::{
     AtlasRenderOptions, BlockBoundaryRenderOptions, BlockVolumeRenderOptions, ChunkBounds,
     ChunkPos, ChunkRegion, DEFAULT_PALETTE_VERSION, DecodedTileImage, Dimension, ImageFormat,
@@ -103,14 +109,19 @@ pub(super) use bedrock_render::{
     },
     load_or_build_tile_occupancy_index_blocking,
 };
-pub(super) use bedrock_world::{
-    ActorDigestKey, BedrockWorld, BlockPos, CancelFlag, ChunkDetail, ChunkKey, ChunkRecord,
-    ChunkRecordTag, ChunkVersion, ParsedBlockEntity, PlayerData, PlayerId, RegionOverlayQuery,
-    RegionOverlayQueryOptions, SelectionStats, SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize,
-    VillageOverlay, VillageOverlayIndex, WriteGuard, delete_chunks_blocking, is_slime_chunk,
-    query_block_tip_blocking, query_chunk_detail_blocking,
-    query_region_overlays_blocking_with_control, query_selection_stats_blocking,
-    query_slime_chunk_windows,
+pub(super) use ::bedrock_world::{
+    block::{BlockPos, ParsedBlockEntity},
+    chunk::{ChunkKey, ChunkRecord, ChunkRecordTag, ChunkVersion},
+    entity::ActorDigestKey,
+    player::{PlayerData, PlayerId},
+    query::{
+        ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
+        SlimeChunkBounds, SlimeChunkWindow, SlimeWindowSize, VillageOverlay, VillageOverlayIndex,
+        WriteGuard, delete_chunks_blocking, is_slime_chunk, query_block_tip_blocking,
+        query_chunk_detail_blocking, query_region_overlays_blocking_with_control,
+        query_selection_stats_blocking, query_slime_chunk_windows,
+    },
+    world::{BedrockWorld, CancelFlag},
 };
 pub(super) use bytes::Bytes;
 pub(super) use futures::channel::mpsc::{UnboundedSender, unbounded};

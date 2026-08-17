@@ -1,22 +1,47 @@
-mod world_07 {
-    pub use ::bedrock_world::codec::*;
-    pub use ::bedrock_world::model::*;
-    pub use ::bedrock_world::storage::*;
-    pub use ::bedrock_world::world::*;
+// Internal renderer import surface assembled exclusively from the current bedrock-world domain API.
+// It is private to bedrock-render and does not preserve any removed codec/model/storage namespaces.
+mod bedrock_api {
+    pub use ::bedrock_world::biome::ParsedBiomeStorage;
+    pub use ::bedrock_world::block::{BlockPos, BlockState, block_storage_index};
+    pub use ::bedrock_world::chunk::{
+        ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN,
+        LEGACY_TERRAIN_BLOCK_COUNT, LEGACY_TERRAIN_VALUE_LEN, LegacyBiomeSample, SubChunk,
+        SubChunkDecodeMode,
+    };
+    pub use ::bedrock_world::database::{
+        BedrockDbKey, BedrockLevelDbStorage, MemoryStorage, PartitionedWorldStorage,
+        StorageCachePolicy, StoragePipelineOptions, StorageReadOptions, StorageScanMode,
+        StorageThreadingOptions, StorageVisitorControl, WorldStorage,
+    };
+    pub use ::bedrock_world::error::BedrockWorldErrorKind;
+    pub use ::bedrock_world::nbt::NbtTag;
+    pub use ::bedrock_world::world::{
+        BedrockWorld, BiomeDataRequirement, CancelFlag, ChunkBlockEntity, ChunkBounds, ChunkData,
+        ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats,
+        ExactSurfaceSubchunkPolicy, OpenOptions, SubchunkDataRequirement, TerrainColumnBiome,
+        TerrainColumnOverlay, TerrainColumnSample, TerrainColumnSamples, WorldChunkQueryRegion,
+        WorldChunkQueryRegionData, WorldChunkQueryRegionLoadOptions, WorldFormat,
+        WorldPipelineOptions, WorldScanOptions, WorldStorageHandle, WorldThreadingOptions,
+        terrain_surface_overlay_alpha,
+    };
+
+    pub mod nbt {
+        pub use ::bedrock_world::nbt::*;
+    }
 }
 
 mod cache {
-    use super::world_07 as bedrock_world;
+    use super::bedrock_api as bedrock_world;
     include!("renderer/cache.rs");
 }
 #[path = "renderer/gpu.rs"]
 mod gpu;
 mod occupancy {
-    use super::world_07 as bedrock_world;
+    use super::bedrock_api as bedrock_world;
     include!("renderer/occupancy.rs");
 }
 mod pipeline {
-    use super::world_07 as bedrock_world;
+    use super::bedrock_api as bedrock_world;
     include!("renderer/pipeline.rs");
 }
 
@@ -61,8 +86,8 @@ pub use cache::{
     world_cache_signature,
 };
 
-pub use bedrock_world::{
-    codec::NbtTag,
-    model::{ChunkPos, Dimension},
+pub use ::bedrock_world::{
+    chunk::{ChunkPos, Dimension},
+    nbt::NbtTag,
     world::ChunkBounds,
 };

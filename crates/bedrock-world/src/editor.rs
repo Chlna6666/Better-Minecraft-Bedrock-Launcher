@@ -10,7 +10,7 @@ pub use crate::mcstructure::{
     McStructurePlacement, McStructureRotation, McStructureWritePhase, McStructureWriteProgress,
     McStructureWriteResult,
 };
-pub use crate::query::write::{
+pub use crate::query::{
     WriteGuard, delete_chunk_positions_blocking, delete_chunks_blocking,
     write_chunk_record_nbt_blocking,
 };

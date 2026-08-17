@@ -29,7 +29,7 @@ pub enum BedrockRenderErrorKind {
 pub enum BedrockRenderError {
     /// Error propagated from `bedrock-world`.
     #[error("Bedrock world error: {0}")]
-    World(#[from] bedrock_world::BedrockWorldError),
+    World(#[from] bedrock_world::error::BedrockWorldError),
     /// Error propagated from `bedrock-leveldb`.
     #[error("Bedrock LevelDB error: {0}")]
     LevelDb(#[from] bedrock_leveldb::LevelDbError),
