@@ -1,4 +1,4 @@
-use crate::codec::NbtRef;
+use crate::nbt::NbtRef;
 use crate::error::{BedrockWorldError, Result};
 use std::borrow::Cow;
 
