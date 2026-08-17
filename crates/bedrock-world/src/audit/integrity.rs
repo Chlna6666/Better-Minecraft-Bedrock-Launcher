@@ -8,11 +8,11 @@ use crate::chunk::{
     BedrockDbKey, ChunkRecordTag, LegacyTerrain, SubChunkDecodeMode, SubChunkFormat,
     parse_subchunk_with_mode,
 };
-use crate::error::Result;
-use crate::level_dat::read_level_dat_document;
+use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::entity::parse_actor_digest_ids;
+use crate::error::{BedrockWorldError, Result};
+use crate::level::read_level_dat_document;
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt};
-use crate::parsed::parse_actor_digest_ids;
-use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::world::{BedrockWorld, WorldStorageHandle};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -555,16 +555,17 @@ where
             audit_world_integrity_blocking(&path, storage.storage(), options)
         })
         .await
-        .map_err(|error| crate::BedrockWorldError::Join(error.to_string()))?
+        .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::{ActorDigestKey, ActorUid};
-    use crate::level_dat::{LevelDatDocument, write_level_dat_document};
-    use crate::storage::MemoryStorage;
+    use crate::chunk::{ChunkPos, Dimension};
+    use crate::database::MemoryStorage;
+    use crate::entity::{ActorDigestKey, ActorUid};
+    use crate::level::{LevelDatDocument, write_level_dat_document};
     use bytes::Bytes;
     use indexmap::IndexMap;
     use std::fs;
@@ -572,10 +573,10 @@ mod tests {
     #[test]
     fn audit_detects_dangling_and_orphan_actors() {
         let storage = MemoryStorage::default();
-        let digest = ActorDigestKey::new(crate::ChunkPos {
+        let digest = ActorDigestKey::new(ChunkPos {
             x: 0,
             z: 0,
-            dimension: crate::Dimension::Overworld,
+            dimension: Dimension::Overworld,
         });
         storage
             .put(&digest.storage_key(), &42_i64.to_le_bytes())
