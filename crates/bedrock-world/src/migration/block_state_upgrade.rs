@@ -5,7 +5,7 @@
 //! deliberately separates *recognising* an old state from *rewriting* it: an older state without a
 //! matching rule remains unresolved instead of being silently stamped with the target version.
 
-use crate::chunk::BlockState;
+use crate::block::BlockState;
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use std::collections::{BTreeMap, BTreeSet};
@@ -225,11 +225,6 @@ impl BlockStateUpgrader {
 
     /// Upgrades one state and requires the resulting semantic permutation to be accepted by a
     /// caller-supplied authoritative palette validator.
-    ///
-    /// This closes an important safety gap in data-driven migrations: matching a rewrite rule proves
-    /// only that a transformation was requested, not that the resulting identifier/state assignment
-    /// actually exists in the target Bedrock palette. Servers and editors should use this method when
-    /// an authoritative version palette is available and only persist the returned state on success.
     pub fn upgrade_strict_with_validator<F>(
         &self,
         state: &BlockState,
