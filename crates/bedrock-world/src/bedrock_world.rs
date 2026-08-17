@@ -93,7 +93,9 @@ pub mod structure {
 pub mod nbt {
     pub use crate::codec::nbt::{
         NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter,
-        parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt, visit_nbt_events,
+        nbt_tags_equal_for_write, parse_consecutive_root_nbt, parse_root_nbt,
+        parse_root_nbt_with_consumed, serialize_root_nbt, validate_root_nbt_for_write,
+        visit_nbt_events,
     };
 }
 
