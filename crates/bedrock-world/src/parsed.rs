@@ -1,12 +1,11 @@
 //! Structured parsers layered above raw Bedrock world records.
 //!
-//! Parser implementation remains behind a compatibility facade while semantic models and parse-report
-//! policy have stable responsibility entry points under `parsed/`.
+//! Parsing, semantic models, and parse-report policy use responsibility-oriented child modules under
+//! `parsed/`.
 
-#[path = "parsed/parser.rs"]
-mod implementation;
+mod parser;
 
 pub mod model;
 pub mod report;
 
-pub use implementation::*;
+pub use parser::*;

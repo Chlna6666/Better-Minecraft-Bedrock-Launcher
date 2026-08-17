@@ -24,8 +24,6 @@
 //! ```
 #![warn(missing_docs)]
 
-#[path = "write_batch.rs"]
-mod batch;
 mod coding;
 mod db;
 /// Storage-engine error types.
@@ -34,8 +32,8 @@ mod manifest;
 mod options;
 mod table;
 mod wal;
+mod write_batch;
 
-pub use batch::{WriteBatch, WriteOp};
 pub use db::{
     Db, DbCacheStats, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport, Snapshot,
     ValueRef,
@@ -47,3 +45,4 @@ pub use options::{
     ScanProgress, ScanProgressSink, ThreadingOptions, VisitorControl, WriteOptions,
     MAX_LEVELDB_THREADS,
 };
+pub use write_batch::{WriteBatch, WriteOp};
