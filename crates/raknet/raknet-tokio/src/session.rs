@@ -4,7 +4,9 @@
 //! - 引擎状态由 `std::sync::Mutex` 保护，临界区内绝不 await；
 //! - 入站数据报由套接字接收任务调用 [`SessionShared::ingest`]；
 //! - 每会话一个 tick 任务负责 ACK 冲刷、重传与 keep-alive；
-//! - [`RakSession::send`] 短暂持锁打包后直接写套接字，无 actor 往返。
+//! - [`RakSession::send`] 短暂持锁打包后直接写套接字，无 actor 往返；
+//! - 需要并发收发时可把会话拆成 [`RakSendHandle`] 与 [`RakReceiver`]，发送不再
+//!   经过接收端所有权或额外异步锁。
 
 use bytes::Bytes;
 use raknet::config::RakSessionConfig;
@@ -228,13 +230,159 @@ impl SessionShared {
     }
 }
 
+async fn close_shared(shared: &SessionShared) -> Result<(), RakSessionError> {
+    if shared.is_closed() {
+        return Ok(());
+    }
+    match shared.close().await {
+        Ok(()) | Err(RakSessionError::Closed) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn close_shared_on_drop(shared: Arc<SessionShared>) {
+    if shared.is_closed() {
+        return;
+    }
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            let _ = close_shared(&shared).await;
+        });
+    } else {
+        shared.mark_closed();
+    }
+}
+
+/// 可克隆的发送侧句柄。
+///
+/// 只持有会话共享状态，不拥有入站 `Receiver`。因此它可以在另一个任务中并发发送，
+/// 不会与 [`RakReceiver::recv_bytes`] 争夺异步互斥锁。
+#[derive(Clone)]
+pub struct RakSendHandle {
+    shared: Arc<SessionShared>,
+}
+
+impl std::fmt::Debug for RakSendHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RakSendHandle")
+            .field("addr", &self.shared.addr)
+            .field("closed", &self.shared.is_closed())
+            .finish()
+    }
+}
+
+impl RakSendHandle {
+    /// 发送一条消息。
+    pub async fn send<T>(
+        &self,
+        buf: T,
+        reliability: RakReliability,
+        priority: RakPriority,
+    ) -> Result<(), RakSessionError>
+    where
+        T: Into<Box<[u8]>>,
+    {
+        let boxed: Box<[u8]> = buf.into();
+        self.send_bytes(Bytes::from(boxed.into_vec()), reliability, priority)
+            .await
+    }
+
+    /// 零拷贝发送。
+    pub async fn send_bytes(
+        &self,
+        payload: Bytes,
+        reliability: RakReliability,
+        priority: RakPriority,
+    ) -> Result<(), RakSessionError> {
+        self.shared
+            .send_payload(payload, reliability, priority)
+            .await
+    }
+
+    /// 通知对端断开并关闭会话。重复关闭按幂等成功处理。
+    pub async fn close(&self) -> Result<(), RakSessionError> {
+        close_shared(&self.shared).await
+    }
+
+    pub async fn is_closed(&self) -> bool {
+        self.shared.is_closed()
+    }
+
+    pub fn get_addr(&self) -> SocketAddr {
+        self.shared.addr
+    }
+
+    /// 当前平滑 RTT 估计。
+    pub fn rtt(&self) -> Duration {
+        self.shared.rtt()
+    }
+}
+
+/// 独占的接收侧句柄。
+///
+/// 一个会话只能有一个接收者；发送侧可通过 [`RakSendHandle`] 任意克隆并发使用。
+pub struct RakReceiver {
+    shared: Arc<SessionShared>,
+    incoming: mpsc::UnboundedReceiver<Bytes>,
+}
+
+impl std::fmt::Debug for RakReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RakReceiver")
+            .field("addr", &self.shared.addr)
+            .field("closed", &self.shared.is_closed())
+            .finish()
+    }
+}
+
+impl RakReceiver {
+    /// 接收一条完整消息。cancel-safe：可放心用于 `tokio::select!`。
+    pub async fn recv<T>(&mut self) -> Result<T, RakSessionError>
+    where
+        Box<[u8]>: Into<T>,
+    {
+        match self.incoming.recv().await {
+            Some(bytes) => Ok(Box::<[u8]>::from(&bytes[..]).into()),
+            None => Err(RakSessionError::Closed),
+        }
+    }
+
+    /// 零拷贝接收：直接返回入站数据报的切片视图。
+    pub async fn recv_bytes(&mut self) -> Result<Bytes, RakSessionError> {
+        self.incoming.recv().await.ok_or(RakSessionError::Closed)
+    }
+
+    pub async fn close(&self) -> Result<(), RakSessionError> {
+        close_shared(&self.shared).await
+    }
+
+    pub async fn is_closed(&self) -> bool {
+        self.shared.is_closed()
+    }
+
+    pub fn get_addr(&self) -> SocketAddr {
+        self.shared.addr
+    }
+
+    pub fn rtt(&self) -> Duration {
+        self.shared.rtt()
+    }
+}
+
+impl Drop for RakReceiver {
+    fn drop(&mut self) {
+        close_shared_on_drop(self.shared.clone());
+    }
+}
+
 /// 已建立的 RakNet 会话句柄。
 ///
 /// [`RakSession::recv`] 需要 `&mut self`（独占接收端），
 /// [`RakSession::send`] / [`RakSession::close`] 只需 `&self`，可并发调用。
+/// 如果上层需要把接收循环与发送任务彻底解耦，可使用 [`RakSession::into_split`]。
 pub struct RakSession {
     shared: Arc<SessionShared>,
-    incoming: mpsc::UnboundedReceiver<Bytes>,
+    incoming: Option<mpsc::UnboundedReceiver<Bytes>>,
 }
 
 impl std::fmt::Debug for RakSession {
@@ -251,7 +399,37 @@ impl RakSession {
         shared: Arc<SessionShared>,
         incoming: mpsc::UnboundedReceiver<Bytes>,
     ) -> Self {
-        Self { shared, incoming }
+        Self {
+            shared,
+            incoming: Some(incoming),
+        }
+    }
+
+    fn incoming_mut(&mut self) -> Result<&mut mpsc::UnboundedReceiver<Bytes>, RakSessionError> {
+        self.incoming.as_mut().ok_or(RakSessionError::Closed)
+    }
+
+    /// 创建一个可克隆的发送侧句柄，原会话仍保留接收所有权。
+    pub fn send_handle(&self) -> RakSendHandle {
+        RakSendHandle {
+            shared: self.shared.clone(),
+        }
+    }
+
+    /// 把会话拆成可克隆发送端与独占接收端。
+    ///
+    /// 拆分后不再保留 `RakSession` 本体，因此没有额外代理任务或 channel 转发。
+    pub fn into_split(mut self) -> (RakSendHandle, RakReceiver) {
+        let incoming = self
+            .incoming
+            .take()
+            .expect("RakSession receiver must exist before into_split");
+        let sender = self.send_handle();
+        let receiver = RakReceiver {
+            shared: self.shared.clone(),
+            incoming,
+        };
+        (sender, receiver)
     }
 
     /// 接收一条完整消息。cancel-safe：可放心用于 `tokio::select!`。
@@ -259,7 +437,7 @@ impl RakSession {
     where
         Box<[u8]>: Into<T>,
     {
-        match self.incoming.recv().await {
+        match self.incoming_mut()?.recv().await {
             Some(bytes) => Ok(Box::<[u8]>::from(&bytes[..]).into()),
             None => Err(RakSessionError::Closed),
         }
@@ -267,7 +445,10 @@ impl RakSession {
 
     /// 零拷贝接收：直接返回入站数据报的切片视图。
     pub async fn recv_bytes(&mut self) -> Result<Bytes, RakSessionError> {
-        self.incoming.recv().await.ok_or(RakSessionError::Closed)
+        self.incoming_mut()?
+            .recv()
+            .await
+            .ok_or(RakSessionError::Closed)
     }
 
     /// 发送一条消息。
@@ -297,7 +478,7 @@ impl RakSession {
             .await
     }
 
-    /// 通知对端断开并关闭会话。重复关闭返回 `Err(Closed)`。
+    /// 通知对端断开并关闭会话。重复关闭返回 `Err(Closed)`，保持旧 API 语义。
     pub async fn close(&self) -> Result<(), RakSessionError> {
         self.shared.close().await
     }
@@ -318,17 +499,10 @@ impl RakSession {
 
 impl Drop for RakSession {
     fn drop(&mut self) {
-        if self.shared.is_closed() {
+        // `into_split()` 会 take 掉接收端；这时关闭职责已经移交给 RakReceiver。
+        if self.incoming.is_none() {
             return;
         }
-        // 用户未显式 close 就丢弃句柄：尽力通知对端后清理。
-        let shared = self.shared.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let _ = shared.close().await;
-            });
-        } else {
-            shared.mark_closed();
-        }
+        close_shared_on_drop(self.shared.clone());
     }
 }
