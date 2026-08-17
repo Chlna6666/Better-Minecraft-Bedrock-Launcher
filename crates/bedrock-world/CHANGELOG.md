@@ -2,33 +2,65 @@
 
 All notable changes to `bedrock-world` are tracked here.
 
+## 0.6.0 - 2026-08-17
+
+### Breaking Changes
+
+- `BlockEditOptions` now carries an explicit `WritePolicy`; struct literals must set it or use
+  `..BlockEditOptions::default()`.
+- The optional storage backend now requires `bedrock-leveldb` 0.6.0, whose Minecraft world-semantic
+  helpers were intentionally removed. All chunk/key/terrain semantics are owned by `bedrock-world`.
+
+### Added
+
+- Added capability-based historical-format classification through `CompatibilityLevel`,
+  `WorldCapabilities`, `ChunkCapabilities`, `SubChunkCodecKind`, and `ActorStorageModel`.
+- Added a single-pass `scan_world_compatibility_blocking` report that detects mixed historical and
+  modern chunk records, legacy inline entities, modern actor digest/prefix storage, unknown chunk
+  tags and future subchunk versions from the actual database population.
+- Added explicit `WritePolicy::{Preserve,Migrate,Refuse}` semantics.
+- Added classification for legacy v0, paletted v1, legacy v2-v7, paletted v8/v9, and unknown future
+  subchunk versions while retaining raw unsupported payloads.
+- Added an explicit pre-LevelDB Pocket `chunks.dat` importer that migrates the container into
+  `LegacyTerrain` records but deliberately reports that semantic chunk migration is still required.
+- Added a cross-version local fixture matrix covering Pocket/early Bedrock, legacy LevelDB terrain,
+  extended-height and actor-storage transitions, modern worlds, and synthetic future-format records.
+- Added strict block-state upgrade validation hooks so a migration can be checked against an
+  authoritative target palette before it is accepted for writing.
+
+### Changed
+
+- World compatibility is now derived from record/chunk capabilities instead of assuming one global
+  `StorageVersion` describes every record in a partially upgraded world.
+- Typed block edits are exact-format writers: historical chunks require an explicit migration first,
+  while future/unknown formats are always protected from destructive structured rewrites.
+- Ordinary block edits preserve an existing `FinalizedState` record instead of forcing a guessed
+  value. Generation/finalization state is owned by world generation and migration flows.
+- `bedrock-world` is explicitly the owner of Minecraft semantics above the raw `bedrock-leveldb`
+  storage layer.
+
+### Safety
+
+- Unknown future records remain raw-preserved and are not considered safe for destructive writes.
+- Legacy formats require an explicit migration path; `Preserve` mode only permits exact
+  round-trippable chunk formats.
+- Existing `level.dat` `RandomSeed` values remain map-owned metadata and are never overwritten by a
+  caller-provided candidate seed.
+- Future block-state storage versions are preserved and rejected by strict downgrade/write paths.
+
 ## 0.5.3 - 2026-08-17
 
 ### Added
 
-- Added capability-based historical-format classification through `CompatibilityLevel`, `WorldCapabilities`, `ChunkCapabilities`, `SubChunkCodecKind`, and `ActorStorageModel`.
-- Added explicit `WritePolicy::{Preserve,Migrate,Refuse}` semantics so callers do not accidentally rewrite legacy or unknown future data.
-- Added compatibility classification for legacy v0, paletted v1, legacy v2-v7, paletted v8/v9, and unknown future subchunk versions while preserving raw unsupported payloads.
-- Added a cross-version local fixture matrix covering Pocket/early Bedrock, legacy LevelDB terrain, extended-height and actor-storage transitions, modern worlds, and synthetic future-format records.
-- Added strict block-state upgrade validation hooks so a migration may be checked against an authoritative target palette before it is accepted for writing.
-
-### Changed
-
-- `bedrock-world` is now explicitly described as a multi-version Bedrock world library rather than a current-version-only parser.
-- World compatibility is treated as record/chunk capability data instead of assuming that a single world-level version describes every record in partially upgraded worlds.
-- Future block-state versions and future subchunk versions are classified as read/preserve-only rather than being silently treated as current data.
-
-### Safety
-
-- Unknown future records remain raw-preserved and are not considered safe for destructive structured writes.
-- Legacy formats require an explicit migration policy before conversion; preserve mode only permits exact round-trippable formats.
+- Added the initial historical compatibility/capability API and fixture planning that was consolidated
+  into the 0.6.0 breaking boundary release.
 
 ## 0.5.2 - 2026-08-17
 
 ### Added
 
 - Added a read-only whole-world integrity auditor covering `level.dat`, chunk/subchunk parseability, palette block-state versions, player/entity/block-entity NBT, and `digp` ↔ `actorprefix` ownership relationships.
-- Added typed modern paletted-chunk block editing with chunk-grouped writes, primary/secondary block layers, block-entity replacement/removal, heightmap updates, FinalizedState updates, and bounded transactional commit batches.
+- Added typed modern paletted-chunk block editing with chunk-grouped writes, primary/secondary block layers, block-entity replacement/removal, heightmap updates, and bounded transactional commit batches.
 - Added a data-driven `BlockStateUpgrader` with identifier/state rename/remove/set/value-rewrite rules and strict unresolved-state handling.
 
 ### Changed
