@@ -1,23 +1,28 @@
-//! Tools for inspecting and editing Minecraft Bedrock `LevelDB` worlds.
+//! Tools for inspecting, migrating and editing Minecraft Bedrock worlds.
 //!
-//! `bedrock-world` focuses on world-level concepts layered above
-//! `bedrock-leveldb`: `level.dat`, little-endian Bedrock NBT, chunk and
-//! subchunk decoding, player records, entity summaries, biome data, map/village
-//! records, and scan-oriented APIs for launchers or offline tools.
+//! `bedrock-world` owns Minecraft world semantics above the raw storage engine: `level.dat`, Bedrock
+//! NBT, chunk/subchunk formats, BlockState, actors, block entities, players, maps, villages, historical
+//! codecs, migrations, compatibility auditing and typed edits. Raw Mojang LevelDB mechanics remain in
+//! `bedrock-leveldb`.
 //!
-//! The default APIs are deliberately lazy. Opening a [`BedrockWorld`] does not
-//! parse the full database; callers choose targeted operations such as
-//! [`read_level_dat`], [`BedrockWorld::list_players_blocking`],
-//! [`BedrockWorld::parse_chunk_blocking`], or [`BedrockWorld::scan_items_blocking`].
-//! Async wrappers use `tokio::task::spawn_blocking` so `LevelDB` and NBT work does
-//! not run on foreground async tasks.
+//! # Public API layers
 //!
-//! # Features
+//! New consumers should prefer the grouped facades:
 //!
-//! docs.rs builds this crate with all features enabled. Default builds enable
-//! `async` and the `bedrock-leveldb` backend. Disable default features for
-//! pure parsing, in-memory storage, `level.dat`, and NBT workflows that should
-//! not depend on a database backend.
+//! - [`model`] — semantic world/chunk/block/entity/player data types.
+//! - [`codec`] — Bedrock NBT, chunk/subchunk and structure codecs.
+//! - [`migration`] — historical formats, block-state migration graphs and importers.
+//! - [`edit`] — typed guarded world modifications.
+//! - [`audit`] — compatibility and integrity inspection.
+//! - [`storage`] — raw world-storage abstraction and the `bedrock-leveldb` adapter.
+//!
+//! The historical root-level exports remain during the 0.6 transition. Internally, code should move
+//! toward these layers so model types do not depend on editors/auditors and storage never depends on
+//! Minecraft gameplay policy.
+//!
+//! The default APIs are deliberately lazy. Opening a [`BedrockWorld`] does not parse the full database;
+//! callers choose targeted operations. Async wrappers use `tokio::task::spawn_blocking` so LevelDB/NBT
+//! work does not execute on foreground async tasks.
 
 #![deny(missing_docs)]
 #![allow(
@@ -80,6 +85,93 @@ pub mod surface;
 /// High-level lazy world handle and scan/render helpers.
 pub mod world;
 
+/// Semantic Minecraft world model types with no editor or migration policy attached.
+pub mod model {
+    pub use crate::chunk::{
+        ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPalette, BlockPos, BlockState,
+        Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension, EntityData,
+        GlobalRecordKind, LegacyBiomeSample, LegacySubChunk, LegacyTerrain, MapRecordId,
+        ParsedVillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat, VillageRecordKind,
+    };
+    pub use crate::parsed::{
+        ActorRecord, ActorResolution, ActorSource, Biome2d, Biome3d, BlockEntityRecord,
+        HardcodedSpawnAreaKind, HeightMap2d, ItemStack, MapKnownFields, MapPixels,
+        ParsedActorDigest, ParsedBiomeData, ParsedBiomeStorage, ParsedBlockEntity, ParsedChunkData,
+        ParsedChunkRecord, ParsedChunkRecordValue, ParsedDbEntry, ParsedDbValue, ParsedEntity,
+        ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData, ParsedPlayer, ParsedVillageData,
+        ParsedWorld,
+    };
+    pub use crate::player::{PlayerData, PlayerId};
+}
+
+/// Bedrock binary/NBT/chunk/structure codecs and decode policies.
+pub mod codec {
+    pub use crate::chunk::{
+        LEGACY_SUBCHUNK_BLOCK_COUNT, LEGACY_SUBCHUNK_MIN_VALUE_LEN,
+        LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_BLOCK_COUNT,
+        LEGACY_TERRAIN_VALUE_LEN, block_storage_index,
+    };
+    pub use crate::mcstructure::{
+        McStructureBlock, McStructureFile, McStructurePaletteEntry, McStructurePlacement,
+        McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
+    };
+    pub use crate::nbt::{
+        NbtEvent, NbtReader, NbtRef, NbtTag, NbtValue, NbtView, NbtWriter, visit_nbt_events,
+    };
+    pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
+}
+
+/// Historical format conversion, BlockState schema migration and legacy world import.
+pub mod migration {
+    pub use crate::block_state_graph::{BlockStateMigrationGraph, BlockStateMigrationStep};
+    pub use crate::block_state_upgrade::{
+        BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
+        BlockStateValueRewrite,
+    };
+    pub use crate::historical_chunk::{
+        LegacyBlockMapping, LegacyBlockReference, LegacyBlockResolver, LegacyBlockSource,
+        ResolvedHistoricalSubChunk, ResolvedLegacyTerrain, resolve_legacy_subchunk,
+        resolve_legacy_terrain,
+    };
+    pub use crate::legacy_import::{
+        PocketChunksDatImportOptions, PocketChunksDatImportReport,
+        import_pocket_chunks_dat_records_blocking,
+    };
+}
+
+/// Typed, policy-guarded world editing and structure placement APIs.
+pub mod edit {
+    pub use crate::block_edit::{
+        BlockEdit, BlockEditOptions, BlockEditResult, BlockEntityEdit, BlockStorageLayer,
+        apply_block_edits_blocking, set_block_state_blocking,
+    };
+    pub use crate::mcstructure::{
+        McStructurePlacement, McStructureRotation, McStructureWritePhase, McStructureWriteProgress,
+        McStructureWriteResult,
+    };
+    pub use crate::query::{
+        WriteGuard, delete_chunk_positions_blocking, delete_chunks_blocking,
+        write_chunk_record_nbt_blocking,
+    };
+}
+
+/// Compatibility classification, whole-world capability scans and integrity auditing.
+pub mod audit {
+    pub use crate::compatibility::{
+        ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind,
+        WorldCapabilities, WritePolicy,
+    };
+    pub use crate::compatibility_scan::{
+        ChunkCompatibilitySummary, WorldCompatibilityReport, scan_world_compatibility_blocking,
+    };
+    pub use crate::integrity::{
+        WorldIntegrityIssue, WorldIntegrityIssueKind, WorldIntegrityOptions, WorldIntegrityReport,
+        WorldIntegritySeverity, WorldIntegrityStatus, audit_world_integrity_blocking,
+    };
+}
+
+// Transitional root facade for existing BMCBL/Calcite consumers. New code should prefer the grouped
+// modules above; root exports can be reduced after internal callers have migrated.
 pub use block_edit::{
     BlockEdit, BlockEditOptions, BlockEditResult, BlockEntityEdit, BlockStorageLayer,
     apply_block_edits_blocking, set_block_state_blocking,
