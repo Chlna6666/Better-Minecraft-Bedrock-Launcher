@@ -138,14 +138,6 @@ mod storage {
     pub(crate) use crate::database::*;
 }
 
-mod audit {
-    pub(crate) use crate::integrity::*;
-}
-
-mod migration {
-    pub(crate) use crate::upgrade::*;
-}
-
 mod codec {
     pub(crate) use crate::chunk::legacy::{
         LEGACY_SUBCHUNK_BLOCK_COUNT, LEGACY_SUBCHUNK_MIN_VALUE_LEN,
