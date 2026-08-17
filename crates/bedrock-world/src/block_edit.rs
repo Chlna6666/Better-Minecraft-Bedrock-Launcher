@@ -9,8 +9,9 @@ use crate::nbt::NbtTag;
 use crate::parsed::encode_consecutive_roots;
 use crate::{
     BedrockWorld, BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockPos, BlockState, Chunk,
-    ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension, Result,
-    SubChunkFormat, WorldStorageHandle, WriteGuard, block_storage_index,
+    ChunkCapabilities, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, CompatibilityLevel,
+    Dimension, Result, SubChunkFormat, WorldStorageHandle, WriteGuard, WritePolicy,
+    block_storage_index,
 };
 use bytes::Bytes;
 use indexmap::IndexMap;
@@ -76,6 +77,9 @@ pub struct BlockEditOptions {
     pub commit_batch_chunks: usize,
     /// Delete a subchunk record when both supported layers become entirely air.
     pub compact_empty_subchunks: bool,
+    /// Historical-format write policy. Typed editing is exact-format only; `Migrate` requires callers
+    /// to run an explicit migration before invoking this writer on a legacy chunk.
+    pub write_policy: WritePolicy,
 }
 
 impl Default for BlockEditOptions {
@@ -83,6 +87,7 @@ impl Default for BlockEditOptions {
         Self {
             commit_batch_chunks: DEFAULT_COMMIT_BATCH_CHUNKS,
             compact_empty_subchunks: true,
+            write_policy: WritePolicy::Preserve,
         }
     }
 }
@@ -204,6 +209,11 @@ where
             commits: 0,
         });
     }
+    if options.write_policy == WritePolicy::Refuse {
+        return Err(BedrockWorldError::Validation(
+            "typed block editing is disabled by WritePolicy::Refuse".to_string(),
+        ));
+    }
     if options.commit_batch_chunks == 0 {
         return Err(BedrockWorldError::Validation(
             "commit_batch_chunks must be greater than zero".to_string(),
@@ -245,6 +255,7 @@ where
                 "typed block editing refuses to synthesize missing chunk {chunk_pos:?}; create/generate the chunk first"
             )));
         }
+        validate_chunk_write_compatibility(chunk_pos, &existing.records, options.write_policy)?;
         let fallback_state_version = chunk_edits
             .iter()
             .find_map(|edit| edit.state.version)
@@ -312,10 +323,8 @@ where
                 active.put_raw_record(&key, subchunk.encode()?);
             }
         }
-        active.put_raw_record(
-            &ChunkKey::new(chunk_pos, ChunkRecordTag::FinalizedState),
-            Bytes::copy_from_slice(&2_i32.to_le_bytes()),
-        );
+        // FinalizedState is world-generation metadata. Ordinary block edits preserve the existing
+        // record exactly instead of forcing a guessed generation state.
         apply_block_entity_edits(world, active, chunk_pos, &block_entity_edits)?;
         affected_chunks.insert(chunk_pos);
 
@@ -341,6 +350,35 @@ where
         affected_chunks,
         commits,
     })
+}
+
+fn validate_chunk_write_compatibility(
+    chunk: ChunkPos,
+    records: &[ChunkRecord],
+    policy: WritePolicy,
+) -> Result<()> {
+    let capabilities = ChunkCapabilities::inspect(records);
+    match capabilities.compatibility {
+        CompatibilityLevel::Exact => Ok(()),
+        CompatibilityLevel::UnsupportedFuture => Err(BedrockWorldError::UnsupportedChunkFormat(
+            format!(
+                "chunk {chunk:?} contains a future/unknown storage format; raw data is preserved and structured writes are refused"
+            ),
+        )),
+        CompatibilityLevel::Corrupt => Err(BedrockWorldError::CorruptWorld(format!(
+            "chunk {chunk:?} is not safe to rewrite"
+        ))),
+        CompatibilityLevel::ReadCompatible | CompatibilityLevel::MigrationRequired => match policy {
+            WritePolicy::Migrate => Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+                "chunk {chunk:?} requires an explicit historical migration before typed block editing"
+            ))),
+            WritePolicy::Preserve | WritePolicy::Refuse => Err(
+                BedrockWorldError::UnsupportedChunkFormat(format!(
+                    "chunk {chunk:?} is historical/read-compatible but not exact; preserve mode refuses format conversion"
+                )),
+            ),
+        },
+    }
 }
 
 /// Convenience wrapper for replacing one primary-layer block.
@@ -724,5 +762,10 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(parsed.block_state_at(1, 2, 3), Some(&stone));
+    }
+
+    #[test]
+    fn block_edit_default_policy_is_preserve() {
+        assert_eq!(BlockEditOptions::default().write_policy, WritePolicy::Preserve);
     }
 }
