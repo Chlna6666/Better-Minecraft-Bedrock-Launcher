@@ -1,14 +1,13 @@
 //! Exact non-rectangular chunk selection primitives and queries.
 
-use crate::error::BedrockWorldError;
+use crate::chunk::{ChunkPos, Dimension};
+use crate::database::{CancelFlag, MemoryStorage, WorldStorage};
+use crate::error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 use crate::query::{
-    ChunkRecordQuery, RegionOverlayQueryOptions, SelectionStats, SlimeChunkBounds,
-    VillageOverlayIndex, is_slime_chunk, query_chunk_records_many_blocking,
+    ChunkRecordQuery, ParsedChunkRecordValue, RegionOverlayQueryOptions, SelectionStats,
+    SlimeChunkBounds, VillageOverlayIndex, is_slime_chunk, query_chunk_records_many_blocking,
 };
-use crate::{
-    BedrockWorld, CancelFlag, ChunkPos, Dimension, ParsedChunkRecordValue, Result,
-    WorldStorageHandle,
-};
+use crate::world::{BedrockWorld, OpenOptions, WorldStorageHandle};
 use std::collections::BTreeSet;
 
 /// A validated, non-empty, exact set of chunks from one Bedrock dimension.
@@ -72,9 +71,6 @@ impl ExactChunkSelection {
     }
 
     /// Returns whether the exact selection is empty.
-    ///
-    /// A constructed `ExactChunkSelection` is never empty; this method is
-    /// provided for collection-like API symmetry.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
@@ -100,9 +96,6 @@ impl ExactChunkSelection {
     }
 
     /// Returns the minimal bounding rectangle around the exact selection.
-    ///
-    /// The returned bounds must not be used as membership information for a
-    /// non-rectangular selection.
     #[must_use]
     pub fn bounds(&self) -> SlimeChunkBounds {
         let first = *self
@@ -135,8 +128,6 @@ impl ExactChunkSelection {
     }
 
     /// Returns a new selection containing this selection plus the supplied chunks.
-    ///
-    /// The added positions must use the same dimension as the existing selection.
     pub fn union<I>(&self, positions: I) -> Result<Self>
     where
         I: IntoIterator<Item = ChunkPos>,
@@ -176,9 +167,6 @@ impl ExactChunkSelection {
     }
 
     /// Decomposes the exact set into fully-selected rectangles.
-    ///
-    /// The rectangles never cover a chunk outside this selection. This is useful
-    /// when adapting older rectangle-only APIs without filling holes.
     #[must_use]
     pub fn rectangle_cover(&self) -> Vec<SlimeChunkBounds> {
         let mut remaining = self
@@ -233,9 +221,6 @@ impl ExactChunkSelection {
 }
 
 /// Rasterizes a chunk-grid line including both endpoints.
-///
-/// This is suitable for pointer-drag selection because skipped mouse events are
-/// filled without converting the stroke into a bounding rectangle.
 pub fn rasterize_chunk_line(start: ChunkPos, end: ChunkPos) -> Result<Vec<ChunkPos>> {
     if start.dimension != end.dimension {
         return Err(BedrockWorldError::Validation(
@@ -386,10 +371,6 @@ where
 }
 
 /// Queries aggregate statistics for an arbitrary set of chunk positions.
-///
-/// This compatibility helper accepts raw positions and delegates to
-/// [`query_selection_stats_exact_blocking`]. An empty input returns default
-/// statistics.
 pub fn query_selection_stats_chunks_blocking<S, I>(
     world: &BedrockWorld<S>,
     positions: I,
@@ -421,7 +402,6 @@ fn capped_add(current: usize, additional: usize, limit: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemoryStorage, OpenOptions};
     use std::sync::Arc;
 
     fn chunk(x: i32, z: i32) -> ChunkPos {
@@ -473,7 +453,7 @@ mod tests {
 
     #[test]
     fn exact_stats_do_not_fill_bounding_rectangle() {
-        let storage = Arc::new(MemoryStorage::default()) as Arc<dyn crate::WorldStorage>;
+        let storage = Arc::new(MemoryStorage::default()) as Arc<dyn WorldStorage>;
         let world = BedrockWorld::from_storage("memory", storage, OpenOptions::default());
         let selection =
             ExactChunkSelection::new([chunk(0, 0), chunk(2, 0)]).expect("exact selection");
@@ -509,6 +489,6 @@ mod tests {
         ])
         .expect_err("mixed dimensions must fail");
 
-        assert_eq!(error.kind(), crate::BedrockWorldErrorKind::Validation);
+        assert_eq!(error.kind(), BedrockWorldErrorKind::Validation);
     }
 }
