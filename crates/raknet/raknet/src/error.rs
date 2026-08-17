@@ -20,6 +20,10 @@ pub enum RakCodecError {
 pub enum RakSessionError {
     #[error("会话已关闭")]
     Closed,
+    #[error("对端主动断开会话")]
+    PeerDisconnected,
+    #[error("RakNet 链路已失效")]
+    Dead,
     #[error("消息过大：{size} 字节，上限 {max}")]
     TooLarge { size: usize, max: usize },
     #[error("发送队列已满（超过 {max} 字节）")]
