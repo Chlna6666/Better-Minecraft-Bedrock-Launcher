@@ -35,11 +35,9 @@ mod selection_query;
 #[path = "model/surface.rs"]
 mod surface;
 
-// Internal implementation groupings. These are deliberately private in 0.7;
-// consumers use Bedrock-domain modules below.
+// Internal implementation groupings that are still being split into game-data domains.
 mod model;
 mod codec;
-mod edit;
 
 /// Blocks, block states, palettes and block-entity data.
 pub mod block {
@@ -112,9 +110,7 @@ pub mod upgrade;
 pub mod integrity;
 
 /// Typed policy-guarded Bedrock world editing.
-pub mod editor {
-    pub use crate::edit::*;
-}
+pub mod editor;
 
 /// Read/query APIs for maps, regions and selections.
 pub mod query;
