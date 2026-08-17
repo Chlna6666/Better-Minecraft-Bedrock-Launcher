@@ -3,6 +3,7 @@ use crate::coding::{
 };
 use crate::error::{LevelDbError, Result};
 use bytes::Bytes;
+use std::collections::HashSet;
 
 /// One operation inside a [`WriteBatch`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,15 @@ pub enum WriteOp {
         /// Raw key bytes to delete.
         key: Bytes,
     },
+}
+
+impl WriteOp {
+    #[must_use]
+    fn key(&self) -> &Bytes {
+        match self {
+            Self::Put { key, .. } | Self::Delete { key } => key,
+        }
+    }
 }
 
 /// LevelDB-compatible write batch payload used by the WAL overlay.
@@ -67,6 +77,25 @@ impl WriteBatch {
         self.ops.is_empty()
     }
 
+    /// Returns an upper-bound-oriented encoded payload size estimate.
+    ///
+    /// The result includes the 12-byte batch header, operation tags, key/value bytes and a
+    /// conservative five-byte varint allowance for each length-prefixed slice. It is intended for
+    /// queue/backpressure decisions and capacity reservation, not as a replacement for [`Self::encode`].
+    #[must_use]
+    pub fn encoded_len_hint(&self) -> usize {
+        self.ops.iter().fold(12usize, |total, op| match op {
+            WriteOp::Put { key, value } => total
+                .saturating_add(1 + 5)
+                .saturating_add(key.len())
+                .saturating_add(5)
+                .saturating_add(value.len()),
+            WriteOp::Delete { key } => total
+                .saturating_add(1 + 5)
+                .saturating_add(key.len()),
+        })
+    }
+
     /// Adds a put operation.
     pub fn put(&mut self, key: impl Into<Bytes>, value: impl Into<Bytes>) {
         self.ops.push(WriteOp::Put {
@@ -80,6 +109,31 @@ impl WriteBatch {
         self.ops.push(WriteOp::Delete { key: key.into() });
     }
 
+    /// Removes superseded writes to the same key using LevelDB's last-write-wins semantics.
+    ///
+    /// The final operation for every key is retained, and retained operations keep their relative
+    /// order from the original batch. This is useful for map-editor transactions where the same
+    /// chunk/subchunk record may be updated several times before commit: compacting avoids redundant
+    /// WAL and memtable traffic without changing the visible result of the batch.
+    ///
+    /// Returns the number of removed operations.
+    pub fn compact_last_write_wins(&mut self) -> usize {
+        if self.ops.len() < 2 {
+            return 0;
+        }
+        let original_len = self.ops.len();
+        let mut seen = HashSet::<Bytes>::with_capacity(self.ops.len());
+        let mut retained = Vec::with_capacity(self.ops.len());
+        for op in self.ops.drain(..).rev() {
+            if seen.insert(op.key().clone()) {
+                retained.push(op);
+            }
+        }
+        retained.reverse();
+        self.ops = retained;
+        original_len.saturating_sub(self.ops.len())
+    }
+
     /// Encodes this batch into the `LevelDB` write batch wire format.
     ///
     /// # Errors
@@ -90,7 +144,7 @@ impl WriteBatch {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let op_count = u32::try_from(self.ops.len())
             .map_err(|_| LevelDbError::invalid_argument("batch is too large".to_string()))?;
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(self.encoded_len_hint());
         out.extend_from_slice(&self.sequence.to_le_bytes());
         out.extend_from_slice(&op_count.to_le_bytes());
         for op in &self.ops {
@@ -178,5 +232,38 @@ mod tests {
         let encoded = batch.encode().expect("encode");
         let decoded = WriteBatch::decode(&encoded).expect("decode");
         assert_eq!(decoded, batch);
+    }
+
+    #[test]
+    fn compact_last_write_wins_removes_superseded_operations() {
+        let mut batch = WriteBatch::new();
+        batch.put(Bytes::from_static(b"chunk"), Bytes::from_static(b"old"));
+        batch.put(Bytes::from_static(b"other"), Bytes::from_static(b"keep"));
+        batch.delete(Bytes::from_static(b"chunk"));
+        batch.put(Bytes::from_static(b"chunk"), Bytes::from_static(b"new"));
+
+        assert_eq!(batch.compact_last_write_wins(), 2);
+        assert_eq!(
+            batch.ops(),
+            &[
+                WriteOp::Put {
+                    key: Bytes::from_static(b"other"),
+                    value: Bytes::from_static(b"keep"),
+                },
+                WriteOp::Put {
+                    key: Bytes::from_static(b"chunk"),
+                    value: Bytes::from_static(b"new"),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn encoded_len_hint_is_never_smaller_than_actual_encoding() {
+        let mut batch = WriteBatch::new();
+        batch.put(Bytes::from_static(b"a"), Bytes::from_static(b"value"));
+        batch.delete(Bytes::from_static(b"b"));
+        let encoded = batch.encode().expect("encode");
+        assert!(batch.encoded_len_hint() >= encoded.len());
     }
 }
