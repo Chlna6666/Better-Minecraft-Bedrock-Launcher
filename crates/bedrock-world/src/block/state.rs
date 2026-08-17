@@ -4,9 +4,9 @@
 //! byte-level hashing is order-sensitive. This module centralises the canonical representation used
 //! by editors, servers and network adapters so every consumer derives the same identity.
 
-use crate::codec::nbt::{NbtTag, serialize_root_nbt};
+use crate::chunk::palette::BlockState;
 use crate::error::Result;
-use crate::model::BlockState;
+use crate::nbt::{NbtTag, serialize_root_nbt};
 use indexmap::IndexMap;
 
 impl BlockState {
