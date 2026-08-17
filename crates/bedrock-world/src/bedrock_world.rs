@@ -110,12 +110,6 @@ pub mod query;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
 
-// Temporary crate-private database alias for implementation files that are still moving from the
-// old generic storage name to the Bedrock world database domain. It is not public API.
-mod storage {
-    pub(crate) use crate::database::*;
-}
-
 // Temporary crate-root aliases for implementation files still being moved to direct domain imports.
 pub(crate) use chunk::key::{
     ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
