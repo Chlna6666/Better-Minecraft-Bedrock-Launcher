@@ -1,4 +1,4 @@
-//! Semantic Minecraft Bedrock world models.
+//! Internal semantic Minecraft Bedrock world models.
 
 pub use crate::chunk::key::{
     ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, ChunkKey, ChunkRecordTag,
@@ -18,4 +18,4 @@ pub use crate::parsed::model::{
     ParsedGlobalData, ParsedHardcodedSpawnArea, ParsedMapData, ParsedPlayer, ParsedVillageData,
     ParsedWorld,
 };
-pub use crate::player::{PlayerData, PlayerId};
+pub use crate::player_impl::{PlayerData, PlayerId};
