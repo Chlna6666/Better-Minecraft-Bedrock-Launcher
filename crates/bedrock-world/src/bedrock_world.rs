@@ -39,7 +39,6 @@ mod surface;
 // consumers use Bedrock-domain modules below.
 mod model;
 mod codec;
-mod migration;
 mod storage;
 mod edit;
 
@@ -111,9 +110,7 @@ pub mod database {
 }
 
 /// Explicit historical Bedrock world and BlockState upgrades.
-pub mod upgrade {
-    pub use crate::migration::*;
-}
+pub mod upgrade;
 
 /// Bedrock world compatibility and integrity validation.
 pub mod integrity;
