@@ -19,14 +19,6 @@
     clippy::wildcard_imports
 )]
 
-#[cfg(feature = "backend-bedrock-leveldb")]
-mod bedrock_leveldb {
-    pub use ::bedrock_leveldb::access::*;
-    pub use ::bedrock_leveldb::engine::*;
-    pub use ::bedrock_leveldb::error::*;
-    pub use ::bedrock_leveldb::format::*;
-}
-
 #[path = "model/block_state.rs"]
 mod block_state;
 mod chunk;
@@ -59,25 +51,3 @@ pub mod query;
 pub mod storage;
 /// High-level lazy world lifecycle, scans and transactions.
 pub mod world;
-
-// Implementation-only migration surface. These names are crate-private, so the removed pre-0.7
-// crate-root API is not available to external consumers. They disappear as the remaining large
-// implementation files are physically split into their responsibility modules.
-pub(crate) use audit::{
-    ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind, WorldCapabilities,
-    WritePolicy,
-};
-pub(crate) use codec::{
-    NbtReader, NbtTag, NbtWriter, block_storage_index, level_dat, nbt,
-};
-pub(crate) use edit::block_edit;
-pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
-pub(crate) use migration::{
-    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, block_state_graph,
-    block_state_upgrade, historical_chunk, legacy_import,
-};
-pub(crate) use model::*;
-pub(crate) use query::*;
-pub(crate) use selection_query::*;
-pub(crate) use storage::*;
-pub(crate) use world::*;
