@@ -12,6 +12,19 @@
 //! native `.ldb` tables plus manifest edits. Older crate-specific `BWLDB...` files remain readable for
 //! migration of databases produced by earlier versions of this crate.
 //!
+//! # Public API layers
+//!
+//! Prefer the grouped modules for new code:
+//!
+//! - [`engine`] contains database lifecycle, snapshots, cache/statistics, iterators, repair and
+//!   compaction-facing types.
+//! - [`access`] contains read/scan strategies, borrowed raw key/value views and cancellation/progress
+//!   controls.
+//! - [`format`] contains write batches and physical-format policies such as compression/checksums.
+//!
+//! Root-level re-exports remain during the 0.6 transition so existing consumers can migrate without
+//! an all-at-once source change. Internal WAL/SST/MANIFEST/coding modules intentionally remain private.
+//!
 //! # Logging
 //!
 //! The crate emits low-noise diagnostics through the [`log`] facade at `trace`, `debug`, and `warn`
@@ -65,6 +78,32 @@ mod options;
 mod table;
 mod wal;
 
+/// Database engine lifecycle, snapshots, iterators, statistics, cache configuration and repair.
+pub mod engine {
+    pub use crate::db::{
+        Db, DbCacheStats, DbStats, PrefixIterator, RawIterator, RepairReport, Snapshot,
+    };
+    pub use crate::error::{ErrorKind, LevelDbError, Result};
+    pub use crate::options::{CachePolicy, NativeCacheOptions, OpenOptions, ThreadingOptions};
+}
+
+/// Raw byte access, borrowed value views and scan/read execution controls.
+pub mod access {
+    pub use crate::db::{EntryRef, KeyRef, ValueRef};
+    pub use crate::options::{
+        ReadOptions, ReadStrategy, ScanCancelFlag, ScanMode, ScanOutcome, ScanPipelineOptions,
+        ScanProgress, ScanProgressSink, VisitorControl,
+    };
+}
+
+/// Physical write-batch and Mojang LevelDB format policies.
+pub mod format {
+    pub use crate::batch::{WriteBatch, WriteOp};
+    pub use crate::options::{ChecksumMode, CompressionPolicy, WriteOptions};
+}
+
+// Transitional root facade. New code should prefer `engine`, `access` and `format` so the storage
+// engine's public surface remains navigable while internal format modules continue to evolve.
 pub use batch::{WriteBatch, WriteOp};
 pub use db::{
     Db, DbCacheStats, DbStats, EntryRef, KeyRef, PrefixIterator, RawIterator, RepairReport, Snapshot,
