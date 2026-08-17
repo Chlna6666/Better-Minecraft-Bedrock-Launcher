@@ -63,6 +63,7 @@ pub mod entity {
         ActorDigestKey, ActorRecord, ActorResolution, ActorSource, ActorUid, EntityData,
         ParsedActorDigest, ParsedEntity,
     };
+    pub use crate::parsed::{encode_actor_digest_ids, parse_actor_digest_ids};
 }
 
 /// Bedrock player records and inventory item data.
