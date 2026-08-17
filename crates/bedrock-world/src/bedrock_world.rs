@@ -34,6 +34,8 @@
     clippy::wildcard_imports
 )]
 
+/// Canonical semantic identity helpers for Bedrock block states.
+pub mod block_state;
 /// Chunk keys, subchunk formats, palette data, and legacy terrain helpers.
 pub mod chunk;
 /// Filesystem discovery for Bedrock world folders.
@@ -74,8 +76,10 @@ pub use chunk::{
 pub use discover::{WorldDiscovery, WorldSummary, discover_worlds};
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub use level_dat::{
-    LevelDatDocument, LevelDatHeader, LevelDatReadWarning, parse_level_dat_document,
-    read_level_dat, read_level_dat_document, write_level_dat_atomic, write_level_dat_document,
+    LevelDatDocument, LevelDatHeader, LevelDatReadWarning,
+    initialize_level_dat_random_seed_if_missing, parse_level_dat_document, read_level_dat,
+    read_level_dat_document, read_level_dat_random_seed, write_level_dat_atomic,
+    write_level_dat_document,
 };
 #[cfg(feature = "async")]
 pub use level_dat::{read_level_dat_async, write_level_dat_atomic_async};
