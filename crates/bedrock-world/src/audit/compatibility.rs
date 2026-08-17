@@ -5,7 +5,9 @@
 //! upgrades. Callers should inspect the concrete world/chunk/subchunk data and choose an explicit
 //! [`WritePolicy`] before mutating historical or future-format data.
 
-use crate::{ActorSource, ChunkRecord, ChunkRecordTag, SubChunkFormat, WorldFormat};
+use crate::chunk::{ChunkRecord, ChunkRecordTag, SubChunkFormat};
+use crate::entity::ActorSource;
+use crate::world::WorldFormat;
 use serde::{Deserialize, Serialize};
 
 /// Compatibility level of decoded Bedrock data relative to the codecs implemented by this crate.
@@ -387,7 +389,7 @@ const fn codec_sort_key(codec: SubChunkCodecKind) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChunkKey, ChunkPos, Dimension};
+    use crate::chunk::{ChunkKey, ChunkPos, Dimension};
     use bytes::Bytes;
 
     fn record(tag: ChunkRecordTag, subchunk_y: Option<i8>, value: &'static [u8]) -> ChunkRecord {
