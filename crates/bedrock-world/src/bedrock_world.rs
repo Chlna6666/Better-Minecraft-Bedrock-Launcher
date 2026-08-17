@@ -50,6 +50,8 @@ pub mod compatibility_scan;
 pub mod discover;
 /// Crate-wide error and result types.
 pub mod error;
+/// Canonical decoding of legacy numeric terrain through caller-supplied authoritative mappings.
+pub mod historical_chunk;
 /// Read-only whole-world consistency and corruption auditing.
 pub mod integrity;
 /// Explicit pre-LevelDB Pocket Edition container import helpers.
@@ -102,6 +104,11 @@ pub use compatibility_scan::{
 };
 pub use discover::{WorldDiscovery, WorldSummary, discover_worlds};
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+pub use historical_chunk::{
+    LegacyBlockMapping, LegacyBlockReference, LegacyBlockResolver, LegacyBlockSource,
+    ResolvedHistoricalSubChunk, ResolvedLegacyTerrain, resolve_legacy_subchunk,
+    resolve_legacy_terrain,
+};
 pub use integrity::{
     WorldIntegrityIssue, WorldIntegrityIssueKind, WorldIntegrityOptions, WorldIntegrityReport,
     WorldIntegritySeverity, WorldIntegrityStatus, audit_world_integrity_blocking,
