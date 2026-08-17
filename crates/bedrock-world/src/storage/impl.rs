@@ -1,14 +1,14 @@
-//! Storage abstraction used by [`crate::BedrockWorld`].
+//! Storage abstraction used by [`crate::world::BedrockWorld`].
 //!
 //! The trait in this module keeps world parsing independent from a concrete
 //! LevelDB implementation. [`MemoryStorage`] is useful for tests and synthetic
-//! tools, while [`BedrockLevelDbStorage`](crate::BedrockLevelDbStorage) adapts
+//! tools, while [`BedrockLevelDbStorage`](crate::storage::backend::BedrockLevelDbStorage) adapts
 //! the `bedrock-leveldb` crate.
 
-use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LEGACY_TERRAIN_VALUE_LEN};
+use crate::codec::{LEGACY_TERRAIN_BLOCK_COUNT, LEGACY_TERRAIN_VALUE_LEN, NbtTag};
+use crate::codec::level_dat::read_level_dat_document;
 use crate::error::{BedrockWorldError, Result};
-use crate::level_dat::read_level_dat_document;
-use crate::nbt::NbtTag;
+use crate::model::{ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LegacyTerrain};
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::fs;
@@ -323,7 +323,7 @@ impl StorageBatch {
     }
 }
 
-/// Raw key/value storage abstraction used by [`BedrockWorld`](crate::BedrockWorld).
+/// Raw key/value storage abstraction used by [`BedrockWorld`](crate::world::BedrockWorld).
 pub trait WorldStorage: Send + Sync {
     /// Looks up a raw value by exact key.
     fn get(&self, key: &[u8]) -> Result<Option<Bytes>>;
@@ -863,7 +863,7 @@ pub mod backend {
 
     #[cfg(feature = "backend-bedrock-leveldb")]
     #[derive(Clone)]
-    /// Bedrock level db storage data model.
+    /// Bedrock LevelDB storage adapter.
     pub struct BedrockLevelDbStorage {
         db: Arc<bedrock_leveldb::Db>,
     }
@@ -900,7 +900,7 @@ pub mod backend {
                     format!("LevelDB path not found: {}", path.display()),
                 )));
             }
-            let options = bedrock_leveldb::OpenOptions {
+            let options = bedrock_leveldb::Options {
                 read_only,
                 create_if_missing: false,
                 error_if_exists: false,
@@ -1399,7 +1399,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).expect("create");
         drop(
-            bedrock_leveldb::Db::open(&path, bedrock_leveldb::OpenOptions::default())
+            bedrock_leveldb::Db::open(&path, bedrock_leveldb::Options::default())
                 .expect("initialize"),
         );
 
@@ -1460,8 +1460,8 @@ mod tests {
         let block_index = (1_usize << 11) | (3_usize << 7) | 2_usize;
         let column_index = 3_usize * 16 + 1_usize;
         terrain[block_index] = 42;
-        terrain[crate::LEGACY_TERRAIN_BLOCK_COUNT
-            + (crate::LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
+        terrain[LEGACY_TERRAIN_BLOCK_COUNT
+            + (LEGACY_TERRAIN_BLOCK_COUNT / 2) * 3
             + column_index] = 99;
         let mut chunks = vec![0_u8; POCKET_CHUNKS_DAT_SECTOR_BYTES];
         chunks[0] = 21;
@@ -1503,7 +1503,7 @@ mod tests {
             &value[..POCKET_CHUNKS_DAT_TERRAIN_VALUE_LEN],
             terrain.as_slice()
         );
-        let terrain = crate::LegacyTerrain::parse(value.clone()).expect("legacy terrain");
+        let terrain = LegacyTerrain::parse(value.clone()).expect("legacy terrain");
         assert_eq!(terrain.block_id_at(1, 2, 3), Some(42));
         assert_eq!(terrain.height_at(1, 3), Some(99));
 
