@@ -10,10 +10,12 @@ sanitised/minimal synthetic fixtures generated specifically for tests.
 ## Version matrix
 
 The local fixture corpus should use the following directory names. A fixture may be a complete world,
-a minimal LevelDB database, or a synthetic record set when a redistributable real save is unavailable.
+a reduced/sanitised world, or a synthetic record set when a redistributable real save is unavailable.
+Synthetic data must not be used as the sole evidence for a historical game-version compatibility claim.
 
 ```text
 tests/fixtures/
+  bedrock-0.6.1/
   bedrock-0.14/
   bedrock-0.16/
   bedrock-1.0/
@@ -32,6 +34,8 @@ tests/fixtures/
 
 The matrix intentionally includes storage transition points rather than every patch release:
 
+- 0.6.1: pre-LevelDB Pocket Edition `chunks.dat`, `entities.dat`, header-v3 `level.dat.Player`, numeric
+  saved items and old TileEntity/entity storage.
 - 0.14/0.16: Pocket/early Bedrock legacy terrain and pre-modern world layouts.
 - 1.0: early LevelDB-era world compatibility.
 - 1.12/1.13: legacy numeric block data and later palette/state transitions.
@@ -53,18 +57,35 @@ Each available fixture should be exercised through the same compatibility suite:
 
 1. Open storage without rewriting it.
 2. Parse `level.dat` while preserving unknown NBT fields.
-3. Detect `WorldFormat` and `WorldCapabilities`.
-4. Enumerate chunk keys, including old Overworld keys without an explicit dimension id.
-5. Inspect `ChunkCapabilities` for every unique chunk-record family.
-6. Decode every recognised subchunk generation (legacy v0, paletted v1, legacy v2-v7, paletted v8/v9).
-7. Preserve unsupported/future subchunk bytes exactly.
-8. Parse legacy inline `Entity` records and modern `digp`/`actorprefix` actor storage through the
-   unified actor model.
-9. Parse block entities, biome/height data, players, maps and known global records where present.
-10. Run the world integrity audit without mutating the fixture.
-11. Verify `WritePolicy::Preserve` refuses migrations and unknown/future structured rewrites.
-12. When a migration fixture exists, migrate into a temporary destination and reopen the result before
-    comparing canonical blocks/entities/biomes.
+3. Detect the physical `WorldFormat` from real files/records.
+4. Scan persisted version evidence instead of trusting only `lastOpenedWithVersion`.
+5. Enumerate chunk keys, including old Overworld keys without an explicit dimension id.
+6. Inspect chunk capabilities for every unique chunk-record family.
+7. Decode every recognised subchunk generation supported by the library.
+8. Preserve unsupported/future subchunk bytes exactly.
+9. Parse legacy inline `Entity` records and modern `digp`/`actorprefix` actor storage without silently
+   converting one storage generation into another.
+10. Parse block entities, biome/height data, players, maps and known global records where present.
+11. Run integrity/compatibility inspection without mutating the fixture.
+12. Refuse destructive writes when the exact target representation has not been proven.
+13. When an explicit conversion fixture exists, write into a temporary destination and reopen the result
+    before comparing canonical blocks/entities/biomes/player data.
+
+## Enforcing the corpus
+
+Normal developer tests may run without private real-world fixtures. Missing fixtures are reported as
+skipped in that mode and **must not** be interpreted as a compatibility pass.
+
+For release or compatibility validation set:
+
+```text
+BEDROCK_WORLD_REQUIRE_HISTORICAL_FIXTURES=1
+```
+
+The default root is this `tests/fixtures` directory. Use
+`BEDROCK_WORLD_FIXTURE_ROOT=/path/to/private/corpus` to point the suite at an externally mounted corpus.
+With enforcement enabled every matrix entry must contain `level.dat` plus either `db/CURRENT` or
+`chunks.dat`; otherwise the test suite fails.
 
 ## Local complete-world fixture
 
@@ -81,14 +102,14 @@ explicitly reduced and sanitised for redistribution.
 
 ## Fixture metadata
 
-Each local fixture should optionally contain a `fixture.json` next to the world directory, for example:
+Each local fixture may contain a `fixture.json` next to the world directory, for example:
 
 ```json
 {
   "game_version": "1.18.30",
   "expected_storage": "leveldb",
   "expected_actor_storage": "modern-digest",
-  "expected_write_policy": "migrate",
+  "expected_write_policy": "explicit-target-only",
   "notes": "sanitised local fixture"
 }
 ```
