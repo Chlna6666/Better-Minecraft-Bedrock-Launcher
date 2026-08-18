@@ -9,6 +9,7 @@ mod authoritative;
 mod block_state_graph;
 mod block_state_upgrade;
 mod corpus;
+mod corpus_bundle;
 mod legacy_numeric;
 
 use crate::chunk::palette::BlockState;
@@ -27,6 +28,11 @@ pub use corpus::{
     PINNED_BLOCK_UPGRADE_SCHEMA_VERSION, PINNED_LEGACY_BLOCK_ID_MAP_FILE,
     PINNED_LEGACY_ID_META_1_9_TABLE_FILE, PINNED_LEGACY_ID_META_1_12_TABLE_FILE,
     load_pinned_block_state_catalog, load_pinned_block_state_catalog_for_target,
+};
+pub use corpus_bundle::{
+    PINNED_BLOCK_MIGRATION_CORPUS_FILES, PinnedBlockMigrationBundle, PinnedCorpusFileSpec,
+    load_pinned_block_migration_bundle_for_target_from_dir,
+    load_pinned_block_migration_bundle_from_dir, verify_pinned_block_migration_corpus,
 };
 pub use legacy_numeric::{LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats};
 

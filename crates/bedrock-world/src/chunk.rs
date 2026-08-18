@@ -5,6 +5,7 @@ mod legacy_encoding;
 mod legacy_extra;
 mod legacy_numeric_resolver;
 mod level_chunk;
+mod pinned_migration;
 
 /// Bedrock world, chunk and block coordinates and dimension identities.
 pub mod position;
@@ -33,6 +34,7 @@ pub use migration::{
     ResolvedLegacyTerrain, resolve_legacy_subchunk, resolve_legacy_terrain,
 };
 pub use palette::*;
+pub use pinned_migration::migrate_historical_chunk_with_pinned_bundle_blocking;
 pub use position::*;
 pub use subchunk::*;
 pub use crate::parsed::{

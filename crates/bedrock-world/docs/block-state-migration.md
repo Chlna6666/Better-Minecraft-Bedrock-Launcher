@@ -7,31 +7,49 @@ paletted subchunks already contain BlockState NBT and enter the semantic pipelin
 ## Pinned corpus
 
 The reference corpus is PocketMine `bedrock-block-upgrade-schema` 5.2.0 at commit
-`5d7889c9a1cdf9e3cd814d2a104ad69b75116ec7` (CC0-1.0). The public manifest constants list all 34
-schema documents plus the legacy ID map and the 1.9/1.12 numeric tables. Applications should package
-those immutable resources with the server/client and pass all schema documents to
-`load_pinned_block_state_catalog`; the loader refuses missing, duplicated, or mixed filenames.
+`5d7889c9a1cdf9e3cd814d2a104ad69b75116ec7` (CC0-1.0). The manifest covers all 34 schema documents,
+`block_legacy_id_map.json`, the 1.9/1.12 numeric tables, and the upstream license.
 
-The library does **not** fetch migration data at runtime. World conversion must be deterministic and
-must not depend on network availability or on a mutable upstream branch.
+The library does **not** fetch migration data at runtime. Applications distribute one immutable corpus
+bundle and load it with `load_pinned_block_migration_bundle_from_dir`. Every resource is checked by
+exact byte count and Git blob SHA-1 before any migration rule is accepted.
 
-### Historical target versions
+For development or packaging, PowerShell 7 can materialize the exact pinned bundle without CI:
 
-A server or editor that intentionally writes a historical Bedrock generation should build a catalogue
-with `load_pinned_block_state_catalog_for_target`. The complete pinned corpus is still validated first;
-only schema groups ending at or before the requested `BlockStateStorageVersion` are then compiled.
-The requested target must be an actual authoritative schema endpoint. This prevents arbitrary version
-stamping and keeps the per-palette migration hot path target-specific instead of branching across the
-full corpus for every BlockState.
+```powershell
+pwsh ./crates/bedrock-world/scripts/sync-blockstate-corpus.ps1
+```
 
-Downgrading a newer BlockState into an older semantic schema is not inferred from forward upgrade
-rules. Existing historical data may be preserved in its original representation, while destructive
-conversion requires an authoritative forward path to the selected target and a target-palette check.
+The script downloads only the fixed commit, validates every payload against `corpus.lock.json`, and
+places it under `crates/bedrock-world/vendor/blockstate-schema`. The crate package include list retains
+this directory when a release chooses to ship the corpus alongside the library.
+
+## Runtime ownership and performance
+
+`PinnedBlockMigrationBundle` owns the parsed schema catalog and both numeric tables. Raw schema JSON
+and binary file buffers are temporary during bundle construction and are released afterwards. Normal
+chunk migration therefore performs no filesystem access, network access, JSON parsing, or corpus hash
+calculation on the hot path.
+
+Keeping the bundle separate from the executable also avoids forcing every client/server binary to
+carry a duplicate static copy. A process may place one bundle in an `Arc` and share it across world
+workers because its migration interfaces are read-only and `Send + Sync`.
+
+## Historical target versions
+
+The default bundle loader targets the newest represented schema. A server or editor that intentionally
+writes an older Bedrock generation can instead use `load_pinned_block_migration_bundle_for_target_from_dir`.
+The complete 38-file bundle is still verified first; only schema groups ending at or before the
+requested `BlockStateStorageVersion` are compiled. The target must be an actual authoritative schema
+endpoint, matching `load_pinned_block_state_catalog_for_target`.
+
+For classic numeric terrain the bundle selects the 1.9 table for pre-1.12 targets and the 1.12 table
+for 1.12-or-newer targets. Downgrading newer BlockStates is never inferred from forward schemas.
 
 ## Execution semantics
 
-The authoritative executor follows the reference ordering rather than reducing the data to simple
-`from_version -> to_version` edges:
+The authoritative executor follows the PocketMine reference ordering rather than reducing the data to
+simple `from_version -> to_version` edges:
 
 - schema filename numeric IDs define ordering within equal Mojang storage-version groups;
 - multiple schemas with the same storage version are all applied because Mojang has shipped semantic
@@ -46,14 +64,17 @@ The authoritative executor follows the reference ordering rather than reducing t
 
 `LegacyNumericBlockStateTable` parses the upstream `id_meta_to_nbt/*.bin` format without expanding a
 4096-block subchunk into 4096 heap-owned states. The chunk adapter performs exact `(id, meta)` lookup
-and then metadata-0 fallback, matching the reference upgrader. Resolved historical subchunks continue
-through the same `BlockStateMigrator` interface as old paletted subchunks.
+and then metadata-0 fallback, matching the reference upgrader.
 
-For migrations targeting 1.12 or newer, use the 1.12 numeric table. The 1.9 table is retained for
-callers that deliberately need an earlier BlockState target.
+`migrate_historical_chunk_with_pinned_bundle_blocking` connects the bundle-selected numeric resolver
+and target-bound catalog to the existing atomic historical chunk migration path.
 
-## Destructive-write rule
+## Target palette validation
 
-A historical chunk is written only after every source palette entry has migrated to the selected
-output version and passed the caller's authoritative target-palette validator. Unknown future
-subchunks/record tags remain preservation-only and block the destructive batch.
+The upgrade-schema corpus describes historical transformations; it is not the complete runtime block
+palette of a specific Minecraft client/server build. Destructive migration therefore still requires
+`target_palette_contains` from the selected runtime palette.
+
+A chunk is written only after every source palette entry has migrated to the selected output version
+and passed that validator. Unknown future subchunks or record tags remain preservation-only and block
+the destructive batch.

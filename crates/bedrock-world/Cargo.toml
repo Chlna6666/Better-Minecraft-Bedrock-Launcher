@@ -23,6 +23,8 @@ include = [
     "src/**/*.rs",
     "tests/**/*.rs",
     "tests/fixtures/**/*",
+    "scripts/**/*.ps1",
+    "vendor/blockstate-schema/**/*",
     "benches/**/*.rs",
 ]
 
