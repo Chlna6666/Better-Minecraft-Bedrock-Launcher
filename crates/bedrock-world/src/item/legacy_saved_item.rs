@@ -145,6 +145,25 @@ impl LegacySavedItemIdTable {
         })
     }
 
+    /// Returns the historical string item identifier behind one numeric saved-item candidate.
+    ///
+    /// Metadata does not participate in numeric-ID lookup; it is retained on [`LegacySavedItemId`]
+    /// because later item upgrade rules may interpret it.
+    #[must_use]
+    pub fn legacy_item_name(&self, legacy: LegacySavedItemId) -> Option<&str> {
+        self.catalog.legacy_numeric_name(legacy.numeric_id)
+    }
+
+    /// Returns the 1.12-era block identifier associated with one historical blockitem candidate.
+    ///
+    /// `None` means the historical numeric item is not classified by the authoritative item→block map
+    /// as a blockitem. No block identifier is inferred from the modern item name.
+    #[must_use]
+    pub fn legacy_block_id(&self, legacy: LegacySavedItemId) -> Option<&str> {
+        let item_name = self.legacy_item_name(legacy)?;
+        self.catalog.legacy_block_id(item_name)
+    }
+
     /// Applies authoritative forward rules to one historical numeric pair.
     #[must_use]
     pub fn named_id(&self, legacy: LegacySavedItemId) -> Option<NamedSavedItemId> {
@@ -342,6 +361,29 @@ mod tests {
                 meta: 0,
             }),
             LegacySavedItemMatch::Missing
+        );
+    }
+
+    #[test]
+    fn historical_blockitem_mapping_is_exposed_without_modern_name_guessing() {
+        let table = LegacySavedItemIdTable::from_sources(
+            r#"{"minecraft:old_item":5,"minecraft:plain":6}"#,
+            r#"{"minecraft:old_item":"minecraft:old_block"}"#,
+            &[],
+        )
+        .unwrap();
+        let blockitem = LegacySavedItemId {
+            numeric_id: 5,
+            meta: 7,
+        };
+        assert_eq!(table.legacy_item_name(blockitem), Some("minecraft:old_item"));
+        assert_eq!(table.legacy_block_id(blockitem), Some("minecraft:old_block"));
+        assert_eq!(
+            table.legacy_block_id(LegacySavedItemId {
+                numeric_id: 6,
+                meta: 0,
+            }),
+            None
         );
     }
 }
