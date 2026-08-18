@@ -2,6 +2,7 @@
 
 mod classic_saved_item;
 mod format;
+mod format_evidence;
 mod legacy_saved_item;
 mod legacy_saved_item_check;
 mod legacy_saved_item_conversion;
@@ -16,6 +17,10 @@ pub use classic_saved_item::{
     convert_saved_items_to_classic_with_blocks,
 };
 pub use format::SavedItemFormat;
+pub use format_evidence::{
+    SavedItemFormatEvidence, SavedItemStorageForm, inspect_saved_item_formats,
+    saved_item_storage_form,
+};
 pub use legacy_saved_item::{
     LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, MedievalSavedItemId,
     MedievalSavedItemMatch, NamedSavedItemId, SavedItemUpgradeSource,

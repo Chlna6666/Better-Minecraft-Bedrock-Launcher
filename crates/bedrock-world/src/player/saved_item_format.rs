@@ -4,15 +4,23 @@ use crate::error::Result;
 use crate::item::{
     ClassicSavedItemCheckReport, ClassicSavedItemConversionReport,
     LegacySavedItemBlockStateTables, LegacySavedItemIdTable, MedievalSavedItemCheckReport,
-    MedievalSavedItemConversionReport, check_saved_items_for_classic,
+    MedievalSavedItemConversionReport, SavedItemFormatEvidence, check_saved_items_for_classic,
     check_saved_items_for_classic_with_blocks, check_saved_items_for_medieval,
     check_saved_items_for_medieval_with_blocks, convert_saved_items_to_classic,
     convert_saved_items_to_classic_with_blocks, convert_saved_items_to_medieval,
-    convert_saved_items_to_medieval_with_blocks,
+    convert_saved_items_to_medieval_with_blocks, inspect_saved_item_formats,
 };
 use crate::player::PlayerData;
 
 impl PlayerData {
+    /// Inspects the actual saved-item storage forms present in this player without rewriting them.
+    ///
+    /// Plain string-ID items do not by themselves prove Medieval versus Modern source generation;
+    /// callers can inspect `proven_format()` and `minimum_format()` on the returned evidence.
+    pub fn saved_item_format_evidence(&self) -> Result<SavedItemFormatEvidence> {
+        inspect_saved_item_formats(&self.nbt)
+    }
+
     /// Checks whether every saved item has an exact MCPE <= 1.5 Classic representation.
     pub fn check_saved_items_for_classic(
         &self,
@@ -111,7 +119,7 @@ impl PlayerData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::item::SavedItemUpgradeSource;
+    use crate::item::{SavedItemFormat, SavedItemUpgradeSource};
     use crate::nbt::NbtTag;
     use crate::player::PlayerId;
     use indexmap::IndexMap;
@@ -125,6 +133,21 @@ mod tests {
             )])),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn player_reports_format_evidence_without_claiming_plain_string_source_generation() {
+        let player = player_with_item(NbtTag::Compound(IndexMap::from([
+            (
+                "Name".to_string(),
+                NbtTag::String("minecraft:apple".to_string()),
+            ),
+            ("Count".to_string(), NbtTag::Byte(1)),
+        ])));
+        let evidence = player.saved_item_format_evidence().unwrap();
+        assert_eq!(evidence.minimum_format(), Some(SavedItemFormat::Medieval));
+        assert_eq!(evidence.proven_format(), None);
+        assert!(!player.is_modified());
     }
 
     #[test]
