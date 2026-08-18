@@ -29,6 +29,8 @@ mod parsed;
 pub mod player;
 pub mod biome;
 pub mod entity;
+/// Bedrock saved-item identities, stacks and historical item migration.
+pub mod item;
 
 /// Bedrock map item records.
 pub mod map {

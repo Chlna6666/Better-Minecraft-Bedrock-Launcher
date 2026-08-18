@@ -25,6 +25,7 @@ include = [
     "tests/fixtures/**/*",
     "scripts/**/*.ps1",
     "vendor/blockstate-schema/**/*",
+    "vendor/item-upgrade-schema/**/*",
     "benches/**/*.rs",
 ]
 
