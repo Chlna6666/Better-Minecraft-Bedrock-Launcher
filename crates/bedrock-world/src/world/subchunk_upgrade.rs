@@ -17,6 +17,8 @@ pub struct WorldSubChunkUpgradeReport {
     /// Target persisted SubChunk version selected for the requested Bedrock game version.
     pub target: SubChunkVersion,
     /// Legacy V0/V2-V7 numeric SubChunks converted through the authoritative numeric table.
+    ///
+    /// For V8/V9 targets this report also includes historical `BlockExtraData` second-layer merges.
     pub legacy: LegacySubChunkUpgradeWriteReport,
     /// Existing paletted SubChunks upgraded through the authoritative BlockState schema rules.
     pub paletted: SubChunkUpgradeWriteReport,
@@ -44,16 +46,17 @@ where
 {
     /// Upgrades all supported SubChunk generations to one target Bedrock version in one transaction.
     ///
-    /// The world is scanned twice before writing: the first pass resolves legacy V0/V2-V7 numeric
-    /// blocks through [`BlockUpgradeData`], and the second pass upgrades already-paletted SubChunks.
-    /// Both paths validate every resulting BlockState against the exact target-game vanilla palette.
-    /// Only after **both** complete successfully are their disjoint record changes committed through a
-    /// single [`crate::world::WorldTransaction`]. A failure in either path therefore leaves all source
-    /// SubChunk records unchanged.
+    /// The world is scanned before writing: legacy V0/V2-V7 numeric blocks are resolved through
+    /// [`BlockUpgradeData`], while already-paletted SubChunks use the authoritative BlockState schema
+    /// chain directly. Both paths validate every resulting BlockState against the exact target-game
+    /// vanilla palette. For V8/V9 targets, historical chunk-scoped `BlockExtraData` (`0x34`) entries
+    /// are assigned by their persisted full Y coordinate to the matching legacy SubChunk and become a
+    /// second paletted storage layer. The original `BlockExtraData` record is deleted only after every
+    /// entry has been converted successfully. V1 targets preserve that historical record.
     ///
-    /// Historical `BlockExtraData` (`0x34`) is a separate second block layer. Until that layer is
-    /// explicitly merged into the target paletted storage, its presence makes this complete SubChunk
-    /// operation refuse to run instead of silently dropping or stranding those blocks.
+    /// Only after **both** legacy and paletted staging complete successfully are their disjoint record
+    /// changes committed through a single [`crate::world::WorldTransaction`]. A failure in either path
+    /// therefore leaves all source SubChunk and `BlockExtraData` records unchanged.
     ///
     /// `LegacyTerrain`, biomes, actors, player items and `level.dat` are deliberately outside this
     /// operation. They have separate Bedrock data representations and separate upgrade steps.
@@ -65,12 +68,6 @@ where
     ) -> Result<WorldSubChunkUpgradeReport> {
         let plan = self.upgrade_plan_blocking(target.clone())?;
         reject_plan_issues(&plan)?;
-        if plan.world.block_extra_data_records != 0 {
-            return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-                "world contains {} historical BlockExtraData second-layer records; merge them into target SubChunk storage before complete SubChunk upgrade",
-                plan.world.block_extra_data_records
-            )));
-        }
         validate_target_data(&target, upgrade_data, target_palette)?;
 
         let target_version = target_subchunk_version(&target).ok_or_else(|| {

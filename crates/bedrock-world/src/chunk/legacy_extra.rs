@@ -1,9 +1,10 @@
 //! Legacy second block-layer payload stored under chunk tag `0x34` (`BlockExtraData`).
 //!
-//! The physical value is `i32 count` followed by fixed six-byte entries: little-endian `u32` raw
-//! location index, `u8` numeric block ID, and `u8` wide block data. The raw index remains the
-//! authoritative representation because old world generations differ in whether it is interpreted as
-//! a chunk-column index or a legacy SubChunk-local index.
+//! The physical value is `i32 count` followed by fixed six-byte entries: little-endian `u32` index,
+//! `u8` numeric block ID, and `u8` wide block data. The low 16 index bits store chunk-local
+//! coordinates as `((x << 4) | z) << 8 | y`: X/Z are four-bit values, Y is a full unsigned byte,
+//! and the high 16 bits are unused by the historical format. Unknown high bits are preserved raw but
+//! are never reinterpreted as another coordinate layout.
 
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
@@ -23,7 +24,7 @@ pub struct LegacyBlockExtraDataEntry {
 }
 
 impl LegacyBlockExtraDataEntry {
-    /// Builds the chunk-column index `((x << 4) | z) << 8 | y`.
+    /// Builds the persisted chunk-local index `((x << 4) | z) << 8 | y`.
     pub fn from_chunk_coordinates(
         local_x: u8,
         local_y: u8,
@@ -46,33 +47,11 @@ impl LegacyBlockExtraDataEntry {
         })
     }
 
-    /// Builds the legacy SubChunk-local index `x * 256 + z * 16 + y`.
+    /// Decodes the persisted low 16 index bits as chunk-local `(x, y, z)` coordinates.
     ///
-    /// This layout is distinct from the chunk-column form above and is used by the second block layer
-    /// accompanying fixed-array SubChunk versions 0 and 2 through 7.
-    pub fn from_subchunk_coordinates(
-        local_x: u8,
-        local_y: u8,
-        local_z: u8,
-        block_id: u8,
-        block_data: u8,
-    ) -> Result<Self> {
-        if local_x >= 16 || local_y >= 16 || local_z >= 16 {
-            return Err(BedrockWorldError::Validation(format!(
-                "legacy subchunk extra-data coordinates must be below 16, got ({local_x}, {local_y}, {local_z})"
-            )));
-        }
-        let raw_index = u32::from(local_y)
-            | (u32::from(local_z) << 4)
-            | (u32::from(local_x) << 8);
-        Ok(Self {
-            raw_index,
-            block_id,
-            block_data,
-        })
-    }
-
-    /// Interprets the low 16 bits as chunk-column coordinates and refuses unknown high index bits.
+    /// The historical format leaves the upper 16 bits unused. Non-zero high bits therefore make this
+    /// helper return `None` instead of inventing an alternate layout; [`Self::raw_index`] still retains
+    /// the original value byte-for-byte for inspection and roundtrip preservation.
     #[must_use]
     pub fn chunk_coordinates(self) -> Option<(u8, u8, u8)> {
         if self.raw_index & 0xffff_0000 != 0 {
@@ -81,21 +60,6 @@ impl LegacyBlockExtraDataEntry {
         let local_y = (self.raw_index & 0xff) as u8;
         let local_z = ((self.raw_index >> 8) & 0x0f) as u8;
         let local_x = ((self.raw_index >> 12) & 0x0f) as u8;
-        Some((local_x, local_y, local_z))
-    }
-
-    /// Interprets the entry using the SubChunk-local `x * 256 + z * 16 + y` layout.
-    ///
-    /// Only the low 12 bits are meaningful in this interpretation; non-zero high bits are preserved
-    /// by the raw representation and make this helper return `None` instead of guessing.
-    #[must_use]
-    pub fn subchunk_coordinates(self) -> Option<(u8, u8, u8)> {
-        if self.raw_index & 0xffff_f000 != 0 {
-            return None;
-        }
-        let local_y = (self.raw_index & 0x0f) as u8;
-        let local_z = ((self.raw_index >> 4) & 0x0f) as u8;
-        let local_x = ((self.raw_index >> 8) & 0x0f) as u8;
         Some((local_x, local_y, local_z))
     }
 }
@@ -284,7 +248,7 @@ impl LegacyBlockExtraDataBuilder {
         Ok(())
     }
 
-    /// Appends one entry using chunk-column coordinates.
+    /// Appends one entry using the persisted chunk-local coordinate layout.
     pub fn push_chunk_coordinates(
         &mut self,
         local_x: u8,
@@ -294,24 +258,6 @@ impl LegacyBlockExtraDataBuilder {
         block_data: u8,
     ) -> Result<()> {
         self.push(LegacyBlockExtraDataEntry::from_chunk_coordinates(
-            local_x,
-            local_y,
-            local_z,
-            block_id,
-            block_data,
-        )?)
-    }
-
-    /// Appends one entry using legacy SubChunk-local coordinates.
-    pub fn push_subchunk_coordinates(
-        &mut self,
-        local_x: u8,
-        local_y: u8,
-        local_z: u8,
-        block_id: u8,
-        block_data: u8,
-    ) -> Result<()> {
-        self.push(LegacyBlockExtraDataEntry::from_subchunk_coordinates(
             local_x,
             local_y,
             local_z,
@@ -337,31 +283,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extra_data_roundtrips_distinct_chunk_and_subchunk_coordinate_layouts() {
-        let chunk = LegacyBlockExtraDataEntry::from_chunk_coordinates(15, 200, 9, 8, 240).unwrap();
-        assert_eq!(chunk.raw_index, 0xf9c8);
-        assert_eq!(chunk.chunk_coordinates(), Some((15, 200, 9)));
-        assert_eq!(chunk.subchunk_coordinates(), None);
+    fn extra_data_roundtrips_persisted_chunk_coordinates() {
+        let entry = LegacyBlockExtraDataEntry::from_chunk_coordinates(15, 200, 9, 8, 240).unwrap();
+        assert_eq!(entry.raw_index, 0xf9c8);
+        assert_eq!(entry.chunk_coordinates(), Some((15, 200, 9)));
 
-        let subchunk =
-            LegacyBlockExtraDataEntry::from_subchunk_coordinates(3, 14, 4, 21, 7).unwrap();
-        assert_eq!(subchunk.raw_index, 0x034e);
-        assert_eq!(subchunk.subchunk_coordinates(), Some((3, 14, 4)));
-        assert_ne!(subchunk.raw_index, chunk.raw_index);
-
-        let mut builder = LegacyBlockExtraDataBuilder::with_capacity(2).unwrap();
-        builder.push(chunk).unwrap();
-        builder.push(subchunk).unwrap();
+        let mut builder = LegacyBlockExtraDataBuilder::with_capacity(1).unwrap();
+        builder.push(entry).unwrap();
         let data = builder.build().unwrap();
-        assert_eq!(data.len(), 2);
+        assert_eq!(data.len(), 1);
         let entries = data.entries().collect::<Vec<_>>();
-        assert_eq!(entries[0], chunk);
+        assert_eq!(entries[0], entry);
         assert_eq!(entries[0].block_data, 240);
-        assert_eq!(entries[1], subchunk);
     }
 
     #[test]
-    fn raw_unknown_index_bits_are_preserved() {
+    fn raw_unknown_index_bits_are_preserved_without_alternate_coordinate_guessing() {
         let entry = LegacyBlockExtraDataEntry {
             raw_index: 0xabcd_1234,
             block_id: 2,
@@ -372,12 +309,13 @@ mod tests {
         let parsed = builder.build().unwrap();
         assert_eq!(parsed.entries().next(), Some(entry));
         assert_eq!(entry.chunk_coordinates(), None);
-        assert_eq!(entry.subchunk_coordinates(), None);
     }
 
     #[test]
     fn malformed_count_and_trailing_bytes_are_rejected() {
-        assert!(LegacyBlockExtraData::parse(Bytes::from_static(&[0xff, 0xff, 0xff, 0xff])).is_err());
+        assert!(
+            LegacyBlockExtraData::parse(Bytes::from_static(&[0xff, 0xff, 0xff, 0xff])).is_err()
+        );
         assert!(LegacyBlockExtraData::parse(Bytes::from_static(&[0, 0, 0, 0, 1])).is_err());
     }
 

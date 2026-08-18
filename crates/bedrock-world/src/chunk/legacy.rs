@@ -221,6 +221,12 @@ impl LegacySubChunk {
     }
 
     #[must_use]
+    /// Returns whether this payload persists both legacy sky-light and block-light nibble arrays.
+    pub fn has_light_arrays(&self) -> bool {
+        self.bytes.len() == LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN
+    }
+
+    #[must_use]
     /// Returns the complete raw legacy subchunk payload.
     pub fn raw(&self) -> &Bytes {
         &self.bytes
@@ -245,7 +251,7 @@ impl LegacySubChunk {
     #[must_use]
     /// Returns packed 4-bit sky-light values when present.
     pub fn sky_light(&self) -> Option<&[u8]> {
-        if self.bytes.len() != LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN {
+        if !self.has_light_arrays() {
             return None;
         }
         let start = 1 + LEGACY_SUBCHUNK_BLOCK_COUNT + LEGACY_SUBCHUNK_BLOCK_COUNT / 2;
@@ -256,7 +262,7 @@ impl LegacySubChunk {
     #[must_use]
     /// Returns packed 4-bit block-light values when present.
     pub fn block_light(&self) -> Option<&[u8]> {
-        if self.bytes.len() != LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN {
+        if !self.has_light_arrays() {
             return None;
         }
         let start = 1 + LEGACY_SUBCHUNK_BLOCK_COUNT + LEGACY_SUBCHUNK_BLOCK_COUNT;
