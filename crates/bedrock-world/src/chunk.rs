@@ -6,6 +6,7 @@ mod legacy_extra;
 mod level_chunk;
 mod subchunk;
 mod subchunk_storage;
+mod subchunk_upgrade;
 #[path = "chunk/subchunk/v0.rs"]
 mod subchunk_v0;
 #[path = "chunk/subchunk/v1.rs"]
@@ -43,6 +44,8 @@ pub use subchunk_storage::{SubChunkDowngradeWriteReport, SubChunkStorageWriteRep
 pub(crate) use subchunk_storage::{
     stage_subchunks_as_version, stage_subchunks_for_exact_downgrade,
 };
+pub use subchunk_upgrade::SubChunkUpgradeWriteReport;
+pub(crate) use subchunk_upgrade::stage_paletted_subchunks_for_upgrade;
 pub use version::SubChunkVersion;
 pub use crate::parsed::{
     HardcodedSpawnAreaKind, ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,

@@ -3,7 +3,11 @@
 //! Ordinary world reads/writes never call this code. Upgrade is a separate operation and its plan is
 //! derived from the actual persisted data present in the world folder.
 
-use crate::chunk::{SubChunkStorageWriteReport, SubChunkVersion, stage_subchunks_as_version};
+use crate::block::{AuthoritativeBlockStateCatalog, VanillaBlockStatePalette};
+use crate::chunk::{
+    SubChunkStorageWriteReport, SubChunkUpgradeWriteReport, SubChunkVersion,
+    stage_paletted_subchunks_for_upgrade, stage_subchunks_as_version,
+};
 use crate::database::StorageOp;
 use crate::entity::{ActorStorageRewriteReport, stage_world_entity_to_digp_actorprefix};
 use crate::error::{BedrockWorldError, Result};
@@ -206,6 +210,51 @@ where
             ))
         })?;
         let (batch, report) = stage_subchunks_as_version(self.storage(), target_version)?;
+        commit_upgrade_storage_batch(self, &batch)?;
+        Ok(report)
+    }
+
+    /// Upgrades paletted SubChunk BlockStates with authoritative rules and writes the target game's
+    /// exact persisted BlockState entries and SubChunk version.
+    ///
+    /// The schema catalog and vanilla palette are separate authoritative inputs: the catalog defines
+    /// how an old state changes, while the palette proves the resulting state actually exists in the
+    /// requested target game. The palette must be for exactly `target`, and its BlockState storage
+    /// version must match the catalog output. Every affected SubChunk is fully upgraded and encoded
+    /// before any database write, so one unsupported/future/missing state aborts the complete step.
+    ///
+    /// This path intentionally accepts only paletted source SubChunks. V0/V2-V7 numeric/fixed-array
+    /// data must first be resolved through the historical numeric block tables; it is never guessed
+    /// through this method.
+    pub fn upgrade_paletted_subchunks_blocking(
+        &self,
+        target: GameVersion,
+        catalog: &AuthoritativeBlockStateCatalog,
+        target_palette: &VanillaBlockStatePalette,
+    ) -> Result<SubChunkUpgradeWriteReport> {
+        let plan = self.upgrade_plan_blocking(target.clone())?;
+        if let Some(issue) = plan.issues.first() {
+            return Err(BedrockWorldError::Validation(format!(
+                "paletted SubChunk upgrade cannot run: {issue:?}"
+            )));
+        }
+        if target_palette.game_version() != &target {
+            return Err(BedrockWorldError::Validation(format!(
+                "target vanilla BlockState palette is for Bedrock {}, requested upgrade target is {target}",
+                target_palette.game_version()
+            )));
+        }
+        let target_version = target_subchunk_version(&target).ok_or_else(|| {
+            BedrockWorldError::Validation(format!(
+                "Bedrock {target} does not select one unambiguous SubChunk version"
+            ))
+        })?;
+        let (batch, report) = stage_paletted_subchunks_for_upgrade(
+            self.storage(),
+            target_version,
+            catalog,
+            target_palette,
+        )?;
         commit_upgrade_storage_batch(self, &batch)?;
         Ok(report)
     }
