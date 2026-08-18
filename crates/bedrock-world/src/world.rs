@@ -8,6 +8,7 @@ pub mod discover;
 mod downgrade;
 mod legacy_terrain;
 mod level_dat;
+mod player_classic_saved_items;
 mod player_medieval_saved_items;
 mod player_saved_item_conversion;
 mod player_saved_items;
@@ -25,6 +26,9 @@ pub use downgrade::{
     DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan, DowngradeRequirement,
 };
 pub use level_dat::{SubChunkVersionCount, WorldVersions};
+pub use player_classic_saved_items::{
+    PlayerClassicSavedItemCheckEntry, WorldPlayerClassicSavedItemCheckReport,
+};
 pub use player_medieval_saved_items::{
     PlayerMedievalSavedItemCheckEntry, WorldPlayerMedievalSavedItemCheckReport,
 };
