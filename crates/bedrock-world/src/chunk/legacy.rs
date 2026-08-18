@@ -5,7 +5,7 @@ use bytes::Bytes;
 
 /// Number of block ID entries in an old 16x128x16 `LegacyTerrain` value.
 pub const LEGACY_TERRAIN_BLOCK_COUNT: usize = 16 * 128 * 16;
-/// Exact byte length of an old LevelDB `LegacyTerrain` value.
+/// Exact byte length of an old LevelDB `LegacyTerrain` value including the 1024-byte biome/RGB tail.
 pub const LEGACY_TERRAIN_VALUE_LEN: usize = 83_200;
 /// Number of block entries in a 16x16x16 legacy subchunk.
 pub const LEGACY_SUBCHUNK_BLOCK_COUNT: usize = 16 * 16 * 16;
@@ -25,6 +25,11 @@ pub(crate) const LEGACY_TERRAIN_HEIGHTMAP_OFFSET: usize =
     LEGACY_TERRAIN_BLOCK_LIGHT_OFFSET + LEGACY_TERRAIN_BLOCK_COUNT / 2;
 pub(crate) const LEGACY_TERRAIN_BIOME_OFFSET: usize =
     LEGACY_TERRAIN_HEIGHTMAP_OFFSET + 16 * 16;
+/// Exact byte length of the terrain core used by pre-LevelDB Pocket Edition `chunks.dat`.
+///
+/// This form contains block IDs, metadata, sky light, block light and the 16x16 height map, but no
+/// persisted biome id/RGB samples. The library preserves that absence instead of synthesising bytes.
+pub const POCKET_TERRAIN_VALUE_LEN: usize = LEGACY_TERRAIN_BIOME_OFFSET;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Legacy biome sample containing biome id and saved RGB components.
@@ -48,17 +53,21 @@ impl LegacyBiomeSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Decoded view over an old LevelDB-era terrain value.
+/// Decoded view over historical 16x128x16 numeric terrain.
+///
+/// Both the pre-LevelDB Pocket Edition terrain core and the later LevelDB `LegacyTerrain` value are
+/// accepted. The shorter Pocket form intentionally has no biome samples; callers can inspect that via
+/// [`Self::has_biome_samples`].
 pub struct LegacyTerrain {
     bytes: Bytes,
 }
 
 impl LegacyTerrain {
-    /// Parses this value from Bedrock storage bytes.
+    /// Parses historical terrain bytes without inventing fields absent from the source representation.
     pub fn parse(bytes: Bytes) -> Result<Self> {
-        if bytes.len() != LEGACY_TERRAIN_VALUE_LEN {
+        if !matches!(bytes.len(), POCKET_TERRAIN_VALUE_LEN | LEGACY_TERRAIN_VALUE_LEN) {
             return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-                "LegacyTerrain value must be {LEGACY_TERRAIN_VALUE_LEN} bytes, got {}",
+                "historical terrain value must be {POCKET_TERRAIN_VALUE_LEN} bytes (Pocket chunks.dat core) or {LEGACY_TERRAIN_VALUE_LEN} bytes (LevelDB LegacyTerrain), got {}",
                 bytes.len()
             )));
         }
@@ -66,9 +75,15 @@ impl LegacyTerrain {
     }
 
     #[must_use]
-    /// Returns the complete raw `LegacyTerrain` value bytes.
+    /// Returns the complete raw terrain bytes exactly as supplied.
     pub fn raw(&self) -> &Bytes {
         &self.bytes
+    }
+
+    #[must_use]
+    /// Returns whether this source actually persists all 256 `[biome_id, red, green, blue]` samples.
+    pub fn has_biome_samples(&self) -> bool {
+        self.bytes.len() == LEGACY_TERRAIN_VALUE_LEN
     }
 
     #[must_use]
@@ -102,9 +117,14 @@ impl LegacyTerrain {
     }
 
     #[must_use]
-    /// Returns legacy biome samples as `[biome_id, red, green, blue]` columns.
+    /// Returns persisted legacy biome samples as `[biome_id, red, green, blue]` columns.
+    ///
+    /// Pre-LevelDB Pocket `chunks.dat` does not contain this tail, so this returns an empty slice for
+    /// that source form rather than a synthetic default biome.
     pub fn biomes(&self) -> &[u8] {
-        &self.bytes[LEGACY_TERRAIN_BIOME_OFFSET..LEGACY_TERRAIN_VALUE_LEN]
+        self.bytes
+            .get(LEGACY_TERRAIN_BIOME_OFFSET..LEGACY_TERRAIN_VALUE_LEN)
+            .unwrap_or(&[])
     }
 
     #[must_use]
@@ -162,7 +182,7 @@ impl LegacyTerrain {
     }
 
     #[must_use]
-    /// Returns the legacy biome sample for a local column.
+    /// Returns the legacy biome sample for a local column when the source persisted biome data.
     pub fn biome_sample_at(&self, local_x: u8, local_z: u8) -> Option<LegacyBiomeSample> {
         let offset = Self::column_index(local_x, local_z)?.checked_mul(4)?;
         let bytes = self.biomes().get(offset..offset + 4)?;
@@ -175,7 +195,7 @@ impl LegacyTerrain {
     }
 
     #[must_use]
-    /// Returns the legacy RGB biome color for a local column.
+    /// Returns the legacy RGB biome color for a local column when present.
     pub fn biome_color_at(&self, local_x: u8, local_z: u8) -> Option<u32> {
         self.biome_sample_at(local_x, local_z)
             .map(LegacyBiomeSample::rgb_u32)
