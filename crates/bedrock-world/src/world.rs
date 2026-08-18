@@ -15,6 +15,7 @@ mod player_saved_items;
 mod player_storage;
 mod pocket_chunks_dat;
 mod pocket_entities_dat;
+mod pocket_world_storage;
 mod subchunk_numeric;
 mod subchunk_upgrade;
 pub(crate) mod surface;

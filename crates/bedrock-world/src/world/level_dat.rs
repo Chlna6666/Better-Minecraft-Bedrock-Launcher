@@ -4,9 +4,10 @@
 //! records from several storage generations at the same time. This module therefore reports literal
 //! on-disk evidence instead of deriving one synthetic world format version.
 
+use super::pocket_world_storage::PocketWorldStorage;
 use crate::chunk::{BedrockDbKey, ChunkRecordTag, SubChunkVersion};
-use crate::database::{StorageReadOptions, StorageVisitorControl};
-use crate::error::Result;
+use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::error::{BedrockWorldError, Result};
 use crate::version::{GameVersion, LevelVersion};
 use crate::world::{BedrockWorld, OpenOptions, WorldFormat, WorldStorageHandle};
 use std::path::Path;
@@ -147,18 +148,32 @@ impl WorldVersions {
     }
 }
 
-impl BedrockWorld<Arc<dyn crate::database::WorldStorage>> {
+impl BedrockWorld<Arc<dyn WorldStorage>> {
     /// Opens a Bedrock world folder read-only with automatic storage-family detection.
     ///
-    /// This is the normal developer entry point when no custom backend or write access is needed.
+    /// Pre-LevelDB Pocket worlds combine `chunks.dat` terrain with `entities.dat` entity and tile
+    /// entity records, so normal BedrockWorld scans see the complete old world through one handle.
     pub fn open_auto_blocking(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if !path.join("db").join("CURRENT").is_file() && path.join("chunks.dat").is_file() {
+            let storage: Arc<dyn WorldStorage> = Arc::new(PocketWorldStorage::open(&path)?);
+            return Ok(Self::from_storage_with_format(
+                path,
+                storage,
+                OpenOptions::default(),
+                WorldFormat::PocketChunksDat,
+            ));
+        }
         Self::open_blocking(path, OpenOptions::default())
     }
 
     #[cfg(feature = "async")]
     /// Opens a Bedrock world folder read-only with automatic storage-family detection.
     pub async fn open_auto(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open(path, OpenOptions::default()).await
+        let path = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || Self::open_auto_blocking(path))
+            .await
+            .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
 }
 
