@@ -8,7 +8,7 @@ use crate::chunk::{
 use crate::database::{StorageBatch, StorageOp};
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
-use crate::world::{BedrockWorld, UpgradePlan, WorldStorageHandle};
+use crate::world::{BedrockWorld, WorldFormat, WorldStorageHandle};
 use std::cmp::Ordering;
 
 /// Result of one atomic SubChunk upgrade over both historical numeric and paletted source records.
@@ -46,28 +46,26 @@ where
 {
     /// Upgrades all supported SubChunk generations to one target Bedrock version in one transaction.
     ///
-    /// The world is scanned before writing: legacy V0/V2-V7 numeric blocks are resolved through
-    /// [`BlockUpgradeData`], while already-paletted SubChunks use the authoritative BlockState schema
-    /// chain directly. Both paths validate every resulting BlockState against the exact target-game
-    /// vanilla palette. For V8/V9 targets, historical chunk-scoped `BlockExtraData` (`0x34`) entries
-    /// are assigned by their persisted full Y coordinate to the matching legacy SubChunk and become a
-    /// second paletted storage layer. The original `BlockExtraData` record is deleted only after every
-    /// entry has been converted successfully. V1 targets preserve that historical record.
+    /// Source direction and persisted SubChunk evidence are checked directly for this operation rather
+    /// than through a synthetic whole-world upgrade plan. Legacy V0/V2-V7 numeric blocks are resolved
+    /// through [`BlockUpgradeData`], while already-paletted SubChunks use the authoritative BlockState
+    /// schema chain. Both paths validate every resulting BlockState against the exact target-game
+    /// vanilla palette.
     ///
-    /// Only after **both** legacy and paletted staging complete successfully are their disjoint record
-    /// changes committed through a single [`crate::world::WorldTransaction`]. A failure in either path
-    /// therefore leaves all source SubChunk and `BlockExtraData` records unchanged.
+    /// For V8/V9 targets, historical chunk-scoped `BlockExtraData` (`0x34`) entries are assigned by
+    /// persisted full Y coordinate to the matching legacy SubChunk and become a second paletted storage
+    /// layer. The original `BlockExtraData` record is deleted only after every entry converts.
     ///
-    /// `LegacyTerrain`, biomes, actors, player items and `level.dat` are deliberately outside this
-    /// operation. They have separate Bedrock data representations and separate upgrade steps.
+    /// Only after both legacy and paletted staging complete successfully are their disjoint changes
+    /// committed through one [`crate::world::WorldTransaction`]. `LegacyTerrain`, biomes, actors,
+    /// player items and `level.dat` are deliberately outside this concrete operation.
     pub fn upgrade_subchunks_blocking(
         &self,
         target: GameVersion,
         upgrade_data: &BlockUpgradeData,
         target_palette: &VanillaBlockStatePalette,
     ) -> Result<WorldSubChunkUpgradeReport> {
-        let plan = self.upgrade_plan_blocking(target.clone())?;
-        reject_plan_issues(&plan)?;
+        validate_upgrade_source(self, &target)?;
         validate_target_data(&target, upgrade_data, target_palette)?;
 
         let target_version = target_subchunk_version(&target).ok_or_else(|| {
@@ -107,10 +105,38 @@ where
     }
 }
 
-fn reject_plan_issues(plan: &UpgradePlan) -> Result<()> {
-    if let Some(issue) = plan.issues.first() {
+fn validate_upgrade_source<S>(world: &BedrockWorld<S>, target: &GameVersion) -> Result<()>
+where
+    S: WorldStorageHandle,
+{
+    let versions = world.versions_blocking()?;
+    if versions.world_format == WorldFormat::PocketChunksDat {
+        return Err(BedrockWorldError::ReadOnly);
+    }
+    let source = versions.game_version().ok_or_else(|| {
+        BedrockWorldError::Validation(
+            "SubChunk upgrade requires level.dat LastOpenedWithVersion evidence".to_string(),
+        )
+    })?;
+    if compare_components(target.components(), source.components()) != Ordering::Greater {
         return Err(BedrockWorldError::Validation(format!(
-            "SubChunk upgrade cannot run: {issue:?}"
+            "SubChunk upgrade target {target} must be newer than persisted source {source}"
+        )));
+    }
+    if versions.unversioned_subchunks != 0 {
+        return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+            "{} SubChunk records have no readable version byte",
+            versions.unversioned_subchunks
+        )));
+    }
+    if let Some(entry) = versions
+        .subchunks
+        .iter()
+        .find(|entry| matches!(entry.version, SubChunkVersion::Unknown(_)))
+    {
+        return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+            "cannot upgrade unknown persisted SubChunk version {:?} ({} records)",
+            entry.version, entry.records
         )));
     }
     Ok(())
@@ -168,6 +194,8 @@ fn target_subchunk_version(target: &GameVersion) -> Option<SubChunkVersion> {
     if game_at_least(target, &[1, 18, 0, 20]) {
         Some(SubChunkVersion::V9)
     } else if game_at_least(target, &[1, 16, 230, 50]) {
+        // Experimental Caves & Cliffs builds used non-unique storage transitions; exact persisted
+        // evidence is required rather than guessing V8 versus V9 from a broad version interval.
         None
     } else if game_at_least(target, &[1, 2, 14, 2]) {
         Some(SubChunkVersion::V8)
