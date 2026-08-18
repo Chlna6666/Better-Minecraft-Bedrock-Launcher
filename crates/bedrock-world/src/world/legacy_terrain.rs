@@ -1,7 +1,10 @@
-//! Explicit lossless `LegacyTerrain` record split for Minecraft Bedrock worlds.
+//! Explicit lossless `LegacyTerrain` record split/recombine operations for Minecraft Bedrock worlds.
 
-use crate::chunk::{LegacyTerrainSplitReport, SubChunkVersion, stage_legacy_terrain_split};
-use crate::database::StorageOp;
+use crate::chunk::{
+    LegacyTerrainCombineReport, LegacyTerrainSplitReport, SubChunkVersion,
+    stage_legacy_terrain_combine, stage_legacy_terrain_split,
+};
+use crate::database::{StorageBatch, StorageOp};
 use crate::error::Result;
 use crate::world::{BedrockWorld, WorldStorageHandle};
 
@@ -21,22 +24,41 @@ where
         subchunk_version: SubChunkVersion,
     ) -> Result<LegacyTerrainSplitReport> {
         let (batch, report) = stage_legacy_terrain_split(self.storage(), subchunk_version)?;
-        if batch.is_empty() {
-            return Ok(report);
-        }
-
-        let mut transaction = self.transaction();
-        for op in batch.ops() {
-            match op {
-                StorageOp::Put { key, value } => {
-                    transaction.put_raw_key(key.clone(), value.clone());
-                }
-                StorageOp::Delete { key } => {
-                    transaction.delete_raw_key(key.clone());
-                }
-            }
-        }
-        transaction.commit()?;
+        commit_legacy_terrain_batch(self, &batch)?;
         Ok(report)
     }
+
+    /// Exactly recombines separated V0/V2-V7 SubChunks plus `Data2DLegacy` back into
+    /// `LegacyTerrain` in one world transaction.
+    ///
+    /// This reverse write is accepted only when all eight Y=0..7 fixed-array SubChunks exist, each
+    /// still contains sky/block light arrays, no SubChunk exists outside the 0..127 target height,
+    /// every `Data2DLegacy` height fits the `LegacyTerrain` `u8` field, and no competing biome or
+    /// existing `LegacyTerrain` record is present. Otherwise nothing is written.
+    pub fn combine_legacy_terrain_blocking(&self) -> Result<LegacyTerrainCombineReport> {
+        let (batch, report) = stage_legacy_terrain_combine(self.storage())?;
+        commit_legacy_terrain_batch(self, &batch)?;
+        Ok(report)
+    }
+}
+
+fn commit_legacy_terrain_batch<S>(world: &BedrockWorld<S>, batch: &StorageBatch) -> Result<()>
+where
+    S: WorldStorageHandle,
+{
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = world.transaction();
+    for op in batch.ops() {
+        match op {
+            StorageOp::Put { key, value } => {
+                transaction.put_raw_key(key.clone(), value.clone());
+            }
+            StorageOp::Delete { key } => {
+                transaction.delete_raw_key(key.clone());
+            }
+        }
+    }
+    transaction.commit()
 }
