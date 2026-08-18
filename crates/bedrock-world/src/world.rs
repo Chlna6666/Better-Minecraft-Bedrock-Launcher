@@ -12,6 +12,6 @@ pub use crate::parsed::{
     RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport,
 };
 pub use conversion::{
-    ChunkMigrationTarget, MigrationBlocker, PocketChunksDatImportOptions,
-    PocketChunksDatImportReport, WorldMigrationPlan, import_pocket_chunks_dat_records_blocking,
+    ChunkConversionTarget, ConversionBlocker, PocketChunksDatImportOptions,
+    PocketChunksDatImportReport, WorldConversionPlan, import_pocket_chunks_dat_records_blocking,
 };

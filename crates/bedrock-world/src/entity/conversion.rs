@@ -1,87 +1,119 @@
-//! Actor-storage migration between historical inline entity records and modern digest storage.
+//! Explicit conversion between Minecraft Bedrock actor-storage representations.
 //!
-//! Actor migration belongs to `bedrock-world`: `Entity`, `digp`, `actorprefix`, actor `UniqueID` and
-//! Bedrock NBT are Minecraft world semantics rather than LevelDB mechanics.
+//! Historical inline `Entity` records and modern `digp`/`actorprefix` storage are both supported
+//! persisted representations. Normal reads do not convert either form.
 
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag};
 use crate::database::{StorageBatch, WorldStorage};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
-use crate::integrity::{ActorStorageModel, CompatibilityLevel, WritePolicy};
+use crate::integrity::{ActorStorageModel, CompatibilityLevel};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
+use crate::version::ConversionCompatibility;
 use bytes::Bytes;
 use std::collections::BTreeSet;
 
-/// Required action for an observed actor storage population.
+/// Explicit target actor-storage representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActorMigrationAction {
-    /// No actor-format conversion is required.
+pub enum ActorStorageTarget {
+    /// Consecutive actor NBT roots stored in the chunk `Entity` record.
+    Inline,
+    /// `digp<ChunkKey>` digest plus `actorprefix<ActorUid>` payload records.
+    Digest,
+}
+
+/// Conversion selected from observed actor storage and an explicit target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorStorageConversion {
+    /// Source already uses the requested storage representation.
     None,
-    /// Convert legacy inline chunk `Entity` records to modern digest/payload storage.
+    /// Convert inline chunk actors to digest/payload storage.
     InlineToDigest,
-    /// Reconcile a mixed inline/digest population before destructive actor writes.
+    /// Convert one chunk digest back to an inline `Entity` record.
+    DigestToInline,
+    /// Both representations are present and require caller-directed reconciliation.
     ReconcileMixed,
-    /// No safe actor migration can be selected from the available evidence.
-    Refuse,
+    /// Source storage cannot be established safely.
+    Unsupported,
 }
 
-/// Result of converting one legacy inline actor record.
+/// Result of one explicit actor-storage conversion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ActorMigrationReport {
-    /// Number of inline actor NBT roots converted.
-    pub actors_migrated: usize,
-    /// Number of existing actorprefix payloads that already matched exactly.
-    pub actor_payloads_reused: usize,
-    /// Whether an existing digest was merged rather than created from scratch.
-    pub merged_existing_digest: bool,
+pub struct ActorStorageConversionReport {
+    /// Number of actor payloads represented in the target chunk storage.
+    pub actors_converted: usize,
+    /// Number of target payload/records that already matched exactly.
+    pub target_records_reused: usize,
+    /// Number of actorprefix payloads intentionally retained during digest -> inline conversion.
+    ///
+    /// Actor payload records can outlive an individual digest reference, so this converter never
+    /// deletes them without a whole-world reference analysis.
+    pub actorprefix_payloads_retained: usize,
 }
 
-/// Classifies actor migration without mutating storage.
+/// Classifies a requested actor-storage conversion without mutating storage.
 #[must_use]
-pub const fn classify_actor_migration(
-    storage: ActorStorageModel,
-    policy: WritePolicy,
-) -> ActorMigrationAction {
-    if matches!(policy, WritePolicy::Refuse | WritePolicy::Preserve) {
-        return match storage {
-            ActorStorageModel::ModernDigest | ActorStorageModel::Unknown => ActorMigrationAction::None,
-            ActorStorageModel::LegacyInline | ActorStorageModel::Mixed => ActorMigrationAction::Refuse,
-        };
-    }
-    match storage {
-        ActorStorageModel::Unknown | ActorStorageModel::ModernDigest => ActorMigrationAction::None,
-        ActorStorageModel::LegacyInline => ActorMigrationAction::InlineToDigest,
-        ActorStorageModel::Mixed => ActorMigrationAction::ReconcileMixed,
+pub const fn classify_actor_storage_conversion(
+    source: ActorStorageModel,
+    target: ActorStorageTarget,
+) -> ActorStorageConversion {
+    match (source, target) {
+        (ActorStorageModel::LegacyInline, ActorStorageTarget::Inline)
+        | (ActorStorageModel::ModernDigest, ActorStorageTarget::Digest) => ActorStorageConversion::None,
+        (ActorStorageModel::LegacyInline, ActorStorageTarget::Digest) => {
+            ActorStorageConversion::InlineToDigest
+        }
+        (ActorStorageModel::ModernDigest, ActorStorageTarget::Inline) => {
+            ActorStorageConversion::DigestToInline
+        }
+        (ActorStorageModel::Mixed, _) => ActorStorageConversion::ReconcileMixed,
+        (ActorStorageModel::Unknown, _) => ActorStorageConversion::Unsupported,
     }
 }
 
-/// Compatibility implied by an actor storage population.
+/// Reports semantic conversion support for actor-storage representations.
+#[must_use]
+pub const fn actor_storage_conversion_compatibility(
+    source: ActorStorageModel,
+    target: ActorStorageTarget,
+) -> ConversionCompatibility {
+    match classify_actor_storage_conversion(source, target) {
+        ActorStorageConversion::None
+        | ActorStorageConversion::InlineToDigest
+        | ActorStorageConversion::DigestToInline => ConversionCompatibility::Lossless,
+        ActorStorageConversion::ReconcileMixed | ActorStorageConversion::Unsupported => {
+            ConversionCompatibility::Unsupported
+        }
+    }
+}
+
+/// Compatibility implied by an observed actor storage population.
+///
+/// Both known Bedrock actor-storage generations are first-class readable representations.
 #[must_use]
 pub const fn actor_storage_compatibility(storage: ActorStorageModel) -> CompatibilityLevel {
     match storage {
-        ActorStorageModel::ModernDigest => CompatibilityLevel::Exact,
-        ActorStorageModel::LegacyInline | ActorStorageModel::Mixed => CompatibilityLevel::MigrationRequired,
-        ActorStorageModel::Unknown => CompatibilityLevel::ReadCompatible,
+        ActorStorageModel::LegacyInline | ActorStorageModel::ModernDigest => CompatibilityLevel::Exact,
+        ActorStorageModel::Mixed | ActorStorageModel::Unknown => CompatibilityLevel::ReadCompatible,
     }
 }
 
-/// Converts one chunk's legacy inline `Entity` payload to modern `digp`/`actorprefix` storage.
+/// Converts one chunk's inline `Entity` payload to `digp`/`actorprefix` storage.
 ///
-/// The operation is conservative and atomic through [`WorldStorage::write_batch`]. Existing modern
-/// actor payloads are reused only when their bytes exactly match. Conflicting payloads, duplicate
-/// actor ids and actors without a usable `UniqueID` abort migration without deleting legacy data.
-pub fn migrate_inline_actor_chunk_blocking(
+/// Existing actor payloads are reused only when bytes match exactly. Conflicts or actors without a
+/// usable `UniqueID` abort before the legacy chunk record is removed.
+pub fn convert_inline_actor_chunk_to_digest_blocking(
     storage: &dyn WorldStorage,
     pos: ChunkPos,
-) -> Result<ActorMigrationReport> {
-    let legacy_key = ChunkKey::new(pos, ChunkRecordTag::Entity).encode();
-    let Some(legacy_payload) = storage.get(&legacy_key)? else {
-        return Ok(ActorMigrationReport::default());
+) -> Result<ActorStorageConversionReport> {
+    let inline_key = ChunkKey::new(pos, ChunkRecordTag::Entity).encode();
+    let Some(inline_payload) = storage.get(&inline_key)? else {
+        return Ok(ActorStorageConversionReport::default());
     };
-    let roots = parse_consecutive_root_nbt(legacy_payload.as_ref())?;
+    let roots = parse_consecutive_root_nbt(inline_payload.as_ref())?;
     if roots.is_empty() {
         return Err(BedrockWorldError::CorruptWorld(format!(
-            "legacy Entity record for chunk ({}, {}, {}) is empty",
+            "inline Entity record for chunk ({}, {}, {}) is empty",
             pos.x,
             pos.z,
             pos.dimension.id()
@@ -109,15 +141,11 @@ pub fn migrate_inline_actor_chunk_blocking(
     }
 
     let mut batch = StorageBatch::new();
-    let mut report = ActorMigrationReport {
-        merged_existing_digest: existing_digest.is_some(),
-        ..ActorMigrationReport::default()
-    };
-
+    let mut report = ActorStorageConversionReport::default();
     for root in roots {
         let unique_id = actor_unique_id(&root).ok_or_else(|| {
             BedrockWorldError::Validation(format!(
-                "legacy actor in chunk ({}, {}, {}) has no integer UniqueID",
+                "inline actor in chunk ({}, {}, {}) has no integer UniqueID",
                 pos.x,
                 pos.z,
                 pos.dimension.id()
@@ -127,7 +155,7 @@ pub fn migrate_inline_actor_chunk_blocking(
         let raw_uid = uid.raw_storage_bytes();
         if !digest_ids.insert(raw_uid) && existing_digest.is_none() {
             return Err(BedrockWorldError::Validation(format!(
-                "legacy actor record contains duplicate UniqueID {unique_id}"
+                "inline actor record contains duplicate UniqueID {unique_id}"
             )));
         }
         let actor_value = Bytes::from(serialize_root_nbt(&root)?);
@@ -135,14 +163,14 @@ pub fn migrate_inline_actor_chunk_blocking(
         if let Some(existing) = storage.get(&actor_key)? {
             if existing != actor_value {
                 return Err(BedrockWorldError::ConcurrentWrite(format!(
-                    "actorprefix collision while migrating UniqueID {unique_id}"
+                    "actorprefix collision while converting UniqueID {unique_id}"
                 )));
             }
-            report.actor_payloads_reused = report.actor_payloads_reused.saturating_add(1);
+            report.target_records_reused = report.target_records_reused.saturating_add(1);
         } else {
             batch.put(actor_key, actor_value);
         }
-        report.actors_migrated = report.actors_migrated.saturating_add(1);
+        report.actors_converted = report.actors_converted.saturating_add(1);
     }
 
     let mut digest = Vec::with_capacity(digest_ids.len() * 8);
@@ -150,7 +178,80 @@ pub fn migrate_inline_actor_chunk_blocking(
         digest.extend_from_slice(&uid);
     }
     batch.put(digest_key, Bytes::from(digest));
-    batch.delete(legacy_key);
+    batch.delete(inline_key);
+    storage.write_batch(&batch)?;
+    Ok(report)
+}
+
+/// Converts one chunk's `digp` references back to a consecutive inline `Entity` record.
+///
+/// `actorprefix` payloads are retained because deleting them safely requires proving that no other
+/// digest references them. The chunk digest itself is removed after the inline target record is
+/// validated/staged.
+pub fn convert_digest_actor_chunk_to_inline_blocking(
+    storage: &dyn WorldStorage,
+    pos: ChunkPos,
+) -> Result<ActorStorageConversionReport> {
+    let digest_key = ActorDigestKey::new(pos).storage_key();
+    let Some(digest) = storage.get(&digest_key)? else {
+        return Ok(ActorStorageConversionReport::default());
+    };
+    if digest.len() % 8 != 0 {
+        return Err(BedrockWorldError::CorruptWorld(format!(
+            "actor digest for chunk ({}, {}, {}) has invalid byte length {}",
+            pos.x,
+            pos.z,
+            pos.dimension.id(),
+            digest.len()
+        )));
+    }
+
+    let mut inline = Vec::new();
+    let mut seen = BTreeSet::<[u8; 8]>::new();
+    let mut report = ActorStorageConversionReport::default();
+    for raw in digest.chunks_exact(8) {
+        let mut uid_bytes = [0_u8; 8];
+        uid_bytes.copy_from_slice(raw);
+        if !seen.insert(uid_bytes) {
+            return Err(BedrockWorldError::CorruptWorld(
+                "actor digest contains duplicate actor storage ids".to_string(),
+            ));
+        }
+        let uid = ActorUid(i64::from_le_bytes(uid_bytes));
+        let actor_key = uid.storage_key();
+        let actor = storage.get(&actor_key)?.ok_or_else(|| {
+            BedrockWorldError::CorruptWorld(format!(
+                "actor digest references missing actor payload {:?}", uid_bytes
+            ))
+        })?;
+        let roots = parse_consecutive_root_nbt(actor.as_ref())?;
+        if roots.len() != 1 {
+            return Err(BedrockWorldError::CorruptWorld(format!(
+                "actorprefix payload {:?} contains {} NBT roots instead of one",
+                uid_bytes,
+                roots.len()
+            )));
+        }
+        inline.extend_from_slice(actor.as_ref());
+        report.actors_converted = report.actors_converted.saturating_add(1);
+        report.actorprefix_payloads_retained =
+            report.actorprefix_payloads_retained.saturating_add(1);
+    }
+
+    let inline_key = ChunkKey::new(pos, ChunkRecordTag::Entity).encode();
+    let inline = Bytes::from(inline);
+    let mut batch = StorageBatch::new();
+    if let Some(existing) = storage.get(&inline_key)? {
+        if existing != inline {
+            return Err(BedrockWorldError::ConcurrentWrite(
+                "inline Entity target already exists with different bytes".to_string(),
+            ));
+        }
+        report.target_records_reused = report.target_records_reused.saturating_add(1);
+    } else {
+        batch.put(inline_key, inline);
+    }
+    batch.delete(digest_key);
     storage.write_batch(&batch)?;
     Ok(report)
 }
@@ -171,28 +272,23 @@ mod tests {
     use super::*;
     use crate::chunk::Dimension;
     use crate::database::{MemoryStorage, WorldStorage};
-    use crate::nbt::NbtTag;
     use indexmap::IndexMap;
 
     #[test]
-    fn inline_actor_migration_writes_digest_and_removes_legacy_record() {
+    fn inline_and_digest_conversion_roundtrip_actor_payload() {
         let storage = MemoryStorage::new();
         let pos = ChunkPos { x: 1, z: -2, dimension: Dimension::Overworld };
         let root = NbtTag::Compound(IndexMap::from([
             ("identifier".to_string(), NbtTag::String("minecraft:pig".to_string())),
             ("UniqueID".to_string(), NbtTag::Long(0x0000_0002_1234_5678_i64)),
         ]));
-        let legacy_key = ChunkKey::new(pos, ChunkRecordTag::Entity).encode();
-        storage.put(&legacy_key, &serialize_root_nbt(&root).unwrap()).unwrap();
+        let inline_key = ChunkKey::new(pos, ChunkRecordTag::Entity).encode();
+        let original = Bytes::from(serialize_root_nbt(&root).unwrap());
+        storage.put(&inline_key, &original).unwrap();
 
-        let report = migrate_inline_actor_chunk_blocking(&storage, pos).unwrap();
-        assert_eq!(report.actors_migrated, 1);
-        assert!(storage.get(&legacy_key).unwrap().is_none());
-        let uid = ActorUid::from_unique_id(0x0000_0002_1234_5678_i64);
-        assert!(storage.get(&uid.storage_key()).unwrap().is_some());
-        assert_eq!(
-            storage.get(&ActorDigestKey::new(pos).storage_key()).unwrap().unwrap().as_ref(),
-            uid.raw_storage_bytes().as_slice()
-        );
+        convert_inline_actor_chunk_to_digest_blocking(&storage, pos).unwrap();
+        assert!(storage.get(&inline_key).unwrap().is_none());
+        convert_digest_actor_chunk_to_inline_blocking(&storage, pos).unwrap();
+        assert_eq!(storage.get(&inline_key).unwrap(), Some(original));
     }
 }

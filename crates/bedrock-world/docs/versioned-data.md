@@ -15,36 +15,34 @@ implicit save upgrader.
 
 ## Public responsibility names
 
-Game-data APIs use Bedrock terminology rather than framework terminology:
-
 - `version`: persisted game/data/storage version evidence and authoritative version data;
 - `legacy`: actual historical Bedrock representations;
 - `conversion`: explicit caller-requested conversion between representations.
 
-`migration` is not a public domain/module responsibility. The crate is in active development and old
-module paths are removed rather than kept as compatibility aliases.
+The crate is in active development; replaced `migration` module paths are removed instead of retained
+as compatibility aliases.
 
 ## SubChunk
 
-`SubChunkVersion` represents the actual payload byte: V0 through V9 plus `Unknown(u8)`.
-`parse_subchunk*()` selects the reader from that byte automatically. Unknown future versions are kept
-raw. `write_subchunk_preserving_version()` writes retained historical/unknown payloads without
-implicitly selecting a newer SubChunk generation.
+`SubChunkVersion` is the actual payload byte (`V0` through `V9`, plus `Unknown(u8)`). Reads select the
+format automatically. Unknown future versions remain raw. Same-version writes preserve the selected
+SubChunk generation; a different target is only selected through explicit conversion.
 
 ## Player
 
-Player NBT does not contain one universal player schema byte. `PlayerDataFormat` therefore reports
-observable evidence instead of inventing `PlayerV1`, `PlayerV2`, etc.:
+Player data is detected from actual storage and NBT evidence: `level.dat.Player`, `~local_player`,
+`player_<xuid>`, saved-item representation and real `level.dat` version fields. Reading never invents a
+precise Player schema version.
 
-- storage: `level.dat.Player`, `~local_player`, `player_<xuid>` or unknown;
-- saved-item representation: legacy numeric, named, named BlockState or mixed;
-- `LevelVersion`/`GameVersion` only when actual `level.dat` fields provide that evidence.
+## Actor storage
 
-`player::storage` reads and writes each storage form directly. `player::conversion` is explicit and is
-not called by those normal read/write functions.
+Both inline chunk `Entity` and `digp`/`actorprefix` are supported Bedrock actor-storage
+representations. `entity::conversion` exposes explicit lossless conversion in both directions. The
+`digest -> inline` path retains actorprefix payloads because deleting them safely requires a complete
+world reference analysis.
 
 ## Other domains
 
-Item, biome, entity, chunk and whole-world cross-version operations live under `conversion`. BlockState
-schema/corpus/numeric-ID resources live under `block::version`; BlockState transforms live under
-`block::conversion`. No new `xxx::migration` module should be added.
+Item, biome, entity, chunk and whole-world cross-version operations live under `conversion`.
+BlockState schema/corpus/numeric-ID resources live under `block::version`; BlockState transforms live
+under `block::conversion`.

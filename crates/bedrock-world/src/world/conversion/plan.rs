@@ -1,89 +1,86 @@
-//! Whole-world migration planning derived from observed records rather than a single global version.
+//! Whole-world explicit conversion planning derived from observed Bedrock records.
 
 use crate::chunk::ChunkPos;
-use crate::entity::{ActorMigrationAction, classify_actor_migration};
-use crate::integrity::{
-    ActorStorageModel, CompatibilityLevel, WorldCompatibilityReport, WritePolicy,
+use crate::entity::{
+    ActorStorageConversion, ActorStorageTarget, classify_actor_storage_conversion,
 };
+use crate::integrity::{ActorStorageModel, CompatibilityLevel, WorldCompatibilityReport};
 
-/// A reason a world cannot be migrated destructively without additional authoritative information.
+/// A reason an explicit whole-world conversion cannot proceed safely.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MigrationBlocker {
+pub enum ConversionBlocker {
     /// Future/unknown chunk data is present and must be preserved raw.
     FutureChunkData(ChunkPos),
-    /// Corrupt chunk data must be repaired before migration.
+    /// Corrupt chunk data must be repaired before conversion.
     CorruptChunk(ChunkPos),
-    /// Actor storage evidence cannot be reconciled automatically.
+    /// Actor storage evidence cannot be converted automatically to the requested target.
     ActorStorage,
 }
 
-/// One chunk selected for historical format migration.
+/// One chunk selected for caller-requested historical format conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChunkMigrationTarget {
+pub struct ChunkConversionTarget {
     /// Chunk position including dimension.
     pub pos: ChunkPos,
-    /// Compatibility observed before migration.
+    /// Compatibility observed before conversion.
     pub compatibility: CompatibilityLevel,
 }
 
-/// Deterministic migration plan built from a read-only compatibility scan.
+/// Deterministic explicit conversion plan built from a read-only compatibility scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorldMigrationPlan {
-    /// Requested mutation policy.
-    pub policy: WritePolicy,
-    /// Chunks requiring explicit conversion.
-    pub chunks: Vec<ChunkMigrationTarget>,
-    /// Actor storage conversion/reconciliation action.
-    pub actor_action: ActorMigrationAction,
-    /// Blocking conditions that prohibit execution.
-    pub blockers: Vec<MigrationBlocker>,
+pub struct WorldConversionPlan {
+    /// Chunks containing non-exact data for which a domain conversion may be required.
+    pub chunks: Vec<ChunkConversionTarget>,
+    /// Requested actor-storage conversion.
+    pub actor_conversion: ActorStorageConversion,
+    /// Conditions that prohibit automatic execution of this plan.
+    pub blockers: Vec<ConversionBlocker>,
 }
 
-impl WorldMigrationPlan {
-    /// Builds a migration plan from a compatibility report without touching storage.
+impl WorldConversionPlan {
+    /// Builds a conversion plan without touching storage.
     #[must_use]
-    pub fn from_report(report: &WorldCompatibilityReport, policy: WritePolicy) -> Self {
+    pub fn from_report(
+        report: &WorldCompatibilityReport,
+        actor_target: ActorStorageTarget,
+    ) -> Self {
         let mut chunks = Vec::new();
         let mut blockers = Vec::new();
         for chunk in &report.chunks {
             match chunk.capabilities.compatibility {
                 CompatibilityLevel::MigrationRequired | CompatibilityLevel::ReadCompatible => {
-                    if matches!(policy, WritePolicy::Migrate) {
-                        chunks.push(ChunkMigrationTarget {
-                            pos: chunk.pos,
-                            compatibility: chunk.capabilities.compatibility,
-                        });
-                    }
+                    chunks.push(ChunkConversionTarget {
+                        pos: chunk.pos,
+                        compatibility: chunk.capabilities.compatibility,
+                    });
                 }
                 CompatibilityLevel::UnsupportedFuture => {
-                    blockers.push(MigrationBlocker::FutureChunkData(chunk.pos));
+                    blockers.push(ConversionBlocker::FutureChunkData(chunk.pos));
                 }
                 CompatibilityLevel::Corrupt => {
-                    blockers.push(MigrationBlocker::CorruptChunk(chunk.pos));
+                    blockers.push(ConversionBlocker::CorruptChunk(chunk.pos));
                 }
                 CompatibilityLevel::Exact => {}
             }
         }
-        let actor_action = classify_actor_migration(report.actor_storage, policy);
-        if matches!(actor_action, ActorMigrationAction::Refuse)
-            && !matches!(
-                report.actor_storage,
-                ActorStorageModel::Unknown | ActorStorageModel::ModernDigest
-            )
+        let actor_conversion = classify_actor_storage_conversion(report.actor_storage, actor_target);
+        if matches!(
+            actor_conversion,
+            ActorStorageConversion::ReconcileMixed | ActorStorageConversion::Unsupported
+        ) && !matches!(report.actor_storage, ActorStorageModel::Unknown)
         {
-            blockers.push(MigrationBlocker::ActorStorage);
+            blockers.push(ConversionBlocker::ActorStorage);
         }
         Self {
-            policy,
             chunks,
-            actor_action,
+            actor_conversion,
             blockers,
         }
     }
 
-    /// Returns whether this plan may proceed without violating preservation guarantees.
+    /// Returns whether no blocker prevents execution.
     #[must_use]
     pub fn executable(&self) -> bool {
-        matches!(self.policy, WritePolicy::Migrate) && self.blockers.is_empty()
+        self.blockers.is_empty()
     }
 }
