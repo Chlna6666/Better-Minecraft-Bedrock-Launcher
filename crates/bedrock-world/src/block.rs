@@ -10,7 +10,8 @@ pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
 pub use version::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
     BlockUpgradeData, LegacyNumericBlock, LegacyNumericBlockMatch, LegacyNumericBlockStateTable,
-    LegacyNumericBlockStateTableStats, PINNED_BLOCK_STATE_SCHEMA_FILES,
+    LegacyNumericBlockStateTableStats, LegacyNumericBlockUpgradeTable,
+    LegacyNumericBlockUpgradeTableStats, PINNED_BLOCK_STATE_SCHEMA_FILES,
     PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT, PINNED_BLOCK_UPGRADE_SCHEMA_VERSION,
     VanillaBlockStatePalette, load_pinned_block_state_catalog,
     load_pinned_block_state_catalog_for_target, load_pinned_block_upgrade_data_for_palette,

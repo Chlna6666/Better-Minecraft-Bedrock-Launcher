@@ -4,6 +4,7 @@ mod authoritative;
 mod corpus;
 mod corpus_bundle;
 mod legacy_numeric;
+mod legacy_numeric_upgrade;
 mod upgrade_data;
 mod vanilla_palette;
 
@@ -24,6 +25,9 @@ pub use corpus_bundle::{
 pub use legacy_numeric::{
     LegacyNumericBlock, LegacyNumericBlockMatch, LegacyNumericBlockStateTable,
     LegacyNumericBlockStateTableStats,
+};
+pub use legacy_numeric_upgrade::{
+    LegacyNumericBlockUpgradeTable, LegacyNumericBlockUpgradeTableStats,
 };
 pub use upgrade_data::{BlockUpgradeData, load_pinned_block_upgrade_data_for_palette};
 pub use vanilla_palette::VanillaBlockStatePalette;
