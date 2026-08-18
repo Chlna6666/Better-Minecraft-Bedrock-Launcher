@@ -4,7 +4,9 @@
 //! manifest pins the exact PocketMine revision and validates that destructive migration never runs
 //! against a partial, duplicated, or accidentally mixed schema set.
 
-use super::{AuthoritativeBlockStateCatalog, BlockStateSchemaSource};
+use super::{
+    AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
+};
 use crate::error::{BedrockWorldError, Result};
 use std::collections::BTreeSet;
 
@@ -58,7 +60,7 @@ pub const PINNED_BLOCK_STATE_SCHEMA_FILES: &[&str] = &[
     "0331_1.21.100.23_beta_to_1.21.110.26_beta.json",
 ];
 
-/// Validates and loads a complete pinned schema set.
+/// Validates and loads the complete pinned schema set, targeting the newest represented version.
 ///
 /// Input ordering does not matter, but the filename set must match
 /// [`PINNED_BLOCK_STATE_SCHEMA_FILES`] exactly. This prevents a server from performing destructive
@@ -66,6 +68,92 @@ pub const PINNED_BLOCK_STATE_SCHEMA_FILES: &[&str] = &[
 pub fn load_pinned_block_state_catalog(
     sources: &[BlockStateSchemaSource<'_>],
 ) -> Result<AuthoritativeBlockStateCatalog> {
+    validate_pinned_sources(sources)?;
+    AuthoritativeBlockStateCatalog::from_sources(sources)
+}
+
+/// Loads the complete pinned corpus as a catalogue bound to one exact historical target version.
+///
+/// All 34 pinned sources must still be supplied and validated. The loader then compiles only schema
+/// groups whose result version is at or below `target_version`, so the per-block migration hot path
+/// remains identical to a newest-version catalogue. The target must be an actual authoritative schema
+/// endpoint; arbitrary version stamping and downgrades are refused.
+pub fn load_pinned_block_state_catalog_for_target(
+    sources: &[BlockStateSchemaSource<'_>],
+    target_version: BlockStateStorageVersion,
+) -> Result<AuthoritativeBlockStateCatalog> {
+    validate_pinned_sources(sources)?;
+    load_catalog_for_target(sources, target_version)
+}
+
+fn load_catalog_for_target(
+    sources: &[BlockStateSchemaSource<'_>],
+    target_version: BlockStateStorageVersion,
+) -> Result<AuthoritativeBlockStateCatalog> {
+    let mut selected = Vec::with_capacity(sources.len());
+    for source in sources {
+        if schema_result_version(source)? <= target_version {
+            selected.push(*source);
+        }
+    }
+    if selected.is_empty() {
+        return Err(BedrockWorldError::Validation(format!(
+            "target BlockState version {} predates every schema endpoint in the supplied corpus",
+            target_version.raw()
+        )));
+    }
+
+    let catalog = AuthoritativeBlockStateCatalog::from_sources(&selected)?;
+    if catalog.output_version() != target_version {
+        return Err(BedrockWorldError::Validation(format!(
+            "target BlockState version {} is not an authoritative schema endpoint; nearest compiled endpoint is {}",
+            target_version.raw(),
+            catalog.output_version().raw()
+        )));
+    }
+    Ok(catalog)
+}
+
+fn schema_result_version(source: &BlockStateSchemaSource<'_>) -> Result<BlockStateStorageVersion> {
+    let value: serde_json::Value = serde_json::from_str(source.json).map_err(|error| {
+        BedrockWorldError::Validation(format!(
+            "invalid BlockState schema {} while selecting target: {error}",
+            source.name
+        ))
+    })?;
+    let root = value.as_object().ok_or_else(|| {
+        BedrockWorldError::Validation(format!(
+            "BlockState schema {} root must be an object",
+            source.name
+        ))
+    })?;
+    let component = |name: &str| -> Result<u8> {
+        let raw = root
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                BedrockWorldError::Validation(format!(
+                    "BlockState schema {} field {name} must be an unsigned integer",
+                    source.name
+                ))
+            })?;
+        u8::try_from(raw).map_err(|_| {
+            BedrockWorldError::Validation(format!(
+                "BlockState schema {} field {name} exceeds u8",
+                source.name
+            ))
+        })
+    };
+
+    Ok(BlockStateStorageVersion::from_components(
+        component("maxVersionMajor")?,
+        component("maxVersionMinor")?,
+        component("maxVersionPatch")?,
+        component("maxVersionRevision")?,
+    ))
+}
+
+fn validate_pinned_sources(sources: &[BlockStateSchemaSource<'_>]) -> Result<()> {
     if sources.len() != PINNED_BLOCK_STATE_SCHEMA_FILES.len() {
         return Err(BedrockWorldError::Validation(format!(
             "pinned BlockState corpus requires {} schemas, got {}",
@@ -90,12 +178,14 @@ pub fn load_pinned_block_state_catalog(
             "pinned BlockState corpus mismatch; missing={missing:?}, unexpected={unexpected:?}"
         )));
     }
-    AuthoritativeBlockStateCatalog::from_sources(sources)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::BlockState;
+    use std::collections::BTreeMap;
 
     #[test]
     fn manifest_is_strictly_schema_id_sorted() {
@@ -111,5 +201,39 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ids.len(), 34);
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn target_bound_catalog_stops_at_requested_endpoint() {
+        let first = r#"{
+            "maxVersionMajor":1,"maxVersionMinor":12,"maxVersionPatch":0,"maxVersionRevision":1,
+            "renamedIds":{"minecraft:old":"minecraft:middle"}
+        }"#;
+        let second = r#"{
+            "maxVersionMajor":1,"maxVersionMinor":13,"maxVersionPatch":0,"maxVersionRevision":1,
+            "renamedIds":{"minecraft:middle":"minecraft:new"}
+        }"#;
+        let sources = [
+            BlockStateSchemaSource {
+                name: "0011_test.json",
+                json: first,
+            },
+            BlockStateSchemaSource {
+                name: "0021_test.json",
+                json: second,
+            },
+        ];
+        let target = BlockStateStorageVersion::from_components(1, 12, 0, 1);
+        let catalog = load_catalog_for_target(&sources, target).expect("target-bound catalog");
+        let output = catalog
+            .upgrade(&BlockState {
+                name: "minecraft:old".to_string(),
+                states: BTreeMap::new(),
+                version: Some(BlockStateStorageVersion::from_components(1, 10, 0, 0).raw()),
+            })
+            .expect("upgrade to historical endpoint");
+        assert_eq!(catalog.output_version(), target);
+        assert_eq!(output.version, Some(target.raw()));
+        assert_eq!(output.name, "minecraft:middle");
     }
 }

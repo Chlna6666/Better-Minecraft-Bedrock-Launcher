@@ -15,4 +15,5 @@ pub use migration::{
     PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT, PINNED_BLOCK_UPGRADE_SCHEMA_VERSION,
     PINNED_LEGACY_BLOCK_ID_MAP_FILE, PINNED_LEGACY_ID_META_1_9_TABLE_FILE,
     PINNED_LEGACY_ID_META_1_12_TABLE_FILE, load_pinned_block_state_catalog,
+    load_pinned_block_state_catalog_for_target,
 };

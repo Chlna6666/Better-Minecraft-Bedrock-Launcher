@@ -26,7 +26,7 @@ pub use corpus::{
     PINNED_BLOCK_STATE_SCHEMA_FILES, PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT,
     PINNED_BLOCK_UPGRADE_SCHEMA_VERSION, PINNED_LEGACY_BLOCK_ID_MAP_FILE,
     PINNED_LEGACY_ID_META_1_9_TABLE_FILE, PINNED_LEGACY_ID_META_1_12_TABLE_FILE,
-    load_pinned_block_state_catalog,
+    load_pinned_block_state_catalog, load_pinned_block_state_catalog_for_target,
 };
 pub use legacy_numeric::{LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats};
 
@@ -46,7 +46,7 @@ impl BlockStateMigrator for AuthoritativeBlockStateCatalog {
     fn migrate_to(&self, state: &BlockState, target_version: i32) -> Result<BlockState> {
         if self.output_version().raw() != target_version {
             return Err(BedrockWorldError::Validation(format!(
-                "authoritative BlockState corpus outputs version {}, but world migration targets {target_version}",
+                "authoritative BlockState catalog outputs version {}, but world migration targets {target_version}; build a target-bound catalog with load_pinned_block_state_catalog_for_target",
                 self.output_version().raw()
             )));
         }

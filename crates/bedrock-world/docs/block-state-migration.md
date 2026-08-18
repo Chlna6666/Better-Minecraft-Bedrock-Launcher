@@ -15,6 +15,19 @@ those immutable resources with the server/client and pass all schema documents t
 The library does **not** fetch migration data at runtime. World conversion must be deterministic and
 must not depend on network availability or on a mutable upstream branch.
 
+### Historical target versions
+
+A server or editor that intentionally writes a historical Bedrock generation should build a catalogue
+with `load_pinned_block_state_catalog_for_target`. The complete pinned corpus is still validated first;
+only schema groups ending at or before the requested `BlockStateStorageVersion` are then compiled.
+The requested target must be an actual authoritative schema endpoint. This prevents arbitrary version
+stamping and keeps the per-palette migration hot path target-specific instead of branching across the
+full corpus for every BlockState.
+
+Downgrading a newer BlockState into an older semantic schema is not inferred from forward upgrade
+rules. Existing historical data may be preserved in its original representation, while destructive
+conversion requires an authoritative forward path to the selected target and a target-palette check.
+
 ## Execution semantics
 
 The authoritative executor follows the reference ordering rather than reducing the data to simple
