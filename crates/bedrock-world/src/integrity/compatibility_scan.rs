@@ -4,12 +4,16 @@
 //! persisted data that exists; it does not decide that historical data should be upgraded.
 
 use super::{ActorStorage, ChunkCapabilities, CompatibilityLevel, WorldCapabilities};
-use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, SubChunkVersion};
+use crate::chunk::{
+    BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, LEGACY_TERRAIN_VALUE_LEN,
+    POCKET_TERRAIN_VALUE_LEN, SubChunkVersion,
+};
 use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
+use crate::entity::parse_actor_digest_ids;
 use crate::error::Result;
 use crate::world::WorldFormat;
 use bytes::Bytes;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Per-chunk data summary produced by a whole-world scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +22,11 @@ pub struct ChunkCompatibilitySummary {
     pub pos: ChunkPos,
     /// Persisted Bedrock data observed in this chunk.
     pub capabilities: ChunkCapabilities,
+    /// Exact `LegacyTerrain` payload length when one was observed for this chunk.
+    ///
+    /// `82_176` identifies a pre-LevelDB Pocket terrain core with no persisted biome/RGB tail;
+    /// `83_200` identifies the complete LevelDB-era `LegacyTerrain` representation.
+    pub legacy_terrain_payload_len: Option<usize>,
 }
 
 /// Aggregate compatibility information derived from one complete world storage scan.
@@ -31,7 +40,7 @@ pub struct WorldCompatibilityReport {
     pub actor_storage: ActorStorage,
     /// Number of raw storage records visited.
     pub records_scanned: usize,
-    /// Number of unique chunk positions observed.
+    /// Number of unique chunk positions observed, including chunks represented only by `digp`.
     pub chunks_scanned: usize,
     /// Number of chunks safe for same-representation structured round-trip.
     pub exact_chunks: usize,
@@ -47,6 +56,22 @@ pub struct WorldCompatibilityReport {
     pub actorprefix_records: usize,
     /// Number of chunk-scoped `Entity` records observed.
     pub entity_records: usize,
+    /// Number of malformed `digp` records that could not be decoded as actor-id lists.
+    pub malformed_actor_digest_records: usize,
+    /// Duplicate actor-id entries repeated inside one `digp` record.
+    pub duplicate_actor_digest_entries: usize,
+    /// Actor references whose `actorprefix` payload is missing.
+    pub dangling_actor_references: usize,
+    /// Actor payloads not referenced by any observed `digp` record.
+    pub orphan_actorprefix_records: usize,
+    /// Distinct actor ids referenced by more than one chunk digest.
+    pub actor_ids_referenced_by_multiple_chunks: usize,
+    /// Pre-LevelDB Pocket terrain core records with no persisted biome/RGB tail.
+    pub pocket_terrain_core_records: usize,
+    /// Complete LevelDB-era `LegacyTerrain` records including biome/RGB samples.
+    pub complete_legacy_terrain_records: usize,
+    /// `LegacyTerrain` records whose payload length matches neither known historical representation.
+    pub malformed_legacy_terrain_records: usize,
     /// Number of unknown chunk record tags retained for forward compatibility.
     pub unknown_chunk_records: usize,
     /// Number of non-chunk/raw keys not understood by the high-level classifier.
@@ -67,7 +92,20 @@ impl WorldCompatibilityReport {
     /// Returns whether any data must preserve its raw representation for safe writes.
     #[must_use]
     pub const fn requires_raw_preservation(&self) -> bool {
-        self.read_compatible_chunks != 0 || self.unsupported_future_chunks != 0
+        self.read_compatible_chunks != 0
+            || self.unsupported_future_chunks != 0
+            || self.orphan_actorprefix_records != 0
+            || self.pocket_terrain_core_records != 0
+            || self.unknown_storage_keys != 0
+    }
+
+    /// Returns whether actor index/payload relationships are structurally inconsistent.
+    #[must_use]
+    pub const fn has_actor_link_corruption(&self) -> bool {
+        self.malformed_actor_digest_records != 0
+            || self.duplicate_actor_digest_entries != 0
+            || self.dangling_actor_references != 0
+            || self.actor_ids_referenced_by_multiple_chunks != 0
     }
 }
 
@@ -79,9 +117,18 @@ pub fn scan_world_compatibility_blocking(
 ) -> Result<WorldCompatibilityReport> {
     let baseline = format.capabilities();
     let mut chunk_records = BTreeMap::<ChunkPos, Vec<ChunkRecord>>::new();
+    let mut legacy_terrain_lengths = BTreeMap::<ChunkPos, usize>::new();
     let mut actor_storage = ActorStorage::Unknown;
+    let mut actorprefix_ids = BTreeSet::<i64>::new();
+    let mut actor_references = BTreeMap::<i64, (ChunkPos, usize, bool)>::new();
+    let mut corrupt_actor_chunks = BTreeSet::<ChunkPos>::new();
     let mut digp_records = 0usize;
     let mut actorprefix_records = 0usize;
+    let mut malformed_actor_digest_records = 0usize;
+    let mut duplicate_actor_digest_entries = 0usize;
+    let mut pocket_terrain_core_records = 0usize;
+    let mut complete_legacy_terrain_records = 0usize;
+    let mut malformed_legacy_terrain_records = 0usize;
     let mut unknown_storage_keys = 0usize;
     let mut records_scanned = 0usize;
 
@@ -89,6 +136,23 @@ pub fn scan_world_compatibility_blocking(
         records_scanned = records_scanned.saturating_add(1);
         match BedrockDbKey::decode(raw_key) {
             BedrockDbKey::Chunk(key) => {
+                if key.tag == ChunkRecordTag::LegacyTerrain {
+                    legacy_terrain_lengths.insert(key.pos, value.len());
+                    match value.len() {
+                        POCKET_TERRAIN_VALUE_LEN => {
+                            pocket_terrain_core_records =
+                                pocket_terrain_core_records.saturating_add(1);
+                        }
+                        LEGACY_TERRAIN_VALUE_LEN => {
+                            complete_legacy_terrain_records =
+                                complete_legacy_terrain_records.saturating_add(1);
+                        }
+                        _ => {
+                            malformed_legacy_terrain_records =
+                                malformed_legacy_terrain_records.saturating_add(1);
+                        }
+                    }
+                }
                 let retained = if key.tag == ChunkRecordTag::SubChunkPrefix {
                     value
                         .first()
@@ -102,12 +166,46 @@ pub fn scan_world_compatibility_blocking(
                     .or_default()
                     .push(ChunkRecord { key, value: retained });
             }
-            BedrockDbKey::ActorDigest { .. } => {
+            BedrockDbKey::ActorDigest { pos } => {
                 digp_records = digp_records.saturating_add(1);
                 actor_storage = actor_storage.merge(ActorStorage::DigpActorprefix);
+                chunk_records.entry(pos).or_default();
+                match parse_actor_digest_ids(value) {
+                    Ok(ids) => {
+                        let mut local = BTreeSet::<i64>::new();
+                        for uid in ids {
+                            let actor_id = uid.0;
+                            if !local.insert(actor_id) {
+                                duplicate_actor_digest_entries =
+                                    duplicate_actor_digest_entries.saturating_add(1);
+                                corrupt_actor_chunks.insert(pos);
+                                continue;
+                            }
+                            match actor_references.get_mut(&actor_id) {
+                                Some((first_pos, references, multiple_chunks)) => {
+                                    *references = references.saturating_add(1);
+                                    if *first_pos != pos {
+                                        *multiple_chunks = true;
+                                        corrupt_actor_chunks.insert(*first_pos);
+                                        corrupt_actor_chunks.insert(pos);
+                                    }
+                                }
+                                None => {
+                                    actor_references.insert(actor_id, (pos, 1, false));
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        malformed_actor_digest_records =
+                            malformed_actor_digest_records.saturating_add(1);
+                        corrupt_actor_chunks.insert(pos);
+                    }
+                }
             }
-            BedrockDbKey::ActorPrefix { .. } => {
+            BedrockDbKey::ActorPrefix { actor_id } => {
                 actorprefix_records = actorprefix_records.saturating_add(1);
+                actorprefix_ids.insert(actor_id);
                 actor_storage = actor_storage.merge(ActorStorage::DigpActorprefix);
             }
             BedrockDbKey::Unknown(_) => {
@@ -128,6 +226,23 @@ pub fn scan_world_compatibility_blocking(
         Ok(StorageVisitorControl::Continue)
     })?;
 
+    let mut dangling_actor_references = 0usize;
+    let mut actor_ids_referenced_by_multiple_chunks = 0usize;
+    for (actor_id, (first_pos, references, multiple_chunks)) in &actor_references {
+        if !actorprefix_ids.contains(actor_id) {
+            dangling_actor_references = dangling_actor_references.saturating_add(*references);
+            corrupt_actor_chunks.insert(*first_pos);
+        }
+        if *multiple_chunks {
+            actor_ids_referenced_by_multiple_chunks =
+                actor_ids_referenced_by_multiple_chunks.saturating_add(1);
+        }
+    }
+    let orphan_actorprefix_records = actorprefix_ids
+        .iter()
+        .filter(|actor_id| !actor_references.contains_key(actor_id))
+        .count();
+
     let mut compatibility = baseline.compatibility;
     let mut exact_chunks = 0usize;
     let mut read_compatible_chunks = 0usize;
@@ -139,7 +254,23 @@ pub fn scan_world_compatibility_blocking(
     let mut chunks = Vec::with_capacity(chunk_records.len());
 
     for (pos, records) in chunk_records {
-        let capabilities = ChunkCapabilities::inspect(&records);
+        let mut capabilities = ChunkCapabilities::inspect(&records);
+        let legacy_terrain_payload_len = legacy_terrain_lengths.get(&pos).copied();
+        match legacy_terrain_payload_len {
+            Some(POCKET_TERRAIN_VALUE_LEN) => {
+                capabilities.compatibility = worst_compatibility(
+                    capabilities.compatibility,
+                    CompatibilityLevel::ReadCompatible,
+                );
+            }
+            Some(LEGACY_TERRAIN_VALUE_LEN) | None => {}
+            Some(_) => {
+                capabilities.compatibility = CompatibilityLevel::Corrupt;
+            }
+        }
+        if corrupt_actor_chunks.contains(&pos) {
+            capabilities.compatibility = CompatibilityLevel::Corrupt;
+        }
         if capabilities.has_entity {
             entity_records = entity_records.saturating_add(
                 records
@@ -172,7 +303,23 @@ pub fn scan_world_compatibility_blocking(
             CompatibilityLevel::Corrupt => corrupt_chunks = corrupt_chunks.saturating_add(1),
         }
         compatibility = worst_compatibility(compatibility, capabilities.compatibility);
-        chunks.push(ChunkCompatibilitySummary { pos, capabilities });
+        chunks.push(ChunkCompatibilitySummary {
+            pos,
+            capabilities,
+            legacy_terrain_payload_len,
+        });
+    }
+
+    if orphan_actorprefix_records != 0 || unknown_storage_keys != 0 {
+        compatibility = worst_compatibility(compatibility, CompatibilityLevel::ReadCompatible);
+    }
+    if malformed_actor_digest_records != 0
+        || duplicate_actor_digest_entries != 0
+        || dangling_actor_references != 0
+        || actor_ids_referenced_by_multiple_chunks != 0
+        || malformed_legacy_terrain_records != 0
+    {
+        compatibility = CompatibilityLevel::Corrupt;
     }
 
     chunks.sort_by_key(|entry| (entry.pos.dimension.id(), entry.pos.x, entry.pos.z));
@@ -190,6 +337,14 @@ pub fn scan_world_compatibility_blocking(
         digp_records,
         actorprefix_records,
         entity_records,
+        malformed_actor_digest_records,
+        duplicate_actor_digest_entries,
+        dangling_actor_references,
+        orphan_actorprefix_records,
+        actor_ids_referenced_by_multiple_chunks,
+        pocket_terrain_core_records,
+        complete_legacy_terrain_records,
+        malformed_legacy_terrain_records,
         unknown_chunk_records,
         unknown_storage_keys,
         subchunk_versions,
@@ -236,8 +391,9 @@ const fn worst_compatibility(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::Dimension;
+    use crate::chunk::{ActorUid, Dimension};
     use crate::database::{MemoryStorage, StorageBatch};
+    use crate::entity::encode_actor_digest_ids;
 
     #[test]
     fn mixed_actor_and_future_subchunk_are_reported() {
@@ -265,6 +421,88 @@ mod tests {
         assert_eq!(report.actor_storage, ActorStorage::Mixed);
         assert_eq!(report.unsupported_future_chunks, 1);
         assert!(report.has_future_data());
+        assert_eq!(report.orphan_actorprefix_records, 1);
         assert_eq!(report.subchunk_versions.get("unknown-v10"), Some(&1));
+    }
+
+    #[test]
+    fn actor_link_corruption_is_reported_without_deep_nbt_scan() {
+        let storage = MemoryStorage::new();
+        let first = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let second = ChunkPos {
+            x: 1,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let uid = ActorUid(42);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            crate::entity::ActorDigestKey::new(first).storage_key(),
+            encode_actor_digest_ids(&[uid]),
+        );
+        batch.put(
+            crate::entity::ActorDigestKey::new(second).storage_key(),
+            encode_actor_digest_ids(&[uid]),
+        );
+        batch.put(uid.storage_key(), Bytes::from_static(b"actor"));
+        storage.write_batch(&batch).expect("seed actor links");
+
+        let report = scan_world_compatibility_blocking(
+            &storage,
+            WorldFormat::LevelDb,
+            StorageReadOptions::default(),
+        )
+        .expect("scan actor compatibility");
+        assert_eq!(report.compatibility, CompatibilityLevel::Corrupt);
+        assert_eq!(report.actor_ids_referenced_by_multiple_chunks, 1);
+        assert_eq!(report.dangling_actor_references, 0);
+        assert_eq!(report.corrupt_chunks, 2);
+    }
+
+    #[test]
+    fn pocket_terrain_core_is_distinct_from_complete_legacy_terrain() {
+        let storage = MemoryStorage::new();
+        let short_pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let full_pos = ChunkPos {
+            x: 1,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let mut batch = StorageBatch::new();
+        batch.put(
+            ChunkKey::new(short_pos, ChunkRecordTag::LegacyTerrain).encode(),
+            Bytes::from(vec![0; POCKET_TERRAIN_VALUE_LEN]),
+        );
+        batch.put(
+            ChunkKey::new(full_pos, ChunkRecordTag::LegacyTerrain).encode(),
+            Bytes::from(vec![0; LEGACY_TERRAIN_VALUE_LEN]),
+        );
+        storage.write_batch(&batch).expect("seed legacy terrain");
+
+        let report = scan_world_compatibility_blocking(
+            &storage,
+            WorldFormat::LevelDbLegacyTerrain,
+            StorageReadOptions::default(),
+        )
+        .expect("scan terrain compatibility");
+        assert_eq!(report.pocket_terrain_core_records, 1);
+        assert_eq!(report.complete_legacy_terrain_records, 1);
+        assert_eq!(report.malformed_legacy_terrain_records, 0);
+        assert_eq!(report.compatibility, CompatibilityLevel::ReadCompatible);
+        let short = report
+            .chunks
+            .iter()
+            .find(|entry| entry.pos == short_pos)
+            .expect("short terrain chunk");
+        assert_eq!(short.legacy_terrain_payload_len, Some(POCKET_TERRAIN_VALUE_LEN));
+        assert_eq!(short.capabilities.compatibility, CompatibilityLevel::ReadCompatible);
     }
 }
