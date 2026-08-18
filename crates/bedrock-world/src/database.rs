@@ -19,14 +19,14 @@ pub use storage::{
 };
 
 /// Concrete Mojang LevelDB storage backend.
-#[cfg(feature = "backend-bedrock-leveldb")]
+#[cfg(feature = "bedrock-leveldb")]
 pub mod backend {
     pub use super::storage::backend::BedrockLevelDbStorage;
 }
 
-#[cfg(feature = "backend-bedrock-leveldb")]
+#[cfg(feature = "bedrock-leveldb")]
 pub use backend::BedrockLevelDbStorage;
-#[cfg(not(feature = "backend-bedrock-leveldb"))]
+#[cfg(not(feature = "bedrock-leveldb"))]
 pub(crate) use storage::backend::BedrockLevelDbStorage;
 pub(crate) use crate::world::CancelFlag;
 pub(crate) use pocket_chunks::PocketChunksDatStorage;
