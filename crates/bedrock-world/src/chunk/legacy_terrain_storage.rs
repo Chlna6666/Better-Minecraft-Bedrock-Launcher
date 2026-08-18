@@ -46,13 +46,19 @@ impl LegacyTerrainSplitReport {
     }
 }
 
-/// Preflights every `LegacyTerrain` record and stages an exact fixed-array/Data2DLegacy replacement.
+/// Preflights every complete LevelDB `LegacyTerrain` record and stages an exact
+/// fixed-array/Data2DLegacy replacement.
 ///
 /// The target SubChunk must be one of the real fixed-array numeric versions V0 or V2 through V7.
 /// All eight 16-block vertical sections preserve numeric ID, four-bit metadata, sky light and block
 /// light. The source height bytes are promoted exactly to `i16`, and all saved biome RGB components
 /// are retained in `Data2DLegacy`. Existing destination SubChunk or biome records are treated as
 /// conflicts rather than overwritten.
+///
+/// A pre-LevelDB Pocket terrain core is only 82,176 bytes and has no persisted biome/RGB tail. Such
+/// input is readable through [`LegacyTerrain`] but cannot participate in this *lossless* split because
+/// creating `Data2DLegacy` would require inventing 256 missing biome samples; it is rejected before any
+/// replacement record is staged.
 pub(crate) fn stage_legacy_terrain_split(
     storage: &dyn WorldStorage,
     subchunk_version: SubChunkVersion,
@@ -72,8 +78,6 @@ pub(crate) fn stage_legacy_terrain_split(
         }
     };
 
-    // Keep only affected chunk positions. A second key-only pass checks destinations just for these
-    // chunks, avoiding a large set containing every SubChunk key in a modern world.
     let mut legacy_positions = BTreeSet::<ChunkPos>::new();
     storage.for_each_key(StorageReadOptions::default(), &mut |raw_key| {
         if let BedrockDbKey::Chunk(key) = BedrockDbKey::decode(raw_key)
@@ -125,9 +129,9 @@ pub(crate) fn stage_legacy_terrain_split(
         Ok(StorageVisitorControl::Continue)
     })?;
 
-    let mut batch = StorageBatch::new();
-    let mut report = LegacyTerrainSplitReport::new(subchunk_version);
-
+    // Parse and validate every source before constructing any replacement bytes. This keeps the
+    // operation genuinely preflighted even for readable-but-incomplete Pocket terrain cores.
+    let mut sources = Vec::with_capacity(legacy_positions.len());
     for pos in legacy_positions {
         let source_key = ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode();
         let source = storage.get(&source_key)?.ok_or_else(|| {
@@ -136,7 +140,18 @@ pub(crate) fn stage_legacy_terrain_split(
             ))
         })?;
         let terrain = LegacyTerrain::parse(source)?;
+        if !terrain.has_biome_samples() {
+            return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+                "cannot losslessly split LegacyTerrain at chunk {pos:?}: source is a pre-LevelDB Pocket terrain core without the persisted 1,024-byte biome/RGB tail"
+            )));
+        }
+        sources.push((pos, source_key, terrain));
+    }
 
+    let mut batch = StorageBatch::new();
+    let mut report = LegacyTerrainSplitReport::new(subchunk_version);
+
+    for (pos, source_key, terrain) in sources {
         for section in 0_u8..LEGACY_TERRAIN_SUBCHUNKS as u8 {
             let mut builder = LegacySubChunkBuilder::zeroed(version_byte, true)?;
             let base_y = section * 16;
@@ -214,9 +229,11 @@ pub(crate) fn stage_legacy_terrain_split(
 mod tests {
     use super::*;
     use crate::chunk::{
-        Dimension, LegacyTerrainBuilder, SubChunk, SubChunkDecodeMode, SubChunkFormat,
+        Dimension, LegacyTerrainBuilder, POCKET_TERRAIN_VALUE_LEN, SubChunk, SubChunkDecodeMode,
+        SubChunkFormat,
     };
     use crate::database::MemoryStorage;
+    use bytes::Bytes;
 
     #[test]
     fn legacy_terrain_split_preserves_blocks_light_height_and_biome_rgb() {
@@ -302,5 +319,26 @@ mod tests {
 
         assert!(stage_legacy_terrain_split(&storage, SubChunkVersion::V7).is_err());
         assert!(storage.get(&source_key).unwrap().is_some());
+    }
+
+    #[test]
+    fn pocket_core_without_biome_tail_is_rejected_before_staging() {
+        let storage = MemoryStorage::new();
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let source_key = ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode();
+        storage
+            .put(&source_key, &vec![0; POCKET_TERRAIN_VALUE_LEN])
+            .unwrap();
+
+        let result = stage_legacy_terrain_split(&storage, SubChunkVersion::V7);
+        assert!(matches!(result, Err(BedrockWorldError::UnsupportedChunkFormat(_))));
+        assert!(storage.get(&source_key).unwrap().is_some());
+        for y in 0..8 {
+            assert!(storage.get(&ChunkKey::subchunk(pos, y).encode()).unwrap().is_none());
+        }
     }
 }
