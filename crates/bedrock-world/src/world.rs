@@ -8,6 +8,7 @@ pub mod discover;
 mod downgrade;
 mod legacy_terrain;
 mod level_dat;
+mod player_saved_items;
 mod player_storage;
 mod pocket_chunks_dat;
 mod subchunk_numeric;
@@ -22,6 +23,9 @@ pub use downgrade::{
     DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan, DowngradeRequirement,
 };
 pub use level_dat::{SubChunkVersionCount, WorldVersions};
+pub use player_saved_items::{
+    PlayerSavedItemCheckEntry, PlayerSavedItemStorage, WorldPlayerSavedItemCheckReport,
+};
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use pocket_chunks_dat::{
     PocketChunksDatImportOptions, PocketChunksDatImportReport,

@@ -11,6 +11,7 @@ mod equipment;
 mod experience;
 mod game_mode;
 mod inventory;
+mod legacy_saved_items;
 mod level_dat;
 mod local_player;
 mod position;
