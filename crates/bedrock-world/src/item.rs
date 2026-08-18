@@ -1,14 +1,17 @@
-//! Minecraft Bedrock saved-item NBT, including historical numeric ID/meta representations.
+//! Minecraft Bedrock saved-item NBT, including historical persisted representations.
 
+mod format;
 mod legacy_saved_item;
 mod legacy_saved_item_check;
 mod legacy_saved_item_conversion;
 mod saved_item;
 
 pub use crate::parsed::ItemStack;
+pub use format::SavedItemFormat;
 pub use legacy_saved_item::{
-    LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, NamedSavedItemId,
-    SavedItemUpgradeSource, load_pinned_legacy_saved_item_id_table_from_dir,
+    LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, MedievalSavedItemId,
+    MedievalSavedItemMatch, NamedSavedItemId, SavedItemUpgradeSource,
+    load_pinned_legacy_saved_item_id_table_from_dir,
 };
 pub use legacy_saved_item_check::{
     LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemIssue,
