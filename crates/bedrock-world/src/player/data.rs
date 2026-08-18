@@ -8,21 +8,19 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-/// Player identifier as stored by Minecraft Bedrock.
+/// Player identifier used by the typed player convenience APIs.
+///
+/// Arbitrary raw `player_*` suffix bytes are intentionally represented by [`crate::player::PlayerKeyRecord`]
+/// and [`crate::player::PlayerStorageOverview`] rather than being forced through this textual enum.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlayerId {
     /// Local player record stored under `~local_player`.
     Local,
     /// Player record stored under a textual `player_<id>` LevelDB key.
     ///
-    /// Historical naming is retained for source compatibility; the string suffix is not assumed to
-    /// be an Xbox XUID by the storage layer.
+    /// The historical variant name is retained for source compatibility. The library does not assume
+    /// every textual suffix is actually an Xbox XUID.
     Xuid(String),
-    /// Player record stored under `player_<raw suffix>` when the suffix is not valid UTF-8.
-    ///
-    /// Bytes are retained verbatim so listing, reading and writing never replace unknown bytes with
-    /// Unicode replacement characters.
-    RawPlayerKey(Vec<u8>),
     /// Historical player data embedded in `level.dat.Player`.
     LegacyLevelDat,
     /// Player-like identifier whose Bedrock source is not known.
@@ -30,26 +28,20 @@ pub enum PlayerId {
 }
 
 impl PlayerId {
-    /// Encodes this id as its exact Bedrock LevelDB key when applicable.
+    /// Encodes this id as its Bedrock LevelDB key when applicable.
     #[must_use]
     pub fn storage_key(&self) -> Option<Cow<'_, [u8]>> {
         match self {
             Self::Local => Some(Cow::Borrowed(b"~local_player")),
             Self::Xuid(id) => Some(Cow::Owned(format!("player_{id}").into_bytes())),
-            Self::RawPlayerKey(suffix) => {
-                let mut key = Vec::with_capacity(b"player_".len().saturating_add(suffix.len()));
-                key.extend_from_slice(b"player_");
-                key.extend_from_slice(suffix);
-                Some(Cow::Owned(key))
-            }
             Self::LegacyLevelDat | Self::Unknown(_) => None,
         }
     }
 
-    /// Detects a player id directly from an exact Bedrock LevelDB key.
+    /// Detects a textual player id directly from a Bedrock LevelDB key.
     ///
-    /// Non-UTF-8 `player_*` suffixes are retained as [`Self::RawPlayerKey`] rather than skipped or
-    /// lossily decoded.
+    /// Returns `None` for non-UTF-8 `player_*` suffixes. Use the raw-key player APIs when arbitrary
+    /// suffix bytes must be retained.
     #[must_use]
     pub fn from_storage_key(key: &[u8]) -> Option<Self> {
         if key == b"~local_player" {
@@ -59,27 +51,16 @@ impl PlayerId {
         if suffix.is_empty() {
             return None;
         }
-        match std::str::from_utf8(suffix) {
-            Ok(id) => Some(Self::Xuid(id.to_string())),
-            Err(_) => Some(Self::RawPlayerKey(suffix.to_vec())),
-        }
+        std::str::from_utf8(suffix)
+            .ok()
+            .map(|id| Self::Xuid(id.to_string()))
     }
 
-    /// Returns the textual suffix of a `player_<id>` key when it is valid UTF-8.
+    /// Returns the textual suffix of a `player_<id>` key when this is such a record.
     #[must_use]
     pub fn player_key_id(&self) -> Option<&str> {
         match self {
             Self::Xuid(id) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// Returns the exact suffix bytes of a `player_*` key for both textual and raw identifiers.
-    #[must_use]
-    pub fn player_key_suffix(&self) -> Option<&[u8]> {
-        match self {
-            Self::Xuid(id) => Some(id.as_bytes()),
-            Self::RawPlayerKey(suffix) => Some(suffix),
             _ => None,
         }
     }
@@ -143,9 +124,10 @@ impl PlayerData {
         Self::from_raw_with_level_version(id, raw, Some(LevelVersion::detect(level)?))
     }
 
-    /// Reads a known Bedrock player LevelDB key and its NBT payload.
+    /// Reads a known textual Bedrock player LevelDB key and its NBT payload.
     ///
-    /// Returns `Ok(None)` for keys other than `~local_player` and `player_<id>`.
+    /// Returns `Ok(None)` for keys other than `~local_player` and UTF-8 `player_<id>` records. Use
+    /// [`crate::player::read_player_key`] for arbitrary raw `player_*` suffixes.
     pub fn from_leveldb_key(key: &[u8], raw: Bytes) -> Result<Option<Self>> {
         let Some(id) = PlayerId::from_storage_key(key) else {
             return Ok(None);
@@ -153,9 +135,9 @@ impl PlayerData {
         Self::from_raw(id, raw).map(Some)
     }
 
-    /// Reads a known Bedrock player LevelDB key with version evidence from its owning `level.dat`.
+    /// Reads a known textual Bedrock player LevelDB key with version evidence from its owning `level.dat`.
     ///
-    /// Returns `Ok(None)` for keys other than `~local_player` and `player_<id>`.
+    /// Returns `Ok(None)` for keys other than `~local_player` and UTF-8 `player_<id>` records.
     pub fn from_leveldb_key_with_level(
         key: &[u8],
         raw: Bytes,
@@ -376,14 +358,7 @@ mod tests {
             PlayerId::from_storage_key(b"player_-123"),
             Some(PlayerId::Xuid("-123".to_string()))
         );
-        assert_eq!(
-            PlayerId::from_storage_key(b"player_\xff"),
-            Some(PlayerId::RawPlayerKey(vec![0xff]))
-        );
-        assert_eq!(
-            PlayerId::RawPlayerKey(vec![0xff]).storage_key().as_deref(),
-            Some(b"player_\xff".as_slice())
-        );
+        assert_eq!(PlayerId::from_storage_key(b"player_\xff"), None);
         assert_eq!(PlayerId::from_storage_key(b"player_"), None);
         assert_eq!(PlayerId::from_storage_key(b"actorprefix123"), None);
     }
