@@ -133,27 +133,49 @@ impl SubChunk {
     }
 
     /// Writes this SubChunk using the version it currently represents.
+    ///
+    /// Normal round-trips use this method so a V5 remains V5 and a V8 remains V8. Cross-version
+    /// writes happen only through [`Self::write_as_version`].
     pub fn write(&self) -> Result<Bytes> {
-        match self.version() {
-            Some(SubChunkVersion::V0) => self.write_v0(),
-            Some(SubChunkVersion::V1) => self.write_v1(),
-            Some(SubChunkVersion::V2) => self.write_v2(),
-            Some(SubChunkVersion::V3) => self.write_v3(),
-            Some(SubChunkVersion::V4) => self.write_v4(),
-            Some(SubChunkVersion::V5) => self.write_v5(),
-            Some(SubChunkVersion::V6) => self.write_v6(),
-            Some(SubChunkVersion::V7) => self.write_v7(),
-            Some(SubChunkVersion::V8) => self.write_v8(),
-            Some(SubChunkVersion::V9) => self.write_v9(),
-            Some(SubChunkVersion::Unknown(_)) => match &self.format {
-                SubChunkFormat::Raw { bytes, .. } => Ok(bytes.clone()),
-                _ => Err(BedrockWorldError::UnsupportedChunkFormat(
-                    "unknown SubChunk version is not retained as raw bytes".to_string(),
-                )),
+        let version = self.version().ok_or_else(|| {
+            BedrockWorldError::UnsupportedChunkFormat(
+                "value is not a versioned SubChunk payload".to_string(),
+            )
+        })?;
+        self.write_as_version(version)
+    }
+
+    /// Writes this block data using an explicitly selected Minecraft Bedrock SubChunk version.
+    ///
+    /// This method never infers a target from a game version and never silently changes data to make
+    /// an older representation fit. The concrete V0-V9 writer decides whether the current block data
+    /// is exactly representable in that persisted format. For example, V8 and V9 paletted data can be
+    /// rewritten between those versions, while writing paletted BlockStates to V2-V7 currently fails
+    /// until an authoritative BlockState-to-numeric-id/meta reverse mapping is supplied.
+    ///
+    /// Unknown target versions cannot be synthesized. They may only be written when this value already
+    /// holds raw bytes for that exact unknown version, preserving those bytes verbatim.
+    pub fn write_as_version(&self, target: SubChunkVersion) -> Result<Bytes> {
+        match target {
+            SubChunkVersion::V0 => self.write_v0(),
+            SubChunkVersion::V1 => self.write_v1(),
+            SubChunkVersion::V2 => self.write_v2(),
+            SubChunkVersion::V3 => self.write_v3(),
+            SubChunkVersion::V4 => self.write_v4(),
+            SubChunkVersion::V5 => self.write_v5(),
+            SubChunkVersion::V6 => self.write_v6(),
+            SubChunkVersion::V7 => self.write_v7(),
+            SubChunkVersion::V8 => self.write_v8(),
+            SubChunkVersion::V9 => self.write_v9(),
+            SubChunkVersion::Unknown(target_version) => match &self.format {
+                SubChunkFormat::Raw {
+                    version: Some(source_version),
+                    bytes,
+                } if *source_version == target_version => Ok(bytes.clone()),
+                _ => Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+                    "cannot synthesize unknown SubChunk V{target_version}; only identical retained raw bytes may be written"
+                ))),
             },
-            None => Err(BedrockWorldError::UnsupportedChunkFormat(
-                "value is not a SubChunk payload".to_string(),
-            )),
         }
     }
 
@@ -211,7 +233,27 @@ impl SubChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::LegacySubChunkBuilder;
+    use crate::chunk::{BlockPalette, BlockState, LegacySubChunkBuilder};
+    use std::collections::BTreeMap;
+
+    fn paletted_subchunk(version: u8, y: i8) -> SubChunk {
+        let air = BlockState {
+            name: "minecraft:air".to_string(),
+            states: BTreeMap::new(),
+            version: Some(18_168_865),
+        };
+        SubChunk {
+            y,
+            format: SubChunkFormat::Paletted {
+                version,
+                storages: vec![BlockPalette::with_unpacked_indices(
+                    vec![air],
+                    vec![0; 4096],
+                    Some(vec![4096_u16]),
+                )],
+            },
+        }
+    }
 
     #[test]
     fn detects_v0_through_v9() {
@@ -226,14 +268,59 @@ mod tests {
         let raw = LegacySubChunkBuilder::new(7).unwrap().build().unwrap();
         let subchunk = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
         assert_eq!(subchunk.version(), Some(SubChunkVersion::V7));
-        assert_eq!(subchunk.write_v7().unwrap(), raw);
+        assert_eq!(subchunk.write().unwrap(), raw);
     }
 
     #[test]
-    fn unknown_version_roundtrips_raw() {
+    fn explicit_v8_v9_writes_preserve_paletted_block_data() {
+        let subchunk = paletted_subchunk(8, -2);
+        let v8 = subchunk
+            .write_as_version(SubChunkVersion::V8)
+            .expect("write V8");
+        assert_eq!(v8.first().copied(), Some(8));
+
+        let parsed = SubChunk::read(-2, v8, SubChunkDecodeMode::FullIndices).expect("read V8");
+        let v9 = parsed
+            .write_as_version(SubChunkVersion::V9)
+            .expect("write V9");
+        assert_eq!(v9.first().copied(), Some(9));
+
+        let parsed = SubChunk::read(-2, v9, SubChunkDecodeMode::FullIndices).expect("read V9");
+        let v8_again = parsed
+            .write_as_version(SubChunkVersion::V8)
+            .expect("write V8 again");
+        assert_eq!(v8_again.first().copied(), Some(8));
+        let parsed =
+            SubChunk::read(-2, v8_again, SubChunkDecodeMode::FullIndices).expect("read V8 again");
+        assert_eq!(
+            parsed.block_state_at(0, 0, 0).map(|state| state.name.as_str()),
+            Some("minecraft:air")
+        );
+    }
+
+    #[test]
+    fn legacy_cross_version_write_refuses_missing_numeric_reverse_mapping() {
+        let raw = LegacySubChunkBuilder::new(7).unwrap().build().unwrap();
+        let subchunk = SubChunk::read(0, raw, SubChunkDecodeMode::FullIndices).unwrap();
+        assert!(subchunk.write_as_version(SubChunkVersion::V2).is_err());
+    }
+
+    #[test]
+    fn unknown_version_only_roundtrips_the_same_raw_target() {
         let raw = Bytes::from_static(&[10, 1, 0]);
         let subchunk = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
         assert_eq!(subchunk.version(), Some(SubChunkVersion::Unknown(10)));
         assert_eq!(subchunk.write().unwrap(), raw);
+        assert_eq!(
+            subchunk
+                .write_as_version(SubChunkVersion::Unknown(10))
+                .unwrap(),
+            raw
+        );
+        assert!(
+            subchunk
+                .write_as_version(SubChunkVersion::Unknown(11))
+                .is_err()
+        );
     }
 }
