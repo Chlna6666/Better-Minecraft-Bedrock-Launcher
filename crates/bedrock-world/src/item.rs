@@ -1,11 +1,16 @@
 //! Minecraft Bedrock saved-item NBT, including historical numeric ID/meta representations.
 
+mod legacy_saved_item;
 mod saved_item;
 
 pub use crate::parsed::ItemStack;
+pub use legacy_saved_item::{
+    LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, NamedSavedItemId,
+    SavedItemUpgradeSource, load_pinned_legacy_saved_item_id_table_from_dir,
+};
 
-// The historical rule executor is intentionally crate-private until its public surface is expressed
-// through concrete SavedItem representations rather than migration/schema terminology.
+// The historical forward rule executor remains crate-private while public APIs are expressed through
+// concrete saved-item representations and explicit upgrade/reverse checks.
 pub(crate) use saved_item::{
     AuthoritativeItemMigrationCatalog, BlockItemMigrationContext, ItemIdentity,
     ItemMigrationPolicy, ItemMigrationStatus, ItemNbtMigrationOutcome, ItemNbtMigrationReport,
