@@ -21,9 +21,12 @@ include = [
     "LICENSE-MIT",
     "docs/**/*.md",
     "src/**/*.rs",
+    "src/**/*.bin",
+    "tools/**/*.rs",
     "tests/**/*.rs",
     "tests/fixtures/**/*",
     "scripts/**/*.ps1",
+    "vendor/biome-registry/**/*",
     "vendor/blockstate-schema/**/*",
     "vendor/item-upgrade-schema/**/*",
     "benches/**/*.rs",
@@ -32,6 +35,10 @@ include = [
 [lib]
 name = "bedrock_world"
 path = "src/bedrock_world.rs"
+
+[[bin]]
+name = "bedrock-world-tool"
+path = "tools/main.rs"
 
 [package.metadata.docs.rs]
 all-features = true
