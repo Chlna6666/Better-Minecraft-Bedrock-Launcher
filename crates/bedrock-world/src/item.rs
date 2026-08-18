@@ -1,10 +1,13 @@
-//! Bedrock saved-item data and preservation-first historical item migration.
+//! Multi-version Minecraft Bedrock saved-item data and explicit historical conversion.
+//!
+//! Item reads retain the representation found in NBT. Historical ID/meta and BlockState changes are
+//! only applied when a caller explicitly invokes [`conversion`].
 
-/// Historical saved-item migration and pinned authoritative schema loading.
-pub mod migration;
+/// Explicit cross-version saved-item conversion and pinned authoritative version data.
+pub mod conversion;
 
 pub use crate::parsed::ItemStack;
-pub use migration::{
+pub use conversion::{
     AuthoritativeItemMigrationCatalog, BlockItemMigrationContext, ItemIdentity,
     ItemMigrationPolicy, ItemMigrationStatus, ItemNbtMigrationOutcome, ItemNbtMigrationReport,
     ItemSchemaSource, ItemStackMigrationOutcome, LegacyBlockItemResolver,

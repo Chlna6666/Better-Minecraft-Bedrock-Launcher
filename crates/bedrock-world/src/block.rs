@@ -1,23 +1,27 @@
-//! Blocks, block states, palettes, block-entity data and versioned block-state migration.
+//! Minecraft Bedrock blocks, BlockStates, palettes, BlockEntity data and versioned representations.
 
 mod state;
-/// Preservation-first block-entity NBT migration.
-pub mod entity_migration;
-/// Version-aware block-state migration rules, authoritative schema execution and legacy numeric maps.
-pub mod migration;
+/// Explicit BlockEntity data conversion.
+pub mod entity_conversion;
+/// Minecraft Bedrock BlockState persisted version data and authoritative historical resources.
+pub mod version;
+/// Explicit BlockState conversion between persisted storage versions.
+pub mod conversion;
 
 pub use crate::chunk::position::BlockPos;
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
-pub use entity_migration::{
+pub use conversion::{
+    BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator, BlockStateUpgradeResult,
+    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
+};
+pub use entity_conversion::{
     BlockEntityChunkMigrationReport, BlockEntityMigrationContext, BlockEntityMigrationOutcome,
     BlockEntityMigrationStatus, BlockEntityMigrator, VanillaBlockEntityMigrator,
     migrate_block_entity_chunk_blocking, migrate_block_entity_chunk_to_modern_blocking,
 };
-pub use migration::{
-    AuthoritativeBlockStateCatalog, BlockStateMigrationGraph, BlockStateMigrationStep,
-    BlockStateMigrator, BlockStateSchemaSource, BlockStateStorageVersion, BlockStateUpgradeResult,
-    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
+pub use version::{
+    AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
     LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats,
     PINNED_BLOCK_MIGRATION_CORPUS_FILES, PINNED_BLOCK_STATE_SCHEMA_FILES,
     PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT, PINNED_BLOCK_UPGRADE_SCHEMA_VERSION,

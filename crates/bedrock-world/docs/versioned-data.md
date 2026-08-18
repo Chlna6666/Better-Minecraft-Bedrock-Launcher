@@ -13,13 +13,23 @@ implicit save upgrader.
 6. Conversion support is directional and reported as `Lossless`, `Lossy` or `Unsupported`.
 7. Unknown/future data is preserved rather than stamped with a guessed version.
 
+## Public responsibility names
+
+Game-data APIs use Bedrock terminology rather than framework terminology:
+
+- `version`: persisted game/data/storage version evidence and authoritative version data;
+- `legacy`: actual historical Bedrock representations;
+- `conversion`: explicit caller-requested conversion between representations.
+
+`migration` is not a public domain/module responsibility. The crate is in active development and old
+module paths are removed rather than kept as compatibility aliases.
+
 ## SubChunk
 
 `SubChunkVersion` represents the actual payload byte: V0 through V9 plus `Unknown(u8)`.
-`parse_subchunk*()` already selects the reader from that byte automatically.
-`write_subchunk_preserving_version()` writes V0/V2-V7 and unknown retained payloads byte-for-byte and
-re-encodes decoded V1/V8/V9 palettes in the same source version. No V0-V7 -> V9 conversion occurs
-unless a caller invokes an explicit conversion path.
+`parse_subchunk*()` selects the reader from that byte automatically. Unknown future versions are kept
+raw. `write_subchunk_preserving_version()` writes retained historical/unknown payloads without
+implicitly selecting a newer SubChunk generation.
 
 ## Player
 
@@ -33,8 +43,8 @@ observable evidence instead of inventing `PlayerV1`, `PlayerV2`, etc.:
 `player::storage` reads and writes each storage form directly. `player::conversion` is explicit and is
 not called by those normal read/write functions.
 
-## Ongoing dev-stage cleanup
+## Other domains
 
-The crate is pre-stable and does not keep compatibility aliases for replaced APIs. Existing historical
-`migration` modules in other domains are being split into persisted format/version data and explicit
-conversion APIs. New multi-version work must not introduce additional `xxx::migration` modules.
+Item, biome, entity, chunk and whole-world cross-version operations live under `conversion`. BlockState
+schema/corpus/numeric-ID resources live under `block::version`; BlockState transforms live under
+`block::conversion`. No new `xxx::migration` module should be added.
