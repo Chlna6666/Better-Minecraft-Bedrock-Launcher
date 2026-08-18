@@ -76,19 +76,19 @@ pub mod world;
 
 pub(crate) use world::{discover, surface};
 
-pub(crate) use biome::{Biome2d, Biome3d};
-pub(crate) use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
-pub(crate) use chunk::{
+pub use biome::{Biome2d, Biome3d};
+pub use block::{BlockPalette, BlockPos, BlockState, block_storage_index};
+pub use chunk::{
     ActorDigestKey, ActorUid, Chunk, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
     Dimension, ParsedVillageKey, SubChunk, SubChunkFormat,
 };
-pub(crate) use database::{StorageCachePolicy, StorageReadOptions};
-pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
-pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel};
-pub(crate) use nbt::{NbtReader, NbtTag, NbtWriter};
-pub(crate) use parsed::ParsedChunkRecord;
-pub(crate) use query::WriteGuard;
-pub(crate) use world::{
+pub use database::{StorageCachePolicy, StorageReadOptions};
+pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
+pub use integrity::{ChunkCapabilities, CompatibilityLevel};
+pub use nbt::{NbtReader, NbtTag, NbtWriter};
+pub use parsed::ParsedChunkRecord;
+pub use query::WriteGuard;
+pub use world::{
     BedrockWorld, CancelFlag, SurfaceColumn, WorldChunkQueryRegion, WorldStorageHandle,
     WorldTransaction,
 };
