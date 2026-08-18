@@ -14,6 +14,7 @@ mod player_modern_saved_items;
 mod player_saved_items;
 mod player_storage;
 mod pocket_chunks_dat;
+mod pocket_entities_dat;
 mod subchunk_numeric;
 mod subchunk_upgrade;
 pub(crate) mod surface;
@@ -42,6 +43,11 @@ pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, 
 pub use pocket_chunks_dat::{
     PocketChunksDatImportOptions, PocketChunksDatImportReport,
     import_pocket_chunks_dat_records_blocking,
+};
+pub use pocket_entities_dat::{
+    PocketEntitiesDatDocument, PocketEntitiesDatImportOptions, PocketEntitiesDatImportReport,
+    import_pocket_entities_dat_records_blocking, read_pocket_entities_dat,
+    write_pocket_entities_dat_atomic,
 };
 pub use subchunk_upgrade::WorldSubChunkUpgradeReport;
 pub use upgrade::{UpgradeAction, UpgradeIssue, UpgradeLoss, UpgradePlan};
