@@ -30,6 +30,8 @@ pub struct WorldVersions {
     pub unversioned_subchunks: usize,
     /// Number of `LegacyTerrain` records.
     pub legacy_terrain_records: usize,
+    /// Number of historical `BlockExtraData` (`0x34`) second-block-layer records.
+    pub block_extra_data_records: usize,
     /// Number of `Data2D` records.
     pub data2d_records: usize,
     /// Number of `Data2DLegacy` records.
@@ -104,6 +106,7 @@ where
         let mut subchunk_counts = [0usize; 256];
         let mut unversioned_subchunks = 0usize;
         let mut legacy_terrain_records = 0usize;
+        let mut block_extra_data_records = 0usize;
         let mut data2d_records = 0usize;
         let mut data2d_legacy_records = 0usize;
         let mut data3d_records = 0usize;
@@ -126,6 +129,9 @@ where
                         }
                         ChunkRecordTag::LegacyTerrain => {
                             legacy_terrain_records = legacy_terrain_records.saturating_add(1);
+                        }
+                        ChunkRecordTag::BlockExtraData => {
+                            block_extra_data_records = block_extra_data_records.saturating_add(1);
                         }
                         ChunkRecordTag::Data2D => {
                             data2d_records = data2d_records.saturating_add(1);
@@ -170,6 +176,7 @@ where
             subchunks,
             unversioned_subchunks,
             legacy_terrain_records,
+            block_extra_data_records,
             data2d_records,
             data2d_legacy_records,
             data3d_records,

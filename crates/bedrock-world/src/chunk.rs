@@ -3,6 +3,7 @@
 mod encoding;
 mod legacy_encoding;
 mod legacy_extra;
+mod legacy_subchunk_upgrade;
 mod level_chunk;
 mod subchunk;
 mod subchunk_storage;
@@ -36,6 +37,8 @@ pub use legacy_extra::{
     LegacyBlockExtraData, LegacyBlockExtraDataBuilder, LegacyBlockExtraDataEntries,
     LegacyBlockExtraDataEntry,
 };
+pub use legacy_subchunk_upgrade::LegacySubChunkUpgradeWriteReport;
+pub(crate) use legacy_subchunk_upgrade::stage_legacy_subchunks_for_upgrade;
 pub use level_chunk::{Chunk, ChunkRecord, EntityData};
 pub use palette::*;
 pub use position::*;

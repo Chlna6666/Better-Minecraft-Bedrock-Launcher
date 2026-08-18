@@ -6,6 +6,7 @@ pub mod discover;
 mod downgrade;
 mod level_dat;
 mod pocket_chunks_dat;
+mod subchunk_upgrade;
 pub(crate) mod surface;
 mod upgrade;
 
@@ -19,4 +20,5 @@ pub use pocket_chunks_dat::{
     PocketChunksDatImportOptions, PocketChunksDatImportReport,
     import_pocket_chunks_dat_records_blocking,
 };
+pub use subchunk_upgrade::WorldSubChunkUpgradeReport;
 pub use upgrade::{UpgradeAction, UpgradeIssue, UpgradePlan};

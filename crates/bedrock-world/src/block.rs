@@ -9,10 +9,11 @@ pub use crate::chunk::position::BlockPos;
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
 pub use version::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
-    LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats,
+    BlockUpgradeData, LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats,
     PINNED_BLOCK_STATE_SCHEMA_FILES, PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT,
     PINNED_BLOCK_UPGRADE_SCHEMA_VERSION, VanillaBlockStatePalette,
     load_pinned_block_state_catalog, load_pinned_block_state_catalog_for_target,
+    load_pinned_block_upgrade_data_for_palette,
 };
 
 // Historical rule executors remain crate-private while the dev-stage API is rebuilt around concrete
