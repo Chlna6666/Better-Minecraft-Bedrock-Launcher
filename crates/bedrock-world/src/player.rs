@@ -5,6 +5,7 @@
 
 mod abilities;
 mod actor;
+mod actor_state;
 mod attributes;
 mod data;
 mod effects;

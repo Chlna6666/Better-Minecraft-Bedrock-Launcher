@@ -11,7 +11,6 @@ mod level_dat;
 mod player_classic_saved_items;
 mod player_medieval_saved_items;
 mod player_modern_saved_items;
-mod player_saved_item_conversion;
 mod player_saved_items;
 mod player_storage;
 mod pocket_chunks_dat;
@@ -26,7 +25,7 @@ pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use downgrade::{
     DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan, DowngradeRequirement,
 };
-pub use level_dat::{SubChunkVersionCount, WorldVersions};
+pub use level_dat::{LevelChunkVersionCount, SubChunkVersionCount, WorldVersions};
 pub use player_classic_saved_items::{
     PlayerClassicSavedItemCheckEntry, WorldPlayerClassicSavedItemCheckReport,
 };

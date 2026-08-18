@@ -3,6 +3,7 @@
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use crate::player::PlayerData;
+use crate::player::inventory::{integer_tag, set_integer_preserving_type};
 use indexmap::IndexMap;
 
 /// Borrowed view of the exact Bedrock `abilities` compound.
@@ -41,6 +42,64 @@ impl<'a> PlayerAbilities<'a> {
     /// Returns `worldbuilder` when present.
     pub fn worldbuilder(&self) -> Result<Option<bool>> {
         ability_bool(self.nbt, "worldbuilder")
+    }
+
+    /// Returns historical `attackmobs` when present.
+    pub fn attack_mobs(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "attackmobs")
+    }
+
+    /// Returns historical `attackplayers` when present.
+    pub fn attack_players(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "attackplayers")
+    }
+
+    /// Returns historical `build` when present.
+    pub fn build(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "build")
+    }
+
+    /// Returns historical `doorsandswitches` when present.
+    pub fn doors_and_switches(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "doorsandswitches")
+    }
+
+    /// Returns historical `lightning` when present.
+    pub fn lightning(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "lightning")
+    }
+
+    /// Returns historical `mine` when present.
+    pub fn mine(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "mine")
+    }
+
+    /// Returns historical `op` when present.
+    pub fn op(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "op")
+    }
+
+    /// Returns historical `opencontainers` when present.
+    pub fn open_containers(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "opencontainers")
+    }
+
+    /// Returns historical `teleport` when present.
+    pub fn teleport(&self) -> Result<Option<bool>> {
+        ability_bool(self.nbt, "teleport")
+    }
+
+    /// Returns `permissionsLevel` when present.
+    pub fn permissions_level(&self) -> Result<Option<i32>> {
+        integer_tag(self.nbt.get("permissionsLevel"), "abilities.permissionsLevel")
+    }
+
+    /// Returns `playerPermissionsLevel` when present.
+    pub fn player_permissions_level(&self) -> Result<Option<i32>> {
+        integer_tag(
+            self.nbt.get("playerPermissionsLevel"),
+            "abilities.playerPermissionsLevel",
+        )
     }
 
     /// Returns `flySpeed` when present.
@@ -89,6 +148,61 @@ impl PlayerData {
     /// Sets the persisted `worldbuilder` ability without changing other ability fields.
     pub fn set_worldbuilder(&mut self, value: bool) -> Result<()> {
         set_ability_bool(self, "worldbuilder", value)
+    }
+
+    /// Sets historical `attackmobs` without rewriting other ability fields.
+    pub fn set_attack_mobs(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "attackmobs", value)
+    }
+
+    /// Sets historical `attackplayers` without rewriting other ability fields.
+    pub fn set_attack_players(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "attackplayers", value)
+    }
+
+    /// Sets historical `build` without rewriting other ability fields.
+    pub fn set_build(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "build", value)
+    }
+
+    /// Sets historical `doorsandswitches` without rewriting other ability fields.
+    pub fn set_doors_and_switches(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "doorsandswitches", value)
+    }
+
+    /// Sets historical `lightning` without rewriting other ability fields.
+    pub fn set_lightning(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "lightning", value)
+    }
+
+    /// Sets historical `mine` without rewriting other ability fields.
+    pub fn set_mine(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "mine", value)
+    }
+
+    /// Sets historical `op` without rewriting other ability fields.
+    pub fn set_op(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "op", value)
+    }
+
+    /// Sets historical `opencontainers` without rewriting other ability fields.
+    pub fn set_open_containers(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "opencontainers", value)
+    }
+
+    /// Sets historical `teleport` without rewriting other ability fields.
+    pub fn set_teleport(&mut self, value: bool) -> Result<()> {
+        set_ability_bool(self, "teleport", value)
+    }
+
+    /// Sets `permissionsLevel`, preserving the persisted integer NBT width when present.
+    pub fn set_permissions_level(&mut self, value: i32) -> Result<()> {
+        set_ability_integer(self, "permissionsLevel", value)
+    }
+
+    /// Sets `playerPermissionsLevel`, preserving the persisted integer NBT width when present.
+    pub fn set_player_permissions_level(&mut self, value: i32) -> Result<()> {
+        set_ability_integer(self, "playerPermissionsLevel", value)
     }
 
     /// Sets `flySpeed`, preserving Float/Double width when the field already exists.
@@ -164,6 +278,15 @@ fn set_ability_bool(player: &mut PlayerData, field: &str, value: bool) -> Result
     Ok(())
 }
 
+fn set_ability_integer(player: &mut PlayerData, field: &str, value: i32) -> Result<()> {
+    {
+        let root = abilities_mut(player)?;
+        set_integer_preserving_type(root, field, value)?;
+    }
+    player.finish_edit();
+    Ok(())
+}
+
 fn set_ability_float(player: &mut PlayerData, field: &str, value: f32) -> Result<()> {
     if !value.is_finite() {
         return Err(BedrockWorldError::Validation(format!(
@@ -196,6 +319,8 @@ mod tests {
     fn abilities_preserve_unknown_fields() {
         let mut abilities = IndexMap::new();
         abilities.insert("flying".to_string(), NbtTag::Byte(0));
+        abilities.insert("attackmobs".to_string(), NbtTag::Byte(1));
+        abilities.insert("permissionsLevel".to_string(), NbtTag::Int(1));
         abilities.insert("FutureAbility".to_string(), NbtTag::Int(42));
         let mut player = PlayerData::from_nbt(
             PlayerId::Local,
@@ -205,11 +330,19 @@ mod tests {
             )])),
         )
         .unwrap();
+
         player.set_flying(true).unwrap();
-        assert_eq!(player.abilities().unwrap().unwrap().flying().unwrap(), Some(true));
+        player.set_attack_mobs(false).unwrap();
+        player.set_permissions_level(2).unwrap();
+
+        let abilities = player.abilities().unwrap().unwrap();
+        assert_eq!(abilities.flying().unwrap(), Some(true));
+        assert_eq!(abilities.attack_mobs().unwrap(), Some(false));
+        assert_eq!(abilities.permissions_level().unwrap(), Some(2));
         assert_eq!(
-            player.abilities().unwrap().unwrap().nbt().get("FutureAbility"),
-            Some(&NbtTag::Int(42))
+            abilities.nbt().get("permissionsLevel"),
+            Some(&NbtTag::Int(2))
         );
+        assert_eq!(abilities.nbt().get("FutureAbility"), Some(&NbtTag::Int(42)));
     }
 }
