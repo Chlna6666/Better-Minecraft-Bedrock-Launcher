@@ -2,6 +2,7 @@
 
 mod encoding;
 mod legacy_encoding;
+mod legacy_extra;
 mod legacy_numeric_resolver;
 mod level_chunk;
 
@@ -21,6 +22,10 @@ pub mod migration;
 pub use key::*;
 pub use legacy::*;
 pub use legacy_encoding::{LegacySubChunkBuilder, LegacyTerrainBuilder};
+pub use legacy_extra::{
+    LegacyBlockExtraData, LegacyBlockExtraDataBuilder, LegacyBlockExtraDataEntries,
+    LegacyBlockExtraDataEntry,
+};
 pub use level_chunk::{Chunk, ChunkRecord, EntityData};
 pub use migration::{
     HistoricalChunkMigrationOptions, HistoricalChunkMigrationReport, LegacyBlockMapping,
