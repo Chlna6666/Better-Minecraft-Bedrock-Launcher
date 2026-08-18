@@ -5,7 +5,6 @@ mod biome_downgrade;
 mod biome_upgrade;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
-mod downgrade;
 mod legacy_terrain;
 mod level_dat;
 mod player_classic_saved_items;
@@ -19,14 +18,10 @@ mod pocket_world_storage;
 mod subchunk_numeric;
 mod subchunk_upgrade;
 pub(crate) mod surface;
-mod upgrade;
 
 pub use bedrock_world::*;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
-pub(crate) use downgrade::{
-    DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan, DowngradeRequirement,
-};
 pub use level_dat::{LevelChunkVersionCount, SubChunkVersionCount, WorldVersions};
 pub use player_classic_saved_items::{
     PlayerClassicSavedItemCheckEntry, WorldPlayerClassicSavedItemCheckReport,
@@ -51,4 +46,3 @@ pub use pocket_entities_dat::{
     write_pocket_entities_dat_atomic,
 };
 pub use subchunk_upgrade::WorldSubChunkUpgradeReport;
-pub(crate) use upgrade::{UpgradeAction, UpgradeIssue, UpgradeLoss, UpgradePlan};
