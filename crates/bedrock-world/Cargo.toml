@@ -39,10 +39,7 @@ all-features = true
 [features]
 default = ["async", "bedrock-leveldb"]
 async = ["dep:tokio", "bedrock-leveldb?/async"]
-# Canonical public feature name. Keep the old backend-prefixed name as a compatibility alias
-# for downstream crates that have not migrated yet.
-bedrock-leveldb = ["backend-bedrock-leveldb"]
-backend-bedrock-leveldb = ["dep:bedrock-leveldb", "bedrock-leveldb/zlib", "bedrock-leveldb/snappy"]
+bedrock-leveldb = ["dep:bedrock-leveldb", "bedrock-leveldb/zlib", "bedrock-leveldb/snappy"]
 leveldb-mmap = ["bedrock-leveldb", "bedrock-leveldb/mmap"]
 
 [dependencies]
