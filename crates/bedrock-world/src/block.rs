@@ -1,27 +1,29 @@
 //! Minecraft Bedrock blocks, BlockStates, palettes and BlockEntity records.
 
-/// Minecraft Bedrock BlockState identity and persisted `version` history.
-pub mod block_state;
-/// Minecraft Bedrock BlockEntity NBT.
-pub mod block_entity;
-/// Authoritative BlockState storage-version data.
-pub mod version;
+pub(crate) mod block_state;
+pub(crate) mod block_entity;
+pub(crate) mod version;
 
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
 pub use crate::chunk::position::BlockPos;
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
-pub use block_entity::{
+pub use version::{
+    BlockStateStorageVersion, LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats,
+};
+
+// Historical rule executors remain crate-private while the dev-stage API is rebuilt around concrete
+// Bedrock data objects and version-specific writes. They are intentionally not compatibility exports.
+pub(crate) use block_state::{
+    BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator, BlockStateUpgradeResult,
+    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
+};
+pub(crate) use block_entity::{
     BlockEntityChunkMigrationReport, BlockEntityMigrationContext, BlockEntityMigrationOutcome,
     BlockEntityMigrationStatus, BlockEntityMigrator, VanillaBlockEntityMigrator,
     migrate_block_entity_chunk_blocking, migrate_block_entity_chunk_to_modern_blocking,
 };
-pub use block_state::{
-    BlockStateMigrationGraph, BlockStateMigrationStep, BlockStateMigrator, BlockStateUpgradeResult,
-    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader, BlockStateValueRewrite,
-};
-pub use version::{
-    AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
-    LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats,
+pub(crate) use version::{
+    AuthoritativeBlockStateCatalog, BlockStateSchemaSource,
     PINNED_BLOCK_MIGRATION_CORPUS_FILES, PINNED_BLOCK_STATE_SCHEMA_FILES,
     PINNED_BLOCK_UPGRADE_SCHEMA_COMMIT, PINNED_BLOCK_UPGRADE_SCHEMA_VERSION,
     PINNED_LEGACY_BLOCK_ID_MAP_FILE, PINNED_LEGACY_ID_META_1_9_TABLE_FILE,

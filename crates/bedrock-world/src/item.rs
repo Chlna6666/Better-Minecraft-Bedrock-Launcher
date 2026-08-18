@@ -3,7 +3,10 @@
 mod saved_item;
 
 pub use crate::parsed::ItemStack;
-pub use saved_item::{
+
+// The historical rule executor is intentionally crate-private until its public surface is expressed
+// through concrete SavedItem representations rather than migration/schema terminology.
+pub(crate) use saved_item::{
     AuthoritativeItemMigrationCatalog, BlockItemMigrationContext, ItemIdentity,
     ItemMigrationPolicy, ItemMigrationStatus, ItemNbtMigrationOutcome, ItemNbtMigrationReport,
     ItemSchemaSource, ItemStackMigrationOutcome, LegacyBlockItemResolver,
