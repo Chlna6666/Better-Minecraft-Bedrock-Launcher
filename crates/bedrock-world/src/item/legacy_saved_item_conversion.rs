@@ -27,7 +27,7 @@ pub struct LegacySavedItemConversionReport {
 }
 
 /// Converted NBT tree and its conversion report.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LegacySavedItemConversionOutcome {
     /// Converted NBT. The source tree passed to the conversion function is never modified.
     pub nbt: NbtTag,
