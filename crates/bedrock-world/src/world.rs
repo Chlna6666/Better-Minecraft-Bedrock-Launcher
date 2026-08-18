@@ -8,6 +8,7 @@ pub mod discover;
 mod downgrade;
 mod legacy_terrain;
 mod level_dat;
+mod player_saved_item_conversion;
 mod player_saved_items;
 mod player_storage;
 mod pocket_chunks_dat;
