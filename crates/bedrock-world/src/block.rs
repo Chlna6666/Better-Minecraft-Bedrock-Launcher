@@ -7,6 +7,7 @@ pub(crate) mod version;
 pub use crate::chunk::palette::{BlockPalette, BlockState, block_storage_index};
 pub use crate::chunk::position::BlockPos;
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
+pub use block_state::read_block_state_nbt;
 pub use version::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
     BlockUpgradeData, LegacyNumericBlock, LegacyNumericBlockMatch, LegacyNumericBlockStateTable,

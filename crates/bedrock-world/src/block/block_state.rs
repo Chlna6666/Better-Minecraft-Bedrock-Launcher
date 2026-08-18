@@ -3,6 +3,7 @@
 mod block_state_graph;
 mod block_state_upgrade;
 mod identity;
+mod nbt;
 
 use crate::block::version::AuthoritativeBlockStateCatalog;
 use crate::block::BlockState;
@@ -13,6 +14,7 @@ pub use block_state_upgrade::{
     BlockStateUpgradeResult, BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
     BlockStateValueRewrite,
 };
+pub use nbt::read_block_state_nbt;
 
 /// BlockState version writer used only when a caller explicitly selects another persisted version.
 pub trait BlockStateMigrator: Send + Sync {
