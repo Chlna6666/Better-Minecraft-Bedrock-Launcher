@@ -2,15 +2,15 @@
 //!
 //! Writes are grouped by chunk and committed through [`crate::WorldTransaction`]. The editor
 //! preserves unrelated raw records, the secondary block layer, biome payloads, and unknown metadata.
-//! Legacy/unsupported subchunk formats are rejected instead of being rewritten through a guessed
-//! representation.
+//! SubChunk representations not supported by this editor are rejected without invoking world upgrade
+//! or downgrade logic.
 
 use crate::nbt::NbtTag;
 use crate::parsed::encode_consecutive_roots;
 use crate::{
     BedrockWorld, BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockPos, BlockState, Chunk,
-    ChunkCapabilities, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, CompatibilityLevel,
-    Dimension, Result, SubChunkFormat, WorldStorageHandle, WriteGuard, WritePolicy,
+    ChunkCapabilities, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
+    CompatibilityLevel, Dimension, Result, SubChunkFormat, WorldStorageHandle, WriteGuard,
     block_storage_index,
 };
 use bytes::Bytes;
@@ -77,9 +77,6 @@ pub struct BlockEditOptions {
     pub commit_batch_chunks: usize,
     /// Delete a subchunk record when both supported layers become entirely air.
     pub compact_empty_subchunks: bool,
-    /// Historical-format write policy. Typed editing is exact-format only; `Migrate` requires callers
-    /// to run an explicit migration before invoking this writer on a legacy chunk.
-    pub write_policy: WritePolicy,
 }
 
 impl Default for BlockEditOptions {
@@ -87,7 +84,6 @@ impl Default for BlockEditOptions {
         Self {
             commit_batch_chunks: DEFAULT_COMMIT_BATCH_CHUNKS,
             compact_empty_subchunks: true,
-            write_policy: WritePolicy::Preserve,
         }
     }
 }
@@ -132,13 +128,13 @@ impl EditableSubchunk {
         };
         let SubChunkFormat::Paletted { version, storages } = subchunk.format else {
             return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-                "chunk {},{} subchunk {y} is not a modern paletted subchunk",
+                "chunk {},{} subchunk {y} is not a V8/V9 paletted SubChunk",
                 chunk.pos.x, chunk.pos.z
             )));
         };
         if !matches!(version, 8 | 9) {
             return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-                "typed block editing only supports subchunk versions 8/9, got {version}"
+                "typed block editing only supports SubChunk V8/V9, got V{version}"
             )));
         }
         if storages.len() > 2 && storages.iter().skip(2).any(palette_contains_non_air) {
@@ -179,7 +175,7 @@ impl EditableSubchunk {
             9 => vec![9, storage_count, self.y.to_ne_bytes()[0]],
             version => {
                 return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-                    "cannot encode subchunk version {version}"
+                    "cannot encode SubChunk V{version} with the V8/V9 typed editor"
                 )));
             }
         };
@@ -208,11 +204,6 @@ where
             affected_chunks: BTreeSet::new(),
             commits: 0,
         });
-    }
-    if options.write_policy == WritePolicy::Refuse {
-        return Err(BedrockWorldError::Validation(
-            "typed block editing is disabled by WritePolicy::Refuse".to_string(),
-        ));
     }
     if options.commit_batch_chunks == 0 {
         return Err(BedrockWorldError::Validation(
@@ -255,13 +246,13 @@ where
                 "typed block editing refuses to synthesize missing chunk {chunk_pos:?}; create/generate the chunk first"
             )));
         }
-        validate_chunk_write_compatibility(chunk_pos, &existing.records, options.write_policy)?;
+        validate_chunk_write_compatibility(chunk_pos, &existing.records)?;
         let fallback_state_version = chunk_edits
             .iter()
             .find_map(|edit| edit.state.version)
             .ok_or_else(|| {
                 BedrockWorldError::Validation(
-                    "typed block editing requires block-state version metadata".to_string(),
+                    "typed block editing requires persisted BlockState version metadata".to_string(),
                 )
             })?;
 
@@ -352,32 +343,23 @@ where
     })
 }
 
-fn validate_chunk_write_compatibility(
-    chunk: ChunkPos,
-    records: &[ChunkRecord],
-    policy: WritePolicy,
-) -> Result<()> {
+fn validate_chunk_write_compatibility(chunk: ChunkPos, records: &[ChunkRecord]) -> Result<()> {
     let capabilities = ChunkCapabilities::inspect(records);
     match capabilities.compatibility {
         CompatibilityLevel::Exact => Ok(()),
         CompatibilityLevel::UnsupportedFuture => Err(BedrockWorldError::UnsupportedChunkFormat(
             format!(
-                "chunk {chunk:?} contains a future/unknown storage format; raw data is preserved and structured writes are refused"
+                "chunk {chunk:?} contains a future/unknown persisted representation; raw data is preserved and this V8/V9 editor refuses the write"
             ),
         )),
         CompatibilityLevel::Corrupt => Err(BedrockWorldError::CorruptWorld(format!(
             "chunk {chunk:?} is not safe to rewrite"
         ))),
-        CompatibilityLevel::ReadCompatible | CompatibilityLevel::MigrationRequired => match policy {
-            WritePolicy::Migrate => Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-                "chunk {chunk:?} requires an explicit historical migration before typed block editing"
-            ))),
-            WritePolicy::Preserve | WritePolicy::Refuse => Err(
-                BedrockWorldError::UnsupportedChunkFormat(format!(
-                    "chunk {chunk:?} is historical/read-compatible but not exact; preserve mode refuses format conversion"
-                )),
+        CompatibilityLevel::ReadCompatible => Err(BedrockWorldError::UnsupportedChunkFormat(
+            format!(
+                "chunk {chunk:?} contains data that requires raw preservation; this V8/V9 editor cannot rewrite it"
             ),
-        },
+        )),
     }
 }
 
@@ -408,7 +390,7 @@ fn validate_writable_state(state: &BlockState) -> Result<()> {
     }
     if state.version.is_none() {
         return Err(BedrockWorldError::Validation(format!(
-            "block state {} has no storage version; upgrade it before writing",
+            "block state {} has no persisted BlockState version",
             state.name
         )));
     }
@@ -595,7 +577,10 @@ fn chunk_height_map(records: &[ChunkRecord]) -> Result<(ChunkVersion, Vec<i16>)>
     ))
 }
 
-fn encode_height_map(records: &[ChunkRecord], height_map: Vec<i16>) -> Result<(ChunkRecordTag, Bytes)> {
+fn encode_height_map(
+    records: &[ChunkRecord],
+    height_map: Vec<i16>,
+) -> Result<(ChunkRecordTag, Bytes)> {
     for record in records {
         match record.key.tag {
             ChunkRecordTag::Data3D => {
@@ -762,10 +747,5 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(parsed.block_state_at(1, 2, 3), Some(&stone));
-    }
-
-    #[test]
-    fn block_edit_default_policy_is_preserve() {
-        assert_eq!(BlockEditOptions::default().write_policy, WritePolicy::Preserve);
     }
 }

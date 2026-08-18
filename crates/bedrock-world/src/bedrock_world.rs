@@ -1,8 +1,8 @@
-//! Multi-version Minecraft Bedrock world reading, writing, inspection and explicit conversion.
+//! Multi-version Minecraft Bedrock world reading, writing and inspection.
 //!
 //! `bedrock-world` owns Minecraft Bedrock world semantics. Mojang LevelDB mechanics belong exclusively
-//! to `bedrock-leveldb`. Reads preserve the persisted data generation; cross-version conversion is
-//! caller-requested and never an implicit side effect of opening or parsing a world.
+//! to `bedrock-leveldb`. Ordinary reads and writes keep the persisted Bedrock representation. World
+//! upgrade and downgrade are separate caller-requested operations.
 
 #![deny(missing_docs)]
 #![allow(
@@ -29,7 +29,7 @@ mod parsed;
 pub mod player;
 pub mod biome;
 pub mod entity;
-/// Bedrock saved-item identities, stacks and historical item conversion data.
+/// Bedrock saved-item identities, stacks and historical item data.
 pub mod item;
 /// Minecraft Bedrock game and persisted data version information.
 pub mod version;
@@ -66,7 +66,7 @@ pub mod database;
 /// Bedrock world compatibility and integrity validation.
 pub mod integrity;
 
-/// Typed policy-guarded Bedrock world editing.
+/// Typed Bedrock world editing.
 pub mod editor;
 
 /// Read/query APIs for maps, regions and selections.
@@ -84,7 +84,7 @@ pub(crate) use chunk::{
 };
 pub(crate) use database::{StorageCachePolicy, StorageReadOptions};
 pub(crate) use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
-pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel, WritePolicy};
+pub(crate) use integrity::{ChunkCapabilities, CompatibilityLevel};
 pub(crate) use nbt::{NbtReader, NbtTag, NbtWriter};
 pub(crate) use parsed::ParsedChunkRecord;
 pub(crate) use query::WriteGuard;

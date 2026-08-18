@@ -1,82 +1,77 @@
-//! Whole-world historical format capability scanning.
+//! Whole-world Bedrock data capability scanning.
 //!
-//! Bedrock upgrades are not necessarily all-or-nothing: one database may contain old chunk keys,
-//! modern chunk records, legacy inline entities, modern actor digests and unknown future records at
-//! the same time. This scan therefore derives compatibility from the actual key/value population.
+//! One world may contain records written by several game generations. The scan reports the actual
+//! persisted data that exists; it does not decide that historical data should be upgraded.
 
-use super::{
-    ActorStorageModel, ChunkCapabilities, CompatibilityLevel, SubChunkCodecKind, WorldCapabilities,
-};
-use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag};
+use super::{ActorStorage, ChunkCapabilities, CompatibilityLevel, WorldCapabilities};
+use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, SubChunkVersion};
 use crate::database::{StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::Result;
 use crate::world::WorldFormat;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 
-/// Per-chunk compatibility summary produced by a whole-world scan.
+/// Per-chunk data summary produced by a whole-world scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkCompatibilitySummary {
     /// Chunk position including dimension.
     pub pos: ChunkPos,
-    /// Capabilities inferred from the chunk's observed records.
+    /// Persisted Bedrock data observed in this chunk.
     pub capabilities: ChunkCapabilities,
 }
 
 /// Aggregate compatibility information derived from one complete world storage scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldCompatibilityReport {
-    /// Baseline capabilities inferred from the selected physical storage container.
+    /// Baseline storage facts inferred from the selected physical world container.
     pub world: WorldCapabilities,
-    /// Worst compatibility level observed across the scanned world.
+    /// Worst safety level observed across the scanned world.
     pub compatibility: CompatibilityLevel,
-    /// Combined actor storage model observed in legacy chunk records and modern actor key spaces.
-    pub actor_storage: ActorStorageModel,
+    /// Actor storage observed across chunk `Entity` and `digp`/`actorprefix` records.
+    pub actor_storage: ActorStorage,
     /// Number of raw storage records visited.
     pub records_scanned: usize,
     /// Number of unique chunk positions observed.
     pub chunks_scanned: usize,
-    /// Number of chunks safe for exact structured round-trip by current codecs.
+    /// Number of chunks safe for same-representation structured round-trip.
     pub exact_chunks: usize,
-    /// Number of readable chunks containing preserved unknown/non-exact data.
+    /// Number of readable chunks containing data that must retain raw representation for writes.
     pub read_compatible_chunks: usize,
-    /// Number of chunks requiring explicit historical migration before normal writes.
-    pub migration_required_chunks: usize,
-    /// Number of chunks containing a future/unknown subchunk format.
+    /// Number of chunks containing a future/unknown SubChunk version.
     pub unsupported_future_chunks: usize,
-    /// Number of chunks classified as corrupt by the compatibility layer.
+    /// Number of chunks classified as corrupt by this layer.
     pub corrupt_chunks: usize,
-    /// Number of modern actor digest records (`digp...`) observed.
-    pub actor_digest_records: usize,
-    /// Number of modern actor payload records (`actorprefix...`) observed.
-    pub actor_prefix_records: usize,
-    /// Number of legacy inline `Entity` chunk records observed.
-    pub legacy_entity_records: usize,
+    /// Number of `digp...` records observed.
+    pub digp_records: usize,
+    /// Number of `actorprefix...` records observed.
+    pub actorprefix_records: usize,
+    /// Number of chunk-scoped `Entity` records observed.
+    pub entity_records: usize,
     /// Number of unknown chunk record tags retained for forward compatibility.
     pub unknown_chunk_records: usize,
     /// Number of non-chunk/raw keys not understood by the high-level classifier.
     pub unknown_storage_keys: usize,
-    /// Counts of historical subchunk codec families by stable diagnostic label.
-    pub subchunk_codecs: BTreeMap<String, usize>,
+    /// Counts grouped by actual persisted SubChunk version.
+    pub subchunk_versions: BTreeMap<String, usize>,
     /// Optional per-chunk summaries retained by the scan.
     pub chunks: Vec<ChunkCompatibilitySummary>,
 }
 
 impl WorldCompatibilityReport {
-    /// Returns whether any scanned record requires an explicit migration before structured writes.
-    #[must_use]
-    pub const fn requires_migration(&self) -> bool {
-        self.migration_required_chunks != 0
-    }
-
-    /// Returns whether any future/unknown chunk format was observed.
+    /// Returns whether any future/unknown SubChunk representation was observed.
     #[must_use]
     pub const fn has_future_data(&self) -> bool {
         self.unsupported_future_chunks != 0
     }
+
+    /// Returns whether any data must preserve its raw representation for safe writes.
+    #[must_use]
+    pub const fn requires_raw_preservation(&self) -> bool {
+        self.read_compatible_chunks != 0 || self.unsupported_future_chunks != 0
+    }
 }
 
-/// Scans raw world storage once and derives world/chunk capability information.
+/// Scans raw world storage once and derives world/chunk data information.
 pub fn scan_world_compatibility_blocking(
     storage: &dyn WorldStorage,
     format: WorldFormat,
@@ -84,9 +79,9 @@ pub fn scan_world_compatibility_blocking(
 ) -> Result<WorldCompatibilityReport> {
     let baseline = format.capabilities();
     let mut chunk_records = BTreeMap::<ChunkPos, Vec<ChunkRecord>>::new();
-    let mut actor_storage = ActorStorageModel::Unknown;
-    let mut actor_digest_records = 0usize;
-    let mut actor_prefix_records = 0usize;
+    let mut actor_storage = ActorStorage::Unknown;
+    let mut digp_records = 0usize;
+    let mut actorprefix_records = 0usize;
     let mut unknown_storage_keys = 0usize;
     let mut records_scanned = 0usize;
 
@@ -108,12 +103,12 @@ pub fn scan_world_compatibility_blocking(
                     .push(ChunkRecord { key, value: retained });
             }
             BedrockDbKey::ActorDigest { .. } => {
-                actor_digest_records = actor_digest_records.saturating_add(1);
-                actor_storage = actor_storage.merge(ActorStorageModel::ModernDigest);
+                digp_records = digp_records.saturating_add(1);
+                actor_storage = actor_storage.merge(ActorStorage::DigpActorprefix);
             }
             BedrockDbKey::ActorPrefix { .. } => {
-                actor_prefix_records = actor_prefix_records.saturating_add(1);
-                actor_storage = actor_storage.merge(ActorStorageModel::ModernDigest);
+                actorprefix_records = actorprefix_records.saturating_add(1);
+                actor_storage = actor_storage.merge(ActorStorage::DigpActorprefix);
             }
             BedrockDbKey::Unknown(_) => {
                 if let Ok(key) = ChunkKey::decode(raw_key) {
@@ -136,24 +131,23 @@ pub fn scan_world_compatibility_blocking(
     let mut compatibility = baseline.compatibility;
     let mut exact_chunks = 0usize;
     let mut read_compatible_chunks = 0usize;
-    let mut migration_required_chunks = 0usize;
     let mut unsupported_future_chunks = 0usize;
     let mut corrupt_chunks = 0usize;
-    let mut legacy_entity_records = 0usize;
+    let mut entity_records = 0usize;
     let mut unknown_chunk_records = 0usize;
-    let mut subchunk_codecs = BTreeMap::<String, usize>::new();
+    let mut subchunk_versions = BTreeMap::<String, usize>::new();
     let mut chunks = Vec::with_capacity(chunk_records.len());
 
     for (pos, records) in chunk_records {
         let capabilities = ChunkCapabilities::inspect(&records);
-        if capabilities.has_legacy_inline_entities {
-            legacy_entity_records = legacy_entity_records.saturating_add(
+        if capabilities.has_entity {
+            entity_records = entity_records.saturating_add(
                 records
                     .iter()
                     .filter(|record| record.key.tag == ChunkRecordTag::Entity)
                     .count(),
             );
-            actor_storage = actor_storage.merge(ActorStorageModel::LegacyInline);
+            actor_storage = actor_storage.merge(ActorStorage::Entity);
         }
         unknown_chunk_records = unknown_chunk_records.saturating_add(
             records
@@ -161,16 +155,16 @@ pub fn scan_world_compatibility_blocking(
                 .filter(|record| matches!(record.key.tag, ChunkRecordTag::Unknown(_)))
                 .count(),
         );
-        for codec in &capabilities.subchunk_codecs {
-            *subchunk_codecs.entry(codec_label(*codec)).or_default() += 1;
+        for version in &capabilities.subchunk_versions {
+            *subchunk_versions.entry(version_label(*version)).or_default() += 1;
+        }
+        if capabilities.has_unversioned_subchunk {
+            *subchunk_versions.entry("unversioned".to_string()).or_default() += 1;
         }
         match capabilities.compatibility {
             CompatibilityLevel::Exact => exact_chunks = exact_chunks.saturating_add(1),
             CompatibilityLevel::ReadCompatible => {
                 read_compatible_chunks = read_compatible_chunks.saturating_add(1);
-            }
-            CompatibilityLevel::MigrationRequired => {
-                migration_required_chunks = migration_required_chunks.saturating_add(1);
             }
             CompatibilityLevel::UnsupportedFuture => {
                 unsupported_future_chunks = unsupported_future_chunks.saturating_add(1);
@@ -191,29 +185,31 @@ pub fn scan_world_compatibility_blocking(
         chunks_scanned,
         exact_chunks,
         read_compatible_chunks,
-        migration_required_chunks,
         unsupported_future_chunks,
         corrupt_chunks,
-        actor_digest_records,
-        actor_prefix_records,
-        legacy_entity_records,
+        digp_records,
+        actorprefix_records,
+        entity_records,
         unknown_chunk_records,
         unknown_storage_keys,
-        subchunk_codecs,
+        subchunk_versions,
         chunks,
     })
 }
 
-fn codec_label(codec: SubChunkCodecKind) -> String {
-    match codec {
-        SubChunkCodecKind::LegacyV0 => "legacy-v0".to_string(),
-        SubChunkCodecKind::PalettedV1 => "paletted-v1".to_string(),
-        SubChunkCodecKind::LegacyV2ToV7(version) => format!("legacy-v{version}"),
-        SubChunkCodecKind::PalettedV8 => "paletted-v8".to_string(),
-        SubChunkCodecKind::PalettedV9 => "paletted-v9".to_string(),
-        SubChunkCodecKind::UnknownFuture(version) => format!("future-v{version}"),
-        SubChunkCodecKind::UnknownLegacy(version) => format!("unknown-legacy-v{version}"),
-        SubChunkCodecKind::Unknown => "unknown".to_string(),
+fn version_label(version: SubChunkVersion) -> String {
+    match version {
+        SubChunkVersion::V0 => "v0".to_string(),
+        SubChunkVersion::V1 => "v1".to_string(),
+        SubChunkVersion::V2 => "v2".to_string(),
+        SubChunkVersion::V3 => "v3".to_string(),
+        SubChunkVersion::V4 => "v4".to_string(),
+        SubChunkVersion::V5 => "v5".to_string(),
+        SubChunkVersion::V6 => "v6".to_string(),
+        SubChunkVersion::V7 => "v7".to_string(),
+        SubChunkVersion::V8 => "v8".to_string(),
+        SubChunkVersion::V9 => "v9".to_string(),
+        SubChunkVersion::Unknown(version) => format!("unknown-v{version}"),
     }
 }
 
@@ -221,9 +217,8 @@ const fn compatibility_rank(value: CompatibilityLevel) -> u8 {
     match value {
         CompatibilityLevel::Exact => 0,
         CompatibilityLevel::ReadCompatible => 1,
-        CompatibilityLevel::MigrationRequired => 2,
-        CompatibilityLevel::UnsupportedFuture => 3,
-        CompatibilityLevel::Corrupt => 4,
+        CompatibilityLevel::UnsupportedFuture => 2,
+        CompatibilityLevel::Corrupt => 3,
     }
 }
 
@@ -255,7 +250,10 @@ mod tests {
         let mut batch = StorageBatch::new();
         batch.put(ChunkKey::new(pos, ChunkRecordTag::Entity).encode(), Bytes::new());
         batch.put(ChunkKey::subchunk(pos, 0).encode(), Bytes::from_static(&[10, 1, 0]));
-        batch.put(Bytes::from_static(b"actorprefix\x00\x00\x00\x00\x00\x00\x00\x01"), Bytes::new());
+        batch.put(
+            Bytes::from_static(b"actorprefix\x00\x00\x00\x00\x00\x00\x00\x01"),
+            Bytes::new(),
+        );
         storage.write_batch(&batch).expect("seed storage");
 
         let report = scan_world_compatibility_blocking(
@@ -264,8 +262,9 @@ mod tests {
             StorageReadOptions::default(),
         )
         .expect("scan compatibility");
-        assert_eq!(report.actor_storage, ActorStorageModel::Mixed);
+        assert_eq!(report.actor_storage, ActorStorage::Mixed);
         assert_eq!(report.unsupported_future_chunks, 1);
         assert!(report.has_future_data());
+        assert_eq!(report.subchunk_versions.get("unknown-v10"), Some(&1));
     }
 }
