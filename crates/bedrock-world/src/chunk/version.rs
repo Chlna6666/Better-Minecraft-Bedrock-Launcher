@@ -1,41 +1,39 @@
-//! Minecraft Bedrock SubChunk payload versions, conservative reads and version-preserving writes.
+//! Minecraft Bedrock SubChunk V0 through V9 version byte handling.
 
-use crate::chunk::encoding::encode_paletted_subchunk_from_palettes;
 use crate::chunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat};
 use crate::error::{BedrockWorldError, Result};
-use crate::version::ConversionCompatibility;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 /// Version byte stored at the beginning of a Minecraft Bedrock SubChunk payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SubChunkVersion {
-    /// Fixed-array SubChunk version 0.
+    /// SubChunk V0.
     V0,
-    /// Paletted SubChunk version 1.
+    /// SubChunk V1.
     V1,
-    /// Historical fixed-array SubChunk version 2.
+    /// SubChunk V2.
     V2,
-    /// Historical fixed-array SubChunk version 3.
+    /// SubChunk V3.
     V3,
-    /// Historical fixed-array SubChunk version 4.
+    /// SubChunk V4.
     V4,
-    /// Historical fixed-array SubChunk version 5.
+    /// SubChunk V5.
     V5,
-    /// Historical fixed-array SubChunk version 6.
+    /// SubChunk V6.
     V6,
-    /// Historical fixed-array SubChunk version 7.
+    /// SubChunk V7.
     V7,
-    /// Paletted SubChunk version 8.
+    /// SubChunk V8.
     V8,
-    /// Paletted SubChunk version 9 with explicit Y in the payload.
+    /// SubChunk V9.
     V9,
-    /// A version byte not understood by this library.
+    /// A SubChunk version not implemented by this library.
     Unknown(u8),
 }
 
 impl SubChunkVersion {
-    /// Decodes an on-disk SubChunk version byte.
+    /// Reads the exact SubChunk version byte.
     #[must_use]
     pub const fn from_byte(version: u8) -> Self {
         match version {
@@ -53,13 +51,13 @@ impl SubChunkVersion {
         }
     }
 
-    /// Detects the version directly from a raw SubChunk payload.
+    /// Detects a SubChunk version from its payload without parsing block data.
     #[must_use]
     pub fn detect(bytes: &[u8]) -> Option<Self> {
         bytes.first().copied().map(Self::from_byte)
     }
 
-    /// Returns the exact on-disk version byte.
+    /// Returns the persisted version byte.
     #[must_use]
     pub const fn byte(self) -> u8 {
         match self {
@@ -76,53 +74,14 @@ impl SubChunkVersion {
             Self::Unknown(version) => version,
         }
     }
-
-    /// Returns whether this version uses the historical fixed-array representation.
-    #[must_use]
-    pub const fn is_legacy_fixed(self) -> bool {
-        matches!(self, Self::V0 | Self::V2 | Self::V3 | Self::V4 | Self::V5 | Self::V6 | Self::V7)
-    }
-
-    /// Returns whether this version uses a palette representation understood by this library.
-    #[must_use]
-    pub const fn is_paletted(self) -> bool {
-        matches!(self, Self::V1 | Self::V8 | Self::V9)
-    }
-}
-
-impl SubChunk {
-    /// Returns the actual persisted SubChunk version when the payload has one.
-    #[must_use]
-    pub const fn version(&self) -> Option<SubChunkVersion> {
-        self.format.version()
-    }
-
-    /// Reports whether a requested version conversion is known to be lossless from this payload.
-    #[must_use]
-    pub fn conversion_compatibility(&self, target: SubChunkVersion) -> ConversionCompatibility {
-        match self.version() {
-            Some(source) if source == target => ConversionCompatibility::Lossless,
-            Some(source) if source.is_paletted() && target.is_paletted() => {
-                match &self.format {
-                    SubChunkFormat::Paletted { storages, .. }
-                        if !matches!(target, SubChunkVersion::V1) || storages.len() == 1 =>
-                    {
-                        ConversionCompatibility::Lossless
-                    }
-                    _ => ConversionCompatibility::Unsupported,
-                }
-            }
-            _ => ConversionCompatibility::Unsupported,
-        }
-    }
 }
 
 impl SubChunkFormat {
-    /// Returns the actual SubChunk payload version represented by this decoded value.
+    /// Returns the actual version represented by this SubChunk payload.
     #[must_use]
     pub const fn version(&self) -> Option<SubChunkVersion> {
         match self {
-            Self::LegacySubChunk(subchunk) => Some(SubChunkVersion::from_byte(subchunk.version())),
+            Self::LegacySubChunk(value) => Some(SubChunkVersion::from_byte(value.version())),
             Self::FixedArrayV1 => Some(SubChunkVersion::V1),
             Self::Paletted { version, .. } => Some(SubChunkVersion::from_byte(*version)),
             Self::Raw { version, .. } => match version {
@@ -134,45 +93,118 @@ impl SubChunkFormat {
     }
 }
 
-/// Reads a SubChunk by automatically inspecting its persisted version byte.
-///
-/// Known V0-V9 payloads delegate to the structured parser. Unknown versions are always retained raw
-/// even when their bytes happen to resemble a known palette layout.
-pub fn read_subchunk(
-    y: i8,
-    bytes: Bytes,
-    mode: SubChunkDecodeMode,
-) -> Result<SubChunk> {
-    match SubChunkVersion::detect(&bytes) {
-        Some(SubChunkVersion::Unknown(version)) => Ok(SubChunk {
-            y,
-            format: SubChunkFormat::Raw {
-                version: Some(version),
-                bytes,
-            },
-        }),
-        _ => crate::chunk::subchunk::parse_subchunk_with_mode(y, bytes, mode),
-    }
-}
-
-/// Serializes a SubChunk using the same persisted version that was read.
-///
-/// Legacy and unsupported raw payloads are retained byte-for-byte. Decoded paletted V1/V8/V9 data
-/// is re-encoded in its original version. This function never upgrades or downgrades implicitly.
-pub fn write_subchunk_preserving_version(subchunk: &SubChunk) -> Result<Bytes> {
-    match &subchunk.format {
-        SubChunkFormat::LegacySubChunk(legacy) => Ok(legacy.raw().clone()),
-        SubChunkFormat::Paletted { version, storages } => {
-            let storages = storages.iter().collect::<Vec<_>>();
-            encode_paletted_subchunk_from_palettes(*version, subchunk.y, &storages)
+impl SubChunk {
+    /// Reads a SubChunk by its persisted leading version byte.
+    pub fn read(y: i8, bytes: Bytes, mode: SubChunkDecodeMode) -> Result<Self> {
+        match SubChunkVersion::detect(&bytes) {
+            Some(SubChunkVersion::V0) => crate::chunk::subchunk_v0::read(y, bytes, mode),
+            Some(SubChunkVersion::V1) => crate::chunk::subchunk_v1::read(y, bytes, mode),
+            Some(version @ (SubChunkVersion::V2
+            | SubChunkVersion::V3
+            | SubChunkVersion::V4
+            | SubChunkVersion::V5
+            | SubChunkVersion::V6
+            | SubChunkVersion::V7)) => {
+                crate::chunk::subchunk_v2_v7::read(version.byte(), y, bytes, mode)
+            }
+            Some(SubChunkVersion::V8) => crate::chunk::subchunk_v8::read(y, bytes, mode),
+            Some(SubChunkVersion::V9) => crate::chunk::subchunk_v9::read(y, bytes, mode),
+            Some(SubChunkVersion::Unknown(version)) => Ok(Self {
+                y,
+                format: SubChunkFormat::Raw {
+                    version: Some(version),
+                    bytes,
+                },
+            }),
+            None => Ok(Self {
+                y,
+                format: SubChunkFormat::Raw {
+                    version: None,
+                    bytes,
+                },
+            }),
         }
-        SubChunkFormat::Raw { bytes, .. } => Ok(bytes.clone()),
-        SubChunkFormat::FixedArrayV1 => Err(BedrockWorldError::UnsupportedChunkFormat(
-            "FixedArrayV1 has no retained payload to write losslessly".to_string(),
-        )),
-        SubChunkFormat::LegacyTerrain => Err(BedrockWorldError::UnsupportedChunkFormat(
-            "LegacyTerrain is a chunk record, not a SubChunk payload".to_string(),
-        )),
+    }
+
+    /// Returns the actual persisted SubChunk version.
+    #[must_use]
+    pub const fn version(&self) -> Option<SubChunkVersion> {
+        self.format.version()
+    }
+
+    /// Writes this SubChunk using the version it currently represents.
+    pub fn write(&self) -> Result<Bytes> {
+        match self.version() {
+            Some(SubChunkVersion::V0) => self.write_v0(),
+            Some(SubChunkVersion::V1) => self.write_v1(),
+            Some(SubChunkVersion::V2) => self.write_v2(),
+            Some(SubChunkVersion::V3) => self.write_v3(),
+            Some(SubChunkVersion::V4) => self.write_v4(),
+            Some(SubChunkVersion::V5) => self.write_v5(),
+            Some(SubChunkVersion::V6) => self.write_v6(),
+            Some(SubChunkVersion::V7) => self.write_v7(),
+            Some(SubChunkVersion::V8) => self.write_v8(),
+            Some(SubChunkVersion::V9) => self.write_v9(),
+            Some(SubChunkVersion::Unknown(_)) => match &self.format {
+                SubChunkFormat::Raw { bytes, .. } => Ok(bytes.clone()),
+                _ => Err(BedrockWorldError::UnsupportedChunkFormat(
+                    "unknown SubChunk version is not retained as raw bytes".to_string(),
+                )),
+            },
+            None => Err(BedrockWorldError::UnsupportedChunkFormat(
+                "value is not a SubChunk payload".to_string(),
+            )),
+        }
+    }
+
+    /// Writes this block data as SubChunk V0 when it is representable exactly.
+    pub fn write_v0(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v0::write(self)
+    }
+
+    /// Writes this block data as SubChunk V1 when it is representable exactly.
+    pub fn write_v1(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v1::write(self)
+    }
+
+    /// Writes this block data as SubChunk V2 when it is representable exactly.
+    pub fn write_v2(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v2_v7::write(2, self)
+    }
+
+    /// Writes this block data as SubChunk V3 when it is representable exactly.
+    pub fn write_v3(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v2_v7::write(3, self)
+    }
+
+    /// Writes this block data as SubChunk V4 when it is representable exactly.
+    pub fn write_v4(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v2_v7::write(4, self)
+    }
+
+    /// Writes this block data as SubChunk V5 when it is representable exactly.
+    pub fn write_v5(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v2_v7::write(5, self)
+    }
+
+    /// Writes this block data as SubChunk V6 when it is representable exactly.
+    pub fn write_v6(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v2_v7::write(6, self)
+    }
+
+    /// Writes this block data as SubChunk V7 when it is representable exactly.
+    pub fn write_v7(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v2_v7::write(7, self)
+    }
+
+    /// Writes this block data as SubChunk V8 when it is representable exactly.
+    pub fn write_v8(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v8::write(self)
+    }
+
+    /// Writes this block data as SubChunk V9 when it is representable exactly.
+    pub fn write_v9(&self) -> Result<Bytes> {
+        crate::chunk::subchunk_v9::write(self)
     }
 }
 
@@ -182,26 +214,26 @@ mod tests {
     use crate::chunk::LegacySubChunkBuilder;
 
     #[test]
-    fn detects_all_known_subchunk_version_bytes() {
+    fn detects_v0_through_v9() {
         for version in 0_u8..=9 {
             assert_eq!(SubChunkVersion::from_byte(version).byte(), version);
         }
-        assert_eq!(SubChunkVersion::from_byte(12), SubChunkVersion::Unknown(12));
+        assert_eq!(SubChunkVersion::from_byte(10), SubChunkVersion::Unknown(10));
     }
 
     #[test]
-    fn legacy_subchunk_preserving_write_is_byte_exact() {
+    fn v7_reads_and_writes_as_v7() {
         let raw = LegacySubChunkBuilder::new(7).unwrap().build().unwrap();
-        let parsed = read_subchunk(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
-        assert_eq!(parsed.version(), Some(SubChunkVersion::V7));
-        assert_eq!(write_subchunk_preserving_version(&parsed).unwrap(), raw);
+        let subchunk = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
+        assert_eq!(subchunk.version(), Some(SubChunkVersion::V7));
+        assert_eq!(subchunk.write_v7().unwrap(), raw);
     }
 
     #[test]
-    fn unknown_future_subchunk_is_preserved_raw() {
+    fn unknown_version_roundtrips_raw() {
         let raw = Bytes::from_static(&[10, 1, 0]);
-        let parsed = read_subchunk(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
-        assert_eq!(parsed.version(), Some(SubChunkVersion::Unknown(10)));
-        assert_eq!(write_subchunk_preserving_version(&parsed).unwrap(), raw);
+        let subchunk = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
+        assert_eq!(subchunk.version(), Some(SubChunkVersion::Unknown(10)));
+        assert_eq!(subchunk.write().unwrap(), raw);
     }
 }

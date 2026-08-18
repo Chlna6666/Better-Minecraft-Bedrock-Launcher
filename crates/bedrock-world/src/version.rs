@@ -1,25 +1,10 @@
-//! Minecraft Bedrock game and persisted data version information.
-//!
-//! Version values in this module are evidence read from Bedrock data itself. The library does not
-//! infer a precise game version from unrelated NBT fields and does not convert data while detecting
-//! versions.
+//! Minecraft Bedrock game and persisted version values read from world data.
 
 use crate::error::{BedrockWorldError, Result};
 use crate::level::LevelDatDocument;
 use crate::nbt::NbtTag;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-
-/// Compatibility of an explicit conversion between two persisted Bedrock representations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ConversionCompatibility {
-    /// Every represented value can be preserved by the requested conversion.
-    Lossless,
-    /// The target representation cannot express all source data without discarding information.
-    Lossy,
-    /// The library has no authoritative conversion path for this source/target pair.
-    Unsupported,
-}
 
 /// Minecraft Bedrock game version components read from persisted world metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -62,7 +47,7 @@ impl fmt::Display for GameVersion {
     }
 }
 
-/// Version evidence read from one `level.dat` document.
+/// Version values read from one `level.dat` document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LevelVersion {
     /// Binary `level.dat` header version.
@@ -74,7 +59,7 @@ pub struct LevelVersion {
 }
 
 impl LevelVersion {
-    /// Detects version information directly from a parsed `level.dat` document.
+    /// Reads version values directly from a parsed `level.dat` document.
     pub fn detect(document: &LevelDatDocument) -> Result<Self> {
         let NbtTag::Compound(root) = &document.root else {
             return Err(BedrockWorldError::CorruptWorld(
