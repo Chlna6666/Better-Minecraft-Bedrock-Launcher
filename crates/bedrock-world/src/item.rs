@@ -4,6 +4,7 @@ mod format;
 mod legacy_saved_item;
 mod legacy_saved_item_check;
 mod legacy_saved_item_conversion;
+mod medieval_saved_item;
 mod saved_item;
 
 pub use crate::parsed::ItemStack;
@@ -21,6 +22,12 @@ pub use legacy_saved_item_check::{
 pub use legacy_saved_item_conversion::{
     LegacySavedItemConversionOutcome, LegacySavedItemConversionReport,
     convert_saved_items_to_legacy_numeric, convert_saved_items_to_legacy_numeric_with_blocks,
+};
+pub use medieval_saved_item::{
+    MedievalSavedItemCheckReport, MedievalSavedItemConversionOutcome,
+    MedievalSavedItemConversionReport, MedievalSavedItemIssue, MedievalSavedItemIssueKind,
+    check_saved_items_for_medieval, check_saved_items_for_medieval_with_blocks,
+    convert_saved_items_to_medieval, convert_saved_items_to_medieval_with_blocks,
 };
 
 // The historical forward rule executor remains crate-private while public APIs are expressed through
