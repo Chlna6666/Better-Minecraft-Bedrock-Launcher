@@ -7,6 +7,7 @@ mod legacy_saved_item;
 mod legacy_saved_item_check;
 mod legacy_saved_item_conversion;
 mod medieval_saved_item;
+mod modern_saved_item;
 mod modern_target;
 mod saved_item;
 mod vanilla_saved_item_block_map;
@@ -44,6 +45,11 @@ pub use medieval_saved_item::{
     MedievalSavedItemConversionReport, MedievalSavedItemIssue, MedievalSavedItemIssueKind,
     check_saved_items_for_medieval, check_saved_items_for_medieval_with_blocks,
     convert_saved_items_to_medieval, convert_saved_items_to_medieval_with_blocks,
+};
+pub use modern_saved_item::{
+    ModernSavedItemCheckReport, ModernSavedItemConversionOutcome, ModernSavedItemConversionReport,
+    ModernSavedItemIssue, ModernSavedItemIssueKind, check_saved_items_for_modern_target,
+    convert_saved_items_to_modern_target,
 };
 pub use modern_target::{ModernSavedItemTarget, ModernSavedItemTargetMatch};
 pub use vanilla_saved_item_block_map::{
