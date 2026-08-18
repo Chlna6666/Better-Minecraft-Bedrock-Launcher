@@ -1,4 +1,4 @@
-#![cfg(feature = "backend-bedrock-leveldb")]
+#![cfg(feature = "bedrock-leveldb")]
 
 use bedrock_world::{BedrockLevelDbStorage, WorldStorage};
 use std::time::{SystemTime, UNIX_EPOCH};
