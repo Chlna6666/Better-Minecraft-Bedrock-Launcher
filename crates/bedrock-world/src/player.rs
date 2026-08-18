@@ -26,7 +26,9 @@ pub use equipment::{PlayerArmor, PlayerEquipmentEntry, PlayerOffhand};
 pub use inventory::{PlayerInventoryEntry, PlayerInventorySlot};
 pub use level_dat::{read_level_dat_player, remove_level_dat_player, write_level_dat_player};
 pub use local_player::{
-    delete_local_player, read_local_player, read_local_player_with_level, write_local_player,
+    LocalPlayerStorageMoveReport, delete_local_player, move_level_dat_player_to_local_player,
+    move_local_player_to_level_dat, read_local_player, read_local_player_with_level,
+    write_local_player,
 };
 pub use server_player::{
     delete_server_player, read_server_player, read_server_player_with_level, write_server_player,
