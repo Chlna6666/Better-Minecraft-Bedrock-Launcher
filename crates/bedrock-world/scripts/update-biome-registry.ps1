@@ -162,15 +162,12 @@ if (-not $biomePath) {
         -ExpectedSemanticVersion $server.semantic_version `
         -WorkingDirectory (Join-Path $work "endstone-export") `
         -OutputPath $biomePath
-    if ($LASTEXITCODE -ne 0) {
-        throw "Endstone biome runtime export failed"
-    }
     $sourcePath = "$biomePath.source.json"
     if (-not (Test-Path -LiteralPath $sourcePath)) {
         throw "Endstone exporter did not write source metadata '$sourcePath'"
     }
     $source = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json -AsHashtable
-    if ($source.Contains("endstone_commit")) {
+    if ($source.ContainsKey("endstone_commit")) {
         $endstoneCommit = [string]$source["endstone_commit"]
     }
 }
@@ -178,6 +175,7 @@ else {
     $biomePath = (Resolve-Path -LiteralPath $biomePath).Path
 }
 
+$resolvedEndstoneRef = if ($endstoneCommit) { $endstoneCommit } else { $EndstoneRef }
 $crateManifest = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../Cargo.toml"))
 $toolArgs = @(
     "run",
@@ -192,7 +190,7 @@ $toolArgs = @(
     "--bds-metadata", [string]$server.metadata_path,
     "--protocol-readme", [string]$protocol.readme_path,
     "--channel", $Channel,
-    "--endstone-ref", $EndstoneRef,
+    "--endstone-ref", $resolvedEndstoneRef,
     "--protocol-ref", [string]$protocol.ref
 )
 
@@ -218,6 +216,5 @@ Write-Host "  BDS semantic:     $($server.semantic_version)"
 Write-Host "  exact BDS build:  $($server.build_version)"
 Write-Host "  network version:  $($protocol.network_version)"
 Write-Host "  protocol-docs:    $($protocol.ref)"
-Write-Host "  Endstone ref:     $EndstoneRef"
-if ($endstoneCommit) { Write-Host "  Endstone commit:  $endstoneCommit" }
+Write-Host "  Endstone source:  $resolvedEndstoneRef"
 Write-Host "  biome source:     $biomePath"
