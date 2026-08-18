@@ -18,7 +18,7 @@ pub use bedrock_world::*;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use downgrade::{
-    DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan,
+    DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan, DowngradeRequirement,
 };
 pub use level_dat::{SubChunkVersionCount, WorldVersions};
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};

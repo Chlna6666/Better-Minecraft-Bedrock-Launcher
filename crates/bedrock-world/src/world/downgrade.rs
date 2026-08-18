@@ -1,6 +1,7 @@
 //! Explicit Minecraft Bedrock world downgrade planning and independently safe downgrade steps.
 //!
-//! Downgrade has its own rules and loss analysis. It does not run upgrade logic backwards.
+//! Downgrade has its own rules, requirements and loss analysis. It does not run upgrade logic
+//! backwards and it does not classify missing authoritative inputs as data loss.
 
 use crate::block::VanillaBlockStatePalette;
 use crate::chunk::{
@@ -31,7 +32,7 @@ pub enum DowngradeAction {
         /// Number of SubChunk records that must be collapsed into legacy chunk terrain.
         records: usize,
     },
-    /// Collapse `Data3D` biome data to the older 2D representation.
+    /// Collapse `Data3D` biome data to the older `Data2D` representation.
     Data3DToData2D {
         /// Number of `Data3D` records found.
         records: usize,
@@ -50,25 +51,42 @@ pub enum DowngradeAction {
     },
 }
 
-/// Data that cannot be represented identically in the requested older release without additional
-/// authoritative target data or a deliberately lossy rule.
+/// Authoritative inputs or representation checks required before a downgrade can be proven exact.
+///
+/// Requirements are not data loss. A concrete downgrade step may satisfy one by receiving the named
+/// Bedrock data set or by preflighting the persisted records before staging any writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DowngradeLoss {
-    /// 3D biome sections must be collapsed into a 2D biome map.
-    ThreeDimensionalBiomes {
-        /// Number of affected `Data3D` records.
+pub enum DowngradeRequirement {
+    /// Paletted SubChunk downgrade needs the requested release's real vanilla BlockState palette.
+    TargetVanillaBlockPalette,
+    /// V0/fixed-array targets need authoritative legacy numeric block ID/metadata mappings.
+    LegacyNumericBlockStates,
+    /// Every `Data3D` column must be vertically uniform and fit the `Data2D` u8 biome id range.
+    Data3DColumnsFitData2D {
+        /// Number of `Data3D` records requiring this preflight.
         records: usize,
     },
-    /// Target block availability/state validation needs the target release palette before execution.
-    TargetBlockPaletteRequired,
-    /// A classic numeric target requires authoritative reverse block ID/meta data.
-    LegacyNumericBlocksRequired,
-    /// The target item generation requires older item ID/meta representation.
-    HistoricalSavedItems {
-        /// Number of affected player records.
+    /// `LegacyTerrain` needs the historical biome RGB samples persisted by `Data2DLegacy`.
+    ///
+    /// `Data2D` and `Data3D` do not contain these RGB bytes, so an exact pre-SubChunk write needs an
+    /// authoritative source for them rather than inventing colours.
+    Data2DLegacyBiomeColors {
+        /// Number of modern biome records lacking saved `Data2DLegacy` RGB samples.
+        records: usize,
+    },
+    /// Older saved-item generations need authoritative legacy item ID/metadata mappings.
+    LegacySavedItemIds {
+        /// Number of player records requiring historical saved-item rewriting.
         players: usize,
     },
 }
+
+/// Data proven to be discarded by a selected downgrade path.
+///
+/// The current planner has no intrinsically lossy automatic path: unsupported representations become
+/// [`DowngradeRequirement`] entries or fail concrete preflight instead of being silently discarded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DowngradeLoss {}
 
 /// Reason a downgrade target cannot be selected or inspected safely.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,7 +123,9 @@ pub struct DowngradePlan {
     pub world: WorldVersions,
     /// Concrete rewrites required by the target.
     pub actions: Vec<DowngradeAction>,
-    /// Known representation losses or external target data required by execution.
+    /// Inputs or compatibility checks still required to prove exact representation.
+    pub requirements: Vec<DowngradeRequirement>,
+    /// Data already proven to be discarded by the selected path.
     pub losses: Vec<DowngradeLoss>,
     /// Conditions that prevent unambiguous target selection.
     pub issues: Vec<DowngradeIssue>,
@@ -118,7 +138,16 @@ impl DowngradePlan {
         self.issues.is_empty()
     }
 
-    /// Returns whether the plan has any known lossy or target-palette-dependent operation.
+    /// Returns whether no authoritative input or representation preflight remains unresolved.
+    #[must_use]
+    pub fn has_unresolved_requirements(&self) -> bool {
+        !self.requirements.is_empty()
+    }
+
+    /// Returns whether the plan has no already-proven data loss.
+    ///
+    /// This does not mean every requirement is satisfied. Check [`Self::has_unresolved_requirements`]
+    /// separately before execution.
     #[must_use]
     pub fn is_lossless(&self) -> bool {
         self.losses.is_empty()
@@ -134,7 +163,8 @@ where
         let versions = self.versions_blocking()?;
         let source = versions.game_version().cloned();
         let mut actions = Vec::new();
-        let mut losses = Vec::new();
+        let mut requirements = Vec::new();
+        let losses = Vec::new();
         let mut issues = Vec::new();
 
         match source.as_ref() {
@@ -174,9 +204,16 @@ where
                     source: versions.subchunks.clone(),
                     target: target_subchunk,
                 });
-                losses.push(DowngradeLoss::TargetBlockPaletteRequired);
                 if target_subchunk == SubChunkVersion::V0 {
-                    losses.push(DowngradeLoss::LegacyNumericBlocksRequired);
+                    push_requirement(
+                        &mut requirements,
+                        DowngradeRequirement::LegacyNumericBlockStates,
+                    );
+                } else {
+                    push_requirement(
+                        &mut requirements,
+                        DowngradeRequirement::TargetVanillaBlockPalette,
+                    );
                 }
             }
         } else if !game_at_least(&target, &[0, 17, 0, 1]) {
@@ -187,8 +224,22 @@ where
                 .sum::<usize>();
             if records != 0 {
                 actions.push(DowngradeAction::SubChunksToLegacyTerrain { records });
-                losses.push(DowngradeLoss::TargetBlockPaletteRequired);
-                losses.push(DowngradeLoss::LegacyNumericBlocksRequired);
+                push_requirement(
+                    &mut requirements,
+                    DowngradeRequirement::LegacyNumericBlockStates,
+                );
+            }
+
+            let biome_records_without_saved_rgb = versions
+                .data2d_records
+                .saturating_add(versions.data3d_records);
+            if biome_records_without_saved_rgb != 0 {
+                push_requirement(
+                    &mut requirements,
+                    DowngradeRequirement::Data2DLegacyBiomeColors {
+                        records: biome_records_without_saved_rgb,
+                    },
+                );
             }
         }
 
@@ -196,9 +247,12 @@ where
             actions.push(DowngradeAction::Data3DToData2D {
                 records: versions.data3d_records,
             });
-            losses.push(DowngradeLoss::ThreeDimensionalBiomes {
-                records: versions.data3d_records,
-            });
+            push_requirement(
+                &mut requirements,
+                DowngradeRequirement::Data3DColumnsFitData2D {
+                    records: versions.data3d_records,
+                },
+            );
         }
         if !game_at_least(&target, &[1, 18, 30])
             && (versions.digp_records != 0 || versions.actorprefix_records != 0)
@@ -214,9 +268,12 @@ where
             actions.push(DowngradeAction::PlayerSavedItems {
                 players: historical_players,
             });
-            losses.push(DowngradeLoss::HistoricalSavedItems {
-                players: historical_players,
-            });
+            push_requirement(
+                &mut requirements,
+                DowngradeRequirement::LegacySavedItemIds {
+                    players: historical_players,
+                },
+            );
         }
         actions.push(DowngradeAction::LevelDat);
 
@@ -225,6 +282,7 @@ where
             target,
             world: versions,
             actions,
+            requirements,
             losses,
             issues,
         })
@@ -238,8 +296,8 @@ where
     /// game. Missing/renamed states or an unsupported target SubChunk representation abort the complete
     /// operation before any database write.
     ///
-    /// This step intentionally does not perform lossy biome conversion, historical item conversion,
-    /// actor conversion, numeric V0 conversion, or `level.dat` updates.
+    /// This step intentionally does not perform biome conversion, historical item conversion, actor
+    /// conversion, numeric V0 conversion, or `level.dat` updates.
     pub fn downgrade_subchunk_storage_blocking(
         &self,
         target: GameVersion,
@@ -257,11 +315,12 @@ where
                 target_palette.game_version()
             )));
         }
-        if plan
-            .losses
-            .iter()
-            .any(|loss| matches!(loss, DowngradeLoss::LegacyNumericBlocksRequired))
-        {
+        if plan.requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                DowngradeRequirement::LegacyNumericBlockStates
+            )
+        }) {
             return Err(BedrockWorldError::UnsupportedChunkFormat(
                 "target SubChunk generation requires authoritative legacy numeric block ID/meta data"
                     .to_string(),
@@ -287,7 +346,7 @@ where
     /// This is an independently safe downgrade step, not a full-world downgrade. It validates the
     /// requested direction, preflights every `digp` reference, stages all `Entity` writes and removes
     /// only actorprefix records proven to be referenced by the converted digests. Orphan actorprefix
-    /// records are retained and reported. SubChunk/biome downgrade losses do not block this step.
+    /// records are retained and reported. SubChunk/biome downgrade requirements do not block this step.
     pub fn downgrade_actor_storage_blocking(
         &self,
         target: GameVersion,
@@ -314,6 +373,15 @@ where
         let (batch, report) = stage_world_digp_actorprefix_to_entity(self.storage())?;
         commit_downgrade_storage_batch(self, &batch)?;
         Ok(report)
+    }
+}
+
+fn push_requirement(
+    requirements: &mut Vec<DowngradeRequirement>,
+    requirement: DowngradeRequirement,
+) {
+    if !requirements.contains(&requirement) {
+        requirements.push(requirement);
     }
 }
 
@@ -431,5 +499,19 @@ mod tests {
             SavedItemKind::LegacyNumeric,
             &target
         ));
+    }
+
+    #[test]
+    fn duplicate_requirements_are_not_repeated() {
+        let mut requirements = Vec::new();
+        push_requirement(
+            &mut requirements,
+            DowngradeRequirement::LegacyNumericBlockStates,
+        );
+        push_requirement(
+            &mut requirements,
+            DowngradeRequirement::LegacyNumericBlockStates,
+        );
+        assert_eq!(requirements.len(), 1);
     }
 }
