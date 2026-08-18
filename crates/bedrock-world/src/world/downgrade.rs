@@ -1,9 +1,11 @@
-//! Explicit Minecraft Bedrock world downgrade planning.
+//! Explicit Minecraft Bedrock world downgrade planning and independently safe downgrade steps.
 //!
 //! Downgrade has its own rules and loss analysis. It does not run upgrade logic backwards.
 
 use crate::chunk::SubChunkVersion;
-use crate::error::Result;
+use crate::database::StorageOp;
+use crate::entity::{ActorStorageRewriteReport, stage_world_digp_actorprefix_to_entity};
+use crate::error::{BedrockWorldError, Result};
 use crate::player::{SavedItemKind, read_level_dat_player};
 use crate::version::GameVersion;
 use crate::world::{BedrockWorld, SubChunkVersionCount, WorldStorageHandle, WorldVersions};
@@ -223,6 +225,61 @@ where
             issues,
         })
     }
+
+    /// Rewrites only the world's actor storage from `digp`/`actorprefix` to chunk `Entity` records.
+    ///
+    /// This is an independently safe downgrade step, not a full-world downgrade. It validates the
+    /// requested direction, preflights every `digp` reference, stages all `Entity` writes and removes
+    /// only actorprefix records proven to be referenced by the converted digests. Orphan actorprefix
+    /// records are retained and reported. SubChunk/biome downgrade losses do not block this step.
+    pub fn downgrade_actor_storage_blocking(
+        &self,
+        target: GameVersion,
+    ) -> Result<ActorStorageRewriteReport> {
+        let plan = self.downgrade_plan_blocking(target)?;
+        if let Some(issue) = plan.issues.iter().find(|issue| {
+            matches!(
+                issue,
+                DowngradeIssue::MissingSourceGameVersion | DowngradeIssue::TargetIsNotOlder
+            )
+        }) {
+            return Err(BedrockWorldError::Validation(format!(
+                "actor storage downgrade cannot run: {issue:?}"
+            )));
+        }
+        if !plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, DowngradeAction::DigpActorprefixToEntity { .. }))
+        {
+            return Ok(ActorStorageRewriteReport::default());
+        }
+
+        let (batch, report) = stage_world_digp_actorprefix_to_entity(self.storage())?;
+        commit_actor_storage_batch(self, &batch)?;
+        Ok(report)
+    }
+}
+
+fn commit_actor_storage_batch<S>(world: &BedrockWorld<S>, batch: &crate::database::StorageBatch) -> Result<()>
+where
+    S: WorldStorageHandle,
+{
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = world.transaction();
+    for op in batch.ops() {
+        match op {
+            StorageOp::Put { key, value } => {
+                transaction.put_raw_key(key.clone(), value.clone());
+            }
+            StorageOp::Delete { key } => {
+                transaction.delete_raw_key(key.clone());
+            }
+        }
+    }
+    transaction.commit()
 }
 
 fn count_players_needing_item_downgrade<S>(

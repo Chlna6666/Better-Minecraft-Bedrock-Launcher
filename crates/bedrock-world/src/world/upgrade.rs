@@ -1,10 +1,12 @@
-//! Explicit Minecraft Bedrock world upgrade planning.
+//! Explicit Minecraft Bedrock world upgrade planning and independently safe upgrade steps.
 //!
 //! Ordinary world reads/writes never call this code. Upgrade is a separate operation and its plan is
 //! derived from the actual persisted data present in the world folder.
 
 use crate::chunk::SubChunkVersion;
-use crate::error::Result;
+use crate::database::StorageOp;
+use crate::entity::{ActorStorageRewriteReport, stage_world_entity_to_digp_actorprefix};
+use crate::error::{BedrockWorldError, Result};
 use crate::player::{SavedItemKind, read_level_dat_player};
 use crate::version::GameVersion;
 use crate::world::{BedrockWorld, SubChunkVersionCount, WorldFormat, WorldStorageHandle, WorldVersions};
@@ -181,6 +183,63 @@ where
             issues,
         })
     }
+
+    /// Rewrites only the world's actor storage from chunk `Entity` records to `digp`/`actorprefix`.
+    ///
+    /// This is an independently safe upgrade step, not a full-world upgrade. It first rebuilds the
+    /// current plan, rejects only direction/backend issues relevant to Actor storage, preflights all
+    /// actor references, and commits the complete Actor rewrite as one storage batch. SubChunk or
+    /// biome issues do not block this operation because they are not touched.
+    pub fn upgrade_actor_storage_blocking(
+        &self,
+        target: GameVersion,
+    ) -> Result<ActorStorageRewriteReport> {
+        let plan = self.upgrade_plan_blocking(target)?;
+        if let Some(issue) = plan.issues.iter().find(|issue| {
+            matches!(
+                issue,
+                UpgradeIssue::MissingSourceGameVersion
+                    | UpgradeIssue::TargetIsNotNewer
+                    | UpgradeIssue::PocketChunksDatWriteNotImplemented
+            )
+        }) {
+            return Err(BedrockWorldError::Validation(format!(
+                "actor storage upgrade cannot run: {issue:?}"
+            )));
+        }
+        if !plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, UpgradeAction::EntityToDigpActorprefix { .. }))
+        {
+            return Ok(ActorStorageRewriteReport::default());
+        }
+
+        let (batch, report) = stage_world_entity_to_digp_actorprefix(self.storage())?;
+        commit_actor_storage_batch(self, &batch)?;
+        Ok(report)
+    }
+}
+
+fn commit_actor_storage_batch<S>(world: &BedrockWorld<S>, batch: &crate::database::StorageBatch) -> Result<()>
+where
+    S: WorldStorageHandle,
+{
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = world.transaction();
+    for op in batch.ops() {
+        match op {
+            StorageOp::Put { key, value } => {
+                transaction.put_raw_key(key.clone(), value.clone());
+            }
+            StorageOp::Delete { key } => {
+                transaction.delete_raw_key(key.clone());
+            }
+        }
+    }
+    transaction.commit()
 }
 
 fn count_historical_player_items<S>(world: &BedrockWorld<S>) -> Result<usize>
