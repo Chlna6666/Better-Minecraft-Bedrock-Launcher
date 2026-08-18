@@ -3,6 +3,7 @@
 mod encoding;
 mod legacy_encoding;
 mod legacy_extra;
+mod legacy_subchunk_downgrade;
 mod legacy_subchunk_upgrade;
 mod legacy_terrain_combine;
 mod legacy_terrain_storage;
@@ -39,6 +40,8 @@ pub use legacy_extra::{
     LegacyBlockExtraData, LegacyBlockExtraDataBuilder, LegacyBlockExtraDataEntries,
     LegacyBlockExtraDataEntry,
 };
+pub use legacy_subchunk_downgrade::LegacyNumericSubChunkWriteReport;
+pub(crate) use legacy_subchunk_downgrade::stage_paletted_subchunks_as_legacy_numeric;
 pub use legacy_subchunk_upgrade::LegacySubChunkUpgradeWriteReport;
 pub(crate) use legacy_subchunk_upgrade::stage_legacy_subchunks_for_upgrade;
 pub use legacy_terrain_combine::LegacyTerrainCombineReport;
