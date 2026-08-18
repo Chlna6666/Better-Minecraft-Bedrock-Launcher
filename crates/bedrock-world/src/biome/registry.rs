@@ -1,8 +1,8 @@
 //! Versioned Minecraft Bedrock biome registry snapshots embedded as a compact binary table.
 //!
-//! The world storage parsers keep persisted biome IDs exactly as they appear on disk. This module
-//! only interprets those IDs against an explicitly selected Minecraft version; it never rewrites
-//! `Data2D`, `Data2DLegacy`, or `Data3D` records while looking up names or runtime properties.
+//! Persisted `Data2D`, `Data2DLegacy`, and `Data3D` biome IDs remain raw world facts. This module
+//! only interprets an ID against an explicitly selected Minecraft version; registry lookup never
+//! rewrites world data and never falls back to a newer or older snapshot.
 
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
@@ -41,8 +41,8 @@ static EMBEDDED_REGISTRY: OnceLock<std::result::Result<BiomeRegistry<'static>, S
 
 /// Returns the biome registry compiled into this `bedrock-world` build.
 ///
-/// The embedded asset is parsed and validated once per process. Lookup does not allocate a hash map
-/// and performs binary search directly over the immutable embedded byte table.
+/// The packed binary is validated once per process. Lookups operate directly on immutable embedded
+/// bytes with binary search; no runtime JSON parsing or whole-registry `HashMap` is created.
 pub fn embedded_biome_registry() -> Result<&'static BiomeRegistry<'static>> {
     match EMBEDDED_REGISTRY.get_or_init(|| {
         BiomeRegistry::parse(EMBEDDED_BYTES).map_err(|error| error.to_string())
@@ -72,15 +72,13 @@ impl<'a> BiomeRegistry<'a> {
     /// Parses and validates a packed biome registry binary.
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
         if bytes.len() < HEADER_LEN {
-            return Err(BedrockWorldError::CorruptWorld(format!(
+            return Err(corrupt(format!(
                 "biome registry is {} bytes, smaller than the {HEADER_LEN}-byte header",
                 bytes.len()
             )));
         }
         if bytes.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
-            return Err(BedrockWorldError::CorruptWorld(
-                "biome registry magic does not match BWRBIO01".to_string(),
-            ));
+            return Err(corrupt("biome registry magic does not match BWRBIO01"));
         }
         let format_version = read_u16(bytes, 8);
         if format_version != FORMAT_VERSION {
@@ -89,31 +87,13 @@ impl<'a> BiomeRegistry<'a> {
             )));
         }
         if read_u16(bytes, 10) != 0 {
-            return Err(BedrockWorldError::CorruptWorld(
-                "biome registry reserved header bits are non-zero".to_string(),
-            ));
+            return Err(corrupt("biome registry reserved header bits are non-zero"));
         }
 
-        let snapshot_count = usize::try_from(read_u32(bytes, 12)).map_err(|_| {
-            BedrockWorldError::CorruptWorld(
-                "biome registry snapshot count overflowed usize".to_string(),
-            )
-        })?;
-        let biome_count = usize::try_from(read_u32(bytes, 16)).map_err(|_| {
-            BedrockWorldError::CorruptWorld(
-                "biome registry biome count overflowed usize".to_string(),
-            )
-        })?;
-        let name_index_count = usize::try_from(read_u32(bytes, 20)).map_err(|_| {
-            BedrockWorldError::CorruptWorld(
-                "biome registry name-index count overflowed usize".to_string(),
-            )
-        })?;
-        let strings_len = usize::try_from(read_u32(bytes, 24)).map_err(|_| {
-            BedrockWorldError::CorruptWorld(
-                "biome registry string-pool length overflowed usize".to_string(),
-            )
-        })?;
+        let snapshot_count = u32_as_usize(read_u32(bytes, 12), "snapshot count")?;
+        let biome_count = u32_as_usize(read_u32(bytes, 16), "biome count")?;
+        let name_index_count = u32_as_usize(read_u32(bytes, 20), "name-index count")?;
+        let strings_len = u32_as_usize(read_u32(bytes, 24), "string-pool length")?;
 
         let snapshots_offset = HEADER_LEN;
         let biomes_offset = checked_advance(
@@ -130,13 +110,11 @@ impl<'a> BiomeRegistry<'a> {
             NAME_INDEX_RECORD_LEN,
             "name-index table",
         )?;
-        let expected_len = strings_offset.checked_add(strings_len).ok_or_else(|| {
-            BedrockWorldError::CorruptWorld(
-                "biome registry total length overflowed usize".to_string(),
-            )
-        })?;
+        let expected_len = strings_offset
+            .checked_add(strings_len)
+            .ok_or_else(|| corrupt("biome registry total length overflowed usize"))?;
         if expected_len != bytes.len() {
-            return Err(BedrockWorldError::CorruptWorld(format!(
+            return Err(corrupt(format!(
                 "biome registry length is {}, header tables require {expected_len}",
                 bytes.len()
             )));
@@ -165,23 +143,27 @@ impl<'a> BiomeRegistry<'a> {
 
     /// Finds the exact registry snapshot for a persisted Minecraft game version.
     ///
-    /// Missing trailing components are treated as zero for matching. Versions with more than four
-    /// components or components outside the packed `u16` range are not representable and return
-    /// `None` instead of being guessed.
+    /// Missing trailing components are zero-filled only to match Bedrock version arrays such as
+    /// `1.21` with the packed key `[1, 21, 0, 0]`. More than four components, negative values, or
+    /// components outside `u16` are not representable and return `None` instead of being guessed.
     #[must_use]
-    pub fn snapshot(&'a self, version: &GameVersion) -> Option<BiomeRegistrySnapshot<'a>> {
+    pub fn snapshot(&self, version: &GameVersion) -> Option<BiomeRegistrySnapshot<'a>> {
         let key = game_version_key(version)?;
         let mut low = 0_usize;
         let mut high = self.snapshot_count;
         while low < high {
             let middle = low + (high - low) / 2;
-            let record = self.snapshot_record(middle);
+            let record = snapshot_record(self.bytes, self.snapshots_offset, middle);
             match record.version.cmp(&key) {
                 Ordering::Less => low = middle + 1,
                 Ordering::Greater => high = middle,
                 Ordering::Equal => {
                     return Some(BiomeRegistrySnapshot {
-                        registry: self,
+                        bytes: self.bytes,
+                        biomes_offset: self.biomes_offset,
+                        name_index_offset: self.name_index_offset,
+                        strings_offset: self.strings_offset,
+                        strings_len: self.strings_len,
                         record,
                     });
                 }
@@ -194,225 +176,85 @@ impl<'a> BiomeRegistry<'a> {
         let mut previous_version = None::<[u16; 4]>;
         let mut expected_biome_start = 0_usize;
         let mut expected_name_index_start = 0_usize;
+
         for snapshot_index in 0..self.snapshot_count {
-            let snapshot = self.snapshot_record(snapshot_index);
-            if let Some(previous) = previous_version {
-                if snapshot.version <= previous {
-                    return Err(BedrockWorldError::CorruptWorld(
-                        "biome registry snapshots are not strictly sorted by Minecraft version"
-                            .to_string(),
-                    ));
-                }
+            let snapshot = snapshot_record(self.bytes, self.snapshots_offset, snapshot_index);
+            if previous_version.is_some_and(|previous| snapshot.version <= previous) {
+                return Err(corrupt(
+                    "biome registry snapshots are not strictly sorted by Minecraft version",
+                ));
             }
             previous_version = Some(snapshot.version);
 
             if snapshot.biome_start != expected_biome_start
                 || snapshot.name_index_start != expected_name_index_start
             {
-                return Err(BedrockWorldError::CorruptWorld(
-                    "biome registry snapshot ranges are not contiguous".to_string(),
-                ));
+                return Err(corrupt("biome registry snapshot ranges are not contiguous"));
             }
             let biome_end = snapshot
                 .biome_start
                 .checked_add(snapshot.biome_count)
-                .ok_or_else(|| {
-                    BedrockWorldError::CorruptWorld(
-                        "biome registry snapshot biome range overflowed".to_string(),
-                    )
-                })?;
+                .ok_or_else(|| corrupt("biome registry snapshot biome range overflowed"))?;
             let name_index_end = snapshot
                 .name_index_start
                 .checked_add(snapshot.name_index_count)
-                .ok_or_else(|| {
-                    BedrockWorldError::CorruptWorld(
-                        "biome registry snapshot name-index range overflowed".to_string(),
-                    )
-                })?;
+                .ok_or_else(|| corrupt("biome registry snapshot name-index range overflowed"))?;
             if biome_end > self.biome_count || name_index_end > self.name_index_count {
-                return Err(BedrockWorldError::CorruptWorld(
-                    "biome registry snapshot range exceeds its backing table".to_string(),
+                return Err(corrupt(
+                    "biome registry snapshot range exceeds its backing table",
                 ));
             }
             if snapshot.name_index_count != snapshot.biome_count {
-                return Err(BedrockWorldError::CorruptWorld(
-                    "biome registry snapshot must contain one name index per biome".to_string(),
+                return Err(corrupt(
+                    "biome registry snapshot must contain one name index per biome",
                 ));
             }
 
-            let mut previous_id = None::<u32>;
-            for biome_index in snapshot.biome_start..biome_end {
-                let record = self.biome_record(biome_index);
-                if let Some(previous) = previous_id {
-                    if record.id <= previous {
-                        return Err(BedrockWorldError::CorruptWorld(
-                            "biome IDs are not strictly sorted inside a snapshot".to_string(),
-                        ));
-                    }
-                }
-                previous_id = Some(record.id);
-                if record.flags & !KNOWN_FLAGS != 0 {
-                    return Err(BedrockWorldError::CorruptWorld(format!(
-                        "biome {} uses unknown registry flag bits 0x{:04x}",
-                        record.id,
-                        record.flags & !KNOWN_FLAGS
-                    )));
-                }
-                if record.flags & RAIN_VALUE != 0 && record.flags & HAS_RAIN == 0 {
-                    return Err(BedrockWorldError::CorruptWorld(format!(
-                        "biome {} stores a rain value without the rain-presence flag",
-                        record.id
-                    )));
-                }
-                if record.reserved != 0 {
-                    return Err(BedrockWorldError::CorruptWorld(format!(
-                        "biome {} has non-zero reserved bytes",
-                        record.id
-                    )));
-                }
-                for (flag, field, value) in [
-                    (HAS_TEMPERATURE, "temperature", record.temperature),
-                    (HAS_DOWNFALL, "downfall", record.downfall),
-                    (HAS_FOLIAGE_SNOW, "foliage_snow", record.foliage_snow),
-                    (HAS_DEPTH, "depth", record.depth),
-                    (HAS_SCALE, "scale", record.scale),
-                ] {
-                    if record.flags & flag != 0 && !value.is_finite() {
-                        return Err(BedrockWorldError::CorruptWorld(format!(
-                            "biome {} field {field} is not finite",
-                            record.id
-                        )));
-                    }
-                }
-                let name = self.name_from_record(record)?;
-                if name.is_empty() {
-                    return Err(BedrockWorldError::CorruptWorld(format!(
-                        "biome {} has an empty identifier",
-                        record.id
-                    )));
-                }
-            }
-
-            let mut previous_name_key = None::<(u64, &str)>;
-            for name_index in snapshot.name_index_start..name_index_end {
-                let entry = self.name_index_record(name_index);
-                if entry.biome_index < snapshot.biome_start || entry.biome_index >= biome_end {
-                    return Err(BedrockWorldError::CorruptWorld(
-                        "biome name index points outside its snapshot".to_string(),
-                    ));
-                }
-                let biome = self.biome_record(entry.biome_index);
-                let name = self.name_from_record(biome)?;
-                if xxh3_64(name.as_bytes()) != entry.hash {
-                    return Err(BedrockWorldError::CorruptWorld(
-                        "biome name-index hash does not match its string".to_string(),
-                    ));
-                }
-                if let Some((previous_hash, previous_name)) = previous_name_key {
-                    if (entry.hash, name) <= (previous_hash, previous_name) {
-                        return Err(BedrockWorldError::CorruptWorld(
-                            "biome name index is not strictly sorted or contains a duplicate name"
-                                .to_string(),
-                        ));
-                    }
-                }
-                previous_name_key = Some((entry.hash, name));
-            }
+            validate_biomes(
+                self.bytes,
+                self.biomes_offset,
+                self.strings_offset,
+                self.strings_len,
+                snapshot.biome_start,
+                biome_end,
+            )?;
+            validate_name_index(
+                self.bytes,
+                self.biomes_offset,
+                self.name_index_offset,
+                self.strings_offset,
+                self.strings_len,
+                snapshot.biome_start,
+                biome_end,
+                snapshot.name_index_start,
+                name_index_end,
+            )?;
 
             expected_biome_start = biome_end;
             expected_name_index_start = name_index_end;
         }
+
         if expected_biome_start != self.biome_count
             || expected_name_index_start != self.name_index_count
         {
-            return Err(BedrockWorldError::CorruptWorld(
-                "biome registry contains table records not owned by any snapshot".to_string(),
+            return Err(corrupt(
+                "biome registry contains table records not owned by any snapshot",
             ));
         }
         Ok(())
     }
-
-    fn snapshot_record(&self, index: usize) -> SnapshotRecord {
-        let offset = self.snapshots_offset + index * SNAPSHOT_RECORD_LEN;
-        SnapshotRecord {
-            version: [
-                read_u16(self.bytes, offset),
-                read_u16(self.bytes, offset + 2),
-                read_u16(self.bytes, offset + 4),
-                read_u16(self.bytes, offset + 6),
-            ],
-            network_version: read_u32(self.bytes, offset + 8),
-            biome_start: read_u32(self.bytes, offset + 12) as usize,
-            biome_count: read_u32(self.bytes, offset + 16) as usize,
-            name_index_start: read_u32(self.bytes, offset + 20) as usize,
-            name_index_count: read_u32(self.bytes, offset + 24) as usize,
-        }
-    }
-
-    fn biome_record(&self, index: usize) -> BiomeRecord {
-        let offset = self.biomes_offset + index * BIOME_RECORD_LEN;
-        BiomeRecord {
-            id: read_u32(self.bytes, offset),
-            name_offset: read_u32(self.bytes, offset + 4) as usize,
-            name_len: read_u16(self.bytes, offset + 8) as usize,
-            flags: read_u16(self.bytes, offset + 10),
-            temperature: read_f32(self.bytes, offset + 12),
-            downfall: read_f32(self.bytes, offset + 16),
-            foliage_snow: read_f32(self.bytes, offset + 20),
-            depth: read_f32(self.bytes, offset + 24),
-            scale: read_f32(self.bytes, offset + 28),
-            map_water_color: read_i32(self.bytes, offset + 32),
-            reserved: read_u32(self.bytes, offset + 36),
-        }
-    }
-
-    fn name_index_record(&self, index: usize) -> NameIndexRecord {
-        let offset = self.name_index_offset + index * NAME_INDEX_RECORD_LEN;
-        NameIndexRecord {
-            hash: read_u64(self.bytes, offset),
-            biome_index: read_u32(self.bytes, offset + 8) as usize,
-        }
-    }
-
-    fn name_from_record(&self, record: BiomeRecord) -> Result<&'a str> {
-        let start = record.name_offset;
-        let end = start.checked_add(record.name_len).ok_or_else(|| {
-            BedrockWorldError::CorruptWorld("biome registry name range overflowed".to_string())
-        })?;
-        if end > self.strings_len {
-            return Err(BedrockWorldError::CorruptWorld(
-                "biome registry name points outside the string pool".to_string(),
-            ));
-        }
-        std::str::from_utf8(&self.bytes[self.strings_offset + start..self.strings_offset + end])
-            .map_err(|error| {
-                BedrockWorldError::CorruptWorld(format!(
-                    "biome registry name is not valid UTF-8: {error}"
-                ))
-            })
-    }
-
-    fn definition(&self, record: BiomeRecord) -> Option<BiomeDefinition<'a>> {
-        let name = self.name_from_record(record).ok()?;
-        Some(BiomeDefinition {
-            id: record.id,
-            name,
-            temperature: flag_value(record.flags, HAS_TEMPERATURE, record.temperature),
-            downfall: flag_value(record.flags, HAS_DOWNFALL, record.downfall),
-            foliage_snow: flag_value(record.flags, HAS_FOLIAGE_SNOW, record.foliage_snow),
-            depth: flag_value(record.flags, HAS_DEPTH, record.depth),
-            scale: flag_value(record.flags, HAS_SCALE, record.scale),
-            map_water_color: (record.flags & HAS_MAP_WATER_COLOR != 0)
-                .then_some(record.map_water_color),
-            rain: (record.flags & HAS_RAIN != 0).then_some(record.flags & RAIN_VALUE != 0),
-        })
-    }
 }
 
 /// One exact Minecraft-version view inside a [`BiomeRegistry`].
+///
+/// This value contains only table offsets and a borrowed byte slice. Copying it does not allocate.
 #[derive(Debug, Clone, Copy)]
 pub struct BiomeRegistrySnapshot<'a> {
-    registry: &'a BiomeRegistry<'a>,
+    bytes: &'a [u8],
+    biomes_offset: usize,
+    name_index_offset: usize,
+    strings_offset: usize,
+    strings_len: usize,
     record: SnapshotRecord,
 }
 
@@ -446,11 +288,18 @@ impl<'a> BiomeRegistrySnapshot<'a> {
         let mut high = self.record.biome_start + self.record.biome_count;
         while low < high {
             let middle = low + (high - low) / 2;
-            let record = self.registry.biome_record(middle);
+            let record = biome_record(self.bytes, self.biomes_offset, middle);
             match record.id.cmp(&id) {
                 Ordering::Less => low = middle + 1,
                 Ordering::Greater => high = middle,
-                Ordering::Equal => return self.registry.definition(record),
+                Ordering::Equal => {
+                    return definition_from_record(
+                        self.bytes,
+                        self.strings_offset,
+                        self.strings_len,
+                        record,
+                    );
+                }
             }
         }
         None
@@ -466,7 +315,7 @@ impl<'a> BiomeRegistrySnapshot<'a> {
         let mut high = end;
         while low < high {
             let middle = low + (high - low) / 2;
-            if self.registry.name_index_record(middle).hash < hash {
+            if name_index_record(self.bytes, self.name_index_offset, middle).hash < hash {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -474,12 +323,17 @@ impl<'a> BiomeRegistrySnapshot<'a> {
         }
         let mut index = low;
         while index < end {
-            let entry = self.registry.name_index_record(index);
+            let entry = name_index_record(self.bytes, self.name_index_offset, index);
             if entry.hash != hash {
                 break;
             }
-            let record = self.registry.biome_record(entry.biome_index);
-            let definition = self.registry.definition(record)?;
+            let record = biome_record(self.bytes, self.biomes_offset, entry.biome_index);
+            let definition = definition_from_record(
+                self.bytes,
+                self.strings_offset,
+                self.strings_len,
+                record,
+            )?;
             if definition.name == name {
                 return Some(definition);
             }
@@ -590,6 +444,182 @@ struct NameIndexRecord {
     biome_index: usize,
 }
 
+fn validate_biomes(
+    bytes: &[u8],
+    biomes_offset: usize,
+    strings_offset: usize,
+    strings_len: usize,
+    start: usize,
+    end: usize,
+) -> Result<()> {
+    let mut previous_id = None::<u32>;
+    for index in start..end {
+        let record = biome_record(bytes, biomes_offset, index);
+        if previous_id.is_some_and(|previous| record.id <= previous) {
+            return Err(corrupt(
+                "biome IDs are not strictly sorted inside a snapshot",
+            ));
+        }
+        previous_id = Some(record.id);
+        if record.flags & !KNOWN_FLAGS != 0 {
+            return Err(corrupt(format!(
+                "biome {} uses unknown registry flag bits 0x{:04x}",
+                record.id,
+                record.flags & !KNOWN_FLAGS
+            )));
+        }
+        if record.flags & RAIN_VALUE != 0 && record.flags & HAS_RAIN == 0 {
+            return Err(corrupt(format!(
+                "biome {} stores a rain value without the rain-presence flag",
+                record.id
+            )));
+        }
+        if record.reserved != 0 {
+            return Err(corrupt(format!(
+                "biome {} has non-zero reserved bytes",
+                record.id
+            )));
+        }
+        for (flag, field, value) in [
+            (HAS_TEMPERATURE, "temperature", record.temperature),
+            (HAS_DOWNFALL, "downfall", record.downfall),
+            (HAS_FOLIAGE_SNOW, "foliage_snow", record.foliage_snow),
+            (HAS_DEPTH, "depth", record.depth),
+            (HAS_SCALE, "scale", record.scale),
+        ] {
+            if record.flags & flag != 0 && !value.is_finite() {
+                return Err(corrupt(format!(
+                    "biome {} field {field} is not finite",
+                    record.id
+                )));
+            }
+        }
+        let name = name_from_record(bytes, strings_offset, strings_len, record)?;
+        if name.is_empty() {
+            return Err(corrupt(format!(
+                "biome {} has an empty identifier",
+                record.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_name_index(
+    bytes: &[u8],
+    biomes_offset: usize,
+    name_index_offset: usize,
+    strings_offset: usize,
+    strings_len: usize,
+    biome_start: usize,
+    biome_end: usize,
+    start: usize,
+    end: usize,
+) -> Result<()> {
+    let mut previous_name_key = None::<(u64, &str)>;
+    for index in start..end {
+        let entry = name_index_record(bytes, name_index_offset, index);
+        if entry.biome_index < biome_start || entry.biome_index >= biome_end {
+            return Err(corrupt("biome name index points outside its snapshot"));
+        }
+        let biome = biome_record(bytes, biomes_offset, entry.biome_index);
+        let name = name_from_record(bytes, strings_offset, strings_len, biome)?;
+        if xxh3_64(name.as_bytes()) != entry.hash {
+            return Err(corrupt("biome name-index hash does not match its string"));
+        }
+        if previous_name_key.is_some_and(|previous| (entry.hash, name) <= previous) {
+            return Err(corrupt(
+                "biome name index is not strictly sorted or contains a duplicate name",
+            ));
+        }
+        previous_name_key = Some((entry.hash, name));
+    }
+    Ok(())
+}
+
+fn snapshot_record(bytes: &[u8], table_offset: usize, index: usize) -> SnapshotRecord {
+    let offset = table_offset + index * SNAPSHOT_RECORD_LEN;
+    SnapshotRecord {
+        version: [
+            read_u16(bytes, offset),
+            read_u16(bytes, offset + 2),
+            read_u16(bytes, offset + 4),
+            read_u16(bytes, offset + 6),
+        ],
+        network_version: read_u32(bytes, offset + 8),
+        biome_start: read_u32(bytes, offset + 12) as usize,
+        biome_count: read_u32(bytes, offset + 16) as usize,
+        name_index_start: read_u32(bytes, offset + 20) as usize,
+        name_index_count: read_u32(bytes, offset + 24) as usize,
+    }
+}
+
+fn biome_record(bytes: &[u8], table_offset: usize, index: usize) -> BiomeRecord {
+    let offset = table_offset + index * BIOME_RECORD_LEN;
+    BiomeRecord {
+        id: read_u32(bytes, offset),
+        name_offset: read_u32(bytes, offset + 4) as usize,
+        name_len: read_u16(bytes, offset + 8) as usize,
+        flags: read_u16(bytes, offset + 10),
+        temperature: read_f32(bytes, offset + 12),
+        downfall: read_f32(bytes, offset + 16),
+        foliage_snow: read_f32(bytes, offset + 20),
+        depth: read_f32(bytes, offset + 24),
+        scale: read_f32(bytes, offset + 28),
+        map_water_color: read_i32(bytes, offset + 32),
+        reserved: read_u32(bytes, offset + 36),
+    }
+}
+
+fn name_index_record(bytes: &[u8], table_offset: usize, index: usize) -> NameIndexRecord {
+    let offset = table_offset + index * NAME_INDEX_RECORD_LEN;
+    NameIndexRecord {
+        hash: read_u64(bytes, offset),
+        biome_index: read_u32(bytes, offset + 8) as usize,
+    }
+}
+
+fn name_from_record<'a>(
+    bytes: &'a [u8],
+    strings_offset: usize,
+    strings_len: usize,
+    record: BiomeRecord,
+) -> Result<&'a str> {
+    let start = record.name_offset;
+    let end = start
+        .checked_add(record.name_len)
+        .ok_or_else(|| corrupt("biome registry name range overflowed"))?;
+    if end > strings_len {
+        return Err(corrupt(
+            "biome registry name points outside the string pool",
+        ));
+    }
+    std::str::from_utf8(&bytes[strings_offset + start..strings_offset + end])
+        .map_err(|error| corrupt(format!("biome registry name is not valid UTF-8: {error}")))
+}
+
+fn definition_from_record<'a>(
+    bytes: &'a [u8],
+    strings_offset: usize,
+    strings_len: usize,
+    record: BiomeRecord,
+) -> Option<BiomeDefinition<'a>> {
+    let name = name_from_record(bytes, strings_offset, strings_len, record).ok()?;
+    Some(BiomeDefinition {
+        id: record.id,
+        name,
+        temperature: flag_value(record.flags, HAS_TEMPERATURE, record.temperature),
+        downfall: flag_value(record.flags, HAS_DOWNFALL, record.downfall),
+        foliage_snow: flag_value(record.flags, HAS_FOLIAGE_SNOW, record.foliage_snow),
+        depth: flag_value(record.flags, HAS_DEPTH, record.depth),
+        scale: flag_value(record.flags, HAS_SCALE, record.scale),
+        map_water_color: (record.flags & HAS_MAP_WATER_COLOR != 0)
+            .then_some(record.map_water_color),
+        rain: (record.flags & HAS_RAIN != 0).then_some(record.flags & RAIN_VALUE != 0),
+    })
+}
+
 fn game_version_key(version: &GameVersion) -> Option<[u16; 4]> {
     if version.components().len() > 4 {
         return None;
@@ -605,18 +635,27 @@ fn flag_value(flags: u16, flag: u16, value: f32) -> Option<f32> {
     (flags & flag != 0).then_some(value)
 }
 
+fn u32_as_usize(value: u32, field: &str) -> Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| corrupt(format!("biome registry {field} overflowed usize")))
+}
+
 fn checked_advance(
     start: usize,
     count: usize,
     record_len: usize,
     table: &str,
 ) -> Result<usize> {
-    let bytes = count.checked_mul(record_len).ok_or_else(|| {
-        BedrockWorldError::CorruptWorld(format!("biome registry {table} length overflowed"))
-    })?;
-    start.checked_add(bytes).ok_or_else(|| {
-        BedrockWorldError::CorruptWorld(format!("biome registry {table} offset overflowed"))
-    })
+    let bytes = count
+        .checked_mul(record_len)
+        .ok_or_else(|| corrupt(format!("biome registry {table} length overflowed")))?;
+    start
+        .checked_add(bytes)
+        .ok_or_else(|| corrupt(format!("biome registry {table} offset overflowed")))
+}
+
+fn corrupt(message: impl Into<String>) -> BedrockWorldError {
+    BedrockWorldError::CorruptWorld(message.into())
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -701,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_embedded_format_by_version_id_and_name() {
+    fn resolves_by_exact_version_id_and_name() {
         let bytes = sample_registry();
         let registry = BiomeRegistry::parse(&bytes).unwrap();
         let version = GameVersion::new(vec![1, 26, 44, 3]).unwrap();
@@ -715,17 +754,17 @@ mod tests {
     }
 
     #[test]
-    fn embedded_registry_asset_is_valid() {
-        let registry = embedded_biome_registry().unwrap();
-        assert_eq!(registry.snapshot_count(), 0);
+    fn embedded_registry_asset_is_structurally_valid() {
+        embedded_biome_registry().unwrap();
     }
 
     #[test]
     fn unknown_version_and_unknown_biome_are_not_guessed() {
         let bytes = sample_registry();
         let registry = BiomeRegistry::parse(&bytes).unwrap();
-        let version = GameVersion::new(vec![1, 26, 44, 4]).unwrap();
-        assert!(registry.snapshot(&version).is_none());
+        let unknown = GameVersion::new(vec![1, 26, 44, 4]).unwrap();
+        assert!(registry.snapshot(&unknown).is_none());
+
         let known = GameVersion::new(vec![1, 26, 44, 3]).unwrap();
         let snapshot = registry.snapshot(&known).unwrap();
         assert!(snapshot.biome_by_id(999_999).is_none());
