@@ -7,7 +7,7 @@
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Registry metadata retained for one vanilla item identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub struct VanillaSavedItemEntry {
 #[derive(Debug, Clone)]
 pub struct VanillaSavedItemPalette {
     game_version: GameVersion,
-    entries: HashMap<String, VanillaSavedItemEntry>,
+    entries: BTreeMap<String, VanillaSavedItemEntry>,
 }
 
 impl VanillaSavedItemPalette {
@@ -41,7 +41,7 @@ impl VanillaSavedItemPalette {
         game_version: GameVersion,
         json: &str,
     ) -> Result<Self> {
-        let source: HashMap<String, RequiredItemEntry> = serde_json::from_str(json).map_err(|error| {
+        let source: BTreeMap<String, RequiredItemEntry> = serde_json::from_str(json).map_err(|error| {
             BedrockWorldError::Validation(format!(
                 "invalid Bedrock required_item_list.json for {game_version}: {error}"
             ))
@@ -52,7 +52,7 @@ impl VanillaSavedItemPalette {
             )));
         }
 
-        let mut entries = HashMap::with_capacity(source.len());
+        let mut entries = BTreeMap::new();
         for (name, entry) in source {
             if name.is_empty() || !name.contains(':') {
                 return Err(BedrockWorldError::Validation(format!(
@@ -103,6 +103,11 @@ impl VanillaSavedItemPalette {
     pub fn entry(&self, name: &str) -> Option<VanillaSavedItemEntry> {
         self.entries.get(name).copied()
     }
+
+    /// Iterates required item identifiers in deterministic lexical order without allocating.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,7 +143,10 @@ mod tests {
                 version: Some(3),
             })
         );
-        assert!(!palette.contains("minecraft:not_in_target"));
+        assert_eq!(
+            palette.names().collect::<Vec<_>>(),
+            vec!["minecraft:stone", "minecraft:test_component"]
+        );
     }
 
     #[test]

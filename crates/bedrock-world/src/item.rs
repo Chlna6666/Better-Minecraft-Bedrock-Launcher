@@ -9,6 +9,7 @@ mod legacy_saved_item_conversion;
 mod medieval_saved_item;
 mod saved_item;
 mod vanilla_saved_item_palette;
+mod version_target;
 
 pub use crate::parsed::ItemStack;
 pub use classic_saved_item::{
@@ -43,6 +44,7 @@ pub use medieval_saved_item::{
     convert_saved_items_to_medieval, convert_saved_items_to_medieval_with_blocks,
 };
 pub use vanilla_saved_item_palette::{VanillaSavedItemEntry, VanillaSavedItemPalette};
+pub use version_target::{SavedItemVersionMatch, SavedItemVersionTable, SavedItemVersionTarget};
 
 // The historical forward rule executor remains crate-private while public APIs are expressed through
 // concrete saved-item representations and explicit upgrade/reverse checks.
