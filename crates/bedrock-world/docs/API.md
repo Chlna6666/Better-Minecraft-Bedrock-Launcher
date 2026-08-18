@@ -1,295 +1,228 @@
 # API Guide
 
-`bedrock-world` exposes two layers:
+`bedrock-world` is a multi-version Minecraft Bedrock world library. The storage engine boundary is raw
+key/value data; Minecraft record semantics live in this crate, while Mojang LevelDB table/WAL mechanics
+live in `bedrock-leveldb`.
 
-- File-level helpers for `level.dat` and Bedrock little-endian NBT.
-- A lazy `BedrockWorld` handle backed by a `WorldStorage` implementation.
+The main compatibility rule is **preserve the representation that is actually present**. Ordinary reads
+and writes do not silently upgrade, downgrade, normalise, or invent fields. Operations that change a
+storage generation or target a historical game version are explicit and preflighted.
 
-## Fast Metadata Path
+## Opening worlds
 
-Use `read_level_dat` when a launcher or management tool only needs world
-metadata. This path does not open LevelDB.
-
-```rust
-let document = bedrock_world::read_level_dat("world/level.dat".as_ref())?;
-println!("level.dat version={}", document.version());
-```
-
-Use `write_level_dat_atomic` for `level.dat` edits. It validates the serialized
-bytes by parsing them back before replacing the file.
-
-## Lazy World Path
-
-`BedrockWorld::open(path, OpenOptions::default())` opens a world in read-only
-mode and auto-detects `db/CURRENT` LevelDB worlds or old Pocket Edition
-`chunks.dat` worlds. Open with `OpenOptions { read_only: false, ..Default::default() }`
-only for explicit edit flows; high-level writes call `ensure_writable` and
-return `BedrockWorldErrorKind::ReadOnly` on read-only handles before any storage
-mutation. `BedrockWorld::open_blocking` exposes the same detection for CLI tools
-and examples. Use targeted APIs instead of full-world parsing for UI flows:
-
-- `list_players_blocking`
-- `classify_keys_blocking`
-- `list_chunk_positions_blocking`
-- `parse_chunk_blocking`
-- `scan_entities_blocking`
-- `scan_block_entities_blocking`
-- `scan_items_blocking`
-
-Async methods are wrappers over the blocking implementation and use
-`tokio::task::spawn_blocking`.
-
-`OpenOptions::format` can force `WorldFormatHint::LevelDb` or
-`WorldFormatHint::PocketChunksDat`; the default `Auto` reports the result through
-`BedrockWorld::format()`.
+For normal read-only tooling, use:
 
 ```rust
-let world = bedrock_world::BedrockWorld::open_blocking(
-    "world",
-    bedrock_world::OpenOptions::default(),
-)?;
-assert!(matches!(
-    world.format(),
-    bedrock_world::WorldFormat::LevelDb
-        | bedrock_world::WorldFormat::LevelDbLegacyTerrain
-        | bedrock_world::WorldFormat::PocketChunksDat
-));
+let world = bedrock_world::BedrockWorld::open_auto_blocking("world")?;
+println!("format={:?}", world.format());
 ```
 
-## Render Index Path
+`open_auto_blocking` detects:
 
-Interactive renderers should not wait for `list_chunk_positions_blocking` before
-painting the first viewport. Use the render-index APIs instead:
+- modern/current Mojang LevelDB worlds;
+- old LevelDB worlds that still contain `LegacyTerrain`;
+- pre-LevelDB Pocket Edition worlds with `chunks.dat`;
+- Pocket `entities.dat` alongside `chunks.dat`, exposed through the same read-only world handle as
+  legacy chunk `Entity` and `BlockEntity` records.
 
-- `list_render_chunk_positions_blocking` lists chunks that have render records.
-- `list_chunk_positions_in_region_blocking` probes only a viewport or
-  export region using key-only prefix scans.
-- `query_chunk_data_blocking`, `query_chunk_data_many_blocking`, and
-  `query_chunk_region_blocking` accept `ChunkLoadOptions` /
-  `WorldChunkQueryRegionLoadOptions` with `threading`, `pipeline`, `cancel`,
-  `progress`, and `priority` policies.
+The async `BedrockWorld::open_auto` wrapper is available with the `async` feature.
 
-Async wrappers with the same names are available behind the default `async`
-feature. They use `spawn_blocking` and preserve cancellation/progress options.
-The blocking implementation uses bounded local parallelism, not Rayon global
-pool state.
+`BedrockWorld::open_blocking(path, OpenOptions)` remains available when a caller needs an explicit
+format hint or writable LevelDB handle. A pre-LevelDB Pocket world is always read-only at the raw world
+backend; converting it to another storage generation is a separate operation.
+
+## Real version evidence
+
+Do not infer a whole world's format from only `level.dat.lastOpenedWithVersion`. Worlds may be partially
+upgraded and can contain multiple record generations at once.
 
 ```rust
-let region = bedrock_world::WorldChunkQueryRegion {
-    dimension,
-    min_chunk_x: -32,
-    min_chunk_z: -32,
-    max_chunk_x: 31,
-    max_chunk_z: 31,
-};
-let positions = world.list_render_chunk_positions_in_region(
-    region,
-    bedrock_world::WorldScanOptions {
-        pipeline: bedrock_world::WorldPipelineOptions {
-            queue_depth: 64,
-            ..Default::default()
-        },
-        ..Default::default()
-    },
-).await?;
-let chunks = world.load_render_chunks(
-    positions,
-    bedrock_world::ChunkLoadOptions {
-        priority: bedrock_world::ChunkLoadPriority::DistanceFrom {
-            chunk_x: 0,
-            chunk_z: 0,
-        },
-        ..Default::default()
-    },
-).await?;
+let versions = world.versions_blocking()?;
+println!("level={:?}", versions.level);
+println!("format={:?}", versions.world_format);
+println!("mixed={}", versions.has_mixed_version_storage());
+println!("future={}", versions.has_future_storage());
 ```
 
-`query_chunk_region_blocking` returns `WorldChunkQueryRegionData { region, chunks, stats }`.
-Use `stats.worker_threads`, `stats.queue_wait_ms`, and
-`stats.subchunks_decoded` to tune worker budgets without baking fixed time
-thresholds into tests.
+`WorldVersions` records literal persisted evidence including:
 
-`ChunkLoadOptions::data_request` accepts a composable `ChunkDataRequest`.
-Add only the payload that a consumer needs: `surface_columns(policy)`,
-`layer(y)`, `cave_slice(y)`, `full_3d_indices()`, `height_map()`,
-`biome(requirement)`, and `block_entities()`. The loader unions subchunk keys
-for all requested representations, uses packed palette indices for a
-surface-only request, and upgrades to full 3D indices only when a layer, cave,
-or full-3D requirement needs random access. `ChunkDataRequest` remains a
-legacy mutually-exclusive compatibility contract.
+- `Version`, `VersionOld`, and `LegacyVersion` chunk bytes;
+- SubChunk version bytes;
+- `LegacyTerrain`, `BlockExtraData`, `Data2DLegacy`, `Data2D`, and `Data3D` generations;
+- legacy inline `Entity` and modern `digp`/`actorprefix` actor storage;
+- `BlockEntity` and `ActorDigestVersion` records;
+- unknown chunk tags, unknown database keys, and unknown SubChunk versions.
+
+Unknown/future records are evidence to preserve, not permission to reinterpret them.
+
+## Pocket Edition `chunks.dat`
+
+Old Pocket terrain has a confirmed 82,176-byte core containing block IDs, metadata, sky light, block
+light, and a 16x16 height map. Later LevelDB `LegacyTerrain` adds a 1,024-byte tail containing 256
+`[biome_id, red, green, blue]` samples.
+
+The library keeps these forms distinct:
 
 ```rust
-let request = bedrock_world::ChunkDataRequest::new()
-    .surface_columns(bedrock_world::ExactSurfaceSubchunkPolicy::HintThenVerify)
-    .height_map()
-    .biome(bedrock_world::BiomeDataRequirement::SurfaceColumns);
-let options = bedrock_world::ChunkLoadOptions::for_data_request(request);
+let terrain: bedrock_world::chunk::legacy::LegacyTerrain = /* parsed terrain */;
+println!("bytes={}", terrain.raw().len());
+println!("has biome samples={}", terrain.has_biome_samples());
 ```
 
-Surface samples in `ChunkData::column_samples` are derived from actual
-blocks, including relief support, thin overlays, water context, biome, and
-source, rather than raw heightmap records.
+A real 82,176-byte Pocket source remains 82,176 bytes. `LegacyTerrain::biomes()` returns an empty slice
+for that form and `biome_sample_at` returns `None`. No default biome id or RGB colour is appended.
 
-Raw heightmaps remain available through `ChunkData::height_map`, but map
-renderers should treat them as hints or diagnostics. Stats expose
-`computed_surface_columns`, `raw_height_mismatch_columns`,
-`missing_subchunk_columns`, `legacy_fallback_columns`,
-`legacy_biome_preferred_columns`, and `modern_biome_fallback_columns`.
+`LegacyTerrainBuilder::from_terrain` preserves the source size. Block, metadata, light, and height edits
+remain valid on the Pocket core. `set_biome_sample` returns an error when the source has no biome tail;
+it does not extend the record implicitly.
 
-For old LevelDB worlds, render exact-batch loading always requests
-`ChunkRecordTag::LegacyTerrain` (`0x30`). If that record exists,
-`ChunkData::legacy_terrain` is populated, the chunk is considered loaded
-even without `Data2D`/`SubChunkPrefix`, and `ChunkLoadStats::prefix_scans`
-remains `0`.
-Legacy biome samples are exposed through `ChunkData::legacy_biomes` as
-`[biome_id, red, green, blue]`; `legacy_biome_colors` is retained only as a
-compatibility `0x00RRGGBB` view. When both `LegacyTerrain` biome samples and
-old Data2D/Data3D biome ids exist, exact surface sampling prefers the saved
-legacy RGB sample and treats the numeric biome id as fallback only.
+Use `check_pocket_chunks_dat_leveldb_import_blocking` before attempting an exact later-LevelDB copy.
+`import_pocket_chunks_dat_records_blocking` refuses the operation before target mutation if any source
+record lacks the persisted biome/RGB tail. This is intentional: a game-compatible later record cannot be
+constructed losslessly from bytes that never existed in the old source.
 
-Exact render chunk batches preserve the input key/value association after
-deduplication, priority sorting, and parallel decode. Regression fixtures should
-shuffle and duplicate `ChunkPos` values, then assert each returned
-`ChunkData.pos` still carries the matching block, height, and biome
-sentinels.
+## Pocket Edition `entities.dat`
 
-`PocketChunksDatStorage` is a read-only `WorldStorage` backend. It maps each
-old 82,176-byte `chunks.dat` terrain payload to an 83,200-byte virtual
-`LegacyTerrain` record by appending default legacy biome samples. `put`,
-`delete`, and `write_batch` return `UnsupportedChunkFormat`.
+Confirmed MCPE `entities.dat` is handled as its real file type:
 
-## Typed Bedrock Records
+- four-byte `ENT\0` magic;
+- little-endian file version;
+- little-endian NBT byte length;
+- one little-endian NBT root with `Entities` and `TileEntities` lists.
 
-v0.2 adds typed APIs for BedrockLevelFormat records that map editors usually
-need without forcing a full-world parse. The storage boundary remains raw
-key/value: `bedrock-world` owns Bedrock key classification, NBT codecs,
-coordinate validation, and write roundtrip checks. This crate does not decide
-how callers refresh or invalidate their presentation state after a write;
-downstream applications and adapter crates map these semantic writes to their
-own update model.
+```rust
+let mut document = bedrock_world::read_pocket_entities_dat("world")?;
+let entities = document.entities()?;
+let tile_entities = document.tile_entities()?;
+```
 
-Key helpers:
+Unmodified documents return the exact original bytes. Edited documents preserve unknown root fields and
+source trailing bytes. `write_pocket_entities_dat_atomic` uses the historical sidecar replacement style.
 
-- `MapRecordId` validates and encodes `map_<id>` keys.
-- `GlobalRecordKind` classifies `mobevents`, `Overworld`, `Nether`, `TheEnd`,
-  `scoreboard`, `LocalPlayer`, `AutonomousEntities`, and preserved unknown
-  global names.
-- `ActorUid` and `ActorDigestKey` encode `actorprefix<uid>` and
-  `digp<x><z>[dimension]`.
+`import_pocket_entities_dat_records_blocking` is explicit. It maps entities to old chunk `Entity`
+records and tile entities to `BlockEntity`; it does **not** jump directly to `digp`/`actorprefix`.
+Positions and collisions are completely preflighted and the target receives one atomic `StorageBatch`.
+Unpositioned records are rejected unless `skip_unpositioned` is explicitly enabled.
 
-Map and global records:
+## `level.dat` and NBT
 
-- `read_map_record_blocking`, `scan_map_records_blocking`,
-  `write_map_record_blocking`, and `delete_map_record_blocking`.
-- `read_global_record_blocking`, `scan_global_records_blocking`,
-  `write_global_record_blocking`, and `delete_global_record_blocking`.
-- Async wrappers with the same names are available behind the default `async`
-  feature.
+Use the file-level API when a launcher or management tool only needs metadata:
 
-`ParsedMapData` now carries the validated `record_id`, parsed NBT `roots`,
-`known_fields`, optional `MapPixels`, and raw bytes for preservation. The core
-crate exposes map pixel buffers only; PNG/image export belongs in an adapter or
-feature crate.
+```rust
+let document = bedrock_world::read_level_dat_document("world/level.dat".as_ref())?;
+println!("header version={}", document.version());
+```
 
-Chunk payload helpers:
+`LevelDatDocument` retains header information and non-fatal read warnings. NBT is little-endian Bedrock
+NBT and supports owned, borrowed/event, and consecutive-root paths.
 
-- `get_heightmap_blocking`, `put_heightmap_blocking`, and
-  `put_biome_storage_blocking` cover Data2D/Data3D heightmap and biome storage.
-- `scan_hsa_records_blocking`, `put_hsa_for_chunk_blocking`, and
-  `delete_hsa_for_chunk_blocking` cover Hardcoded Spawn Areas.
-- `block_entities_in_chunk_blocking`, `put_block_entities_blocking`,
-  `edit_block_entity_at_blocking`, and `delete_block_entity_at_blocking` cover
-  consecutive block-entity NBT compounds.
-- `actors_in_chunk_blocking`, `put_actor_blocking`, `delete_actor_blocking`,
-  and `move_actor_blocking` cover legacy inline `Entity` reads and modern
-  `digp -> actorprefix` writes.
-- `delete_chunk_positions_blocking` removes a deduplicated set of chunks and
-  their modern actor records in one atomic storage batch. The lower-level
-  `StorageBatch` API also exposes `delete_chunk`, `put_block_entities`, and
-  `put_hsa_for_chunk` for composing a replacement commit.
+Normal write helpers validate serialized data before replacing the target file. Existing world seed and
+unknown fields remain authoritative unless the caller explicitly edits them.
 
-All high-level writes validate the serialized value by parsing it back before
-committing. Actor writes update `actorprefix` and `digp` in one transaction.
-Block-entity writes reject coordinates outside the target chunk. `chunks.dat`
-backends stay read-only. Chunk deletion also removes modern actor digest and
-`actorprefix` records owned by the deleted chunks. Write examples should
-therefore open a writable world:
+## Player data
+
+Player data can live in several physical locations depending on the game/storage generation:
+
+- historical `level.dat.Player`;
+- `~local_player`;
+- `player_<id>` records.
+
+Normal player writes return to the same record family and do not move or rewrite the player to another
+game version implicitly.
+
+Historical saved-item conversion is exposed through concrete target families rather than one generic
+"legacy" writer. Exact mapping checks run before mutation and reject missing/ambiguous item or BlockState
+mappings.
+
+For the confirmed MCPE 0.6.1 target, `write_mcpe_0_6_1_level_dat_player` requires the actual old field
+shape, including numeric inventory items, old Armor list, exact NBT scalar widths, header version 3, and
+`StorageVersion=3`. It does not manufacture missing historical fields.
+
+## Chunk and SubChunk access
+
+Use targeted APIs for interactive tools:
+
+- `list_render_chunk_positions_blocking`;
+- `list_chunk_positions_in_region_blocking`;
+- `query_chunk_data_blocking`;
+- `query_chunk_data_many_blocking`;
+- `query_chunk_region_blocking`;
+- `parse_chunk_blocking` for a complete structured chunk inspection.
+
+`ChunkDataRequest` composes the representation a consumer actually needs: surface columns, a fixed
+layer, cave slice, full 3D indices, height map, biome data, and block entities. Avoid full-world/raw
+materialisation in render loops.
+
+`SubChunkVersion` retains unknown future version bytes. Unsupported payloads must remain raw/preserved
+unless the caller chooses a destructive operation whose target format is fully proven.
+
+## Entities and BlockEntities
+
+Legacy inline chunk entities and modern actors are separate storage generations. Reads support both;
+ordinary writes do not silently move one to the other.
+
+Modern actor writes update `actorprefix` and `digp` consistently. BlockEntity chunk payloads are
+consecutive NBT roots. Unknown BlockEntity roots remain byte-for-byte unchanged when a concrete rewrite
+only modifies a recognised sibling root.
+
+Concrete block-entity rewrites use `BlockEntityRewriter` and `rewrite_block_entity_chunk_blocking` rather
+than a generic world migration manager.
+
+## Maps, villages, global records, and structures
+
+Typed helpers exist for map records, village/global keys, hardcoded spawn areas, `.mcstructure`, player
+records, block entities, actors, biomes, and chunk records. Raw storage remains available through
+`WorldStorage` for tools that need exact key/value access.
+
+Structure placement and other multi-record edits preflight their target data before committing. Use a
+writable LevelDB world only for explicit edits:
 
 ```rust
 let world = bedrock_world::BedrockWorld::open_blocking(
     "world",
     bedrock_world::OpenOptions {
         read_only: false,
-        ..bedrock_world::OpenOptions::default()
+        ..Default::default()
     },
 )?;
 ```
 
-LevelDB backend writes use synced WAL-backed write options. Use
-`BedrockWorld::compact_storage_blocking` after a large write wave when an editor
-needs to force backend compaction before another process opens the world.
+Pre-LevelDB Pocket world handles remain read-only.
 
-## Structure Files
+## Storage backends
 
-`McStructureFile` reads and writes Bedrock `.mcstructure` files, which are
-uncompressed little-endian NBT files containing a structure size, block index
-arrays, a palette, and block entities. The helper can also export a world region
-and place a structure into writable world storage:
+Public storage abstractions include `WorldStorage`, `PartitionedWorldStorage`, `MemoryStorage`, scan
+options/results, and `StorageBatch`. With the `backend-bedrock-leveldb` feature enabled,
+`BedrockLevelDbStorage` provides Mojang LevelDB access.
 
-```rust
-let structure = bedrock_world::McStructureFile::read_from_path("house.mcstructure".as_ref())?;
-let result = structure.write_to_world_blocking(
-    &world,
-    bedrock_world::McStructurePlacement {
-        source_anchor: bedrock_world::ChunkPos { x: 0, z: 0, dimension },
-        target_anchor: bedrock_world::ChunkPos { x: 8, z: -4, dimension },
-        origin_y: 64,
-        rotation: bedrock_world::McStructureRotation::Clockwise90,
-        mirror_x: false,
-        mirror_z: false,
-    },
-    Some(Box::new(|progress| eprintln!("{progress:?}"))),
-)?;
-println!("placed chunks={}", result.touched_chunks.len());
+The old synthetic `PocketChunksDatStorage` public backend has been removed. Pocket world opening belongs
+to the world layer because the source representation is not equivalent to later LevelDB `LegacyTerrain`.
+
+When `backend-bedrock-leveldb` is disabled, LevelDB open paths fail with an explicit unsupported-feature
+error instead of disappearing from internal compilation.
+
+## Compatibility fixture corpus
+
+Historical compatibility tests are intentionally separate from ordinary synthetic unit tests. Local or
+sanitised real-world corpora can be mounted with:
+
+```text
+BEDROCK_WORLD_FIXTURE_ROOT=/path/to/world-corpus
+BEDROCK_WORLD_REQUIRE_HISTORICAL_FIXTURES=1
 ```
 
-Placement recomputes the heightmap columns touched by the new blocks and
-commits world changes in batches of 16 chunks. `WriteChunks` progress events
-are emitted after each batch is committed, so callers can safely refresh data
-after the reported count.
+and raw Mojang LevelDB corpora with:
 
-Placement updates subchunk records, preserves supported block entities, and
-applies horizontal rotation or mirroring to common direction-like block states.
-Entity placement is intentionally left to downstream tools because entity NBT
-semantics are not block-grid local.
-
-## Parsing Modes
-
-`WorldParseOptions::summary()` is the default for large scans. It keeps counters
-and summaries while avoiding raw value retention.
-
-`WorldParseOptions::structured()` keeps structured parsed entries without raw
-values.
-
-`WorldParseOptions::full_raw()` keeps raw values and full subchunk indices. Use
-it for offline debugging, not interactive UI.
-
-## Error Handling
-
-All public fallible APIs return `bedrock_world::Result<T>`.
-
-Match `BedrockWorldError::kind()` for stable categories:
-
-```rust
-match error.kind() {
-    bedrock_world::BedrockWorldErrorKind::ReadOnly => {
-        // Ask the caller to reopen with OpenOptions { read_only: false }.
-    }
-    bedrock_world::BedrockWorldErrorKind::Cancelled => {
-        // A scan observed the caller's cancellation flag.
-    }
-    _ => eprintln!("{error}"),
-}
+```text
+BEDROCK_LEVELDB_FIXTURE_ROOT=/path/to/leveldb-corpus
+BEDROCK_LEVELDB_REQUIRE_HISTORICAL_FIXTURES=1
 ```
 
-Avoid parsing display strings; they are meant for humans.
+When the `REQUIRE` flag is enabled, missing fixtures fail the suite. A skipped private fixture is not a
+compatibility pass.
+
+## Error handling
+
+All public fallible APIs return `bedrock_world::Result<T>`. Match `BedrockWorldError::kind()` for stable
+categories rather than parsing display text. Important categories include `ReadOnly`, `Validation`,
+`UnsupportedChunkFormat`, `CorruptWorld`, `Cancelled`, and `LevelDb`.
