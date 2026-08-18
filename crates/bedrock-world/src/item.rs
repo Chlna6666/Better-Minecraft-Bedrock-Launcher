@@ -10,8 +10,9 @@ pub use legacy_saved_item::{
     SavedItemUpgradeSource, load_pinned_legacy_saved_item_id_table_from_dir,
 };
 pub use legacy_saved_item_check::{
-    LegacySavedItemCheckReport, LegacySavedItemIssue, LegacySavedItemIssueKind,
-    check_legacy_numeric_saved_items,
+    LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemIssue,
+    LegacySavedItemIssueKind, check_legacy_numeric_saved_items,
+    check_legacy_numeric_saved_items_with_blocks,
 };
 
 // The historical forward rule executor remains crate-private while public APIs are expressed through

@@ -2,7 +2,8 @@
 
 use crate::error::Result;
 use crate::item::{
-    LegacySavedItemCheckReport, LegacySavedItemIdTable, check_legacy_numeric_saved_items,
+    LegacySavedItemBlockStateTables, LegacySavedItemCheckReport, LegacySavedItemIdTable,
+    check_legacy_numeric_saved_items, check_legacy_numeric_saved_items_with_blocks,
 };
 use crate::player::PlayerData;
 
@@ -16,6 +17,19 @@ impl PlayerData {
         table: &LegacySavedItemIdTable,
     ) -> Result<LegacySavedItemCheckReport> {
         check_legacy_numeric_saved_items(&self.nbt, table)
+    }
+
+    /// Checks historical numeric saved-item representation including persisted blockitem BlockStates.
+    ///
+    /// The supplied block tables must represent the same historical numeric block corpus: the raw
+    /// table provides the old block identity, while the upgraded table proves the modern BlockState by
+    /// forward upgrade. This method never mutates player NBT.
+    pub fn check_legacy_numeric_saved_items_with_blocks(
+        &self,
+        table: &LegacySavedItemIdTable,
+        blocks: &LegacySavedItemBlockStateTables<'_>,
+    ) -> Result<LegacySavedItemCheckReport> {
+        check_legacy_numeric_saved_items_with_blocks(&self.nbt, table, blocks)
     }
 }
 
