@@ -5,6 +5,7 @@ mod legacy_encoding;
 mod legacy_extra;
 mod level_chunk;
 mod subchunk;
+mod subchunk_storage;
 #[path = "chunk/subchunk/v0.rs"]
 mod subchunk_v0;
 #[path = "chunk/subchunk/v1.rs"]
@@ -38,6 +39,8 @@ pub use level_chunk::{Chunk, ChunkRecord, EntityData};
 pub use palette::*;
 pub use position::*;
 pub use subchunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat, VisibleBlockStatesAt};
+pub use subchunk_storage::SubChunkStorageWriteReport;
+pub(crate) use subchunk_storage::stage_subchunks_as_version;
 pub use version::SubChunkVersion;
 pub use crate::parsed::{
     HardcodedSpawnAreaKind, ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,

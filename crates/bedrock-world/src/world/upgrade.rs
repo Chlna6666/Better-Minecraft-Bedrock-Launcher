@@ -3,7 +3,7 @@
 //! Ordinary world reads/writes never call this code. Upgrade is a separate operation and its plan is
 //! derived from the actual persisted data present in the world folder.
 
-use crate::chunk::SubChunkVersion;
+use crate::chunk::{SubChunkStorageWriteReport, SubChunkVersion, stage_subchunks_as_version};
 use crate::database::StorageOp;
 use crate::entity::{ActorStorageRewriteReport, stage_world_entity_to_digp_actorprefix};
 use crate::error::{BedrockWorldError, Result};
@@ -184,6 +184,32 @@ where
         })
     }
 
+    /// Rewrites only the persisted SubChunk container versions required by the target release.
+    ///
+    /// This is an independently safe storage step, not a complete game-version upgrade. It does not
+    /// update BlockState schema versions, items, biomes, actors, or `level.dat`. Every affected
+    /// SubChunk is parsed and encoded before any storage mutation. If one source representation cannot
+    /// be written exactly as the selected target version, the entire operation fails before commit.
+    pub fn upgrade_subchunk_storage_blocking(
+        &self,
+        target: GameVersion,
+    ) -> Result<SubChunkStorageWriteReport> {
+        let plan = self.upgrade_plan_blocking(target.clone())?;
+        if let Some(issue) = plan.issues.first() {
+            return Err(BedrockWorldError::Validation(format!(
+                "SubChunk storage upgrade cannot run: {issue:?}"
+            )));
+        }
+        let target_version = target_subchunk_version(&target).ok_or_else(|| {
+            BedrockWorldError::Validation(format!(
+                "Bedrock {target} does not select one unambiguous SubChunk version"
+            ))
+        })?;
+        let (batch, report) = stage_subchunks_as_version(self.storage(), target_version)?;
+        commit_upgrade_storage_batch(self, &batch)?;
+        Ok(report)
+    }
+
     /// Rewrites only the world's actor storage from chunk `Entity` records to `digp`/`actorprefix`.
     ///
     /// This is an independently safe upgrade step, not a full-world upgrade. It first rebuilds the
@@ -216,12 +242,15 @@ where
         }
 
         let (batch, report) = stage_world_entity_to_digp_actorprefix(self.storage())?;
-        commit_actor_storage_batch(self, &batch)?;
+        commit_upgrade_storage_batch(self, &batch)?;
         Ok(report)
     }
 }
 
-fn commit_actor_storage_batch<S>(world: &BedrockWorld<S>, batch: &crate::database::StorageBatch) -> Result<()>
+fn commit_upgrade_storage_batch<S>(
+    world: &BedrockWorld<S>,
+    batch: &crate::database::StorageBatch,
+) -> Result<()>
 where
     S: WorldStorageHandle,
 {
