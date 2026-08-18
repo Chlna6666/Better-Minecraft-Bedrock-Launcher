@@ -6,9 +6,9 @@
 
 use crate::parsed::encode_consecutive_roots;
 use crate::{
-    BedrockWorld, BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockState, ChunkKey,
-    ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, NbtReader, NbtTag, NbtWriter, Result,
-    SubChunkFormat, WorldStorageHandle, WriteGuard, block_storage_index,
+    BedrockWorld, BedrockWorldError, Biome2d, Biome2dLegacy, Biome3d, BlockPalette, BlockState,
+    ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, NbtReader, NbtTag, NbtWriter,
+    Result, SubChunkFormat, WorldStorageHandle, WriteGuard, block_storage_index,
 };
 use bytes::Bytes;
 use indexmap::IndexMap;
@@ -1118,43 +1118,94 @@ fn pack_palette_indices(indices: &[u16], bits: u8) -> Result<Vec<u32>> {
 }
 
 fn chunk_height_map(records: &[ChunkRecord]) -> Result<(ChunkVersion, Vec<i16>)> {
+    let mut selected = None::<(ChunkVersion, Vec<i16>, ChunkRecordTag)>;
     for record in records {
-        match record.key.tag {
-            ChunkRecordTag::Data3D => {
-                return Biome3d::parse(&record.value)
-                    .map(|biome| (ChunkVersion::New, biome.height_map));
-            }
-            ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => {
-                return Biome2d::parse(&record.value)
-                    .map(|biome| (ChunkVersion::Old, biome.height_map));
-            }
-            _ => {}
+        let candidate = match record.key.tag {
+            ChunkRecordTag::Data3D => Some((
+                ChunkVersion::New,
+                Biome3d::parse(&record.value)?.height_map,
+                ChunkRecordTag::Data3D,
+            )),
+            ChunkRecordTag::Data2D => Some((
+                ChunkVersion::Old,
+                Biome2d::parse(&record.value)?.height_map,
+                ChunkRecordTag::Data2D,
+            )),
+            ChunkRecordTag::Data2DLegacy => Some((
+                ChunkVersion::Old,
+                Biome2dLegacy::parse(&record.value)?.height_map,
+                ChunkRecordTag::Data2DLegacy,
+            )),
+            _ => None,
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        if let Some((_, _, existing_tag)) = selected.as_ref() {
+            return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+                "structure placement found mixed height/biome records {existing_tag:?} and {:?}; refusing to choose a storage generation",
+                candidate.2
+            )));
         }
+        selected = Some(candidate);
     }
-    Ok((ChunkVersion::New, vec![0; 256]))
+    selected
+        .map(|(version, height_map, _)| (version, height_map))
+        .ok_or_else(|| {
+            BedrockWorldError::UnsupportedChunkFormat(
+                "structure placement requires an existing Data3D, Data2D, or Data2DLegacy record; refusing to invent a biome storage generation"
+                    .to_string(),
+            )
+        })
 }
 
 fn encode_chunk_height_map(
     records: &[ChunkRecord],
     height_map: Vec<i16>,
 ) -> Result<(ChunkRecordTag, Bytes)> {
+    let mut selected = None::<(ChunkRecordTag, Bytes)>;
     for record in records {
-        match record.key.tag {
+        let candidate = match record.key.tag {
             ChunkRecordTag::Data3D => {
                 let biome = Biome3d::parse(&record.value)?;
-                let bytes = Biome3d::new(height_map, biome.storages)?.encode()?;
-                return Ok((ChunkRecordTag::Data3D, Bytes::from(bytes)));
+                Some((
+                    ChunkRecordTag::Data3D,
+                    Bytes::from(Biome3d::new(height_map.clone(), biome.storages)?.encode()?),
+                ))
             }
-            ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => {
+            ChunkRecordTag::Data2D => {
                 let biome = Biome2d::parse(&record.value)?;
-                let bytes = Biome2d::new(height_map, biome.biomes)?.encode()?;
-                return Ok((record.key.tag, Bytes::from(bytes)));
+                Some((
+                    ChunkRecordTag::Data2D,
+                    Bytes::from(Biome2d::new(height_map.clone(), biome.biomes)?.encode()?),
+                ))
             }
-            _ => {}
+            ChunkRecordTag::Data2DLegacy => {
+                let biome = Biome2dLegacy::parse(&record.value)?;
+                Some((
+                    ChunkRecordTag::Data2DLegacy,
+                    Bytes::from(Biome2dLegacy::new(height_map.clone(), biome.biomes)?.encode()?),
+                ))
+            }
+            _ => None,
+        };
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        if let Some((existing_tag, _)) = selected.as_ref() {
+            return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
+                "structure placement found mixed height/biome records {existing_tag:?} and {:?}; refusing to choose a storage generation",
+                candidate.0
+            )));
         }
+        selected = Some(candidate);
     }
-    let bytes = Biome3d::new(height_map, Vec::new())?.encode()?;
-    Ok((ChunkRecordTag::Data3D, Bytes::from(bytes)))
+    selected.ok_or_else(|| {
+        BedrockWorldError::UnsupportedChunkFormat(
+            "structure placement requires an existing Data3D, Data2D, or Data2DLegacy record; refusing to create an empty biome record"
+                .to_string(),
+        )
+    })
 }
 
 fn update_height_map_from_subchunks(
@@ -1809,6 +1860,24 @@ mod tests {
             z: -20,
             dimension: Dimension::Overworld,
         };
+        let mut seed = world.transaction();
+        for offset in 0..17_i32 {
+            let pos = ChunkPos {
+                x: target_anchor.x + offset,
+                ..target_anchor
+            };
+            seed.put_raw_record(
+                &ChunkKey::new(pos, ChunkRecordTag::Data3D),
+                Bytes::from(
+                    Biome3d::new(vec![0; 256], Vec::new())
+                        .expect("seed Data3D")
+                        .encode()
+                        .expect("encode seed Data3D"),
+                ),
+            );
+        }
+        seed.commit().expect("seed target height records");
+
         let guard = WriteGuard::confirmed("memory", "structure progress test");
         let mut committed = Vec::new();
 
@@ -1853,6 +1922,64 @@ mod tests {
             .expect("write structure");
 
         assert_eq!(committed, [0, 16, 17]);
+    }
+
+    #[test]
+    fn structure_height_rewrite_preserves_data2d_legacy_rgb() {
+        let samples = (0..256)
+            .map(|index| crate::LegacyBiomeSample {
+                biome_id: (index % 255) as u8,
+                red: 0x11,
+                green: 0x22,
+                blue: 0x33,
+            })
+            .collect::<Vec<_>>();
+        let original = Biome2dLegacy::new(vec![64; 256], samples.clone()).expect("legacy biome");
+        let record = ChunkRecord {
+            key: ChunkKey::new(
+                ChunkPos {
+                    x: 0,
+                    z: 0,
+                    dimension: Dimension::Overworld,
+                },
+                ChunkRecordTag::Data2DLegacy,
+            ),
+            value: Bytes::from(original.encode().expect("encode legacy biome")),
+        };
+        let (_, encoded) =
+            encode_chunk_height_map(&[record], vec![80; 256]).expect("rewrite height map");
+        let rewritten = Biome2dLegacy::parse(&encoded).expect("parse rewritten legacy biome");
+        assert_eq!(rewritten.height_map, vec![80; 256]);
+        assert_eq!(rewritten.biomes, samples);
+    }
+
+    #[test]
+    fn structure_height_rewrite_rejects_missing_or_mixed_biome_generation() {
+        assert!(chunk_height_map(&[]).is_err());
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let data2d = ChunkRecord {
+            key: ChunkKey::new(pos, ChunkRecordTag::Data2D),
+            value: Bytes::from(
+                Biome2d::new(vec![64; 256], vec![7; 256])
+                    .expect("Data2D")
+                    .encode()
+                    .expect("encode Data2D"),
+            ),
+        };
+        let data3d = ChunkRecord {
+            key: ChunkKey::new(pos, ChunkRecordTag::Data3D),
+            value: Bytes::from(
+                Biome3d::new(vec![64; 256], Vec::new())
+                    .expect("Data3D")
+                    .encode()
+                    .expect("encode Data3D"),
+            ),
+        };
+        assert!(chunk_height_map(&[data2d, data3d]).is_err());
     }
 
     #[test]
