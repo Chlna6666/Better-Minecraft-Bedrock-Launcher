@@ -4,6 +4,7 @@ mod bedrock_world;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
 mod downgrade;
+mod legacy_terrain;
 mod level_dat;
 mod pocket_chunks_dat;
 mod subchunk_upgrade;

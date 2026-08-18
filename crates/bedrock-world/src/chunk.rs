@@ -4,6 +4,7 @@ mod encoding;
 mod legacy_encoding;
 mod legacy_extra;
 mod legacy_subchunk_upgrade;
+mod legacy_terrain_storage;
 mod level_chunk;
 mod subchunk;
 mod subchunk_storage;
@@ -39,6 +40,8 @@ pub use legacy_extra::{
 };
 pub use legacy_subchunk_upgrade::LegacySubChunkUpgradeWriteReport;
 pub(crate) use legacy_subchunk_upgrade::stage_legacy_subchunks_for_upgrade;
+pub use legacy_terrain_storage::LegacyTerrainSplitReport;
+pub(crate) use legacy_terrain_storage::stage_legacy_terrain_split;
 pub use level_chunk::{Chunk, ChunkRecord, EntityData};
 pub use palette::*;
 pub use position::*;
