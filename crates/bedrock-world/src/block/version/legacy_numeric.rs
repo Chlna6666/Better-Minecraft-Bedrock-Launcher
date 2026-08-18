@@ -2,13 +2,42 @@
 //!
 //! BedrockBlockUpgradeSchema's `id_meta_to_nbt/*.bin` maps historical string block ids and metadata
 //! values to versioned BlockState NBT. `block_legacy_id_map.json` supplies the corresponding numeric
-//! ids. This block-domain parser has no chunk/storage dependency; chunk codecs adapt it through their
-//! own resolver trait.
+//! ids. This block-domain parser has no chunk/storage dependency.
 
 use crate::block::BlockState;
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_root_nbt_with_consumed};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// One historical numeric block identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LegacyNumericBlock {
+    /// Numeric block ID persisted by classic terrain formats.
+    pub numeric_id: u32,
+    /// Numeric metadata/data value persisted alongside the block ID.
+    pub metadata: u32,
+}
+
+/// Result of looking up a semantic BlockState in a historical numeric table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyNumericBlockMatch {
+    /// No numeric ID/metadata entry represents this BlockState in the table.
+    Missing,
+    /// Exactly one numeric representation exists.
+    Unique(LegacyNumericBlock),
+    /// Multiple numeric representations map to the same semantic BlockState.
+    ///
+    /// Callers performing destructive reverse writes should not silently choose an alias. The first
+    /// two matching values and total count are returned without allocating a candidate vector.
+    Ambiguous {
+        /// First matching numeric representation in table key order.
+        first: LegacyNumericBlock,
+        /// Second matching numeric representation in table key order.
+        second: LegacyNumericBlock,
+        /// Total number of numeric aliases found.
+        matches: usize,
+    },
+}
 
 /// Parsed legacy numeric block table.
 #[derive(Debug, Clone)]
@@ -151,6 +180,59 @@ impl LegacyNumericBlockStateTable {
         self.extended.get(&(numeric_id, metadata))
     }
 
+    /// Finds numeric ID/metadata representations for one semantic BlockState without allocating.
+    ///
+    /// BlockState persisted `version` is intentionally ignored by the comparison because it identifies
+    /// the storage-schema generation, not the block permutation. `Ambiguous` is returned instead of
+    /// choosing an arbitrary legacy alias when multiple numeric pairs resolve to the same state.
+    #[must_use]
+    pub fn match_numeric(&self, state: &BlockState) -> LegacyNumericBlockMatch {
+        let mut first = None;
+        let mut second = None;
+        let mut matches = 0usize;
+
+        for (slot, state_index) in self.dense_slots.iter().copied().enumerate() {
+            if state_index == u16::MAX {
+                continue;
+            }
+            let Some(candidate) = self.dense_states.get(usize::from(state_index)) else {
+                continue;
+            };
+            if !candidate.semantic_eq(state) {
+                continue;
+            }
+            let value = LegacyNumericBlock {
+                numeric_id: (slot / 16) as u32,
+                metadata: (slot % 16) as u32,
+            };
+            record_numeric_match(value, &mut first, &mut second, &mut matches);
+        }
+        for (&(numeric_id, metadata), candidate) in &self.extended {
+            if candidate.semantic_eq(state) {
+                record_numeric_match(
+                    LegacyNumericBlock {
+                        numeric_id,
+                        metadata,
+                    },
+                    &mut first,
+                    &mut second,
+                    &mut matches,
+                );
+            }
+        }
+
+        match (matches, first, second) {
+            (0, _, _) => LegacyNumericBlockMatch::Missing,
+            (1, Some(value), _) => LegacyNumericBlockMatch::Unique(value),
+            (count, Some(first), Some(second)) => LegacyNumericBlockMatch::Ambiguous {
+                first,
+                second,
+                matches: count,
+            },
+            _ => LegacyNumericBlockMatch::Missing,
+        }
+    }
+
     /// Returns compact loading diagnostics.
     #[must_use]
     pub fn stats(&self) -> LegacyNumericBlockStateTableStats {
@@ -170,6 +252,20 @@ impl LegacyNumericBlockStateTable {
         } else {
             None
         }
+    }
+}
+
+fn record_numeric_match(
+    value: LegacyNumericBlock,
+    first: &mut Option<LegacyNumericBlock>,
+    second: &mut Option<LegacyNumericBlock>,
+    matches: &mut usize,
+) {
+    *matches = matches.saturating_add(1);
+    if first.is_none() {
+        *first = Some(value);
+    } else if second.is_none() {
+        *second = Some(value);
     }
 }
 
@@ -238,10 +334,10 @@ fn read_var_u32(data: &[u8], offset: &mut usize) -> Result<u32> {
 fn take<'a>(data: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8]> {
     let end = offset
         .checked_add(len)
-        .ok_or_else(|| validation("legacy numeric block table slice overflowed usize"))?;
+        .ok_or_else(|| validation("legacy block table slice overflowed usize"))?;
     let value = data
         .get(*offset..end)
-        .ok_or_else(|| validation("legacy numeric block table ended inside a length-delimited field"))?;
+        .ok_or_else(|| validation("legacy block table ended inside a length-delimited field"))?;
     *offset = end;
     Ok(value)
 }
@@ -271,6 +367,14 @@ mod tests {
         }
     }
 
+    fn state(name: &str, version: i32) -> NbtTag {
+        NbtTag::Compound(IndexMap::from([
+            ("name".to_string(), NbtTag::String(name.to_string())),
+            ("states".to_string(), NbtTag::Compound(IndexMap::new())),
+            ("version".to_string(), NbtTag::Int(version)),
+        ]))
+    }
+
     #[test]
     fn parses_dense_id_meta_mapping() {
         let version = BlockStateStorageVersion::from_components(1, 12, 0, 1).raw();
@@ -298,5 +402,43 @@ mod tests {
         assert_eq!(state.states.get("kind"), Some(&NbtTag::Int(3)));
         assert_eq!(parsed.uniform_source_version(), Some(version));
         assert_eq!(parsed.stats().dense_entries, 1);
+        assert_eq!(
+            parsed.match_numeric(state),
+            LegacyNumericBlockMatch::Unique(LegacyNumericBlock {
+                numeric_id: 1,
+                metadata: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn reverse_match_reports_numeric_aliases_instead_of_choosing_one() {
+        let version = BlockStateStorageVersion::from_components(1, 12, 0, 1).raw();
+        let mut table = Vec::new();
+        put_var_u32(1, &mut table);
+        put_var_u32("minecraft:test".len() as u32, &mut table);
+        table.extend_from_slice(b"minecraft:test");
+        put_var_u32(2, &mut table);
+        for metadata in [0_u32, 1] {
+            put_var_u32(metadata, &mut table);
+            table.extend(serialize_root_nbt(&state("minecraft:test", version)).unwrap());
+        }
+        let parsed =
+            LegacyNumericBlockStateTable::parse(&table, r#"{"minecraft:test":5}"#).unwrap();
+        let target = parsed.get(5, 0).unwrap();
+        assert_eq!(
+            parsed.match_numeric(target),
+            LegacyNumericBlockMatch::Ambiguous {
+                first: LegacyNumericBlock {
+                    numeric_id: 5,
+                    metadata: 0,
+                },
+                second: LegacyNumericBlock {
+                    numeric_id: 5,
+                    metadata: 1,
+                },
+                matches: 2,
+            }
+        );
     }
 }

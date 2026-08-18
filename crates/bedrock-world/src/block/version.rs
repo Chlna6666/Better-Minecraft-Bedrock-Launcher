@@ -21,6 +21,9 @@ pub use corpus_bundle::{
     load_pinned_block_migration_bundle_for_target_from_dir,
     load_pinned_block_migration_bundle_from_dir, verify_pinned_block_migration_corpus,
 };
-pub use legacy_numeric::{LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats};
+pub use legacy_numeric::{
+    LegacyNumericBlock, LegacyNumericBlockMatch, LegacyNumericBlockStateTable,
+    LegacyNumericBlockStateTableStats,
+};
 pub use upgrade_data::{BlockUpgradeData, load_pinned_block_upgrade_data_for_palette};
 pub use vanilla_palette::VanillaBlockStatePalette;
