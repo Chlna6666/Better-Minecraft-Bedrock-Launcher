@@ -9,12 +9,16 @@ use crate::chunk::legacy::{
     LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_BIOME_OFFSET,
     LEGACY_TERRAIN_BLOCK_DATA_OFFSET, LEGACY_TERRAIN_BLOCK_LIGHT_OFFSET,
     LEGACY_TERRAIN_HEIGHTMAP_OFFSET, LEGACY_TERRAIN_SKY_LIGHT_OFFSET,
-    LEGACY_TERRAIN_VALUE_LEN, LegacyBiomeSample, LegacySubChunk, LegacyTerrain,
+    LEGACY_TERRAIN_VALUE_LEN, POCKET_TERRAIN_VALUE_LEN, LegacyBiomeSample, LegacySubChunk,
+    LegacyTerrain,
 };
 use crate::error::{BedrockWorldError, Result};
 use bytes::Bytes;
 
-/// Mutable, one-allocation encoder for the fixed 83,200-byte `LegacyTerrain` record.
+/// Mutable, one-allocation encoder for historical 16x128x16 numeric terrain.
+///
+/// A builder created from an existing [`LegacyTerrain`] preserves whether the source is the shorter
+/// Pocket `chunks.dat` terrain core or the later full LevelDB `LegacyTerrain` value.
 #[derive(Debug, Clone)]
 pub struct LegacyTerrainBuilder {
     bytes: Vec<u8>,
@@ -27,13 +31,21 @@ impl Default for LegacyTerrainBuilder {
 }
 
 impl LegacyTerrainBuilder {
-    /// Creates a zero-filled historical terrain record.
+    /// Creates a zero-filled full LevelDB `LegacyTerrain` record.
     ///
-    /// Sky light is also zero until explicitly set or filled by the caller.
+    /// Sky light and biome values are zero until explicitly set or filled by the caller.
     #[must_use]
     pub fn zeroed() -> Self {
         Self {
             bytes: vec![0; LEGACY_TERRAIN_VALUE_LEN],
+        }
+    }
+
+    /// Creates a zero-filled pre-LevelDB Pocket terrain core with no biome/RGB tail.
+    #[must_use]
+    pub fn zeroed_pocket_core() -> Self {
+        Self {
+            bytes: vec![0; POCKET_TERRAIN_VALUE_LEN],
         }
     }
 
@@ -43,6 +55,12 @@ impl LegacyTerrainBuilder {
         Self {
             bytes: source.raw().to_vec(),
         }
+    }
+
+    /// Returns whether this output buffer actually contains the later biome/RGB storage tail.
+    #[must_use]
+    pub fn has_biome_samples(&self) -> bool {
+        self.bytes.len() == LEGACY_TERRAIN_VALUE_LEN
     }
 
     /// Returns the exact mutable output buffer for advanced codecs that already know the layout.
@@ -131,6 +149,9 @@ impl LegacyTerrainBuilder {
     }
 
     /// Sets one legacy biome ID plus its persisted RGB components.
+    ///
+    /// The shorter Pocket terrain core has no storage for these values. Editing such a source returns
+    /// an error rather than extending the record or inventing a format transition implicitly.
     pub fn set_biome_sample(
         &mut self,
         local_x: u8,
@@ -138,20 +159,32 @@ impl LegacyTerrainBuilder {
         sample: LegacyBiomeSample,
     ) -> Result<()> {
         let column = terrain_column_index(local_x, local_z)?;
-        let offset = LEGACY_TERRAIN_BIOME_OFFSET + column * 4;
-        self.bytes[offset..offset + 4]
-            .copy_from_slice(&[sample.biome_id, sample.red, sample.green, sample.blue]);
+        let offset = LEGACY_TERRAIN_BIOME_OFFSET
+            .checked_add(column.saturating_mul(4))
+            .ok_or_else(|| {
+                BedrockWorldError::Validation("LegacyTerrain biome offset overflow".to_string())
+            })?;
+        let end = offset.checked_add(4).ok_or_else(|| {
+            BedrockWorldError::Validation("LegacyTerrain biome range overflow".to_string())
+        })?;
+        let target = self.bytes.get_mut(offset..end).ok_or_else(|| {
+            BedrockWorldError::Validation(
+                "Pocket terrain core has no persisted biome/RGB tail; convert formats explicitly before setting biome samples"
+                    .to_string(),
+            )
+        })?;
+        target.copy_from_slice(&[sample.biome_id, sample.red, sample.green, sample.blue]);
         Ok(())
     }
 
-    /// Finishes the record and revalidates the exact physical size before returning it.
+    /// Finishes the record and revalidates the exact historical physical size before returning it.
     pub fn build(self) -> Result<LegacyTerrain> {
         LegacyTerrain::parse(Bytes::from(self.bytes))
     }
 }
 
 impl LegacyTerrain {
-    /// Creates an editable one-allocation copy while preserving every byte not explicitly changed.
+    /// Creates an editable one-allocation copy while preserving every byte and the source layout size.
     #[must_use]
     pub fn to_builder(&self) -> LegacyTerrainBuilder {
         LegacyTerrainBuilder::from_terrain(self)
@@ -422,6 +455,33 @@ mod tests {
         assert_eq!(terrain.block_light_at(15, 127, 15), Some(7));
         assert_eq!(terrain.height_at(15, 15), Some(99));
         assert_eq!(terrain.biome_sample_at(15, 15).unwrap().biome_id, 5);
+    }
+
+    #[test]
+    fn pocket_core_builder_preserves_missing_biome_tail_without_panicking() {
+        let mut builder = LegacyTerrainBuilder::zeroed_pocket_core();
+        builder.set_block(1, 2, 3, 4, 5).unwrap();
+        builder.set_height(1, 3, 77).unwrap();
+        assert!(!builder.has_biome_samples());
+        assert!(
+            builder
+                .set_biome_sample(
+                    1,
+                    3,
+                    LegacyBiomeSample {
+                        biome_id: 1,
+                        red: 2,
+                        green: 3,
+                        blue: 4,
+                    },
+                )
+                .is_err()
+        );
+        let terrain = builder.build().unwrap();
+        assert_eq!(terrain.raw().len(), POCKET_TERRAIN_VALUE_LEN);
+        assert_eq!(terrain.block_id_at(1, 2, 3), Some(4));
+        assert_eq!(terrain.height_at(1, 3), Some(77));
+        assert!(!terrain.has_biome_samples());
     }
 
     #[test]
