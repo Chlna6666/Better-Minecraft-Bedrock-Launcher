@@ -1,6 +1,7 @@
 //! High-level Minecraft Bedrock world lifecycle and data access.
 
 mod bedrock_world;
+mod biome_upgrade;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
 mod downgrade;
@@ -12,6 +13,7 @@ pub(crate) mod surface;
 mod upgrade;
 
 pub use bedrock_world::*;
+pub use biome_upgrade::BiomeData3dUpgradeReport;
 pub use downgrade::{
     DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan,
 };
