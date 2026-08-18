@@ -586,7 +586,7 @@ mod tests {
     fn blockitem_is_proven_only_when_item_block_name_and_metadata_agree() {
         let item_table = LegacySavedItemIdTable::from_sources(
             r#"{"minecraft:old_item":5}"#,
-            r#"{"minecraft:old_item":"minecraft:old_block"}"#,
+            r#"{"minecraft:new_item":"minecraft:old_block"}"#,
             &[SavedItemUpgradeSource {
                 name: "0001_test.json",
                 json: r#"{"renamedIds":{"minecraft:old_item":"minecraft:new_item"}}"#,
@@ -608,7 +608,7 @@ mod tests {
     fn blockitem_rejects_a_different_historical_block_identity() {
         let item_table = LegacySavedItemIdTable::from_sources(
             r#"{"minecraft:old_item":5}"#,
-            r#"{"minecraft:old_item":"minecraft:old_block"}"#,
+            r#"{"minecraft:new_item":"minecraft:old_block"}"#,
             &[SavedItemUpgradeSource {
                 name: "0001_test.json",
                 json: r#"{"renamedIds":{"minecraft:old_item":"minecraft:new_item"}}"#,
