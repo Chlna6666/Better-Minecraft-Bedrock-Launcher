@@ -2,11 +2,11 @@
 //!
 //! `Entity` and `digp`/`actorprefix` are real Bedrock storage generations. This module preflights
 //! every affected record before producing one batch so callers can switch actor storage atomically.
+//! When both generations already exist for a chunk they must describe the same ordered actors and NBT;
+//! the library never merges two conflicting representations into a third state.
 
 use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag};
-use crate::database::{
-    StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage,
-};
+use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
@@ -17,13 +17,13 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Summary of an atomic whole-world actor storage rewrite.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActorStorageRewriteReport {
-    /// Number of chunk actor records rewritten.
+    /// Number of chunk actor records rewritten or validated for the target representation.
     pub chunks: usize,
     /// Number of actors represented by the rewritten source records.
     pub actors: usize,
     /// `Entity` records written by a modern-to-legacy rewrite.
     pub entity_records_written: usize,
-    /// `Entity` records deleted by a legacy-to-modern rewrite.
+    /// `Entity` records deleted by a legacy-to-modern rewrite or empty modern-to-legacy target.
     pub entity_records_deleted: usize,
     /// `digp` records written by a legacy-to-modern rewrite.
     pub digp_records_written: usize,
@@ -33,7 +33,7 @@ pub struct ActorStorageRewriteReport {
     pub actorprefix_records_written: usize,
     /// Referenced `actorprefix` records removed by a modern-to-legacy rewrite.
     pub actorprefix_records_deleted: usize,
-    /// Existing `actorprefix` records reused because their NBT matched the inline actor exactly.
+    /// Existing target records reused because their bytes matched exactly.
     pub actorprefix_records_reused: usize,
     /// Unreferenced `actorprefix` records retained because no `digp` record proves ownership.
     pub orphan_actorprefix_records_retained: usize,
@@ -41,8 +41,9 @@ pub struct ActorStorageRewriteReport {
 
 /// Preflights every inline `Entity` record and stages one atomic rewrite to `digp`/`actorprefix`.
 ///
-/// Existing modern records are merged only when they refer to the same chunk and contain identical
-/// actor NBT. No storage mutation occurs until the returned batch is committed.
+/// Existing modern records for a source chunk are accepted only when the `digp` UID sequence and every
+/// referenced `actorprefix` NBT exactly match the inline source. Extra actors, reordered actors, or
+/// differing actor NBT abort the entire rewrite before storage mutation.
 pub(crate) fn stage_world_entity_to_digp_actorprefix(
     storage: &dyn WorldStorage,
 ) -> Result<(StorageBatch, ActorStorageRewriteReport)> {
@@ -51,30 +52,15 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
         return Ok((StorageBatch::new(), ActorStorageRewriteReport::default()));
     }
 
-    let mut digest_ids = BTreeMap::<ChunkPos, Vec<ActorUid>>::new();
-    let mut actor_owner = BTreeMap::<ActorUid, ChunkPos>::new();
-    for (pos, raw) in &snapshot.digests {
-        let ids = parse_actor_digest_ids(raw)?;
-        let mut local = BTreeSet::new();
-        for uid in &ids {
-            if !local.insert(*uid) {
-                return Err(BedrockWorldError::CorruptWorld(format!(
-                    "digp for chunk {pos:?} contains duplicate actor storage id {uid:?}"
-                )));
-            }
-            if let Some(previous) = actor_owner.insert(*uid, *pos)
-                && previous != *pos
-            {
-                return Err(BedrockWorldError::CorruptWorld(format!(
-                    "actor storage id {uid:?} is referenced by both {previous:?} and {pos:?}"
-                )));
-            }
-        }
-        digest_ids.insert(*pos, ids);
-    }
+    let modern_owners = validate_digest_ownership(&snapshot.digests)?;
+    let mut batch = StorageBatch::new();
+    let mut report = ActorStorageRewriteReport {
+        chunks: snapshot.entities.len(),
+        entity_records_deleted: snapshot.entities.len(),
+        ..ActorStorageRewriteReport::default()
+    };
+    let mut inline_owner = BTreeMap::<ActorUid, ChunkPos>::new();
 
-    let mut inline_roots = BTreeMap::<ActorUid, NbtTag>::new();
-    let mut actor_count = 0usize;
     for (pos, raw) in &snapshot.entities {
         let roots = parse_consecutive_root_nbt(raw)?;
         if roots.is_empty() {
@@ -82,7 +68,9 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
                 "Entity record for chunk {pos:?} is empty"
             )));
         }
-        let ids = digest_ids.entry(*pos).or_default();
+
+        let mut source_ids = Vec::<ActorUid>::with_capacity(roots.len());
+        let mut source_roots = Vec::<(ActorUid, NbtTag, i64)>::with_capacity(roots.len());
         let mut local = BTreeSet::new();
         for root in roots {
             let unique_id = actor_unique_id(&root).ok_or_else(|| {
@@ -96,80 +84,63 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
                     "Entity record for chunk {pos:?} contains duplicate UniqueID {unique_id}"
                 )));
             }
-            if let Some(previous) = actor_owner.get(&uid).copied()
+            if let Some(previous) = inline_owner.insert(uid, *pos)
                 && previous != *pos
             {
-                return Err(BedrockWorldError::ConcurrentWrite(format!(
-                    "actor UniqueID {unique_id} belongs to {previous:?} and cannot also be written to {pos:?}"
-                )));
-            }
-            actor_owner.insert(uid, *pos);
-            if !ids.contains(&uid) {
-                ids.push(uid);
-            }
-            if inline_roots.insert(uid, root).is_some() {
                 return Err(BedrockWorldError::CorruptWorld(format!(
-                    "actor UniqueID {unique_id} appears in multiple inline Entity records"
+                    "actor UniqueID {unique_id} appears in inline Entity records for both {previous:?} and {pos:?}"
                 )));
             }
-            actor_count = actor_count.saturating_add(1);
-        }
-    }
-
-    let target_uids = inline_roots.keys().copied().collect::<Vec<_>>();
-    let actor_keys = target_uids
-        .iter()
-        .map(|uid| uid.storage_key())
-        .collect::<Vec<_>>();
-    let existing_actor_values = storage.get_many(&actor_keys)?;
-
-    let mut batch = StorageBatch::new();
-    let mut report = ActorStorageRewriteReport {
-        chunks: snapshot.entities.len(),
-        actors: actor_count,
-        entity_records_deleted: snapshot.entities.len(),
-        ..ActorStorageRewriteReport::default()
-    };
-
-    for (uid, existing) in target_uids.iter().copied().zip(existing_actor_values) {
-        let root = inline_roots.get(&uid).ok_or_else(|| {
-            BedrockWorldError::CorruptWorld(format!(
-                "missing preflight inline actor root for storage id {uid:?}"
-            ))
-        })?;
-        if let Some(existing) = existing {
-            let existing_roots = parse_consecutive_root_nbt(&existing)?;
-            if existing_roots.len() != 1 || existing_roots.first() != Some(root) {
+            if let Some(owner) = modern_owners.get(&uid)
+                && *owner != *pos
+            {
                 return Err(BedrockWorldError::ConcurrentWrite(format!(
-                    "actorprefix collision for storage id {uid:?}"
+                    "actor UniqueID {unique_id} is already owned by modern digest {owner:?}, not source chunk {pos:?}"
                 )));
             }
-            report.actorprefix_records_reused =
-                report.actorprefix_records_reused.saturating_add(1);
-        } else {
-            batch.put(uid.storage_key(), Bytes::from(serialize_root_nbt(root)?));
-            report.actorprefix_records_written =
-                report.actorprefix_records_written.saturating_add(1);
+            source_ids.push(uid);
+            source_roots.push((uid, root, unique_id));
         }
-    }
+        report.actors = report.actors.saturating_add(source_ids.len());
 
-    for pos in snapshot.entities.keys().copied() {
-        let ids = digest_ids.get(&pos).ok_or_else(|| {
-            BedrockWorldError::CorruptWorld(format!(
-                "missing staged digp actor list for chunk {pos:?}"
-            ))
-        })?;
-        if ids.is_empty() {
-            return Err(BedrockWorldError::CorruptWorld(format!(
-                "staged digp for chunk {pos:?} would be empty"
-            )));
-        }
-        let encoded = encode_actor_digest_ids(ids);
-        if snapshot.digests.get(&pos) != Some(&encoded) {
-            batch.put(ActorDigestKey::new(pos).storage_key(), encoded);
+        if let Some(existing_digest) = snapshot.digests.get(pos) {
+            let existing_ids = parse_actor_digest_ids(existing_digest)?;
+            if existing_ids != source_ids {
+                return Err(BedrockWorldError::ConcurrentWrite(format!(
+                    "mixed actor storage for chunk {pos:?} disagrees: Entity UniqueID order does not exactly match existing digp"
+                )));
+            }
+        } else {
+            batch.put(
+                ActorDigestKey::new(*pos).storage_key(),
+                encode_actor_digest_ids(&source_ids),
+            );
             report.digp_records_written = report.digp_records_written.saturating_add(1);
         }
-        batch.delete(ChunkKey::new(pos, ChunkRecordTag::Entity).encode());
+
+        let actor_keys = source_ids
+            .iter()
+            .map(|uid| uid.storage_key())
+            .collect::<Vec<_>>();
+        let existing_values = storage.get_many(&actor_keys)?;
+        for ((uid, root, unique_id), existing) in source_roots.into_iter().zip(existing_values) {
+            let encoded = Bytes::from(serialize_root_nbt(&root)?);
+            if let Some(existing) = existing {
+                if existing != encoded {
+                    return Err(BedrockWorldError::ConcurrentWrite(format!(
+                        "actorprefix collision for UniqueID {unique_id} ({uid:?})"
+                    )));
+                }
+                report.actorprefix_records_reused =
+                    report.actorprefix_records_reused.saturating_add(1);
+            } else {
+                batch.put(uid.storage_key(), encoded);
+                report.actorprefix_records_written =
+                    report.actorprefix_records_written.saturating_add(1);
+            }
+        }
+
+        batch.delete(ChunkKey::new(*pos, ChunkRecordTag::Entity).encode());
     }
 
     Ok((batch, report))
@@ -177,9 +148,10 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
 
 /// Preflights every `digp` record and stages one atomic rewrite to chunk-scoped `Entity` records.
 ///
-/// Every referenced `actorprefix` is deleted only because every `digp` record is converted in the
-/// same batch. Unreferenced `actorprefix` records are retained and reported rather than guessed to be
-/// safe to delete.
+/// If an inline `Entity` already exists for a digest chunk, its complete consecutive-root byte stream
+/// must already equal the stream derived from the digest in digest order. Existing extra inline actors
+/// are not merged. Every referenced `actorprefix` is deleted only because every `digp` record is
+/// converted in the same batch; unreferenced `actorprefix` records are retained.
 pub(crate) fn stage_world_digp_actorprefix_to_entity(
     storage: &dyn WorldStorage,
 ) -> Result<(StorageBatch, ActorStorageRewriteReport)> {
@@ -188,41 +160,15 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
         return Ok((StorageBatch::new(), ActorStorageRewriteReport::default()));
     }
 
-    let mut digest_ids = BTreeMap::<ChunkPos, Vec<ActorUid>>::new();
-    let mut actor_owner = BTreeMap::<ActorUid, ChunkPos>::new();
-    let mut referenced = Vec::<ActorUid>::new();
-    for (pos, raw) in &snapshot.digests {
-        let ids = parse_actor_digest_ids(raw)?;
-        if ids.is_empty() {
-            return Err(BedrockWorldError::CorruptWorld(format!(
-                "digp for chunk {pos:?} is empty"
-            )));
-        }
-        let mut local = BTreeSet::new();
-        for uid in &ids {
-            if !local.insert(*uid) {
-                return Err(BedrockWorldError::CorruptWorld(format!(
-                    "digp for chunk {pos:?} contains duplicate actor storage id {uid:?}"
-                )));
-            }
-            if let Some(previous) = actor_owner.insert(*uid, *pos)
-                && previous != *pos
-            {
-                return Err(BedrockWorldError::CorruptWorld(format!(
-                    "actor storage id {uid:?} is referenced by both {previous:?} and {pos:?}"
-                )));
-            }
-            referenced.push(*uid);
-        }
-        digest_ids.insert(*pos, ids);
-    }
-
+    let actor_owner = validate_digest_ownership(&snapshot.digests)?;
+    let referenced = actor_owner.keys().copied().collect::<Vec<_>>();
     let actor_keys = referenced
         .iter()
         .map(|uid| uid.storage_key())
         .collect::<Vec<_>>();
     let actor_values = storage.get_many(&actor_keys)?;
-    let mut actor_roots = BTreeMap::<ActorUid, NbtTag>::new();
+    let mut actor_bytes = BTreeMap::<ActorUid, Bytes>::new();
+
     for (uid, value) in referenced.iter().copied().zip(actor_values) {
         let value = value.ok_or_else(|| {
             BedrockWorldError::CorruptWorld(format!(
@@ -236,12 +182,12 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
                 roots.len()
             )));
         }
-        let root = roots.into_iter().next().ok_or_else(|| {
+        let root = roots.first().ok_or_else(|| {
             BedrockWorldError::CorruptWorld(format!(
                 "actorprefix {uid:?} unexpectedly contains no NBT root"
             ))
         })?;
-        let unique_id = actor_unique_id(&root).ok_or_else(|| {
+        let unique_id = actor_unique_id(root).ok_or_else(|| {
             BedrockWorldError::CorruptWorld(format!(
                 "actorprefix {uid:?} has no integer UniqueID"
             ))
@@ -251,7 +197,7 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
                 "actorprefix {uid:?} does not match NBT UniqueID {unique_id}"
             )));
         }
-        actor_roots.insert(uid, root);
+        actor_bytes.insert(uid, value);
     }
 
     let mut batch = StorageBatch::new();
@@ -266,58 +212,45 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
         ..ActorStorageRewriteReport::default()
     };
 
-    for (pos, ids) in digest_ids {
-        let existing_raw = snapshot.entities.get(&pos);
-        let mut roots = if let Some(raw) = existing_raw {
-            parse_consecutive_root_nbt(raw)?
-        } else {
-            Vec::new()
-        };
-        let mut existing_by_unique_id = BTreeMap::<i64, NbtTag>::new();
-        for root in &roots {
-            if let Some(unique_id) = actor_unique_id(root)
-                && existing_by_unique_id.insert(unique_id, root.clone()).is_some()
-            {
-                return Err(BedrockWorldError::CorruptWorld(format!(
-                    "Entity record for chunk {pos:?} contains duplicate UniqueID {unique_id}"
+    for (pos, raw_digest) in &snapshot.digests {
+        let ids = parse_actor_digest_ids(raw_digest)?;
+        let mut encoded = Vec::new();
+        for uid in &ids {
+            let actor = actor_bytes.get(uid).ok_or_else(|| {
+                BedrockWorldError::CorruptWorld(format!(
+                    "missing preflight actorprefix bytes for storage id {uid:?}"
+                ))
+            })?;
+            encoded.extend_from_slice(actor);
+        }
+        let target = Bytes::from(encoded);
+        let entity_key = ChunkKey::new(*pos, ChunkRecordTag::Entity).encode();
+
+        match (target.is_empty(), snapshot.entities.get(pos)) {
+            (true, Some(existing)) if !existing.is_empty() => {
+                return Err(BedrockWorldError::ConcurrentWrite(format!(
+                    "empty digp for chunk {pos:?} conflicts with an existing non-empty Entity record"
                 )));
             }
-        }
-
-        for uid in ids {
-            let root = actor_roots.get(&uid).ok_or_else(|| {
-                BedrockWorldError::CorruptWorld(format!(
-                    "missing preflight actor root for storage id {uid:?}"
-                ))
-            })?;
-            let unique_id = actor_unique_id(root).ok_or_else(|| {
-                BedrockWorldError::CorruptWorld(format!(
-                    "preflight actor root for storage id {uid:?} lost its UniqueID"
-                ))
-            })?;
-            if let Some(existing) = existing_by_unique_id.get(&unique_id) {
-                if existing != root {
-                    return Err(BedrockWorldError::ConcurrentWrite(format!(
-                        "Entity actor UniqueID {unique_id} differs from actorprefix {uid:?}"
-                    )));
-                }
-                continue;
+            (true, Some(_)) => {
+                batch.delete(entity_key);
+                report.entity_records_deleted = report.entity_records_deleted.saturating_add(1);
             }
-            existing_by_unique_id.insert(unique_id, root.clone());
-            roots.push(root.clone());
+            (true, None) => {}
+            (false, Some(existing)) if existing != &target => {
+                return Err(BedrockWorldError::ConcurrentWrite(format!(
+                    "mixed actor storage for chunk {pos:?} disagrees: existing Entity bytes do not exactly match digp/actorprefix"
+                )));
+            }
+            (false, Some(_)) => {}
+            (false, None) => {
+                batch.put(entity_key, target);
+                report.entity_records_written = report.entity_records_written.saturating_add(1);
+            }
         }
-
-        let mut encoded = Vec::new();
-        for root in roots {
-            encoded.extend(serialize_root_nbt(&root)?);
-        }
-        let encoded = Bytes::from(encoded);
-        if existing_raw != Some(&encoded) {
-            batch.put(ChunkKey::new(pos, ChunkRecordTag::Entity).encode(), encoded);
-            report.entity_records_written = report.entity_records_written.saturating_add(1);
-        }
-        batch.delete(ActorDigestKey::new(pos).storage_key());
+        batch.delete(ActorDigestKey::new(*pos).storage_key());
     }
+
     for uid in referenced {
         batch.delete(uid.storage_key());
     }
@@ -337,10 +270,19 @@ fn scan_actor_storage(storage: &dyn WorldStorage) -> Result<ActorStorageSnapshot
     storage.for_each_entry(StorageReadOptions::default(), &mut |raw_key, value| {
         match BedrockDbKey::decode(raw_key) {
             BedrockDbKey::Chunk(key) if key.tag == ChunkRecordTag::Entity => {
-                snapshot.entities.insert(key.pos, value.clone());
+                if snapshot.entities.insert(key.pos, value.clone()).is_some() {
+                    return Err(BedrockWorldError::CorruptWorld(format!(
+                        "multiple visible Entity records decode to chunk {:?}",
+                        key.pos
+                    )));
+                }
             }
             BedrockDbKey::ActorDigest { pos } => {
-                snapshot.digests.insert(pos, value.clone());
+                if snapshot.digests.insert(pos, value.clone()).is_some() {
+                    return Err(BedrockWorldError::CorruptWorld(format!(
+                        "multiple visible digp records decode to chunk {pos:?}"
+                    )));
+                }
             }
             BedrockDbKey::ActorPrefix { .. } => {
                 snapshot.actorprefix_records = snapshot.actorprefix_records.saturating_add(1);
@@ -350,6 +292,31 @@ fn scan_actor_storage(storage: &dyn WorldStorage) -> Result<ActorStorageSnapshot
         Ok(StorageVisitorControl::Continue)
     })?;
     Ok(snapshot)
+}
+
+fn validate_digest_ownership(
+    digests: &BTreeMap<ChunkPos, Bytes>,
+) -> Result<BTreeMap<ActorUid, ChunkPos>> {
+    let mut actor_owner = BTreeMap::<ActorUid, ChunkPos>::new();
+    for (pos, raw) in digests {
+        let ids = parse_actor_digest_ids(raw)?;
+        let mut local = BTreeSet::new();
+        for uid in ids {
+            if !local.insert(uid) {
+                return Err(BedrockWorldError::CorruptWorld(format!(
+                    "digp for chunk {pos:?} contains duplicate actor storage id {uid:?}"
+                )));
+            }
+            if let Some(previous) = actor_owner.insert(uid, *pos)
+                && previous != *pos
+            {
+                return Err(BedrockWorldError::CorruptWorld(format!(
+                    "actor storage id {uid:?} is referenced by both {previous:?} and {pos:?}"
+                )));
+            }
+        }
+    }
+    Ok(actor_owner)
 }
 
 fn actor_unique_id(root: &NbtTag) -> Option<i64> {
@@ -388,14 +355,18 @@ mod tests {
         Bytes::from(bytes)
     }
 
+    fn overworld(x: i32, z: i32) -> ChunkPos {
+        ChunkPos {
+            x,
+            z,
+            dimension: Dimension::Overworld,
+        }
+    }
+
     #[test]
     fn world_entity_to_digp_is_preflighted_before_one_batch() {
         let storage = MemoryStorage::new();
-        let pos = ChunkPos {
-            x: 4,
-            z: -2,
-            dimension: Dimension::Overworld,
-        };
+        let pos = overworld(4, -2);
         storage
             .put(
                 &ChunkKey::new(pos, ChunkRecordTag::Entity).encode(),
@@ -432,18 +403,37 @@ mod tests {
     }
 
     #[test]
+    fn mixed_entity_and_digest_must_match_exactly() {
+        let storage = MemoryStorage::new();
+        let pos = overworld(0, 0);
+        let uid = ActorUid::from_unique_id(1);
+        storage
+            .put(
+                &ChunkKey::new(pos, ChunkRecordTag::Entity).encode(),
+                &entity_bytes(&[actor(1, "minecraft:pig")]),
+            )
+            .unwrap();
+        storage
+            .put(
+                &ActorDigestKey::new(pos).storage_key(),
+                &encode_actor_digest_ids(&[uid, ActorUid::from_unique_id(2)]),
+            )
+            .unwrap();
+
+        assert!(stage_world_entity_to_digp_actorprefix(&storage).is_err());
+        assert!(
+            storage
+                .get(&ChunkKey::new(pos, ChunkRecordTag::Entity).encode())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn duplicate_inline_unique_id_fails_without_mutation() {
         let storage = MemoryStorage::new();
-        let first = ChunkPos {
-            x: 0,
-            z: 0,
-            dimension: Dimension::Overworld,
-        };
-        let second = ChunkPos {
-            x: 1,
-            z: 0,
-            dimension: Dimension::Overworld,
-        };
+        let first = overworld(0, 0);
+        let second = overworld(1, 0);
         for pos in [first, second] {
             storage
                 .put(
@@ -497,13 +487,6 @@ mod tests {
         let (batch, report) =
             stage_world_digp_actorprefix_to_entity(&storage).expect("stage downgrade");
         assert_eq!(report.orphan_actorprefix_records_retained, 1);
-        assert!(
-            storage
-                .get(&ChunkKey::new(pos, ChunkRecordTag::Entity).encode())
-                .expect("read before commit")
-                .is_none()
-        );
-
         storage.write_batch(&batch).expect("commit downgrade");
         assert!(
             storage
@@ -522,6 +505,40 @@ mod tests {
             storage
                 .get(&orphan.storage_key())
                 .expect("read orphan actorprefix")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn mixed_modern_and_entity_target_must_match_exact_bytes() {
+        let storage = MemoryStorage::new();
+        let pos = overworld(2, 3);
+        let uid = ActorUid::from_unique_id(5);
+        storage
+            .put(
+                &ActorDigestKey::new(pos).storage_key(),
+                &encode_actor_digest_ids(&[uid]),
+            )
+            .unwrap();
+        storage
+            .put(&uid.storage_key(), &entity_bytes(&[actor(5, "minecraft:pig")]))
+            .unwrap();
+        storage
+            .put(
+                &ChunkKey::new(pos, ChunkRecordTag::Entity).encode(),
+                &entity_bytes(&[
+                    actor(5, "minecraft:pig"),
+                    actor(6, "minecraft:cow"),
+                ]),
+            )
+            .unwrap();
+
+        assert!(stage_world_digp_actorprefix_to_entity(&storage).is_err());
+        assert!(storage.get(&uid.storage_key()).unwrap().is_some());
+        assert!(
+            storage
+                .get(&ActorDigestKey::new(pos).storage_key())
+                .unwrap()
                 .is_some()
         );
     }
