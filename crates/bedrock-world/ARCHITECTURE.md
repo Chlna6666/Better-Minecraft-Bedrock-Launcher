@@ -1,8 +1,8 @@
 # bedrock-world 架构边界
 
-`bedrock-world` 是 Minecraft Bedrock 世界文件读写库。它直接面向 Bedrock 实际存在的数据：`level.dat`、LevelDB 世界记录、`LegacyTerrain`、SubChunk、Data2D/Data3D、`Entity`、`digp`、`actorprefix`、Player、BlockEntity、SavedItem、Map、Village 与 `.mcstructure`。
+`bedrock-world` 是 Minecraft Bedrock 世界文件读写库。它面向游戏真实持久化数据：`level.dat`、Mojang LevelDB、pre-LevelDB Pocket `chunks.dat` / `entities.dat`、`LegacyTerrain`、SubChunk、Data2D/Data3D、Actor、Player、BlockEntity、SavedItem、Map、Village 与 `.mcstructure`。
 
-它不是“世界升级器”。普通读取、编辑和写回与版本升级/降级完全分离。
+核心原则是：**读取保存事实，普通编辑保持原表示，跨版本写出必须选择具体数据目标并完成可表达性证明。**
 
 ## 与 bedrock-leveldb 的边界
 
@@ -12,51 +12,63 @@ Minecraft Bedrock world folder
         ├─ level.dat
         ├─ db/
         │    └─ Mojang LevelDB
-        └─ historical chunks.dat
+        ├─ historical chunks.dat
+        └─ historical entities.dat
                  │
                  ▼
           bedrock-world
                  │
                  └─ Bedrock world semantics
 
-bedrock-leveldb 只负责 Mojang 修改版 LevelDB 的数据库机制。
+bedrock-leveldb
+        └─ WAL / SST / MANIFEST / checksum / compression / cache / compaction
 ```
 
-`bedrock-world` 可以理解 Chunk key、Dimension、SubChunk、BlockState、Actor、Player、Biome 等 Minecraft 语义；`bedrock-leveldb` 不应包含这些 Minecraft 规则。
+`bedrock-leveldb` 不理解 Chunk key、Dimension、NBT、BlockState、Actor 或 Player。`bedrock-world` 不应重新实现数据库引擎机制。
 
-## 开发者入口
+正式 Bedrock LevelDB 写出默认使用 compression id `4` 的 raw DEFLATE；id `2` 的 zlib framing 仍作为显式兼容策略保留。
 
-只知道地图文件夹路径时，优先使用：
+## 世界打开与版本证据
+
+只知道地图目录时优先：
 
 ```rust
 let world = bedrock_world::BedrockWorld::open_auto_blocking("world")?;
 let versions = world.versions_blocking()?;
 ```
 
-`open_auto_blocking()` 自动识别当前目录使用的世界数据：
+`open_auto_blocking()` 区分：
 
-- Bedrock LevelDB；
-- 包含 `LegacyTerrain` 的旧 LevelDB 世界；
-- pre-LevelDB Pocket Edition `chunks.dat`。
+- 标准 Bedrock LevelDB；
+- 含 `LegacyTerrain` 的旧 LevelDB；
+- pre-LevelDB Pocket `chunks.dat`，并由 world 层叠加 `entities.dat`。
 
-`versions_blocking()` 从实际文件和数据库记录收集版本证据，不把整个世界强行归纳成一个假的单一版本。它包含：
+Pocket terrain 有两个必须区分的真实长度：
+
+```text
+82,176 bytes  pre-LevelDB Pocket terrain core，没有 biome/RGB tail
+83,200 bytes  LevelDB LegacyTerrain，包含 1,024-byte biome/RGB tail
+```
+
+库不得把 82,176 bytes 补默认 biome 后伪装成 83,200 bytes。缺失字段必须继续表现为缺失。
+
+`versions_blocking()` 收集实际证据，而不是把 mixed-version 世界强行归纳成一个内部 schema：
 
 - `level.dat` header version；
 - `StorageVersion`；
 - `lastOpenedWithVersion`；
 - `MinimumCompatibleClientVersion`；
 - `InventoryVersion`；
-- SubChunk V0-V9/未知版本的实际记录数量；
+- SubChunk V0-V9/未知版本数量；
 - `LegacyTerrain`；
+- `BlockExtraData`；
 - `Data2D` / `Data2DLegacy` / `Data3D`；
 - chunk `Entity`；
 - `digp` / `actorprefix`。
 
-因此 mixed-version 世界是正常输入，不是异常状态。
-
 ## 普通读写
 
-普通 API 的职责只有：
+普通读写只做：
 
 ```text
 识别实际 Bedrock 数据
@@ -65,136 +77,44 @@ let versions = world.versions_blocking()?;
         ↓
 调用者读取/编辑
         ↓
-按该数据本身能够表达的形式写回
+按同一物理记录和同一持久化表示写回
 ```
 
-普通读写不得隐式执行：
+不得隐式执行：
 
 - SubChunk V0-V7 → V8/V9；
 - `LegacyTerrain` → SubChunk；
 - Data2D → Data3D；
 - `Entity` → `digp`/`actorprefix`；
 - numeric SavedItem → named SavedItem；
-- BlockState 版本更新；
+- BlockState schema 更新；
 - Player 历史字段归一化；
+- `level.dat.Player` ↔ `~local_player` 物理迁移；
 - `level.dat` 游戏版本号更新。
 
-如果某个特定编辑 API 只实现 V8/V9，它应明确拒绝其他 SubChunk，而不是调用升级流程。
+未修改的 Player、未知 NBT、未来记录应优先 byte-exact 保留。
 
-## 升级与降级
+## 跨版本操作：具体数据目标，不使用通用 Plan
 
-升级和降级是两套独立操作。
+库不再提供 `UpgradePlan` / `DowngradePlan` 一类泛化世界计划。原因是不同 Bedrock 数据对象的版本边界并不一致，把它们抽象成一个统一 action 列表容易把“局部转换”误当成“完整世界版本转换”。
 
-```rust
-let upgrade = world.upgrade_plan_blocking(target_version)?;
-let downgrade = world.downgrade_plan_blocking(target_version)?;
-```
+现在的设计是每个真实数据对象自行定义严格的 preflight 和 write：
 
-### upgrade
+### SubChunk
 
-升级按目标 Bedrock 版本检查可能需要的实际数据变化，例如：
+- `upgrade_subchunks_blocking(target_game_version, upgrade_data, target_palette)`：目标游戏版本明确，BlockState 升级数据与目标 vanilla palette 必须匹配。
+- `write_subchunks_as_legacy_numeric_blocking(target_subchunk_version, numeric_table)`：目标固定数组 SubChunk version 明确，并要求经过正向验证的历史 numeric ID/meta 表。
+- 未知 SubChunk version、无 version byte、实验期无法唯一确定目标表示时直接拒绝。
 
-- `LegacyTerrain` → 新地形记录；
-- SubChunk → 目标 SubChunk version；
-- Data2D/Data2DLegacy → Data3D；
-- `Entity` → `digp` + `actorprefix`；
-- historical SavedItem / BlockState；
-- 最后更新 `level.dat` 中对应的版本数据。
+### Biome
 
-### downgrade
+- `Data2D/Data2DLegacy → Data3D` 必须显式传入目标 `ChunkVersion::Old/New`，不能默认假设 Caves & Cliffs 后高度。
+- `Data2DLegacy` 的 saved RGB 若要进入无 RGB 字段的 Data3D，必须显式确认损失。
+- `Data3D → Data2D` 只有在每个 `(x,z)` 列所有垂直 biome 完全一致且 id 可表示时才允许；否则拒绝，不做有损折叠。
 
-降级不允许“把升级逻辑倒着执行”。它独立检查旧版本能否表达当前数据，例如：
+### Actor
 
-- V9/V8 → 更早 SubChunk；
-- SubChunk → `LegacyTerrain`；
-- Data3D → Data2D；
-- `digp` + `actorprefix` → chunk `Entity`；
-- named/BlockState SavedItem → historical item representation；
-- 目标版本 block palette / numeric ID+meta 是否存在。
-
-`DowngradePlan` 必须单独报告潜在数据损失，例如 3D biome 降到 2D、目标版本不存在的 BlockState、需要 historical numeric ID/meta 等。
-
-任何实际升级/降级执行都必须先完成完整计划和目标数据验证；不能半途修改世界后才发现目标不可表达。
-
-## Chunk 与 SubChunk
-
-SubChunk 使用实际持久化 version byte：
-
-```text
-V0
-V1
-V2
-V3
-V4
-V5
-V6
-V7
-V8
-V9
-Unknown(u8)
-```
-
-读取自动从 payload 识别版本。
-
-同版本普通写回应尽量保持原表示。调用者明确选择另一个版本时，才进入对应的升级或降级操作。
-
-未知 V10+ 等未来版本：
-
-```text
-读取 version byte
-        ↓
-保留 raw payload
-        ↓
-标记 UnsupportedFuture
-        ↓
-禁止不了解该数据的结构化重写
-```
-
-不能把未知版本当成 V9，也不能只改 version byte。
-
-## BlockState 与 SavedItem
-
-BlockState 的 `version` 是 Bedrock 实际保存的数据版本，不是库内部版本号。
-
-SavedItem 不拥有一个可通用于所有历史时期的单一 Mojang item version，因此版本识别依赖实际保存形态和世界版本证据：
-
-- numeric `id` + meta；
-- string identifier；
-- persisted `Block` BlockState；
-- mixed representation。
-
-普通 Item/Player 读取不得自动更新这些表示。
-
-升级使用权威历史规则正向处理；降级必须有目标版本可表达性和反向映射数据，不能根据正向规则猜逆映射。
-
-## Player
-
-Player 直接对应实际存储来源：
-
-- `level.dat.Player`；
-- `~local_player`；
-- `player_<id>`。
-
-Player 数据按真实 NBT 字段提供访问，例如：
-
-- `Pos` / `Motion` / `Rotation` / `DimensionId`；
-- Spawn fields；
-- `Inventory` / `EnderChestInventory`；
-- `Armor` 和 Inventory slots `100..=103`；
-- `Offhand` / `OffHandItem`；
-- `abilities`；
-- `Attributes`；
-- `ActiveEffects`；
-- `PlayerLevel` / `PlayerLevelProgress`；
-- `PlayerGameMode`。
-
-如果同一玩家同时存在多种历史表示，应把它们分别暴露给调用者，不要在读取阶段偷偷选择一个作为“现代真值”。
-
-未修改 Player 应尽量原 bytes 写回，以保留未知字段和未来数据。
-
-## Actor
-
-Actor 的实际持久化形式包括：
+真实表示只有：
 
 ```text
 chunk Entity
@@ -204,69 +124,65 @@ chunk Entity
 
 ```text
 digp<ChunkKey>
-    ↓ ActorUniqueID
-actorprefix<ActorUniqueID>
+    ↓ Actor storage id
+actorprefix<Actor storage id>
 ```
 
-两种形式都属于 Bedrock 历史数据。普通读取可以识别 mixed actor storage；只有显式 upgrade/downgrade 才改变其存储形式。
+转换必须精确保持 actor 顺序和 NBT。若 mixed storage 同时存在，两套表示必须完全一致；禁止把两边额外 actor 合并成第三份状态。
 
-## Biome
+### Player / SavedItem
 
-支持的实际 Bedrock 数据包括：
+Player 物理记录保持区分：
 
-- `Data2D`；
-- `Data2DLegacy`；
-- `Data3D`；
-- `LegacyTerrain` 内历史 biome sample。
+- `level.dat.Player`；
+- `~local_player`；
+- 原始 `player_<suffix>` key，suffix 不假设为 XUID，也不要求 UTF-8。
 
-Data2D 和 Data3D 之间的变化属于明确的升级/降级，不是普通 biome write 的默认行为。
+SavedItem 的实际持久化代际：
 
-## 源码组织原则
+- Classic：MCPE <= 1.5 numeric `TAG_Short id` + `Damage`；
+- Medieval：MCPE 1.6-1.8 string name + metadata；
+- Modern：MCPE 1.9+ string name，并可包含 persisted `Block` BlockState。
 
-目录和文件名优先使用 Minecraft Bedrock 实际概念，不创建含义过宽的总桶。
+world scope 只提供 representability/preflight。不能只把 Player inventory 降级后原地写回仍标记为新版本的源世界。实际转换发生在 owned `PlayerData` / item 对象上，再交给完整具体目标版本 writer/export。
 
-当前主要结构：
+已确认的 MCPE 0.6.1 Player writer 是这种“具体目标写出”的例子。
+
+### BlockEntity
+
+BlockEntity 没有一个所有实体统一共享的 schema version。公共接口提供 `BlockEntityRewriter`，调用者用明确版本证据实现具体规则；没有 target 绑定的内置便利转换不作为公共兼容接口。
+
+## SubChunk
+
+读取以真实 payload version byte 为准：
 
 ```text
-src/
-├─ bedrock_world.rs
-├─ world/
-│  ├─ bedrock_world.rs
-│  ├─ level_dat.rs
-│  ├─ upgrade.rs
-│  ├─ downgrade.rs
-│  ├─ discover.rs
-│  └─ pocket_chunks_dat.rs
-├─ chunk/
-│  ├─ subchunk.rs
-│  ├─ version.rs
-│  └─ ...
-├─ block/
-├─ biome/
-├─ entity/
-├─ player/
-│  ├─ data.rs
-│  ├─ inventory.rs
-│  ├─ equipment.rs
-│  ├─ abilities.rs
-│  ├─ attributes.rs
-│  ├─ effects.rs
-│  ├─ position.rs
-│  ├─ spawn.rs
-│  ├─ experience.rs
-│  └─ game_mode.rs
-├─ item/
-├─ level/
-├─ map/
-├─ database/
-└─ ...
+V0 V1 V2 V3 V4 V5 V6 V7 V8 V9 Unknown(u8)
 ```
 
-`world/bedrock_world.rs` 目前仍包含较多方法；应继续按实际 Bedrock 数据拆到 `world/chunk.rs`、`world/player.rs`、`world/actor.rs`、`world/map.rs`、`world/village.rs` 等，而不是再创建 `access`、`manager`、`service` 一类总桶。
+未来版本处理：
 
-## 完整性判断
+```text
+读取 version byte
+        ↓
+保留 raw payload
+        ↓
+标记 UnsupportedFuture
+        ↓
+禁止不了解该表示的结构化重写
+```
 
-兼容性只回答“当前保存的数据能否安全读取/按其自身表示写回”，不回答“是否应该升级”。
+绝不能把未知版本当 V9，也不能只改 version byte。
+
+## BlockState 与历史 numeric 映射
+
+BlockState 的 `version` 是游戏真实保存的数据版本，不是库内部 schema id。
+
+升级必须使用权威历史规则正向处理；反向写历史 numeric ID/meta 必须通过“候选历史值 → 正向升级 → 与当前 semantic BlockState 精确相等”的方式证明，不能把正向 rename 表直接反转后猜结果。
+
+## 完整性与兼容性
+
+兼容性回答“当前保存的数据能否安全读取/按自身表示写回”，不回答“是否应该升级”：
 
 ```text
 Exact
@@ -275,38 +191,91 @@ UnsupportedFuture
 Corrupt
 ```
 
-其中：
+whole-world compatibility scan 还会报告：
 
-- 已实现读写的历史格式可以是 `Exact`；
-- `ReadCompatible` 表示可以安全读取，但写入需要保留 raw；
-- `UnsupportedFuture` 表示遇到库未知的新格式；
-- `Corrupt` 表示数据本身损坏或内部矛盾。
+- malformed / duplicate `digp`；
+- dangling actor reference；
+- orphan `actorprefix`；
+- 同一 actor id 被多个 chunk 引用；
+- Pocket 82,176-byte terrain core 与完整 83,200-byte `LegacyTerrain` 数量；
+- malformed terrain length；
+- unknown storage keys / unknown chunk records；
+- 实际 SubChunk version 分布。
 
-不存在 `MigrationRequired` 这种普通兼容性状态。
+结构性 actor 引用错误和非法 terrain 长度属于 `Corrupt`；孤儿 actor payload、Pocket 缺 biome tail 等可读取但不能假装完整写回的数据属于 `ReadCompatible`。
+
+## 原子性
+
+所有跨记录写操作先完成完整 preflight，再构造一个原子 batch/transaction：
+
+- Actor `digp` + `actorprefix`；
+- `entities.dat` 导入；
+- SubChunk 多记录升级；
+- biome 整世界转换；
+- chunk 删除及其 actor references。
+
+禁止“按 N 个 batch 分批提交，再假设后续不会失败”的伪事务语义。
+
+跨 `level.dat` 与 LevelDB 的真正单文件系统事务不可实现；因此这类跨容器操作不能伪装成原子世界转换。
+
+## 源码组织
+
+目录按 Minecraft Bedrock 实际概念拆分，不建立 `manager/service/migration-all` 之类总桶：
+
+```text
+src/
+├─ bedrock_world.rs
+├─ database/
+│  ├─ storage_v2.rs
+│  └─ pocket_chunks.rs
+├─ world/
+│  ├─ bedrock_world.rs
+│  ├─ level_dat.rs
+│  ├─ legacy_terrain.rs
+│  ├─ biome_upgrade.rs
+│  ├─ biome_downgrade.rs
+│  ├─ subchunk_upgrade.rs
+│  ├─ subchunk_numeric.rs
+│  ├─ pocket_chunks_dat.rs
+│  ├─ pocket_entities_dat.rs
+│  └─ pocket_world_storage.rs
+├─ chunk/
+├─ block/
+├─ biome/
+├─ entity/
+├─ player/
+├─ item/
+├─ integrity/
+├─ level/
+├─ map/
+└─ query/
+```
 
 ## 数据保留原则
 
 不能为了“能保存”而：
 
-- 把历史 SubChunk version 直接改成当前 version；
+- 给 Pocket terrain 编造 biome/RGB；
+- 把未知 SubChunk version 直接改成当前 version；
 - 对未知 block metadata 回退到 0；
 - 删除不认识的 NBT 字段；
-- 覆盖已有 `FinalizedState`；
-- 替换已有 `RandomSeed`；
+- 把两个 mixed actor 表示合并成新状态；
 - 将未知未来记录重新编码成已知格式；
-- 在降级时静默丢弃目标版本无法表达的数据。
+- 在降级时静默丢弃目标版本无法表达的数据；
+- 只转换某个 Player/Item/Chunk 子系统后宣称整个世界已降到目标游戏版本。
 
 ## 性能原则
 
 `bedrock-world` 不应抵消 `bedrock-leveldb` 的性能优势：
 
-- 地图目录只解析需要的文件；
-- key scan 尽量一次完成并复用结果；
+- key scan 尽量一次完成并复用；
 - `get_many` / exact-get 批处理；
 - raw record 能不复制就不复制；
 - packed palette indices 延迟展开；
-- surface query 不为每个 SubChunk 无条件分配 4096 个索引；
+- surface query 不为每个 SubChunk 无条件展开 4096 indices；
 - worker-local reduction，避免共享热锁；
 - bounded pipeline，避免大世界扫描无界排队；
-- 编辑按 Chunk 聚合再提交；
-- 未修改记录尽量 byte-exact 保留。
+- 编辑按 Chunk 聚合后原子提交；
+- 未修改记录 byte-exact 保留；
+- LevelDB block cache 分离 data/index/file 容量；
+- native table 写出使用 Bedrock raw-DEFLATE 路径。
