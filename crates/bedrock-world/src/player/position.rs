@@ -12,9 +12,11 @@ impl PlayerData {
         read_numeric_list3(self.root()?, "Pos")
     }
 
-    /// Sets the player `Pos` list.
+    /// Sets the player `Pos` list while retaining the existing homogeneous numeric NBT type.
     ///
-    /// Existing all-double lists remain doubles; otherwise Bedrock float elements are written.
+    /// A missing field uses Bedrock Float elements. Existing Byte/Short/Int/Long/Float/Double lists
+    /// keep that exact element type; values that cannot be represented in the persisted type are
+    /// rejected instead of silently changing the player's historical representation.
     pub fn set_position(&mut self, position: [f64; 3]) -> Result<()> {
         set_numeric_list3(self, "Pos", position)
     }
@@ -24,7 +26,7 @@ impl PlayerData {
         read_numeric_list3(self.root()?, "Motion")
     }
 
-    /// Sets the player `Motion` list.
+    /// Sets the player `Motion` list while retaining its existing numeric NBT type.
     pub fn set_motion(&mut self, motion: [f64; 3]) -> Result<()> {
         set_numeric_list3(self, "Motion", motion)
     }
@@ -34,7 +36,7 @@ impl PlayerData {
         read_numeric_list2(self.root()?, "Rotation")
     }
 
-    /// Sets the player `Rotation` list.
+    /// Sets the player `Rotation` list while retaining its existing numeric NBT type.
     pub fn set_rotation(&mut self, rotation: [f64; 2]) -> Result<()> {
         set_numeric_list2(self, "Rotation", rotation)
     }
@@ -124,17 +126,39 @@ fn numeric_component(tag: &NbtTag, field: &str, index: usize) -> Result<f64> {
     Ok(value)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumericListType {
+    Byte,
+    Short,
+    Int,
+    Long,
+    Float,
+    Double,
+}
+
+impl NumericListType {
+    fn of(tag: &NbtTag) -> Option<Self> {
+        match tag {
+            NbtTag::Byte(_) => Some(Self::Byte),
+            NbtTag::Short(_) => Some(Self::Short),
+            NbtTag::Int(_) => Some(Self::Int),
+            NbtTag::Long(_) => Some(Self::Long),
+            NbtTag::Float(_) => Some(Self::Float),
+            NbtTag::Double(_) => Some(Self::Double),
+            _ => None,
+        }
+    }
+}
+
 fn set_numeric_list3(player: &mut PlayerData, field: &str, values: [f64; 3]) -> Result<()> {
     validate_finite(field, &values)?;
-    let use_double = existing_list_is_all_double(player.root()?.get(field), field)?;
-    let encoded = if use_double {
-        values.into_iter().map(NbtTag::Double).collect()
-    } else {
-        values
-            .into_iter()
-            .map(|value| f32_tag(field, value))
-            .collect::<Result<Vec<_>>>()?
-    };
+    let persisted_type = existing_numeric_list_type(player.root()?.get(field), field, 3)?
+        .unwrap_or(NumericListType::Float);
+    let encoded = values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| numeric_tag(field, index, value, persisted_type))
+        .collect::<Result<Vec<_>>>()?;
     player
         .root_mut()?
         .insert(field.to_string(), NbtTag::List(encoded));
@@ -144,15 +168,13 @@ fn set_numeric_list3(player: &mut PlayerData, field: &str, values: [f64; 3]) -> 
 
 fn set_numeric_list2(player: &mut PlayerData, field: &str, values: [f64; 2]) -> Result<()> {
     validate_finite(field, &values)?;
-    let use_double = existing_list_is_all_double(player.root()?.get(field), field)?;
-    let encoded = if use_double {
-        values.into_iter().map(NbtTag::Double).collect()
-    } else {
-        values
-            .into_iter()
-            .map(|value| f32_tag(field, value))
-            .collect::<Result<Vec<_>>>()?
-    };
+    let persisted_type = existing_numeric_list_type(player.root()?.get(field), field, 2)?
+        .unwrap_or(NumericListType::Float);
+    let encoded = values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| numeric_tag(field, index, value, persisted_type))
+        .collect::<Result<Vec<_>>>()?;
     player
         .root_mut()?
         .insert(field.to_string(), NbtTag::List(encoded));
@@ -160,15 +182,38 @@ fn set_numeric_list2(player: &mut PlayerData, field: &str, values: [f64; 2]) -> 
     Ok(())
 }
 
-fn existing_list_is_all_double(value: Option<&NbtTag>, field: &str) -> Result<bool> {
-    match value {
-        None => Ok(false),
-        Some(NbtTag::List(values)) => Ok(!values.is_empty()
-            && values.iter().all(|value| matches!(value, NbtTag::Double(_)))),
-        Some(other) => Err(BedrockWorldError::CorruptWorld(format!(
-            "player {field} has unexpected NBT type: {other:?}"
-        ))),
+fn existing_numeric_list_type(
+    value: Option<&NbtTag>,
+    field: &str,
+    expected_len: usize,
+) -> Result<Option<NumericListType>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let NbtTag::List(values) = value else {
+        return Err(BedrockWorldError::CorruptWorld(format!(
+            "player {field} has unexpected NBT type: {value:?}"
+        )));
+    };
+    if values.len() != expected_len {
+        return Err(BedrockWorldError::CorruptWorld(format!(
+            "player {field} contains {} values instead of {expected_len}",
+            values.len()
+        )));
     }
+    let first = NumericListType::of(&values[0]).ok_or_else(|| {
+        BedrockWorldError::CorruptWorld(format!(
+            "player {field}[0] is not a numeric NBT value"
+        ))
+    })?;
+    for (index, tag) in values.iter().enumerate().skip(1) {
+        if NumericListType::of(tag) != Some(first) {
+            return Err(BedrockWorldError::CorruptWorld(format!(
+                "player {field} is not a homogeneous numeric NBT list at index {index}"
+            )));
+        }
+    }
+    Ok(Some(first))
 }
 
 fn validate_finite<const N: usize>(field: &str, values: &[f64; N]) -> Result<()> {
@@ -181,13 +226,55 @@ fn validate_finite<const N: usize>(field: &str, values: &[f64; N]) -> Result<()>
     }
 }
 
-fn f32_tag(field: &str, value: f64) -> Result<NbtTag> {
-    if value < -(f32::MAX as f64) || value > f32::MAX as f64 {
-        return Err(BedrockWorldError::Validation(format!(
-            "player {field} value {value} does not fit Bedrock float"
-        )));
+fn numeric_tag(
+    field: &str,
+    index: usize,
+    value: f64,
+    persisted_type: NumericListType,
+) -> Result<NbtTag> {
+    let error = || {
+        BedrockWorldError::Validation(format!(
+            "player {field}[{index}] value {value} cannot be represented as persisted {persisted_type:?}"
+        ))
+    };
+    match persisted_type {
+        NumericListType::Byte => exact_integer(value)
+            .and_then(|value| i8::try_from(value).ok())
+            .map(NbtTag::Byte)
+            .ok_or_else(error),
+        NumericListType::Short => exact_integer(value)
+            .and_then(|value| i16::try_from(value).ok())
+            .map(NbtTag::Short)
+            .ok_or_else(error),
+        NumericListType::Int => exact_integer(value)
+            .and_then(|value| i32::try_from(value).ok())
+            .map(NbtTag::Int)
+            .ok_or_else(error),
+        NumericListType::Long => exact_integer(value)
+            .map(NbtTag::Long)
+            .ok_or_else(error),
+        NumericListType::Float => {
+            if value < -(f32::MAX as f64) || value > f32::MAX as f64 {
+                Err(error())
+            } else {
+                Ok(NbtTag::Float(value as f32))
+            }
+        }
+        NumericListType::Double => Ok(NbtTag::Double(value)),
     }
-    Ok(NbtTag::Float(value as f32))
+}
+
+fn exact_integer(value: f64) -> Option<i64> {
+    const I64_EXCLUSIVE_MAX: f64 = 9_223_372_036_854_775_808.0;
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || value < i64::MIN as f64
+        || value >= I64_EXCLUSIVE_MAX
+    {
+        return None;
+    }
+    let integer = value as i64;
+    ((integer as f64) == value).then_some(integer)
 }
 
 #[cfg(test)]
@@ -216,6 +303,49 @@ mod tests {
         assert_eq!(
             player.root().unwrap().get("FutureField"),
             Some(&NbtTag::Long(123))
+        );
+    }
+
+    #[test]
+    fn historical_integer_position_keeps_its_nbt_type() {
+        let nbt = NbtTag::Compound(IndexMap::from([(
+            "Pos".to_string(),
+            NbtTag::List(vec![NbtTag::Int(1), NbtTag::Int(64), NbtTag::Int(-2)]),
+        )]));
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        player.set_position([2.0, 70.0, 3.0]).unwrap();
+        assert_eq!(
+            player.root().unwrap().get("Pos"),
+            Some(&NbtTag::List(vec![
+                NbtTag::Int(2),
+                NbtTag::Int(70),
+                NbtTag::Int(3),
+            ]))
+        );
+        assert!(player.set_position([2.5, 70.0, 3.0]).is_err());
+    }
+
+    #[test]
+    fn malformed_mixed_numeric_position_is_not_rewritten_as_float() {
+        let nbt = NbtTag::Compound(IndexMap::from([(
+            "Pos".to_string(),
+            NbtTag::List(vec![NbtTag::Int(1), NbtTag::Double(64.0), NbtTag::Int(-2)]),
+        )]));
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        assert!(player.set_position([2.0, 70.0, 3.0]).is_err());
+    }
+
+    #[test]
+    fn long_position_rejects_positive_i64_exclusive_bound() {
+        let nbt = NbtTag::Compound(IndexMap::from([(
+            "Pos".to_string(),
+            NbtTag::List(vec![NbtTag::Long(0), NbtTag::Long(0), NbtTag::Long(0)]),
+        )]));
+        let mut player = PlayerData::from_nbt(PlayerId::Local, nbt).unwrap();
+        assert!(
+            player
+                .set_position([9_223_372_036_854_775_808.0, 0.0, 0.0])
+                .is_err()
         );
     }
 
