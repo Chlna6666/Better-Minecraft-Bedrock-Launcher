@@ -2,7 +2,10 @@
 //!
 //! Downgrade has its own rules and loss analysis. It does not run upgrade logic backwards.
 
-use crate::chunk::SubChunkVersion;
+use crate::block::VanillaBlockStatePalette;
+use crate::chunk::{
+    SubChunkDowngradeWriteReport, SubChunkVersion, stage_subchunks_for_exact_downgrade,
+};
 use crate::database::StorageOp;
 use crate::entity::{ActorStorageRewriteReport, stage_world_digp_actorprefix_to_entity};
 use crate::error::{BedrockWorldError, Result};
@@ -47,7 +50,8 @@ pub enum DowngradeAction {
     },
 }
 
-/// Data that cannot be represented identically in the requested older release.
+/// Data that cannot be represented identically in the requested older release without additional
+/// authoritative target data or a deliberately lossy rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DowngradeLoss {
     /// 3D biome sections must be collapsed into a 2D biome map.
@@ -226,6 +230,58 @@ where
         })
     }
 
+    /// Performs an exact SubChunk/BlockState downgrade using the target game's real vanilla palette.
+    ///
+    /// The supplied palette must represent exactly the requested target game version. Every SubChunk
+    /// palette entry must have the same semantic name/states in that target palette; successful matches
+    /// are replaced with the target entry so the stored BlockState version also belongs to the target
+    /// game. Missing/renamed states or an unsupported target SubChunk representation abort the complete
+    /// operation before any database write.
+    ///
+    /// This step intentionally does not perform lossy biome conversion, historical item conversion,
+    /// actor conversion, numeric V0 conversion, or `level.dat` updates.
+    pub fn downgrade_subchunk_storage_blocking(
+        &self,
+        target: GameVersion,
+        target_palette: &VanillaBlockStatePalette,
+    ) -> Result<SubChunkDowngradeWriteReport> {
+        let plan = self.downgrade_plan_blocking(target.clone())?;
+        if let Some(issue) = plan.issues.first() {
+            return Err(BedrockWorldError::Validation(format!(
+                "SubChunk downgrade cannot run: {issue:?}"
+            )));
+        }
+        if target_palette.game_version() != &target {
+            return Err(BedrockWorldError::Validation(format!(
+                "target vanilla BlockState palette is for Bedrock {}, requested downgrade target is {target}",
+                target_palette.game_version()
+            )));
+        }
+        if plan
+            .losses
+            .iter()
+            .any(|loss| matches!(loss, DowngradeLoss::LegacyNumericBlocksRequired))
+        {
+            return Err(BedrockWorldError::UnsupportedChunkFormat(
+                "target SubChunk generation requires authoritative legacy numeric block ID/meta data"
+                    .to_string(),
+            ));
+        }
+
+        let target_version = target_subchunk_version(&target).ok_or_else(|| {
+            BedrockWorldError::Validation(format!(
+                "Bedrock {target} does not select one SubChunk target for exact palette downgrade"
+            ))
+        })?;
+        let (batch, report) = stage_subchunks_for_exact_downgrade(
+            self.storage(),
+            target_version,
+            target_palette,
+        )?;
+        commit_downgrade_storage_batch(self, &batch)?;
+        Ok(report)
+    }
+
     /// Rewrites only the world's actor storage from `digp`/`actorprefix` to chunk `Entity` records.
     ///
     /// This is an independently safe downgrade step, not a full-world downgrade. It validates the
@@ -256,12 +312,15 @@ where
         }
 
         let (batch, report) = stage_world_digp_actorprefix_to_entity(self.storage())?;
-        commit_actor_storage_batch(self, &batch)?;
+        commit_downgrade_storage_batch(self, &batch)?;
         Ok(report)
     }
 }
 
-fn commit_actor_storage_batch<S>(world: &BedrockWorld<S>, batch: &crate::database::StorageBatch) -> Result<()>
+fn commit_downgrade_storage_batch<S>(
+    world: &BedrockWorld<S>,
+    batch: &crate::database::StorageBatch,
+) -> Result<()>
 where
     S: WorldStorageHandle,
 {

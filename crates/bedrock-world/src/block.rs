@@ -9,6 +9,7 @@ pub use crate::chunk::position::BlockPos;
 pub use crate::parsed::{BlockEntityRecord, ParsedBlockEntity};
 pub use version::{
     BlockStateStorageVersion, LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats,
+    VanillaBlockStatePalette,
 };
 
 // Historical rule executors remain crate-private while the dev-stage API is rebuilt around concrete

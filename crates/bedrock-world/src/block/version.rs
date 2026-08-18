@@ -4,6 +4,7 @@ mod authoritative;
 mod corpus;
 mod corpus_bundle;
 mod legacy_numeric;
+mod vanilla_palette;
 
 pub use authoritative::{
     AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
@@ -20,3 +21,4 @@ pub use corpus_bundle::{
     load_pinned_block_migration_bundle_from_dir, verify_pinned_block_migration_corpus,
 };
 pub use legacy_numeric::{LegacyNumericBlockStateTable, LegacyNumericBlockStateTableStats};
+pub use vanilla_palette::VanillaBlockStatePalette;

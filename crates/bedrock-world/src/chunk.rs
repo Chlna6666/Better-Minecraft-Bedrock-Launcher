@@ -39,8 +39,10 @@ pub use level_chunk::{Chunk, ChunkRecord, EntityData};
 pub use palette::*;
 pub use position::*;
 pub use subchunk::{SubChunk, SubChunkDecodeMode, SubChunkFormat, VisibleBlockStatesAt};
-pub use subchunk_storage::SubChunkStorageWriteReport;
-pub(crate) use subchunk_storage::stage_subchunks_as_version;
+pub use subchunk_storage::{SubChunkDowngradeWriteReport, SubChunkStorageWriteReport};
+pub(crate) use subchunk_storage::{
+    stage_subchunks_as_version, stage_subchunks_for_exact_downgrade,
+};
 pub use version::SubChunkVersion;
 pub use crate::parsed::{
     HardcodedSpawnAreaKind, ParsedChunkData, ParsedChunkRecord, ParsedChunkRecordValue,
