@@ -16,6 +16,7 @@ mod inventory;
 mod legacy_saved_items;
 mod level_dat;
 mod local_player;
+mod mcpe_0_6_1;
 mod modern_saved_items;
 mod position;
 mod saved_item_format;
@@ -36,6 +37,7 @@ pub use local_player::{
     move_local_player_to_level_dat, read_local_player, read_local_player_with_level,
     write_local_player,
 };
+pub use mcpe_0_6_1::{Mcpe061PlayerCheckReport, write_mcpe_0_6_1_level_dat_player};
 pub use server_player::{
     PlayerKeyRecord, delete_player_key, delete_server_player, read_player_key, read_server_player,
     read_server_player_with_level, write_player_key, write_server_player,
