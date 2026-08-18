@@ -2245,6 +2245,7 @@ fn compression_tag(policy: CompressionPolicy) -> u8 {
         CompressionPolicy::None => COMPRESSION_NONE,
         CompressionPolicy::Snappy => COMPRESSION_SNAPPY,
         CompressionPolicy::Zlib => COMPRESSION_ZLIB,
+        CompressionPolicy::RawDeflate => COMPRESSION_BEDROCK_ZLIB,
     }
 }
 
@@ -2253,6 +2254,7 @@ fn compress_payload(policy: CompressionPolicy, payload: &[u8]) -> Result<Vec<u8>
         CompressionPolicy::None => Ok(payload.to_vec()),
         CompressionPolicy::Snappy => compress_snappy(payload),
         CompressionPolicy::Zlib => compress_zlib(payload),
+        CompressionPolicy::RawDeflate => compress_deflate(payload),
     }
 }
 
@@ -2313,6 +2315,26 @@ fn compress_zlib(payload: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(not(feature = "zlib"))]
 fn compress_zlib(_payload: &[u8]) -> Result<Vec<u8>> {
+    Err(LevelDbError::unsupported(
+        "zlib",
+        "zlib feature is disabled",
+    ))
+}
+
+#[cfg(feature = "zlib")]
+fn compress_deflate(payload: &[u8]) -> Result<Vec<u8>> {
+    use flate2::{Compression, write::DeflateEncoder};
+    use std::io::Write;
+
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(payload)?;
+    encoder
+        .finish()
+        .map_err(|error| LevelDbError::compression("table", error.to_string()))
+}
+
+#[cfg(not(feature = "zlib"))]
+fn compress_deflate(_payload: &[u8]) -> Result<Vec<u8>> {
     Err(LevelDbError::unsupported(
         "zlib",
         "zlib feature is disabled",
@@ -2396,6 +2418,21 @@ mod tests {
         let decoded = read_table(&path, true).expect("read");
         assert_eq!(decoded, entries);
         std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[cfg(feature = "zlib")]
+    #[test]
+    fn raw_deflate_policy_uses_bedrock_tag_and_roundtrips() {
+        let payload = b"bedrock raw deflate compression payload";
+        assert_eq!(
+            compression_tag(CompressionPolicy::RawDeflate),
+            COMPRESSION_BEDROCK_ZLIB
+        );
+        let encoded = compress_payload(CompressionPolicy::RawDeflate, payload).expect("compress");
+        assert_eq!(
+            decompress_payload(COMPRESSION_BEDROCK_ZLIB, &encoded).expect("decompress"),
+            payload
+        );
     }
 
     #[test]
