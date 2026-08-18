@@ -26,6 +26,14 @@ const HAS_SCALE: u16 = 1 << 4;
 const HAS_MAP_WATER_COLOR: u16 = 1 << 5;
 const HAS_RAIN: u16 = 1 << 6;
 const RAIN_VALUE: u16 = 1 << 7;
+const KNOWN_FLAGS: u16 = HAS_TEMPERATURE
+    | HAS_DOWNFALL
+    | HAS_FOLIAGE_SNOW
+    | HAS_DEPTH
+    | HAS_SCALE
+    | HAS_MAP_WATER_COLOR
+    | HAS_RAIN
+    | RAIN_VALUE;
 
 const EMBEDDED_BYTES: &[u8] = include_bytes!("registry.bin");
 static EMBEDDED_REGISTRY: OnceLock<std::result::Result<BiomeRegistry<'static>, String>> =
@@ -87,16 +95,24 @@ impl<'a> BiomeRegistry<'a> {
         }
 
         let snapshot_count = usize::try_from(read_u32(bytes, 12)).map_err(|_| {
-            BedrockWorldError::CorruptWorld("biome registry snapshot count overflowed usize".to_string())
+            BedrockWorldError::CorruptWorld(
+                "biome registry snapshot count overflowed usize".to_string(),
+            )
         })?;
         let biome_count = usize::try_from(read_u32(bytes, 16)).map_err(|_| {
-            BedrockWorldError::CorruptWorld("biome registry biome count overflowed usize".to_string())
+            BedrockWorldError::CorruptWorld(
+                "biome registry biome count overflowed usize".to_string(),
+            )
         })?;
         let name_index_count = usize::try_from(read_u32(bytes, 20)).map_err(|_| {
-            BedrockWorldError::CorruptWorld("biome registry name-index count overflowed usize".to_string())
+            BedrockWorldError::CorruptWorld(
+                "biome registry name-index count overflowed usize".to_string(),
+            )
         })?;
         let strings_len = usize::try_from(read_u32(bytes, 24)).map_err(|_| {
-            BedrockWorldError::CorruptWorld("biome registry string-pool length overflowed usize".to_string())
+            BedrockWorldError::CorruptWorld(
+                "biome registry string-pool length overflowed usize".to_string(),
+            )
         })?;
 
         let snapshots_offset = HEADER_LEN;
@@ -115,7 +131,9 @@ impl<'a> BiomeRegistry<'a> {
             "name-index table",
         )?;
         let expected_len = strings_offset.checked_add(strings_len).ok_or_else(|| {
-            BedrockWorldError::CorruptWorld("biome registry total length overflowed usize".to_string())
+            BedrockWorldError::CorruptWorld(
+                "biome registry total length overflowed usize".to_string(),
+            )
         })?;
         if expected_len != bytes.len() {
             return Err(BedrockWorldError::CorruptWorld(format!(
@@ -233,7 +251,46 @@ impl<'a> BiomeRegistry<'a> {
                     }
                 }
                 previous_id = Some(record.id);
-                let _ = self.name_from_record(record)?;
+                if record.flags & !KNOWN_FLAGS != 0 {
+                    return Err(BedrockWorldError::CorruptWorld(format!(
+                        "biome {} uses unknown registry flag bits 0x{:04x}",
+                        record.id,
+                        record.flags & !KNOWN_FLAGS
+                    )));
+                }
+                if record.flags & RAIN_VALUE != 0 && record.flags & HAS_RAIN == 0 {
+                    return Err(BedrockWorldError::CorruptWorld(format!(
+                        "biome {} stores a rain value without the rain-presence flag",
+                        record.id
+                    )));
+                }
+                if record.reserved != 0 {
+                    return Err(BedrockWorldError::CorruptWorld(format!(
+                        "biome {} has non-zero reserved bytes",
+                        record.id
+                    )));
+                }
+                for (flag, field, value) in [
+                    (HAS_TEMPERATURE, "temperature", record.temperature),
+                    (HAS_DOWNFALL, "downfall", record.downfall),
+                    (HAS_FOLIAGE_SNOW, "foliage_snow", record.foliage_snow),
+                    (HAS_DEPTH, "depth", record.depth),
+                    (HAS_SCALE, "scale", record.scale),
+                ] {
+                    if record.flags & flag != 0 && !value.is_finite() {
+                        return Err(BedrockWorldError::CorruptWorld(format!(
+                            "biome {} field {field} is not finite",
+                            record.id
+                        )));
+                    }
+                }
+                let name = self.name_from_record(record)?;
+                if name.is_empty() {
+                    return Err(BedrockWorldError::CorruptWorld(format!(
+                        "biome {} has an empty identifier",
+                        record.id
+                    )));
+                }
             }
 
             let mut previous_name_key = None::<(u64, &str)>;
@@ -305,6 +362,7 @@ impl<'a> BiomeRegistry<'a> {
             depth: read_f32(self.bytes, offset + 24),
             scale: read_f32(self.bytes, offset + 28),
             map_water_color: read_i32(self.bytes, offset + 32),
+            reserved: read_u32(self.bytes, offset + 36),
         }
     }
 
@@ -523,6 +581,7 @@ struct BiomeRecord {
     depth: f32,
     scale: f32,
     map_water_color: i32,
+    reserved: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -653,6 +712,12 @@ mod tests {
         assert_eq!(by_id.temperature(), Some(0.8));
         assert_eq!(by_id.rain(), Some(true));
         assert_eq!(snapshot.biome_by_name("minecraft:plains"), Some(by_id));
+    }
+
+    #[test]
+    fn embedded_registry_asset_is_valid() {
+        let registry = embedded_biome_registry().unwrap();
+        assert_eq!(registry.snapshot_count(), 0);
     }
 
     #[test]
