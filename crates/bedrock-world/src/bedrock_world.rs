@@ -1,8 +1,8 @@
-//! Tools for inspecting, upgrading and editing Minecraft Bedrock worlds.
+//! Multi-version Minecraft Bedrock world reading, writing, inspection and explicit conversion.
 //!
 //! `bedrock-world` owns Minecraft Bedrock world semantics. Mojang LevelDB mechanics belong exclusively
-//! to `bedrock-leveldb`. The 0.7 API is intentionally breaking and is organised by Bedrock game-data
-//! domains instead of generic software layers.
+//! to `bedrock-leveldb`. Reads preserve the persisted data generation; cross-version conversion is
+//! caller-requested and never an implicit side effect of opening or parsing a world.
 
 #![deny(missing_docs)]
 #![allow(
@@ -29,8 +29,10 @@ mod parsed;
 pub mod player;
 pub mod biome;
 pub mod entity;
-/// Bedrock saved-item identities, stacks and historical item migration.
+/// Bedrock saved-item identities, stacks and historical item conversion data.
 pub mod item;
+/// Minecraft Bedrock game and persisted data version information.
+pub mod version;
 
 /// Bedrock map item records.
 pub mod map {

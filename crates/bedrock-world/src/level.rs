@@ -1,8 +1,8 @@
-//! `level.dat` document access, atomic writes and version-aware metadata migration.
+//! `level.dat` document access, atomic writes and explicit version conversion.
 
 mod document;
-/// Explicit `level.dat` migration with preservation guards.
-pub mod migration;
+/// Explicit caller-requested `level.dat` conversion.
+pub mod conversion;
 
+pub use conversion::{LevelDatConversionOptions, convert_level_dat_document};
 pub use document::*;
-pub use migration::{LevelDatMigrationOptions, migrate_level_dat_document};
