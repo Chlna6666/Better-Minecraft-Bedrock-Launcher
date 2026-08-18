@@ -1,6 +1,7 @@
 //! Minecraft Bedrock chunk data grouped by game-data responsibility.
 
 mod encoding;
+mod legacy_encoding;
 mod legacy_numeric_resolver;
 mod level_chunk;
 
@@ -19,6 +20,7 @@ pub mod migration;
 
 pub use key::*;
 pub use legacy::*;
+pub use legacy_encoding::{LegacySubChunkBuilder, LegacyTerrainBuilder};
 pub use level_chunk::{Chunk, ChunkRecord, EntityData};
 pub use migration::{
     HistoricalChunkMigrationOptions, HistoricalChunkMigrationReport, LegacyBlockMapping,
