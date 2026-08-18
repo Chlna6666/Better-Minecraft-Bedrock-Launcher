@@ -10,7 +10,6 @@ use crate::database::{StorageBatch, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtReader, NbtTag, serialize_root_nbt};
 use bytes::Bytes;
-use indexmap::IndexMap;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
@@ -18,7 +17,6 @@ use std::path::Path;
 
 const POCKET_ENTITIES_DAT_HEADER_LEN: usize = 12;
 const POCKET_ENTITIES_DAT_VERSION: i32 = 1;
-const DEFAULT_IMPORT_BATCH_RECORDS: usize = 128;
 
 /// Parsed pre-LevelDB Pocket Edition `entities.dat` document.
 ///
@@ -48,6 +46,7 @@ impl PocketEntitiesDatDocument {
                 "entities.dat does not start with ENT\\0".to_string(),
             ));
         }
+
         let version = i32::from_le_bytes(raw[4..8].try_into().expect("four checked bytes"));
         if version < 0 {
             return Err(BedrockWorldError::CorruptWorld(format!(
@@ -217,24 +216,12 @@ pub fn write_pocket_entities_dat_atomic(
 }
 
 /// Settings for explicitly importing historical `entities.dat` lists into LevelDB chunk records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PocketEntitiesDatImportOptions {
-    /// Maximum generated LevelDB records written in one batch.
-    pub batch_records: usize,
     /// Allows replacing an existing target `Entity` or `BlockEntity` chunk record.
     pub overwrite_existing: bool,
     /// Allows source entities without a usable position to be skipped rather than rejecting import.
     pub skip_unpositioned: bool,
-}
-
-impl Default for PocketEntitiesDatImportOptions {
-    fn default() -> Self {
-        Self {
-            batch_records: DEFAULT_IMPORT_BATCH_RECORDS,
-            overwrite_existing: false,
-            skip_unpositioned: false,
-        }
-    }
 }
 
 /// Result of importing one historical `entities.dat` file into LevelDB chunk records.
@@ -254,28 +241,22 @@ pub struct PocketEntitiesDatImportReport {
     pub entity_chunk_records: usize,
     /// Generated chunk `BlockEntity` records.
     pub block_entity_chunk_records: usize,
-    /// Number of storage batches committed.
-    pub commits: usize,
     /// Number of generated LevelDB value bytes written.
     pub bytes_written: usize,
 }
 
 /// Imports a pre-LevelDB Pocket Edition `entities.dat` into legacy inline `Entity` and `BlockEntity`
-/// chunk records.
+/// chunk records using one atomic target storage batch.
 ///
 /// The operation does not jump directly to `digp`/`actorprefix`: that is a later Bedrock storage
-/// generation and requires a separate explicit actor-storage write. All source positions and target
-/// collisions are checked before the first target batch is committed.
+/// generation and requires a separate explicit actor-storage write. Every source position, serialized
+/// target value and target collision is checked before the single [`WorldStorage::write_batch`] call.
+/// Therefore a backend batch failure cannot leave only a prefix of the source entities imported.
 pub fn import_pocket_entities_dat_records_blocking(
     source_world_path: impl AsRef<Path>,
     target: &dyn WorldStorage,
     options: PocketEntitiesDatImportOptions,
 ) -> Result<PocketEntitiesDatImportReport> {
-    if options.batch_records == 0 {
-        return Err(BedrockWorldError::Validation(
-            "Pocket entities.dat import batch_records must be greater than zero".to_string(),
-        ));
-    }
     let document = read_pocket_entities_dat(source_world_path)?;
     if document.version() != POCKET_ENTITIES_DAT_VERSION {
         return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
@@ -353,21 +334,12 @@ pub fn import_pocket_entities_dat_records_blocking(
     }
 
     let mut batch = StorageBatch::new();
-    let mut pending = 0usize;
     for (key, value) in records {
         report.bytes_written = report.bytes_written.saturating_add(value.len());
         batch.put(key, value);
-        pending = pending.saturating_add(1);
-        if pending >= options.batch_records {
-            target.write_batch(&batch)?;
-            batch = StorageBatch::new();
-            pending = 0;
-            report.commits = report.commits.saturating_add(1);
-        }
     }
     if !batch.is_empty() {
         target.write_batch(&batch)?;
-        report.commits = report.commits.saturating_add(1);
     }
     Ok(report)
 }
@@ -524,6 +496,7 @@ fn serialize_consecutive_roots(roots: &[&NbtTag]) -> Result<Bytes> {
 mod tests {
     use super::*;
     use crate::database::MemoryStorage;
+    use indexmap::IndexMap;
 
     fn entity(x: f32, z: f32) -> NbtTag {
         NbtTag::Compound(IndexMap::from([
@@ -626,6 +599,31 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(storage.get(key.as_ref()).unwrap().unwrap().as_ref(), b"existing");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn successful_import_commits_all_generated_records_together() {
+        let storage = MemoryStorage::new();
+        let document = document();
+        let root = std::env::temp_dir().join(format!(
+            "bedrock-pocket-entities-success-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("entities.dat"), document.to_raw().unwrap()).unwrap();
+
+        let report = import_pocket_entities_dat_records_blocking(
+            &root,
+            &storage,
+            PocketEntitiesDatImportOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(report.entities, 2);
+        assert_eq!(report.tile_entities, 1);
+        assert_eq!(report.entity_chunk_records, 2);
+        assert_eq!(report.block_entity_chunk_records, 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
