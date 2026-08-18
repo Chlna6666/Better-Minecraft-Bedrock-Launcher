@@ -1,17 +1,18 @@
 //! Explicit paletted Minecraft Bedrock SubChunk writes to historical fixed-array numeric versions.
 //!
 //! This module is a physical SubChunk representation write. It does not infer a Minecraft game
-//! version and it never reverses BlockState upgrade rules. A palette entry is writable only when the
-//! caller-supplied historical numeric table contains exactly one semantically identical `(id, meta)`.
+//! version. Modern palette entries are matched through a caller-supplied
+//! [`crate::block::LegacyNumericBlockUpgradeTable`], whose historical candidates were first run
+//! forward through authoritative BlockState upgrade rules. Reverse writes therefore do not invert
+//! rename/property rules heuristically.
 
-use crate::block::{BlockState, LegacyNumericBlockMatch, LegacyNumericBlockStateTable};
+use crate::block::{BlockState, LegacyNumericBlockMatch, LegacyNumericBlockUpgradeTable};
 use crate::chunk::{
     BedrockDbKey, ChunkPos, ChunkRecordTag, ChunkVersion, Dimension, LegacyBlockExtraDataBuilder,
     LegacySubChunkBuilder, SubChunk, SubChunkDecodeMode, SubChunkFormat, SubChunkVersion,
 };
 use crate::database::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::NbtTag;
 use crate::surface::is_air_block_name;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,10 +33,8 @@ pub struct LegacyNumericSubChunkWriteReport {
     pub block_extra_data_written: usize,
     /// Number of non-air second-layer blocks encoded into generated `BlockExtraData` records.
     pub block_extra_entries_written: usize,
-    /// Number of distinct semantic BlockStates resolved through the historical numeric table.
-    pub unique_block_states: usize,
-    /// Number of repeated semantic BlockState resolutions served from the operation cache.
-    pub match_cache_hits: usize,
+    /// Number of palette entries resolved through the forward-verified historical numeric table.
+    pub palette_entries_resolved: usize,
     /// Number of rewritten primary fixed-array payloads intentionally emitted without historical
     /// sky/block light arrays because paletted sources do not contain those values to preserve.
     pub target_without_light_arrays: usize,
@@ -53,42 +52,10 @@ impl LegacyNumericSubChunkWriteReport {
             second_storage_records: 0,
             block_extra_data_written: 0,
             block_extra_entries_written: 0,
-            unique_block_states: 0,
-            match_cache_hits: 0,
+            palette_entries_resolved: 0,
             target_without_light_arrays: 0,
             staged_bytes: 0,
         }
-    }
-}
-
-#[derive(Default)]
-struct NumericMatchCache {
-    by_name: BTreeMap<String, Vec<(BTreeMap<String, NbtTag>, LegacyNumericBlockMatch)>>,
-}
-
-impl NumericMatchCache {
-    fn resolve(
-        &mut self,
-        table: &LegacyNumericBlockStateTable,
-        state: &BlockState,
-        report: &mut LegacyNumericSubChunkWriteReport,
-    ) -> LegacyNumericBlockMatch {
-        if let Some(permutations) = self.by_name.get(state.name.as_str())
-            && let Some((_, result)) = permutations
-                .iter()
-                .find(|(states, _)| states == &state.states)
-        {
-            report.match_cache_hits = report.match_cache_hits.saturating_add(1);
-            return *result;
-        }
-
-        let result = table.match_numeric(state);
-        self.by_name
-            .entry(state.name.clone())
-            .or_default()
-            .push((state.states.clone(), result));
-        report.unique_block_states = report.unique_block_states.saturating_add(1);
-        result
     }
 }
 
@@ -101,15 +68,16 @@ impl NumericMatchCache {
 /// become chunk-scoped `BlockExtraData` entries using the historical full-Y coordinate index. More
 /// than two layers are rejected.
 ///
-/// Every non-air palette state that needs a numeric representation must have exactly one semantic
-/// match in `numeric`. Primary metadata must fit four bits; second-layer `BlockExtraData` metadata may
-/// use the full historical `u8`. Existing `BlockExtraData` beside a paletted source is rejected rather
-/// than merged with generated entries. Paletted source records do not persist historical sky/block
-/// light arrays, so rewritten fixed-array targets use the valid short form instead of inventing light.
+/// Every non-air palette state that needs a numeric representation must have exactly one match in the
+/// forward-verified `numeric` table. Primary metadata must fit four bits; second-layer
+/// `BlockExtraData` metadata may use the full historical `u8`. Existing `BlockExtraData` beside a
+/// paletted source is rejected rather than merged with generated entries. Paletted source records do
+/// not persist historical sky/block light arrays, so rewritten fixed-array targets use the valid short
+/// form instead of inventing light.
 pub(crate) fn stage_paletted_subchunks_as_legacy_numeric(
     storage: &dyn WorldStorage,
     target: SubChunkVersion,
-    numeric: &LegacyNumericBlockStateTable,
+    numeric: &LegacyNumericBlockUpgradeTable,
 ) -> Result<(StorageBatch, LegacyNumericSubChunkWriteReport)> {
     let target_byte = legacy_target_byte(target)?;
 
@@ -125,7 +93,6 @@ pub(crate) fn stage_paletted_subchunks_as_legacy_numeric(
 
     let mut batch = StorageBatch::new();
     let mut report = LegacyNumericSubChunkWriteReport::new(target);
-    let mut cache = NumericMatchCache::default();
     let mut generated_block_extra = BTreeMap::<ChunkPos, LegacyBlockExtraDataBuilder>::new();
 
     storage.for_each_entry(StorageReadOptions::default(), &mut |raw_key, value| {
@@ -199,13 +166,7 @@ pub(crate) fn stage_paletted_subchunks_as_legacy_numeric(
                 "SubChunk {key:?} primary storage does not expose exactly 4096 valid palette indices"
             ))
         })?;
-        let primary_numeric = resolve_primary_palette(
-            primary,
-            &key,
-            numeric,
-            &mut cache,
-            &mut report,
-        )?;
+        let primary_numeric = resolve_primary_palette(primary, &key, numeric, &mut report)?;
 
         let mut builder = LegacySubChunkBuilder::zeroed(target_byte, false)?;
         for local_x in 0_u8..16 {
@@ -231,7 +192,6 @@ pub(crate) fn stage_paletted_subchunks_as_legacy_numeric(
                 y,
                 &key,
                 numeric,
-                &mut cache,
                 &mut generated_block_extra,
                 &mut report,
             )?;
@@ -265,13 +225,12 @@ pub(crate) fn stage_paletted_subchunks_as_legacy_numeric(
 fn resolve_primary_palette(
     palette: &crate::chunk::BlockPalette,
     key: &crate::chunk::ChunkKey,
-    numeric: &LegacyNumericBlockStateTable,
-    cache: &mut NumericMatchCache,
+    numeric: &LegacyNumericBlockUpgradeTable,
     report: &mut LegacyNumericSubChunkWriteReport,
 ) -> Result<Vec<(u8, u8)>> {
     let mut resolved = Vec::with_capacity(palette.states.len());
     for state in &palette.states {
-        let value = unique_numeric_match(state, key, numeric, cache, report)?;
+        let value = unique_numeric_match(state, key, numeric, report)?;
         let numeric_id = u8::try_from(value.numeric_id).map_err(|_| {
             BedrockWorldError::UnsupportedChunkFormat(format!(
                 "historical numeric ID {} for BlockState {} exceeds fixed-array u8 storage",
@@ -301,8 +260,7 @@ fn stage_secondary_storage(
     pos: ChunkPos,
     subchunk_y: i8,
     key: &crate::chunk::ChunkKey,
-    numeric: &LegacyNumericBlockStateTable,
-    cache: &mut NumericMatchCache,
+    numeric: &LegacyNumericBlockUpgradeTable,
     generated: &mut BTreeMap<ChunkPos, LegacyBlockExtraDataBuilder>,
     report: &mut LegacyNumericSubChunkWriteReport,
 ) -> Result<()> {
@@ -318,7 +276,7 @@ fn stage_secondary_storage(
             resolved.push(None);
             continue;
         }
-        let value = unique_numeric_match(state, key, numeric, cache, report)?;
+        let value = unique_numeric_match(state, key, numeric, report)?;
         let numeric_id = u8::try_from(value.numeric_id).map_err(|_| {
             BedrockWorldError::UnsupportedChunkFormat(format!(
                 "historical second-layer numeric ID {} for BlockState {} exceeds BlockExtraData u8 storage",
@@ -372,16 +330,18 @@ fn stage_secondary_storage(
 fn unique_numeric_match(
     state: &BlockState,
     key: &crate::chunk::ChunkKey,
-    numeric: &LegacyNumericBlockStateTable,
-    cache: &mut NumericMatchCache,
+    numeric: &LegacyNumericBlockUpgradeTable,
     report: &mut LegacyNumericSubChunkWriteReport,
 ) -> Result<crate::block::LegacyNumericBlock> {
-    match cache.resolve(numeric, state, report) {
+    report.palette_entries_resolved = report.palette_entries_resolved.saturating_add(1);
+    match numeric.match_numeric(state) {
         LegacyNumericBlockMatch::Unique(value) => Ok(value),
         LegacyNumericBlockMatch::Missing => Err(BedrockWorldError::UnsupportedChunkFormat(
             format!(
-                "BlockState {} {:?} from SubChunk {key:?} has no representation in the supplied historical numeric table",
-                state.name, state.states
+                "BlockState {} {:?} from SubChunk {key:?} has no representation in the forward-verified historical numeric table ending at BlockState version {}",
+                state.name,
+                state.states,
+                numeric.output_version().raw()
             ),
         )),
         LegacyNumericBlockMatch::Ambiguous {
@@ -389,7 +349,7 @@ fn unique_numeric_match(
             second,
             matches,
         } => Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-            "BlockState {} {:?} from SubChunk {key:?} has {matches} historical numeric aliases; first two are {}:{} and {}:{}, refusing to choose silently",
+            "BlockState {} {:?} from SubChunk {key:?} has {matches} historical numeric aliases after authoritative upgrade; first two are {}:{} and {}:{}, refusing to choose silently",
             state.name,
             state.states,
             first.numeric_id,
@@ -440,7 +400,10 @@ fn legacy_target_byte(target: SubChunkVersion) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockStateStorageVersion;
+    use crate::block::{
+        AuthoritativeBlockStateCatalog, BlockStateSchemaSource, BlockStateStorageVersion,
+        LegacyNumericBlockStateTable, LegacyNumericBlockUpgradeTable,
+    };
     use crate::chunk::{BlockPalette, ChunkKey};
     use crate::database::MemoryStorage;
     use crate::nbt::{NbtTag, serialize_root_nbt};
@@ -483,6 +446,24 @@ mod tests {
             table.extend(serialize_root_nbt(&root).unwrap());
         }
         LegacyNumericBlockStateTable::parse(&table, &serde_json::to_string(&ids).unwrap()).unwrap()
+    }
+
+    fn numeric_reverse() -> LegacyNumericBlockUpgradeTable {
+        let catalog = AuthoritativeBlockStateCatalog::from_sources(&[BlockStateSchemaSource {
+            name: "0001_identity.json",
+            json: r#"{"maxVersionMajor":1,"maxVersionMinor":12,"maxVersionPatch":0,"maxVersionRevision":1}"#,
+        }])
+        .unwrap();
+        LegacyNumericBlockUpgradeTable::build(&numeric_table(), &catalog).unwrap()
+    }
+
+    fn renamed_numeric_reverse() -> LegacyNumericBlockUpgradeTable {
+        let catalog = AuthoritativeBlockStateCatalog::from_sources(&[BlockStateSchemaSource {
+            name: "0001_rename.json",
+            json: r#"{"maxVersionMajor":1,"maxVersionMinor":13,"maxVersionPatch":0,"maxVersionRevision":0,"renamedIds":{"minecraft:test":"minecraft:modern_test"}}"#,
+        }])
+        .unwrap();
+        LegacyNumericBlockUpgradeTable::build(&numeric_table(), &catalog).unwrap()
     }
 
     fn block(name: &str) -> BlockState {
@@ -537,10 +518,11 @@ mod tests {
         let (batch, report) = stage_paletted_subchunks_as_legacy_numeric(
             &storage,
             SubChunkVersion::V7,
-            &numeric_table(),
+            &numeric_reverse(),
         )
         .unwrap();
         assert_eq!(report.rewritten, 1);
+        assert_eq!(report.palette_entries_resolved, 1);
         assert_eq!(report.target_without_light_arrays, 1);
         assert_eq!(storage.get(&key).unwrap().unwrap().first().copied(), Some(9));
 
@@ -553,6 +535,48 @@ mod tests {
         assert_eq!(legacy.block_id_at(0, 0, 0), Some(5));
         assert_eq!(legacy.block_data_at(0, 0, 0), Some(2));
         assert!(!legacy.has_light_arrays());
+    }
+
+    #[test]
+    fn writer_matches_modern_state_after_authoritative_rename() {
+        let storage = MemoryStorage::new();
+        let pos = ChunkPos {
+            x: 1,
+            z: 1,
+            dimension: Dimension::Overworld,
+        };
+        let key = ChunkKey::subchunk(pos, 0).encode();
+        let source = SubChunk {
+            y: 0,
+            format: SubChunkFormat::Paletted {
+                version: 9,
+                storages: vec![BlockPalette::with_unpacked_indices(
+                    vec![block("minecraft:modern_test")],
+                    vec![0; 4096],
+                    Some(vec![4096]),
+                )],
+            },
+        };
+        storage.put(&key, &source.write_v9().unwrap()).unwrap();
+
+        let (batch, _) = stage_paletted_subchunks_as_legacy_numeric(
+            &storage,
+            SubChunkVersion::V7,
+            &renamed_numeric_reverse(),
+        )
+        .unwrap();
+        storage.write_batch(&batch).unwrap();
+        let parsed = SubChunk::read(
+            0,
+            storage.get(&key).unwrap().unwrap(),
+            SubChunkDecodeMode::FullIndices,
+        )
+        .unwrap();
+        let SubChunkFormat::LegacySubChunk(legacy) = parsed.format else {
+            panic!("target must be fixed-array numeric");
+        };
+        assert_eq!(legacy.block_id_at(0, 0, 0), Some(5));
+        assert_eq!(legacy.block_data_at(0, 0, 0), Some(2));
     }
 
     #[test]
@@ -569,7 +593,7 @@ mod tests {
         let (batch, report) = stage_paletted_subchunks_as_legacy_numeric(
             &storage,
             SubChunkVersion::V7,
-            &numeric_table(),
+            &numeric_reverse(),
         )
         .unwrap();
         assert_eq!(report.second_storage_records, 1);
@@ -608,7 +632,7 @@ mod tests {
             stage_paletted_subchunks_as_legacy_numeric(
                 &storage,
                 SubChunkVersion::V7,
-                &numeric_table(),
+                &numeric_reverse(),
             )
             .is_err()
         );
