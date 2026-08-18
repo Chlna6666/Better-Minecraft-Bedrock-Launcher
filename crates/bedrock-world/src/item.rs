@@ -8,6 +8,7 @@ mod legacy_saved_item_check;
 mod legacy_saved_item_conversion;
 mod medieval_saved_item;
 mod saved_item;
+mod vanilla_saved_item_palette;
 
 pub use crate::parsed::ItemStack;
 pub use classic_saved_item::{
@@ -41,6 +42,7 @@ pub use medieval_saved_item::{
     check_saved_items_for_medieval, check_saved_items_for_medieval_with_blocks,
     convert_saved_items_to_medieval, convert_saved_items_to_medieval_with_blocks,
 };
+pub use vanilla_saved_item_palette::{VanillaSavedItemEntry, VanillaSavedItemPalette};
 
 // The historical forward rule executor remains crate-private while public APIs are expressed through
 // concrete saved-item representations and explicit upgrade/reverse checks.
