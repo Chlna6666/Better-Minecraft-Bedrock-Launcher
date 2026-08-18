@@ -16,26 +16,39 @@ use crate::version::GameVersion;
 use crate::world::{BedrockWorld, SubChunkVersionCount, WorldFormat, WorldStorageHandle, WorldVersions};
 use std::cmp::Ordering;
 
+const LEGACY_TERRAIN_SUBCHUNKS_PER_CHUNK: usize = 8;
+
 /// One concrete data rewrite required to upgrade a world to the requested Bedrock release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpgradeAction {
     /// Update version-bearing `level.dat` data after all world data has been rewritten successfully.
     LevelDat,
-    /// Rewrite `LegacyTerrain` into the target terrain representation.
-    LegacyTerrain {
+    /// Losslessly separate `LegacyTerrain` into fixed-array SubChunks plus `Data2DLegacy`.
+    LegacyTerrainToSubChunksAndData2DLegacy {
         /// Number of `LegacyTerrain` records found.
+        records: usize,
+        /// Explicit fixed-array SubChunk version used by the lossless split step.
+        subchunk_target: SubChunkVersion,
+        /// Number of SubChunk records produced by the split (`records * 8`).
+        generated_subchunks: usize,
+    },
+    /// Merge historical `BlockExtraData` second-layer blocks into V8/V9 SubChunk storage.
+    BlockExtraDataToSubChunkStorage {
+        /// Number of chunk-scoped `BlockExtraData` records found.
         records: usize,
     },
     /// Rewrite persisted SubChunks to the target SubChunk version.
     SubChunks {
-        /// Actual source SubChunk versions and counts.
+        /// Actual source SubChunk versions and counts already persisted in the world.
         source: Vec<SubChunkVersionCount>,
+        /// Additional fixed-array SubChunks that will be produced by the preceding `LegacyTerrain` split.
+        generated_from_legacy_terrain: usize,
         /// Target SubChunk version selected for the requested Bedrock release.
         target: SubChunkVersion,
     },
     /// Rewrite `Data2D`/`Data2DLegacy` biome data to `Data3D`.
     Data2DToData3D {
-        /// Number of 2D biome records found.
+        /// Number of 2D biome records affected, including `Data2DLegacy` generated from `LegacyTerrain`.
         records: usize,
     },
     /// Rewrite chunk-scoped `Entity` actor data to `digp`/`actorprefix` storage.
@@ -140,27 +153,54 @@ where
             issues.push(UpgradeIssue::ExperimentalSubChunkTarget);
         }
 
-        if versions.legacy_terrain_records != 0 {
-            actions.push(UpgradeAction::LegacyTerrain {
-                records: versions.legacy_terrain_records,
+        let split_target = legacy_terrain_split_target(target_subchunk);
+        let generated_legacy_subchunks = if versions.legacy_terrain_records != 0 {
+            if let Some(split_target) = split_target {
+                let generated_subchunks = versions
+                    .legacy_terrain_records
+                    .saturating_mul(LEGACY_TERRAIN_SUBCHUNKS_PER_CHUNK);
+                actions.push(UpgradeAction::LegacyTerrainToSubChunksAndData2DLegacy {
+                    records: versions.legacy_terrain_records,
+                    subchunk_target: split_target,
+                    generated_subchunks,
+                });
+                generated_subchunks
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        if matches!(target_subchunk, Some(SubChunkVersion::V8 | SubChunkVersion::V9))
+            && versions.block_extra_data_records != 0
+        {
+            actions.push(UpgradeAction::BlockExtraDataToSubChunkStorage {
+                records: versions.block_extra_data_records,
             });
         }
+
         if let Some(target_subchunk) = target_subchunk {
-            if versions
+            let existing_need_rewrite = versions
                 .subchunks
                 .iter()
-                .any(|entry| entry.version != target_subchunk)
-            {
+                .any(|entry| entry.version != target_subchunk);
+            let generated_need_rewrite = generated_legacy_subchunks != 0
+                && split_target.is_some_and(|split| split != target_subchunk);
+            if existing_need_rewrite || generated_need_rewrite {
                 actions.push(UpgradeAction::SubChunks {
                     source: versions.subchunks.clone(),
+                    generated_from_legacy_terrain: generated_legacy_subchunks,
                     target: target_subchunk,
                 });
             }
         }
+
         if game_at_least(&target, &[1, 18, 0]) {
             let records = versions
                 .data2d_records
-                .saturating_add(versions.data2d_legacy_records);
+                .saturating_add(versions.data2d_legacy_records)
+                .saturating_add(versions.legacy_terrain_records);
             if records != 0 {
                 actions.push(UpgradeAction::Data2DToData3D { records });
             }
@@ -347,6 +387,16 @@ where
     Ok(count)
 }
 
+fn legacy_terrain_split_target(target_subchunk: Option<SubChunkVersion>) -> Option<SubChunkVersion> {
+    match target_subchunk {
+        Some(SubChunkVersion::V0) => Some(SubChunkVersion::V0),
+        Some(SubChunkVersion::V1 | SubChunkVersion::V8 | SubChunkVersion::V9) => {
+            Some(SubChunkVersion::V7)
+        }
+        _ => None,
+    }
+}
+
 fn target_subchunk_version(target: &GameVersion) -> Option<SubChunkVersion> {
     if game_at_least(target, &[1, 18, 0, 20]) {
         Some(SubChunkVersion::V9)
@@ -405,6 +455,26 @@ mod tests {
         assert_eq!(
             target_subchunk_version(&GameVersion::new(vec![1, 2, 13]).unwrap()),
             Some(SubChunkVersion::V1)
+        );
+    }
+
+    #[test]
+    fn legacy_terrain_split_uses_lossless_numeric_intermediate() {
+        assert_eq!(
+            legacy_terrain_split_target(Some(SubChunkVersion::V0)),
+            Some(SubChunkVersion::V0)
+        );
+        assert_eq!(
+            legacy_terrain_split_target(Some(SubChunkVersion::V1)),
+            Some(SubChunkVersion::V7)
+        );
+        assert_eq!(
+            legacy_terrain_split_target(Some(SubChunkVersion::V8)),
+            Some(SubChunkVersion::V7)
+        );
+        assert_eq!(
+            legacy_terrain_split_target(Some(SubChunkVersion::V9)),
+            Some(SubChunkVersion::V7)
         );
     }
 }
