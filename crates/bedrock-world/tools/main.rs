@@ -1,16 +1,69 @@
 //! Maintenance CLI for generated `bedrock-world` version data.
 
-use bedrock_world::biome::BiomeRegistry;
+use bedrock_world::{BedrockWorldError, biome::BiomeRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::xxh3_64;
 
-type ToolResult<T> = std::result::Result<T, Box<dyn Error>>;
+#[derive(Debug)]
+struct ToolError(String);
+
+impl fmt::Display for ToolError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ToolError {}
+
+impl From<&str> for ToolError {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<std::io::Error> for ToolError {
+    fn from(value: std::io::Error) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<serde_json::Error> for ToolError {
+    fn from(value: serde_json::Error) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<std::num::ParseIntError> for ToolError {
+    fn from(value: std::num::ParseIntError) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<std::num::TryFromIntError> for ToolError {
+    fn from(value: std::num::TryFromIntError) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<BedrockWorldError> for ToolError {
+    fn from(value: BedrockWorldError) -> Self {
+        Self(value.to_string())
+    }
+}
+
+type ToolResult<T> = std::result::Result<T, ToolError>;
 
 const MAGIC: &[u8; 8] = b"BWRBIO01";
 const FORMAT_VERSION: u16 = 1;
