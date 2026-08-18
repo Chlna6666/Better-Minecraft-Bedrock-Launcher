@@ -1,12 +1,17 @@
 //! Minecraft Bedrock saved-item NBT, including historical numeric ID/meta representations.
 
 mod legacy_saved_item;
+mod legacy_saved_item_check;
 mod saved_item;
 
 pub use crate::parsed::ItemStack;
 pub use legacy_saved_item::{
     LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, NamedSavedItemId,
     SavedItemUpgradeSource, load_pinned_legacy_saved_item_id_table_from_dir,
+};
+pub use legacy_saved_item_check::{
+    LegacySavedItemCheckReport, LegacySavedItemIssue, LegacySavedItemIssueKind,
+    check_legacy_numeric_saved_items,
 };
 
 // The historical forward rule executor remains crate-private while public APIs are expressed through
