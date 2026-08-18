@@ -1,4 +1,7 @@
-//! Whole-world `Data2D` / `Data2DLegacy` to `Data3D` writes.
+//! Whole-world `Data2D` / `Data2DLegacy` to `Data3D` record rewrites.
+//!
+//! The target vertical chunk generation is explicit. A record-format conversion must not guess whether
+//! the caller intends the pre-Caves-and-Cliffs or extended-height Overworld range.
 
 use crate::biome::{Biome2d, Biome2dLegacy, data2d_to_data3d};
 use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion, Dimension};
@@ -30,20 +33,26 @@ impl<S> BedrockWorld<S>
 where
     S: WorldStorageHandle,
 {
-    /// Promotes every `Data2D` and `Data2DLegacy` biome record to modern `Data3D` in one transaction.
+    /// Rewrites every `Data2D` and `Data2DLegacy` biome record to `Data3D` in one transaction.
     ///
-    /// `Data2D` is expanded losslessly by repeating each horizontal biome through the dimension's
-    /// modern vertical SubChunk range. `Data2DLegacy` contains an additional saved RGB triplet for
-    /// every column; `Data3D` has no field for those bytes. If such records exist and
-    /// `allow_saved_rgb_loss` is `false`, the complete operation is rejected before any write. Passing
-    /// `true` explicitly acknowledges that those historical RGB samples will be discarded while biome
-    /// IDs and height values are preserved.
-    pub fn upgrade_biomes_to_data3d_blocking(
+    /// `target_chunk_version` explicitly selects the vertical range used when repeating each 2D biome
+    /// through SubChunk layers. `ChunkVersion::Old` keeps the pre-extended-height range and
+    /// `ChunkVersion::New` selects the extended-height range. Nether and End use their dimension range.
+    ///
+    /// `Data2DLegacy` contains an additional saved RGB triplet for every column; `Data3D` has no field
+    /// for those bytes. If such records exist and `allow_saved_rgb_loss` is `false`, the complete
+    /// operation is rejected before any write. Passing `true` explicitly acknowledges that those
+    /// historical RGB samples will be discarded while biome IDs and height values are preserved.
+    pub fn rewrite_biomes_to_data3d_blocking(
         &self,
+        target_chunk_version: ChunkVersion,
         allow_saved_rgb_loss: bool,
     ) -> Result<BiomeData3dUpgradeReport> {
-        let (batch, report) =
-            stage_biomes_to_data3d(self.storage(), allow_saved_rgb_loss)?;
+        let (batch, report) = stage_biomes_to_data3d(
+            self.storage(),
+            target_chunk_version,
+            allow_saved_rgb_loss,
+        )?;
         if batch.is_empty() {
             return Ok(report);
         }
@@ -65,6 +74,7 @@ where
 
 fn stage_biomes_to_data3d(
     storage: &dyn WorldStorage,
+    target_chunk_version: ChunkVersion,
     allow_saved_rgb_loss: bool,
 ) -> Result<(StorageBatch, BiomeData3dUpgradeReport)> {
     let mut sources = BTreeMap::<ChunkPos, ChunkRecordTag>::new();
@@ -120,7 +130,7 @@ fn stage_biomes_to_data3d(
                     pos.x, pos.z
                 )));
             }
-            _ => pos.subchunk_index_range(ChunkVersion::New),
+            _ => pos.subchunk_index_range(target_chunk_version),
         };
         let source_key = ChunkKey::new(pos, source_tag).encode();
         let raw = storage.get(&source_key)?.ok_or_else(|| {
@@ -165,7 +175,7 @@ mod tests {
     use crate::database::MemoryStorage;
 
     #[test]
-    fn data2d_promotes_to_full_modern_overworld_range() {
+    fn data2d_old_target_keeps_pre_extended_overworld_range() {
         let storage = MemoryStorage::new();
         let pos = ChunkPos {
             x: 3,
@@ -176,13 +186,35 @@ mod tests {
         let source = Biome2d::new(vec![72; 256], vec![4; 256]).unwrap();
         storage.put(&source_key, &source.encode().unwrap()).unwrap();
 
-        let (batch, report) = stage_biomes_to_data3d(&storage, false).unwrap();
+        let (batch, report) =
+            stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).unwrap();
         assert_eq!(report.data2d_records, 1);
-        assert_eq!(report.saved_rgb_samples_discarded, 0);
-        assert!(storage.get(&source_key).unwrap().is_some());
         storage.write_batch(&batch).unwrap();
-        assert!(storage.get(&source_key).unwrap().is_none());
+        let value = storage
+            .get(&ChunkKey::new(pos, ChunkRecordTag::Data3D).encode())
+            .unwrap()
+            .unwrap();
+        let parsed = crate::biome::Biome3d::parse(&value).unwrap();
+        assert_eq!(parsed.storages.len(), 16);
+        assert_eq!(parsed.storages.first().unwrap().y, Some(0));
+        assert_eq!(parsed.storages.last().unwrap().y, Some(15));
+    }
 
+    #[test]
+    fn data2d_new_target_uses_extended_overworld_range() {
+        let storage = MemoryStorage::new();
+        let pos = ChunkPos {
+            x: 3,
+            z: -6,
+            dimension: Dimension::Overworld,
+        };
+        let source_key = ChunkKey::new(pos, ChunkRecordTag::Data2D).encode();
+        let source = Biome2d::new(vec![72; 256], vec![4; 256]).unwrap();
+        storage.put(&source_key, &source.encode().unwrap()).unwrap();
+
+        let (batch, _) =
+            stage_biomes_to_data3d(&storage, ChunkVersion::New, false).unwrap();
+        storage.write_batch(&batch).unwrap();
         let value = storage
             .get(&ChunkKey::new(pos, ChunkRecordTag::Data3D).encode())
             .unwrap()
@@ -218,9 +250,12 @@ mod tests {
         .unwrap();
         storage.put(&source_key, &legacy.encode().unwrap()).unwrap();
 
-        assert!(stage_biomes_to_data3d(&storage, false).is_err());
+        assert!(
+            stage_biomes_to_data3d(&storage, ChunkVersion::Old, false).is_err()
+        );
         assert!(storage.get(&source_key).unwrap().is_some());
-        let (batch, report) = stage_biomes_to_data3d(&storage, true).unwrap();
+        let (batch, report) =
+            stage_biomes_to_data3d(&storage, ChunkVersion::Old, true).unwrap();
         assert_eq!(report.data2d_legacy_records, 1);
         assert_eq!(report.saved_rgb_samples_discarded, 256);
         storage.write_batch(&batch).unwrap();
