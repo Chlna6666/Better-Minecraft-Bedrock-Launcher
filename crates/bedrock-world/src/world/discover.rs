@@ -1,8 +1,9 @@
 //! Discovery helpers for locating Bedrock world folders on disk.
 
+use crate::error::Result;
 use crate::level::read_level_dat_document;
 use crate::nbt::NbtTag;
-use crate::error::Result;
+use crate::version::LevelVersion;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -41,6 +42,18 @@ pub struct WorldSummary {
     pub folder_path: PathBuf,
     /// Display name from `levelname.txt` or `level.dat`.
     pub level_name: Option<String>,
+    /// Version evidence read directly from `level.dat`.
+    #[serde(default)]
+    pub level_version: Option<LevelVersion>,
+    /// Whether the world contains the Bedrock `db` LevelDB directory.
+    #[serde(default)]
+    pub has_leveldb: bool,
+    /// Whether the world contains the pre-LevelDB Pocket Edition `chunks.dat` file.
+    #[serde(default)]
+    pub has_chunks_dat: bool,
+    /// Whether the world contains the pre-LevelDB Pocket Edition `entities.dat` file.
+    #[serde(default)]
+    pub has_entities_dat: bool,
     /// Optional `world_icon.*` path.
     pub icon_path: Option<PathBuf>,
     /// Last modified timestamp for the folder.
@@ -60,6 +73,10 @@ pub struct WorldSummary {
 }
 
 /// Discovers Bedrock worlds directly under the configured roots.
+///
+/// `level.dat` is parsed once per discovered world and reused for both the display-name fallback and
+/// version detection. The summary also exposes the actual storage files present so callers can choose
+/// LevelDB handling or the older `chunks.dat` importer without guessing from a game-version string.
 pub fn discover_worlds(options: &WorldDiscovery) -> Result<Vec<WorldSummary>> {
     let mut folders = Vec::new();
     for root in &options.roots {
@@ -85,7 +102,10 @@ pub fn discover_worlds(options: &WorldDiscovery) -> Result<Vec<WorldSummary>> {
             continue;
         }
 
-        let level_name = read_level_name(&folder_path);
+        let (level_name, level_version) = read_level_metadata(&folder_path);
+        let has_leveldb = folder_path.join("db").is_dir();
+        let has_chunks_dat = folder_path.join("chunks.dat").is_file();
+        let has_entities_dat = folder_path.join("entities.dat").is_file();
         let icon_path = find_world_icon(&folder_path);
         let modified = fs::metadata(&folder_path)
             .and_then(|metadata| metadata.modified())
@@ -100,6 +120,10 @@ pub fn discover_worlds(options: &WorldDiscovery) -> Result<Vec<WorldSummary>> {
             folder_name,
             folder_path,
             level_name,
+            level_version,
+            has_leveldb,
+            has_chunks_dat,
+            has_entities_dat,
             icon_path,
             modified,
             size_bytes,
@@ -114,22 +138,26 @@ pub fn discover_worlds(options: &WorldDiscovery) -> Result<Vec<WorldSummary>> {
     Ok(worlds)
 }
 
-fn read_level_name(folder_path: &Path) -> Option<String> {
+fn read_level_metadata(folder_path: &Path) -> (Option<String>, Option<LevelVersion>) {
     let text_name = fs::read_to_string(folder_path.join("levelname.txt"))
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    if text_name.is_some() {
-        return text_name;
-    }
-    let document = read_level_dat_document(&folder_path.join("level.dat")).ok()?;
-    let NbtTag::Compound(root) = document.root else {
-        return None;
-    };
-    match root.get("LevelName") {
-        Some(NbtTag::String(name)) if !name.is_empty() => Some(name.clone()),
-        _ => None,
-    }
+    let document = read_level_dat_document(&folder_path.join("level.dat")).ok();
+    let level_name = text_name.or_else(|| {
+        let document = document.as_ref()?;
+        let NbtTag::Compound(root) = &document.root else {
+            return None;
+        };
+        match root.get("LevelName") {
+            Some(NbtTag::String(name)) if !name.is_empty() => Some(name.clone()),
+            _ => None,
+        }
+    });
+    let level_version = document
+        .as_ref()
+        .and_then(|document| LevelVersion::detect(document).ok());
+    (level_name, level_version)
 }
 
 fn find_world_icon(folder_path: &Path) -> Option<PathBuf> {
@@ -184,7 +212,7 @@ mod tests {
     use std::io::Write as _;
 
     #[test]
-    fn discovers_level_dat_worlds() {
+    fn discovers_level_dat_worlds_with_version_and_storage_evidence() {
         let root = std::env::temp_dir().join(format!(
             "bedrock-world-discover-{}",
             SystemTime::now()
@@ -193,15 +221,27 @@ mod tests {
                 .as_nanos()
         ));
         let world = root.join("world");
-        fs::create_dir_all(&world).expect("create world");
+        fs::create_dir_all(world.join("db")).expect("create world db");
         fs::File::create(world.join("levelname.txt"))
             .expect("create levelname")
             .write_all(b"Test World")
             .expect("write levelname");
+        fs::File::create(world.join("chunks.dat")).expect("create chunks.dat");
+        fs::File::create(world.join("entities.dat")).expect("create entities.dat");
         let mut level = IndexMap::new();
         level.insert(
             "LevelName".to_string(),
             NbtTag::String("Fallback".to_string()),
+        );
+        level.insert("StorageVersion".to_string(), NbtTag::Int(8));
+        level.insert(
+            "LastOpenedWithVersion".to_string(),
+            NbtTag::List(vec![
+                NbtTag::Int(1),
+                NbtTag::Int(14),
+                NbtTag::Int(60),
+                NbtTag::Int(5),
+            ]),
         );
         write_level_dat_document(
             &world.join("level.dat"),
@@ -212,6 +252,17 @@ mod tests {
         let worlds = discover_worlds(&WorldDiscovery::new(vec![root.clone()])).expect("discover");
         assert_eq!(worlds.len(), 1);
         assert_eq!(worlds[0].level_name.as_deref(), Some("Test World"));
+        assert_eq!(
+            worlds[0]
+                .level_version
+                .as_ref()
+                .and_then(|version| version.last_opened_with.as_ref())
+                .map(|version| version.components()),
+            Some(&[1, 14, 60, 5][..])
+        );
+        assert!(worlds[0].has_leveldb);
+        assert!(worlds[0].has_chunks_dat);
+        assert!(worlds[0].has_entities_dat);
 
         fs::remove_dir_all(root).expect("cleanup");
     }

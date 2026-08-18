@@ -4,6 +4,7 @@
 //! same Bedrock record family; no game-version or saved-item rewrite is performed implicitly.
 
 mod abilities;
+mod actor;
 mod attributes;
 mod data;
 mod effects;
