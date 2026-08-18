@@ -24,7 +24,7 @@ mod upgrade;
 pub use bedrock_world::*;
 pub use biome_downgrade::BiomeData2dDowngradeReport;
 pub use biome_upgrade::BiomeData3dUpgradeReport;
-pub use downgrade::{
+pub(crate) use downgrade::{
     DowngradeAction, DowngradeIssue, DowngradeLoss, DowngradePlan, DowngradeRequirement,
 };
 pub use level_dat::{LevelChunkVersionCount, SubChunkVersionCount, WorldVersions};
@@ -51,4 +51,4 @@ pub use pocket_entities_dat::{
     write_pocket_entities_dat_atomic,
 };
 pub use subchunk_upgrade::WorldSubChunkUpgradeReport;
-pub use upgrade::{UpgradeAction, UpgradeIssue, UpgradeLoss, UpgradePlan};
+pub(crate) use upgrade::{UpgradeAction, UpgradeIssue, UpgradeLoss, UpgradePlan};
