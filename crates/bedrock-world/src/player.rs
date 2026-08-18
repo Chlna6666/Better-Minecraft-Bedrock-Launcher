@@ -14,6 +14,7 @@ mod inventory;
 mod legacy_saved_items;
 mod level_dat;
 mod local_player;
+mod modern_saved_items;
 mod position;
 mod saved_item_format;
 mod server_player;
