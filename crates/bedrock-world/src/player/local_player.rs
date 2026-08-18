@@ -1,14 +1,14 @@
 //! Minecraft Bedrock `~local_player` LevelDB record.
 
 use crate::database::{StorageBatch, WorldStorage};
-use crate::error::Result;
+use crate::error::{BedrockWorldError, Result};
 use crate::level::LevelDatDocument;
 use crate::player::{PlayerData, PlayerId};
 use bytes::Bytes;
 
 const LOCAL_PLAYER_KEY: &[u8] = b"~local_player";
 
-/// Reads `~local_player` and detects the player data generation from its contents.
+/// Reads `~local_player` and detects saved-item/version evidence from its contents.
 pub fn read_local_player(storage: &dyn WorldStorage) -> Result<Option<PlayerData>> {
     storage
         .get(LOCAL_PLAYER_KEY)?
@@ -27,8 +27,16 @@ pub fn read_local_player_with_level(
         .transpose()
 }
 
-/// Writes the supplied player NBT to the exact `~local_player` key.
+/// Writes a `~local_player` record back to the exact `~local_player` key.
+///
+/// The supplied [`PlayerData`] must itself represent `~local_player`; this does not implicitly move
+/// another Bedrock player-record family.
 pub fn write_local_player(storage: &dyn WorldStorage, player: &PlayerData) -> Result<()> {
+    if player.id != PlayerId::Local {
+        return Err(BedrockWorldError::Validation(
+            "write_local_player requires PlayerId::Local".to_string(),
+        ));
+    }
     let mut batch = StorageBatch::new();
     batch.put(Bytes::from_static(LOCAL_PLAYER_KEY), player.to_raw()?);
     storage.write_batch(&batch)
