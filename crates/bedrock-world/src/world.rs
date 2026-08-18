@@ -26,4 +26,4 @@ pub use pocket_chunks_dat::{
     import_pocket_chunks_dat_records_blocking,
 };
 pub use subchunk_upgrade::WorldSubChunkUpgradeReport;
-pub use upgrade::{UpgradeAction, UpgradeIssue, UpgradePlan};
+pub use upgrade::{UpgradeAction, UpgradeIssue, UpgradeLoss, UpgradePlan};
