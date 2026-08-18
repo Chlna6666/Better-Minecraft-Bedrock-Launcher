@@ -3,10 +3,12 @@
 mod bedrock_world;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
+mod level_dat;
 mod pocket_chunks_dat;
 pub(crate) mod surface;
 
 pub use bedrock_world::*;
+pub use level_dat::{SubChunkVersionCount, WorldVersions};
 pub use crate::parsed::{RetentionMode, WorldParseCategories, WorldParseOptions, WorldParseReport};
 pub use pocket_chunks_dat::{
     PocketChunksDatImportOptions, PocketChunksDatImportReport,
