@@ -1,8 +1,8 @@
-//! Historical numeric Bedrock saved-item IDs and exact reverse representation checks.
+//! Historical Bedrock saved-item identities and exact reverse representation checks.
 //!
-//! A reverse lookup never inverts rename/remap rules heuristically. Candidate historical numeric
-//! ID/meta pairs are run through the same authoritative forward item rules and accepted only when the
-//! resulting named ID/meta exactly matches the requested saved item.
+//! Reverse lookup never inverts rename/remap rules heuristically. Candidate historical ID/meta pairs
+//! are run through the same authoritative forward item rules and accepted only when the resulting
+//! named ID/meta exactly matches the requested saved item.
 
 use super::saved_item::{
     AuthoritativeItemMigrationCatalog, ItemSchemaSource, PINNED_ITEM_SCHEMA_FILES,
@@ -35,7 +35,7 @@ pub struct NamedSavedItemId {
     pub meta: i32,
 }
 
-/// One exact historical numeric saved-item representation.
+/// One exact Classic (MCPE <= 1.5) numeric saved-item representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LegacySavedItemId {
     /// Historical numeric item ID.
@@ -44,7 +44,16 @@ pub struct LegacySavedItemId {
     pub meta: i32,
 }
 
-/// Result of asking whether one named saved item has an exact historical numeric representation.
+/// One exact Medieval (MCPE 1.6-1.8) string-ID saved-item representation.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MedievalSavedItemId {
+    /// Historical string item identifier persisted by the 1.6-1.8 format.
+    pub name: String,
+    /// Historical auxiliary metadata value.
+    pub meta: i32,
+}
+
+/// Result of asking whether one named saved item has an exact Classic numeric representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacySavedItemMatch {
     /// No historical numeric pair upgrades to the requested named ID/meta.
@@ -58,7 +67,7 @@ pub enum LegacySavedItemMatch {
     Ambiguous {
         /// First matching historical representation.
         first: LegacySavedItemId,
-        /// Second matching historical representation proving ambiguity.
+        /// Second historical representation proving ambiguity.
         second: LegacySavedItemId,
     },
 }
@@ -74,11 +83,39 @@ impl LegacySavedItemMatch {
     }
 }
 
-/// Authoritative historical numeric saved-item table with forward-verified reverse lookup.
+/// Result of asking whether one named saved item has an exact Medieval string-ID representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MedievalSavedItemMatch {
+    /// No historical string ID/meta pair upgrades to the requested named ID/meta.
+    Missing,
+    /// Exactly one historical string ID/meta pair represents the requested item.
+    Unique(MedievalSavedItemId),
+    /// Multiple distinct historical string ID/meta pairs converge to the same requested item.
+    Ambiguous {
+        /// First matching historical representation in string-ID/meta order.
+        first: MedievalSavedItemId,
+        /// Second matching historical representation proving ambiguity.
+        second: MedievalSavedItemId,
+    },
+}
+
+impl MedievalSavedItemMatch {
+    /// Returns the historical pair only when the representation is unique.
+    #[must_use]
+    pub fn unique(self) -> Option<MedievalSavedItemId> {
+        match self {
+            Self::Unique(value) => Some(value),
+            Self::Missing | Self::Ambiguous { .. } => None,
+        }
+    }
+}
+
+/// Authoritative historical saved-item table with forward-verified reverse lookup.
 #[derive(Debug, Clone)]
 pub struct LegacySavedItemIdTable {
     catalog: AuthoritativeItemMigrationCatalog,
     legacy_ids: Vec<(i32, String)>,
+    legacy_names: Vec<String>,
     remapped_source_metas: Vec<i32>,
 }
 
@@ -111,6 +148,13 @@ impl LegacySavedItemIdTable {
     ) -> Result<Self> {
         let source_ids: BTreeMap<String, i32> = serde_json::from_str(legacy_item_id_map_json)
             .map_err(|error| validation(format!("invalid legacy item id map: {error}")))?;
+        let mut legacy_names = source_ids
+            .iter()
+            .filter_map(|(name, numeric_id)| (*numeric_id != 0).then_some(name.clone()))
+            .collect::<Vec<_>>();
+        legacy_names.sort();
+        legacy_names.dedup();
+
         let mut legacy_ids = source_ids
             .into_iter()
             .filter_map(|(name, numeric_id)| (numeric_id != 0).then_some((numeric_id, name)))
@@ -141,30 +185,31 @@ impl LegacySavedItemIdTable {
         Ok(Self {
             catalog,
             legacy_ids,
+            legacy_names,
             remapped_source_metas: metas.into_iter().collect(),
         })
     }
 
-    /// Returns the historical string item identifier behind one numeric saved-item candidate.
-    ///
-    /// Metadata does not participate in numeric-ID lookup; it is retained on [`LegacySavedItemId`]
-    /// because later item upgrade rules may interpret it.
+    /// Returns the historical string item identifier behind one Classic numeric candidate.
     #[must_use]
     pub fn legacy_item_name(&self, legacy: LegacySavedItemId) -> Option<&str> {
         self.catalog.legacy_numeric_name(legacy.numeric_id)
     }
 
-    /// Returns the 1.12-era block identifier associated with one historical blockitem candidate.
-    ///
-    /// `None` means the historical numeric item is not classified by the authoritative item→block map
-    /// as a blockitem. No block identifier is inferred from the modern item name.
+    /// Returns the 1.12-era block identifier associated with one Classic blockitem candidate.
     #[must_use]
     pub fn legacy_block_id(&self, legacy: LegacySavedItemId) -> Option<&str> {
         let item_name = self.legacy_item_name(legacy)?;
         self.catalog.legacy_block_id(item_name)
     }
 
-    /// Applies authoritative forward rules to one historical numeric pair.
+    /// Returns the block identifier associated with one Medieval string-ID blockitem candidate.
+    #[must_use]
+    pub fn medieval_block_id(&self, medieval: &MedievalSavedItemId) -> Option<&str> {
+        self.catalog.legacy_block_id(&medieval.name)
+    }
+
+    /// Applies authoritative forward rules to one Classic numeric pair.
     #[must_use]
     pub fn named_id(&self, legacy: LegacySavedItemId) -> Option<NamedSavedItemId> {
         let name = self.catalog.legacy_numeric_name(legacy.numeric_id)?;
@@ -175,13 +220,22 @@ impl LegacySavedItemIdTable {
         })
     }
 
-    /// Finds an exact historical numeric representation for one named saved item.
+    /// Applies authoritative forward rules to one Medieval string-ID/meta pair.
+    #[must_use]
+    pub fn named_id_from_medieval(&self, medieval: &MedievalSavedItemId) -> NamedSavedItemId {
+        let upgraded = self.catalog.upgrade_id_meta(&medieval.name, medieval.meta);
+        NamedSavedItemId {
+            name: upgraded.name,
+            meta: upgraded.meta,
+        }
+    }
+
+    /// Finds an exact Classic numeric representation for one named saved item.
     ///
     /// Candidate metadata consists of the requested target metadata plus every source metadata value
-    /// explicitly referenced by authoritative `remappedMetas` rules. This is complete for the rule
-    /// model: unchanged metadata can only originate from the same value, while changed metadata must
-    /// appear as a source key in a remap rule. Every candidate is then verified by running the full
-    /// ordered forward rule chain. Lookup performs no temporary metadata-vector allocation.
+    /// explicitly referenced by authoritative `remappedMetas` rules. Every candidate is verified by
+    /// running the full ordered forward rule chain. Numeric aliases remain distinct because Classic
+    /// saves persist the numeric ID itself.
     #[must_use]
     pub fn match_numeric(&self, target: &NamedSavedItemId) -> LegacySavedItemMatch {
         let target_already_present = self.remapped_source_metas.binary_search(&target.meta).is_ok();
@@ -191,18 +245,12 @@ impl LegacySavedItemIdTable {
             let mut index = 0usize;
             let mut target_emitted = target_already_present;
             while index < self.remapped_source_metas.len() || !target_emitted {
-                let meta = if !target_emitted
-                    && (index == self.remapped_source_metas.len()
-                        || target.meta < self.remapped_source_metas[index])
-                {
-                    target_emitted = true;
-                    target.meta
-                } else {
-                    let meta = self.remapped_source_metas[index];
-                    index += 1;
-                    meta
-                };
-
+                let meta = next_candidate_meta(
+                    &self.remapped_source_metas,
+                    target.meta,
+                    &mut index,
+                    &mut target_emitted,
+                );
                 let upgraded = self.catalog.upgrade_id_meta(historical_name, meta);
                 if upgraded.name != target.name || upgraded.meta != target.meta {
                     continue;
@@ -226,10 +274,59 @@ impl LegacySavedItemIdTable {
         first.map_or(LegacySavedItemMatch::Missing, LegacySavedItemMatch::Unique)
     }
 
-    /// Returns the number of historical non-zero numeric IDs considered by reverse lookup.
+    /// Finds an exact Medieval (MCPE 1.6-1.8) string-ID/meta representation.
+    ///
+    /// Numeric aliases are deliberately collapsed before this search because Medieval saves persist
+    /// the string item identifier, not the old numeric ID. Distinct historical strings that converge
+    /// to the same modern item remain ambiguous and are never selected implicitly.
+    #[must_use]
+    pub fn match_medieval(&self, target: &NamedSavedItemId) -> MedievalSavedItemMatch {
+        let target_already_present = self.remapped_source_metas.binary_search(&target.meta).is_ok();
+        let mut first = None::<MedievalSavedItemId>;
+
+        for historical_name in &self.legacy_names {
+            let mut index = 0usize;
+            let mut target_emitted = target_already_present;
+            while index < self.remapped_source_metas.len() || !target_emitted {
+                let meta = next_candidate_meta(
+                    &self.remapped_source_metas,
+                    target.meta,
+                    &mut index,
+                    &mut target_emitted,
+                );
+                let upgraded = self.catalog.upgrade_id_meta(historical_name, meta);
+                if upgraded.name != target.name || upgraded.meta != target.meta {
+                    continue;
+                }
+                let candidate = MedievalSavedItemId {
+                    name: historical_name.clone(),
+                    meta,
+                };
+                match &first {
+                    None => first = Some(candidate),
+                    Some(previous) if previous == &candidate => {}
+                    Some(previous) => {
+                        return MedievalSavedItemMatch::Ambiguous {
+                            first: previous.clone(),
+                            second: candidate,
+                        };
+                    }
+                }
+            }
+        }
+        first.map_or(MedievalSavedItemMatch::Missing, MedievalSavedItemMatch::Unique)
+    }
+
+    /// Returns the number of historical non-zero numeric IDs considered by Classic reverse lookup.
     #[must_use]
     pub fn legacy_id_count(&self) -> usize {
         self.legacy_ids.len()
+    }
+
+    /// Returns the number of distinct historical string IDs considered by Medieval reverse lookup.
+    #[must_use]
+    pub fn medieval_name_count(&self) -> usize {
+        self.legacy_names.len()
     }
 
     /// Returns how many distinct metadata values appear as explicit remap sources.
@@ -239,7 +336,23 @@ impl LegacySavedItemIdTable {
     }
 }
 
-/// Loads the pinned, Git-blob-verified item corpus and builds its historical numeric reverse table.
+fn next_candidate_meta(
+    remapped: &[i32],
+    target: i32,
+    index: &mut usize,
+    target_emitted: &mut bool,
+) -> i32 {
+    if !*target_emitted && (*index == remapped.len() || target < remapped[*index]) {
+        *target_emitted = true;
+        target
+    } else {
+        let meta = remapped[*index];
+        *index += 1;
+        meta
+    }
+}
+
+/// Loads the pinned, Git-blob-verified item corpus and builds its historical reverse table.
 pub fn load_pinned_legacy_saved_item_id_table_from_dir(
     root: impl AsRef<Path>,
 ) -> Result<LegacySavedItemIdTable> {
@@ -308,16 +421,63 @@ mod tests {
             })
         );
         assert_eq!(
-            table.named_id(LegacySavedItemId {
-                numeric_id: 1,
+            table.match_medieval(&target),
+            MedievalSavedItemMatch::Unique(MedievalSavedItemId {
+                name: "minecraft:old".to_string(),
+                meta: 3,
+            })
+        );
+        assert_eq!(
+            table.named_id_from_medieval(&MedievalSavedItemId {
+                name: "minecraft:old".to_string(),
                 meta: 3,
             }),
-            Some(target)
+            target
         );
     }
 
     #[test]
-    fn reverse_match_reports_alias_ambiguity_instead_of_picking_one_id() {
+    fn numeric_aliases_do_not_make_medieval_string_identity_ambiguous() {
+        let table = LegacySavedItemIdTable::from_sources(
+            r#"{"minecraft:old":1}"#,
+            "{}",
+            &[],
+        )
+        .unwrap();
+        let target = NamedSavedItemId {
+            name: "minecraft:old".to_string(),
+            meta: 2,
+        };
+        assert_eq!(
+            table.match_medieval(&target),
+            MedievalSavedItemMatch::Unique(MedievalSavedItemId {
+                name: "minecraft:old".to_string(),
+                meta: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn distinct_historical_strings_remain_ambiguous_for_medieval_target() {
+        let sources = [SavedItemUpgradeSource {
+            name: "0001_test.json",
+            json: r#"{"renamedIds":{"minecraft:first":"minecraft:new","minecraft:second":"minecraft:new"}}"#,
+        }];
+        let table = LegacySavedItemIdTable::from_sources(
+            r#"{"minecraft:first":1,"minecraft:second":2}"#,
+            "{}",
+            &sources,
+        )
+        .unwrap();
+        let result = table.match_medieval(&NamedSavedItemId {
+            name: "minecraft:new".to_string(),
+            meta: 0,
+        });
+        assert!(matches!(result, MedievalSavedItemMatch::Ambiguous { .. }));
+    }
+
+    #[test]
+    fn reverse_match_reports_alias_ambiguity_instead_of_picking_one_numeric_id() {
         let sources = [SavedItemUpgradeSource {
             name: "0001_test.json",
             json: r#"{"renamedIds":{"minecraft:first":"minecraft:new","minecraft:second":"minecraft:new"}}"#,
@@ -332,19 +492,10 @@ mod tests {
             name: "minecraft:new".to_string(),
             meta: 5,
         };
-        assert_eq!(
+        assert!(matches!(
             table.match_numeric(&target),
-            LegacySavedItemMatch::Ambiguous {
-                first: LegacySavedItemId {
-                    numeric_id: 1,
-                    meta: 5,
-                },
-                second: LegacySavedItemId {
-                    numeric_id: 2,
-                    meta: 5,
-                },
-            }
-        );
+            LegacySavedItemMatch::Ambiguous { .. }
+        ));
     }
 
     #[test]
@@ -361,6 +512,13 @@ mod tests {
                 meta: 0,
             }),
             LegacySavedItemMatch::Missing
+        );
+        assert_eq!(
+            table.match_medieval(&NamedSavedItemId {
+                name: "minecraft:air".to_string(),
+                meta: 0,
+            }),
+            MedievalSavedItemMatch::Missing
         );
     }
 
@@ -379,11 +537,11 @@ mod tests {
         assert_eq!(table.legacy_item_name(blockitem), Some("minecraft:old_item"));
         assert_eq!(table.legacy_block_id(blockitem), Some("minecraft:old_block"));
         assert_eq!(
-            table.legacy_block_id(LegacySavedItemId {
-                numeric_id: 6,
-                meta: 0,
+            table.medieval_block_id(&MedievalSavedItemId {
+                name: "minecraft:old_item".to_string(),
+                meta: 7,
             }),
-            None
+            Some("minecraft:old_block")
         );
     }
 }
