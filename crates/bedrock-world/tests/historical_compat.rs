@@ -1,4 +1,4 @@
-#![cfg(feature = "backend-bedrock-leveldb")]
+#![cfg(feature = "bedrock-leveldb")]
 
 use bedrock_world::{BedrockWorld, WorldScanOptions};
 use std::env;
