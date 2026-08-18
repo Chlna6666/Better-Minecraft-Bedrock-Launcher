@@ -1,5 +1,6 @@
 //! Minecraft Bedrock saved-item NBT, including historical persisted representations.
 
+mod classic_saved_item;
 mod format;
 mod legacy_saved_item;
 mod legacy_saved_item_check;
@@ -8,6 +9,12 @@ mod medieval_saved_item;
 mod saved_item;
 
 pub use crate::parsed::ItemStack;
+pub use classic_saved_item::{
+    ClassicSavedItemCheckReport, ClassicSavedItemConversionOutcome, ClassicSavedItemConversionReport,
+    ClassicSavedItemIssue, ClassicSavedItemIssueKind, check_saved_items_for_classic,
+    check_saved_items_for_classic_with_blocks, convert_saved_items_to_classic,
+    convert_saved_items_to_classic_with_blocks,
+};
 pub use format::SavedItemFormat;
 pub use legacy_saved_item::{
     LegacySavedItemId, LegacySavedItemIdTable, LegacySavedItemMatch, MedievalSavedItemId,
