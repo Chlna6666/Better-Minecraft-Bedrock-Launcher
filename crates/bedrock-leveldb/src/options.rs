@@ -3,11 +3,16 @@
 pub enum CompressionPolicy {
     /// Store native table blocks uncompressed.
     None,
-    /// Compress native table blocks with Snappy.
+    /// Compress native table blocks with Snappy (compression id `1`).
     Snappy,
-    /// Compress native table blocks with zlib.
-    #[default]
+    /// Compress native table blocks with zlib framing (compression id `2`).
     Zlib,
+    /// Compress native table blocks with raw DEFLATE (Bedrock compression id `4`).
+    ///
+    /// This is the default because current Minecraft Bedrock LevelDB tables use Mojang's raw-zlib/
+    /// raw-DEFLATE block representation rather than the standard zlib wrapper.
+    #[default]
+    RawDeflate,
 }
 
 /// Independent native table cache capacities.
@@ -87,7 +92,7 @@ impl Default for OpenOptions {
             create_if_missing: true,
             error_if_exists: false,
             paranoid_checks: true,
-            compression_policy: CompressionPolicy::Zlib,
+            compression_policy: CompressionPolicy::RawDeflate,
             cache: NativeCacheOptions::default(),
             write_buffer_size: 4 * 1024 * 1024,
         }
@@ -501,5 +506,11 @@ mod tests {
         let options = ReadOptions::default();
         assert_eq!(options.cache_policy, CachePolicy::Use);
         assert_eq!(options.read_strategy, ReadStrategy::Shared);
+    }
+
+    #[test]
+    fn bedrock_raw_deflate_is_the_default_write_compression() {
+        assert_eq!(CompressionPolicy::default(), CompressionPolicy::RawDeflate);
+        assert_eq!(OpenOptions::default().compression_policy, CompressionPolicy::RawDeflate);
     }
 }
